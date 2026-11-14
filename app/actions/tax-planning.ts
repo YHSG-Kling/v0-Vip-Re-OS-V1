@@ -1,14 +1,22 @@
 "use server"
 
 // app/actions/tax-planning.ts
-// Self-employed (1099) agent tax planning — persists the agent's set-aside % + effective rate +
-// recorded quarterly payments, and computes the full tax plan from their REAL YTD income (commission
-// received) and deductible business expenses. Feeds lib/finance/tax-planning.ts (the pure engine).
+// Self-employed (1099) agent ESTIMATED-TAX planning — the doors of THE ONE estimator (lib/finance/tax-planning.ts).
 //
-// TENANT OPTION (m574): every action here is gated on brokerages.tax_assistance_enabled via
-// lib/finance/tax-assistance.ts — fail-closed, opt-in (the farm-mail/revenue-share direction). The
-// quarterly-tax-concierge cron gates on the same column, so the tools and the reminders turn on and
-// off together.
+// WAVE 153 (lane 153A): owner ruling "make sure estimate quarterly taxes work (if we cant determine their tax
+// percentages, then the user can enter that in)". These doors:
+//   · read the SESSION agent's own recorded facts only — their commission (agent_commissions.agent_commission, their
+//     split) on their chosen basis, and their own book's expenses — never team or brokerage revenue, so a team lead's or
+//     broker's personal plan is never inflated by consolidated income;
+//   · save each rate / target with its source (self_entered | accountant_supplied), period, time and version, appending
+//     the replaced value to assumption_history (m901) — no default rate exists anywhere;
+//   · APPEND a recorded payment or set-aside (the old door replaced a quarter's earlier payment, rewriting history);
+//   · never pay anything.
+// The legacy columns estimated_effective_rate / set_aside_percent are neither read nor written (m901 makes them nullable;
+// before it is applied an insert still lands, the old defaults filling columns nobody reads).
+//
+// TENANT OPTION (m574): every action is gated on brokerages.tax_assistance_enabled via lib/finance/tax-assistance.ts —
+// fail-closed, opt-in. The quarterly concierge gates on the same column.
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -16,32 +24,34 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
 import {
   buildTaxPlan,
+  parseTaxAssumptions,
+  applyAssumptionChange,
+  recognizeCommissionIncome,
   sumDeductibleExpenses,
+  taxYearWindow,
   type TaxPlan,
   type FilingStatus,
+  type AssumptionChange,
+  type CommissionIncomeRow,
+  type RecordedTaxEntry,
 } from "@/lib/finance/tax-planning"
 import { resolveTaxAssistanceEnabled, TAX_ASSISTANCE_DISABLED_ERROR } from "@/lib/finance/tax-assistance"
 
+type Svc = ReturnType<typeof createServiceClient>
+
 interface TaxProfileRow {
-  agent_id: string
-  brokerage_id: string
-  tax_year: number
-  set_aside_percent: number
-  estimated_effective_rate: number
-  filing_status: string
+  filing_status: string | null
   home_state: string | null
-  quarterly_payments: Array<{ quarter: number; amount: number; paid_at: string }>
+  quarterly_payments: RecordedTaxEntry[] | null
+  assumptions: unknown
+  assumption_history: unknown[] | null
 }
 
-function currentTaxYear(): number {
-  return new Date().getUTCFullYear()
-}
-function fractionOfYearElapsed(): number {
-  const now = new Date()
-  const start = Date.UTC(now.getUTCFullYear(), 0, 1)
-  const elapsedDays = (now.getTime() - start) / 86_400_000
-  return Math.min(1, Math.max(0.01, elapsedDays / 365))
-}
+const LOAD_FAILED = "Your tax planner could not be loaded right now. Nothing was changed; try again in a moment."
+const SAVE_FAILED = "Your change could not be saved right now. Nothing was changed; try again in a moment."
+
+function todayIso(): string { return new Date().toISOString().slice(0, 10) }
+function currentTaxYear(): number { return new Date().getUTCFullYear() }
 
 async function ctx() {
   const supabase = await createClient()
@@ -52,44 +62,20 @@ async function ctx() {
   return { userId: user.id, agentId, brokerageId }
 }
 
-async function loadOrDefaultProfile(svc: ReturnType<typeof createServiceClient>, agentId: string, brokerageId: string, taxYear: number): Promise<TaxProfileRow> {
-  const { data } = await svc
+/** The session agent's profile row for one tax year (null = none yet). A refused read is an error, never "no profile". */
+async function loadProfile(svc: Svc, agentId: string, taxYear: number): Promise<{ ok: true; row: TaxProfileRow | null } | { ok: false; error: string }> {
+  const { data, error } = await svc
     .from("agent_tax_profile")
-    .select("agent_id, brokerage_id, tax_year, set_aside_percent, estimated_effective_rate, filing_status, home_state, quarterly_payments")
+    .select("filing_status, home_state, quarterly_payments, assumptions, assumption_history")
     .eq("agent_id", agentId)
     .eq("tax_year", taxYear)
     .maybeSingle()
-  if (data) return data as TaxProfileRow
-  return {
-    agent_id: agentId, brokerage_id: brokerageId, tax_year: taxYear,
-    set_aside_percent: 25, estimated_effective_rate: 0.12, filing_status: "single",
-    home_state: null, quarterly_payments: [],
-  }
-}
-
-/** Compute the agent's YTD commission income + deductible business expenses for the tax year. */
-async function loadYtdNumbers(svc: ReturnType<typeof createServiceClient>, agentId: string, taxYear: number) {
-  const yearStart = `${taxYear}-01-01`
-  const yearEnd = `${taxYear}-12-31`
-  const [{ data: comms }, { data: expenses }] = await Promise.all([
-    // The agent's 1099 income = the commission THEY receive (their split), not the whole deal's GCI.
-    svc.from("agent_commissions")
-      .select("agent_commission, close_date, created_at")
-      .eq("agent_id", agentId)
-      .gte("created_at", `${yearStart}T00:00:00Z`),
-    svc.from("business_expenses")
-      .select("amount")
-      .eq("agent_id", agentId)
-      .gte("expense_date", yearStart)
-      .lte("expense_date", yearEnd),
-  ])
-  const ytdGrossIncome = (comms ?? []).reduce((s: number, c: any) => s + Number(c.agent_commission ?? 0), 0)
-  const deductibleExpenses = sumDeductibleExpenses((expenses ?? []) as Array<{ amount?: number | null }>)
-  return { ytdGrossIncome, deductibleExpenses }
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, row: (data as TaxProfileRow | null) ?? null }
 }
 
 export async function getTaxPlanAction(input?: { taxYear?: number }): Promise<
-  { success: true; plan: TaxPlan; profile: { setAsidePercent: number; estimatedEffectiveRate: number; filingStatus: string; homeState: string | null } }
+  { success: true; plan: TaxPlan; profile: { filingStatus: string | null; homeState: string | null } }
   | { success: false; error: string }
 > {
   const c = await ctx()
@@ -102,36 +88,85 @@ export async function getTaxPlanAction(input?: { taxYear?: number }): Promise<
   const gate = await resolveTaxAssistanceEnabled(svc, c.brokerageId)
   if (!gate.enabled) return { success: false, error: TAX_ASSISTANCE_DISABLED_ERROR }
 
-  const profile = await loadOrDefaultProfile(svc, c.agentId, c.brokerageId, taxYear)
-  const { ytdGrossIncome, deductibleExpenses } = await loadYtdNumbers(svc, c.agentId, taxYear)
-  const paidQuarters = (profile.quarterly_payments ?? []).map((p) => p.quarter)
+  const prof = await loadProfile(svc, c.agentId, taxYear)
+  if (!prof.ok) { console.error("[tax-planning] profile read refused:", prof.error); return { success: false, error: LOAD_FAILED } }
+  const assumptions = parseTaxAssumptions(prof.row?.assumptions)
+  const today = todayIso()
+  const window = taxYearWindow(taxYear, assumptions, today)
+  const [{ data: comms, error: commErr }, { data: expenses, error: expErr }] = await Promise.all([
+    // The agent's 1099 income = the commission THEY receive (their split), on their basis.
+    svc.from("agent_commissions")
+      .select("agent_commission, close_date, paid_at, status")
+      .eq("agent_id", c.agentId)
+      .or(`close_date.gte.${window.from},paid_at.gte.${window.from}`),
+    // Their OWN book only (agent scope) — a team's or the brokerage's costs are not their personal deductions.
+    svc.from("business_expenses")
+      .select("amount, category")
+      .eq("agent_id", c.agentId)
+      .gte("expense_date", window.from)
+      .lte("expense_date", window.to),
+  ])
+  if (commErr || expErr) { console.error("[tax-planning] income/expense read refused:", commErr?.message ?? expErr?.message); return { success: false, error: LOAD_FAILED } }
 
   const plan = buildTaxPlan({
     taxYear,
-    ytdGrossIncome,
-    deductibleExpenses,
-    setAsidePercent: Number(profile.set_aside_percent ?? 25),
-    effectiveIncomeRate: Number(profile.estimated_effective_rate ?? 0.12),
-    fractionOfYearElapsed: fractionOfYearElapsed(),
-    paidQuarters,
+    today,
+    assumptions,
+    income: recognizeCommissionIncome((comms ?? []) as CommissionIncomeRow[], assumptions.incomeBasis?.value ?? "cash", window),
+    expenses: sumDeductibleExpenses((expenses ?? []) as Array<{ amount: number | null; category: string | null }>, assumptions.deductibleCategories?.value ?? null),
+    recorded: (prof.row?.quarterly_payments ?? []) as RecordedTaxEntry[],
   })
-
-  return {
-    success: true,
-    plan,
-    profile: {
-      setAsidePercent: Number(profile.set_aside_percent ?? 25),
-      estimatedEffectiveRate: Number(profile.estimated_effective_rate ?? 0.12),
-      filingStatus: profile.filing_status ?? "single",
-      homeState: profile.home_state ?? null,
-    },
-  }
+  return { success: true, plan, profile: { filingStatus: prof.row?.filing_status ?? null, homeState: prof.row?.home_state ?? null } }
 }
 
+/**
+ * Save ONE assumption (a rate, a target, the basis, the confirmed deductible categories, a due date) with where it came
+ * from. The replaced value is appended to assumption_history; recorded payments are untouched, so the plan reforecasts
+ * only the quarters still ahead.
+ */
+export async function saveTaxAssumptionsAction(input: {
+  taxYear?: number
+  change: AssumptionChange
+  source: "self_entered" | "accountant_supplied"
+  note?: string | null
+}): Promise<{ success: true } | { success: false; error: string }> {
+  const c = await ctx()
+  if (!c) return { success: false, error: "unauthenticated" }
+  const taxYear = input.taxYear ?? currentTaxYear()
+  const svc = createServiceClient()
+
+  const gate = await resolveTaxAssistanceEnabled(svc, c.brokerageId)
+  if (!gate.enabled) return { success: false, error: TAX_ASSISTANCE_DISABLED_ERROR }
+
+  const prof = await loadProfile(svc, c.agentId, taxYear)
+  if (!prof.ok) { console.error("[tax-planning] profile read refused:", prof.error); return { success: false, error: SAVE_FAILED } }
+  const applied = applyAssumptionChange(prof.row?.assumptions ?? {}, input.change, {
+    source: input.source, taxYear, userId: c.userId, now: new Date().toISOString(), note: input.note?.toString().slice(0, 300) ?? null,
+  })
+  if (!applied.ok) return { success: false, error: applied.error }
+  const history = Array.isArray(prof.row?.assumption_history) ? prof.row!.assumption_history! : []
+  const { data: saved, error } = await svc
+    .from("agent_tax_profile")
+    .upsert({
+      agent_id: c.agentId,
+      brokerage_id: c.brokerageId,
+      tax_year: taxYear,
+      assumptions: applied.next,
+      assumption_history: applied.replaced ? [...history, applied.replaced] : history,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "agent_id,tax_year" })
+    .select("agent_id")
+  if (error) { console.error("[tax-planning] assumption save refused:", error.message); return { success: false, error: SAVE_FAILED } }
+  if (!Array.isArray(saved) || saved.length === 0) return { success: false, error: SAVE_FAILED }
+
+  // agent_tax_profile is read by TaxSetasidePanel, mounted on app/dashboard/financials/agent/agent-financials-client.tsx.
+  revalidatePath("/dashboard/financials/agent")
+  return { success: true }
+}
+
+/** Filing status and home state — profile facts shown beside the plan (never used to derive a rate). */
 export async function saveTaxProfileAction(input: {
   taxYear?: number
-  setAsidePercent: number
-  estimatedEffectiveRate?: number
   filingStatus?: FilingStatus
   homeState?: string | null
 }): Promise<{ success: true } | { success: false; error: string }> {
@@ -145,8 +180,10 @@ export async function saveTaxProfileAction(input: {
   const saveGate = await resolveTaxAssistanceEnabled(svc, c.brokerageId)
   if (!saveGate.enabled) return { success: false, error: TAX_ASSISTANCE_DISABLED_ERROR }
 
-  const setAside = Math.max(0, Math.min(50, Number(input.setAsidePercent)))
-  const rate = input.estimatedEffectiveRate != null ? Math.max(0, Math.min(0.5, Number(input.estimatedEffectiveRate))) : undefined
+  const FILING: readonly FilingStatus[] = ["single", "married_joint", "married_separate", "head_of_household"]
+  if (input.filingStatus && !FILING.includes(input.filingStatus)) return { success: false, error: "Choose a filing status from the list." }
+  const state = input.homeState === undefined ? undefined : (input.homeState ?? "").trim().toUpperCase() || null
+  if (state && !/^[A-Z]{2}$/.test(state)) return { success: false, error: "Home state must be a two-letter state code." }
 
   const { error } = await svc
     .from("agent_tax_profile")
@@ -154,24 +191,26 @@ export async function saveTaxProfileAction(input: {
       agent_id: c.agentId,
       brokerage_id: c.brokerageId,
       tax_year: taxYear,
-      set_aside_percent: setAside,
-      ...(rate != null ? { estimated_effective_rate: rate } : {}),
       ...(input.filingStatus ? { filing_status: input.filingStatus } : {}),
-      ...(input.homeState !== undefined ? { home_state: input.homeState } : {}),
+      ...(state !== undefined ? { home_state: state } : {}),
       updated_at: new Date().toISOString(),
     }, { onConflict: "agent_id,tax_year" })
-  if (error) return { success: false, error: error.message }
+  if (error) { console.error("[tax-planning] profile save refused:", error.message); return { success: false, error: SAVE_FAILED } }
 
-  // /dashboard/financials/planning has no page.tsx. agent_tax_profile is read by
-  // TaxSetasidePanel, mounted on app/dashboard/financials/agent/agent-financials-client.tsx:419.
   revalidatePath("/dashboard/financials/agent")
   return { success: true }
 }
 
+/**
+ * Record money the person PAID (or set aside) toward a quarter. APPEND-ONLY: earlier entries are never replaced or
+ * removed, so a changed assumption can never rewrite what was recorded. No payment is made by this platform.
+ */
 export async function recordQuarterlyPaymentAction(input: {
   taxYear?: number
   quarter: 1 | 2 | 3 | 4
   amount: number
+  kind?: "payment" | "set_aside"
+  paidOn?: string | null
 }): Promise<{ success: true } | { success: false; error: string }> {
   const c = await ctx()
   if (!c) return { success: false, error: "unauthenticated" }
@@ -182,27 +221,29 @@ export async function recordQuarterlyPaymentAction(input: {
   const payGate = await resolveTaxAssistanceEnabled(svc, c.brokerageId)
   if (!payGate.enabled) return { success: false, error: TAX_ASSISTANCE_DISABLED_ERROR }
 
-  const profile = await loadOrDefaultProfile(svc, c.agentId, c.brokerageId, taxYear)
-  const existing = (profile.quarterly_payments ?? []).filter((p) => p.quarter !== input.quarter)
-  const next = [...existing, { quarter: input.quarter, amount: Math.max(0, Number(input.amount) || 0), paid_at: new Date().toISOString() }]
+  if (![1, 2, 3, 4].includes(Number(input.quarter))) return { success: false, error: "Choose the quarter this payment is for." }
+  const amount = Math.round((Number(input.amount) || 0) * 100) / 100
+  if (!(amount > 0)) return { success: false, error: "Enter the amount you paid or set aside." }
+  const paidOn = input.paidOn && /^\d{4}-\d{2}-\d{2}$/.test(input.paidOn) ? input.paidOn : todayIso()
 
-  const { error } = await svc
+  const prof = await loadProfile(svc, c.agentId, taxYear)
+  if (!prof.ok) { console.error("[tax-planning] profile read refused:", prof.error); return { success: false, error: SAVE_FAILED } }
+  const existing = Array.isArray(prof.row?.quarterly_payments) ? prof.row!.quarterly_payments! : []
+  const next = [...existing, { quarter: input.quarter, amount, kind: input.kind === "set_aside" ? "set_aside" : "payment", paid_at: paidOn, recorded_at: new Date().toISOString(), recorded_by: c.userId }]
+
+  const { data: saved, error } = await svc
     .from("agent_tax_profile")
     .upsert({
       agent_id: c.agentId,
       brokerage_id: c.brokerageId,
       tax_year: taxYear,
-      set_aside_percent: profile.set_aside_percent ?? 25,
-      estimated_effective_rate: profile.estimated_effective_rate ?? 0.12,
-      filing_status: profile.filing_status ?? "single",
-      home_state: profile.home_state ?? null,
       quarterly_payments: next,
       updated_at: new Date().toISOString(),
     }, { onConflict: "agent_id,tax_year" })
-  if (error) return { success: false, error: error.message }
+    .select("agent_id")
+  if (error) { console.error("[tax-planning] payment save refused:", error.message); return { success: false, error: SAVE_FAILED } }
+  if (!Array.isArray(saved) || saved.length === 0) return { success: false, error: SAVE_FAILED }
 
-  // /dashboard/financials/planning has no page.tsx. agent_tax_profile is read by
-  // TaxSetasidePanel, mounted on app/dashboard/financials/agent/agent-financials-client.tsx:419.
   revalidatePath("/dashboard/financials/agent")
   return { success: true }
 }

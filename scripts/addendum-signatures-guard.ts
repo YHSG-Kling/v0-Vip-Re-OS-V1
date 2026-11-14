@@ -575,7 +575,100 @@ async function main() {
     (mig.split("\n")[0] === "-- WRITTEN, NOT APPLIED (wave 152, lane 152F) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL" || /^-- ── APPLIED LIVE \d{4}-\d{2}-\d{2} via Supabase MCP \(project [a-z]+\) — wave 152, lane 152F ──$/.test(mig.split("\n")[0]))
     && /contract_term_version_id uuid NULL REFERENCES public\.contract_term_versions\(id\)/.test(migBody) && /evidence jsonb NOT NULL DEFAULT/.test(migBody) && /CREATE UNIQUE INDEX IF NOT EXISTS signature_requests_one_live_per_version_uidx/.test(migBody) && /-- ROLLBACK/.test(mig))
 
+  // ═══ H · ATTENTION (wave 153, lane 153F — owner ruling 13: "proposed addendums need to be brought to the agents attention") ═══
+  console.log("\n[H · attention: one task + one bell per state, the TC told, re-delivery deduped, escalation if ignored, proposed ≠ partly signed ≠ executed]")
+  {
+    const U_TC = "a0000000-0000-4000-8000-000000000009", TC_ROW = "9c000000-0000-4000-8000-000000000001"
+    const dbH = seed(); const sbH = makeSandbox()
+    dbH.tables.transactions[0].coordinator_id = TC_ROW
+    dbH.tables.transaction_coordinators = [{ id: TC_ROW, brokerage_id: B, user_id: U_TC, is_active: true }]
+    dbH.tables.users.push({ id: U_TC, brokerage_id: B, user_type: "agent", email: "tc@testrealty.example" })
+    dbH.tables.tasks = []
+    const t0 = new Date("2026-11-14T15:00:00Z")
+    const at = (h: number) => new Date(t0.getTime() + h * 3_600_000)
+    const actor = { userId: U_AGENT, brokerageId: B, userType: "agent", teamId: null }
+    const signalsH: any[] = []
+    const depsH: any = { now: () => t0, signal: async (s: any) => { signalsH.push(s); return { ok: true } } }
+    const sendDeps = (env: string): any => ({
+      ...depsH, esignChoice: async () => ({ ok: true, kind: "api", providerName: "docusign" }), readiness: async () => ({ transactable: true, blockers: [], message: null }), documentUrl: async (_s: any, u: string) => u, event: async () => ({}),
+      dispatch: async (_svc: any, input: any) => { await sbH.sendForSignature({ externalTransactionId: env, signers: input.signers }); return { ok: true, status: "sent", envelopeId: env, providerName: "docusign" } },
+    })
+    const attentionTasks = (vId: string, state?: string) => dbH.tables.tasks.filter((t) => t.source === "addendum_attention" && (t.tags ?? []).includes(`addendum:${vId}`) && (!state || (t.tags ?? []).includes(`addendum_state:${state}`)))
+    const bells = (type = "esign.addendum.attention") => dbH.tables.notifications.filter((n) => n.type === type)
+
+    const p1 = await quiet(() => C.proposeContractAddendumVersion(dbH as any, actor, { ref: { transactionId: TXN }, kind: "addendum", documentId: DOC_UNSIGNED, terms: { closing_date: "2026-12-20" }, effectiveOn: "2026-11-20", termEvidence: null }, depsH))
+    const v1 = p1.ok ? p1.versionId : ""
+    const task1 = attentionTasks(v1, "proposed")
+    const d1 = String(task1[0]?.description ?? "")
+    check("PROPOSED → exactly ONE task for the deal's agent (agents.id), on the deal, pending, high priority, due on the date the proposal states",
+      p1.ok && p1.attention.raised && task1.length === 1 && task1[0].assigned_to_agent_id === AG && task1[0].transaction_id === TXN && task1[0].status === "pending" && task1[0].priority === "high" && task1[0].due_date === "2026-11-20", JSON.stringify({ p1, task1 }))
+    check("…carrying the issue, the parties, the requested action, the stage and the due date",
+      /Changes: closing date\./.test(d1) && /Parties: buyer \(buyer, signs in our envelope\); seller \(seller, signs in our envelope\)/.test(d1) && /Next: Review the proposed addendum and send it for signatures/.test(d1) && /Stage: under contract · due 2026-11-20/.test(d1), d1)
+    check("…and saying plainly that PROPOSED is not signed and partly signed is not executed", /Proposed is not signed, and partly signed is not executed/.test(d1))
+    check("ONE bell for the transaction coordinator (users.id via transaction_coordinators); the agent who proposed it is NOT belled for their own action",
+      bells().length === 1 && bells()[0].user_id === U_TC && bells()[0].priority === "high" && bells()[0].entity_type === "transaction" && bells()[0].entity_id === TXN, JSON.stringify(bells()))
+    check("TENANT COPY: the task and bell name no table, vendor, credential or raw error", !/contract_term_versions|signature_requests|docusign|PGRST|api[_ ]?key|token|\bnull\b|undefined/i.test(`${d1} ${bells()[0]?.body ?? ""}`))
+    const gov1 = await T.governingContractTerms(dbH as any, B, { transactionId: TXN })
+    check("PROPOSED ≠ EXECUTED: after the attention the governing closing date is unchanged and the proposal is only pending", gov1.ok && gov1.governing.values.closing_date === "2026-12-01" && gov1.governing.pending.length >= 1)
+
+    // tenant shape: a brokerage admin proposes on the agent's deal → the AGENT and the TC are told (the admin is not)
+    const pAdmin = await quiet(() => C.proposeContractAddendumVersion(dbH as any, { userId: U_BROKER, brokerageId: B, userType: "broker", teamId: null }, { ref: { transactionId: TXN }, kind: "amendment", documentId: DOC_UNSIGNED, terms: { closing_date: "2026-12-22" }, effectiveOn: null, termEvidence: null }, depsH))
+    const vA = pAdmin.ok ? pAdmin.versionId : ""
+    const adminBells = bells().filter((n) => n.body?.includes(vA))
+    check("A BROKERAGE ADMIN proposes on the agent's deal → the agent AND the TC are belled, the admin is not; the agent still gets the task; due falls back to the contract closing date",
+      pAdmin.ok && adminBells.map((n) => n.user_id).sort().join(",") === [U_AGENT, U_TC].sort().join(",") && attentionTasks(vA, "proposed").length === 1 && attentionTasks(vA, "proposed")[0].due_date === "2026-12-01", JSON.stringify(adminBells.map((n) => n.user_id)))
+
+    // SENT: one more task + bell for the new state; a replayed send raises nothing; a void + resend of the SAME proposal raises nothing more
+    const s1 = await quiet(() => C.requestAddendumSignatures(dbH as any, actor, { versionId: v1, choices: { includeAttorneys: false } }, sendDeps("ENV-H1")))
+    const sentTasks = attentionTasks(v1, "sent")
+    check("SENT FOR SIGNATURE → ONE new task (out for signature, due the request's expiry) and ONE bell for the TC",
+      s1.ok && sentTasks.length === 1 && /Next: It is out for signature/.test(String(sentTasks[0].description)) && typeof sentTasks[0].due_date === "string" && bells().filter((n) => n.body?.includes(v1) && /sent for signatures/i.test(n.title)).length === 1, JSON.stringify({ s1, sentTasks }))
+    const sReplay = await quiet(() => C.requestAddendumSignatures(dbH as any, actor, { versionId: v1, choices: { includeAttorneys: false } }, sendDeps("ENV-H1")))
+    check("RE-DELIVERY: the replayed send raises NOTHING (still one 'sent' task, one bell)", s1.ok && sReplay.ok && (sReplay as any).replayed === true && attentionTasks(v1, "sent").length === 1 && bells().filter((n) => n.body?.includes(v1) && /sent for signatures/i.test(n.title)).length === 1)
+    const vd = await quiet(() => C.voidAddendumSignatureRequest(dbH as any, actor, { requestId: s1.ok ? s1.requestId : "", reason: "wrong signer" }, { ...sendDeps("ENV-H1"), provider: async () => sbH }))
+    const s2 = await quiet(() => C.requestAddendumSignatures(dbH as any, actor, { versionId: v1, choices: { includeAttorneys: false } }, sendDeps("ENV-H2")))
+    check("ONE PER STATE: voided and sent AGAIN for the same proposal → the claim already held 'sent' — no second task, no second bell",
+      vd.ok && s2.ok && attentionTasks(v1, "sent").length === 1 && attentionTasks(v1).length === 2, JSON.stringify({ vd, s2: (s2 as any).status, tasks: attentionTasks(v1).length }))
+
+    // PARTIAL ≠ EXECUTED (the 152F ladder, re-asserted under the new attention): one signature in → partly signed, terms unchanged
+    sbH.sign("ENV-H2", "bea.buyer@mail.example")
+    const sweepDeps: any = { ...depsH, provider: async () => sbH, fetchBytes: async () => ({ ok: true, bytes: new TextEncoder().encode("%PDF h") }), event: async () => ({}), storeSignedCopy: async () => ({ ok: false, error: "not expected" }) }
+    await quiet(() => C.sweepAddendumSignatureRequests(dbH as any, { ...sweepDeps, now: () => at(1) }))
+    const req2 = dbH.tables.signature_requests.find((r) => r.id === (s2.ok ? s2.requestId : ""))
+    const gov2 = await T.governingContractTerms(dbH as any, B, { transactionId: TXN })
+    check("PARTLY SIGNED ≠ EXECUTED: one of two signatures → partially_signed, no executed addendum, the governing closing date unchanged",
+      req2?.request_status === "partially_signed" && !dbH.tables.contract_term_versions.some((v) => v.status === "executed" && v.source === "addendum") && gov2.ok && gov2.governing.values.closing_date === "2026-12-01", JSON.stringify(req2?.request_status))
+
+    // ESCALATION IF IGNORED: an unsent proposal with its task still open, past ATTENTION_ESCALATE_HOURS → ONCE to the deal coordinator
+    const p3 = await quiet(() => C.proposeContractAddendumVersion(dbH as any, actor, { ref: { transactionId: TXN }, kind: "addendum", documentId: DOC_UNSIGNED, terms: { closing_date: "2026-12-24" }, effectiveOn: null, termEvidence: null }, depsH))
+    const v3 = p3.ok ? p3.versionId : ""
+    const p4 = await quiet(() => C.proposeContractAddendumVersion(dbH as any, actor, { ref: { transactionId: TXN }, kind: "addendum", documentId: DOC_UNSIGNED, terms: { closing_date: "2026-12-26" }, effectiveOn: null, termEvidence: null }, depsH))
+    const v4 = p4.ok ? p4.versionId : ""
+    for (const t of attentionTasks(v4, "proposed")) t.status = "completed" // the agent acted on this one
+    const early = await quiet(() => C.sweepAddendumSignatureRequests(dbH as any, { ...sweepDeps, now: () => at(10) }))
+    check("NOT YET: inside the escalation window nothing escalates", (early.attentionEscalated ?? 0) === 0 && !signalsH.some((s) => s.signalType === "addendum_proposal_unattended"))
+    const esc = await quiet(() => C.sweepAddendumSignatureRequests(dbH as any, { ...sweepDeps, now: () => at(30) }))
+    const escSignals = signalsH.filter((s) => s.signalType === "addendum_proposal_unattended")
+    check("IGNORED → ONE escalation: a deal-coordinator signal and a CRITICAL bell to the people first told, stamped on the proposal",
+      escSignals.some((s) => s.entityId === v3 && s.toManager === "deal_coordinator") && bells("esign.addendum.attention_escalated").some((n) => n.user_id === U_TC && n.priority === "critical" && n.body?.includes(v3))
+      && !!dbH.tables.contract_term_versions.find((v) => v.id === v3)?.evidence?.attention_escalated_at, JSON.stringify({ esc: esc.attentionEscalated, escSignals: escSignals.map((s) => s.entityId) }))
+    check("POSITIVE CONTROLS: a proposal whose task the agent COMPLETED is not escalated, and a proposal that WENT OUT (its request leg chases it) is not escalated",
+      !escSignals.some((s) => s.entityId === v4) && !escSignals.some((s) => s.entityId === v1) && !dbH.tables.contract_term_versions.find((v) => v.id === v4)?.evidence?.attention_escalated_at)
+    const escAgain = await quiet(() => C.sweepAddendumSignatureRequests(dbH as any, { ...sweepDeps, now: () => at(40) }))
+    check("ESCALATION IS ONCE: the next sweep escalates nothing more", (escAgain.attentionEscalated ?? 0) === 0 && signalsH.filter((s) => s.signalType === "addendum_proposal_unattended" && s.entityId === v3).length === 1)
+
+    // the reader the card renders + the card's wiring (stripped source)
+    const listed = await C.listAddendumSignatureState(dbH as any, actor, { transactionId: TXN })
+    const row3 = listed.ok ? listed.proposals.find((p) => p.id === v3) : null
+    check("THE CARD'S READER: each proposal carries who was told, the requested action, the due date and whether it escalated", !!row3 && row3.attention.notifiedCount >= 1 && /send it for signatures/.test(row3.attention.requestedAction ?? "") && !!row3.attention.escalatedAt && !!row3.attention.proposedAt)
+    const ui = code("app/dashboard/offers/outside-offer-threads.tsx")
+    check("THE CARD renders the attention (requested action, people told, the escalation) — stripped source", /p\.attention\.requestedAction/.test(ui) && /p\.attention\.notifiedCount/.test(ui) && /p\.attention\.escalatedAt/.test(ui))
+    check("POSITIVE CONTROL: the stripped reader sees a code token it must (the card's own door call)", /listAddendumSignatures\(/.test(ui))
+    check("SIGNAL CATALOGUE (outside-lane): `addendum_proposal_unattended` is the one NEW signal type — listed for lib/kernel/signal-registry.ts in the lane notes", /addendum_proposal_unattended/.test(code("lib/esign/addendum-signature-request.ts")))
+  }
+
   console.log("\nBLIND SPOTS (published, not hidden):")
+  console.log("  · H (153F): the attention claim is a compare-and-set on the proposal's evidence (a flat `attention_<state>_at` key) — modelled on the in-memory client; the read-merge-write of the evidence object can lose a CONCURRENT unrelated evidence write (the survivor stampProposal pattern); a TC who is not on the deal (no transactions.coordinator_id) is not told — the offer-only deal has no TC column")
   console.log("  · every provider call is the SANDBOX seam — no live DocuSign / Dotloop / SkySlope / Authentisign envelope was cut (SIMULATED); activation and credentials are OWNER-HELD")
   console.log("  · the 23505 race is modelled with a full-column unique key on the in-memory client; the live index is PARTIAL (open statuses only) — read from m953, not exercised against Postgres")
   console.log("  · a Dotloop webhook resolves its tenant from client_documents, so a Dotloop-sent addendum completes through the 4-hourly poll, not the callback")

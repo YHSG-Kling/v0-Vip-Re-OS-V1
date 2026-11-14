@@ -50,6 +50,8 @@ import { summarizeQrRegistry } from "../lib/marketing/qr-registry-board"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 // WAVE 152 (lane 152C) — the governed doors and the pure contract they decide with, driven for real on the in-memory client.
 import { mintGovernedQr, editQrDestination, changeQrLifecycle, duplicateQrDesign, loadQrActivity, classifyScanForCode, type QrActor } from "../lib/marketing/qr-governance"
+// WAVE 153 (lane 153E) — the ONE QR authority and the board's scoped reads, driven for every tenant shape (§16).
+import { resolveQrAuthority, authorizeQrCodeChange, listQrCodesInScope, loadQrLinkTargets } from "../lib/marketing/qr-governance"
 import {
   QR_TOKEN_SHAPE, QR_RETIRED_REASONS, QR_TRAFFIC_CLASSES, QR_DEVICE_CLASSES, QR_PLACEMENT_TYPES, QR_REPEAT_WINDOW_MS,
   validateQrDestination, resolveQrScanDestination, qrLifecycleState, qrUnavailableNotice, classifyQrScan, summarizeQrScans,
@@ -219,6 +221,7 @@ async function main() {
   check("MAINTENANCE_DOMAINS.qr_registry names a manager, this proof, and coOwners", !!dom && dom.proof === "test:qr-registry" && Array.isArray(dom.coOwners) && dom.coOwners.length >= 1)
 
   await wave152Sections()
+  await wave153Sections()
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
@@ -372,7 +375,9 @@ async function wave152Sections() {
     check("ADVERSE: an unsafe edit is refused and changes nothing", !unsafe.ok && unsafe.code === "unsafe_destination" && JSON.stringify(row()) === snapshot)
     const same = await editQrDestination({ qrCodeId: m.code.id, targetUrl: "https://homes.alder.example/featured" }, A, deps(db))
     check("re-saving the same destination is a no-op (unchanged, no new version, no ledger row)", same.ok && same.unchanged && row().destination_history.length === 3 && ledgerRows(db, "marketing.qr.destination_edit").length === 2)
-    db.tables.qr_codes.push({ id: "legacy-1", brokerage_id: "bA", slug: "listing-la-l0ld", label: "listing:LA", target_url: `${ORIGIN}/listings/LA`, destination_type: "listing_detail", is_active: true, destination_history: [] })
+    // WAVE 153 (153E): the legacy automatic listing code is filed to A's agent record (as the launch path files it) — an
+    // UNOWNED code is no longer editable by a plain agent (§16 proves that refusal separately).
+    db.tables.qr_codes.push({ id: "legacy-1", brokerage_id: "bA", agent_id: "agA", slug: "listing-la-l0ld", label: "listing:LA", target_url: `${ORIGIN}/listings/LA`, destination_type: "listing_detail", is_active: true, destination_history: [] })
     const legacy = await editQrDestination({ qrCodeId: "legacy-1", targetUrl: "/listings/LA" }, A, deps(db))
     check("a code minted BEFORE version history: its first edit records the old URL as legacy_initial, then the edit — nothing is lost", legacy.ok && legacy.history.length === 2 && legacy.history[0].kind === "legacy_initial" && legacy.history[0].target_url === `${ORIGIN}/listings/LA` && legacy.history[1].kind === "edited")
     check("appendQrDestinationVersion never rewrites an earlier entry (pure, positive control on a mutated copy)", (() => { const h = appendQrDestinationVersion([{ version: 1, target_url: "/a", destination_type: null, kind: "minted", changed_at: "t0", changed_by_user_id: null, reason: null }], { target_url: "/a", destination_type: null }, { target_url: "/b", destination_type: null, changed_at: "t1", changed_by_user_id: "u", reason: null }); return h.length === 2 && h[0].target_url === "/a" && h[1].version === 2 && JSON.stringify(h[0]) !== JSON.stringify({ ...h[0], target_url: "/z" }) })())
@@ -539,5 +544,242 @@ async function wave152Sections() {
 }
 
 const files = ["lib", "app", "remotion"].flatMap((d) => walk(join(root, d))).filter((f) => !PROSE.has(rel(f)))
+
+// ─── WAVE 153 (lane 153E) — QR FOR EVERY AUTHORIZED SEAT, NEVER BEYOND ITS SCOPE ──────────────────────────────────
+// Owner (verbatim, 2026-11-14): "qr codes can be used by tenant and seat holders. you redid the qr code section for
+// brokerage/teams but agents and solo agent tenants use qr codes." Directive 153E E1/E2: every tenant shape — solo, team
+// seat, agent seat, team lead, brokerage admin, multi-location office, revoked/disabled seat, unrelated tenant — for mint,
+// manage and destination change; an agent cannot mint onto a peer's listing. Driven on the REAL exported doors.
+
+const u = (n: number) => `00000000-0000-4000-8153-${String(n).padStart(12, "0")}`
+// listings carry uuids so a destination PATH (/listings/<uuid>) is recognised as a listing link
+const L_SEAT1 = u(101), L_SEAT2 = u(102), L_UNOWNED = u(103), L_M1 = u(111), L_M2 = u(112), L_SOLO = u(121)
+
+function authorityDb() {
+  return memSupabase({
+    brokerages: [
+      { id: "bS", plan_tier: "solo_agent", website: null }, { id: "bT", plan_tier: "team", website: null },
+      { id: "bM", plan_tier: "multi_location", website: null }, { id: "bU", plan_tier: "brokerage", website: null },
+    ],
+    users: [
+      // SOLO: the subscriber's one seat carries user_type 'agent' (the live shape tier parity exists for)
+      { id: "uS", brokerage_id: "bS", user_type: "agent" },
+      // TEAM tenant (single office): a team lead (FACT: teams.team_lead_id, user_type agent), a team seat, a plain agent
+      // seat, an admin with no agents row, a revoked agent seat, a suspended seat
+      { id: "uLeadT", brokerage_id: "bT", user_type: "agent" }, { id: "uSeat1", brokerage_id: "bT", user_type: "agent" },
+      { id: "uSeat2", brokerage_id: "bT", user_type: "agent" }, { id: "uAdminT", brokerage_id: "bT", user_type: "broker_owner" },
+      { id: "uRevoked", brokerage_id: "bT", user_type: "agent" }, { id: "uSusp", brokerage_id: "bT", user_type: "agent", status: "suspended" },
+      // MULTI-LOCATION: the owner (tenant leadership grant), two office heads (locations.managing_broker_user_id), agents
+      // in each office, and a broker with NO grant / office (C34: user_type never widens a multi-location row)
+      { id: "uOwnerM", brokerage_id: "bM", user_type: "broker_owner" }, { id: "uOffice1", brokerage_id: "bM", user_type: "broker" },
+      { id: "uOffice2", brokerage_id: "bM", user_type: "broker" }, { id: "uAgentM1", brokerage_id: "bM", user_type: "agent" },
+      { id: "uAgentM2", brokerage_id: "bM", user_type: "agent" }, { id: "uBrokerNoGrant", brokerage_id: "bM", user_type: "broker" },
+      // UNRELATED tenant
+      { id: "uU", brokerage_id: "bU", user_type: "agent" },
+    ],
+    agents: [
+      { id: "agS", user_id: "uS", brokerage_id: "bS", team_id: null, location_id: null, is_active: true },
+      { id: "agLeadT", user_id: "uLeadT", brokerage_id: "bT", team_id: "tT", location_id: null, is_active: true },
+      { id: "agSeat1", user_id: "uSeat1", brokerage_id: "bT", team_id: "tT", location_id: null, is_active: true },
+      { id: "agSeat2", user_id: "uSeat2", brokerage_id: "bT", team_id: null, location_id: null, is_active: true },
+      { id: "agRevoked", user_id: "uRevoked", brokerage_id: "bT", team_id: "tT", location_id: null, is_active: false },
+      { id: "agSusp", user_id: "uSusp", brokerage_id: "bT", team_id: null, location_id: null, is_active: true },
+      { id: "agM1", user_id: "uAgentM1", brokerage_id: "bM", team_id: "tM1", location_id: "oM1", is_active: true },
+      { id: "agM2", user_id: "uAgentM2", brokerage_id: "bM", team_id: null, location_id: "oM2", is_active: true },
+      { id: "agU", user_id: "uU", brokerage_id: "bU", team_id: null, location_id: null, is_active: true },
+      // uSeat2's own record in ANOTHER account (a person may hold seats in two accounts)
+      { id: "agSeat2Elsewhere", user_id: "uSeat2", brokerage_id: "bU", team_id: null, location_id: null, is_active: true },
+    ],
+    teams: [{ id: "tT", brokerage_id: "bT", team_lead_id: "uLeadT", location_id: null }, { id: "tM1", brokerage_id: "bM", team_lead_id: null, location_id: "oM1" }],
+    locations: [
+      { id: "oM1", brokerage_id: "bM", managing_broker_user_id: "uOffice1", status: "active" },
+      { id: "oM2", brokerage_id: "bM", managing_broker_user_id: "uOffice2", status: "active" },
+    ],
+    organization_members: [{ brokerage_id: "bM", user_id: "uOwnerM", scope_kind: "tenant", location_id: null, team_id: null, access_level: "leadership", revoked_at: null }],
+    listings: [
+      { id: L_SEAT1, brokerage_id: "bT", agent_id: "agSeat1", team_id: "tT", location_id: null, address: "1 Team Way", city: "Austin", state: "TX", status: "active", deleted_at: null },
+      { id: L_SEAT2, brokerage_id: "bT", agent_id: "agSeat2", team_id: null, location_id: null, address: "2 Own St", city: "Austin", state: "TX", status: "coming_soon", deleted_at: null },
+      { id: L_UNOWNED, brokerage_id: "bT", agent_id: null, team_id: null, location_id: null, address: "3 Office Rd", city: "Austin", state: "TX", status: "draft", deleted_at: null },
+      { id: L_M1, brokerage_id: "bM", agent_id: "agM1", team_id: "tM1", location_id: "oM1", address: "11 North Ave", city: "Tampa", state: "FL", status: "active", deleted_at: null },
+      { id: L_M2, brokerage_id: "bM", agent_id: "agM2", team_id: null, location_id: "oM2", address: "12 South Ave", city: "Tampa", state: "FL", status: "active", deleted_at: null },
+      { id: L_SOLO, brokerage_id: "bS", agent_id: "agS", team_id: null, location_id: null, address: "21 Solo Ln", city: "Boise", state: "ID", status: "active", deleted_at: null },
+    ],
+    marketing_campaigns: [
+      { id: "cSeat1Private", brokerage_id: "bT", agent_user_id: "uSeat1", created_by: "uSeat1", team_id: null, visibility_scope: "agent", campaign_name: "Seat 1 farm" },
+      { id: "cSeat2Private", brokerage_id: "bT", agent_user_id: "uSeat2", created_by: "uSeat2", team_id: null, visibility_scope: "agent", campaign_name: "Seat 2 farm" },
+      { id: "cTeam", brokerage_id: "bT", agent_user_id: "uLeadT", created_by: "uLeadT", team_id: "tT", visibility_scope: "team", campaign_name: "Team spring" },
+      { id: "cShared", brokerage_id: "bT", agent_user_id: "uAdminT", created_by: "uAdminT", team_id: null, visibility_scope: "brokerage", campaign_name: "Account spring" },
+    ],
+    brokerage_brand_settings: [], tenant_custom_domains: [],
+    qr_codes: [], qr_scan_events: [], agent_action_ledger: [],
+  }, { uuidIds: true, stampCreatedAt: true, unique: { agent_action_ledger: [["idempotency_key"]], qr_codes: [["slug"]] } })
+}
+const act = (userId: string, brokerageId: string, agentId: string | null, userType = "agent"): QrActor => ({ brokerageId, userId, agentId, userType })
+
+async function wave153Sections() {
+  console.log("\n[16 · QR FOR EVERY AUTHORIZED SEAT (153E) — solo · agent seat · team seat · team lead · admin · office · revoked · unrelated]")
+  const db = authorityDb()
+  const d = { client: db, ledgerClient: db, origin: ORIGIN, appOrigins: [ORIGIN] }
+  const SOLO = act("uS", "bS", "agS"), LEADT = act("uLeadT", "bT", "agLeadT"), SEAT1 = act("uSeat1", "bT", "agSeat1"), SEAT2 = act("uSeat2", "bT", "agSeat2")
+  const ADMINT = act("uAdminT", "bT", null, "broker_owner"), REVOKED = act("uRevoked", "bT", "agRevoked"), SUSP = act("uSusp", "bT", "agSusp")
+  const OWNERM = act("uOwnerM", "bM", null, "broker_owner"), OFFICE1 = act("uOffice1", "bM", null, "broker"), AGENTM2 = act("uAgentM2", "bM", "agM2"), NOGRANT = act("uBrokerNoGrant", "bM", null, "broker"), UNREL = act("uU", "bU", "agU")
+  const mint = (a: QrActor, key: string, over: Record<string, unknown> = {}) => mintGovernedQr({ idempotencyKey: key, label: `Code ${key}`, purpose: "general", destinationType: "landing_page", ...over } as never, a, d)
+  const row = (id: string) => db.tables.qr_codes.find((r: any) => r.id === id) as any
+  const kind = async (a: QrActor) => { const r = await resolveQrAuthority(a, d); return r.ok ? r.authority.kind : `refused:${r.code}` }
+
+  // ── the authority, per shape ──
+  const shapes = { solo: await kind(SOLO), seat2: await kind(SEAT2), seat1: await kind(SEAT1), lead: await kind(LEADT), admin: await kind(ADMINT), owner: await kind(OWNERM), office1: await kind(OFFICE1), noGrant: await kind(NOGRANT), revoked: await kind(REVOKED), susp: await kind(SUSP) }
+  check("THE AUTHORITY per shape: solo (user_type agent) → the whole account; agent seat / team seat → own; team lead → teams; single-office admin → whole account; multi-location owner (tenant leadership grant) → whole account; office head → offices; multi-location broker with no grant → own (C34); revoked and suspended seats → refused",
+    shapes.solo === "tenant" && shapes.seat2 === "own" && shapes.seat1 === "own" && shapes.lead === "teams" && shapes.admin === "tenant" && shapes.owner === "tenant" && shapes.office1 === "offices" && shapes.noGrant === "own" && shapes.revoked === "refused:not_permitted" && shapes.susp === "refused:not_permitted", JSON.stringify(shapes))
+  const soloAuth = await resolveQrAuthority(SOLO, d)
+  check("the SOLO subscriber's authority says why (solo plan) — tier parity, not a QR-specific role", soloAuth.ok && soloAuth.authority.solo && /solo plan/.test(soloAuth.authority.basis.join(" ")))
+
+  // ── E1: every seat mints its OWN code ──
+  const mSolo = await mint(SOLO, "s153-solo-0001", { listingId: L_SOLO, placement: "flyer" })
+  const mSeat1 = await mint(SEAT1, "s153-seat1-001", { listingId: L_SEAT1 })
+  const mSeat2 = await mint(SEAT2, "s153-seat2-001", { listingId: L_SEAT2, placement: "mailer" })
+  const mLead = await mint(LEADT, "s153-lead-0001")
+  const mAdmin = await mint(ADMINT, "s153-admin-001", { listingId: L_UNOWNED })
+  const mM1 = await mint(act("uAgentM1", "bM", "agM1"), "s153-m1-00001", { listingId: L_M1 })
+  const mM2 = await mint(AGENTM2, "s153-m2-00001", { listingId: L_M2 })
+  check("E1 — a solo subscriber, an agent seat, a team seat, a team lead, an admin with NO agent record and office agents each mint their own code",
+    [mSolo, mSeat1, mSeat2, mLead, mAdmin, mM1, mM2].every((r) => r.ok), JSON.stringify([mSolo, mSeat1, mSeat2, mLead, mAdmin, mM1, mM2].filter((r) => !r.ok)))
+  if (!(mSolo.ok && mSeat1.ok && mSeat2.ok && mLead.ok && mAdmin.ok && mM1.ok && mM2.ok)) return
+  check("creator attribution on every code: the session's users.id as creator, the person's OWN agent record (an admin with none files to the account: agent_id null)",
+    row(mSeat2.code.id).created_by_user_id === "uSeat2" && row(mSeat2.code.id).agent_id === "agSeat2" && row(mSolo.code.id).agent_id === "agS" && row(mAdmin.code.id).agent_id === null && row(mAdmin.code.id).created_by_user_id === "uAdminT")
+  check("listing + placement relation recorded on the code (listing_id, mint_context.placement)", row(mSeat2.code.id).listing_id === L_SEAT2 && row(mSeat2.code.id).mint_context?.placement === "mailer" && row(mSolo.code.id).listing_id === L_SOLO)
+  check("evidence: the mint's ledger row names the authority that permitted it and whose code it is (authority_scope, attributed_agent_id)",
+    (() => { const l = db.tables.agent_action_ledger.find((r: any) => r.action === "marketing.qr.mint" && r.provider_ref === mSeat2.code.id) as any; return l?.detail?.authority_scope === "own" && l?.detail?.attributed_agent_id === "agSeat2" })())
+
+  // ── E1 ADVERSE: never onto a peer's listing / campaign, never filed to a peer ──
+  const before = db.tables.qr_codes.length
+  const ledgerBefore = db.tables.agent_action_ledger.length
+  const peerListing = await mint(SEAT2, "s153-adv-0001", { listingId: L_SEAT1 })
+  const peerPath = await mint(SEAT2, "s153-adv-0002", { destinationType: "listing_detail", targetUrl: `${ORIGIN}/listings/${L_SEAT1}` })
+  const unownedListing = await mint(SEAT2, "s153-adv-0003", { listingId: L_UNOWNED })
+  const officeB = await mint(AGENTM2, "s153-adv-0004", { listingId: L_M1 })
+  check("ADVERSE: an agent cannot mint onto ANOTHER agent's listing — by listing id, by pointing the destination at that listing's page, onto an unowned office listing, or onto another office's listing; nothing written, nothing ledgered",
+    [peerListing, peerPath, unownedListing, officeB].every((r) => !r.ok && r.code === "not_permitted") && db.tables.qr_codes.length === before && db.tables.agent_action_ledger.length === ledgerBefore, JSON.stringify([peerListing, peerPath, unownedListing, officeB].map((r) => (r.ok ? "MINTED" : r.code))))
+  check("the refusal is a tenant-facing sentence that names who can help (no SQL, no id)", !peerListing.ok && /another agent/.test(peerListing.message) && /listing agent or your team lead/.test(peerListing.message) && !/(PGRST|uuid|agent_id|listing_id)/i.test(peerListing.message))
+  const peerCampaign = await mint(SEAT2, "s153-adv-0005", { marketingCampaignId: "cSeat1Private" })
+  const teamCampaignOutsider = await mint(SEAT2, "s153-adv-0006", { marketingCampaignId: "cTeam" })
+  const sharedCampaign = await mint(SEAT2, "s153-ok-00007", { marketingCampaignId: "cShared" })
+  const ownCampaign = await mint(SEAT2, "s153-ok-00008", { marketingCampaignId: "cSeat2Private" })
+  const teamCampaignMember = await mint(SEAT1, "s153-ok-00009", { marketingCampaignId: "cTeam" })
+  check("campaign relation: a peer's private campaign and another team's campaign are refused; the agent's own, the account-wide shared and their own team's campaign are allowed",
+    !peerCampaign.ok && peerCampaign.code === "not_permitted" && !teamCampaignOutsider.ok && sharedCampaign.ok && ownCampaign.ok && teamCampaignMember.ok)
+  const fileToPeer = await mintGovernedQr({ idempotencyKey: "s153-adv-0010", label: "Filed to a peer", purpose: "general", destinationType: "landing_page" } as never, act("uSeat2", "bT", "agSeat1"), d)
+  const fileCrossTenant = await mintGovernedQr({ idempotencyKey: "s153-adv-0011", label: "Filed across accounts", purpose: "general", destinationType: "landing_page" } as never, act("uSeat2", "bT", "agU"), d)
+  const leadFilesMember = await mintGovernedQr({ idempotencyKey: "s153-ok-00012", label: "For my team member", purpose: "general", destinationType: "landing_page" } as never, act("uLeadT", "bT", "agSeat1"), d)
+  const leadFilesOutsider = await mintGovernedQr({ idempotencyKey: "s153-adv-0013", label: "For a non-member", purpose: "general", destinationType: "landing_page" } as never, act("uLeadT", "bT", "agSeat2"), d)
+  const ownRowElsewhere = await mintGovernedQr({ idempotencyKey: "s153-ok-00014", label: "My other seat named", purpose: "general", destinationType: "landing_page" } as never, act("uSeat2", "bT", "agSeat2Elsewhere"), d)
+  check("ADVERSE attribution: a seat cannot file a code to a peer, nor to an agent of ANOTHER account (the old unscoped body-supplied agent id); a team lead may file to a member of the team they lead and not to a non-member",
+    !fileToPeer.ok && fileToPeer.code === "not_permitted" && !fileCrossTenant.ok && /isn't in your account/.test(fileCrossTenant.message) && leadFilesMember.ok && row(leadFilesMember.code.id).agent_id === "agSeat1" && !leadFilesOutsider.ok)
+  check("the person's OWN record in another account files the code to their record HERE (never to the other account's row)", ownRowElsewhere.ok && row(ownRowElsewhere.code.id).agent_id === "agSeat2" && row(ownRowElsewhere.code.id).brokerage_id === "bT")
+
+  // ── revoked / suspended seats ──
+  db.tables.qr_codes.push({ id: "q-revoked-own", brokerage_id: "bT", agent_id: "agRevoked", created_by_user_id: "uRevoked", slug: "tokrevoked0000000000001", label: "Old sign", target_url: `${ORIGIN}/qr/tokrevoked0000000000001`, is_active: true, destination_history: [], mint_context: {} })
+  const revMint = await mint(REVOKED, "s153-rev-0001")
+  const revEdit = await editQrDestination({ qrCodeId: "q-revoked-own", targetUrl: "/home-value" }, REVOKED, d)
+  const revPause = await changeQrLifecycle({ qrCodeId: "q-revoked-own", action: "pause" }, REVOKED, d)
+  const suspMint = await mint(SUSP, "s153-susp-001")
+  const revList = await resolveQrAuthority(REVOKED, d)
+  check("ADVERSE: a REVOKED agent seat (agents.is_active false) and a SUSPENDED seat (users.status) cannot mint, edit or pause — even their own old code — and are told their seat is turned off",
+    !revMint.ok && !revEdit.ok && !revPause.ok && !suspMint.ok && [revMint, revEdit, revPause, suspMint].every((r) => !r.ok && /seat in this account is turned off/.test(r.message)) && row("q-revoked-own").is_active === true && row("q-revoked-own").target_url.endsWith("tokrevoked0000000000001") && !revList.ok)
+  const revokedAdmin = memSupabase({ brokerages: [{ id: "bT", plan_tier: "team" }], users: [{ id: "uAdm", brokerage_id: "bT", user_type: "broker_owner" }], agents: [{ id: "agAdm", user_id: "uAdm", brokerage_id: "bT", is_active: false }] })
+  const ra = await resolveQrAuthority(act("uAdm", "bT", null, "broker_owner"), { client: revokedAdmin })
+  check("an account admin whose PRODUCING record was retired still administers (files to the account, no agent record)", ra.ok && ra.authority.kind === "tenant" && ra.authority.ownAgentId === null)
+
+  // ── E2: manage within scope only ──
+  const snap = JSON.stringify(row(mSeat1.code.id))
+  const seat2EditsSeat1 = await editQrDestination({ qrCodeId: mSeat1.code.id, targetUrl: "/home-value" }, SEAT2, d)
+  const seat2PausesSeat1 = await changeQrLifecycle({ qrCodeId: mSeat1.code.id, action: "pause" }, SEAT2, d)
+  const seat2Retires = await changeQrLifecycle({ qrCodeId: mSeat1.code.id, action: "retire" }, SEAT2, d)
+  const seat2Dups = await duplicateQrDesign({ sourceQrCodeId: mSeat1.code.id, idempotencyKey: "s153-dup-0001" }, SEAT2, d)
+  const seat2Activity = await loadQrActivity(mSeat1.code.id, SEAT2, d)
+  const seat2Meta = await authorizeQrCodeChange(mSeat1.code.id, SEAT2, d)
+  check("ADVERSE (same account): an agent seat cannot edit, pause, retire, duplicate, read the scans of, or rename another agent's code — every door answers the same way and the row is byte-identical",
+    [seat2EditsSeat1, seat2PausesSeat1, seat2Retires, seat2Dups, seat2Activity, seat2Meta].every((r) => !r.ok && r.code === "not_permitted") && JSON.stringify(row(mSeat1.code.id)) === snap, JSON.stringify([seat2EditsSeat1, seat2PausesSeat1, seat2Retires, seat2Dups, seat2Activity, seat2Meta].map((r) => (r.ok ? "OK" : r.code))))
+  const ownEdit = await editQrDestination({ qrCodeId: mSeat2.code.id, targetUrl: "/home-value", reason: "new funnel" }, SEAT2, d)
+  const ownPause = await changeQrLifecycle({ qrCodeId: mSeat2.code.id, action: "pause" }, SEAT2, d)
+  const ownResume = await changeQrLifecycle({ qrCodeId: mSeat2.code.id, action: "resume" }, SEAT2, d)
+  const ownDup = await duplicateQrDesign({ sourceQrCodeId: mSeat2.code.id, idempotencyKey: "s153-dup-0002" }, SEAT2, d)
+  const ownActivity = await loadQrActivity(mSeat2.code.id, SEAT2, d)
+  check("E2 full lifecycle from the agent's OWN seat: governed destination change (versioned), pause, resume, governed duplicate (new token) and scan activity on their own code",
+    ownEdit.ok && !ownEdit.unchanged && ownEdit.history.length === 2 && ownPause.ok && ownResume.ok && ownDup.ok && ownDup.code.slug !== mSeat2.code.slug && ownActivity.ok)
+  const peerPage = await editQrDestination({ qrCodeId: mSeat2.code.id, targetUrl: `${ORIGIN}/listings/${L_SEAT1}` }, SEAT2, d)
+  check("ADVERSE: re-pointing one's OWN code at a peer's listing page is refused (the listing rule applies to edits too)", !peerPage.ok && peerPage.code === "not_permitted" && row(mSeat2.code.id).target_url === "/home-value")
+  const leadPausesMember = await changeQrLifecycle({ qrCodeId: mSeat1.code.id, action: "pause" }, LEADT, d)
+  const leadPausesOutsider = await changeQrLifecycle({ qrCodeId: mSeat2.code.id, action: "pause" }, LEADT, d)
+  const leadMintsTeamListing = await mint(LEADT, "s153-lead-0002", { listingId: L_SEAT1 })
+  const leadMintsOutsiderListing = await mint(LEADT, "s153-lead-0003", { listingId: L_SEAT2 })
+  check("TEAM LEAD: manages their team members' codes and team listings — and NOT a non-member's code or listing",
+    leadPausesMember.ok && leadPausesMember.state === "paused" && !leadPausesOutsider.ok && leadPausesOutsider.code === "not_permitted" && leadMintsTeamListing.ok && !leadMintsOutsiderListing.ok)
+  const adminRetires = await changeQrLifecycle({ qrCodeId: mSeat2.code.id, action: "retire" }, ADMINT, d)
+  const adminEditsLead = await editQrDestination({ qrCodeId: mLead.code.id, targetUrl: "/home-value" }, ADMINT, d)
+  check("BROKERAGE ADMIN (single office): manages every code in the account — retires an agent's code, edits the lead's", adminRetires.ok && adminRetires.state === "retired" && adminEditsLead.ok)
+  const officeOwn = await changeQrLifecycle({ qrCodeId: mM1.code.id, action: "pause" }, OFFICE1, d)
+  const officeOther = await changeQrLifecycle({ qrCodeId: mM2.code.id, action: "pause" }, OFFICE1, d)
+  const ownerAny = await changeQrLifecycle({ qrCodeId: mM2.code.id, action: "pause" }, OWNERM, d)
+  const noGrantAny = await changeQrLifecycle({ qrCodeId: mM1.code.id, action: "resume" }, NOGRANT, d)
+  check("MULTI-LOCATION: an office head manages their office's codes, not the other office's; the owner (tenant leadership) manages all; a broker with no grant or office manages only their own (C34)",
+    officeOwn.ok && !officeOther.ok && officeOther.code === "not_permitted" && ownerAny.ok && !noGrantAny.ok && noGrantAny.code === "not_permitted")
+  const soloAuto = await mintTrackedQr({ brokerageId: "bS", label: "listing:solo-launch", purpose: "listing", origin: ORIGIN }, db as never)
+  const soloEditsAuto = soloAuto ? await editQrDestination({ qrCodeId: soloAuto.qrCodeId, targetUrl: "/home-value" }, SOLO, d) : null
+  check("SOLO: an AUTOMATIC code filed to no agent (the old ladder hid it from a solo seat typed 'agent') is the subscriber's to manage", !!soloEditsAuto?.ok)
+  db.tables.qr_codes.push({ id: "q-unowned", brokerage_id: "bT", agent_id: null, created_by_user_id: null, slug: "tokunowned0000000000001", label: "listing:office", target_url: `${ORIGIN}/qr/tokunowned0000000000001`, is_active: true, destination_history: [], mint_context: {} })
+  const seatUnowned = await changeQrLifecycle({ qrCodeId: "q-unowned", action: "pause" }, SEAT1, d)
+  const adminUnowned = await changeQrLifecycle({ qrCodeId: "q-unowned", action: "pause" }, ADMINT, d)
+  check("an UNOWNED account code (no agent, no creator) is the admin's, not any agent seat's", !seatUnowned.ok && seatUnowned.code === "not_permitted" && adminUnowned.ok)
+
+  // ── unrelated tenant ──
+  const crossEdit = await editQrDestination({ qrCodeId: mSeat2.code.id, targetUrl: "/home-value" }, UNREL, d)
+  const crossAct = await loadQrActivity(mSeat1.code.id, UNREL, d)
+  const crossDup = await duplicateQrDesign({ sourceQrCodeId: mSeat1.code.id, idempotencyKey: "s153-dup-0003" }, UNREL, d)
+  const crossMeta = await authorizeQrCodeChange(mSeat1.code.id, UNREL, d)
+  check("ADVERSE: an UNRELATED account cannot edit, read, duplicate or rename these codes — answered 'not in your account' (the same as missing)",
+    [crossEdit, crossAct, crossDup, crossMeta].every((r) => !r.ok && r.code === "not_found"))
+
+  // ── the board's list + pickers follow the same authority ──
+  const listOf = async (a: QrActor) => { const auth = await resolveQrAuthority(a, d); if (!auth.ok) return null; const l = await listQrCodesInScope(a, auth.authority, d); return l.ok ? new Set(l.rows.map((r) => String(r.id))) : null }
+  const seat2List = await listOf(SEAT2), leadList = await listOf(LEADT), adminList = await listOf(ADMINT), office1List = await listOf(OFFICE1), unrelList = await listOf(UNREL), soloList = await listOf(SOLO)
+  check("THE BOARD LIST = THE DOORS: an agent sees their own codes only; the lead sees the team's (incl. a member's) and not a non-member's; the admin sees all; the office head sees their office only; the solo subscriber sees their automatic codes; another account sees none",
+    !!seat2List && seat2List.has(mSeat2.code.id) && !seat2List.has(mSeat1.code.id)
+    && !!leadList && leadList.has(mSeat1.code.id) && leadList.has(mLead.code.id) && !leadList.has(mSeat2.code.id)
+    && !!adminList && adminList.has(mSeat1.code.id) && adminList.has(mSeat2.code.id) && adminList.has("q-unowned")
+    && !!office1List && office1List.has(mM1.code.id) && !office1List.has(mM2.code.id)
+    && !!soloList && !!soloAuto && soloList.has(soloAuto.qrCodeId)
+    && !!unrelList && ![mSeat1, mSeat2, mLead].some((m) => unrelList.has(m.code.id)))
+  const seat2Auth = await resolveQrAuthority(SEAT2, d), leadAuth = await resolveQrAuthority(LEADT, d)
+  const seat2Targets = seat2Auth.ok ? await loadQrLinkTargets(SEAT2, seat2Auth.authority, d) : null
+  const leadTargets = leadAuth.ok ? await loadQrLinkTargets(LEADT, leadAuth.authority, d) : null
+  const ids = (xs: Array<{ id: string }> | undefined) => new Set((xs ?? []).map((x) => x.id))
+  check("THE PICKERS offer only what the mint allows: an agent gets their own listing and their own + shared campaigns (never a peer's listing or private campaign); the lead gets the team listing and team campaign",
+    !!seat2Targets && ids(seat2Targets.listings).has(L_SEAT2) && !ids(seat2Targets.listings).has(L_SEAT1) && !ids(seat2Targets.listings).has(L_UNOWNED) && ids(seat2Targets.campaigns).has("cShared") && ids(seat2Targets.campaigns).has("cSeat2Private") && !ids(seat2Targets.campaigns).has("cSeat1Private") && !ids(seat2Targets.campaigns).has("cTeam")
+    && !!leadTargets && ids(leadTargets.listings).has(L_SEAT1) && !ids(leadTargets.listings).has(L_SEAT2) && ids(leadTargets.campaigns).has("cTeam"))
+
+  // ── wiring (stripped source) ──
+  const admin = stripped("app/api/admin/qr-codes/route.ts")
+  const mgmt = stripped("app/actions/qr-management.ts")
+  const board = stripped("app/dashboard/agent/qr-codes/QRCodesClient.tsx")
+  const patchBody = admin.slice(admin.indexOf("export async function PATCH"))
+  const TENANT_ONLY_GATE_RE = /\.select\(['"]id, brokerage_id['"]\)[\s\S]{0,300}existing\.brokerage_id !== ctx\.brokerageId/
+  check("the board's PATCH gates EVERY change (name, purpose, end date included) through authorizeQrCodeChange before any write — the tenant-only lookup is gone",
+    /authorizeQrCodeChange\(id, actor/.test(patchBody) && patchBody.indexOf("authorizeQrCodeChange(") < patchBody.indexOf(".update(patch)") && !TENANT_ONLY_GATE_RE.test(admin))
+  check("CONTROL: the finder sees the old tenant-only gate", TENANT_ONLY_GATE_RE.test(stripComments("const { data: existing } = await supabase.from('qr_codes').select('id, brokerage_id').eq('id', id).maybeSingle()\nif (existing.brokerage_id !== ctx.brokerageId) return nf")))
+  const RAW_ERROR_RE = /error: (lookupError|err|e)\.message|error: message \}/
+  check("no raw database / exception text reaches the board from the route (the catch logs it and answers a sentence)", !RAW_ERROR_RE.test(admin))
+  check("CONTROL: the raw-relay finder sees the old shapes", RAW_ERROR_RE.test("return NextResponse.json({ success: false, error: lookupError.message }") && RAW_ERROR_RE.test("return NextResponse.json({ success: false, error: message }, { status: 500 })"))
+  const postBody = board.slice(board.indexOf("method: 'POST'"), board.indexOf("channel: 'qr_board'"))
+  check("the POST names an agent only as a REQUEST (namedAgentId → actor.agentId → decideAttribution), and the board's create body no longer sends one", /agentId: \(namedAgentId as string \| null\) \?\? null/.test(admin) && postBody.length > 100 && !/\bagentUserId\b/.test(postBody))
+  check("CONTROL: the body finder sees the old create body naming the agent", /\bagentUserId\b/.test("method: 'POST', body: JSON.stringify({ label, agentUserId,\n brokerageId, channel: 'qr_board'"))
+  check("the board list reads THE authority (resolveQrAuthority → listQrCodesInScope → loadQrLinkTargets); the user_type ladder is gone",
+    /resolveQrAuthority\(actor/.test(mgmt) && /listQrCodesInScope\(actor, auth/.test(mgmt) && /loadQrLinkTargets\(actor, auth/.test(mgmt) && !/BROKERAGE_SCOPE_ROLES/.test(mgmt))
+  check("E2 on the agent's own screen: create is open to every seat (no agent-record gate), a listing PICKER (not a raw id box), placement / creator / name filters, and the placement rollup",
+    !/disabled=\{!agentUserId\}/.test(board) && /linkableListings\.map\(/.test(board) && !/placeholder="UUID of the listing"/.test(board) && /setPlacementFilter\(/.test(board) && /setMineOnly\(/.test(board) && /placements\.map\(/.test(board))
+  const nav = src("app/config/navigation-config.ts")
+  check("the agent / solo navigation reaches the board (Agent Tools → QR Codes) and the page admits a producing agent seat",
+    /id: 'qr-codes', label: 'QR Codes', href: '\/dashboard\/agent\/qr-codes'/.test(nav.slice(0, nav.indexOf("  broker: {"))) && /userRole !== 'agent' && !isAdminOrBroker/.test(stripped("app/dashboard/agent/qr-codes/page.tsx")))
+}
 
 main().catch((e) => { console.error(e); process.exit(1) })

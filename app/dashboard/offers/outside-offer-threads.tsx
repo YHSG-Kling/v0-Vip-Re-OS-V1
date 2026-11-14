@@ -701,6 +701,14 @@ function ProposalCard({ offerId, proposal: p, onChanged, onError, onNotice }: {
           <p className="text-[11px] text-muted-foreground break-words">
             {Object.entries(p.terms).map(([k, v]) => `${k.replace(/_/g, " ")}: ${v === null ? "struck" : String(v)}`).join(" · ")}
           </p>
+          {p.status === "proposed" && p.attention.requestedAction && (
+            <p className={cn("text-[11px] break-words", p.attention.escalatedAt ? "text-amber-700" : "text-muted-foreground")}>
+              Next: {p.attention.requestedAction}
+              {p.attention.due ? ` Due ${String(p.attention.due).slice(0, 10)}.` : ""}
+              {p.attention.notifiedCount > 0 ? ` ${p.attention.notifiedCount} ${p.attention.notifiedCount === 1 ? "person on this deal was" : "people on this deal were"} told.` : ""}
+              {p.attention.escalatedAt ? " Nobody acted on it, so the deal coordinator was told." : ""}
+            </p>
+          )}
         </div>
       </div>
 

@@ -207,10 +207,16 @@ export async function createTRIDTimeline(transactionId: string) {
 // is closed at the door (lane E2 2026-08-28, hardened while wiring the
 // transaction compliance tab's milestone dialog to this action).
 // NOT exported as a value: "use server" files may only export async functions.
+//
+// TOMBSTONE (wave 153, lane 153C): `closing_disclosure_delivered_date` is NO LONGER a typed milestone. A date somebody types is
+// not the buyer's RECEIPT of the Closing Disclosure (owner: "trid is determined from the lender … if lender isn't on the platform,
+// the agent needs to find out from the lender and then mark the timeline"). SURVIVOR: the receipt ledger —
+// app/actions/trid-disclosure-receipt.ts (lender-confirmed / agent-reported-pending / compliance-verified) →
+// lib/compliance/trid-disclosure-clock-evidence.ts recordTridReceiptEvidence, which alone mirrors the lender-verified effective
+// receipt into trid_timeline.closing_disclosure_delivered_date.
 const TRID_MILESTONES = [
   "loan_application_date",
   "loan_estimate_delivered_date",
-  "closing_disclosure_delivered_date",
   "scheduled_close_date",
 ] as const
 export type TridMilestone = (typeof TRID_MILESTONES)[number]
@@ -222,6 +228,9 @@ export async function updateTRIDMilestone(params: {
   date: string
 }) {
   if (!isValidUUID(params.transactionId)) throw new Error("Invalid transaction ID")
+  if ((params.milestone as string) === "closing_disclosure_delivered_date") {
+    throw new Error("The Closing Disclosure's receipt is recorded from the lender's evidence on the deal's Closing Disclosure panel — a typed date does not start the waiting period.")
+  }
   if (!TRID_MILESTONES.includes(params.milestone as TridMilestone)) throw new Error("Unknown TRID milestone")
   if (!params.date)                        throw new Error("date is required")
   return updateTRIDMilestoneService(params)

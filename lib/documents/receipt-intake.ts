@@ -32,6 +32,7 @@ import { recordPolicyDecision } from "./policy-decisions"
 import { loadGrantsFor } from "./autonomy-ratchet"
 import { withActionLedger } from "@/lib/kernel/action-ledger"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { BOOKS_WRITE_COPY } from "@/lib/finance/expense-rollup"
 import {
   RECEIPT_FIELDS, POSTED_EXPENSE_FIELD_KEY, FINANCIAL_DOCUMENT_KINDS,
   buildReceiptProposal, validateReceipt, findReceiptDuplicates, decideReceiptPosting, autopostGrantFor, postingClassFor,
@@ -64,6 +65,8 @@ interface ScopedExpenseRequest {
   agentId?: string | null
   receiptUrl?: string | null
   reversalOfExpenseId?: string | null
+  /** WAVE 153 (lane 153A): the office whose books carry it (logScopedExpense `locationId`); omitted = the main office. */
+  locationId?: string | null
 }
 
 interface ReceiptSeams {
@@ -202,7 +205,9 @@ const WRITER_COPY: Record<string, string> = {
   date_invalid: "The date must be a full date.",
   description_required: "The merchant is needed before this can be recorded.",
 }
-const writerCopy = (code: string | null | undefined) => WRITER_COPY[String(code ?? "")] ?? "The expense could not be recorded."
+// WAVE 153 (lane 153A): the office refusals (cross_location_write, forbidden_central_books, …) are worded once, beside
+// the gate that issues them (lib/finance/expense-rollup.ts BOOKS_WRITE_COPY).
+const writerCopy = (code: string | null | undefined) => WRITER_COPY[String(code ?? "")] ?? (BOOKS_WRITE_COPY as Record<string, string>)[String(code ?? "")] ?? "The expense could not be recorded."
 
 // ─── reads ────────────────────────────────────────────────────────────────────
 
@@ -406,9 +411,35 @@ function applyCorrection(prev: FieldEnvelope | undefined, key: string, raw: stri
   return { ok: true, env: { ...base, value, read_by: "human", uncertainty: null, confidence: "high", review_state: "corrected", corrected_from: prev?.value ?? null, extracted_at: nowIso, extractor: `human:${actorId}` } }
 }
 
+/**
+ * WAVE 153 (lane 153A): the office a tenant-books receipt is recorded to. Single-office tenant → the books as before (an
+ * office id, if given, is passed through for the writer to authorize). Multi-location tenant → the chosen office, or the
+ * main office only when the person said so AND keeps the main office's books; anything else HOLDS with the question.
+ * The writer (logScopedExpense → authorizeBooksWrite) re-checks every case — this is the pre-gate that asks.
+ */
+async function receiptOfficeDecision(svc: Svc, actor: ReceiptActor, choice: { locationId: string | null; mainOffice: boolean }):
+  Promise<{ ok: true; locationId: string | null } | { ok: false; reason: string }> {
+  const { resolveBooksAuthority } = await import("@/lib/finance/expense-rollup")
+  const auth = await resolveBooksAuthority(svc, { userId: actor.userId, brokerageId: actor.brokerageId, userType: actor.userType })
+  if (!auth.ok) return { ok: false, reason: "We could not confirm which office's books you keep right now, so nothing was recorded." }
+  if (choice.locationId) {
+    if (!auth.writeOffices.includes(choice.locationId)) return { ok: false, reason: "You can record receipts only for the office you manage." }
+    return { ok: true, locationId: choice.locationId }
+  }
+  if (!auth.multiLocation) return { ok: true, locationId: null }
+  if (choice.mainOffice && auth.writeCentral) return { ok: true, locationId: null }
+  if (choice.mainOffice) return { ok: false, reason: "Only someone who keeps the whole company's books can record a main-office expense. Choose your office instead." }
+  return { ok: false, reason: "Which office is this expense for? Choose the office, or mark it a main-office shared cost, then approve it." }
+}
+
 export async function approveReceipt(
   svc: Svc,
-  input: { actor: ReceiptActor; documentId: string; corrections?: Record<string, string>; scope?: ExpenseScope | null; teamId?: string | null; confirmNotDuplicate?: boolean; reversalOfExpenseId?: string | null; viaPolicy?: boolean },
+  input: {
+    actor: ReceiptActor; documentId: string; corrections?: Record<string, string>; scope?: ExpenseScope | null; teamId?: string | null; confirmNotDuplicate?: boolean; reversalOfExpenseId?: string | null; viaPolicy?: boolean
+    /** WAVE 153 (lane 153A) — the office a person chose for a tenant-books receipt, or `mainOffice` for a shared main-office cost. */
+    locationId?: string | null
+    mainOffice?: boolean
+  },
   seams: ReceiptSeams = {},
 ): Promise<ReceiptOutcome> {
   const { actor } = input
@@ -462,6 +493,17 @@ export async function approveReceipt(
   const scope = resolveScope(actor, input.scope ?? (review.proposed_scope as ExpenseScope | null) ?? null, input.teamId)
   if (!scope.ok) return refuse([writerCopy(scope.code)])
 
+  // WAVE 153 (lane 153A) — WHICH OFFICE. On a multi-location tenant a receipt on the company's books belongs to ONE
+  // office or to the main office, and nothing on a receipt says which: the location is never guessed. Until an
+  // authorized person names it (or marks it a main-office shared cost) the receipt is HELD with that question. A refund
+  // inherits its original's office in the writer, so it is not asked. A refused authority read holds too (fail closed).
+  let officeId: string | null = null
+  if (scope.scope === "brokerage" && cls !== "reversal") {
+    const office = await receiptOfficeDecision(svc, actor, { locationId: input.locationId ?? null, mainOffice: input.mainOffice === true })
+    if (!office.ok) return refuse([office.reason])
+    officeId = office.locationId
+  }
+
   const category = canonicalExpenseCategory(String(fields["expense.category"]?.value ?? "")) ?? "other"
   const request: ScopedExpenseRequest = {
     scope: scope.scope,
@@ -470,6 +512,7 @@ export async function approveReceipt(
     amount: total,
     expenseDate: date,
     teamId: scope.teamId,
+    ...(officeId ? { locationId: officeId } : {}),
     receiptUrl: receiptLink(doc.id),
     ...(cls === "reversal" ? { reversalOfExpenseId: input.reversalOfExpenseId ?? null } : {}),
   }
@@ -483,7 +526,7 @@ export async function approveReceipt(
       riskClass: "FINANCIAL",
       reasonCode: "HUMAN_REQUESTED",
       reasonDetail: input.viaPolicy ? "receipt auto-posted under the account's approved receipt grant" : "receipt approved by a person on the review page",
-      detail: { kind, scope: scope.scope, amount: total, expense_date: date, category, corrected_fields: Object.keys(input.corrections ?? {}), confirmed_not_duplicate: input.confirmNotDuplicate === true, reversal_of: input.reversalOfExpenseId ?? null, sha256: doc.metadata.file_sha256 ?? null },
+      detail: { kind, scope: scope.scope, location_id: officeId, amount: total, expense_date: date, category, corrected_fields: Object.keys(input.corrections ?? {}), confirmed_not_duplicate: input.confirmNotDuplicate === true, reversal_of: input.reversalOfExpenseId ?? null, sha256: doc.metadata.file_sha256 ?? null },
     },
     () => postExpense(request),
     {
@@ -566,6 +609,15 @@ export async function rejectReceipt(svc: Svc, input: { actor: ReceiptActor; docu
 
 // ─── THE REVIEW READ (side-by-side page + proposal) ───────────────────────────
 
+/** WAVE 153 (lane 153A): the offices this reviewer may record a company-books receipt to (empty for a seat that keeps no
+ *  company books). `required` = a multi-location tenant, where the review page asks before approval. A refused read
+ *  degrades to "required, no choices" so the page asks instead of letting an office-less approval through. */
+async function receiptOfficeChoices(svc: Svc, actor: ReceiptActor): Promise<{ required: boolean; mainOfficeAllowed: boolean; choices: Array<{ id: string; name: string }> }> {
+  if (!isBrokerageFinanceAdmin({ user_type: actor.userType })) return { required: false, mainOfficeAllowed: false, choices: [] }
+  const { officeChoicesFor } = await import("@/lib/finance/expense-rollup")
+  return officeChoicesFor(svc, { userId: actor.userId, brokerageId: actor.brokerageId, userType: actor.userType })
+}
+
 export async function loadReceiptReview(svc: Svc, input: { actor: ReceiptActor; documentId: string }, seams: ReceiptSeams = {}) {
   const { actor } = input
   const now = (seams.now ?? (() => new Date()))()
@@ -605,6 +657,7 @@ export async function loadReceiptReview(svc: Svc, input: { actor: ReceiptActor; 
       reasons: (review.reasons ?? []) as string[],
       proposedScope: (review.proposed_scope ?? proposeScope(actor)) as ExpenseScope | null,
       canPostBrokerage: isBrokerageFinanceAdmin({ user_type: actor.userType }),
+      offices: await receiptOfficeChoices(svc, actor),
       postingClass: kind ? postingClassFor(kind) : "not_financial",
       postedExpenseId: (review.posted_expense_id ?? null) as string | null,
       verifiedByUserId: verifiedBy,

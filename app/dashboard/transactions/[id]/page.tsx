@@ -11,6 +11,12 @@ import { HazardInsuranceSection } from "./hazard-insurance-section"
 import { NotificationDeliverySection } from "./notification-delivery-section"
 import { EsignSyncButton } from "./esign-sync-button"
 import { getTransactionHazardInsuranceAction } from "@/app/actions/transaction-hazard-insurance"
+import { getTridDisclosureStatusAction } from "@/app/actions/trid-disclosure-receipt"
+import { listDealReviewNotesAction } from "@/app/actions/deal-review-notes"
+import { TridReceiptSection } from "./trid-receipt-section"
+import { DealOwnershipSection } from "./deal-ownership-section"
+import { CommissionTermsPanel } from "@/app/dashboard/financials/agent/components/commission-terms-panel"
+import { LenderInsuranceCheckpointCard } from "./lender-insurance-checkpoint-card"
 import { AiCoordinatorPanel } from "./ai-coordinator-panel"
 import { SmartChecklistPanel } from "./smart-checklist-panel"
 import { getBuyerMoveCase } from "@/lib/transactions/buyer-move"
@@ -449,6 +455,11 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     id,
     (transaction as any).brokerage_id ?? undefined,
   )
+  // WAVE 153 (lane 153C): the Closing Disclosure receipt status and the deal's roles + review notes (each door gates on the session).
+  const [tridStatus, dealRolesAndNotes] = await Promise.all([
+    getTridDisclosureStatusAction(id),
+    listDealReviewNotesAction({ entityType: "transaction", entityId: id }),
+  ])
 
   // TITLE ISSUE TRIAGE — transaction_title_escrow.title_issues is a TEXT column
   // the platform writes as a JSON array of { text, status, severity }. The Title
@@ -533,6 +544,14 @@ export default async function TransactionDetailPage({ params }: PageProps) {
         brokerageId={(transaction as any).brokerage_id}
         view={hazardInsuranceView}
       />
+      {/* WAVE 153 (lane 153C): the lender-required insurance checkpoint (around the appraisal deadline by the account's setting),
+          the Closing Disclosure receipt (TRID from the lender — coaching when the lender is off the platform), and who leads this
+          deal with the compliance review notes / coordinator flags. Each reads its own governed door. */}
+      {hazardInsuranceView.ok && <LenderInsuranceCheckpointCard transactionId={id} view={hazardInsuranceView} />}
+      <TridReceiptSection transactionId={id} initial={tridStatus} />
+      <DealOwnershipSection entityType="transaction" entityId={id} initial={dealRolesAndNotes} />
+      {/* WAVE 153 (153B): the deal's commission terms — governed pre-close changes, frozen at close (the server decides who may act). */}
+      <CommissionTermsPanel transactionId={id} label={(transaction as { property_address?: string | null } | null)?.property_address ?? null} />
       {/* Client Notification Delivery — status/response reader for
           notification_log (readerless-write-census). */}
       <NotificationDeliverySection

@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
 
   const supabase = createServiceClient()
   const errors: string[] = []
-  let agents = 0, reminders = 0
+  let agents = 0, reminders = 0, inputReminders = 0
   let dueQuarter: string | null = null
 
   try {
@@ -51,16 +51,17 @@ export async function GET(req: NextRequest) {
     for (const b of (rows ?? []) as Array<{ id: string }>) {
       try {
         const r = await runQuarterlyTaxConcierge(b.id, supabase)
-        agents += r.agentsConsidered; reminders += r.remindersSent
+        agents += r.agentsConsidered; reminders += r.remindersSent; inputReminders += r.inputRemindersSent
         if (r.dueQuarter) dueQuarter = r.dueQuarter
         if (r.errors.length) errors.push(...r.errors.slice(0, 3).map((e) => `${b.id}: ${e}`))
       } catch (e: any) { errors.push(`${b.id}: ${e?.message ?? String(e)}`) }
     }
     await recordCronSuccessAction({
-      context_id: contextId, records_processed: reminders,
-      metadata: { agents, reminders, dueQuarter, errors: errors.slice(0, 10) },
+      context_id: contextId, records_processed: reminders + inputReminders,
+      // WAVE 153 (lane 153A): input reminders = "your date is coming — enter your rates" (no amount is ever invented).
+      metadata: { agents, reminders, inputReminders, dueQuarter, errors: errors.slice(0, 10) },
     }).catch(() => {})
-    return NextResponse.json({ ok: true, agents, reminders, dueQuarter })
+    return NextResponse.json({ ok: true, agents, reminders, inputReminders, dueQuarter })
   } catch (e: any) {
     await recordCronFailureAction({ context_id: contextId, error: e, stage: "main-processing" }).catch(() => {})
     return NextResponse.json({ ok: false, error: e?.message ?? String(e), errors }, { status: 500 })

@@ -41,6 +41,26 @@ import {
   buildOutreachPrompt,
   buildDeterministicCopy,
 } from "../lib/ai-isa/personalize-outreach"
+import { registerHooks } from "node:module"
+import { memSupabase } from "./in-memory-supabase"
+
+// WAVE 153 (lane 153F) Layer W153: the sweep is driven IN MEMORY — only `server-only`, the service client and the two engagement doors
+// (which the sweep's own deps replace anyway) are stubbed; the sweep, the claim, the arbiter and the completion tracker are REAL.
+const STL_STUBS: Record<string, string> = {
+  "server-only": "export{}",
+  "@/lib/supabase/service": "export const createServiceClient = () => globalThis.__153F_db",
+  "@/app/actions/ai-isa/initiate-engagement": "export const initiateAIISAEngagement = async () => ({ success: false, reason: 'stub: the proof injects the door' })",
+  "@/app/actions/ai-isa/engage-contact": "export const engageContact = async () => ({ success: false, reason: 'stub: the proof injects the door' })",
+}
+// Registered ONLY without live credentials — the credentialed Layer 2 must load the real modules, so Layer W153 is skipped there.
+const STL_IN_MEMORY = !(process.env.SUPABASE_SERVICE_ROLE_KEY && (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL))
+if (STL_IN_MEMORY) registerHooks({
+  resolve(spec: string, ctx: unknown, next: (s: string, c: unknown) => unknown) {
+    const stub = STL_STUBS[spec]
+    if (stub !== undefined) return { url: `data:text/javascript,${encodeURIComponent(stub)}`, shortCircuit: true }
+    return next(spec, ctx)
+  },
+} as never)
 
 // ── Test harness ─────────────────────────────────────────────────────────────
 
@@ -437,6 +457,79 @@ async function main() {
     !/outcomes\.(totalContacted|totalQualified|byOutcome)\b/.test(analyticsSrc) && analyticsSrc.includes("outcomes.stats."))
   check("POSITIVE CONTROL: the blind-meter scan DOES flag a fixture that still reads outcomes.totalContacted",
     /outcomes\.(totalContacted|totalQualified|byOutcome)\b/.test("const n = outcomes.totalContacted || 0"))
+
+  // Layer W153 (wave 153, lane 153F — brief F2): REAL timestamps, ACTUAL latency, no planning call in front of the first touch
+  console.log("\n[Layer W153 · wave 153 (153F) — measured speed-to-lead: real timestamps, actual latency, the stated-channel fast path, the latency budget]")
+  {
+    const pol = await import("../lib/ai-isa/speed-to-lead-policy")
+    const T0 = Date.parse("2026-11-14T15:00:00Z")
+    const at = (ms: number) => new Date(ms).toISOString()
+    const rows = [
+      { id: "L-a", createdAt: at(T0), firstTouchedAt: at(T0 + 5_000), channel: "email" },
+      { id: "L-b", createdAt: at(T0), firstTouchedAt: at(T0 + 60_000), channel: "email" },
+    ]
+    const merged = pol.preferMeasuredFirstTouch(rows, [{ subjectId: "L-a", receivedAt: at(T0 + 30_000), dispatchedAt: at(T0 + 30_000 + 9 * 60_000) }])
+    const measuredSum = pol.summarizeFirstTouchLatency(merged.rows)
+    const inferredSum = pol.summarizeFirstTouchLatency(rows)
+    check("MEASURED BEATS INFERRED: a row with a recorded timeline is timed received → DISPATCHED (9 min), not claim − created (5 s); the other row stays inferred and is COUNTED as inferred",
+      merged.measuredCount === 1 && merged.inferredCount === 1 && merged.rows[0].firstTouchedAt === at(T0 + 30_000 + 9 * 60_000) && measuredSum.touchedCount === 2)
+    check("…so the SLA meter tells the truth: the claim-based reading said 2 of 2 inside 5 min, the measured one says 1 of 2", inferredSum.pctWithinSla === 1 && measuredSum.pctWithinSla === 0.5, `${inferredSum.pctWithinSla} vs ${measuredSum.pctWithinSla}`)
+    check("POSITIVE CONTROL: a timeline with no dispatch (failed / handed to a person) never stands in as a measured response", pol.preferMeasuredFirstTouch(rows, [{ subjectId: "L-a", receivedAt: at(T0), dispatchedAt: null }]).measuredCount === 0)
+
+    const arb = await import("../lib/ai-isa/followup-arbiter")
+    const { DEFAULT_FOLLOWUP_POLICY } = await import("../lib/ai-isa/followup-policy")
+    const policy = { ...DEFAULT_FOLLOWUP_POLICY, arbiter: { ...DEFAULT_FOLLOWUP_POLICY.arbiter, enabled: true, minConfidence: 0.3 } }
+    let asked = 0
+    const spy = async () => { asked++; return { optionId: "first_touch", channel: "email", format: null, waitHours: null, rationale: "Email reaches a brand-new lead fastest.", evidence: ["moment"], confidence: 0.8 } }
+    const facts = (prefs: Array<{ key: string; value: string }>) => ({ leadTemperature: "warm", leadScore: 60, timeline: "1-3", source: "website", minutesSinceArrival: 1, hoursSinceLastOutreach: null, preferences: prefs })
+    const stated = await arb.arbitrateSpeedToLead({ brokerageId: "b", policy, permitted: ["email", "direct_mail"], facts: facts([{ key: "channel_preference", value: "mail" }]) }, { decide: spy as never })
+    check("FAST PATH: a new lead who told us how to reach them (mail) is answered there at once — NO planning call; the arbiter's own decision (path fast), ledgerable as any other",
+      stated.channel === "direct_mail" && asked === 0 && stated.decision?.path === "fast" && stated.decision?.source === "deterministic", JSON.stringify(stated.decision))
+    const open = await arb.arbitrateSpeedToLead({ brokerageId: "b", policy, permitted: ["email", "direct_mail"], facts: facts([]) }, { decide: spy as never })
+    check("POSITIVE CONTROL: nothing stated and a real choice → the arbiter's judgment is asked (once), inside the speed-to-lead budget", asked === 1 && open.channel === "email" && open.decision?.path === "deliberate")
+    const t1 = Date.now()
+    const hung = await arb.arbitrateSpeedToLead({ brokerageId: "b", policy, permitted: ["email", "direct_mail"], facts: facts([]) }, { decide: (() => new Promise(() => undefined)) as never })
+    const took = Date.now() - t1
+    check("MODEL TIMEOUT: a hung model never holds the first touch — the default channel answers inside ARBITER_LATENCY_BUDGET_MS.speed_to_lead",
+      hung.channel === "email" && /latency budget/.test(hung.decision?.fallbackReason ?? "") && took < arb.ARBITER_LATENCY_BUDGET_MS.speed_to_lead + 1_000, `${took}ms ${hung.decision?.fallbackReason}`)
+
+    if (!STL_IN_MEMORY) {
+      console.log("  ⏭  in-memory sweep skipped under live credentials (Layer 2 drives the real sweep instead)")
+    } else {
+      const stl = await import("../lib/ai-isa/speed-to-lead")
+      const B = "b1530000-0000-4000-8000-000000000001", L1 = "b1530000-0000-4000-8000-0000000000a1", L2 = "b1530000-0000-4000-8000-0000000000a2"
+      const NOW = new Date()
+      const createdLongAgo = at(NOW.getTime() - 3 * 86_400_000) // parked for days, then distributed
+      const distributed = at(NOW.getTime() - 40_000)
+      const lead = (id: string, email: string) => ({ id, brokerage_id: B, created_at: createdLongAgo, distributed_at: distributed, first_touched_at: null, contact_id: null, email, email_verified: true, email_opt_out: false, mailing_address_verified: false, direct_mail_opt_out: false, ai_isa_owner: true, preferred_channel: "email", lead_temperature: "warm", lead_score: 55, timeline: "1-3", source: "website", lifecycle_state: "new", is_active: true })
+      const db = memSupabase({ leads: [lead(L1, "first@x.example"), lead(L2, "second@x.example")], contacts: [], manager_completions: [], agent_action_ledger: [], automation_errors: [] },
+        { uuidIds: true, stampCreatedAt: true, unique: { manager_completions: [["idempotency_key"]], agent_action_ledger: [["idempotency_key"]] } })
+      ;(globalThis as { __153F_db?: unknown }).__153F_db = db
+      const dispatchedAt = new Date(Date.parse(distributed) + 95_000)
+      const doors: string[] = []
+      const r = await stl.runSpeedToLead(B, { now: NOW }, {
+        supabase: db as never,
+        initiateEngagement: (async (leadId: string, o: { forceChannel?: string }) => { doors.push(`${leadId}:${o?.forceChannel}`); return leadId === L1 ? { success: true, channel: "email", messageId: "SG-first-1" } : { success: false, reason: "the provider refused the address" } }) as never,
+        contactEngagement: (async () => ({ success: false, reason: "no contact expected" })) as never,
+        clock: () => dispatchedAt,
+      })
+      const comp = (id: string) => db.tables.manager_completions.find((c) => c.subject_id === id)?.context as Record<string, any> | undefined
+      const c1 = comp(L1), c2 = comp(L2)
+      check("THE SWEEP touched the first lead on the channel it stated (the arbiter's fast path inside the real sweep — no model was reachable here)", r.leadsTouched === 1 && doors.includes(`${L1}:email`), JSON.stringify({ r, doors }))
+      check("REAL TIMESTAMPS on the decision's completion: received = the un-parked DISTRIBUTION time (not a 3-day-old created_at), claimed, dispatched off the wall clock, the provider's reference, the decision path",
+        c1?.timeline?.received_at === distributed && c1?.timeline?.claimed_at === NOW.toISOString() && c1?.timeline?.dispatched_at === dispatchedAt.toISOString() && c1?.timeline?.failed_at === null && c1?.timeline?.provider_ref === "SG-first-1" && c1?.decision_path === "fast", JSON.stringify(c1 ?? null))
+      check("ACTUAL RESPONSE LATENCY = dispatched − received (95 s here) — the claim-based inference would have read three days", c1?.response_latency_ms === 95_000 && Date.parse(String(db.tables.leads.find((l) => l.id === L1)?.first_touched_at)) - Date.parse(createdLongAgo) > 2 * 86_400_000)
+      check("FAILURE IS A TIMESTAMP TOO: the refused first touch records failed_at, no dispatch, no latency — and the claim is released so the next sweep tries again",
+        !!c2?.timeline?.failed_at && c2?.timeline?.dispatched_at === null && c2?.response_latency_ms === null && db.tables.leads.find((l) => l.id === L2)?.first_touched_at === null, JSON.stringify(c2 ?? null))
+      const fed = pol.preferMeasuredFirstTouch([{ id: L1, createdAt: createdLongAgo, firstTouchedAt: String(db.tables.leads.find((l) => l.id === L1)?.first_touched_at), channel: "email" }], [{ subjectId: L1, receivedAt: c1?.timeline?.received_at ?? null, dispatchedAt: c1?.timeline?.dispatched_at ?? null }])
+      check("THE READER'S MATH on the sweep's own record: the dashboard row is timed 95 s, measured", fed.measuredCount === 1 && pol.summarizeFirstTouchLatency(fed.rows).medianSeconds === 95)
+      ;(globalThis as { __153F_db?: unknown }).__153F_db = undefined
+    }
+    const metricsSrc2 = stripComments(readFileSync("app/actions/ai-isa/speed-to-lead-metrics.ts", "utf8"))
+    check("WIRED: getSpeedToLeadMetrics reads the measured first responses (manager_completions, speed_to_lead:*) and prefers them (preferMeasuredFirstTouch), a refusal named in `refused`",
+      /from\("manager_completions"\)[\s\S]{0,300}\.like\("source_ref", "speed_to_lead:%"\)/.test(metricsSrc2) && /preferMeasuredFirstTouch\(touched, measuredRows\)/.test(metricsSrc2) && /measured first responses \(manager_completions\)/.test(metricsSrc2))
+    check("WIRED: the ISA panel says how much of its number is measured vs estimated (recent.measuredCount)", /recent\.measuredCount/.test(stripComments(readFileSync("app/dashboard/isa/components/speed-to-lead-panel.tsx", "utf8"))))
+  }
 
   // ───────────────────────────────────────────────────────────────────────────
   // Layer 2: LIVE (gated)

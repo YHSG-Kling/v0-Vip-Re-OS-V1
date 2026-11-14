@@ -7,23 +7,22 @@
 // inactive codes or creating a qr code manually plus tracking linked to
 // campaign."
 //
-// ONE PAGE, ROLE-SCOPED DATA. /dashboard/agent/qr-codes was reachable from the
-// agent sidebar only and read `.eq('agent_id', ctx.agentId)` — a broker who
-// reached the URL directly saw their own (usually empty) list, not their
-// brokerage's. Rather than fork a second broker page, the scope is resolved
-// here:
-//   · broker / broker_owner / broker_admin / admin → the whole brokerage
-//   · the LEAD of a team                            → that team's agents
-//   · everyone else                                 → their own codes
-// SCOPE LADDER (kept inline — a shared admin predicate would move roles between
-// tiers). 'superadmin' is absent because it is dead as users.user_type; platform
-// staff reach a tenant through the act-as seam and arrive carrying the tenant's
-// own user_type.
+// ONE PAGE, ROLE-SCOPED DATA. /dashboard/agent/qr-codes is the one tenant board for every
+// seat — a solo subscriber, an agent seat, a team lead, an office head and an account admin.
+// WAVE 153 (lane 153E): the scope is lib/marketing/qr-governance.ts resolveQrAuthority —
+//   · the seat must be live (not suspended, not a revoked agent record)
+//   · a SOLO-plan subscriber            → their whole account (tier parity)
+//   · tenant leadership / single-office tenant admin → every code in the account
+//   · an office head                    → their offices' codes (multi-location)
+//   · the LEAD of a team                → that team's codes
+//   · everyone else                     → the codes they created or that are filed to them
+// and the governed doors enforce the SAME answer, so the list and the actions never disagree.
+// 'superadmin' is absent because it is dead as users.user_type; platform staff reach a tenant
+// through the act-as seam and arrive carrying the tenant's own user_type.
 //
 // TEAM IS A FACT, NOT A SEAT: leading a team is `teams.team_lead_id = users.id`
-// (lib/teams/team-scope.ts), the same anchor m473 put on every RLS lane. A
-// user_type 'team_lead' who leads no team row leads nothing and falls to their
-// own codes.
+// (lib/kernel/resolve-user-office.ts resolveViewerHierarchy), the same anchor m473 put on
+// every RLS lane. A user_type 'team_lead' who leads no team row leads nothing.
 //
 // GATE-THEN-SERVICE: the reads run on the service client because a team lead and
 // a broker must see codes minted by OTHER agents, and qr_codes' RLS is written
@@ -33,15 +32,11 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { resolveActingContext, resolveWriteContext } from '@/lib/platform/acting-context'
-import { resolveAgentIdInBrokerage } from '@/lib/kernel/agent-identity'
-import { resolveLedTeamId } from '@/lib/kernel/resolve-user-team'
-import { presentTenantError } from '@/lib/errors'
 // WAVE 152 (lane 152C): the governed lifecycle / duplicate / activity doors and the one lifecycle classifier. This file
 // stays the board's SESSION gate (tenant from the session, read-only impersonation refused) in front of them.
-import { changeQrLifecycle, duplicateQrDesign, loadQrActivity, type QrActor, type QrLifecycleAction, type QrActivity } from '@/lib/marketing/qr-governance'
+// WAVE 153 (lane 153E): + the ONE QR authority and the board's scoped reads (codes in scope, link pickers).
+import { changeQrLifecycle, duplicateQrDesign, loadQrActivity, resolveQrAuthority, listQrCodesInScope, loadQrLinkTargets, type QrActor, type QrLifecycleAction, type QrActivity } from '@/lib/marketing/qr-governance'
 import { qrLifecycleState, type QrLifecycleState, type QrMintContext, type QrDestinationVersion } from '@/lib/marketing/qr-contract'
-
-const BROKERAGE_SCOPE_ROLES = new Set(['broker', 'broker_owner', 'broker_admin', 'admin'])
 
 /**
  * The name a human reads on the board, resolved from the row's own subject.
@@ -94,7 +89,9 @@ function provenanceOf(c: Record<string, any>, creatorNames: Map<string, string>)
   }
 }
 
-export type QrScopeKind = 'agent' | 'team' | 'brokerage'
+/** WAVE 153 (153E): + 'office' — an office head on a multi-location account manages their offices' codes. 'brokerage' is
+ *  the whole-account scope (a solo subscriber's whole business included); the label the board prints says which. */
+export type QrScopeKind = 'agent' | 'team' | 'office' | 'brokerage'
 
 export interface QrManagerCode {
   id:                   string
@@ -134,6 +131,23 @@ export interface QrManagerCode {
   destination_versions: number
   /** The person who minted it (m945 created_by_user_id → users name), null for an automatic or older code. */
   creator_name:         string | null
+  /** WAVE 153 (153E): the viewer minted this code themselves (the board's "Only codes I created" filter). */
+  created_by_me:        boolean
+}
+
+/** WAVE 153 (153E): one placement's codes, RAW scans and consented Contacts (never pooled across placements). */
+export interface QrPlacementRollup {
+  placement:         string
+  codeCount:         number
+  rawScans:          number
+  consentedContacts: number
+}
+
+/** WAVE 153 (153E): a listing a new code may be linked to — only listings the viewer may put a code on. */
+export interface QrLinkableListing {
+  id:     string
+  line:   string
+  status: string | null
 }
 
 export interface QrCampaignRollup {
@@ -157,8 +171,16 @@ export type QrManagerData =
       codes:      QrManagerCode[]
       /** Scans/leads rolled up by the FORWARD campaign link only. */
       campaigns:  QrCampaignRollup[]
-      /** The brokerage's campaigns, for the create form's campaign picker. */
+      /** The campaigns a new code may be linked to (the viewer's own, shared with their team or the whole account). */
       linkableCampaigns: QrLinkableCampaign[]
+      /** WAVE 153 (153E): the listings a new code may be linked to (own, or in a team / office the viewer leads). */
+      linkableListings: QrLinkableListing[]
+      /** WAVE 153 (153E): raw scans + consented Contacts per placement. */
+      placements: QrPlacementRollup[]
+      /** WAVE 153 (153E): why this scope (the facts / grants that decided it). */
+      scopeBasis: string[]
+      /** WAVE 153 (153E): every seat that can see the board can create codes (filed to their own record, or to none). */
+      canCreate: true
     }
   | { ok: false; error: string }
 
@@ -171,91 +193,45 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
   const ctx = await resolveActingContext()
   if (!ctx.ok) return { ok: false, error: ctx.error ?? 'Not authenticated' }
   if (!ctx.brokerageId) {
-    return { ok: false, error: 'No brokerage on your account — QR codes are scoped to a brokerage.' }
+    return { ok: false, error: 'Your sign-in isn\'t attached to an account yet, so QR codes aren\'t available. Finish your account setup, then try again.' }
   }
 
   const svc = createServiceClient()
   const brokerageId = ctx.brokerageId
 
-  let scope: QrScopeKind = 'agent'
-  let scopeLabel = 'Your QR codes'
-  let agentIds: string[] | null = null   // null = no agent narrowing (brokerage scope)
+  // WAVE 153 (lane 153E) — ONE AUTHORITY FOR THE LIST AND EVERY DOOR. Owner (verbatim, 2026-11-14): "qr codes can be
+  // used by tenant and seat holders. you redid the qr code section for brokerage/teams but agents and solo agent tenants
+  // use qr codes."
+  // TOMBSTONE: the inline SCOPE LADDER that lived here (BROKERAGE_SCOPE_ROLES by user_type → whole brokerage; a led team
+  // → that team's agents; else the caller's own agents row, REFUSING a seat without one). It disagreed with the doors —
+  // they let ANY seat change ANY code in the account — it never saw a SOLO subscriber whose one seat is user_type
+  // 'agent' as owning their whole account (their automatic, agent-less codes were invisible to them), it had no office
+  // scope for a multi-location tenant, and it hid codes a person CREATED but filed elsewhere. SURVIVOR:
+  // lib/marketing/qr-governance.ts resolveQrAuthority (seat · solo plan · resolveViewerHierarchy) + listQrCodesInScope,
+  // the same answer the mint / edit / lifecycle / duplicate / activity doors now enforce.
+  const actor: QrActor = { brokerageId, userId: ctx.userId, agentId: ctx.agentId ?? null, userType: ctx.userType }
+  const authority = await resolveQrAuthority(actor, { client: svc })
+  if (!authority.ok) return { ok: false, error: authority.message }
+  const auth = authority.authority
+  const scope: QrScopeKind = auth.kind === 'tenant' ? 'brokerage' : auth.kind === 'offices' ? 'office' : auth.kind === 'teams' ? 'team' : 'agent'
+  const scopeLabel = auth.kind === 'tenant'
+    ? (auth.solo ? 'Every QR code in your business' : 'Every QR code in your account')
+    : auth.kind === 'offices' ? "QR codes for the offices you lead"
+    : auth.kind === 'teams' ? "Your team's QR codes"
+    : 'Your QR codes'
 
-  if (BROKERAGE_SCOPE_ROLES.has(ctx.userType)) {
-    scope = 'brokerage'
-    scopeLabel = 'Every QR code in your brokerage'
-  } else {
-    // The team question first — a lead who is also user_type 'agent' (the live
-    // shape, per m473) still leads their team's codes.
-    const led = await resolveLedTeamId(svc, ctx.userId)
-    // DESTRUCTURE THE REFUSAL: "the read was refused" must never be reported as
-    // "you lead nothing", which would silently narrow a lead to their own codes.
-    // PRESENTER WIRING (wave 152, lane 152K): both refusals relayed the raw database sentence to the board
-    // ("Could not resolve your team: <error.message>"). Now THE presenter logs it with a reference and the person reads
-    // what did not happen + one action (lib/errors/index.ts presentTenantError).
-    if (!led.ok) return { ok: false, error: presentTenantError({ what: "Your team's QR codes could not be loaded right now", raw: led.error, next: 'platform_support', action: { label: 'Try again in a moment' }, context: 'qr-management' }).sentence }
+  const listed = await listQrCodesInScope(actor, auth, { client: svc })
+  if (!listed.ok) return { ok: false, error: listed.message }
+  // The campaigns and listings a NEW code can be linked to — the same rules the mint enforces. Fetched whether or not any
+  // codes exist: the first code an agent mints is the one most worth linking.
+  const targets = await loadQrLinkTargets(actor, auth, { client: svc })
+  const linkableCampaigns: QrLinkableCampaign[] = targets.campaigns
+  const linkableListings: QrLinkableListing[] = targets.listings
+  const shared = { scope, scopeLabel, scopeBasis: auth.basis, canCreate: true as const, linkableCampaigns, linkableListings }
 
-    if (led.teamId) {
-      const { data: teamAgents, error: teamAgentsError } = await svc
-        .from('agents')
-        .select('id')
-        .eq('brokerage_id', brokerageId)
-        .eq('team_id', led.teamId)
-      if (teamAgentsError) {
-        return { ok: false, error: presentTenantError({ what: "Your team's QR codes could not be loaded right now", raw: `team agents: ${teamAgentsError.message}`, next: 'platform_support', action: { label: 'Try again in a moment' }, context: 'qr-management' }).sentence }
-      }
-      scope = 'team'
-      scopeLabel = "Your team's QR codes"
-      // The lead's OWN agents row is unioned in rather than assumed to carry
-      // team_id — agent_team_id()'s resolution order lets someone lead a team
-      // their agents row is not filed under, and a lead who cannot see their own
-      // codes on their own team's board is the obvious way to get this wrong.
-      const ownAgentId = await resolveAgentIdInBrokerage(svc, ctx.userId, brokerageId)
-      agentIds = [...new Set([
-        ...(teamAgents ?? []).map((a: { id: string }) => a.id),
-        ...(ownAgentId ? [ownAgentId] : []),
-      ])]
-    } else {
-      const agentId = await resolveAgentIdInBrokerage(svc, ctx.userId, brokerageId)
-      if (!agentId) {
-        return { ok: false, error: 'No agent record in this brokerage — QR codes are filed against an agent.' }
-      }
-      agentIds = [agentId]
-    }
-  }
-
-  // WAVE 152 (152C): the m945 provenance + lifecycle columns (created_by_user_id → the creator's name, mint_context,
-  // destination_history, retired_at / retired_reason). m945 was applied live 2026-11-12, so the column list is ONE literal —
-  // the pre-apply degrade (a second, shorter select on PGRST204) retired with it.
-  let query = svc
-    .from('qr_codes')
-    .select('id, slug, label, purpose, target_url, destination_type, listing_id, scan_count, lead_count, is_active, created_at, expires_at, marketing_campaign_id, agent_id, created_by_user_id, mint_context, destination_history, retired_at, retired_reason')
-    .eq('brokerage_id', brokerageId)
-    .order('created_at', { ascending: false })
-  if (agentIds) query = query.in('agent_id', agentIds)
-  const { data: rows, error: rowsError } = await query
-  if (rowsError) return { ok: false, error: 'We couldn\'t load your QR codes right now. Nothing was changed — refresh the page in a moment.' }
-
-  // The campaigns a NEW code can be linked to. Fetched whether or not any codes
-  // exist — the first code an agent mints is the one most worth linking.
-  const { data: linkable, error: linkableError } = await svc
-    .from('marketing_campaigns')
-    .select('id, campaign_name, created_at')
-    .eq('brokerage_id', brokerageId)
-    .order('created_at', { ascending: false })
-    .limit(100)
-  if (linkableError) {
-    console.error('[qr-management] campaign picker list not resolved:', linkableError.message)
-  }
-  const linkableCampaigns: QrLinkableCampaign[] =
-    ((linkable ?? []) as Array<{ id: string; campaign_name: string | null }>).map((c) => ({
-      id:   c.id,
-      name: c.campaign_name ?? 'Untitled campaign',
-    }))
-
-  const codeRows = (rows ?? []) as Array<Record<string, any>>
+  const codeRows = listed.rows as Array<Record<string, any>>
   if (codeRows.length === 0) {
-    return { ok: true, scope, scopeLabel, codes: [], campaigns: [], linkableCampaigns }
+    return { ok: true, ...shared, codes: [], campaigns: [], placements: [] }
   }
 
   // ── Campaign linkage, BOTH directions, kept apart on purpose ───────────────
@@ -395,7 +371,22 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
       campaignName: c.marketing_campaign_id ? campaignNames.get(c.marketing_campaign_id) ?? null : null,
     }),
     ...provenanceOf(c, creatorNames),
+    created_by_me:         !!c.created_by_user_id && c.created_by_user_id === ctx.userId,
   }))
+
+  // WAVE 153 (153E) — PLACEMENT ANALYTICS: the same design on a postcard, a yard sign and a social graphic is three codes,
+  // so ROI per placement is never pooled. Counted from the codes themselves: RAW scans (qr_codes.scan_count — bots and
+  // repeats included; each code's details panel separates human-likely visits) and consented Contacts (lead_count, the
+  // submit door's counter). Appointments and closings are the ROI reader's (lib/intelligence/roi-ledger.ts); not here.
+  const byPlacement = new Map<string, QrPlacementRollup>()
+  for (const code of codes) {
+    const key = code.placement ?? 'not_stated'
+    const r = byPlacement.get(key) ?? { placement: key, codeCount: 0, rawScans: 0, consentedContacts: 0 }
+    r.codeCount += 1
+    r.rawScans += code.scan_count
+    r.consentedContacts += code.lead_count
+    byPlacement.set(key, r)
+  }
 
   // Scans per campaign, from the codes CURRENTLY linked to each campaign. This
   // is the same arithmetic lib/marketing/campaign-measurer.ts applies to
@@ -418,11 +409,10 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
 
   return {
     ok: true,
-    scope,
-    scopeLabel,
+    ...shared,
     codes,
     campaigns: [...rollup.values()].sort((a, b) => b.scans - a.scans),
-    linkableCampaigns,
+    placements: [...byPlacement.values()].sort((a, b) => b.rawScans - a.rawScans),
   }
 }
 
@@ -436,7 +426,7 @@ async function gatedLifecycle(qrCodeId: string, action: QrLifecycleAction, reaso
   const ctx = await resolveWriteContext()
   if (!ctx.ok) return { ok: false, error: ctx.error }
   const actor = actorFrom(ctx)
-  if (!actor) return { ok: false, error: 'No brokerage on your account — QR codes are scoped to a brokerage.' }
+  if (!actor) return { ok: false, error: 'Your sign-in isn\'t attached to an account yet, so QR codes aren\'t available. Finish your account setup, then try again.' }
   const res = await changeQrLifecycle({ qrCodeId, action, reason }, actor)
   return res.ok ? res : { ok: false, error: res.message }
 }
@@ -493,7 +483,7 @@ export async function duplicateQrCode(input: {
   const ctx = await resolveWriteContext()
   if (!ctx.ok) return { ok: false, error: ctx.error }
   const actor = actorFrom(ctx)
-  if (!actor) return { ok: false, error: 'No brokerage on your account — QR codes are scoped to a brokerage.' }
+  if (!actor) return { ok: false, error: 'Your sign-in isn\'t attached to an account yet, so QR codes aren\'t available. Finish your account setup, then try again.' }
   const res = await duplicateQrDesign({ sourceQrCodeId: input?.qrCodeId, idempotencyKey: input?.idempotencyKey, label: input?.label ?? null }, actor)
   if (!res.ok) return { ok: false, error: res.message }
   const { id, slug, label, scanUrl, targetUrl } = res.code
@@ -509,7 +499,7 @@ export async function loadQrCodeActivity(qrCodeId: string): Promise<{ ok: true; 
   const ctx = await resolveActingContext()
   if (!ctx.ok) return { ok: false, error: ctx.error ?? 'Not authenticated' }
   const actor = actorFrom(ctx)
-  if (!actor) return { ok: false, error: 'No brokerage on your account — QR codes are scoped to a brokerage.' }
+  if (!actor) return { ok: false, error: 'Your sign-in isn\'t attached to an account yet, so QR codes aren\'t available. Finish your account setup, then try again.' }
   const res = await loadQrActivity(qrCodeId, actor)
   return res.ok ? res : { ok: false, error: res.message }
 }

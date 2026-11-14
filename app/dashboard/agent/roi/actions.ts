@@ -27,8 +27,8 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-// Wave 152 (lane 152B): THE authorized ROI reader decides whether this viewer may see commission dollars (an agent
-// may not — CLAUDE.md §5; a solo subscriber or a finance administrator may) and supplies the sourced-deal figures.
+// Wave 152 (lane 152B): THE authorized ROI reader decides whose commission dollars this viewer sees and supplies the
+// sourced-deal figures. Wave 153 (lane 153B, owner ruling 5): an agent sees their OWN commission (money tier "own").
 import { loadRoiOutcomeLedger } from "@/lib/intelligence/roi-ledger"
 import { PIPELINE_COLUMN_STATUSES, inPipelineColumn, isOpenDeal } from "@/lib/transactions/transaction-status"
 
@@ -217,13 +217,20 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
   const { startISO, endISO } = periodBounds(period)
 
   // ── THE AUTHORIZED ROI READER (wave 152, lane 152B) ─────────────────────
-  // Session ids only. It decides whether commission dollars may show to THIS viewer (an agent: no — CLAUDE.md §5;
-  // a solo subscriber / finance administrator / team lead over their team: yes) and supplies the sourced figures:
+  // Session ids only. It decides whose commission dollars THIS viewer sees (wave 153, owner ruling 5: an agent their own;
+  // a team lead their team's; a solo subscriber / finance administrator all) and supplies the sourced figures:
   // earned commission on CLOSED deals in the period, each deal split once across the campaigns that touched it.
   // A ledger that cannot be read hides the dollars (fail closed) and says why.
   const outcomes = await loadRoiOutcomeLedger(svc, { userId: user.id, brokerageId: profile.brokerage_id }, { sinceDay: startISO.slice(0, 10), untilDay: endISO.slice(0, 10) })
   const moneyVisible = outcomes.ok && outcomes.ledger.scope.moneyVisible
   const moneyNote = outcomes.ok ? outcomes.ledger.scope.moneyNote : outcomes.error
+  // WAVE 153 (lane 153B, owner ruling 5): the agent sees their OWN commission. The three reads below price WHOLE deals
+  // (estimated_commission, the deal's finalized commission_amount, attribution credit_dollars), so on the "own" tier they
+  // count only deals that are wholly this agent's — a deal shared with another agent shows its count, never a co-agent's
+  // share (their own share on a shared deal is in the authorized ledger above, from their own commission row).
+  const moneyTier = outcomes.ok ? outcomes.ledger.scope.moneyTier : "none"
+  const wholeDealIsMine = (t: { agent_id?: string | null; buyer_agent_id?: string | null; seller_agent_id?: string | null }) =>
+    moneyTier !== "own" || [t.agent_id, t.buyer_agent_id, t.seller_agent_id].filter((a): a is string => !!a).every((a) => a === agentRowId)
   const attributedRevenueCents: number | null = moneyVisible && outcomes.ok ? (outcomes.ledger.attribution?.sourcedEarnedCents ?? null) : null
   const closedDealsSourced = outcomes.ok ? outcomes.ledger.results.sourcedDealsClosed : 0
 
@@ -236,12 +243,12 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
   if (agentRowId && moneyVisible) {
     const { data: agentTxns, error: agentTxnsErr } = await svc
       .from("transactions")
-      .select("id, status, deleted_at")
+      .select("id, status, deleted_at, agent_id, buyer_agent_id, seller_agent_id")
       .eq("brokerage_id", profile.brokerage_id)
       .eq("agent_id", agentRowId)
     if (agentTxnsErr) modelComparison = { ok: false, error: agentTxnsErr.message }
-    const txnIds = ((agentTxns ?? []) as Array<{ id: string; status: string | null; deleted_at: string | null }>)
-      .filter((t) => !t.deleted_at && inPipelineColumn(t.status, "closed"))
+    const txnIds = ((agentTxns ?? []) as Array<{ id: string; status: string | null; deleted_at: string | null; agent_id: string | null; buyer_agent_id: string | null; seller_agent_id: string | null }>)
+      .filter((t) => !t.deleted_at && inPipelineColumn(t.status, "closed") && wholeDealIsMine(t))
       .map((t) => t.id)
     if (txnIds.length > 0) {
 
@@ -485,13 +492,13 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
   if (agentRowId) {
     const { data: openTxns } = await svc
       .from("transactions")
-      .select("estimated_commission, close_date, status, deleted_at")
+      .select("estimated_commission, close_date, status, deleted_at, agent_id, buyer_agent_id, seller_agent_id")
       .eq("brokerage_id", profile.brokerage_id)
       .eq("agent_id", agentRowId)
       .is("deleted_at", null)
-    const open = ((openTxns ?? []) as Array<{ estimated_commission: number | null; status: string | null }>).filter((t) => isOpenDeal(t.status))
+    const open = ((openTxns ?? []) as Array<{ estimated_commission: number | null; status: string | null; agent_id: string | null; buyer_agent_id: string | null; seller_agent_id: string | null }>).filter((t) => isOpenDeal(t.status))
     activeTransactions = open.length
-    if (moneyVisible) pipelineCommissionCents = open.reduce((acc, t) => acc + Math.round(Number(t.estimated_commission ?? 0) * 100), 0)
+    if (moneyVisible) pipelineCommissionCents = open.filter(wholeDealIsMine).reduce((acc, t) => acc + Math.round(Number(t.estimated_commission ?? 0) * 100), 0)
   }
   let upcomingSphereTouchpoints = 0
   if (agentRowId) {
@@ -525,7 +532,7 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
     // may show to this viewer.
     const { data: closedWins } = await svc
       .from("transactions")
-      .select("id, deal_name, commission_amount, commission_finalized_at, close_date, status")
+      .select("id, deal_name, commission_amount, commission_finalized_at, close_date, status, agent_id, buyer_agent_id, seller_agent_id")
       .eq("brokerage_id", profile.brokerage_id)
       .eq("agent_id", agentRowId)
       .in("status", [...PIPELINE_COLUMN_STATUSES.closed])
@@ -538,7 +545,7 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
       recentWins.push({
         happenedAt: w.close_date ?? new Date().toISOString(),
         headline:   `Deal closed — ${w.deal_name ?? "transaction"}`,
-        valueCents: moneyVisible && cents > 0 ? cents : null,
+        valueCents: moneyVisible && cents > 0 && wholeDealIsMine(w) ? cents : null,
         featureKey: "deal_close",
       })
     }

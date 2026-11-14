@@ -79,6 +79,33 @@ async function resolveExpenseAccountRef(svc: Svc, brokerageId: string, category:
   return null
 }
 
+/**
+ * WAVE 153 (lane 153A) — THE BUSINESS UNIT. A multi-location tenant's office expense must land in the connected books
+ * under that office, not dissolve into the company total. The mapping is TENANT-CONFIGURED on the office itself
+ * (`locations.settings.accounting.quickbooks_department_id` — QuickBooks' Location/Department dimension), written
+ * through the existing office editor (app/actions/admin/locations.ts updates `settings`). Never inferred from a name.
+ *   · no office on the expense (main office / single-office tenant)   → no business unit (the company itself);
+ *   · the tenant maps NO office at all (it does not track locations in its books) → pushed without one, and the
+ *     payload snapshot records that the books do not track offices;
+ *   · the tenant maps SOME offices but not this one                    → an honest BUSINESS_UNIT_NOT_MAPPED sync error
+ *     (never filed under the company by default — that would misstate both the office's and the company's books).
+ * A refused read is a refusal (the push is not attempted with a guessed unit).
+ */
+async function resolveBusinessUnit(svc: Svc, brokerageId: string, locationId: string | null):
+  Promise<{ ok: true; tracked: boolean; departmentRef: string | null } | { ok: false; error: string }> {
+  if (!locationId) return { ok: true, tracked: false, departmentRef: null }
+  const { data, error } = await svc.from("locations").select("id, settings").eq("brokerage_id", brokerageId)
+  if (error) return { ok: false, error: `office mapping read refused: ${error.message}` }
+  const refOf = (settings: unknown): string | null => {
+    const v = ((settings as { accounting?: { quickbooks_department_id?: unknown } } | null)?.accounting?.quickbooks_department_id)
+    return typeof v === "string" && v.trim() ? v.trim() : typeof v === "number" ? String(v) : null
+  }
+  const rows = (data ?? []) as Array<{ id: string; settings: unknown }>
+  const tracked = rows.some((r) => refOf(r.settings) !== null)
+  const mine = rows.find((r) => r.id === locationId)
+  return { ok: true, tracked, departmentRef: mine ? refOf(mine.settings) : null }
+}
+
 export interface AccountingPushOutcome {
   attempted: boolean
   success: boolean
@@ -86,7 +113,7 @@ export interface AccountingPushOutcome {
   error?: string
 }
 
-type EgressErrorCode = "CONNECTION_FAILED" | "ACCOUNT_NOT_MAPPED" | "CUSTOMER_NOT_MAPPED" | "PROVIDER_REFUSED"
+type EgressErrorCode = "CONNECTION_FAILED" | "ACCOUNT_NOT_MAPPED" | "CUSTOMER_NOT_MAPPED" | "PROVIDER_REFUSED" | "BUSINESS_UNIT_NOT_MAPPED"
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** One accounting_sync_log row per attempted push — and, on a FAILED push, one sync_errors row naming the record.
@@ -142,10 +169,10 @@ async function logSync(
  *  this: those books don't roll up to the brokerage ledger (owner rule). */
 export async function pushExpenseToAccounting(
   svc: Svc,
-  expense: { brokerageId: string; amount: number; category: string; description?: string | null; expenseDate?: string | null; expenseId?: string | null },
+  expense: { brokerageId: string; amount: number; category: string; description?: string | null; expenseDate?: string | null; expenseId?: string | null; locationId?: string | null },
 ): Promise<AccountingPushOutcome> {
   const startedAt = new Date().toISOString()
-  const failed = { recordId: expense.expenseId ?? null, payload: { amount: expense.amount, category: expense.category, expense_date: expense.expenseDate ?? null } }
+  const failed = { recordId: expense.expenseId ?? null, payload: { amount: expense.amount, category: expense.category, expense_date: expense.expenseDate ?? null, location_id: expense.locationId ?? null } as Record<string, unknown> }
   let qbo: QuickBooksProvider | null
   try {
     qbo = await buildQuickBooksForBrokerage(expense.brokerageId, { teamId: null })
@@ -165,13 +192,29 @@ export async function pushExpenseToAccounting(
     return { attempted: true, success: false, error: msg }
   }
 
-  const result = await qbo.createPurchase({
+  const unit = await resolveBusinessUnit(svc, expense.brokerageId, expense.locationId ?? null)
+  if (!unit.ok) {
+    await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: false, error: unit.error, errorCode: "BUSINESS_UNIT_NOT_MAPPED", ...failed })
+    return { attempted: true, success: false, error: unit.error }
+  }
+  failed.payload.business_unit = unit.departmentRef ?? (expense.locationId ? (unit.tracked ? "unmapped" : "books_do_not_track_offices") : "company")
+  if (expense.locationId && unit.tracked && !unit.departmentRef) {
+    const msg = "This office has no QuickBooks location mapped while other offices do — map it in Settings → Offices so the expense lands under the right office"
+    await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: false, error: msg, errorCode: "BUSINESS_UNIT_NOT_MAPPED", ...failed })
+    return { attempted: true, success: false, error: msg }
+  }
+
+  // The purchase carries the office's department when one is mapped. (The provider's Purchase builder sending
+  // DepartmentRef is lane 153G's file — Outside-lane request in lane 153A's notes; the snapshot above records the unit.)
+  const purchase: Parameters<QuickBooksProvider["createPurchase"]>[0] & { departmentRef?: string } = {
     amount: expense.amount,
     expenseAccountRef,
     paymentAccountRef,
     description: expense.description ?? undefined,
     txnDate: expense.expenseDate ?? undefined,
-  })
+    ...(unit.departmentRef ? { departmentRef: unit.departmentRef } : {}),
+  }
+  const result = await qbo.createPurchase(purchase)
   await logSync(svc, { brokerageId: expense.brokerageId, syncType: "expense", startedAt, success: result.success, error: result.error, errorCode: "PROVIDER_REFUSED", ...failed })
   return { attempted: true, success: result.success, externalId: result.externalId, error: result.error }
 }

@@ -67,7 +67,7 @@ export default async function SearchPage({
       .from("saved_properties")
       // Wave 151 (lane 151J, m983): the last verified state rides along so the card can say when the source was last
       // checked and what it reported (savedHomeVerificationLine) — never the hold's internal reason.
-      .select("id, listing_id, external_property_id, source, source_url, mls_number, mls_name, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons, last_verified_at, last_verified_status, verification_hold, listings(photos)")
+      .select("id, listing_id, external_property_id, source, source_url, mls_number, mls_name, saved_at, notes, dismissed, dismissed_reason, list_price, bedrooms, bathrooms, primary_photo_url, property_address, city, state, ai_match_score, match_reasons, last_verified_at, last_verified_status, verification_hold, listings(photos, status, deleted_at, list_price)")
       .eq("contact_id", contactId)
       .order("saved_at", { ascending: false })
       .limit(40),
@@ -389,7 +389,7 @@ export default async function SearchPage({
                         <FitBadge score={item.ai_match_score} size="xs" />
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        ${item.list_price?.toLocaleString() || "N/A"}
+                        ${(item.listing_id ? (!item.listings?.deleted_at && (item.listings?.status === "active" || item.listings?.status === "coming_soon") ? (item.listings?.list_price ?? item.list_price) : null) : item.list_price)?.toLocaleString() || "N/A"}
                       </p>
                       {Array.isArray(item.match_reasons) && item.match_reasons[0] && (
                         <p className="text-[11px] text-teal-700 italic truncate">✨ {item.match_reasons[0]}</p>

@@ -14,10 +14,13 @@ const states = (...vs: unknown[]) => vs.some((v) => v !== null && v !== undefine
 /**
  * The deal's EXECUTED client agreements and whether each states a commission rate (WAVE 145, owner ruling 4). Read only when
  * the brokerage default would price the deal. A refused read is a finding that makes the rate UNPROVABLE (the engine then
- * refuses a final), never "no agreement". Module-private: reached through resolveGrossRate.
+ * refuses a final), never "no agreement". Reached through resolveGrossRate and (wave 153, lane 153B) through
+ * lib/commission/commission-term-change.ts, which asks the SAME question before a commission term changes ("is an executed
+ * agreement governing this commission?") — one reader of the executed client agreements, never a second copy.
  */
-async function governingClientAgreementRates(
-  supabase: Svc,
+export async function governingClientAgreementRates(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: { from: (t: string) => any },
   brokerageId: string,
   txn: { listing_id?: string | null; buyer_contact_id?: string | null },
 ): Promise<{ governingClientAgreements: Array<{ kind: "listing_agreement" | "buyer_broker_agreement"; id: string; statesRate: boolean }>; findings: string[] }> {

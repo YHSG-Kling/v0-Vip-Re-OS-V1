@@ -31,6 +31,10 @@ export interface TridClockRunResult {
   scanned: number
   flagged: number
   escalated: number
+  /** WAVE 153 (lane 153C): deals whose receipt-ledger summary was synced, coaching tasks opened, syncs that could not run. */
+  synced: number
+  coachingOpened: number
+  syncFailures: number
 }
 
 interface SingleClockResult { result: TridClockResult; escalated: boolean; transitioned: boolean }
@@ -126,7 +130,7 @@ export async function runTridDisclosureClock(input: TridClockRunInput, client?: 
   const svc = client ?? createServiceClient()
   const today = input.today ?? new Date().toISOString().slice(0, 10)
   const horizon = new Date(Date.now() + (input.withinDays ?? 30) * 86_400_000).toISOString().slice(0, 10)
-  const out: TridClockRunResult = { scanned: 0, flagged: 0, escalated: 0 }
+  const out: TridClockRunResult = { scanned: 0, flagged: 0, escalated: 0, synced: 0, coachingOpened: 0, syncFailures: 0 }
 
   // Active deals closing within the horizon (or with an open loan-application clock).
   const { data: timelines } = await svc
@@ -137,6 +141,7 @@ export async function runTridDisclosureClock(input: TridClockRunInput, client?: 
     .or(`scheduled_close_date.lte.${horizon},and(scheduled_close_date.is.null,loan_application_date.not.is.null)`)
     .limit(500)
 
+  const swept = new Set<string>()
   for (const tl of (timelines ?? []) as any[]) {
     out.scanned++
     const r = await runTridClockForTimeline(
@@ -145,6 +150,37 @@ export async function runTridDisclosureClock(input: TridClockRunInput, client?: 
     )
     if (r.result.flagged) out.flagged++
     if (r.escalated) out.escalated++
+    if (tl.transaction_id) swept.add(String(tl.transaction_id))
+  }
+
+  // WAVE 153 (lane 153C) — THE RECEIPT LEDGER RIDES THIS SWEEP (no new cron). For every deal above AND every financed deal closing
+  // inside the horizon that has no timeline yet, bring the existing readers in line with the ledger (lib/compliance/
+  // trid-disclosure-clock-evidence.ts syncTridSummary): the verified receipt mirror, the seeded `trid_timing` compliance row the
+  // closing gate reads, and — when the lender is NOT on the platform — the agent / TC coaching task ("Confirm with the lender
+  // when the buyer received the initial Closing Disclosure …"). A sync that cannot run is counted, never reported as clean.
+  const { data: financed, error: finErr } = await svc
+    .from("transactions")
+    .select("id, financing_type")
+    .eq("brokerage_id", input.brokerageId)
+    .in("status", ["under_contract", "pending", "active", "clear_to_close"])
+    .gte("close_date", today)
+    .lte("close_date", horizon)
+    .limit(500)
+  if (finErr) { console.error(`[trid-clock] financed deals could not be read (${finErr.message}) — only timelines were synced`); out.syncFailures++ }
+  const { financingKindFor } = await import("@/lib/compliance/checklist-dimensions")
+  for (const t of (financed ?? []) as Array<{ id: string; financing_type: string | null }>) {
+    if (financingKindFor(t.financing_type) === "financed") swept.add(t.id)
+  }
+  const { syncTridSummary } = await import("./trid-disclosure-clock-evidence")
+  // The lender-required INSURANCE checkpoint is time-driven too (it becomes due around the appraisal deadline by the tenant's
+  // setting), so the same financed-deal sweep re-settles it (lib/transactions/lender-insurance-checkpoint.ts) — no second cron.
+  const { syncLenderInsuranceCheckpoint } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  for (const transactionId of swept) {
+    const s = await syncTridSummary(svc as any, { brokerageId: input.brokerageId, transactionId, today })
+    if (!s.ok) { out.syncFailures++; console.error(`[trid-clock] receipt-ledger sync for ${transactionId} could not run: ${s.error}`) }
+    else { out.synced++; out.coachingOpened += s.coachingOpened }
+    const ins = await syncLenderInsuranceCheckpoint(svc as any, { brokerageId: input.brokerageId, transactionId, today })
+    if (!ins.ok) { out.syncFailures++; console.error(`[trid-clock] insurance checkpoint sync for ${transactionId} could not run: ${ins.error}`) }
   }
 
   return out

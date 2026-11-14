@@ -486,13 +486,18 @@ export async function saveListingDraftAction(params: {
   const supabase = await createClient()
   const { data: owned, error: ownedError } = await supabase
     .from("listings")
-    .select("id")
+    .select("id, status")
     .eq("id", params.listingId)
     .eq("brokerage_id", ctx.brokerageId)
     .maybeSingle()
 
   if (ownedError) return { success: false, error: `Could not verify the listing: ${ownedError.message}` }
   if (!owned)     return { success: false, error: "Listing not found in your brokerage" }
+  // WAVE 153 (lane 153B, owner ruling 4): past draft, a listing's commission rate is a governed term — it changes only through
+  // lib/commission/commission-term-change.ts (attachment check, evidence, approval, close freeze), never by a silent field edit.
+  if (allowed.commission_rate !== undefined && (owned as { status?: string | null }).status !== "draft") {
+    return { success: false, error: "A listing's commission changes through its commission terms once the listing is past draft — open Commission terms on the listing (with the reason, the executed amendment where the listing agreement sets it, and the broker's decision where your brokerage requires one)." }
+  }
 
   const result = await saveListingDraft({
     listingId:    params.listingId,

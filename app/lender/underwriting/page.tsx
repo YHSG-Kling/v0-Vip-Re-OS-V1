@@ -46,6 +46,10 @@ export default async function LenderUnderwritingPage() {
                   <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white" asChild>
                     <Link href={`/portal/lender/${t.id}`}>Open loan file</Link>
                   </Button>
+                  {/* WAVE 153 (lane 153C): the lender marks when TRID starts — Closing Disclosure delivery / receipt + insurance evidence. */}
+                  <Button size="sm" variant="outline" asChild>
+                    <Link href={`/lender/underwriting/${t.id}`}>Closing Disclosure &amp; insurance</Link>
+                  </Button>
                 </div>
               </CardContent>
             </Card>

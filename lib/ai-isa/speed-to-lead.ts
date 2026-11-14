@@ -91,6 +91,30 @@ export interface SpeedToLeadDeps {
   contactEngagement?:  typeof engageContact
   /** Wave 145: the arbiter's lead decision (the model call is behind it) — a seam for the proofs. */
   arbitrateLead?: (input: SpeedToLeadArbitrationInput) => Promise<SpeedToLeadArbitration>
+  /** WAVE 153 (153F): the wall clock the REAL timestamps are read from (received → claimed → dispatched / failed). Default: new Date(). */
+  clock?: () => Date
+}
+
+/**
+ * WAVE 153 (lane 153F, brief F2 — "persist real timestamps … and compute ACTUAL response latency"). Measured at 22b84783: the only
+ * latency anyone could read was first_touched_at − created_at (app/actions/ai-isa/speed-to-lead-metrics.ts), and first_touched_at is
+ * the CLAIM — stamped BEFORE the send (wave 145Z) — while created_at ignores an un-parked lead's distributed_at. So a touch that never
+ * left, or left minutes after its claim, read as instant. Now each first-touch decision carries its own timeline, read off the wall
+ * clock at each hop: received (the lead's arrival — distributed_at when it was un-parked later — or the contact's assignment),
+ * claimed, dispatched (the engagement door's success, i.e. the provider accepted it) or failed, and the decision's own path + latency.
+ * response_latency_ms = dispatched − received. Written on the decision's completion (manager_completions.context), read back by
+ * getSpeedToLeadMetrics in preference to the claim-based inference. Delivery and the person's first reply close later on their own
+ * evidence (the provider status callbacks, the inbound completion) — not inferred here.
+ */
+function firstTouchTimeline(a: { receivedAt: string | null; assignedAt: string | null; claimedAt: string; endedAt: Date; dispatched: boolean; handedToPerson?: boolean; decision: { path?: string | null; latencyMs?: number | null; source?: string | null } | null; providerRef: string | null }): Record<string, unknown> {
+  const end = a.endedAt.toISOString()
+  const received = a.receivedAt && Number.isFinite(Date.parse(a.receivedAt)) ? new Date(a.receivedAt).toISOString() : null
+  return {
+    timeline: { received_at: received, assigned_at: a.assignedAt, claimed_at: a.claimedAt, dispatched_at: a.dispatched ? end : null, handed_to_person_at: !a.dispatched && a.handedToPerson ? end : null, failed_at: a.dispatched || a.handedToPerson ? null : end, provider_ref: a.providerRef },
+    response_latency_ms: a.dispatched && received ? Math.max(0, a.endedAt.getTime() - Date.parse(received)) : null,
+    decision_path: a.decision?.path ?? (a.decision?.source === "ai" ? "deliberate" : a.decision ? "deterministic" : null),
+    decision_latency_ms: typeof a.decision?.latencyMs === "number" ? a.decision.latencyMs : null,
+  }
 }
 
 /**
@@ -122,6 +146,7 @@ export async function runSpeedToLead(
   const supabase = deps.supabase ?? createServiceClient()
   const doLeadEngagement    = deps.initiateEngagement ?? initiateAIISAEngagement
   const doContactEngagement = deps.contactEngagement  ?? engageContact
+  const clock = deps.clock ?? (() => new Date())
 
   const now          = opts.now          ?? new Date()
   const graceMinutes = opts.graceMinutes ?? DEFAULT_AGENT_GRACE_MINUTES
@@ -215,7 +240,8 @@ export async function runSpeedToLead(
           source: (lead.source as string | null) ?? null,
           minutesSinceArrival: arrivedAt ? Math.max(0, Math.round((now.getTime() - new Date(arrivedAt).getTime()) / 60_000)) : null,
           hoursSinceLastOutreach: null, // a first touch: first_touched_at IS NULL is the sweep's own predicate
-          preferences: [],
+          // WAVE 153 (153F): what the person told us about how to reach them — the arbiter answers on it at once (its fast path).
+          preferences: lead.preferred_channel ? [{ key: "channel_preference", value: String(lead.preferred_channel) }] : [],
         },
       }
       const arb = await (deps.arbitrateLead ?? arbiterMod.arbitrateSpeedToLead)(arbInput)
@@ -244,10 +270,12 @@ export async function runSpeedToLead(
       // Lane 86E: the cron has no session — it PRESENTS the internal secret
       // (the engagement door no longer treats the env var's presence as one).
       const result = await doLeadEngagement(lead.id, { internalSecret: process.env.CRON_SECRET, forceChannel: arb.channel })
+      const leadEndedAt = clock()
 
       // C14 (wave 147, lane 147Z): ONE completion per first-touch decision, opened and evidenced in one call.
       await trackFirstTouchDecision(supabase, {
         brokerageId, subject: { type: "lead", id: lead.id }, claimAt: claim.at, ledgerRef: arb.decision ? `arbiter:${arb.decision.optionId}` : null,
+        measured: firstTouchTimeline({ receivedAt: arrivedAt ?? null, assignedAt: null, claimedAt: claim.at, endedAt: leadEndedAt, dispatched: result?.success !== false, decision: arb.decision, providerRef: providerRefOf(result) }),
         outcome: result?.success !== false
           ? `first touch sent on ${String((result as { channel?: unknown } | null)?.channel ?? arb.channel)} (the arbiter's channel ${arb.channel})`
           : `the first touch did not go out (${String((result as { reason?: unknown } | null)?.reason ?? (result as { error?: unknown } | null)?.error ?? "no reason")}) — the claim is released and the next sweep decides again`,
@@ -356,9 +384,12 @@ export async function runSpeedToLead(
       // A PERSON was the arbiter's answer (notify human — the agent's task exists, engage-contact routeToAgent): the requirement is
       // answered, so the claim is stamped `human_task` — otherwise this sweep would re-arbitrate the same contact every two minutes.
       const answeredByPerson = result?.success === false && /^experience:agent_intervention:/.test(String(result?.reason ?? ""))
+      const contactEndedAt = clock()
       // C14 (wave 147, lane 147Z): ONE completion per first-touch decision — a person's answer waits on that person's task.
       await trackFirstTouchDecision(supabase, {
         brokerageId: contact.brokerage_id, subject: { type: "contact", id: contact.id }, claimAt: claim.at, ledgerRef: null,
+        // contacts.created_at IS the assignment moment (createContactFromLead) — the person was received by their agent then.
+        measured: firstTouchTimeline({ receivedAt: contact.created_at ?? null, assignedAt: contact.created_at ?? null, claimedAt: claim.at, endedAt: contactEndedAt, dispatched: result?.success !== false, handedToPerson: answeredByPerson, decision: null, providerRef: providerRefOf(result) }),
         outcome: answeredByPerson
           ? "the arbiter handed the first touch to a person (the agent's task)"
           : result?.success !== false
@@ -419,9 +450,16 @@ export async function runSpeedToLead(
  * so a released claim's retry is its own decision. A person's answer (the arbiter's notify-human) waits on the agent's task —
  * the supervisor bells them if nobody acts. Never blocks the sweep: a refusal is logged as a blind spot.
  */
+/** The provider's reference for the first touch, when the engagement door returned one (evidence the delivery callbacks reconcile). */
+function providerRefOf(result: unknown): string | null {
+  const r = (result ?? {}) as { messageId?: unknown; providerRef?: unknown; provider_message_id?: unknown }
+  const v = r.providerRef ?? r.messageId ?? r.provider_message_id
+  return typeof v === "string" && v ? v : null
+}
+
 async function trackFirstTouchDecision(
   supabase: ReturnType<typeof createServiceClient>,
-  a: { brokerageId: string; subject: { type: "lead" | "contact"; id: string }; claimAt: string; outcome: string; ledgerRef: string | null; humanContactId: string | null },
+  a: { brokerageId: string; subject: { type: "lead" | "contact"; id: string }; claimAt: string; outcome: string; ledgerRef: string | null; humanContactId: string | null; measured?: Record<string, unknown> },
 ): Promise<void> {
   try {
     const { trackManagerDecision } = await import("@/lib/kernel/completion-tracking")
@@ -430,7 +468,7 @@ async function trackFirstTouchDecision(
       what: `Answer a new ${a.subject.type} now (speed-to-lead first touch)`,
       decision: { outcome: a.outcome, source: "speed_to_lead", ledgerRef: a.ledgerRef },
       next: a.humanContactId ? { kind: "human", contactId: a.humanContactId } : { kind: "none" },
-      context: { [`${a.subject.type}_id`]: a.subject.id, claim_at: a.claimAt },
+      context: { [`${a.subject.type}_id`]: a.subject.id, claim_at: a.claimAt, ...(a.measured ?? {}) },
     })
     if (!r.ok) console.warn(`[speed-to-lead] completion not tracked for ${a.subject.type} ${a.subject.id}: ${r.reason}`)
   } catch (e) {

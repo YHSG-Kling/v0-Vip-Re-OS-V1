@@ -287,9 +287,23 @@ export function readHazardInsurance(input: {
   closeDate: string | null
   now: Date
   representsBuyer?: boolean
+  /**
+   * WAVE 153 (lane 153C): the deal's financing (lib/compliance/checklist-dimensions.ts financingKindFor). On a CASH purchase no
+   * lender requires a binder, so an absence never becomes a closing blocker ("cash deal never held for lender insurance").
+   * Omitted / null keeps the pre-existing behavior exactly.
+   */
+  financing?: "cash" | "financed" | null
 }): HazardInsuranceStatus {
   const { service, closeDate, now } = input
   const representsBuyer = input.representsBuyer !== false
+  if (input.financing === "cash" && representsBuyer) {
+    const status = readHazardInsurance({ ...input, financing: null })
+    return {
+      ...status,
+      blocksClosing: false,
+      detail: status.hasPolicyOnFile ? status.detail : "Cash purchase: no lender requires a binder, so nothing here holds the closing. Insuring the home is still the buyer's decision.",
+    }
+  }
 
   const daysToClose = daysTo(closeDate, now)
   /** Inside the lead-time window AND the coverage is ours to chase. */
@@ -507,6 +521,10 @@ export interface HazardInsuranceView {
   /** Present ONLY on a deal whose buyer is not our client — the one line that
    *  keeps "we have no record" from being read as "there is no coverage". */
   sideNote: string | null
+  /** WAVE 153 (lane 153C): the lender-required insurance checkpoint (null when it could not be read — the panel says so). */
+  checkpoint?: LenderInsuranceCheckpoint | null
+  /** WAVE 153 (lane 153C): what the viewer may do here (from lib/auth/deal-work-ownership.ts). */
+  can?: { recordRequirement: boolean; acceptEvidence: boolean }
 }
 
 /**
@@ -565,5 +583,182 @@ export function hazardReminderHeadline(status: HazardInsuranceStatus): string {
       return status.missingEvidenceDocument
         ? `Homeowner's policy bound but no binder on file — ${when}`
         : `Homeowner's insurance bound — ${when}`
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE LENDER'S INSURANCE REQUIREMENT AND ITS CHECKPOINT (wave 153, lane 153C; directive §153C C3)
+//
+// Owner (verbatim, 2026-11-14): "an insurance policy is required by the lender so that needs to be added in around the appraisal
+// deadline if it isn't already there". The POLICY record above says what the buyer bound; nothing said what the LENDER requires,
+// by when, or whether the evidence was ACCEPTED. The requirement lives on the lender's per-deal row
+// (transaction_lenders.insurance_requirement, m907 — its CHECK mirrors the vocabularies below, the ONE source). Nothing here
+// invents a coverage, an amount or a deadline: an unstated requirement is `requirement_unknown` and the agent is coached to ask.
+
+/** Coverage kinds a lender may require (transaction_lenders.insurance_requirement.coverages). */
+export const LENDER_INSURANCE_COVERAGES = ["hazard", "flood", "wind", "earthquake", "other"] as const
+/** How the premium is handled at closing, as the lender states it. */
+export const LENDER_INSURANCE_ESCROW = ["escrowed", "paid_at_closing", "paid_outside_closing", "unknown"] as const
+/** Who recorded the requirement: the lender on its loan file, or the agent / TC relaying what the lender said. */
+export const LENDER_INSURANCE_SOURCES = ["lender_portal", "agent_reported", "tc_reported"] as const
+/** Who accepted the evidence: the lender itself, or compliance / an admin reviewing the binder against the requirement. */
+export const LENDER_INSURANCE_VERIFIERS = ["lender_portal", "staff_review"] as const
+/** Where the checkpoint sits when the lender gave no date of its own — a TENANT setting (brokerage_settings.settings.lender_insurance_checkpoint). */
+const CHECKPOINT_ANCHORS = ["appraisal_deadline", "financing_deadline", "days_before_closing"] as const
+
+export interface LenderInsuranceRequirement {
+  required: boolean | null
+  coverages: string[]
+  other_coverage: string | null
+  mortgagee_clause: string | null
+  escrow_treatment: string | null
+  evidence_recipient: string | null
+  due_date: string | null
+  source: string | null
+  recorded_by: string | null
+  recorded_at: string | null
+  evidence_verified_at: string | null
+  evidence_verified_by: string | null
+  evidence_verified_source: string | null
+  evidence_document_id: string | null
+}
+
+/** PURE — read a stored requirement (unknown keys dropped, wrong types read as absent — never a fabricated "required"). */
+export function normalizeLenderInsuranceRequirement(raw: unknown): LenderInsuranceRequirement | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const str = (k: string) => (typeof r[k] === "string" && (r[k] as string).trim() ? (r[k] as string).trim() : null)
+  const day = (k: string) => { const v = str(k); return v && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null }
+  const inList = (list: readonly string[], v: string | null) => (v && list.includes(v) ? v : null)
+  return {
+    required: typeof r.required === "boolean" ? r.required : null,
+    coverages: Array.isArray(r.coverages) ? (r.coverages as unknown[]).filter((c): c is string => typeof c === "string" && (LENDER_INSURANCE_COVERAGES as readonly string[]).includes(c)) : [],
+    other_coverage: str("other_coverage"),
+    mortgagee_clause: str("mortgagee_clause"),
+    escrow_treatment: inList(LENDER_INSURANCE_ESCROW, str("escrow_treatment")),
+    evidence_recipient: str("evidence_recipient"),
+    due_date: day("due_date"),
+    source: inList(LENDER_INSURANCE_SOURCES, str("source")),
+    recorded_by: str("recorded_by"),
+    recorded_at: str("recorded_at"),
+    evidence_verified_at: str("evidence_verified_at"),
+    evidence_verified_by: str("evidence_verified_by"),
+    evidence_verified_source: inList(LENDER_INSURANCE_VERIFIERS, str("evidence_verified_source")),
+    evidence_document_id: str("evidence_document_id"),
+  }
+}
+
+interface LenderInsuranceCheckpointPolicy {
+  anchor: (typeof CHECKPOINT_ANCHORS)[number]
+  /** days relative to the anchor (negative = before it; for days_before_closing, how many days before) */
+  offsetDays: number
+  /** what a required, unverified binder does once the checkpoint is due: hold the closing, or warn */
+  missingEvidence: "hold" | "warning"
+}
+
+/** The safe default: around the APPRAISAL deadline, and a required binder that is not verified HOLDS the closing once due. */
+const DEFAULT_LENDER_INSURANCE_CHECKPOINT: LenderInsuranceCheckpointPolicy ={ anchor: "appraisal_deadline", offsetDays: 0, missingEvidence: "hold" }
+
+/** PURE — a tenant's stored checkpoint setting, read defensively (anything unreadable falls back to the safe default). */
+export function readLenderInsuranceCheckpointPolicy(raw: unknown): LenderInsuranceCheckpointPolicy {
+  const r = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
+  const anchor = (CHECKPOINT_ANCHORS as readonly string[]).includes(String(r.anchor)) ? (r.anchor as LenderInsuranceCheckpointPolicy["anchor"]) : DEFAULT_LENDER_INSURANCE_CHECKPOINT.anchor
+  const offset = Number(r.offset_days)
+  return {
+    anchor,
+    offsetDays: Number.isFinite(offset) && Math.abs(offset) <= 60 ? Math.trunc(offset) : DEFAULT_LENDER_INSURANCE_CHECKPOINT.offsetDays,
+    missingEvidence: r.missing_evidence === "warning" ? "warning" : "hold",
+  }
+}
+
+type CheckpointState = "not_applicable_cash" | "not_our_side" | "financing_unknown" | "requirement_unknown" | "not_required" | "required_missing" | "evidence_pending_verification" | "verified"
+
+export interface LenderInsuranceCheckpoint {
+  state: CheckpointState
+  label: string
+  detail: string
+  dueDate: string | null
+  dueBasis: "lender_date" | "appraisal_deadline" | "financing_deadline" | "days_before_closing" | "closing_lead_time" | null
+  /** none = informational; warning = shown, not blocking; blocking = the closing gate holds */
+  hold: "none" | "warning" | "blocking"
+  coaching: string | null
+  requiredCoverages: string[]
+}
+
+const addDays = (d: string, n: number) => isoDay(new Date(Date.parse(`${d.slice(0, 10)}T00:00:00Z`) + n * 86_400_000))
+
+/** The coaching line when the lender has not said (or is not on the platform to say) what it requires. */
+const INSURANCE_COACHING =
+  "Ask the lender what insurance it requires for this loan (homeowner's / hazard, flood, wind or other), whether it wants a binder or the policy declarations page, any mortgagee clause wording, who receives the evidence and by when — then record what the lender says."
+
+/**
+ * PURE — where the lender-required insurance stands. Positioned around the appraisal / underwriting milestone by the TENANT's
+ * setting (never a universal "due on the appraisal date"); the lender's own date always wins. A cash purchase is never held,
+ * a seller-side deal is never held, an unknown requirement is coached, not held. A REQUIRED binder that is not ACCEPTED holds
+ * (or warns, per the tenant's policy) once the checkpoint is due — and at the latest on the closing day.
+ */
+export function readLenderInsuranceCheckpoint(input: {
+  financing: "cash" | "financed" | null
+  representsBuyer: boolean
+  requirement: LenderInsuranceRequirement | null
+  policy: HazardInsuranceStatus | null
+  appraisalDeadline: string | null
+  financingDeadline: string | null
+  closeDate: string | null
+  policySetting: LenderInsuranceCheckpointPolicy
+  lenderOnPlatform: boolean
+  today: string
+}): LenderInsuranceCheckpoint {
+  const none = { dueDate: null, dueBasis: null, hold: "none" as const, coaching: null, requiredCoverages: [] as string[] }
+  if (!input.representsBuyer) return { ...none, state: "not_our_side", label: "Not our side", detail: "We represent the seller; the buyer's lender and insurance are the buying side's to coordinate." }
+  if (input.financing === "cash") return { ...none, state: "not_applicable_cash", label: "Cash purchase", detail: "No lender, so no lender-required insurance checkpoint. Nothing here holds the closing." }
+
+  // ── the due date: the lender's own date, else the tenant's anchor, else the closing lead time ──
+  const req = input.requirement
+  const close = input.closeDate ? input.closeDate.slice(0, 10) : null
+  let dueDate: string | null = null
+  let dueBasis: LenderInsuranceCheckpoint["dueBasis"] = null
+  if (req?.due_date) { dueDate = req.due_date; dueBasis = "lender_date" }
+  else {
+    const p = input.policySetting
+    const anchorDate = p.anchor === "appraisal_deadline" ? input.appraisalDeadline : p.anchor === "financing_deadline" ? input.financingDeadline : null
+    if (anchorDate) { dueDate = addDays(anchorDate, p.offsetDays); dueBasis = p.anchor }
+    else if (p.anchor === "days_before_closing" && close) { dueDate = addDays(close, -Math.abs(p.offsetDays || HAZARD_EVIDENCE_LEAD_DAYS)); dueBasis = "days_before_closing" }
+    else if (close) { dueDate = addDays(close, -HAZARD_EVIDENCE_LEAD_DAYS); dueBasis = "closing_lead_time" }
+  }
+  if (dueDate && close && dueDate > close) dueDate = close
+  const due = dueDate ?? close
+  const pressing = !!due && input.today >= due
+
+  if (input.financing == null) {
+    return { ...none, dueDate, dueBasis, state: "financing_unknown", label: "Financing not recorded", detail: "Whether a lender requires insurance depends on the financing, which is not recorded on this deal.", coaching: "Record whether the purchase is financed or cash." }
+  }
+  const coaching = input.lenderOnPlatform ? null : INSURANCE_COACHING
+  if (!req || req.required == null) {
+    return { ...none, dueDate, dueBasis, state: "requirement_unknown", label: "Ask the lender", detail: input.lenderOnPlatform ? "The lender has not recorded its insurance requirement on its loan file yet." : "The lender's insurance requirement has not been recorded.", coaching: coaching ?? "The lender records its insurance requirement on its loan file.", hold: pressing ? "warning" : "none" }
+  }
+  if (req.required === false) return { ...none, dueDate, dueBasis, state: "not_required", label: "Not required by the lender", detail: `The lender ${req.source === "lender_portal" ? "stated" : "was reported to state"} that no insurance evidence is required for this loan.` }
+
+  const coverages = req.coverages.length > 0 ? req.coverages : []
+  const coverageWords = coverages.length > 0 ? coverages.map((c) => (c === "other" && req.other_coverage ? req.other_coverage : c)).join(", ") : "insurance"
+  const severity: "warning" | "blocking" = input.policySetting.missingEvidence === "warning" ? "warning" : "blocking"
+  const verified = !!req.evidence_verified_at && !!(req.evidence_document_id || input.policy?.documentId)
+  if (verified && !input.policy?.expiresBeforeClosing) {
+    return { ...none, dueDate, dueBasis, requiredCoverages: coverages, state: "verified", label: "Evidence accepted", detail: `The ${coverageWords} evidence was accepted ${req.evidence_verified_source === "lender_portal" ? "by the lender" : "on review against the lender's requirement"}.` }
+  }
+  const onFile = !!input.policy?.documentId || !!req.evidence_document_id
+  if (onFile) {
+    return {
+      ...none, dueDate, dueBasis, requiredCoverages: coverages, coaching,
+      state: "evidence_pending_verification", label: "Evidence on file — not yet accepted",
+      detail: input.policy?.expiresBeforeClosing ? "The policy on file lapses on or before the closing date — the lender needs coverage in force at funding." : `A binder or declarations page is on file; the lender (or compliance, against the lender's written requirement) has not accepted it yet.${req.evidence_recipient ? ` It goes to ${req.evidence_recipient}.` : ""}`,
+      hold: pressing ? severity : "none",
+    }
+  }
+  return {
+    ...none, dueDate, dueBasis, requiredCoverages: coverages, coaching,
+    state: "required_missing", label: "Required — no binder on file",
+    detail: `The lender requires ${coverageWords} evidence${dueDate ? ` by ${dueDate}` : ""} and no binder or declarations page is on file.${req.mortgagee_clause ? " A mortgagee clause was requested." : ""}`,
+    hold: pressing ? severity : "none",
   }
 }

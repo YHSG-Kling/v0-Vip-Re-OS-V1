@@ -68,7 +68,9 @@ function statusWords(status: string | null | undefined): string {
     case "coming_soon": return "coming soon"
     case "pending": return "under contract"
     case "sold": return "sold"
-    case "withdrawn": case "expired": case "off_market": return "no longer listed"
+    case "withdrawn": case "expired": case "off_market": case "cancelled": return "no longer listed"
+    // Wave 153 (153E): a tenant listing's internal pre-market states (C12: never public) read as not listed right now.
+    case "draft": case "listing_signed": return "not listed right now"
     default: return "status not reported"
   }
 }
@@ -78,9 +80,14 @@ const checkedOn = (iso: string) => {
   return Number.isFinite(t.getTime()) ? t.toLocaleDateString("en-US", { month: "short", day: "numeric" }) : null
 }
 
-/** PURE. "Checked Nov 9 · still listed", or an honest "not re-checked" line — never the hold's internal reason. */
-export function savedHomeVerificationLine(row: { source?: string | null; listing_id?: string | null; last_verified_at?: string | null; last_verified_status?: string | null; verification_hold?: string | null }): string {
+/** PURE. "Checked Nov 9 · still listed", or an honest "not re-checked" line — never the hold's internal reason.
+ *  WAVE 153 (153E): a saved TENANT listing whose row carries the listing's own live state (the `listings` embed with
+ *  `status` / `deleted_at`) reads that state FIRST — it is the board itself, fresher than the daily watch's last check —
+ *  so a home that sold, was withdrawn or was archived since it was saved never reads as still available. */
+export function savedHomeVerificationLine(row: { source?: string | null; listing_id?: string | null; last_verified_at?: string | null; last_verified_status?: string | null; verification_hold?: string | null; listings?: { status?: string | null; deleted_at?: string | null } | null }): string {
   const origin = savedHomeOrigin(row)
+  const live = origin === "tenant_listing" && row.listings && "status" in row.listings ? row.listings : null
+  if (live) return `Live from your agent's board · ${live.deleted_at ? "no longer listed" : statusWords(live.status)}`
   const when = row.last_verified_at ? checkedOn(row.last_verified_at) : null
   if (when) {
     const words = statusWords(row.last_verified_status)

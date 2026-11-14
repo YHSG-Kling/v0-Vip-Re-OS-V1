@@ -140,6 +140,9 @@ async function scanDoorEndToEnd(): Promise<void> {
     direct_mail_campaigns: [{ id: "dm-1", brokerage_id: "bA", qr_code_id: "q-mail", lead_id: null, contact_id: null }],
     qr_scan_events: [], contacts: [], leads: [], direct_mail_responses: [], mail_response_tracking: [], lifecycle_events: [],
     tenant_custom_domains: [], brokerage_brand_settings: [], brokerages: [{ id: "bA" }], agent_action_ledger: [],
+    // WAVE 153 (153E): the person who edits a code must be a SEAT in the account (resolveQrAuthority). q-live is an
+    // unowned account code (no agent, no creator), so its editor here is the account's admin.
+    users: [{ id: "uA", brokerage_id: "bA", user_type: "broker_owner" }],
   }, { uuidIds: true, stampCreatedAt: true, missingColumns: opts.missingColumns, refuse: opts.refuse })
 
   let current: Mem = seed()
@@ -205,7 +208,7 @@ async function scanDoorEndToEnd(): Promise<void> {
   check("a code minted BEFORE wave 152 (label-shaped slug, absolute target) still resolves", legacy.status === 302 && legacy.location === "https://app.example.test/listings/LA?qr=listing-la-lx9old")
 
   const { editQrDestination } = await import("../lib/marketing/qr-governance")
-  const edit = await editQrDestination({ qrCodeId: "q-live", targetUrl: "/open-house/E1/signin", reason: "open house Saturday" }, { brokerageId: "bA", userId: "uA", agentId: null, userType: "agent" }, { client: current, ledgerClient: current, origin: "https://app.example.test", appOrigins: ["https://app.example.test"] })
+  const edit = await editQrDestination({ qrCodeId: "q-live", targetUrl: "/open-house/E1/signin", reason: "open house Saturday" }, { brokerageId: "bA", userId: "uA", agentId: null, userType: "broker_owner" }, { client: current, ledgerClient: current, origin: "https://app.example.test", appOrigins: ["https://app.example.test"] })
   const after = await scan("tok-live", IPHONE, "192.0.2.10")
   check("THE OLD PRINTED CODE FOLLOWS AN ALLOWED EDIT: same token, next scan lands on the new destination; v1 kept", edit.ok && after.status === 302 && after.location === "https://app.example.test/open-house/E1/signin?qr=tok-live" && code("q-live").destination_history.length === 2 && code("q-live").destination_history[0].target_url === "/listings/LA")
 

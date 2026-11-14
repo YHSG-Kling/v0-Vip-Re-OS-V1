@@ -14,6 +14,7 @@ import {
 import { loadCommissionQueueAction } from '@/app/actions/financial-kernel'
 import { CommissionDisputeQueue } from '../components/commission-dispute-queue'
 import { PayoutPolicyCard } from './payout-policy-card'
+import { CommissionTermChangeQueue } from './commission-term-change-queue'
 import { ApproveCommissionButton } from '@/app/components/features/financial/ApproveCommissionButton'
 import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
@@ -206,6 +207,9 @@ export default async function PayoutsPage() {
 
       {/* Disputed commissions awaiting broker resolution (uphold / correct / reopen). */}
       <CommissionDisputeQueue brokerageId={profile.brokerage_id} />
+
+      {/* WAVE 153 (lane 153B, owner ruling 4): pre-close commission term changes awaiting the broker's decision. */}
+      <CommissionTermChangeQueue />
 
       {/* Commission Records */}
       <Card>

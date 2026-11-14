@@ -77,7 +77,10 @@ export default async function CampaignROIPage({
   // none (fail closed — "nobody checked" never renders as the whole brokerage). Revenue columns are withheld when
   // commission is off this viewer's display (CLAUDE.md §5).
   const inView = outcomes.ok ? new Set(outcomes.ledger.campaigns.map((c) => c.campaignId)) : new Set<string>()
-  const moneyVisible = outcomes.ok && outcomes.ledger.scope.moneyVisible
+  // WAVE 153 (lane 153B, owner ruling 5): an agent now sees their OWN commission — but the campaign_roi cache's revenue is a
+  // WHOLE-DEAL figure (every agent's share on the deal), so it shows only to the full and team tiers; an agent reads their own
+  // share from the outcomes ledger (scope.moneyTier "own"), never a co-agent's through the cache.
+  const moneyVisible = outcomes.ok && (outcomes.ledger.scope.moneyTier === "full" || outcomes.ledger.scope.moneyTier === "team")
   const scopeRows = (rows: any[]) => rows
     .filter((r) => inView.has(r.marketing_campaign_id))
     .map((r) => (moneyVisible ? r : { ...r, total_revenue: null, roi_percentage: null }))

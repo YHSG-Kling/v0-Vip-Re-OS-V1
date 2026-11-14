@@ -425,7 +425,7 @@ async function liveRequestFor(svc: Svc, brokerageId: string, versionId: string):
 }
 
 /** Every proposed addendum on one contract with its requests, for the addendum panel. Tenant-pinned; a refused read is a reason. */
-export async function listAddendumSignatureState(svc: Svc, actor: AddendumActor, ref: { offerId: string } | { transactionId: string }): Promise<{ ok: true; proposals: Array<{ id: string; source: string; versionNo: number; status: string; closedAs: string | null; terms: Record<string, unknown>; documentId: string | null; createdAt: string | null; requests: Array<{ id: string; status: string; sentAt: string | null; display: AddendumRequestDisplay; parties: unknown; fileable: boolean; held: boolean }> }> } | Fail> {
+export async function listAddendumSignatureState(svc: Svc, actor: AddendumActor, ref: { offerId: string } | { transactionId: string }): Promise<{ ok: true; proposals: Array<{ id: string; source: string; versionNo: number; status: string; closedAs: string | null; terms: Record<string, unknown>; documentId: string | null; createdAt: string | null; attention: { proposedAt: string | null; sentAt: string | null; escalatedAt: string | null; requestedAction: string | null; due: string | null; notifiedCount: number }; requests: Array<{ id: string; status: string; sentAt: string | null; display: AddendumRequestDisplay; parties: unknown; fileable: boolean; held: boolean }> }> } | Fail> {
   const gov = await governingContractTerms(svc, actor.brokerageId, ref)
   if (!gov.ok) return unreadable("The contract", gov.reason)
   const filters = [gov.rootOfferId ? `root_offer_id.eq.${gov.rootOfferId}` : null, gov.transactionId ? `transaction_id.eq.${gov.transactionId}` : null].filter(Boolean) as string[]
@@ -442,6 +442,12 @@ export async function listAddendumSignatureState(svc: Svc, actor: AddendumActor,
     ok: true,
     proposals: proposals.map((p) => ({
       id: p.id, source: p.source, versionNo: Number(p.version_no), status: p.status, closedAs: (p.evidence?.closed_as as string | undefined) ?? null, terms: p.terms ?? {}, documentId: p.document_id ?? null, createdAt: p.created_at ?? null,
+      // WAVE 153 (153F): who was told, what they were asked to do, and whether it escalated — read from the proposal's own evidence.
+      attention: (() => {
+        const ev = (p.evidence ?? {}) as Record<string, any>
+        const last = (ev.attention?.sent ?? ev.attention?.proposed ?? null) as { requested_action?: string; due?: string | null; notified?: string[] } | null
+        return { proposedAt: ev.attention_proposed_at ?? null, sentAt: ev.attention_sent_at ?? null, escalatedAt: ev.attention_escalated_at ?? null, requestedAction: last?.requested_action ?? null, due: last?.due ?? null, notifiedCount: Array.isArray(last?.notified) ? last!.notified!.length : 0 }
+      })(),
       requests: (byVersion.get(p.id) ?? []).sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""))).map((r) => ({ id: r.id, status: r.request_status, sentAt: r.sent_at ?? null, display: describeAddendumRequest(r.request_status, r.evidence), parties: r.all_parties, ...fileableState(r) })),
     })),
   }
@@ -453,7 +459,7 @@ export async function listAddendumSignatureState(svc: Svc, actor: AddendumActor,
  * Record a PROPOSED addendum through the ONE recorder (status proposed — it never governs; the reader lists it as pending).
  * The addendum's unsigned document is part of the proposal: it is what goes out for signature.
  */
-export async function proposeContractAddendumVersion(svc: Svc, actor: AddendumActor, input: { ref: { offerId: string } | { transactionId: string }; kind: "addendum" | "amendment"; documentId: string; terms: Record<string, unknown>; effectiveOn: string | null; termEvidence: Record<string, unknown> | null }): Promise<{ ok: true; versionId: string; versionNo: number } | Fail> {
+export async function proposeContractAddendumVersion(svc: Svc, actor: AddendumActor, input: { ref: { offerId: string } | { transactionId: string }; kind: "addendum" | "amendment"; documentId: string; terms: Record<string, unknown>; effectiveOn: string | null; termEvidence: Record<string, unknown> | null }, deps: AddendumSignatureDeps = {}): Promise<{ ok: true; versionId: string; versionNo: number; attention: { raised: boolean; reason: string } } | Fail> {
   const gov = await governingContractTerms(svc, actor.brokerageId, input.ref)
   if (!gov.ok) return unreadable("The contract", gov.reason)
   if (!gov.governing.governingVersion) return fail("no_contract", "There is no executed contract to amend yet — an addendum changes a contract both parties have signed.")
@@ -473,7 +479,10 @@ export async function proposeContractAddendumVersion(svc: Svc, actor: AddendumAc
     evidence: { recorded_via: "propose_contract_addendum", ...(input.effectiveOn ? { effective_on: input.effectiveOn } : {}), ...(input.termEvidence ? { term_evidence_stated: input.termEvidence } : {}) },
   })
   if (!rec.ok) return fail("refused", rec.reason)
-  return { ok: true, versionId: rec.id, versionNo: rec.versionNo }
+  // WAVE 153 (153F): the people on the deal are TOLD — one task for the agent, one bell each for the agent / TC (never the proposer).
+  const attention = await raiseAddendumAttention(svc, actor.brokerageId, rec.id, "proposed", { actorUserId: actor.userId }, deps)
+  if (!attention.raised) console.warn(`[addendum-signatures] proposal ${rec.id}: attention not raised (${attention.reason})`)
+  return { ok: true, versionId: rec.id, versionNo: rec.versionNo, attention: { raised: attention.raised, reason: attention.reason } }
 }
 
 /** A brokerage-finance admin approves a proposal whose terms move the brokerage's money (hold-for-human, recorded on the proposal). */
@@ -601,6 +610,11 @@ export async function requestAddendumSignatures(svc: Svc, actor: AddendumActor, 
     return { ok: false, state: "refused", requestId, message: `The addendum went out for signature${dispatch.envelopeId ? ` (reference ${dispatch.envelopeId})` : ""}, but its status could not be saved here. Do not send it again; platform support can link the signed copy back to this deal.` }
   }
   await stampProposal(svc, actor.brokerageId, ctx.proposal, { signature_request_id: requestId })
+  // WAVE 153 (153F): out for signature is a state the deal's people hear about once (the compare-and-set above won this transition).
+  if (status === "sent") {
+    const attention = await raiseAddendumAttention(svc, actor.brokerageId, ctx.proposal.id, "sent", { actorUserId: actor.userId, expiresAt: iso(new Date(now.getTime() + REQUEST_TTL_DAYS * 86_400_000)) }, deps)
+    if (!attention.raised) console.warn(`[addendum-signatures] request ${requestId}: sent-attention not raised (${attention.reason})`)
+  }
   await dep(deps, "event")(svc, actor.brokerageId, {
     event_type: "contract_sent_for_signature", source: "ui", user_id: actor.userId,
     entity_type: ctx.transactionId ? "transaction" : "offer", entity_id: (ctx.transactionId ?? ctx.rootOfferId) as string,
@@ -624,6 +638,161 @@ async function stampProposal(svc: Svc, brokerageId: string, p: ProposalRow, patc
   const { data, error } = await svc.from("contract_term_versions").update({ evidence: { ...(((cur as any)?.evidence ?? {}) as Record<string, unknown>), ...patch } }).eq("id", p.id).eq("brokerage_id", brokerageId).eq("status", "proposed").select("id")
   if (error || !data || data.length === 0) { console.error(`[addendum-signatures] proposal ${p.id}: evidence not stamped (${error?.message ?? "no proposed row matched"})`); return false }
   return true
+}
+
+// ─── WAVE 153 (lane 153F) — PROPOSED-ADDENDUM ATTENTION ───────────────────────────────────────────────────────────────────────
+// OWNER RULING 13 (2026-11-14): "proposed addendums need to be brought to the agents attention". Measured at 22b84783: a proposal
+// was recorded and LISTED on the offer card, but nobody was TOLD — no task, no bell (the hop bells start at partially_signed; `sent`
+// rang nothing), the transaction coordinator was never in the loop, and a proposal that never went out for signature had no chase at
+// all (the sweep chases live REQUESTS only). Now each attention-worthy state of a proposal — `proposed` (it exists and someone must act)
+// and `sent` (it is out for signature) — raises, ONCE per state (a claim on the proposal's own evidence, compare-and-set), one TASK
+// for the deal's agent and one BELL for each person on the deal (the agent, the transaction coordinator, whoever proposed it — never the
+// person who just acted), carrying the parties, the issue (the terms it changes), the requested action, the deal's stage and the due
+// date where one is known. A `proposed` attention nobody acted on inside ATTENTION_ESCALATE_HOURS escalates ONCE to the deal
+// coordinator (the sweep below). Proposed ≠ partly signed ≠ executed is said in every message: only the fully signed copy, recorded
+// through executeSignedAddendum → recordContractTermsVersion, moves the governing terms.
+
+/** A `proposed` addendum attention left unacted this long escalates (once) to the deal coordinator. A bound, not a schedule. */
+const ATTENTION_ESCALATE_HOURS = 24
+type AddendumAttentionState = "proposed" | "sent"
+const attentionClaimKey = (s: AddendumAttentionState) => `attention_${s}_at`
+const termWords = (keys: readonly string[]) => keys.map((k) => k.replace(/_pct$/, " %").replace(/_/g, " ")).join(", ") || "its terms"
+
+/**
+ * Raise the attention for ONE state of ONE proposal. Claim-first: the proposal's evidence gains `attention_<state>_at` only when it
+ * did not carry one (a redelivered event, a retried door or a second concurrent caller matches no row and raises nothing). Never
+ * throws; a refusal is said in the result and the log, and the proposal itself is never changed by it.
+ */
+async function raiseAddendumAttention(svc: Svc, brokerageId: string, versionId: string, state: AddendumAttentionState, opts: { actorUserId: string | null; expiresAt?: string | null }, deps: AddendumSignatureDeps): Promise<{ raised: boolean; reason: string; taskId?: string | null; notified?: string[] }> {
+  try {
+    const loaded = await loadSigningContext(svc, brokerageId, versionId)
+    if (!loaded.ok) return { raised: false, reason: loaded.message }
+    const ctx = loaded.ctx
+    const key = attentionClaimKey(state)
+    const { data: cur, error: curErr } = await svc.from("contract_term_versions").select("evidence, status, recorded_by").eq("id", versionId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (curErr) return { raised: false, reason: `the proposal could not be read (${curErr.message})` }
+    if (!cur || (cur as any).status !== "proposed") return { raised: false, reason: "no longer a proposal" }
+    const ev = (((cur as any).evidence ?? {}) as Record<string, any>)
+    if (ev[key]) return { raised: false, reason: `already raised for '${state}'` }
+    const at = iso(nowOf(deps))
+    const { data: claimed, error: claimErr } = await svc.from("contract_term_versions").update({ evidence: { ...ev, [key]: at } })
+      .eq("id", versionId).eq("brokerage_id", brokerageId).eq("status", "proposed").is(`evidence->>${key}`, null).select("id")
+    if (claimErr) return { raised: false, reason: `the attention claim was refused (${claimErr.message})` }
+    if (!claimed || claimed.length === 0) return { raised: false, reason: `another delivery raised '${state}' first` }
+
+    // The deal's stage, due date and transaction coordinator (users.id through transaction_coordinators — the closing-verification pattern).
+    const notes: string[] = []
+    let stage: string | null = null, closingDate: string | null = null, tcUserId: string | null = null
+    if (ctx.transactionId) {
+      const { data: tx, error } = await svc.from("transactions").select("stage, status, contract_closing_date, coordinator_id").eq("id", ctx.transactionId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (error) notes.push("the deal's stage could not be read")
+      else {
+        stage = ((tx as any)?.stage as string | null) ?? ((tx as any)?.status as string | null) ?? null
+        closingDate = ((tx as any)?.contract_closing_date as string | null) ?? null
+        const coord = (tx as any)?.coordinator_id as string | null
+        if (coord) {
+          const { data: tc, error: tcErr } = await svc.from("transaction_coordinators").select("user_id").eq("id", coord).eq("brokerage_id", brokerageId).maybeSingle()
+          if (tcErr) notes.push("the transaction coordinator could not be read")
+          else tcUserId = ((tc as any)?.user_id as string | null) ?? null
+        }
+      }
+    } else if (ctx.rootOfferId) {
+      const { data: of, error } = await svc.from("offers").select("status, closing_date").eq("id", ctx.rootOfferId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (error) notes.push("the offer's stage could not be read")
+      else { stage = ((of as any)?.status as string | null) ?? null; closingDate = ((of as any)?.closing_date as string | null) ?? null }
+    }
+
+    const plan = planAddendumSignatureRouting(routingInputFor(ctx, {}, null, false))
+    const kind = ctx.proposal.source === "amendment" ? "amendment" : "addendum"
+    const Kind = kind === "amendment" ? "Amendment" : "Addendum"
+    const where = ctx.propertyAddress ?? "the contract"
+    const parties = [
+      ...plan.required.filter((r) => r.route === "envelope").map((r) => `${r.role.replace(/_/g, " ")} (${r.side}, signs in our envelope)`),
+      ...plan.routed.map((r) => `the ${r.side}'s side through their agent${r.agentName ? ` ${r.agentName}` : ""}`),
+    ]
+    const approval = plan.approvals.find((x) => x.kind === "broker_approval")
+    const requested = state === "proposed"
+      ? approval && !approval.satisfied
+        ? `A brokerage finance admin approves it first (${approval.reason}); then the agent sends it for signatures.`
+        : `Review the proposed ${kind} and send it for signatures, or withdraw it.`
+      : `It is out for signature. Watch for the signed copy; call the party if it stalls.`
+    const due = state === "sent" ? (opts.expiresAt ?? null) : ((ctx.proposal.evidence?.effective_on as string | undefined) ?? closingDate ?? null)
+    const title = state === "proposed" ? `Proposed ${kind} needs your attention — ${where}`.slice(0, 200) : `${Kind} sent for signatures — ${where}`.slice(0, 200)
+    const body = [
+      `Changes: ${termWords(ctx.routingBase.changedTermKeys)}.`,
+      `Parties: ${parties.length ? parties.join("; ") : "not yet chosen — pick the signers on the offer card"}.`,
+      `Next: ${requested}`,
+      `Stage: ${stage ? stage.replace(/_/g, " ") : "not on file"}${due ? ` · due ${String(due).slice(0, 10)}` : ""}.`,
+      "Proposed is not signed, and partly signed is not executed — the contract changes only when the fully signed copy is recorded.",
+      ...(notes.length ? [`Not read: ${notes.join("; ")}.`] : []),
+      `Reference: ${versionId}`,
+    ].join(" ")
+
+    let taskId: string | null = null
+    if (ctx.agentId) {
+      const { data: t, error: tErr } = await svc.from("tasks").insert({
+        brokerage_id: brokerageId, assigned_to_agent_id: ctx.agentId, assignee_type: "agent", transaction_id: ctx.transactionId, contact_id: ctx.contactId,
+        title, description: body.slice(0, 1800), due_date: due, priority: "high", status: "pending", source: "addendum_attention", auto_generated: true,
+        tags: [`addendum:${versionId}`, `addendum_state:${state}`],
+      }).select("id").maybeSingle()
+      if (tErr) console.error(`[addendum-signatures] proposal ${versionId} (${state}): the agent's task was not written (${tErr.message})`)
+      else taskId = ((t as any)?.id as string | null) ?? null
+    }
+    const recipients = [...new Set([ctx.agentUserId, tcUserId, ((cur as any).recorded_by as string | null) ?? null].filter((u): u is string => !!u && u !== opts.actorUserId))]
+    const entity = ctx.transactionId ? { entity_type: "transaction", entity_id: ctx.transactionId } : ctx.rootOfferId ? { entity_type: "offer", entity_id: ctx.rootOfferId } : { entity_type: "contract_term_version", entity_id: versionId }
+    // The bell is the short form (the task holds the whole brief); its reference always survives the length cap.
+    const bellBody = `${`Changes: ${termWords(ctx.routingBase.changedTermKeys)}. Next: ${requested}`.slice(0, 300)}${due ? ` Due ${String(due).slice(0, 10)}.` : ""} The contract changes only when the fully signed copy is recorded. Reference: ${versionId}`
+    let notified: string[] = []
+    if (recipients.length) {
+      const { error: nErr } = await svc.from("notifications").insert(recipients.map((uid) => ({ user_id: uid, brokerage_id: brokerageId, type: "esign.addendum.attention", title, body: bellBody, priority: "high", channel: "in_app", is_read: false, ...entity })))
+      if (nErr) console.error(`[addendum-signatures] proposal ${versionId} (${state}): the bell was not written (${nErr.message})`)
+      else notified = recipients
+    }
+    await stampProposal(svc, brokerageId, ctx.proposal, { attention: { ...(ev.attention ?? {}), [state]: { at, task_id: taskId, notified, due, requested_action: requested, tc_user_id: tcUserId } } })
+    return { raised: true, reason: `raised for '${state}'`, taskId, notified }
+  } catch (err) {
+    return { raised: false, reason: `attention threw: ${(err as Error)?.message ?? err}` }
+  }
+}
+
+/**
+ * The sweep's attention leg: a `proposed` attention older than ATTENTION_ESCALATE_HOURS whose proposal is still unsent and whose task
+ * is still open escalates ONCE (claim on `attention_escalated_at`) — a deal-coordinator signal and a second, high-priority bell to the
+ * people first told. A task already completed, or a proposal that went out (its request leg chases it), is not ignored.
+ */
+async function escalateUnattendedAddendumProposals(svc: Svc, deps: AddendumSignatureDeps, out: AddendumSweepResult, limit: number): Promise<void> {
+  const { data, error } = await svc.from("contract_term_versions").select("id, brokerage_id, transaction_id, root_offer_id, source, status, evidence, version_no")
+    .eq("status", "proposed").in("source", [...ADDENDUM_SOURCES]).not("evidence->>attention_proposed_at", "is", null).is("evidence->>attention_escalated_at", null).limit(limit)
+  if (error) { out.errors.push(`proposed addenda read refused: ${error.message}`); return }
+  const now = nowOf(deps)
+  for (const p of (data ?? []) as Array<Record<string, any>>) {
+    const b = p.brokerage_id as string
+    const ev = (p.evidence ?? {}) as Record<string, any>
+    const raisedAt = Date.parse(String(ev.attention_proposed_at ?? ""))
+    if (!b || !Number.isFinite(raisedAt) || now.getTime() - raisedAt < ATTENTION_ESCALATE_HOURS * 3_600_000) continue
+    if (ev.signature_request_id) continue
+    const first = (ev.attention?.proposed ?? {}) as { task_id?: string | null; notified?: string[] }
+    if (first.task_id) {
+      const { data: t, error: tErr } = await svc.from("tasks").select("status").eq("id", first.task_id).eq("brokerage_id", b).maybeSingle()
+      if (tErr) { out.errors.push(`proposal ${p.id}: its task could not be read (${tErr.message}) — not escalated on a guess`); continue }
+      if (t && ["completed", "done", "cancelled", "dismissed"].includes(String((t as any).status ?? "").toLowerCase())) continue
+    }
+    const at = iso(now)
+    const { data: claimed, error: cErr } = await svc.from("contract_term_versions").update({ evidence: { ...ev, attention_escalated_at: at } })
+      .eq("id", p.id).eq("brokerage_id", b).eq("status", "proposed").is("evidence->>attention_escalated_at", null).select("id")
+    if (cErr) { out.errors.push(`proposal ${p.id}: escalation claim refused (${cErr.message})`); continue }
+    if (!claimed || claimed.length === 0) continue
+    const hours = Math.floor((now.getTime() - raisedAt) / 3_600_000)
+    const kind = p.source === "amendment" ? "amendment" : "addendum"
+    await dep(deps, "signal")({ brokerageId: b, fromManager: "compliance_officer", toManager: "deal_coordinator", signalType: "addendum_proposal_unattended", message: `A proposed ${kind} has waited ${hours} hours with nobody sending it for signature or withdrawing it. The contract is unchanged; the deal's agent decides the next step.`, entityType: "contract_term_version", entityId: p.id, payload: { hours, task_id: first.task_id ?? null } }, svc).catch(() => ({ ok: false }))
+    const people = (first.notified ?? []).filter(Boolean)
+    if (people.length) {
+      const entity = p.transaction_id ? { entity_type: "transaction", entity_id: p.transaction_id } : p.root_offer_id ? { entity_type: "offer", entity_id: p.root_offer_id } : { entity_type: "contract_term_version", entity_id: p.id }
+      const { error: nErr } = await svc.from("notifications").insert(people.map((uid) => ({ user_id: uid, brokerage_id: b, type: "esign.addendum.attention_escalated", title: `A proposed ${kind} is still waiting on you`, body: `It was proposed ${hours} hours ago and has not gone out for signature or been withdrawn. The contract is unchanged until it is fully signed. The deal coordinator has been told. Reference: ${p.id}`.slice(0, 480), priority: "critical", channel: "in_app", is_read: false, ...entity })))
+      if (nErr) out.errors.push(`proposal ${p.id}: escalated, but the bell was refused (${nErr.message})`)
+    }
+    out.attentionEscalated = (out.attentionEscalated ?? 0) + 1
+  }
 }
 
 // ─── the one transition writer ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -973,7 +1142,7 @@ export async function fileSignedAddendumCopy(svc: Svc, actor: AddendumActor, inp
 
 // ─── the sweep leg (lib/transactions/esign-doc-sync-sweep.ts) ───────────────────────────────────────────────────────────────
 
-export interface AddendumSweepResult { examined: number; polled: number; executed: number; expired: number; nudged: number; escalated: number; errors: string[] }
+export interface AddendumSweepResult { examined: number; polled: number; executed: number; expired: number; nudged: number; escalated: number; errors: string[]; /** WAVE 153 (153F): proposed addenda nobody acted on, escalated once. */ attentionEscalated?: number }
 
 /**
  * The autonomous half: every LIVE addendum request — past its expiry → expired (the agent and the deal coordinator hear it);
@@ -1037,5 +1206,7 @@ export async function sweepAddendumSignatureRequests(svc: Svc, deps: AddendumSig
       out.errors.push(`request ${row.id}: ${(err as Error)?.message ?? err}`)
     }
   }
+  // WAVE 153 (153F): the proposal nobody acted on — escalated once (the request legs above only see proposals that went out).
+  try { await escalateUnattendedAddendumProposals(svc, deps, out, opts.limit ?? 200) } catch (err) { out.errors.push(`attention leg: ${(err as Error)?.message ?? err}`) }
   return out
 }

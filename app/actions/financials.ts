@@ -652,6 +652,34 @@ export async function deleteExpense(expenseId: string) {
     .maybeSingle()
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
 
+  // WAVE 153 (lane 153A) — PAID / CLOSED ROWS ARE IMMUTABLE. Once an expense has a money trail (it IS a refund, it HAS
+  // a refund, it was posted from an approved receipt, or offices carry a share of it) a delete would silently rewrite
+  // the books; the correction is a reversal on the same books (logScopedExpense reversalOfExpenseId). Both reads are
+  // the caller's own RLS client and their errors are READ — a refused read refuses the delete (fail closed).
+  const { data: target, error: targetErr } = await supabase
+    .from("business_expenses")
+    .select("id, description, receipt_url")
+    .eq("id", expenseId)
+    .eq("agent_id", agentRow.id)
+    .maybeSingle()
+  if (targetErr) return { success: false, error: "This expense could not be checked right now, so nothing was deleted." }
+  if (!target) return { success: false, error: "Expense not found or not yours to delete" }
+  const { expenseDeleteVerdict, reversalSearchPattern } = await import("@/lib/finance/expense-rollup")
+  const { count: reversalCount, error: revErr } = await supabase
+    .from("business_expenses")
+    .select("id", { count: "exact", head: true })
+    .eq("agent_id", agentRow.id)
+    .ilike("description", reversalSearchPattern(expenseId))
+  if (revErr) return { success: false, error: "This expense could not be checked right now, so nothing was deleted." }
+  // An agent's own book never carries an allocation (only main-office rows can be split — m900's trigger).
+  const closed = expenseDeleteVerdict({
+    description: (target as { description: string | null }).description,
+    receiptUrl: (target as { receipt_url: string | null }).receipt_url,
+    reversalCount: reversalCount ?? 0,
+    activeAllocationCount: 0,
+  })
+  if (!closed.ok) return { success: false, error: closed.message }
+
   const { data: deleted, error } = await supabase
     .from("business_expenses")
     .delete()
@@ -835,7 +863,16 @@ export async function logScopedExpense(input: {
    * REFUSED, not booked as a free-standing negative cost.
    */
   reversalOfExpenseId?: string | null
-}): Promise<{ success: boolean; expenseId?: string; error?: string }> {
+  /**
+   * WAVE 153 (lane 153A) — THE OFFICE THAT OWNS A TENANT-BOOKS EXPENSE (business_expenses.location_id, m900). Owner:
+   * "each location takes care of expenses but all can roll up to the main tenant." Brokerage scope: omitted = the main
+   * office (a shared cost that can be split across offices with allocateSharedExpense); an office id = that office's
+   * own books, admitted only by lib/finance/expense-rollup.ts authorizeBooksWrite (the C34 tenant hierarchy × the
+   * books roster — an office admin cannot write another office's books). Team scope: the team's office is stamped.
+   * Agent scope: refused (an agent's own book never rolls up). A reversal inherits its original's office.
+   */
+  locationId?: string | null
+}): Promise<{ success: boolean; expenseId?: string; error?: string; message?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!input.description?.trim()) return { success: false, error: "description_required" }
@@ -904,6 +941,37 @@ export async function logScopedExpense(input: {
     return { success: false, error: "unknown_scope" }
   }
 
+  // THE OFFICE GATE (wave 153, lane 153A — see `locationId`). A reversal belongs to the office its original was booked
+  // to: the original's office is read tenant-pinned FIRST and a caller naming a different office is refused, so a refund
+  // can never move cost between offices. Then the books authority decides (fail closed on any refused read), and the
+  // office it returns is stamped. Agent rows add no read here.
+  let requestedOffice = input.locationId?.trim() || null
+  if (input.reversalOfExpenseId && input.scope !== "agent") {
+    const { data: origRow, error: origOfficeErr } = await svc
+      .from("business_expenses")
+      .select("location_id")
+      .eq("id", input.reversalOfExpenseId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (origOfficeErr) return { success: false, error: origOfficeErr.message }
+    const origOffice = (origRow as { location_id?: string | null } | null)?.location_id ?? null
+    if (requestedOffice && requestedOffice !== origOffice) return { success: false, error: "reversal_scope_mismatch" }
+    requestedOffice = origOffice
+  }
+  const { authorizeBooksWrite, BOOKS_WRITE_COPY } = await import("@/lib/finance/expense-rollup")
+  const officeGate = await authorizeBooksWrite(
+    svc,
+    { userId: ctx.userId, brokerageId: ctx.brokerageId, userType: ctx.userType ?? null },
+    { scope: input.scope, locationId: requestedOffice, teamId: (row.team_id as string | undefined) ?? null },
+  )
+  if (!officeGate.ok) {
+    if (officeGate.detail) console.error("[logScopedExpense] books authority unavailable:", officeGate.detail)
+    // `error` stays the machine code every caller already maps; `message` is the plain sentence a person sees.
+    return { success: false, error: officeGate.code, message: BOOKS_WRITE_COPY[officeGate.code] }
+  }
+  // Written only when there IS an office, so a row without one inserts exactly as before m900.
+  if (officeGate.locationId) row.location_id = officeGate.locationId
+
   // THE REVERSAL GATE (see `reversalOfExpenseId`). The original is read tenant-pinned; earlier reversals of it are
   // found by the marker their descriptions carry. A refused read refuses the write — never a blind negative row.
   let isReversal = false
@@ -967,6 +1035,10 @@ export async function logScopedExpense(input: {
         description: String(row.description),
         expenseDate: input.expenseDate,
         expenseId: data.id as string,
+        // WAVE 153 (lane 153A): the business unit travels with the expense — the egress maps the office onto the
+        // connected books' location dimension, or files an honest sync error when the books track offices and this
+        // one is not mapped.
+        locationId: (row.location_id as string | undefined) ?? null,
       })
     } catch { /* egress is best-effort; the expense row is already committed */ }
   }
@@ -974,6 +1046,69 @@ export async function logScopedExpense(input: {
   revalidatePath("/dashboard/financials/brokerage")
   revalidatePath("/dashboard/financials/expenses")
   return { success: true, expenseId: data.id as string }
+}
+
+// ─── SPLIT A MAIN-OFFICE COST ACROSS OFFICES (wave 153, lane 153A) ────────────
+// Shared organizational costs stay on the main office's books as ONE row; this records the approved split as allocation
+// FACTS (business_expense_allocations, m900) whose shares total exactly 100% and whose amounts total the source to the
+// cent — the source row is never copied, so the rollup counts it once. Only the consolidated books keeper may split
+// (lib/finance/expense-rollup.ts allocateSharedExpenseCore re-checks it on the session actor). Evidence: one
+// agent_action_ledger row per distinct split (FINANCIAL); a replay of the same split over the same prior state writes
+// nothing twice.
+
+export async function allocateSharedExpense(input: {
+  expenseId: string
+  shares: Array<{ locationId: string | null; percent: number }>
+  ruleLabel: string
+}): Promise<{ success: boolean; error?: string; allocationSetId?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Sign in again to split this cost." }
+  if (!input?.expenseId || !Array.isArray(input.shares)) return { success: false, error: "Choose the expense and the office shares." }
+  const brokerageId = ctx.brokerageId
+  // Percent in, basis points stored (two decimals of a percent = one basis point; nothing finer is representable).
+  const shares = input.shares.map((s) => ({ locationId: s.locationId || null, shareBps: Math.round(Number(s.percent) * 100) }))
+  const svc = createServiceClient()
+  const { allocateSharedExpenseCore, ALLOCATION_COPY } = await import("@/lib/finance/expense-rollup")
+  const { data: prior, error: priorErr } = await svc
+    .from("business_expense_allocations")
+    .select("allocation_set_id")
+    .eq("brokerage_id", brokerageId)
+    .eq("expense_id", input.expenseId)
+    .is("superseded_at", null)
+    .limit(1)
+  if (priorErr) return { success: false, error: ALLOCATION_COPY.books_authority_unavailable }
+  const priorSet = ((prior ?? []) as Array<{ allocation_set_id: string }>)[0]?.allocation_set_id ?? "none"
+  const shareKey = shares.map((s) => `${s.locationId ?? "main"}:${s.shareBps}`).sort().join(",")
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const result = await withActionLedger(
+    {
+      brokerageId,
+      action: "finance.expense.allocate_shared",
+      actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId },
+      subject: { type: "business_expense", id: input.expenseId },
+      idempotencyKey: `expense_allocation:${input.expenseId}:${priorSet}:${shareKey}`,
+      riskClass: "FINANCIAL",
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: `shared cost split across offices — ${String(input.ruleLabel ?? "").trim().slice(0, 200)}`,
+      detail: { shares, rule_label: String(input.ruleLabel ?? "").trim(), prior_allocation_set: priorSet },
+    },
+    () => allocateSharedExpenseCore(svc, { userId: ctx.userId, brokerageId, userType: ctx.userType ?? null }, { expenseId: input.expenseId, shares, ruleLabel: input.ruleLabel }),
+    {
+      settle: (r) => (r.ok
+        ? { status: "executed", outcome: "allocation_recorded", provider: "business_expense_allocations", providerRef: r.allocationSetId, costUsd: null }
+        : { status: "failed", outcome: "allocation_refused", error: r.code }),
+      replay: (claim) => (claim.kind === "replay"
+        ? { ok: true as const, allocationSetId: String(claim.entry.provider_ref ?? ""), lines: [], superseded: 0 }
+        : { ok: false as const, code: "books_authority_unavailable" as const, detail: `earlier_attempt_${claim.kind}` }),
+    },
+    { client: svc },
+  )
+  if (!result.ok) {
+    if (result.detail) console.error("[allocateSharedExpense]", result.code, result.detail)
+    return { success: false, error: ALLOCATION_COPY[result.code] }
+  }
+  revalidatePath("/dashboard/financials/brokerage")
+  return { success: true, allocationSetId: result.allocationSetId }
 }
 
 // ─── RECEIPT → BOOKS (wave 152, lane 152D) ────────────────────────────────────
@@ -1078,6 +1213,9 @@ export async function approveReceiptExpense(input: {
   teamId?: string | null
   confirmNotDuplicate?: boolean
   reversalOfExpenseId?: string | null
+  /** WAVE 153 (lane 153A): the office chosen on the review page (multi-location tenants), or a main-office shared cost. */
+  locationId?: string | null
+  mainOffice?: boolean
 }) {
   const actor = await sessionReceiptActor()
   if (!actor) return { ok: false, state: "held", message: SIGN_IN_COPY, reasons: [] as string[], expenseId: null }
@@ -1090,6 +1228,8 @@ export async function approveReceiptExpense(input: {
     teamId: input.teamId ?? null,
     confirmNotDuplicate: input.confirmNotDuplicate === true,
     reversalOfExpenseId: input.reversalOfExpenseId ?? null,
+    locationId: input.locationId ?? null,
+    mainOffice: input.mainOffice === true,
   }, { postExpense: logScopedExpense })
   if (outcome.internal) console.error(`[receipt] approve ${input.documentId} (${outcome.state}):`, outcome.internal)
   revalidatePath("/dashboard/financials/expenses")

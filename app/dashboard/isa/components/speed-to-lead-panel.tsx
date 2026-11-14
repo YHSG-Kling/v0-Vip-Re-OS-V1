@@ -144,6 +144,11 @@ export function SpeedToLeadPanel({ metrics }: { metrics: SpeedToLeadMetrics }) {
             </div>
             <p className="text-2xl font-bold leading-none">{humanizeSeconds(recent.medianSeconds)}</p>
             <p className="text-[11px] text-muted-foreground mt-1">{recent.touchedCount} touched</p>
+            {typeof recent.measuredCount === "number" && recent.touchedCount > 0 && (
+              <p className="text-[10px] text-muted-foreground">
+                {recent.measuredCount} timed from arrival to the actual send{recent.inferredCount ? ` · ${recent.inferredCount} estimated from the claim time` : ""}
+              </p>
+            )}
           </div>
 
           {/* % within 5-min SLA */}

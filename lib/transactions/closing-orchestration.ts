@@ -96,6 +96,11 @@ interface TransactionContext {
    * setting could not be read — the CDA detector ABSTAINS (an alarm off an unread setting would be fabricated).
    */
   cdaRequired:         boolean | null
+  /**
+   * WAVE 153 (lane 153C, integrator): the deal's financing kind (lib/compliance/checklist-dimensions.ts financingKindFor) —
+   * a CASH purchase has no lender requiring a binder, so the hazard reminder never fires on one. null = not stated.
+   */
+  financing:           "cash" | "financed" | null
 }
 
 interface TransactionEvidence {
@@ -371,6 +376,7 @@ function detectHazardInsuranceUnbound(ctx: TransactionContext, ev: TransactionEv
     service: selectHazardService(ev.insuranceServices),
     closeDate: ctx.closeDate,
     now: new Date(),
+    financing: ctx.financing,
   })
   if (!status.blocksClosing) return null
 
@@ -486,7 +492,7 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
   // never invented.
   const { data: txns, error: txnsError } = await svc
     .from("transactions")
-    .select("id, brokerage_id, agent_id, contract_date, close_date, estimated_close_date, contract_closing_date, property_address, deal_type, inspection_deadline, appraisal_deadline, financing_deadline")
+    .select("id, brokerage_id, agent_id, contract_date, close_date, estimated_close_date, contract_closing_date, property_address, deal_type, financing_type, inspection_deadline, appraisal_deadline, financing_deadline")
     .not("status", "in", "(closed,cancelled,terminated)")
     .not("contract_date", "is", null)
     .order("close_date", { ascending: true, nullsFirst: false })
@@ -668,6 +674,7 @@ export async function runClosingOrchestration(opts?: { limit?: number }): Promis
       earnestMoneyDueAt: emMile?.target_date ?? null,
       dealType:          t.deal_type ?? null,
       cdaRequired:       await cdaRequiredFor(t.brokerage_id, t.id),
+      financing:         (await import("@/lib/compliance/checklist-dimensions")).financingKindFor((t as { financing_type?: string | null }).financing_type ?? null) ?? null,
     }
 
     // Run all detectors

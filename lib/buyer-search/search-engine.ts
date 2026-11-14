@@ -23,6 +23,11 @@ import { scoreBuyerForListing, type BuyerProfile, type ListingProfile } from '@/
 import type { ParsedBuyerIntent } from './intent-parser'
 import type { BuyerCriteria } from './buyer-criteria'
 import { intentWithStoredCriteria, fitCriteriaFor } from './conversational-search'
+// WAVE 153 (lane 153E): the one street+ZIP join key (dedup against the IDX / RentCast copy of a tenant listing) and the
+// compliance-attested Coming Soon rule + the Coming Soon address door. All three are already on this module's page graphs.
+import { normalizeAddressKey } from '@/lib/analytics/prediction-accuracy'
+import { loadComingSoonPolicy, evaluateComingSoonReadiness } from '@/lib/compliance/coming-soon-policy'
+import { resolveComingSoonCreativeAddress } from '@/lib/marketing/listing-public-address'
 // Wave 150 (lane 150W): the buyer's stated must-haves held over the page (canary 7), and the ONE photo rule (R9).
 
 /**
@@ -41,6 +46,80 @@ export function buyerShoppableListingStatuses(): string[] {
   const pub = new Set<string>(publiclyVisibleListingStatuses())
   return BUYER_SHOPPABLE_LISTING_STATUSES.filter((s) => pub.has(s))
 }
+
+// ─── WAVE 153 (lane 153E) — THE TENANT'S OWN INVENTORY IN THE SHOPPING AGENT ──────────────────────────────────────────
+// Owner (verbatim, 2026-11-14): "the tenant or user's listings that they created on the platform should be searchable for
+// the shopping agent." VERIFIED: the tenant's own ACTIVE listings were already searched (step 4, bounded to the
+// contact's tenant, deleted_at IS NULL, read LIVE on every search — a status change or an archive leaves the results on
+// the very next search; there is no index to go stale). The three gaps closed here:
+//   1. COMING SOON ONLY UNDER POLICY — a Coming Soon listing is shown only when the brokerage's compliance-attested MLS
+//      rule permits Coming Soon for that listing's market (lib/compliance/coming-soon-policy.ts — no rule, an unattested
+//      rule or an unreadable one → not shown, the closed default), labelled Coming Soon (never "active"), with the street
+//      address only when the seller authorized it AND the rule permits it (lib/marketing/listing-public-address.ts
+//      resolveComingSoonCreativeAddress), else "City, ST". Drafts, signed-not-live, withdrawn, cancelled, off-market,
+//      expired, sold and archived listings are never shown as shoppable (the C12 partition, unchanged).
+//   2. ONE HOME, ONE RESULT — the same house in the tenant's own inventory and in the IDX feed / RentCast used to appear
+//      twice. The tenant's listing is kept (its live status, its own photos, its in-house save / tour path); the outside
+//      copy is folded in as PROVENANCE ("also on <MLS> #<n>"), and its photo is borrowed only from the tenant's own IDX
+//      feed when the listing has none of its own (owner R9: RentCast is never a photo source).
+//   3. ORIGIN + FRESHNESS on every result — where the status comes from (the live board, the tenant's MLS feed, a
+//      property-data provider) and when it was read.
+//   4. NO STALE ACTIVE — when the tenant's own board says a home is under contract or recently sold, an outside copy
+//      still reporting it for sale is suppressed (feeds lag; the listing brokerage's own board does not).
+
+/** The Coming Soon status the Shopping Agent may show UNDER POLICY — inside lane 147F's public predicate (C12). PURE. */
+function buyerComingSoonStatuses(): string[] {
+  return (publiclyVisibleListingStatuses() as string[]).filter((s) => s === 'coming_soon')
+}
+
+/** PURE — the unit designator a street line carries ("#4", "Apt 2B", "Unit 12"), lower-cased, or "" — kept apart from
+ *  the canonical address key (which drops it) so two condos in one building never fold into one result. */
+function addressUnit(street: string | null | undefined): string {
+  const m = /(?:#|\bapt\.?|\bapartment|\bunit|\bsuite|\bste\.?)\s*([\w-]+)/i.exec(String(street ?? ''))
+  return m ? m[1].toLowerCase() : ''
+}
+
+/** PURE — the identity a home is matched on: the canonical street+ZIP key (lib/analytics/prediction-accuracy.ts
+ *  normalizeAddressKey, the one join key) plus its unit; and its MLS number, alphanumerics upper-cased. */
+function homeIdentity(street: string | null | undefined, zip: string | null | undefined, mlsNumber: string | null | undefined): { address: string | null; mls: string | null; zip5: string | null } {
+  const key = normalizeAddressKey(street, zip)
+  const mls = String(mlsNumber ?? '').replace(/[^0-9a-z]/gi, '').toUpperCase()
+  const zip5 = /^\d{5}/.test(String(zip ?? '').trim()) ? String(zip).trim().slice(0, 5) : null
+  return { address: key ? `${key}#${addressUnit(street)}` : null, mls: mls.length >= 4 ? mls : null, zip5 }
+}
+
+/**
+ * PURE — fold outside copies (IDX / RentCast rows, `__external`) of a home the tenant itself lists into that listing.
+ * A match is the same street+ZIP+unit, or the same MLS number in the same ZIP. The platform row survives with
+ * `__also_listed` provenance; an IDX photo is borrowed only when the listing has no photo of its own. Returns the merged
+ * list and how many outside copies were folded (reported, never silent).
+ */
+function foldOutsideCopiesIntoOwnListings(platform: any[], external: any[], ownOffMarket: any[] = []): { listings: any[]; folded: number; staleSuppressed: number } {
+  const own = platform.map((l) => ({ row: l, id: homeIdentity(l.address, l.zip, l.mls_number) }))
+  const offMarket = ownOffMarket.map((l) => homeIdentity(l.address, l.zip, l.mls_number))
+  const same = (a: ReturnType<typeof homeIdentity>, b: ReturnType<typeof homeIdentity>) =>
+    (!!a.address && a.address === b.address) || (!!a.mls && a.mls === b.mls && (!a.zip5 || !b.zip5 || a.zip5 === b.zip5))
+  const kept: any[] = []
+  let folded = 0
+  let staleSuppressed = 0
+  for (const e of external) {
+    const eid = homeIdentity(e.__address, e.zip, e.__mls_number)
+    const twin = own.find(({ id }) => same(id, eid))
+    // The tenant's OWN board says this very home is under contract or just sold — an outside copy still reporting it
+    // for sale is stale, and is never shown as available (counted, never silent).
+    if (!twin && offMarket.some((id) => same(id, eid))) { staleSuppressed++; continue }
+    if (!twin) { kept.push(e); continue }
+    folded++
+    const t = twin.row
+    t.__also_listed = [...(t.__also_listed ?? []), { source: e.__source, mls_name: e.__mls_name ?? null, mls_number: e.__mls_number ?? null }]
+    if (!t.primary_photo_url && e.__source === 'idx' && e.__photo_url) { t.primary_photo_url = e.__photo_url; t.__photo_source = 'idx_mls' }
+  }
+  return { listings: [...platform, ...kept], folded, staleSuppressed }
+}
+
+/** How long after a tenant listing SOLD its own board still outranks an outside copy calling the home for sale. Past
+ *  it, a re-listing by anyone is plausible and the outside row is shown on its own label. PURE constant. */
+const SOLD_OUTRANKS_OUTSIDE_COPY_DAYS = 120
 
 // The store→search glue (intentWithStoredCriteria, fitCriteriaFor) lives with the rest of the C10
 // conversation in ./conversational-search.ts and is imported above.
@@ -92,6 +171,15 @@ export interface BuyerSearchResult {
   /** Wave 148E: the one gentle question and the offer to meet the agent (the agent's first impression). */
   follow_up_question?: string
   agent_offer?: string
+  /** Wave 153 (153E): the status AS ITS SOURCE REPORTS IT — the tenant's live board for its own listings (active, or
+   *  coming_soon under policy), the feed / provider for an outside row. */
+  listing_status?: string | null
+  /** Wave 153 (153E): where the status comes from and when it was read (the tenant's board is read live per search). */
+  freshness?: { basis: 'live_board' | 'mls_feed' | 'provider'; source_updated_at: string | null; checked_at: string }
+  /** Wave 153 (153E): outside copies of this same home folded into the tenant's own listing (provenance kept). */
+  also_listed_on?: Array<{ source: string; mls_name: string | null; mls_number: string | null }>
+  /** Wave 153 (153E): whose photo `primary_photo_url` / `photo_url` is — the listing's own media, or the tenant's IDX feed. */
+  photo_source?: 'tenant_listing_media' | 'idx_mls' | null
 }
 
 /**
@@ -235,29 +323,63 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
     // other's listings). It is now bounded to the CONTACT's tenant (read above under the contact id — never a caller
     // value); a contact with no tenant gets no in-house rows (fail closed), and the outside sources below still run.
     const filters = intentToFilters(enrichedIntent)
-    let q = supabase
+    // WAVE 153 (153E): + mls_number (the dedup identity) and updated_at (the freshness each result reports). The buyer's
+    // price / beds / baths / place / type filters are ONE function applied to both of the tenant's own reads (active,
+    // and Coming Soon under policy) — each read keeps its own tenant bound, status list and archive exclusion in plain sight.
+    const LISTING_COLUMNS = 'id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at, updated_at, mls_number, has_pool, has_septic, hoa_dues, lot_size, lot_size_unit, year_built, public_remarks'
+    const withBuyerFilters = (query: any) => {
+      let f = query
+      if (filters.priceRange?.max) f = f.lte('list_price', filters.priceRange.max)
+      if (filters.priceRange?.min) f = f.gte('list_price', filters.priceRange.min)
+      if (filters.bedrooms?.min)   f = f.gte('bedrooms', filters.bedrooms.min)
+      if (filters.bedrooms?.max)   f = f.lte('bedrooms', filters.bedrooms.max)
+      if (filters.bathrooms?.min)  f = f.gte('bathrooms', filters.bathrooms.min)
+      if (filters.cities?.length)  f = f.in('city', filters.cities)
+      if (filters.states?.length)  f = f.in('state', filters.states)
+      if (filters.propertyTypes?.length) f = f.in('property_type', filters.propertyTypes)
+      return f
+    }
+    const q = withBuyerFilters(supabase
       .from('listings')
       // has_pool / has_septic / hoa_dues / lot_size / year_built / public_remarks (wave 147C) are what
       // the explainable fit answers lifestyle asks and deal-breakers from — columns the live table has.
-      .select('id, address, primary_photo_url, price:list_price, bedrooms, bathrooms, square_feet:sqft, property_type, city, state, zip, status, created_at, has_pool, has_septic, hoa_dues, lot_size, lot_size_unit, year_built, public_remarks')
+      .select(LISTING_COLUMNS)
       .eq('brokerage_id', contact.brokerage_id ?? '')
       .in('status', buyerShoppableListingStatuses())
-      .is('deleted_at', null)  // deleted_at IS NULL = NOT soft-deleted (was inverted: returned only deleted rows)
-
-    if (filters.priceRange?.max) q = q.lte('list_price', filters.priceRange.max)
-    if (filters.priceRange?.min) q = q.gte('list_price', filters.priceRange.min)
-    if (filters.bedrooms?.min)   q = q.gte('bedrooms', filters.bedrooms.min)
-    if (filters.bedrooms?.max)   q = q.lte('bedrooms', filters.bedrooms.max)
-    if (filters.bathrooms?.min)  q = q.gte('bathrooms', filters.bathrooms.min)
-    if (filters.cities?.length)  q = q.in('city', filters.cities)
-    if (filters.states?.length)  q = q.in('state', filters.states)
-    if (filters.propertyTypes?.length) q = q.in('property_type', filters.propertyTypes)
+      .is('deleted_at', null))  // deleted_at IS NULL = NOT soft-deleted (was inverted: returned only deleted rows)
 
     const { data: platformListings, error: listingsError } = contact.brokerage_id
       ? await q.order('created_at', { ascending: false }).limit(200)
       : { data: [] as any[], error: null }
 
     if (listingsError) return { success: false, error: 'Failed to fetch listings' }
+
+    // WAVE 153 (153E) — COMING SOON ONLY UNDER POLICY. Every refusal here leaves Coming Soon OUT (fail closed) and the
+    // active search above still answers; the reason is logged, never shown to the buyer as a system message.
+    const comingSoonListings: any[] = []
+    if (contact.brokerage_id && buyerComingSoonStatuses().length > 0) {
+      const { data: csRows, error: csErr } = await withBuyerFilters(supabase
+        .from('listings')
+        .select(LISTING_COLUMNS)
+        .eq('brokerage_id', contact.brokerage_id)
+        .in('status', buyerComingSoonStatuses())
+        .is('deleted_at', null))
+        .order('created_at', { ascending: false }).limit(25)
+      if (csErr) console.error('[buyer-search] coming-soon read refused — none shown:', csErr.message)
+      else if ((csRows ?? []).length > 0) {
+        const policy = await loadComingSoonPolicy(supabase, contact.brokerage_id).catch((e: unknown) => ({ ok: false as const, error: String(e) }))
+        if (!policy.ok) console.error('[buyer-search] coming-soon policy unreadable — none shown:', policy.error)
+        else {
+          for (const row of csRows as any[]) {
+            if (!evaluateComingSoonReadiness(policy.policy, { stateCode: row.state ?? null }).ready) continue
+            const addr = await resolveComingSoonCreativeAddress({ policyClient: supabase, termsClient: supabase, listing: { id: row.id, brokerage_id: contact.brokerage_id, address: row.address ?? null, city: row.city ?? null, state: row.state ?? null, zip: row.zip ?? null } })
+              .catch(() => null)
+            if (!addr) continue
+            comingSoonListings.push({ ...row, address: addr.decision.disclose ? row.address : null, __coming_soon: true, __public_location: addr.publicLocation })
+          }
+        }
+      }
+    }
 
     // 4b. Augment with external listings (Rentcast / IDX) when configured.
     // External listings are display-only and tagged so the UI can route the
@@ -351,7 +473,26 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       // External augmentation is best-effort; never fail the search
     }
 
-    const listings = [...(platformListings ?? []), ...externalListings]
+    // WAVE 153 (153E): NO STALE ACTIVE — the tenant's own listings that went UNDER CONTRACT (pending) or SOLD recently,
+    // read only when outside rows exist, so an outside copy still calling that home "for sale" is suppressed. Withdrawn /
+    // expired / cancelled are NOT used: such a home may be re-listed elsewhere, and that listing is real. A refused read
+    // suppresses nothing (the outside rows keep their own source labels — they are never presented as the tenant's).
+    let ownOffMarket: any[] = []
+    if (contact.brokerage_id && externalListings.length > 0) {
+      const { data: offRows, error: offErr } = await supabase
+        .from('listings')
+        .select('id, address, zip, mls_number, status, sold_date, updated_at')
+        .eq('brokerage_id', contact.brokerage_id)
+        .in('status', ['pending', 'sold'])
+        .limit(500)
+      if (offErr) console.error('[buyer-search] own off-market read refused — no outside copy suppressed:', offErr.message)
+      const soldSince = Date.now() - SOLD_OUTRANKS_OUTSIDE_COPY_DAYS * 86_400_000
+      ownOffMarket = ((offRows ?? []) as any[]).filter((l) => l.status === 'pending' || new Date(l.sold_date ?? l.updated_at ?? 0).getTime() >= soldSince)
+    }
+    // WAVE 153 (153E): ONE HOME, ONE RESULT — the tenant's own listing absorbs its IDX / RentCast copy as provenance.
+    const merged = foldOutsideCopiesIntoOwnListings([...(platformListings ?? []), ...comingSoonListings], externalListings, ownOffMarket)
+    const listings = merged.listings
+    const checkedAt = new Date().toISOString()
 
     if (listings.length === 0) {
       return {
@@ -448,9 +589,18 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       // EXPLAINABLE MATCH (C10): deterministic, from the listing's own data only; the neighbourly
       // voice is composed from the fit and steering-checked like every other line WE author.
       const fit: CriteriaFit = explainCriteriaFit(listing as unknown as ListingFitFacts, fitCriteria, pageEvidence.get(String(listing.id)) ?? null)
-      const label = (isExternal ? (listing as any).__address : (listing as any).address) || listing.city || 'This home'
+      const comingSoon = !isExternal && (listing as any).__coming_soon === true
+      const label = (isExternal ? (listing as any).__address : ((listing as any).address ?? (listing as any).__public_location)) || listing.city || 'This home'
       // C18 + owner ruling 8: the source labelled for what it is; every claim carries its evidence.
-      const sourceLabel = describeListingSource(isExternal ? (listing as any).__source : 'platform', { brokerageName: brand.brokerageName, mlsName: isExternal ? ((listing as any).__mls_name ?? null) : null })
+      let sourceLabel = describeListingSource(isExternal ? (listing as any).__source : 'platform', { brokerageName: brand.brokerageName, mlsName: isExternal ? ((listing as any).__mls_name ?? null) : null })
+      // WAVE 153 (153E): a Coming Soon listing is said to be Coming Soon — never a verified ACTIVE listing — and a home
+      // whose IDX / RentCast copy was folded in names where else it is listed (provenance the buyer can check).
+      if (comingSoon) sourceLabel = { ...sourceLabel, label: `${sourceLabel.label} · Coming Soon, not on the MLS yet`, verified_active_listing: false, caveat: "Coming Soon: this home isn't on the market yet. Your agent can tell you when it can be shown and how to hear about it first." }
+      const alsoListed = (!isExternal ? ((listing as any).__also_listed ?? []) : []) as Array<{ source: string; mls_name: string | null; mls_number: string | null }>
+      if (alsoListed.length > 0) {
+        const where = alsoListed.map((a) => a.mls_name ? `${a.mls_name}${a.mls_number ? ` #${a.mls_number}` : ''}` : a.source === 'idx' ? "your agent's MLS feed" : 'RentCast property data').join(', ')
+        sourceLabel = { ...sourceLabel, label: `${sourceLabel.label} · also listed on ${where}` }
+      }
       const claims = claimsFromFit(fit, sourceLabel)
       const verdict = validateClaims(claims)
       if (!verdict.ok) { claimProblems += verdict.problems.length; console.error('[buyer-search] C18 claim contract broken:', verdict.problems.slice(0, 3)) }
@@ -488,6 +638,14 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
         claims,
         follow_up_question: voice.followUpQuestion,
         agent_offer: voice.agentOffer,
+        // WAVE 153 (153E): the status as its source reports it, where that status comes from and when it was read, the
+        // outside copies folded into this result, and whose photo this is.
+        listing_status: isExternal ? ((listing as any).__status_reported ?? null) : ((listing as any).status ?? null),
+        freshness: isExternal
+          ? { basis: (listing as any).__source === 'idx' ? 'mls_feed' as const : 'provider' as const, source_updated_at: null, checked_at: checkedAt }
+          : { basis: 'live_board' as const, source_updated_at: (listing as any).updated_at ?? null, checked_at: checkedAt },
+        also_listed_on: alsoListed.length > 0 ? alsoListed : undefined,
+        photo_source: isExternal ? ((listing as any).__photo_url ? 'idx_mls' : null) : ((listing as any).primary_photo_url ? ((listing as any).__photo_source ?? 'tenant_listing_media') : null),
       }
     })
     if (claimProblems > 0) console.error(`[buyer-search] ${claimProblems} C18 claim problem(s) on this page — see above`)
@@ -548,6 +706,10 @@ export async function searchPropertiesCore(params: BuyerSearchParams) {
       metadata: {
         total_listings_evaluated: listings.length,
         results_returned: results.length,
+        /** Wave 153 (153E): outside copies folded into the tenant's own listings, and Coming Soon listings shown under policy. */
+        outside_copies_folded: merged.folded,
+        stale_outside_copies_suppressed: merged.staleSuppressed,
+        coming_soon_shown: comingSoonListings.length,
         search_confidence: enrichedIntent.confidence,
         /**
          * What the fair-housing sanitizer rewrote in OUR generated copy — never

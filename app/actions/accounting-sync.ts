@@ -268,7 +268,7 @@ export async function retrySyncError(data: {
   if (recordType === "expense") {
     const { data: exp, error: expErr } = await svc
       .from("business_expenses")
-      .select("id, amount, category, description, expense_date, agent_id, team_id")
+      .select("id, amount, category, description, expense_date, agent_id, team_id, location_id")
       .eq("id", recordId)
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
@@ -280,6 +280,8 @@ export async function retrySyncError(data: {
     outcome = await egress.pushExpenseToAccounting(svc, {
       brokerageId, amount, category: String(exp.category ?? ""), description: (exp.description as string | null) ?? null,
       expenseDate: (exp.expense_date as string | null) ?? null, expenseId: exp.id as string,
+      // wave 153 (153A): a re-send keeps the office that owns the expense (business unit), never re-posts it as the company's.
+      locationId: (exp.location_id as string | null) ?? null,
     })
   } else {
     const { data: com, error: comErr } = await svc

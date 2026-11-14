@@ -23,8 +23,21 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { registerHooks } from "node:module"
 import { memSupabase, type Row } from "./in-memory-supabase"
-import { blankComments, stripComments } from "./strip-comments"
+import { blankComments, stripComments, blankStrings } from "./strip-comments"
+
+// WAVE 153 (153F) §E: the lead-touch governor resolves the ISA settings through `./resolve-isa-settings` (a service client). Only THAT
+// relative import from lib/ai-isa/lead-action-plan.ts is replaced — by the settings §E supplies (default: unreadable, exactly what the
+// real resolver answers without credentials). Every other importer of the resolver is untouched.
+registerHooks({
+  resolve(spec: string, ctx: { parentURL?: string }, next: (s: string, c: unknown) => unknown) {
+    if (spec === "./resolve-isa-settings" && /\/lib\/ai-isa\/lead-action-plan\.ts$/.test(ctx.parentURL ?? "")) {
+      return { url: `data:text/javascript,${encodeURIComponent("export const resolveIsaSettingsResult = async () => globalThis.__153F_isa ?? { status: 'unreadable', ownerType: 'brokerage', ownerId: null, detail: 'no settings supplied' }")}`, shortCircuit: true }
+    }
+    return next(spec, ctx)
+  },
+} as never)
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -383,6 +396,205 @@ async function main() {
     check("the unattended decision brief is an expert, structured prompt (every section, a typed JSON contract; money / approval never reach it)", SECTIONS.every((s) => ua.ARBITER_UNATTENDED_SYSTEM.includes(s)) && /JSON/.test(ua.ARBITER_UNATTENDED_SYSTEM) && /Money, approvals, signatures, legal/.test(ua.ARBITER_UNATTENDED_SYSTEM))
   }
 
+  // ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+  section("E · wave 153 (153F, owner ruling 13) — a live turn is never held for a planning call; hard stops hold; one conversation owner; per-Contact timing; the early lead touch")
+  {
+    const arb = await import("../lib/ai-isa/followup-arbiter")
+    const responder = await import("../lib/communications/inbound-responder")
+    const lap = await import("../lib/ai-isa/lead-action-plan")
+    const { DEFAULT_FOLLOWUP_POLICY } = await import("../lib/ai-isa/followup-policy")
+    const { DEFAULT_AISA_SETTINGS } = await import("../lib/ai-isa/settings-types")
+    const policy = { ...DEFAULT_FOLLOWUP_POLICY, arbiter: { ...DEFAULT_FOLLOWUP_POLICY.arbiter, enabled: true, minConfidence: 0.3 } }
+    const EB = "e1e1e1e1-0000-4000-8000-000000000001", EA = "e2e2e2e2-0000-4000-8000-000000000001", EU = "e3e3e3e3-0000-4000-8000-000000000001"
+    const K1 = "e4e4e4e4-0000-4000-8000-000000000001", K2 = "e4e4e4e4-0000-4000-8000-000000000002", K3 = "e4e4e4e4-0000-4000-8000-000000000003"
+    const NOWE = new Date()
+    const ago = (m: number) => new Date(NOWE.getTime() - m * 60_000).toISOString()
+    const world = (extra: Record<string, Row[]> = {}) => memSupabase({
+      brokerages: [{ id: EB }],
+      contacts: [
+        { id: K1, brokerage_id: EB, agent_id: EA, first_name: "Dana", dnc_status: false, ai_outreach_paused: false, source: "website", created_at: "2026-01-01T00:00:00Z" },
+        { id: K2, brokerage_id: EB, agent_id: EA, first_name: "Riley", dnc_status: true, ai_outreach_paused: false, source: "website", created_at: "2026-01-01T00:00:00Z" },
+        { id: K3, brokerage_id: EB, agent_id: EA, first_name: "Sam", dnc_status: false, ai_outreach_paused: false, source: "website", created_at: "2026-01-01T00:00:00Z" },
+      ],
+      agents: [{ id: EA, brokerage_id: EB, user_id: EU, is_active: true }],
+      conversations: [{ id: "cv-1", brokerage_id: EB, contact_id: K1, agent_id: EA }, { id: "cv-2", brokerage_id: EB, contact_id: K2, agent_id: EA }, { id: "cv-3", brokerage_id: EB, contact_id: K3, agent_id: EA }],
+      messages: [], agent_action_ledger: [], activities: [], ai_message_drafts: [], notifications: [],
+      ...extra,
+    }, { uuidIds: true, stampCreatedAt: true, unique: { agent_action_ledger: [["idempotency_key"]] } })
+    type Decide = (a: { brokerageId: string; system: string; prompt: string }) => Promise<Record<string, unknown>>
+    const mk = (o: { decide?: Decide; sendError?: string | null } = {}) => {
+      const calls = { decide: 0, prompts: [] as string[], sent: [] as Array<Record<string, unknown>>, coach: 0, route: 0 }
+      const deps = {
+        policy, now: NOWE,
+        decide: (async (a: { brokerageId: string; system: string; prompt: string }) => { calls.decide++; calls.prompts.push(a.prompt); return o.decide ? o.decide(a) : { optionId: "reply", channel: null, format: null, waitHours: null, rationale: "A question the team can answer in the thread now.", evidence: ["intent"], confidence: 0.9 } }) as never,
+        autonomy: async () => ({ allowed: true, reason: null }),
+        customer360For: async () => ({ ok: true, view: { fields: {} } }),
+        compose: async () => ({ text: "Saturday at 11 works — I'll confirm the showing with you shortly." }),
+        safety: () => [],
+        sendSms: async (p: Record<string, unknown>) => { calls.sent.push(p); return o.sendError ? { sent: false, error: o.sendError } : { sent: true, providerRef: `SM-${calls.sent.length}`, messageId: `m-${calls.sent.length}` } },
+        replyCoach: async () => { calls.coach++; return { success: true, draftId: "draft-1" } },
+        routeToAgent: (async () => { calls.route++; return true }) as never,
+      }
+      return { calls, deps }
+    }
+    let n = 0
+    const req = (o: Record<string, unknown> = {}) => ({ brokerageId: EB, contactId: K1, conversationId: "cv-1", recordId: `rec-e-${++n}`, channel: "sms", provider: "twilio", surface: "sms", body: "Can we see it Saturday at 11?", isPublic: false, threadRef: null, intent: { primary: "schedule_showing", confidence: 86, urgency: "medium" }, receivedAt: NOWE.toISOString(), ...o }) as never
+    const ledgerOf = (db: ReturnType<typeof world>, recId: string) => (db.tables.agent_action_ledger ?? []).find((r) => r.action === "inbound.message.respond" && r.detail?.record_id === recId)
+
+    // E1 · the FAST path: an inbound inquiry is answered with no planning call
+    { const db = world(); const { calls, deps } = mk(); const q = req() as any
+      const r = await responder.respondToInboundCommunication(db, q, deps)
+      const row = ledgerOf(db, q.recordId)
+      check("E1 · INBOUND INQUIRY → the acknowledgment is DISPATCHED (through the SMS chokepoint seam) with NO planning call — the arbiter's own deterministic fast decision", r.action === "reply_sent" && calls.sent.length === 1 && calls.decide === 0 && r.decision?.path === "fast" && r.decision?.source === "deterministic", JSON.stringify({ action: r.action, reason: r.reason }))
+      check("E1 · …evidenced: the decision row carries the turn's path and the MEASURED decision time (decided_in_ms, wall clock)", row?.detail?.turn?.path === "fast" && typeof row?.detail?.decided_in_ms === "number" && row.detail.decided_in_ms >= 0 && row.detail.decided_in_ms < 2_000, JSON.stringify(row?.detail?.turn ?? null)) }
+    // E2 · a LIVE exchange (we answered minutes ago) keeps flowing without the planner
+    { const db = world({ messages: [{ id: "m-prev", brokerage_id: EB, contact_id: K1, conversation_id: "cv-1", direction: "outbound", sender_type: "ai", type: "sms", created_at: ago(4) }] }); const { calls, deps } = mk(); const q = req({ intent: { primary: "general_question", confidence: 81, urgency: "low" }, body: "Does it have a garage?" }) as any
+      const r = await responder.respondToInboundCommunication(db, q, deps)
+      check("E2 · a LIVE exchange (our reply 4 min ago) → the next routine turn is answered at once, no planning call, `live` on the evidence", r.action === "reply_sent" && calls.decide === 0 && ledgerOf(db, q.recordId)?.detail?.turn?.live === true) }
+    // E3 · real ambiguity still reaches the arbiter's judgment (positive control: the fast path is not a bypass of the arbiter)
+    { const db = world(); const { calls, deps } = mk(); const r = await responder.respondToInboundCommunication(db, req({ intent: { primary: "question", confidence: 80, urgency: "medium" } }), deps)
+      check("E3 · POSITIVE CONTROL: a message the classifier could not NAME is the arbiter's call — the model is asked once, inside its budget (path deliberate)", calls.decide === 1 && r.decision?.path === "deliberate" && typeof r.decision?.latencyMs === "number" && r.action === "reply_sent") }
+    // E4 · the model is slow → bounded budget, safe fallback (a PERSON for an unreadable message), never a hang
+    {
+      const late = { optionId: "reply", channel: null, format: null, waitHours: null, rationale: "Late answer that must be ignored entirely.", evidence: ["moment"], confidence: 0.99 }
+      const facts = { subject: "contact" as const, relationship: { type: "contact", persona: null, hasAssignedAgent: true }, intent: null, history: { hoursSinceAnyTouch: null, hoursSinceAgentTouch: null, campaignTouches7d: null, lastChannel: null, portalEducationViews: null }, journey: { transactionStage: null, nextMilestone: null, openLessons: null, nextLesson: null }, preferences: [], fatigueRisk: null, localHour: null, moment: { key: "inbound_sms", intent: "test", daysSinceOpen: 0 }, blindSpots: [] }
+      const replyOpt = { id: "reply", kind: "communication" as const, channels: ["sms" as const], why: ["answer"] }
+      const humanOpt = { id: "notify_human", kind: "agent_intervention" as const, channels: ["human_task" as const], why: ["a person"] }
+      const t0 = Date.now()
+      const d = await arb.arbitrateFollowUp({ brokerageId: EB, facts, menu: { menu: [replyOpt, humanOpt], locked: null }, planned: humanOpt, policy, latencyBudgetMs: 40 }, { decide: () => new Promise((res) => setTimeout(() => res(late), 400)) })
+      const took = Date.now() - t0
+      check("E4 · the model did not answer inside its budget (40 ms) → the planner's SAFE verdict answers at once (a person), the budget named, the late answer discarded", d.optionId === "notify_human" && d.source === "deterministic" && /latency budget/.test(d.fallbackReason ?? "") && took < 300 && (d.latencyMs ?? 0) >= 35, `${took}ms ${d.fallbackReason}`)
+      const quick = await arb.arbitrateFollowUp({ brokerageId: EB, facts, menu: { menu: [replyOpt, humanOpt], locked: null }, planned: humanOpt, policy, latencyBudgetMs: 500 }, { decide: () => new Promise((res) => setTimeout(() => res(late), 5)) })
+      check("E4 · POSITIVE CONTROL: a model that answers inside the budget is honoured (source ai, latency measured)", quick.source === "ai" && quick.optionId === "reply" && typeof quick.latencyMs === "number" && quick.latencyMs < 500)
+      check("E4 · the ceilings: a waiting person (interactive) and a first touch are bounded tighter than a sweep's planned touch", arb.ARBITER_LATENCY_BUDGET_MS.interactive <= arb.ARBITER_LATENCY_BUDGET_MS.planned && arb.ARBITER_LATENCY_BUDGET_MS.speed_to_lead <= arb.ARBITER_LATENCY_BUDGET_MS.planned)
+      const db = world(); const { calls, deps } = mk({ decide: () => new Promise(() => undefined) })
+      const s0 = Date.now()
+      const r = await responder.respondToInboundCommunication(db, req({ intent: null, body: "hmm ok so what about that thing" }), deps)
+      const rt = Date.now() - s0
+      check("E4 · MODEL TIMEOUT on a live inbound: the responder answers inside the interactive budget with the SAFE fallback — an unreadable message goes to a PERSON, nothing is sent unattended", r.action === "human_task" && calls.sent.length === 0 && calls.decide === 1 && rt < arb.ARBITER_LATENCY_BUDGET_MS.interactive + 1_500 && /latency budget/.test(r.decision?.fallbackReason ?? ""), `${rt}ms ${r.action} ${r.decision?.fallbackReason}`)
+    }
+    // E5 · the deterministic hard stops still apply on the fast path
+    { const db = world(); const { calls, deps } = mk(); const r = await responder.respondToInboundCommunication(db, req({ contactId: K2, conversationId: "cv-2" }), deps)
+      check("E5 · DNC: a do-not-contact person's routine message → a PERSON decides; nothing sent, no model asked", r.action === "human_task" && calls.sent.length === 0 && calls.decide === 0) }
+    { const db = world(); const { calls, deps } = mk(); const r = await responder.respondToInboundCommunication(db, req({ intent: { primary: "unsubscribe", confidence: 90, urgency: "high" }, body: "please stop texting me" }), deps)
+      check("E5 · STOP: a request to stop → no automated answer at all (the opt-out door owns it)", r.action === "no_response" && calls.sent.length === 0 && calls.decide === 0) }
+    { const db = world(); const { calls, deps } = mk({ sendError: "Outbound blocked: quiet_hours" }); const r = await responder.respondToInboundCommunication(db, req(), deps)
+      check("E5 · QUIET HOURS: the fast path decided, the SMS chokepoint refused → nothing left; a person gets the draft with the reason", r.action === "reply_proposed" && /quiet_hours/.test(r.reason) && calls.coach === 1 && calls.decide === 0) }
+    { const db = world(); const { calls, deps } = mk({ sendError: "Outbound blocked: no TCPA consent on file" }); const r = await responder.respondToInboundCommunication(db, req(), deps)
+      check("E5 · MISSING CONSENT: the chokepoint's consent gate refuses → a person gets the draft (the fast path never bypasses consent)", r.action === "reply_proposed" && /TCPA consent/.test(r.reason) && calls.coach === 1) }
+    // E6 · a request for a person is a deterministic stop and makes the thread the person's
+    { const db = world(); const { calls, deps } = mk()
+      const q1 = req({ body: "Can I talk to a real person please?", intent: { primary: "general_question", confidence: 84, urgency: "medium" } }) as any
+      const r1 = await responder.respondToInboundCommunication(db, q1, deps)
+      const marker = ledgerOf(db, q1.recordId)?.detail?.conversation_owner
+      check("E6 · HUMAN HANDOFF REQUEST → a person is handed it now (task), the AI does not answer, the model is never asked", r1.action === "human_task" && calls.sent.length === 0 && calls.decide === 0 && calls.route === 1)
+      check("E6 · …and the thread is stamped the person's (owner human, a reason, a bounded future `until` — at least an hour, at most the replay window) on the decision row", marker?.owner === "human" && marker?.reason === "handoff_requested" && Date.parse(marker?.until ?? "") >= NOWE.getTime() + 3_600_000 && Date.parse(marker?.until ?? "") <= NOWE.getTime() + 7 * 86_400_000, JSON.stringify(marker ?? null))
+      const r2 = await responder.respondToInboundCommunication(db, req(), deps)
+      check("E6 · ONE CONVERSATION OWNER: their next routine message is NOT answered by the AI while the person owns the thread", r2.action === "human_task" && calls.sent.length === 0 && /owns this conversation/.test(r2.reason), r2.reason)
+      const r3 = await responder.respondToInboundCommunication(db, req({ contactId: K3, conversationId: "cv-3" }), deps)
+      check("E6 · POSITIVE CONTROL: another person's routine message in the same tenant is answered (the ownership is per person)", r3.action === "reply_sent" && calls.sent.length === 1) }
+    // E7 · an agent typing in the thread → no duplicate AI reply
+    { const db = world({ messages: [{ id: "m-agent", brokerage_id: EB, contact_id: K1, conversation_id: "cv-1", direction: "outbound", type: "sms", body: "Hi Dana, checking on Saturday for you now", created_at: ago(5) }] }); const { calls, deps } = mk()
+      const r = await responder.respondToInboundCommunication(db, req(), deps)
+      check("E7 · HUMAN ENGAGED: the agent wrote in this thread 5 min ago → the AI stays silent (one owner), the agent has the task", r.action === "human_task" && calls.sent.length === 0 && /wrote in this conversation/.test(r.reason), r.reason) }
+    { const db = world({ messages: [{ id: "m-ai", brokerage_id: EB, contact_id: K1, conversation_id: "cv-1", direction: "outbound", sender_type: "ai", type: "sms", created_at: ago(5) }] }); const { calls, deps } = mk()
+      const r = await responder.respondToInboundCommunication(db, req(), deps)
+      check("E7 · POSITIVE CONTROL: the AI's OWN reply 5 min ago is not a human in the thread — the turn is answered", r.action === "reply_sent" && calls.sent.length === 1) }
+    { const db = world({ messages: [{ id: "m-agent-old", brokerage_id: EB, contact_id: K1, conversation_id: "cv-1", direction: "outbound", type: "sms", created_at: ago(6 * 60) }] }); const { calls, deps } = mk()
+      const r = await responder.respondToInboundCommunication(db, req(), deps)
+      check("E7 · …and an agent message older than the engaged window no longer silences the AI", r.action === "reply_sent" && calls.sent.length === 1) }
+
+    // E8 · per-Contact timing at the planner door — two people, two answers (even on a model outage)
+    {
+      const T = new Date("2026-11-14T15:00:00Z") // 10:00 in America/New_York
+      const tAgo = (h: number) => new Date(T.getTime() - h * 3_600_000).toISOString()
+      const P1 = "e5e5e5e5-0000-4000-8000-000000000001", P2 = "e5e5e5e5-0000-4000-8000-000000000002", P3 = "e5e5e5e5-0000-4000-8000-000000000003", P4 = "e5e5e5e5-0000-4000-8000-000000000004", P5 = "e5e5e5e5-0000-4000-8000-000000000005"
+      const w = memSupabase({
+        contacts: [
+          { id: P1, brokerage_id: EB }, { id: P2, brokerage_id: EB }, { id: P3, brokerage_id: EB, preferred_contact_time: "evenings", time_zone: "America/New_York" }, { id: P4, brokerage_id: EB }, { id: P5, brokerage_id: EB },
+        ],
+        buyer_fatigue_scores: [{ id: "f1", brokerage_id: EB, contact_id: P1, risk_level: "high", last_calculated_at: tAgo(2) }],
+        messages: [
+          { id: "p2-out", brokerage_id: EB, contact_id: P2, direction: "outbound", sender_type: "ai", created_at: tAgo(30) },
+          { id: "p2-in", brokerage_id: EB, contact_id: P2, direction: "inbound", created_at: tAgo(3) },
+        ],
+        agent_action_ledger: [{ id: "own-1", brokerage_id: EB, subject_type: "contact", subject_id: P5, action: "inbound.message.respond", created_at: tAgo(1), detail: { conversation_owner: { owner: "human", reason: "handoff_requested", until: new Date(T.getTime() + 5 * 3_600_000).toISOString() } } }],
+      }, { uuidIds: true, stampCreatedAt: true, unique: { agent_action_ledger: [["idempotency_key"]] } })
+      const options = [{ id: "written_note", kind: "communication" as const, channels: ["email" as const], why: ["a home they saved changed"] }]
+      const ask = (id: string, decide: Decide) => arb.arbitratePlannedTouch(w as never, { brokerageId: EB, planner: "saved_home_nudge", subject: { type: "contact", id }, now: T, options, planned: "written_note", moment: { key: "saved_home_new_match", intent: "a new match" }, policy }, { decide: decide as never })
+      const outage: Decide = async () => { throw new Error("provider 503") }
+      const [a1, a2, a3, a4] = [await ask(P1, outage), await ask(P2, outage), await ask(P3, outage), await ask(P4, outage)]
+      check("E8 · PER-CONTACT TIMING on an OUTAGE: fatigue high → a bounded ease-off for the tenant's own floor; replied after our touch → the touch now; asked for evenings at 10:00 their time → wait 7h for the window; no signals → the planner's verdict",
+        a1.choice === "wait" && a1.decision.waitHours === policy.guardrails.minHoursBetweenTouches && a2.choice === "written_note" && a3.choice === "wait" && a3.decision.waitHours === 7 && a4.choice === "written_note",
+        JSON.stringify([a1, a2, a3, a4].map((x) => [x.choice, x.decision.waitHours])))
+      const rec = (): { calls: string[]; d: Decide } => { const calls: string[] = []; return { calls, d: async (x) => { calls.push(x.prompt); return { optionId: "written_note", channel: "email", format: null, waitHours: null, rationale: "The evidence says now is a fine moment for a useful note.", evidence: ["moment"], confidence: 0.8 } } } }
+      const r1 = rec(), r2 = rec(), r3 = rec(), r4 = rec()
+      await ask(P1, r1.d); await ask(P2, r2.d); await ask(P3, r3.d); await ask(P4, r4.d)
+      check("E8 · …and the MODEL sees each person's own timing evidence (fatigue / they are waiting on us / the window they asked for and their local hour) — four different prompts, not one",
+        /"fatigueRisk":"high"/.test(r1.calls[0] ?? "") && /"urgency":"high"/.test(r2.calls[0] ?? "") && /"key":"preferred_contact_time","value":"evenings"/.test(r3.calls[0] ?? "") && /"localHour":10/.test(r3.calls[0] ?? "") && !/"fatigueRisk":"high"|"urgency":"high"/.test(r4.calls[0] ?? "") && new Set([r1, r2, r3, r4].map((r) => r.calls[0])).size === 4)
+      const r5 = rec(); const a5 = await ask(P5, r5.d)
+      const held = (w.tables.agent_action_ledger ?? []).find((r) => r.subject_id === P5 && String(r.action).startsWith("followup.decision."))
+      check("E8 · ONE CONVERSATION OWNER at the planner door: a person owns P5's conversation → the planned touch is HELD with no model call, ledgered with the timing reading",
+        a5.choice === "wait" && a5.decision.fallbackReason === "human_owns_conversation" && r5.calls.length === 0 && held?.detail?.timing?.verdict === "human_owns" && (a5.decision.waitHours ?? 0) >= 1, JSON.stringify(a5.decision))
+    }
+
+    // E9 · row 86's remaining step — the EARLY lead touch on fresh activity (the interval is guidance, the floor is deterministic)
+    {
+      const T = new Date("2026-11-14T15:00:00Z")
+      const h = (x: number) => new Date(T.getTime() - x * 3_600_000)
+      const base = { now: T, settings: { ...DEFAULT_AISA_SETTINGS, touch_interval_days: 3 }, touchesSoFar: 1, lastChannel: "email", channelsAlreadyStaged: [] as never[], emailUsable: true, mailingVerified: true, reelReady: false, lifecycleState: null }
+      const quiet = lap.planNextLeadTouch({ ...base, lastTouchAt: h(60), lastLeadActivityAt: null })
+      const active = lap.planNextLeadTouch({ ...base, lastTouchAt: h(60), lastLeadActivityAt: h(10) })
+      const before = lap.planNextLeadTouch({ ...base, lastTouchAt: h(60), lastLeadActivityAt: h(70) })
+      const inFloor = lap.planNextLeadTouch({ ...base, lastTouchAt: h(24), lastLeadActivityAt: h(2) })
+      check("E9 · a QUIET lead inside touch_interval_days waits (interval_not_elapsed) — the interval still guides", quiet.code === "interval_not_elapsed")
+      check("E9 · FRESH ACTIVITY (the lead wrote 10h ago, after our touch 60h ago) → the next step is authored EARLY, the reason says so", active.code === "due" && /EARLY on fresh activity/.test(active.reason) && !!active.step, active.reason)
+      check("E9 · POSITIVE CONTROL: activity from BEFORE our last touch is not fresh — the interval holds", before.code === "interval_not_elapsed")
+      check("E9 · THE FLOOR IS DETERMINISTIC: fresh activity inside the tenant's fatigue floor still waits — due when the floor ends, never earlier", inFloor.code === "interval_not_elapsed" && /fatigue floor/.test(inFloor.reason) && inFloor.dueAt?.getTime() === h(24).getTime() + DEFAULT_FOLLOWUP_POLICY.guardrails.minHoursBetweenTouches * 3_600_000, inFloor.reason)
+      const replay = lap.planFromDecisionInput(lap.decisionInputSnapshot({ subject: "lead", plan: { ...base, lastTouchAt: h(60), lastLeadActivityAt: h(10) } }))
+      check("E9 · REPLAYABLE: the decision snapshot carries the activity it read, so the replay harness reproduces the early verdict", replay?.code === "due" && /EARLY/.test(replay?.reason ?? ""))
+      const lapSrc = code("lib/ai-isa/lead-action-plan.ts")
+      check("E9 · WIRED: the plan sweep reads the lead's own newest inbound (lead_conversation_history, direction inbound) and hands it to the planner", /from\("lead_conversation_history"\)[\s\S]{0,260}\.eq\("direction", "inbound"\)/.test(lapSrc) && /lastLeadActivityAt,\s*\n\s*context:/.test(lapSrc))
+    }
+
+    // E10 · a reply while a touch is queued → the queued touch is re-evaluated by a person, never released on its schedule
+    {
+      const T = new Date()
+      const h = (x: number) => new Date(T.getTime() - x * 3_600_000).toISOString()
+      const L1 = "e6e6e6e6-0000-4000-8000-000000000001", L2 = "e6e6e6e6-0000-4000-8000-000000000002"
+      ;(globalThis as { __153F_isa?: unknown }).__153F_isa = { status: "resolved", settings: { ...DEFAULT_AISA_SETTINGS, enabled: true, require_broker_approval: false, lead_allowed_channels: ["email", "direct_mail"] }, owner: { ownerType: "brokerage", ownerId: EB } }
+      const w = memSupabase({
+        agent_client_messages: [
+          { id: "acm-1", brokerage_id: EB, audience: "lead", status: "proposed", recipient_lead_id: L1, recipient_contact_id: null, channel: "email", subject: "s", body: "b", proposed_at: h(3) },
+          { id: "acm-2", brokerage_id: EB, audience: "lead", status: "proposed", recipient_lead_id: L2, recipient_contact_id: null, channel: "email", subject: "s", body: "b", proposed_at: h(3) },
+        ],
+        lead_conversation_history: [
+          { id: "lch-1", brokerage_id: EB, lead_id: L1, direction: "inbound", occurred_at: h(1) },
+          { id: "lch-2", brokerage_id: EB, lead_id: L2, direction: "inbound", occurred_at: h(5) },
+        ],
+        leads: [{ id: L2, brokerage_id: EB, agent_id: null, contact_id: null, is_active: true, ai_outreach_paused: true, email: "l2@x.example", email_verified: true }],
+      }, { uuidIds: true })
+      const out = await lap.releaseDueLeadTouches({ brokerageId: EB, supabase: w, now: T })
+      const d1 = out.decisions.find((d) => d.messageId === "acm-1"), d2 = out.decisions.find((d) => d.messageId === "acm-2")
+      ;(globalThis as { __153F_isa?: unknown }).__153F_isa = undefined
+      check("E10 · REPLY WHILE QUEUED: the lead wrote AFTER the touch was drafted → it is NOT released on its schedule; staged for a person with the reply named",
+        !!d1?.supersededByReply && d1.mode === "stage_for_approval" && out.sent === 0 && w.tables.agent_client_messages.find((m) => m.id === "acm-1")?.status === "proposed", JSON.stringify(d1 ?? out.warnings))
+      check("E10 · POSITIVE CONTROL: a reply from BEFORE the draft does not supersede it (that proposal goes on to the usual re-checks — here the pause stops it)", !!d2 && !d2.supersededByReply && /ai_outreach_paused/.test(d2.reason), JSON.stringify(d2 ?? null))
+    }
+
+    // E11 · no fake "typing", no artificial delay
+    {
+      const files = ["lib/ai-isa/followup-arbiter.ts", "lib/communications/inbound-responder.ts", "lib/communications/inbound-reply-executors.ts", "lib/social/inbound-social.ts", "lib/ai-isa/speed-to-lead.ts"]
+      const TYPING = /\b(?:is|are|was)\s+typing\b|typing\s*(?:\.\.\.|…)/i
+      check("E11 · NO FAKE TYPING: no tenant- or customer-facing string in the live-conversation path claims someone is typing", files.every((f) => !TYPING.test(stripComments(raw(f)))))
+      check("E11 · POSITIVE CONTROL: the typing finder sees a planted claim", TYPING.test(`const s = "Dana is typing…"`))
+      const DELAY = /\bsetTimeout\s*\(|\bsleep\s*\(|\bdelay\s*\(/
+      check("E11 · NO ARTIFICIAL DELAY: the responder carries no timer at all, and the arbiter's ONLY timer is the latency-budget race", !DELAY.test(blankStrings(stripComments(raw("lib/communications/inbound-responder.ts")))) && (blankStrings(stripComments(raw("lib/ai-isa/followup-arbiter.ts"))).match(/\bsetTimeout\s*\(/g) ?? []).length === 1 && /function decideWithinBudget[\s\S]{0,700}setTimeout\(/.test(stripComments(raw("lib/ai-isa/followup-arbiter.ts"))))
+      check("E11 · POSITIVE CONTROL: the delay finder sees a planted pause", DELAY.test("await new Promise((r) => setTimeout(r, 1500))"))
+    }
+  }
+
+  console.log("\n BLIND SPOTS (§E, wave 153): the fast path is proven on the SMS lane with the chokepoint as a seam (test:egress-send-guard owns dispatchSms's own gates); a human typing in the thread is read from messages rows — app/actions/ai-auto-response.ts is excluded by type, but the open-house instant greeting (lib/open-house/instant-greeting.ts) writes an automated outbound row with no sender_type and reads as a person for 30 minutes (the safe side: a person answers — outside-lane request to stamp it 'ai'); the voice channel's live-call ownership is not read here; the ownership marker lives on the responder's decision row (the planner door holds only planners that offered a wait); the lead-touch re-evaluation is proven with the ISA settings resolver stubbed to an auto-send tenant.")
   console.log("\n BLIND SPOTS: the census is LEXICAL — a schedule spelled without an outbound word or a time unit in its name (e.g. `const X = 7` used as days), a schedule stored in a DB row (campaign_sequence_steps.delay_days, campaign bundle send_after_minutes, strategy cadenceDays, ai_isa_settings.touch_interval_days) or computed inline (`7 * 86_400_000` next to a send) is NOT seen; the step executor's arbiter hold is proven on stripped source (executeSequenceStep builds its own service client); the model is stubbed (the briefs are asserted by section); dispatchEmail / dispatchSms gates are seams here (test:egress-send-guard owns them); the inbound → completion hop is opened directly (the responder's own proof, test:inbound-sms-arbiter / test:unattended-answer, drives C13); no live soak.")
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(` failed: ${failures.join(" | ")}`); process.exit(1) }

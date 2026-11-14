@@ -26,8 +26,11 @@ export default async function AgentQRCodesPage() {
   if (userRole !== 'agent' && !isAdminOrBroker({ user_type: userRole })) notFound()
 
   // Heal genuinely couldn't complete (pending invite / non-agent) — honest in-place
-  // notice, not a 404 or a bounce. Only the BROKERAGE is required to render the
+  // notice, not a 404 or a bounce. Only the ACCOUNT is required to render the
   // board: a broker or admin has no agents row and still owns every code in it.
+  // WAVE 153 (153E): who sees which codes — and who may create, change, pause or retire them — is ONE answer,
+  // lib/marketing/qr-governance.ts resolveQrAuthority (a solo subscriber owns their whole account; a suspended or
+  // revoked seat is told so); loadQrCodesForCaller below relays its sentence when it refuses.
   if (!ctx.brokerageId) {
     return (
       <div className="p-8 text-center text-sm text-muted-foreground">
@@ -52,6 +55,9 @@ export default async function AgentQRCodesPage() {
       qrCodes={data.codes}
       campaigns={data.campaigns}
       linkableCampaigns={data.linkableCampaigns}
+      linkableListings={data.linkableListings}
+      placements={data.placements}
+      scopeBasis={data.scopeBasis}
       purposes={[...QR_PURPOSES]}
       scope={data.scope}
       scopeLabel={data.scopeLabel}

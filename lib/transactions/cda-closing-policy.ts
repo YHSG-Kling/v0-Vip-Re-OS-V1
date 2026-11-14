@@ -27,6 +27,8 @@
 // components that import this module's pure half reach no server module.
 
 import { timeZoneForState } from "@/lib/fatigue/after-hours"
+// WAVE 153 (lane 153C): the ONE APR-tolerance rule tridRevisionAssessment reads (pure; already in this module's graph — no new module).
+import { aprRevisionVerdict } from "@/lib/compliance/trid-disclosure-clock"
 
 // ─── 1. CDA MODE — the brokerage setting is the ONE switch ──────────────────────────────────────
 
@@ -1042,6 +1044,13 @@ function closingRecordKind(input: { financing: "cash" | "financed" | null; tridT
 /**
  * PURE — does a revised Closing Disclosure restart the three-business-day wait? Compares LENDER-STATED values only. A trigger the
  * documents cannot show (a figure not stated on one of the two CDs) is escalated to the lender — never assumed either way.
+ *
+ * WAVE 153 (lane 153C) — THE APR TOLERANCE IS THE LENDER'S CLASSIFICATION, NOT A HARD-CODED 1/8 BAND (CORRECTED). The APR test now
+ * reads the ONE rule, lib/compliance/trid-disclosure-clock.ts aprRevisionVerdict: 1/8 point for a regular transaction, 1/4 for an
+ * irregular one (12 CFR 1026.22(a)(2)–(3)), and the LENDER says which. `lender` carries what the lender stated on the receipt
+ * ledger (trid_disclosure_receipts: transaction_regularity, lender_new_wait_determination); omitted, the rule still decides only
+ * what is outside or inside BOTH tolerances and escalates everything between. A lender determination settles only what the
+ * documents cannot — never a documented loan-product / prepayment-penalty trigger.
  */
 function tridRevisionAssessment(input: {
   kind: "trid_cd" | "settlement_statement" | "undetermined"
@@ -1049,6 +1058,7 @@ function tridRevisionAssessment(input: {
   current: StatementIssuerFigures
   currentReceivedAt: string | null
   cdDeliveredDate: string | null
+  lender?: { regularity: string | null; newWaitDetermination: string | null } | null
 }): TridRevisionAssessment {
   if (input.kind !== "trid_cd") {
     return { path: "not_applicable", triggers: [], waitingPeriodOutstanding: false, detail: "Cash or non-TRID closing: the settlement statement is the record — no borrower Closing Disclosure and no TRID waiting period apply." }
@@ -1059,13 +1069,9 @@ function tridRevisionAssessment(input: {
   const triggers: string[] = []
   const unknowns: string[] = []
   const aprA = reconNum(input.prior.apr), aprB = reconNum(input.current.apr)
-  let aprBand: "within" | "over" | "irregular_band" | "decrease_over" | null = null
-  if (aprA == null || aprB == null) unknowns.push("the APR")
-  else {
-    const d = Math.round((aprB - aprA) * 1000) / 1000
-    aprBand = Math.abs(d) <= 0.125 ? "within" : d < 0 ? "decrease_over" : d <= 0.25 ? "irregular_band" : "over"
-    if (aprBand === "over") triggers.push("apr_inaccurate")
-  }
+  const apr = aprRevisionVerdict({ previous: aprA, current: aprB, regularity: input.lender?.regularity ?? null })
+  if (apr.verdict === "unknown") unknowns.push("the APR")
+  else if (apr.verdict === "beyond_tolerance") triggers.push("apr_inaccurate")
   const prodA = reconStr(input.prior.loanProduct)?.toLowerCase() ?? null, prodB = reconStr(input.current.loanProduct)?.toLowerCase() ?? null
   if (prodA == null || prodB == null) unknowns.push("the loan product")
   else if (prodA !== prodB) triggers.push("loan_product_changed")
@@ -1076,16 +1082,24 @@ function tridRevisionAssessment(input: {
   if (triggers.length > 0) {
     const received = input.currentReceivedAt ? input.currentReceivedAt.slice(0, 10) : null
     const outstanding = !input.cdDeliveredDate || (received != null && input.cdDeliveredDate < received)
-    const words = triggers.map((t) => t === "apr_inaccurate" ? "changed the APR beyond the 1/8-point tolerance" : t === "loan_product_changed" ? "changed the loan product" : "added a prepayment penalty").join(" and ")
+    const words = triggers.map((t) => t === "apr_inaccurate" ? `changed the APR (${apr.detail})` : t === "loan_product_changed" ? "changed the loan product" : "added a prepayment penalty").join(" and ")
     return {
       path: "new_waiting_period", triggers, waitingPeriodOutstanding: outstanding,
-      detail: `The revised Closing Disclosure ${words} — a new three-business-day waiting period starts when the buyer receives it (12 CFR 1026.19(f)(2)(ii)). The lender owns the timing.${outstanding ? " The delivery date on file is earlier than the revised Closing Disclosure — record when the buyer received the revised one." : ""}`,
+      detail: `The revised Closing Disclosure ${words} — a new three-business-day waiting period starts when the buyer receives it (12 CFR 1026.19(f)(2)(ii)). The lender owns the timing.${outstanding ? " The receipt on file is earlier than the revised Closing Disclosure — record when the buyer received the revised one." : ""}`,
     }
   }
-  if (aprBand === "irregular_band" || aprBand === "decrease_over" || unknowns.length > 0) {
-    const why = aprBand === "irregular_band" ? "the APR rose more than 1/8 but not more than 1/4 of a point — accurate only if the loan is an irregular transaction"
-      : aprBand === "decrease_over" ? "the APR fell more than 1/8 of a point — it can still be accurate when the finance charge was overstated (12 CFR 1026.22(a)(4))"
-      : `the documents on file do not state ${unknowns.join(", ")} on both Closing Disclosures`
+  const aprUncertain = apr.verdict === "lender_must_classify" || apr.verdict === "decrease_lender_review"
+  if (aprUncertain || unknowns.length > 0) {
+    // The lender's own determination (recorded on the receipt ledger) settles a case the documents cannot.
+    if (input.lender?.newWaitDetermination === "new_wait_required") {
+      const received = input.currentReceivedAt ? input.currentReceivedAt.slice(0, 10) : null
+      const outstanding = !input.cdDeliveredDate || (received != null && input.cdDeliveredDate < received)
+      return { path: "new_waiting_period", triggers: [], waitingPeriodOutstanding: outstanding, detail: `The lender determined this revision requires a new three-business-day waiting period (12 CFR 1026.19(f)(2)(ii)).${outstanding ? " The receipt on file is earlier than the revised Closing Disclosure — record when the buyer received the revised one." : ""}` }
+    }
+    if (input.lender?.newWaitDetermination === "no_new_wait") {
+      return { path: "corrected_cd_no_new_wait", triggers: [], waitingPeriodOutstanding: false, detail: "The lender determined this revision does not require a new waiting period: the corrected Closing Disclosure is provided at or before closing (12 CFR 1026.19(f)(2)(i))." }
+    }
+    const why = aprUncertain ? apr.detail : `the documents on file do not state ${unknowns.join(", ")} on both Closing Disclosures`
     return { path: "escalate_to_lender", triggers: [], waitingPeriodOutstanding: false, detail: `Whether this revision restarts the three-business-day wait cannot be decided from the documents: ${why}. The lender confirms it.` }
   }
   return { path: "corrected_cd_no_new_wait", triggers: [], waitingPeriodOutstanding: false, detail: "The revision changes no APR beyond tolerance, no loan product and adds no prepayment penalty: the lender provides the corrected Closing Disclosure at or before closing (12 CFR 1026.19(f)(2)(i)) — no new three-business-day wait." }

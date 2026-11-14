@@ -888,8 +888,9 @@ function OutcomesPanel({ ledger, csv, windowLabel }: { ledger: RoiOutcomeLedger;
                 {stat("Contracted (estimate)", usdCents(rev.contractedCents), "under contract, not closed")}
                 {stat("Earned", usdCents(rev.earnedCents), rev.closedNotEstablished ? `${rev.closedNotEstablished} closed deal(s) await a finalized commission` : "closed deals")}
                 {stat("Received", usdCents(rev.receivedCents))}
-                {stat("Paid out to agents", usdCents(rev.disbursedCents))}
-                {stat("Net to the business", usdCents(rev.netBrokerageCents))}
+                {/* Wave 153 (owner ruling 5): an agent's view is their OWN commission — paid to them, never the business's net. */}
+                {stat(ledger.scope.moneyTier === "own" ? "Paid to you" : "Paid out to agents", usdCents(rev.disbursedCents))}
+                {ledger.scope.moneyTier === "own" ? null : stat("Net to the business", usdCents(rev.netBrokerageCents))}
               </>
             ) : (
               <p className="col-span-2 text-sm text-muted-foreground">{ledger.scope.moneyNote}</p>
@@ -918,6 +919,39 @@ function OutcomesPanel({ ledger, csv, windowLabel }: { ledger: RoiOutcomeLedger;
           </CardContent>
         </Card>
       </div>
+
+      {/* WAVE 153 (lane 153B, A3): the measures that help decide where the next dollar goes — measured only, N/A says why. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Decision metrics</CardTitle>
+          <CardDescription>{ledger.why.decisionMetrics}</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {([
+            ["Cost per verified contact", ledger.decisionMetrics.costPerVerifiedContact],
+            ["Cost per appointment", ledger.decisionMetrics.costPerAppointment],
+            ["Cost per closing", ledger.decisionMetrics.costPerClosing],
+            [ledger.scope.moneyTier === "own" ? "Your earned commission from campaigns" : "Earned commission from campaigns", ledger.decisionMetrics.attributableEarnedCommission],
+            ["Net contribution", ledger.decisionMetrics.netContribution],
+            ["Spend avoided by catching duplicates", ledger.decisionMetrics.acquisitionCostAvoidedByDedup],
+          ] as const).map(([label, r]) => (
+            <div key={label} className="rounded-md border p-3">
+              <p className="text-xs text-muted-foreground">{label}</p>
+              <p className="text-lg font-semibold"><RatioValue r={r} as="usd" /></p>
+              {r.na ? <p className="text-[11px] text-muted-foreground">{r.na}</p> : null}
+            </div>
+          ))}
+          <div className="rounded-md border p-3">
+            <p className="text-xs text-muted-foreground">First response to new contacts</p>
+            <p className="text-lg font-semibold">
+              {ledger.decisionMetrics.leadResponse.medianSeconds == null ? <span className="text-muted-foreground">N/A</span> : `${Math.max(1, Math.round(ledger.decisionMetrics.leadResponse.medianSeconds / 60))} min median`}
+            </p>
+            <p className="text-[11px] text-muted-foreground">
+              {ledger.decisionMetrics.leadResponse.na ?? `${ledger.decisionMetrics.leadResponse.measured} measured · ${Math.round((ledger.decisionMetrics.leadResponse.withinSlaShare ?? 0) * 100)}% within 5 minutes`}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader><CardTitle className="text-base">Campaigns, asset by asset</CardTitle></CardHeader>

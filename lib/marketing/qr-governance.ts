@@ -17,14 +17,19 @@
  *     → withActionLedger evidence (who, why HUMAN_REQUESTED, which tool, what happened; idempotency for the mint)
  *     → readback (the row the write returned, or the ledger's provider_ref on a replay)
  *
- * SERVER-ONLY and gate-free by design: every export takes the ALREADY-RESOLVED session actor. The callers are the gates
- * — app/api/admin/qr-codes/route.ts (create + edit on the board) and app/actions/qr-management.ts (lifecycle,
+ * SERVER-ONLY: every export takes the ALREADY-RESOLVED session actor. The callers are the SESSION gates —
+ * app/api/admin/qr-codes/route.ts (create + edit on the board) and app/actions/qr-management.ts (lifecycle,
  * duplicate, activity) — each resolveWriteContext first, then here (CLAUDE.md §4: gate first, then the service client).
+ * WAVE 153 (lane 153E): behind that gate every door now also decides the actor's QR AUTHORITY (resolveQrAuthority — a
+ * live seat, the solo plan, the hierarchy scope) and the code's / listing's / campaign's place inside it, so a solo
+ * subscriber and every authorized seat manage their OWN codes and nobody reaches past their scope.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { withActionLedger, type LedgerClient, type NonActingClaim } from "@/lib/kernel/action-ledger"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+// WAVE 153 (lane 153E): THE hierarchy answer (tenant / offices / teams / own) every QR door's authority is built on.
+import { resolveViewerHierarchy } from "@/lib/kernel/resolve-user-office"
 import { MAIL_LAYOUT_LIBRARY } from "@/lib/direct-mail/mail-piece-rules"
 import { mintTrackedQr, isQrDestinationType, isQrPurpose, normalizeOrigin, type QrDestinationType, type QrPurpose, type MintedTrackedQr } from "./tracked-qr"
 import {
@@ -59,10 +64,6 @@ interface QrDoorDeps {
 
 type Refusal = { ok: false; code: "invalid" | "unsafe_destination" | "not_permitted" | "not_found" | "terminal" | "conflict" | "refused" | "in_flight" | "unavailable"; message: string }
 
-/** Office filing: the tenant-admin roster minus team leads (a lead files under the TEAM they lead — a fact, below).
- *  Derived by named subtraction from the one roster (CLAUDE.md §4), never retyped. */
-const OFFICE_FILERS = new Set([...TENANT_ADMIN_USER_TYPES].filter((t) => t !== "team_lead"))
-
 const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_.:-]{8,128}$/
 /** `<kind>:<id>` is a minter's server-side key namespace (listing:, open_house:, lead_magnet:, …) — a person's label may
  *  not take that shape, or a later automated mint for that entity would find the person's code. */
@@ -95,22 +96,218 @@ export async function loadQrTenantHosts(db: Db, brokerageId: string): Promise<{ 
   return { customDomains, websiteHosts }
 }
 
+// ─── WHO MAY CREATE AND MANAGE WHICH CODES (wave 153, lane 153E) ──────────────
+//
+// Owner (verbatim, 2026-11-14): "qr codes can be used by tenant and seat holders. you redid the qr code section for
+// brokerage/teams but agents and solo agent tenants use qr codes."
+//
+// ONE authority for every QR door — the board's list, the mint, the destination edit, the lifecycle, the duplicate, the
+// activity panel and the link pickers. It is built from EXISTING facts only (no QR-specific role, product or seat type):
+//   · THE SEAT: users.brokerage_id = the session tenant, users.status ≠ 'suspended' and users.deleted_at IS NULL (the
+//     seat meter's own rule, lib/kernel/seat-usage.ts), and a producing record that is not deactivated
+//     (agents.is_active = false is how lib/agents/agent-deactivation.ts revokes an agent; an account admin whose
+//     producing row was retired still administers, filed without an agent record);
+//   · THE PLAN: a SOLO-tier subscriber is their own broker — "TIER PARITY", the rule
+//     lib/auth/require-caller.ts requireTenantAdminOrSoloOwner already applies — so the whole account is theirs,
+//     whatever their user_type says (their one seat often carries 'agent');
+//   · otherwise THE hierarchy answer, lib/kernel/resolve-user-office.ts resolveViewerHierarchy (contract C34): a tenant
+//     leadership grant or a single-office tenant admin → every code; an office head / office leadership → their
+//     offices and those offices' teams; a team lead (teams.team_lead_id) / team leadership → their teams; everyone else
+//     → their own work. users.user_type never widens a multi-location row (C34).
+// A person ALWAYS manages a code they created and a code filed to their own agent record.
+//
+// TOMBSTONE (this lane): OFFICE_FILERS (the roster minus team_lead) decided office/team filing by user_type alone — on a
+// multi-location tenant an office-A broker could file under office B. SURVIVOR: decideFilingScope below reads the
+// authority (hierarchy scope + the person's own team/office), the same answer every other door uses.
+
+interface QrAuthority {
+  /** tenant = every code in the account · offices / teams = those scopes · own = what the person created or owns. */
+  kind: "tenant" | "offices" | "teams" | "own"
+  locationIds: string[]
+  teamIds: string[]
+  /** The person's own ACTIVE agents.id in this account — null for an admin with no producing record. */
+  ownAgentId: string | null
+  ownTeamId: string | null
+  ownLocationId: string | null
+  /** True when the account is on the solo plan (the person is their own broker). */
+  solo: boolean
+  /** Why — the facts or grants that decided (shown on the board, written on every mint's evidence). */
+  basis: string[]
+}
+
+type QrAuthorityResult = { ok: true; authority: QrAuthority } | Refusal
+
+const SEAT_OFF = "Your seat in this account is turned off, so QR codes can't be created or changed. Ask an account admin to restore it."
+const NOT_YOUR_CODE = "This QR code belongs to someone else. You can change codes you created, codes filed to you, and codes in a team or office you lead — ask the code's creator or an account admin."
+
+/**
+ * The SESSION actor's QR authority in ONE account (the actor came from the caller's gate — tenant from the session).
+ * Every read's error is READ and any refusal REFUSES (fail closed): "we couldn't tell" never renders as "allowed".
+ */
+export async function resolveQrAuthority(actor: QrActor, deps: QrDoorDeps = {}): Promise<QrAuthorityResult> {
+  const db: Db = deps.client ?? createServiceClient()
+  if (!actor?.brokerageId || !actor.userId) return { ok: false, code: "not_permitted", message: "Sign in to an account to use QR codes." }
+  const refused: Refusal = { ok: false, code: "refused", message: "We couldn't confirm your seat in this account, so nothing was changed. Try again in a moment." }
+  const { data: u, error: uErr } = await db.from("users").select("id, brokerage_id, user_type, status, deleted_at").eq("id", actor.userId).maybeSingle()
+  if (uErr) return refused
+  const user = u as { brokerage_id?: string | null; user_type?: string | null; status?: string | null; deleted_at?: string | null } | null
+  if (!user || user.brokerage_id !== actor.brokerageId) return { ok: false, code: "not_permitted", message: "Your sign-in isn't a seat in this account, so its QR codes aren't available to you." }
+  if (user.status === "suspended" || user.deleted_at) return { ok: false, code: "not_permitted", message: SEAT_OFF }
+  const { data: ag, error: aErr } = await db.from("agents").select("id, is_active, team_id, location_id").eq("user_id", actor.userId).eq("brokerage_id", actor.brokerageId)
+  if (aErr) return refused
+  const rows = (ag ?? []) as Array<{ id: string; is_active?: boolean | null; team_id?: string | null; location_id?: string | null }>
+  const active = rows.find((r) => r.is_active !== false) ?? null
+  const userType = String(user.user_type ?? actor.userType ?? "")
+  if (rows.length > 0 && !active && !TENANT_ADMIN_USER_TYPES.has(userType)) return { ok: false, code: "not_permitted", message: SEAT_OFF }
+  const h = await resolveViewerHierarchy(db as never, { userId: actor.userId, brokerageId: actor.brokerageId })
+  if (!h.ok) return { ok: false, code: "refused", message: "We couldn't confirm which QR codes you manage, so nothing was changed. Try again in a moment." }
+  const own = { ownAgentId: active?.id ?? null, ownTeamId: active?.team_id ?? null, ownLocationId: active?.location_id ?? null }
+  if (h.tier === "solo_agent") {
+    return { ok: true, authority: { kind: "tenant", locationIds: h.scope.locationIds, teamIds: h.scope.teamIds, ...own, solo: true, basis: ["solo plan — the whole account is your own business"] } }
+  }
+  return { ok: true, authority: { kind: h.scope.kind, locationIds: h.scope.locationIds, teamIds: h.scope.teamIds, ...own, solo: false, basis: h.scope.basis } }
+}
+
+/** PURE — does a row (filed to an agent, a team and/or an office) sit inside this authority? */
+function withinQrScope(auth: QrAuthority, f: { agentId?: string | null; teamIds: Array<string | null | undefined>; locationIds: Array<string | null | undefined> }): boolean {
+  if (auth.kind === "tenant") return true
+  if (f.agentId && auth.ownAgentId && f.agentId === auth.ownAgentId) return true
+  if (auth.kind === "offices" && f.locationIds.some((id) => !!id && auth.locationIds.includes(id))) return true
+  if ((auth.kind === "offices" || auth.kind === "teams") && f.teamIds.some((id) => !!id && auth.teamIds.includes(id))) return true
+  return false
+}
+
+/** An agent record's placement (team + office), tenant-pinned. A refused read is reported, never "no placement". */
+async function readAgentPlacement(db: Db, brokerageId: string, agentId: string): Promise<{ ok: true; team_id: string | null; location_id: string | null } | { ok: false }> {
+  const { data, error } = await db.from("agents").select("team_id, location_id").eq("id", agentId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) return { ok: false }
+  const a = data as { team_id?: string | null; location_id?: string | null } | null
+  return { ok: true, team_id: a?.team_id ?? null, location_id: a?.location_id ?? null }
+}
+
+/** May this person CHANGE / VIEW this code? Tenant first (another account's code reads as missing — the same answer as a
+ *  code that does not exist), then the code's creator, its agent's team/office and its own filing against the authority. */
+async function decideCodeAccess(db: Db, actor: QrActor, auth: QrAuthority, qrCodeId: string): Promise<{ ok: true } | Refusal> {
+  let { data, error } = await db.from("qr_codes").select("id, agent_id, created_by_user_id, mint_context").eq("id", qrCodeId).eq("brokerage_id", actor.brokerageId).maybeSingle()
+  if (error && isAbsentColumnRefusal(error)) ({ data, error } = await db.from("qr_codes").select("id, agent_id").eq("id", qrCodeId).eq("brokerage_id", actor.brokerageId).maybeSingle())
+  if (error) return { ok: false, code: "refused", message: "We couldn't load this code, so nothing was changed. Try again in a moment." }
+  if (!data) return { ok: false, code: "not_found", message: "That QR code isn't in your account." }
+  const row = data as { agent_id?: string | null; created_by_user_id?: string | null; mint_context?: Partial<QrMintContext> | null }
+  if (auth.kind === "tenant" || (row.created_by_user_id && row.created_by_user_id === actor.userId)) return { ok: true }
+  const ctx = row.mint_context ?? {}
+  let owner: { team_id: string | null; location_id: string | null } = { team_id: null, location_id: null }
+  if (row.agent_id && row.agent_id !== auth.ownAgentId) {
+    const p = await readAgentPlacement(db, actor.brokerageId, row.agent_id)
+    if (!p.ok) return { ok: false, code: "refused", message: "We couldn't confirm who this code belongs to, so nothing was changed. Try again in a moment." }
+    owner = p
+  }
+  return withinQrScope(auth, { agentId: row.agent_id, teamIds: [ctx.team_id, owner.team_id], locationIds: [ctx.location_id, owner.location_id] })
+    ? { ok: true }
+    : { ok: false, code: "not_permitted", message: NOT_YOUR_CODE }
+}
+
+/**
+ * The gate a caller runs before a change that has no governed door of its own (the board's name / purpose / end-date
+ * edit, app/api/admin/qr-codes PATCH): the seat, then the code's scope. Refusal codes match the doors' own.
+ */
+export async function authorizeQrCodeChange(qrCodeId: string, actor: QrActor, deps: QrDoorDeps = {}): Promise<{ ok: true; authority: QrAuthority } | Refusal> {
+  const db: Db = deps.client ?? createServiceClient()
+  if (!qrCodeId) return { ok: false, code: "invalid", message: "Choose the code to change." }
+  const auth = await resolveQrAuthority(actor, { ...deps, client: db })
+  if (!auth.ok) return auth
+  const access = await decideCodeAccess(db, actor, auth.authority, qrCodeId)
+  return access.ok ? { ok: true, authority: auth.authority } : access
+}
+
+/** PURE — the listing a destination PATH names (`/listings/<uuid>`), so pointing a code at a listing's page is judged
+ *  like linking it to that listing. Null for any other path. */
+function listingIdInDestination(url: string | null | undefined): string | null {
+  if (!url) return null
+  let path = url
+  try { path = new URL(url, "https://destination.invalid").pathname } catch { return null }
+  const m = /^\/listings\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(path)
+  return m ? m[1].toLowerCase() : null
+}
+
+/** PURE — may this person put a code on this listing? Their own listing (agents.id), or one filed to a team / office they
+ *  lead (the listing's own team_id / location_id, or its agent's), or any listing when the whole account is theirs. */
+function listingOpenToActor(auth: QrAuthority, l: { agent_id?: string | null; team_id?: string | null; location_id?: string | null }, owner: { team_id: string | null; location_id: string | null }): boolean {
+  return withinQrScope(auth, { agentId: l.agent_id, teamIds: [l.team_id, owner.team_id], locationIds: [l.location_id, owner.location_id] })
+}
+
+/** An agent cannot mint a code onto a listing they cannot edit — another agent's listing is refused with a sentence. */
+async function decideListingAccess(db: Db, actor: QrActor, auth: QrAuthority, listingId: string): Promise<{ ok: true } | Refusal> {
+  const { data, error } = await db.from("listings").select("id, agent_id, team_id, location_id, deleted_at").eq("id", listingId).eq("brokerage_id", actor.brokerageId).maybeSingle()
+  if (error) return { ok: false, code: "refused", message: "We couldn't confirm that listing, so nothing was created. Try again in a moment." }
+  if (!data) return { ok: false, code: "not_permitted", message: "That listing isn't in your account. Pick one of your listings." }
+  const l = data as { agent_id?: string | null; team_id?: string | null; location_id?: string | null; deleted_at?: string | null }
+  if (l.deleted_at) return { ok: false, code: "not_permitted", message: "That listing is archived, so a new code can't point at it. Pick an active listing." }
+  let owner: { team_id: string | null; location_id: string | null } = { team_id: null, location_id: null }
+  if (auth.kind !== "tenant" && l.agent_id && l.agent_id !== auth.ownAgentId) {
+    const p = await readAgentPlacement(db, actor.brokerageId, l.agent_id)
+    if (!p.ok) return { ok: false, code: "refused", message: "We couldn't confirm who that listing belongs to, so nothing was created. Try again in a moment." }
+    owner = p
+  }
+  return listingOpenToActor(auth, l, owner)
+    ? { ok: true }
+    : { ok: false, code: "not_permitted", message: "That listing belongs to another agent. You can create codes for your own listings, or for listings in a team or office you lead — ask the listing agent or your team lead." }
+}
+
+/** PURE — may this person attach a code to this campaign? Theirs (agent_user_id / created_by), one shared with the whole
+ *  account (visibility_scope brokerage / multi_location / platform — the live column is NOT NULL with DEFAULT 'brokerage',
+ *  so an unstated value reads as that default), one shared with a team they belong to or lead, or any when the whole
+ *  account is theirs. */
+function campaignOpenToActor(auth: QrAuthority, userId: string, c: { agent_user_id?: string | null; created_by?: string | null; team_id?: string | null; visibility_scope?: string | null }): boolean {
+  if (auth.kind === "tenant") return true
+  if ((c.agent_user_id && c.agent_user_id === userId) || (c.created_by && c.created_by === userId)) return true
+  const visibility = c.visibility_scope ?? "brokerage"
+  if (visibility === "brokerage" || visibility === "multi_location" || visibility === "platform") return true
+  if (c.team_id && auth.teamIds.includes(c.team_id)) return true
+  return visibility === "team" && !!c.team_id && c.team_id === auth.ownTeamId
+}
+
+async function decideCampaignAccess(db: Db, actor: QrActor, auth: QrAuthority, campaignId: string): Promise<{ ok: true } | Refusal> {
+  const { data, error } = await db.from("marketing_campaigns").select("id, agent_user_id, created_by, team_id, visibility_scope").eq("id", campaignId).eq("brokerage_id", actor.brokerageId).maybeSingle()
+  if (error) return { ok: false, code: "refused", message: "We couldn't confirm that campaign, so nothing was created. Try again in a moment." }
+  if (!data) return { ok: false, code: "not_permitted", message: "That campaign isn't in your account. Pick one of your campaigns." }
+  return campaignOpenToActor(auth, actor.userId, data as never)
+    ? { ok: true }
+    : { ok: false, code: "not_permitted", message: "That campaign belongs to another agent. Pick one of your own campaigns, or one shared with your team or the whole account." }
+}
+
+/**
+ * WHOSE code is it? The person's own active record by default. A NAMED agent (a lead filing a code for a team member)
+ * must be an active record of THIS account inside the person's scope; the person's own record in another account (or a
+ * retired one) files to their record here. TOMBSTONE (this lane): the board route resolved a BODY-supplied
+ * `agentUserId` with an unscoped lookup and wrote it as qr_codes.agent_id — any seat could file a code to a peer, or to
+ * an agents row of ANOTHER account (the FK proves existence, never tenancy). SURVIVOR: this decision.
+ */
+async function decideAttribution(db: Db, actor: QrActor, auth: QrAuthority, named: string | null | undefined): Promise<{ ok: true; agentId: string | null } | Refusal> {
+  if (!named || named === auth.ownAgentId) return { ok: true, agentId: auth.ownAgentId }
+  const { data, error } = await db.from("agents").select("id, user_id, brokerage_id, team_id, location_id, is_active").eq("id", named).maybeSingle()
+  if (error) return { ok: false, code: "refused", message: "We couldn't confirm whose code this is, so nothing was created. Try again in a moment." }
+  const a = data as { id: string; user_id?: string | null; brokerage_id?: string | null; team_id?: string | null; location_id?: string | null; is_active?: boolean | null } | null
+  if (a && a.user_id === actor.userId) return { ok: true, agentId: auth.ownAgentId }
+  if (!a || a.brokerage_id !== actor.brokerageId) return { ok: false, code: "not_permitted", message: "That agent isn't in your account, so a code can't be filed to them." }
+  if (a.is_active === false) return { ok: false, code: "not_permitted", message: "That agent's seat is turned off, so a code can't be filed to them." }
+  return withinQrScope(auth, { agentId: a.id, teamIds: [a.team_id], locationIds: [a.location_id] })
+    ? { ok: true, agentId: a.id }
+    : { ok: false, code: "not_permitted", message: "You can file a code to another agent only when they are in a team or office you lead. Create it as your own code, or ask an account admin." }
+}
+
 // ─── office / team permission ─────────────────────────────────────────────────
 
-/** May this actor file a code under this team / office? The existing facts only: teams.team_lead_id (a users.id),
- *  the actor's own agents.team_id / location_id, locations.managing_broker_user_id, and the tenant-admin roster. */
-async function decideFilingScope(db: Db, actor: QrActor, input: { teamId?: string | null; locationId?: string | null }): Promise<{ ok: true } | Refusal> {
+/** May this actor file a code under this team / office? The authority's scope (hierarchy facts and grants) plus the
+ *  person's own team / office and the two leadership facts (teams.team_lead_id, locations.managing_broker_user_id). */
+async function decideFilingScope(db: Db, actor: QrActor, auth: QrAuthority, input: { teamId?: string | null; locationId?: string | null }): Promise<{ ok: true } | Refusal> {
   if (!input.teamId && !input.locationId) return { ok: true }
-  const admin = OFFICE_FILERS.has(actor.userType)
-  const { data: own, error: ownErr } = await db.from("agents").select("team_id, location_id").eq("user_id", actor.userId).eq("brokerage_id", actor.brokerageId).maybeSingle()
-  if (ownErr) return { ok: false, code: "refused", message: "We couldn't confirm which office or team you belong to, so nothing was created. Try again in a moment." }
-  const mine = (own ?? {}) as { team_id?: string | null; location_id?: string | null }
+  const whole = auth.kind === "tenant"
   if (input.teamId) {
     const { data: team, error } = await db.from("teams").select("id, team_lead_id").eq("id", input.teamId).eq("brokerage_id", actor.brokerageId).maybeSingle()
     if (error) return { ok: false, code: "refused", message: "We couldn't confirm that team, so nothing was created. Try again in a moment." }
     const t = team as { id?: string; team_lead_id?: string | null } | null
     if (!t?.id) return { ok: false, code: "not_permitted", message: "That team isn't in your account. Pick one of your teams, or leave the team empty." }
-    if (!admin && t.team_lead_id !== actor.userId && mine.team_id !== input.teamId) {
+    if (!whole && t.team_lead_id !== actor.userId && auth.ownTeamId !== t.id && !auth.teamIds.includes(t.id)) {
       return { ok: false, code: "not_permitted", message: "You can file a code only under a team you lead or belong to. Ask an account admin to create it for that team." }
     }
   }
@@ -119,11 +316,86 @@ async function decideFilingScope(db: Db, actor: QrActor, input: { teamId?: strin
     if (error) return { ok: false, code: "refused", message: "We couldn't confirm that office, so nothing was created. Try again in a moment." }
     const l = loc as { id?: string; managing_broker_user_id?: string | null } | null
     if (!l?.id) return { ok: false, code: "not_permitted", message: "That office isn't in your account. Pick one of your offices, or leave the office empty." }
-    if (!admin && l.managing_broker_user_id !== actor.userId && mine.location_id !== input.locationId) {
+    if (!whole && l.managing_broker_user_id !== actor.userId && auth.ownLocationId !== l.id && !auth.locationIds.includes(l.id)) {
       return { ok: false, code: "not_permitted", message: "You can file a code only under your own office. Ask an account admin to create it for that office." }
     }
   }
   return { ok: true }
+}
+
+// ─── THE BOARD'S READS: codes in scope + what a new code may link to ──────────
+
+/** The code columns the board reads (m945 applied live 2026-11-12, so one literal). */
+const BOARD_CODE_COLUMNS = "id, slug, label, purpose, target_url, destination_type, listing_id, scan_count, lead_count, is_active, created_at, expires_at, marketing_campaign_id, agent_id, created_by_user_id, mint_context, destination_history, retired_at, retired_reason"
+
+/**
+ * Every code this authority covers, newest first: the whole account; or the union of codes filed to an agent in scope,
+ * codes the person created, and codes filed (mint_context) to a team / office in scope. Error READ on every query.
+ */
+export async function listQrCodesInScope(actor: QrActor, auth: QrAuthority, deps: QrDoorDeps = {}): Promise<{ ok: true; rows: Array<Record<string, unknown>> } | Refusal> {
+  const db: Db = deps.client ?? createServiceClient()
+  const base = () => db.from("qr_codes").select(BOARD_CODE_COLUMNS).eq("brokerage_id", actor.brokerageId)
+  const refused: Refusal = { ok: false, code: "refused", message: "We couldn't load your QR codes right now. Nothing was changed — refresh the page in a moment." }
+  if (auth.kind === "tenant") {
+    const { data, error } = await base().order("created_at", { ascending: false })
+    return error ? refused : { ok: true, rows: (data ?? []) as Array<Record<string, unknown>> }
+  }
+  const agentIds = new Set<string>(auth.ownAgentId ? [auth.ownAgentId] : [])
+  if (auth.teamIds.length) {
+    const { data, error } = await db.from("agents").select("id").eq("brokerage_id", actor.brokerageId).in("team_id", auth.teamIds)
+    if (error) return refused
+    for (const a of (data ?? []) as Array<{ id: string }>) agentIds.add(a.id)
+  }
+  if (auth.kind === "offices" && auth.locationIds.length) {
+    const { data, error } = await db.from("agents").select("id").eq("brokerage_id", actor.brokerageId).in("location_id", auth.locationIds)
+    if (error) return refused
+    for (const a of (data ?? []) as Array<{ id: string }>) agentIds.add(a.id)
+  }
+  const queries = [base().eq("created_by_user_id", actor.userId)]
+  if (agentIds.size) queries.push(base().in("agent_id", [...agentIds]))
+  if (auth.teamIds.length) queries.push(base().in("mint_context->>team_id", auth.teamIds))
+  if (auth.kind === "offices" && auth.locationIds.length) queries.push(base().in("mint_context->>location_id", auth.locationIds))
+  const results = await Promise.all(queries)
+  const byId = new Map<string, Record<string, unknown>>()
+  for (const r of results) {
+    if (r.error) return refused
+    for (const row of (r.data ?? []) as Array<Record<string, unknown>>) byId.set(String(row.id), row)
+  }
+  return { ok: true, rows: [...byId.values()].sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""))) }
+}
+
+interface QrLinkTargets {
+  campaigns: Array<{ id: string; name: string }>
+  listings: Array<{ id: string; line: string; status: string | null }>
+}
+
+/** The campaigns and listings a NEW code may be linked to — the same rules the mint enforces, so the pickers never offer
+ *  what the mint would refuse. A refused read leaves that picker empty (the mint still decides), never wider. */
+export async function loadQrLinkTargets(actor: QrActor, auth: QrAuthority, deps: QrDoorDeps = {}): Promise<QrLinkTargets> {
+  const db: Db = deps.client ?? createServiceClient()
+  const out: QrLinkTargets = { campaigns: [], listings: [] }
+  const { data: camps, error: cErr } = await db.from("marketing_campaigns").select("id, campaign_name, agent_user_id, created_by, team_id, visibility_scope, created_at").eq("brokerage_id", actor.brokerageId).order("created_at", { ascending: false }).limit(200)
+  if (cErr) console.error("[qr-governance] campaign picker not read:", cErr.message)
+  for (const c of (camps ?? []) as Array<{ id: string; campaign_name?: string | null; agent_user_id?: string | null; created_by?: string | null; team_id?: string | null; visibility_scope?: string | null }>) {
+    if (out.campaigns.length < 100 && campaignOpenToActor(auth, actor.userId, c)) out.campaigns.push({ id: c.id, name: c.campaign_name ?? "Untitled campaign" })
+  }
+  const { data: lst, error: lErr } = await db.from("listings").select("id, address, city, state, status, agent_id, team_id, location_id, created_at").eq("brokerage_id", actor.brokerageId).is("deleted_at", null).order("created_at", { ascending: false }).limit(300)
+  if (lErr) { console.error("[qr-governance] listing picker not read:", lErr.message); return out }
+  const listingRows = (lst ?? []) as Array<{ id: string; address?: string | null; city?: string | null; state?: string | null; status?: string | null; agent_id?: string | null; team_id?: string | null; location_id?: string | null }>
+  const placement = new Map<string, { team_id: string | null; location_id: string | null }>()
+  const others = [...new Set(listingRows.map((l) => l.agent_id).filter((id): id is string => !!id && id !== auth.ownAgentId))]
+  if (auth.kind !== "tenant" && others.length) {
+    const { data: ags, error: aErr } = await db.from("agents").select("id, team_id, location_id").eq("brokerage_id", actor.brokerageId).in("id", others)
+    if (aErr) console.error("[qr-governance] listing owners not read — only own listings offered:", aErr.message)
+    for (const a of (ags ?? []) as Array<{ id: string; team_id?: string | null; location_id?: string | null }>) placement.set(a.id, { team_id: a.team_id ?? null, location_id: a.location_id ?? null })
+  }
+  for (const l of listingRows) {
+    const owner = (l.agent_id && placement.get(l.agent_id)) || { team_id: null, location_id: null }
+    if (!listingOpenToActor(auth, l, owner)) continue
+    const line = [l.address, [l.city, l.state].filter(Boolean).join(", ")].filter(Boolean).join(" — ") || "Listing without an address"
+    out.listings.push({ id: l.id, line, status: l.status ?? null })
+  }
+  return out
 }
 
 // ─── THE GOVERNED MINT ────────────────────────────────────────────────────────
@@ -214,19 +486,27 @@ export async function mintGovernedQr(input: GovernedQrMintInput, actor: QrActor,
   const invalid = inputRefusal(input, nowMs)
   if (invalid) return invalid
 
-  const scope = await decideFilingScope(db, actor, { teamId: input.teamId, locationId: input.locationId })
+  // WAVE 153 (153E): WHO is asking — the seat (not suspended / revoked), the plan (solo = the whole account) and the
+  // hierarchy scope. Every rule below reads this one answer.
+  const authority = await resolveQrAuthority(actor, { ...deps, client: db })
+  if (!authority.ok) return authority
+  const auth = authority.authority
+
+  const scope = await decideFilingScope(db, actor, auth, { teamId: input.teamId, locationId: input.locationId })
   if (!scope.ok) return scope
 
-  // A campaign or listing FK proves a row exists, never that it is THIS tenant's.
+  // Whose code it is: the person's own record, or a named agent inside their scope — never a body's say-so.
+  const attribution = await decideAttribution(db, actor, auth, actor.agentId)
+  if (!attribution.ok) return attribution
+
+  // A campaign or listing FK proves a row exists, never that it is THIS tenant's — nor that THIS person may use it.
   if (input.marketingCampaignId) {
-    const { data, error } = await db.from("marketing_campaigns").select("id").eq("id", input.marketingCampaignId).eq("brokerage_id", actor.brokerageId).maybeSingle()
-    if (error) return { ok: false, code: "refused", message: "We couldn't confirm that campaign, so nothing was created. Try again in a moment." }
-    if (!data) return { ok: false, code: "not_permitted", message: "That campaign isn't in your account. Pick one of your campaigns." }
+    const c = await decideCampaignAccess(db, actor, auth, input.marketingCampaignId)
+    if (!c.ok) return c
   }
   if (input.listingId) {
-    const { data, error } = await db.from("listings").select("id").eq("id", input.listingId).eq("brokerage_id", actor.brokerageId).maybeSingle()
-    if (error) return { ok: false, code: "refused", message: "We couldn't confirm that listing, so nothing was created. Try again in a moment." }
-    if (!data) return { ok: false, code: "not_permitted", message: "That listing isn't in your account. Pick one of your listings." }
+    const l = await decideListingAccess(db, actor, auth, input.listingId)
+    if (!l.ok) return l
   }
 
   const target = (input.targetUrl ?? "").trim()
@@ -241,6 +521,14 @@ export async function mintGovernedQr(input: GovernedQrMintInput, actor: QrActor,
     destination = verdict.url
     destinationKind = verdict.kind
   }
+  // A destination that IS a listing's page is a link to that listing: judged by the same listing rule, and recorded on
+  // the code (listing_id) so the listing's QR scans are attributed to it.
+  const pathListingId = destinationKind === "in_app" ? listingIdInDestination(destination) : null
+  if (pathListingId && pathListingId !== (input.listingId ?? "").toLowerCase()) {
+    const l = await decideListingAccess(db, actor, auth, pathListingId)
+    if (!l.ok) return l
+  }
+  const listingId = input.listingId ?? pathListingId ?? null
 
   const context: Partial<QrMintContext> = {
     token_scope: input.tokenScope ?? "per_design",
@@ -265,12 +553,13 @@ export async function mintGovernedQr(input: GovernedQrMintInput, actor: QrActor,
       idempotencyKey: `qr_mint:${actor.brokerageId}:${input.idempotencyKey}`,
       channel: input.channel ?? null,
       systemSource: "qr_registry",
-      detail: { label: input.label.trim(), purpose: input.purpose, destination_type: input.destinationType, destination_kind: destinationKind, marketing_campaign_id: input.marketingCampaignId ?? null, listing_id: input.listingId ?? null, ...context },
+      // WAVE 153 (153E): which authority permitted it (scope kind + the facts behind it) and whose code it is.
+      detail: { label: input.label.trim(), purpose: input.purpose, destination_type: input.destinationType, destination_kind: destinationKind, marketing_campaign_id: input.marketingCampaignId ?? null, listing_id: listingId, authority_scope: auth.kind, authority_basis: auth.basis, attributed_agent_id: attribution.agentId, ...context },
     },
     async () => {
       const minted = await mintTrackedQr({
-        brokerageId: actor.brokerageId, agentId: actor.agentId, label: input.label.trim(), destinationType: input.destinationType,
-        targetUrl: destination, listingId: input.listingId ?? null, marketingCampaignId: input.marketingCampaignId ?? null,
+        brokerageId: actor.brokerageId, agentId: attribution.agentId, label: input.label.trim(), destinationType: input.destinationType,
+        targetUrl: destination, listingId, marketingCampaignId: input.marketingCampaignId ?? null,
         expiresAt: input.expiresAt ?? null, purpose: input.purpose, origin, createdByUserId: actor.userId, mintContext: context, governed: true,
       }, db as never)
       return minted ? { kind: "minted", minted } : { kind: "refused" }
@@ -321,18 +610,29 @@ export async function editQrDestination(
   const origin = normalizeOrigin(deps.origin ?? null)
   if (!input?.qrCodeId) return { ok: false, code: "invalid", message: "Choose the code to change." }
   if (input.destinationType !== undefined && input.destinationType !== null && !isQrDestinationType(input.destinationType)) return { ok: false, code: "invalid", message: "Choose where scanners should land." }
+  // WAVE 153 (153E): the seat first (a suspended / revoked seat changes nothing), the code's scope after the row read.
+  const authority = await resolveQrAuthority(actor, { ...deps, client: db })
+  if (!authority.ok) return authority
 
   const { data, error } = await db.from("qr_codes").select(EDIT_COLUMNS).eq("id", input.qrCodeId).eq("brokerage_id", actor.brokerageId).maybeSingle()
   if (error && isAbsentColumnRefusal(error)) return { ok: false, code: "unavailable", message: "Destination history isn't switched on for your account yet, so the destination wasn't changed. Platform support can finish the update." }
   if (error) return { ok: false, code: "refused", message: "We couldn't load this code, so nothing was changed. Try again in a moment." }
   const row = data as { id: string; slug: string; target_url: string; destination_type: string | null; is_active: boolean | null; expires_at: string | null; retired_at: string | null; retired_reason: string | null; destination_history: QrDestinationVersion[] | null } | null
   if (!row) return { ok: false, code: "not_found", message: "That QR code isn't in your account." }
+  const access = await decideCodeAccess(db, actor, authority.authority, row.id)
+  if (!access.ok) return access
   const state = qrLifecycleState(row)
   if (state === "retired" || state === "revoked") return { ok: false, code: "terminal", message: "This code is retired, so its destination can't change. Duplicate it to print a new code with a new destination." }
 
   const hosts = await loadQrTenantHosts(db, actor.brokerageId)
   const verdict = validateQrDestination({ url: input.targetUrl, appOrigins: [...(deps.appOrigins ?? []), origin], tenantHosts: [...hosts.customDomains, ...hosts.websiteHosts], ownSlug: row.slug })
   if (!verdict.ok) return { ok: false, code: "unsafe_destination", message: verdict.message }
+  // Re-pointing a code at a listing's page is putting a code on that listing — the same rule as the mint.
+  const pathListingId = verdict.kind === "in_app" ? listingIdInDestination(verdict.url) : null
+  if (pathListingId) {
+    const l = await decideListingAccess(db, actor, authority.authority, pathListingId)
+    if (!l.ok) return l
+  }
   const nextType = input.destinationType === undefined ? row.destination_type : input.destinationType
   if (verdict.url === row.target_url && nextType === row.destination_type) {
     return { ok: true, unchanged: true, targetUrl: row.target_url, destinationType: row.destination_type, history: row.destination_history ?? [] }
@@ -420,6 +720,9 @@ export async function changeQrLifecycle(
   if (!["pause", "resume", "retire", "revoke_unsafe"].includes(input.action)) return { ok: false, code: "invalid", message: "Choose pause, resume, retire or turn off." }
   if (input.action === "revoke_unsafe" && !(input.reason ?? "").trim()) return { ok: false, code: "invalid", message: "Say why the destination is unsafe — it goes on the code's record." }
 
+  const authority = await resolveQrAuthority(actor, { ...deps, client: db })
+  if (!authority.ok) return authority
+
   const needsRetirement = input.action === "retire" || input.action === "revoke_unsafe"
   let { data, error } = await db.from("qr_codes").select("id, is_active, expires_at, retired_at, retired_reason").eq("id", input.qrCodeId).eq("brokerage_id", actor.brokerageId).maybeSingle()
   if (error && isAbsentColumnRefusal(error)) {
@@ -429,6 +732,9 @@ export async function changeQrLifecycle(
   if (error) return { ok: false, code: "refused", message: "We couldn't load this code, so nothing was changed. Try again in a moment." }
   if (!data) return { ok: false, code: "not_found", message: "That QR code isn't in your account." }
   const row = data as { id: string; is_active: boolean | null; expires_at: string | null; retired_at?: string | null; retired_reason?: string | null }
+  // WAVE 153 (153E): pause / resume / retire / turn off only a code inside this person's scope.
+  const access = await decideCodeAccess(db, actor, authority.authority, row.id)
+  if (!access.ok) return access
   const before = qrLifecycleState(row)
   const decision = lifecycleTransition(before, input.action, new Date().toISOString())
   if (!decision.ok) return decision
@@ -477,6 +783,11 @@ export async function duplicateQrDesign(
   if (error && isAbsentColumnRefusal(error)) ({ data, error } = await db.from("qr_codes").select("id, label, purpose, destination_type, target_url, slug, listing_id, marketing_campaign_id").eq("id", input.sourceQrCodeId).eq("brokerage_id", actor.brokerageId).maybeSingle())
   if (error) return { ok: false, code: "refused", message: "We couldn't load the code to copy, so nothing was created. Try again in a moment." }
   if (!data) return { ok: false, code: "not_found", message: "That QR code isn't in your account." }
+  // WAVE 153 (153E): copy only a code inside this person's scope (the mint below re-checks the seat, listing and campaign).
+  const authority = await resolveQrAuthority(actor, { ...deps, client: db })
+  if (!authority.ok) return authority
+  const access = await decideCodeAccess(db, actor, authority.authority, input.sourceQrCodeId)
+  if (!access.ok) return access
   const src = data as { id: string; label: string; purpose: string | null; destination_type: string | null; target_url: string; slug: string; listing_id: string | null; marketing_campaign_id: string | null; mint_context?: Partial<QrMintContext> | null }
   const ctx = src.mint_context ?? {}
   // The source's own landing is ITS landing — a copy lands on its own (empty target → the minter's default).
@@ -530,6 +841,12 @@ export async function loadQrActivity(qrCodeId: string, actor: QrActor, deps: QrD
   if (codeErr && isAbsentColumnRefusal(codeErr)) ({ data: code, error: codeErr } = await db.from("qr_codes").select("id, lead_count").eq("id", qrCodeId).eq("brokerage_id", actor.brokerageId).maybeSingle())
   if (codeErr) return { ok: false, code: "refused", message: "We couldn't load this code's activity. Try again in a moment." }
   if (!code) return { ok: false, code: "not_found", message: "That QR code isn't in your account." }
+  // WAVE 153 (153E): a code's scan history is shown to the people who manage it — the board lists only those codes,
+  // and the door agrees with the list (an id typed by hand reaches no further).
+  const authority = await resolveQrAuthority(actor, { ...deps, client: db })
+  if (!authority.ok) return authority
+  const access = await decideCodeAccess(db, actor, authority.authority, qrCodeId)
+  if (!access.ok) return access
   let { data: events, error: evErr } = await db.from("qr_scan_events").select("scanned_at, traffic_class, visitor_key, device_class, contact_id, referrer").eq("qr_code_id", qrCodeId).eq("brokerage_id", actor.brokerageId).order("scanned_at", { ascending: false }).limit(500)
   if (evErr && isAbsentColumnRefusal(evErr)) ({ data: events, error: evErr } = await db.from("qr_scan_events").select("scanned_at, contact_id, referrer").eq("qr_code_id", qrCodeId).eq("brokerage_id", actor.brokerageId).order("scanned_at", { ascending: false }).limit(500))
   if (evErr) return { ok: false, code: "refused", message: "We couldn't load this code's scans. Try again in a moment." }

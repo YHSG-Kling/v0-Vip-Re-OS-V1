@@ -698,10 +698,12 @@ export async function recordMissionOutcomes(
 //     — credits are unique per (campaign, deal, model), and scans / touchpoints never carry money.
 // AUTHORITY: the tenant and the viewer come from the SESSION (callers pass the session's own ids — never a body or a
 // parameter). Scope is the ONE hierarchy answer (resolveViewerHierarchy) and, for a team lead, the ONE team roster
-// (resolveTeamLeadContactScope). Commission DOLLARS show only to the finance roster (isBrokerageFinanceAdmin), the
-// books reader (compliance_officer, m467), the tenant principal (m526) / the lead of the teams in view (m473), and a
-// solo-tier subscriber (their own broker — requireTenantAdminOrSoloOwner's parity rule); an agent sees counts, costs
-// and closings with no commission amount (CLAUDE.md §5). A contact or vendor seat is refused. Platform staff read
+// (resolveTeamLeadContactScope). Commission DOLLARS (wave 153, lane 153B — owner ruling 5 "commission amounts should be
+// showed to the agent and team lead", superseding wave 152's agent-sees-no-commission rule): the finance roster
+// (isBrokerageFinanceAdmin), the books reader (compliance_officer, m467), the tenant principal (m526) and a solo-tier
+// subscriber see every row; the lead of the teams in view (m473) sees their TEAM's agents' rows; every other agent sees
+// THEIR OWN rows — never another agent's private payout and never the business's net (RoiMoneyTier, moneyOf). One
+// commission truth (agent_commissions, else the finalized deal amount) feeds every tier. A contact or vendor seat is refused. Platform staff read
 // only the tenant their session sits in (an approved support impersonation IS that session); no parameter can name
 // another tenant, and any row stamped with another tenant is dropped and counted.
 
@@ -801,7 +803,7 @@ interface RoiDealFact {
   buyer_contact_id: string | null; seller_contact_id: string | null; contact_id: string | null
 }
 interface RoiCommissionFact {
-  id: string; transaction_id: string; status: string | null; gross_commission: number | null
+  id: string; transaction_id: string; agent_id?: string | null; status: string | null; gross_commission: number | null
   net_to_brokerage: number | null; brokerage_commission: number | null; net_to_agent: number | null; agent_commission: number | null
   deposit_received_at: string | null; paid_at: string | null
 }
@@ -823,9 +825,20 @@ function roiDealState(d: Pick<RoiDealFact, "status" | "deleted_at">): DealState 
   return "open"
 }
 
-interface DealMoney { earnedCents: number | null; basis: "commission_ledger" | "finalized" | "not_finalized" | "disputed"; receivedCents: number; disbursedCents: number; netBrokerageCents: number | null; refs: string[] }
-/** PURE — what a CLOSED deal earned, from validated facts only (the commission ledger, else a finalized amount). */
-function roiDealMoney(d: RoiDealFact, rows: RoiCommissionFact[]): DealMoney {
+interface DealMoney { earnedCents: number | null; basis: "commission_ledger" | "finalized" | "not_finalized" | "disputed" | "share_not_established"; receivedCents: number; disbursedCents: number; netBrokerageCents: number | null; refs: string[] }
+/**
+ * PURE — what a CLOSED deal earned, from validated facts only (the commission ledger, else a finalized amount).
+ * `rowAgents` (wave 153, own / team tier): only THOSE agents' commission rows count — another agent's private payout on the
+ * same deal is never summed into this view. With no ledger rows, the deal's finalized commission stands in only when every
+ * agent on the deal is one of `rowAgents` (it is wholly theirs); otherwise their share is not established — never guessed.
+ */
+function roiDealMoney(d: RoiDealFact, allRows: RoiCommissionFact[], rowAgents: ReadonlySet<string> | null = null): DealMoney {
+  const rows = rowAgents ? allRows.filter((r) => !!r.agent_id && rowAgents.has(r.agent_id)) : allRows
+  if (rowAgents && allRows.length > 0 && rows.length === 0) return { earnedCents: null, basis: "share_not_established", receivedCents: 0, disbursedCents: 0, netBrokerageCents: null, refs: [] }
+  if (rowAgents && allRows.length === 0) {
+    const onDeal = [d.agent_id, d.buyer_agent_id, d.seller_agent_id].filter((x): x is string => !!x)
+    if (onDeal.length === 0 || onDeal.some((a) => !rowAgents.has(a))) return { earnedCents: null, basis: "share_not_established", receivedCents: 0, disbursedCents: 0, netBrokerageCents: null, refs: [`transactions:${d.id}`] }
+  }
   const refs = rows.map((r) => `agent_commissions:${r.id}`)
   if (rows.length > 0) {
     if (rows.some((r) => r.status === "disputed")) return { earnedCents: null, basis: "disputed", receivedCents: 0, disbursedCents: 0, netBrokerageCents: null, refs }
@@ -858,6 +871,20 @@ function allocateByWeight(earned: number, rows: RoiCreditFact[]): Map<string, nu
   return out
 }
 
+/**
+ * WHOSE COMMISSION DOLLARS THIS VIEWER SEES (wave 153, lane 153B — owner ruling 5, 2026-11-14: "commission amounts should be
+ * showed to the agent and team lead"; it SUPERSEDES wave 152's agent-sees-no-commission rule here):
+ *   · full — the finance roster, the books reader (compliance_officer, m467), the tenant principal (m526), a solo subscriber:
+ *            every commission row of the deals in view, the business's net included;
+ *   · team — the lead of the teams in view (m473 team books): the commission rows of THEIR TEAMS' agents only — a co-agent
+ *            from outside the team on the same deal is never summed in;
+ *   · own  — anyone else with an agent seat: THEIR OWN commission rows only (earned / received / paid to them). The business's
+ *            net and other agents' payouts are not part of this view (directive B3: "do not publish the full brokerage
+ *            waterfall to all agents merely because they see their split");
+ *   · none — a seat with no agent row and no books authority: counts and costs, no dollars.
+ */
+type RoiMoneyTier = "full" | "team" | "own" | "none"
+
 interface RoiViewer {
   userId: string; brokerageId: string; userType: string
   kind: "tenant" | "offices" | "teams" | "own"
@@ -867,12 +894,24 @@ interface RoiViewer {
   userIds: string[] | null
   teamIds: string[]
   moneyVisible: boolean
+  moneyTier: RoiMoneyTier
+  /** null = every commission row of the deals in view; otherwise only the rows whose agent_id is listed (own / team tier). */
+  moneyRowAgentIds: string[] | null
   moneyBasis: string
   basis: string[]
 }
 
 const ROI_MONEY_HIDDEN_NOTE =
-  "Commission amounts are hidden in this view. Counts, costs and closings are complete; dollar amounts from deals show only to your account's finance administrators. To see them, ask an account administrator."
+  "Commission amounts are not shown in this view. Counts, costs and closings are complete; the agent on a deal sees their own amounts, a team lead sees their team's, and your account's finance administrators see the rest. To see them, ask an account administrator."
+
+const ROI_OWN_SHARE_NOTE =
+  "These are your own commission amounts on the deals you are on: what you earned, what was received and what was paid to you. The business's share and other agents' payouts are not part of this view."
+
+/** PURE — the money half of a viewer, from its tier (one place, so every branch below says the same thing). */
+function moneyOf(tier: RoiMoneyTier, rowAgentIds: string[] | null, basis: string): Pick<RoiViewer, "moneyVisible" | "moneyTier" | "moneyRowAgentIds" | "moneyBasis"> {
+  if (tier === "own" && (!rowAgentIds || rowAgentIds.length === 0)) return { moneyVisible: false, moneyTier: "none", moneyRowAgentIds: [], moneyBasis: "no agent seat and no books authority" }
+  return { moneyVisible: tier !== "none", moneyTier: tier, moneyRowAgentIds: tier === "full" ? null : (rowAgentIds ?? []), moneyBasis: basis }
+}
 
 /** A reader refusal composed by THE tenant presenter (lib/errors/index.ts presentTenantMessage — wave 152, lane 152K
  *  presenter wiring): what happened · what it affects · who acts next · ONE action, through the ONE tenant-copy gate.
@@ -916,35 +955,50 @@ async function resolveRoiViewer(svc: RoiSvc, session: { userId: string; brokerag
     const { resolveTeamLeadContactScope } = await import("@/lib/auth/lead-visibility")
     const t = await resolveTeamLeadContactScope(svc, session)
     if (!t.ok) return held
-    if (t.scope.kind === "brokerage") return { ok: true, viewer: { ...base, kind: "tenant", agentIds: null, userIds: null, teamIds: [...h.scope.teamIds], moneyVisible: true, moneyBasis: "tenant principal (the team is the workspace)" } }
+    if (t.scope.kind === "brokerage") return { ok: true, viewer: { ...base, kind: "tenant", agentIds: null, userIds: null, teamIds: [...h.scope.teamIds], ...moneyOf("full", null, "tenant principal (the team is the workspace)") } }
     const own = await agentRows((q) => q.eq("user_id", session.userId))
     if (!own.ok) return held
-    if (t.scope.kind === "none") return { ok: true, viewer: { ...base, kind: "own", agentIds: own.ids, userIds: [session.userId], teamIds: [], moneyVisible: soloParity, moneyBasis: soloParity ? "solo subscriber" : "no team is anchored to your account" } }
+    if (t.scope.kind === "none") return { ok: true, viewer: { ...base, kind: "own", agentIds: own.ids, userIds: [session.userId], teamIds: [], ...(soloParity ? moneyOf("full", null, "solo subscriber") : moneyOf("own", own.ids, "your own commission (no team is anchored to your account)")) } }
     const roster = t.scope.agentIds.length ? await agentRows((q) => q.in("id", t.scope.kind === "team" ? t.scope.agentIds : [])) : { ok: true as const, ids: [], userIds: [] }
     if (!roster.ok) return held
-    return { ok: true, viewer: { ...base, kind: "teams", agentIds: [...new Set([...own.ids, ...roster.ids])], userIds: [...new Set([...roster.userIds, session.userId])], teamIds: [...t.scope.teamIds], moneyVisible: true, moneyBasis: "leads the teams in view (team books)" } }
+    const teamAgents = [...new Set([...own.ids, ...roster.ids])]
+    return { ok: true, viewer: { ...base, kind: "teams", agentIds: teamAgents, userIds: [...new Set([...roster.userIds, session.userId])], teamIds: [...t.scope.teamIds], ...moneyOf("team", teamAgents, "leads the teams in view (team books — the team's agents' commission only)") } }
+  }
+  // Everyone below without books authority sees THEIR OWN commission rows (owner ruling 5) — resolved once, only when needed.
+  const ownMoney = async (): Promise<{ ok: true; m: ReturnType<typeof moneyOf>; ids: string[] } | { ok: false }> => {
+    if (financeRoster) return { ok: true, m: moneyOf("full", null, "finance roster"), ids: [] }
+    if (soloParity) return { ok: true, m: moneyOf("full", null, "solo subscriber"), ids: [] }
+    const own = await agentRows((q) => q.eq("user_id", session.userId))
+    if (!own.ok) return { ok: false }
+    return { ok: true, m: moneyOf("own", own.ids, "your own commission on the deals you are on"), ids: own.ids }
   }
   if (h.scope.kind === "tenant") {
-    const money = financeRoster || soloParity
-    return { ok: true, viewer: { ...base, kind: "tenant", agentIds: null, userIds: null, teamIds: [...h.scope.teamIds], moneyVisible: money, moneyBasis: money ? (financeRoster ? "finance roster" : "solo subscriber") : "not a finance administrator" } }
+    const m = await ownMoney()
+    if (!m.ok) return held
+    return { ok: true, viewer: { ...base, kind: "tenant", agentIds: null, userIds: null, teamIds: [...h.scope.teamIds], ...m.m } }
   }
   if (h.scope.kind === "offices") {
     const locs = h.scope.locationIds, teams = h.scope.teamIds
     const terms = [`location_id.in.(${locs.join(",")})`, ...(teams.length ? [`team_id.in.(${teams.join(",")})`] : [])]
     const a = await agentRows((q) => q.or(terms.join(",")))
     if (!a.ok) return held
-    return { ok: true, viewer: { ...base, kind: "offices", agentIds: a.ids, userIds: [...new Set([...a.userIds, session.userId])], teamIds: [...teams], moneyVisible: financeRoster, moneyBasis: financeRoster ? "finance roster (offices in view)" : "not a finance administrator" } }
+    const m = await ownMoney()
+    if (!m.ok) return held
+    return { ok: true, viewer: { ...base, kind: "offices", agentIds: a.ids, userIds: [...new Set([...a.userIds, session.userId])], teamIds: [...teams], ...(financeRoster ? moneyOf("full", null, "finance roster (offices in view)") : m.m) } }
   }
   if (h.scope.kind === "teams") {
-    // A team scope that is NOT leadership of those teams (a team grant): counts for the teams' agents, no team books.
+    // A team scope that is NOT leadership of those teams (a team grant): counts for the teams' agents; dollars only for the
+    // viewer's own deals (no team books without leading the team).
     const byTeam = await agentRows((q) => q.in("team_id", h.scope.teamIds))
     if (!byTeam.ok) return held
-    return { ok: true, viewer: { ...base, kind: "teams", agentIds: byTeam.ids, userIds: [...new Set([...byTeam.userIds, session.userId])], teamIds: [...h.scope.teamIds], moneyVisible: financeRoster, moneyBasis: financeRoster ? "finance roster" : "team access without team books" } }
+    const m = await ownMoney()
+    if (!m.ok) return held
+    return { ok: true, viewer: { ...base, kind: "teams", agentIds: byTeam.ids, userIds: [...new Set([...byTeam.userIds, session.userId])], teamIds: [...h.scope.teamIds], ...m.m } }
   }
   const own = await agentRows((q) => q.eq("user_id", session.userId))
   if (!own.ok) return held
-  const money = financeRoster || soloParity
-  return { ok: true, viewer: { ...base, kind: "own", agentIds: own.ids, userIds: [session.userId], teamIds: [], moneyVisible: money, moneyBasis: money ? (soloParity ? "solo subscriber" : "finance roster") : "agent view (commission is off an agent's display)" } }
+  const money = financeRoster ? moneyOf("full", null, "finance roster") : soloParity ? moneyOf("full", null, "solo subscriber") : moneyOf("own", own.ids, "your own commission on the deals you are on")
+  return { ok: true, viewer: { ...base, kind: "own", agentIds: own.ids, userIds: [session.userId], teamIds: [], ...money } }
 }
 
 async function readByIds(svc: RoiSvc, table: string, cols: string, brokerageId: string, col: string, ids: string[], extra?: (q: any) => any): Promise<{ ok: true; rows: any[] } | { ok: false; error: string }> {
@@ -1006,7 +1060,8 @@ export interface RoiOutcomeLedger {
   generatedAt: string
   window: { sinceDay: string; untilDay: string }
   model: AttributionModel
-  scope: { kind: RoiViewer["kind"]; basis: string[]; moneyVisible: boolean; moneyNote: string | null }
+  /** moneyTier (wave 153): whose commission dollars the figures are — full · team (the team's agents) · own (the viewer's own) · none. */
+  scope: { kind: RoiViewer["kind"]; basis: string[]; moneyVisible: boolean; moneyTier: RoiMoneyTier; moneyNote: string | null }
   activity: { touchpointsSent: number; qrScans: number; qrFirstScans: number; mailResponses: number }
   acquisition: { contactsReached: number; contactsWithDeals: number }
   engagement: { appointments: number }
@@ -1015,6 +1070,24 @@ export interface RoiOutcomeLedger {
   revenue: { projectedCents: number; contractedCents: number; earnedCents: number; receivedCents: number; disbursedCents: number; netBrokerageCents: number | null; closedNotEstablished: number } | null
   attribution: { sourcedEarnedCents: number; sourcedDeals: number; reconciled: boolean; reconciliation: Array<{ transactionId: string; earnedCents: number; creditedCents: number }>; influencedDeals: number; influenceIsAdditive: false } | null
   ratios: { realizedReturnOnMarketingSpend: RoiRatio; costPerContact: RoiRatio; costPerAppointment: RoiRatio; costPerClosedTransaction: RoiRatio }
+  /**
+   * A3 (wave 153, lane 153B — directive 153A/A3: "measures that help make choices") — measured only, each N/A with its reason
+   * otherwise. Money values are cents and follow the viewer's money tier; the spend-divided ones use the same fully-recorded
+   * campaigns as `ratios`.
+   */
+  decisionMetrics: {
+    /** spend ÷ distinct reached Contacts with a verified email or phone (contacts.email_verified / phone_verified). */
+    costPerVerifiedContact: RoiRatio
+    costPerAppointment: RoiRatio
+    costPerClosing: RoiRatio
+    /** earned commission credited to the campaigns in view (cents). */
+    attributableEarnedCommission: RoiRatio
+    /** attributable earned commission − recorded spend, over the fully-recorded campaigns (cents). */
+    netContribution: RoiRatio
+    acquisitionCostAvoidedByDedup: RoiRatio
+    /** the first-response time of the Contacts the campaigns reached who entered in the window (lib/ai-isa/speed-to-lead-policy.ts summarizeFirstTouchLatency). */
+    leadResponse: { medianSeconds: number | null; withinSlaShare: number | null; measured: number; na: string | null }
+  }
   campaigns: RoiCampaignRow[]
   placements: RoiPlacementRow[]
   journeys: RoiJourney[]
@@ -1091,7 +1164,7 @@ export async function loadRoiOutcomeLedger(
     const dealsInView = deals.filter(inViewDeal)
 
     // ── 3. Commission ledger rows for the deals in view ──
-    const cm = await readByIds(svc, "agent_commissions", "id, brokerage_id, transaction_id, status, gross_commission, net_to_brokerage, brokerage_commission, net_to_agent, agent_commission, deposit_received_at, paid_at", brokerageId, "transaction_id", dealsInView.map((d) => d.id))
+    const cm = await readByIds(svc, "agent_commissions", "id, brokerage_id, transaction_id, agent_id, status, gross_commission, net_to_brokerage, brokerage_commission, net_to_agent, agent_commission, deposit_received_at, paid_at", brokerageId, "transaction_id", dealsInView.map((d) => d.id))
     if (!cm.ok) return refused("commission ledger")
     const commByDeal = new Map<string, RoiCommissionFact[]>()
     for (const r of mine(cm.rows as Array<RoiCommissionFact & { brokerage_id: string }>)) commByDeal.set(r.transaction_id, [...(commByDeal.get(r.transaction_id) ?? []), r])
@@ -1138,6 +1211,11 @@ export async function loadRoiOutcomeLedger(
     const showings = uniq(mine(shR.rows as Array<{ id: string; brokerage_id: string; contact_id: string; status: string | null; created_at: string }>)).filter((s) => !/cancel/i.test(String(s.status ?? "")))
     const apptByContact = new Map<string, string[]>()
     for (const s of showings) apptByContact.set(s.contact_id, [...(apptByContact.get(s.contact_id) ?? []), s.id])
+    // A3 (wave 153): which reached people are VERIFIED Contacts, and how fast each new one got a first response.
+    const ctR = await readByIds(svc, "contacts", "id, brokerage_id, created_at, first_touched_at, first_touch_channel, email_verified, phone_verified", brokerageId, "id", reachedAll)
+    if (!ctR.ok) return refused("contacts")
+    const reachedContacts = mine(ctR.rows as Array<{ id: string; brokerage_id: string; created_at: string | null; first_touched_at: string | null; first_touch_channel: string | null; email_verified: boolean | null; phone_verified: boolean | null }>)
+    const verified = new Set(reachedContacts.filter((c) => c.email_verified === true || c.phone_verified === true).map((c) => c.id))
 
     // ── 5. Spend per campaign: confirmed / partial / tenant-reported / unknown / none ──
     const spend = new Map<string, RoiCampaignRow["cost"]>()
@@ -1176,10 +1254,12 @@ export async function loadRoiOutcomeLedger(
     const creditsByDeal = new Map<string, RoiCreditFact[]>()
     for (const c of allCredits) creditsByDeal.set(c.transaction_id, [...(creditsByDeal.get(c.transaction_id) ?? []), c])
     const money = new Map<string, DealMoney>()
-    for (const d of dealsInView) if (roiDealState(d) === "closed") money.set(d.id, roiDealMoney(d, commByDeal.get(d.id) ?? []))
+    // Own / team tier (wave 153, owner ruling 5): only the viewer's own — or their team's agents' — commission rows count.
+    const rowAgents = v.moneyRowAgentIds ? new Set(v.moneyRowAgentIds) : null
+    for (const d of dealsInView) if (roiDealState(d) === "closed") money.set(d.id, roiDealMoney(d, commByDeal.get(d.id) ?? [], rowAgents))
     const camp = new Map(campaignIds.map((id) => [id, { sourced: new Set<string>(), influenced: new Set<string>(), escrow: new Set<string>(), outside: new Set<string>(), cents: 0, byModel: {} as Record<string, number> }]))
     const reconciliation: Array<{ transactionId: string; earnedCents: number; creditedCents: number }> = []
-    let sourcedEarned = 0, notEstablishedClosed = 0
+    let sourcedEarned = 0, notEstablishedClosed = 0, shareNotEstablished = 0
     const influencedDeals = new Set<string>(), sourcedDeals = new Set<string>()
     const contactsWithDeals = new Set<string>()
     for (const d of deals) {
@@ -1198,7 +1278,7 @@ export async function loadRoiOutcomeLedger(
       influencedDeals.add(d.id)
       for (const c of [d.buyer_contact_id, d.seller_contact_id, d.contact_id]) if (c) contactsWithDeals.add(c)
       const m = money.get(d.id)!
-      if (m.earnedCents == null) { notEstablishedClosed++; continue }
+      if (m.earnedCents == null) { if (m.basis === "share_not_established") shareNotEstablished++; else notEstablishedClosed++; continue }
       const byModel = new Map<string, RoiCreditFact[]>()
       for (const c of cr) byModel.set(c.attribution_model, [...(byModel.get(c.attribution_model) ?? []), c])
       for (const [model, rows] of byModel) {
@@ -1229,6 +1309,8 @@ export async function loadRoiOutcomeLedger(
       }
     }
     if (closedCount === 0) netBrokerage = null
+    // The business's net is the brokerage waterfall — not part of an agent's own-commission view (directive B3).
+    if (v.moneyTier === "own") netBrokerage = null
 
     // ── 7. Campaign rows, ratios ──
     const rows: RoiCampaignRow[] = campaigns.map((c) => {
@@ -1274,6 +1356,27 @@ export async function loadRoiOutcomeLedger(
     const roms = !v.moneyVisible ? naRatio(ROI_MONEY_HIDDEN_NOTE)
       : eligible.length === 0 ? naRatio(rows.length === 0 ? "No campaigns are in this view yet." : "No campaign in this view has its full spend recorded, so a return cannot be calculated.")
       : realizedReturnOnMarketingSpend({ contributionCents: eligibleContribution, spendCents: eligibleSpend, spendStatus: "confirmed" })
+
+    // ── 7b. A3 decision metrics — measured only; N/A with the reason ──
+    const moneyNa = v.moneyVisible ? null : ROI_MONEY_HIDDEN_NOTE
+    const eligibleVerified = new Set(eligible.flatMap((r) => [...reach.get(r.campaignId)!].filter((ct) => verified.has(ct)))).size
+    const { summarizeFirstTouchLatency } = await import("@/lib/ai-isa/speed-to-lead-policy")
+    const entered = reachedContacts.filter((c) => inWin(day(c.created_at)))
+    const latency = summarizeFirstTouchLatency(entered.map((c) => ({ createdAt: c.created_at, firstTouchedAt: c.first_touched_at, channel: c.first_touch_channel })))
+    const decisionMetrics: RoiOutcomeLedger["decisionMetrics"] = {
+      costPerVerifiedContact: costPer(eligibleSpend, allComplete, eligibleVerified, "verified contact"),
+      costPerAppointment: costPer(eligibleSpend, allComplete, eligibleAppts, "appointment"),
+      costPerClosing: costPer(eligibleSpend, allComplete, eligibleSourced, "closed deal"),
+      attributableEarnedCommission: moneyNa ? naRatio(moneyNa) : { value: sourcedEarned, na: null },
+      netContribution: moneyNa ? naRatio(moneyNa)
+        : eligible.length === 0 ? naRatio(rows.length === 0 ? "No campaigns are in this view yet." : "No campaign in this view has its full spend recorded, so a net contribution cannot be calculated.")
+          : eligibleContribution == null ? naRatio("A closed deal's commission is not finalized yet, so what was earned is not established.")
+            : { value: eligibleContribution - eligibleSpend, na: null },
+      acquisitionCostAvoidedByDedup: naRatio("The duplicate check before a paid pull decides in memory and records no avoided pull, so the cost it saved is not measured yet."),
+      leadResponse: latency.touchedCount > 0
+        ? { medianSeconds: latency.medianSeconds, withinSlaShare: latency.pctWithinSla, measured: latency.touchedCount, na: null }
+        : { medianSeconds: null, withinSlaShare: null, measured: 0, na: entered.length === 0 ? "No Contact your campaigns reached entered in this window, so a response time is not measured." : "None of the Contacts your campaigns reached in this window has a recorded first response yet, so a response time is not measured." },
+    }
 
     // ── 8. Journeys: Contact → touch → scan / response → appointment → contract → close, with evidence ──
     const journeys: RoiJourney[] = []
@@ -1336,6 +1439,7 @@ export async function loadRoiOutcomeLedger(
     // ── 10. Completeness, "why this number?", recommendations ──
     const notes: string[] = []
     if (notEstablishedClosed) notes.push(`${notEstablishedClosed} closed deal(s) have no finalized commission yet; they count as closings but add no earned dollars until finalized.`)
+    if (shareNotEstablished) notes.push(`${shareNotEstablished} closed deal(s) in this view do not record ${v.moneyTier === "team" ? "your team's" : "your own"} share of the commission yet; they count as closings but add no dollars here until it is recorded.`)
     if (byStatus.unknown) notes.push(`${byStatus.unknown} campaign(s) have no recorded spend; their cost is unknown, not $0.`)
     if (byStatus.partial) notes.push(`${byStatus.partial} campaign(s) have spend recorded for only part of their activity.`)
     if (reversed) notes.push(`${reversed} deal(s) fell through in this window; any credit they carried is excluded.`)
@@ -1343,7 +1447,7 @@ export async function loadRoiOutcomeLedger(
     if (!reconciled) notes.push("At least one closed deal's attribution does not split exactly; its campaign shares are held for review.")
     if (foreign) notes.push(`${foreign} row(s) stamped with another workspace were excluded.`)
     notes.push("Figures are restated as of now: a commission corrected after the window closed changes this window's earned amount, and a deal reassigned to another agent moves with it.")
-    const label: RoiOutcomeLedger["completeness"]["label"] = notEstablishedClosed || byStatus.unknown || byStatus.partial || !reconciled ? (eligible.length || sourcedDeals.size ? "partial" : "incomplete") : "complete"
+    const label: RoiOutcomeLedger["completeness"]["label"] = notEstablishedClosed || shareNotEstablished || byStatus.unknown || byStatus.partial || !reconciled ? (eligible.length || sourcedDeals.size ? "partial" : "incomplete") : "complete"
 
     const recommendations: RoiRecommendation[] = []
     const byChannel = new Map<string, RoiCampaignRow[]>()
@@ -1384,7 +1488,7 @@ export async function loadRoiOutcomeLedger(
 
     const ledger: RoiOutcomeLedger = {
       generatedAt: new Date().toISOString(), window: { sinceDay, untilDay }, model: ROI_SOURCED_MODEL,
-      scope: { kind: v.kind, basis: [...v.basis, `money: ${v.moneyBasis}`], moneyVisible: v.moneyVisible, moneyNote: v.moneyVisible ? null : ROI_MONEY_HIDDEN_NOTE },
+      scope: { kind: v.kind, basis: [...v.basis, `money: ${v.moneyBasis}`], moneyVisible: v.moneyVisible, moneyTier: v.moneyTier, moneyNote: v.moneyTier === "own" ? ROI_OWN_SHARE_NOTE : v.moneyVisible ? null : ROI_MONEY_HIDDEN_NOTE },
       activity: rows.reduce((s, r) => ({ touchpointsSent: s.touchpointsSent + r.activity.touchpointsSent, qrScans: s.qrScans + r.activity.qrScans, qrFirstScans: s.qrFirstScans + r.activity.qrFirstScans, mailResponses: s.mailResponses + r.activity.mailResponses }), { touchpointsSent: 0, qrScans: 0, qrFirstScans: 0, mailResponses: 0 }),
       acquisition: { contactsReached: reachedAll.length, contactsWithDeals: contactsWithDeals.size },
       engagement: { appointments: showings.length },
@@ -1398,6 +1502,7 @@ export async function loadRoiOutcomeLedger(
         costPerAppointment: costPer(eligibleSpend, allComplete, eligibleAppts, "appointment"),
         costPerClosedTransaction: costPer(eligibleSpend, allComplete, eligibleSourced, "closed deal"),
       },
+      decisionMetrics,
       campaigns: rows, placements, journeys,
       providerEconomics: {
         shownAtAccountLevel: accountLevel,
@@ -1417,6 +1522,7 @@ export async function loadRoiOutcomeLedger(
         disbursed: "Agent payouts recorded as paid on those deals.",
         pipeline: "Projected (open, no contract) and contracted (under contract) amounts are estimates for deals that have not closed — never part of the return.",
         costs: "Confirmed costs come from ad spend and direct-mail piece costs; tenant-reported is the amount entered on a campaign; unknown means nothing is recorded.",
+        decisionMetrics: "Cost per verified Contact counts reached people whose email or phone is verified. Net contribution is the earned commission credited to campaigns minus their recorded spend, over the campaigns whose spend is fully recorded. Response time is how long a Contact your campaigns reached waited for a first response after entering, for people who entered in this window. A figure that is not measured says why instead of showing zero.",
         placements: "Where each QR code was printed, as recorded when it was created. Visits are split into likely people, automated or repeat scans, and scans recorded before that split existed. A placement's cost is its campaigns' whole recorded spend, counted only when those campaigns printed every code on that one placement — otherwise the spend is shared and no per-placement cost is shown.",
       },
       foreignRowsDropped: foreign,
@@ -1443,6 +1549,18 @@ export function roiOutcomeCsv(l: RoiOutcomeLedger): string {
   if (l.revenue) for (const [k, n] of Object.entries(l.revenue)) out.push(["revenue", k.replace(/Cents$/, "Usd"), k.endsWith("Cents") ? usd(n as number | null) : String(n ?? ""), ""])
   if (l.attribution) out.push(["attribution", "sourcedEarnedUsd", usd(l.attribution.sourcedEarnedCents), `reconciled ${l.attribution.reconciled}`], ["attribution", "influencedDeals", String(l.attribution.influencedDeals), "non-additive"])
   for (const [k, r] of Object.entries(l.ratios)) out.push(["ratio", k, ratio(r), r.na ?? ""])
+  // A3 (wave 153): the decision metrics, from the same object; money figures are dollars, N/A carries its reason
+  const dm = l.decisionMetrics
+  const money = (r: RoiRatio) => (r.value == null ? "N/A" : (r.value / 100).toFixed(2))
+  out.push(
+    ["decision", "costPerVerifiedContactUsd", money(dm.costPerVerifiedContact), dm.costPerVerifiedContact.na ?? ""],
+    ["decision", "costPerAppointmentUsd", money(dm.costPerAppointment), dm.costPerAppointment.na ?? ""],
+    ["decision", "costPerClosingUsd", money(dm.costPerClosing), dm.costPerClosing.na ?? ""],
+    ["decision", "attributableEarnedCommissionUsd", money(dm.attributableEarnedCommission), dm.attributableEarnedCommission.na ?? ""],
+    ["decision", "netContributionUsd", money(dm.netContribution), dm.netContribution.na ?? ""],
+    ["decision", "acquisitionCostAvoidedByDedupUsd", money(dm.acquisitionCostAvoidedByDedup), dm.acquisitionCostAvoidedByDedup.na ?? ""],
+    ["decision", "leadResponseMedianSeconds", dm.leadResponse.medianSeconds == null ? "N/A" : String(dm.leadResponse.medianSeconds), dm.leadResponse.na ?? `${dm.leadResponse.measured} measured`],
+  )
   out.push([], ["campaign", "type", "cost_status", "cost_usd", "contacts_reached", "appointments", "sourced_closed", "influenced_closed", "sourced_earned_usd", "realized_return", "cost_per_contact_usd", "note"])
   for (const c of l.campaigns) out.push([c.name, c.type, c.cost.status, usd(c.cost.cents), String(c.acquisition.contactsReached), String(c.engagement.appointments), String(c.results.sourcedDealsClosed), String(c.results.influencedDealsClosed), usd(c.revenue?.sourcedEarnedCents ?? null), ratio(c.ratios.realizedReturnOnMarketingSpend), c.ratios.costPerContact.value == null ? "N/A" : usd(c.ratios.costPerContact.value), c.ratios.realizedReturnOnMarketingSpend.na ?? ""])
   return out.map((r) => r.map(esc).join(",")).join("\n") + "\n"

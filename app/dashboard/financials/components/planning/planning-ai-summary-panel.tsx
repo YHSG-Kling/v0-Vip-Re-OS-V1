@@ -1,11 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Sparkles, Loader2, CheckCircle, AlertTriangle, Link as LinkIcon, Clock } from "lucide-react"
 import { aiGenerateProfitLossReport } from "@/app/actions/ai-financial-management"
+import { getTaxPlanAction } from "@/app/actions/tax-planning"
 import Link from "next/link"
 
 interface SyncStatus {
@@ -18,7 +19,12 @@ interface PlanningAiSummaryPanelProps {
   agentId: string
   ytdGCI: number
   ytdExpenses: number
-  estimatedTaxLiability: number
+  /**
+   * WAVE 153 (lane 153A): IGNORED. The parent computes this at a hardcoded 25% (agent-financials-client.tsx), a rate
+   * nobody entered; this panel now reads THE ONE estimator (getTaxPlanAction) instead. Kept optional only until the
+   * parent stops passing it (lane 153A Outside-lane request to 153B).
+   */
+  estimatedTaxLiability?: number
   syncStatus?: SyncStatus | null
 }
 
@@ -26,16 +32,25 @@ export function PlanningAiSummaryPanel({
   agentId,
   ytdGCI,
   ytdExpenses,
-  estimatedTaxLiability,
   syncStatus,
 }: PlanningAiSummaryPanelProps) {
   const [summary, setSummary] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
+  // The suggested reserve set aside so far + still suggested — only when the person has entered their rates (or their
+  // accountant's amounts). Otherwise null, and the row says so rather than subtracting an invented tax.
+  const [reserveSoFar, setReserveSoFar] = useState<number | null>(null)
+  useEffect(() => {
+    getTaxPlanAction().then((res) => {
+      if (res.success && res.plan.inputs.status === "ready" && res.plan.remainingSuggestedReserve != null) {
+        setReserveSoFar(res.plan.alreadySetAsideOrPaid + res.plan.remainingSuggestedReserve)
+      }
+    }).catch(() => {})
+  }, [])
 
   // Calculate key metrics
   const netIncome = ytdGCI - ytdExpenses
   const expenseRatio = ytdGCI > 0 ? (ytdExpenses / ytdGCI) * 100 : 0
-  const netAfterTax = netIncome - estimatedTaxLiability
+  const netAfterTax = reserveSoFar == null ? null : netIncome - reserveSoFar
 
   const handleGenerateSummary = async () => {
     setGenerating(true)
@@ -145,10 +160,14 @@ export function PlanningAiSummaryPanel({
             </div>
             
             <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
-              <span className="text-sm text-muted-foreground">Net After Est. Tax</span>
-              <span className={`text-sm font-semibold ${netAfterTax >= 0 ? "text-green-700" : "text-red-600"}`}>
-                {formatCurrency(netAfterTax)}
-              </span>
+              <span className="text-sm text-muted-foreground">Net after your tax reserve</span>
+              {netAfterTax == null ? (
+                <span className="text-xs text-muted-foreground">Enter your tax rates in the tax planner</span>
+              ) : (
+                <span className={`text-sm font-semibold ${netAfterTax >= 0 ? "text-green-700" : "text-red-600"}`}>
+                  {formatCurrency(netAfterTax)}
+                </span>
+              )}
             </div>
           </div>
         </div>

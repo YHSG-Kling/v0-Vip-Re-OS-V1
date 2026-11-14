@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
 // (generateText/resolveModel imports left with the deleted
 // analyzeFairHousingRiskService — see its tombstone below.)
-import { businessDaysInclusive } from "@/lib/compliance/trid-disclosure-clock"
+import { businessDaysInclusive, earliestConsummationDate } from "@/lib/compliance/trid-disclosure-clock"
 import { resolveBrokerageComplianceIdentity } from "@/lib/brokerage/compliance-identity"
 import { getAgentContext } from "@/lib/identity"
 
@@ -590,14 +590,19 @@ export async function monitorTRIDComplianceService(transactionId: string, client
     }
   }
 
+  // WAVE 153 (lane 153C) — CORRECTED: the CD rule is RECEIPT + three PRECISE business days (Saturdays count; consummation on the
+  // third business day following receipt — 12 CFR 1026.19(f)(1)(ii)–(iii), 1026.2(a)(6)). The inclusive weekday count here let a CD
+  // received Monday clear a Wednesday closing. The column now carries the lender-verified effective receipt (the receipt ledger is
+  // its only writer). The SAME rule the forward clock and the close gate read — no drift.
   if (timeline.closing_disclosure_delivered_date && timeline.scheduled_close_date) {
-    const days = getBusinessDays(timeline.closing_disclosure_delivered_date, timeline.scheduled_close_date)
-    if (days < 3) {
+    const earliest = earliestConsummationDate(String(timeline.closing_disclosure_delivered_date).slice(0, 10))
+    const close = String(timeline.scheduled_close_date).slice(0, 10)
+    if (close < earliest) {
       violations.push({
         type: "TRID_CD_EARLY_CLOSE",
         severity: "critical",
-        message: `Closing scheduled only ${days} business days after CD delivery (min 3 required)`,
-        days_violation: 3 - days,
+        message: `Closing is scheduled for ${close}, before the earliest permitted closing day ${earliest} (the buyer received the Closing Disclosure on ${String(timeline.closing_disclosure_delivered_date).slice(0, 10)})`,
+        earliest_consummation_date: earliest,
       })
     }
   }
@@ -649,6 +654,11 @@ export async function updateTRIDMilestoneService(params: {
 }) {
   const supabase = await createClient()
 
+  // WAVE 153 (lane 153C): the Closing Disclosure receipt is never a typed milestone — the receipt ledger is its only writer
+  // (lib/compliance/trid-disclosure-clock-evidence.ts). Refused here too, so no caller of the service can type it in.
+  if (params.milestone === "closing_disclosure_delivered_date") {
+    throw new Error("The Closing Disclosure's receipt is recorded from the lender's evidence, not typed as a milestone.")
+  }
   const updateData: any = {}
   updateData[params.milestone] = params.date
 

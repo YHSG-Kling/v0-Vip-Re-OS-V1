@@ -123,7 +123,7 @@ function roiWorld() {
       deal(T3, RA, "under_contract", K4, { amount: null, est: 8000, final: null }, "2026-10-28"),
       deal(TB, RB, "closed", KB, { amount: 5000, est: 5000, final: "2026-10-21T18:00:00.000Z" }, "2026-10-21"),
     ],
-    agent_commissions: [{ id: AC1, brokerage_id: RA, transaction_id: T1, status: "paid", gross_commission: 12000, net_to_brokerage: 3600, brokerage_commission: 3600, net_to_agent: 8400, agent_commission: 8400, deposit_received_at: "2026-10-26T12:00:00.000Z", paid_at: "2026-10-28T12:00:00.000Z" }],
+    agent_commissions: [{ id: AC1, brokerage_id: RA, transaction_id: T1, agent_id: AG1, status: "paid", gross_commission: 12000, net_to_brokerage: 3600, brokerage_commission: 3600, net_to_agent: 8400, agent_commission: 8400, deposit_received_at: "2026-10-26T12:00:00.000Z", paid_at: "2026-10-28T12:00:00.000Z" }],
     vendor_usage_tracking: [], ai_tool_usage: [], raw_scraped_leads: [], marketing_attribution_credits: [],
   }, { uuidIds: true, stampCreatedAt: true })
 }
@@ -523,9 +523,9 @@ scenario({
       ["the CSV export is built from the same ledger object", csv.length > 0 && csv.includes("Oak Street letters with QR")],
     ], [
       ["ADVERSE · the unknown-spend campaign reads Unknown and N/A, never $0", social?.cost?.status === "unknown" && social?.cost?.cents === null && social?.ratios?.realizedReturnOnMarketingSpend?.value === null],
-      ["ADVERSE · an agent sees counts and closings but NO commission dollars; a contact seat is refused", (agent as any).ok && (agent as any).ledger.revenue?.earnedCents == null && !(contact as any).ok],
+      ["ADVERSE · an agent sees their OWN commission (wave 153, owner ruling 5) but never the business's net; a contact seat is refused", (agent as any).ok && (agent as any).ledger.scope.moneyTier === "own" && (agent as any).ledger.revenue?.earnedCents === 1_200_000 && (agent as any).ledger.revenue?.netBrokerageCents === null && !(contact as any).ok],
       ["ADVERSE · the other tenant's mis-stamped touchpoint on the same person earns no credit on this tenant's deal", !foreignCredit],
-      ["POSITIVE CONTROL · the broker's view of the same ledger shows the commission", bl?.revenue?.earnedCents === 1_200_000],
+      ["POSITIVE CONTROL · the broker's view of the same ledger shows the commission AND the business's net — so the agent's null net is the role rule", bl?.revenue?.earnedCents === 1_200_000 && bl?.revenue?.netBrokerageCents === 360_000],
     ])
     return { ...h, detail: JSON.stringify({ failing: h.failing, broker: (broker as any).ok ? { revenue: bl.revenue, attribution: { sourced: bl.attribution?.sourcedEarnedCents, reconciled: bl.attribution?.reconciled }, mail: mail?.cost, social: social?.cost, kinds: [...kinds] } : (broker as any).error, agentRev: (agent as any).ledger?.revenue, contact: (contact as any).ok }).slice(0, 1800), note: `QR scan → appointment → close traced with evidence; earned $${(bl?.revenue?.earnedCents ?? 0) / 100}; mailer cost $${(mail?.cost?.cents ?? 0) / 100} (known); social cost unknown → N/A`, state: "built" }
   },

@@ -38,6 +38,7 @@ import { AgentFinancialsClient } from "./agent-financials-client"
 import { AgentNetPositionCard } from "./agent-net-position-card"
 import { getMyOpenCharges } from "@/app/actions/brokerage-fees"
 import { loadAgentFinancialDashboardSummaryAction } from "@/app/actions/financial-kernel"
+import { CommissionTermsPanel } from "./components/commission-terms-panel"
 
 export const dynamic = "force-dynamic"
 
@@ -528,6 +529,8 @@ export default async function AgentFinancialsPage() {
                         >
                           View Deposits
                         </a>
+                        {/* WAVE 153 (lane 153B, owner ruling 4): change this deal's commission before it closes. */}
+                        <CommissionTermsPanel transactionId={deal.transaction_id} label={deal.transactions?.property_address ?? null} />
                       </div>
                     </div>
                     <p className="font-semibold text-amber-700 ml-3 shrink-0">

@@ -292,9 +292,145 @@ async function main() {
   check("the link save never fetches the linked page (no fetch in saved-homes)", !/\bfetch\(/.test(code("lib/portal/saved-homes.ts")))
   check("POSITIVE CONTROL: the fetch finder sees a planted fetch", /\bfetch\(/.test("await fetch(url)"))
 
+  await shoppingAgentInternalListings()
+
   console.log(`\n RESULT: ${pass} passed, ${fail} failed${fail ? ` — ${failures.join(" | ")}` : ""}`)
   if (fail === 0) console.log(" BUYER_CONSTRAINTS_PASS")
   process.exit(fail === 0 ? 0 : 1)
+}
+
+// ─── K. WAVE 153 (lane 153E) — THE SHOPPING AGENT SEARCHES THE TENANT'S OWN PLATFORM LISTINGS ─────────────────────────
+// Owner (verbatim, 2026-11-14): "the tenant or user's listings that they created on the platform should be searchable
+// for the shopping agent." Directive E3: published listings found alongside licensed outside sources; Coming Soon only
+// under policy; never drafts / withdrawn / expired / sold / archived as active; origin + freshness; dedup against the
+// IDX / RentCast copy keeping provenance and photo rights; status changes reflected promptly.
+//
+// DRIVEN END TO END: the REAL searchPropertiesCore on the in-memory client — loaded through a fresh module URL so three
+// SEAMS (node:module registerHooks, the scripts/marketing-qr-simulator.ts pattern) bind to IT: the service client → the
+// in-memory client; the outside-listings search → injected IDX / RentCast rows; the NL parser's model lane → rules only
+// (no network, no model). SIMULATED — no live provider, no database.
+async function shoppingAgentInternalListings(): Promise<void> {
+  console.log("\n K. SHOPPING AGENT INTERNAL LISTINGS (153E) — own inventory + outside sources, one home one result, no stale active")
+  const id = (n: number) => `00000000-0000-4000-8153-${String(n).padStart(12, "0")}`
+  const L_ACTIVE = id(201), L_CONDO4 = id(202), L_DRAFT = id(203), L_WITHDRAWN = id(204), L_SOLD = id(205), L_EXPIRED = id(206), L_ARCHIVED = id(207), L_CS = id(208), L_OTHER = id(209), L_SIGNED = id(210)
+  const BUYER3 = id(250)
+  const listing = (lid: string, over: Record<string, unknown>) => ({ id: lid, brokerage_id: BRK, address: null, city: "Austin", state: "TX", zip: "78701", list_price: 450000, bedrooms: 3, bathrooms: 2, sqft: 1800, property_type: "single_family", primary_photo_url: null, mls_number: null, deleted_at: null, created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-10T00:00:00Z", sold_date: null, ...over })
+  const policyEntry = (attested: boolean) => ({ coming_soon_policy: { mls: { abor: { mls_slug: "abor", mls_name: "ABoR MLS", state_codes: ["TX"], permitted: true, max_days: 21, showings_permitted: false, mls_submission_within_business_days: 1, street_address_disclosure_permitted: false, source: { url: "https://www.abor.example/rules", rule_ref: "Sec 18.1", title: null, verified_on: null }, attestation: attested ? { user_id: "u-comp", user_type: "compliance_officer", at: "2026-11-01" } : null } } } })
+  const world = (settings: Record<string, unknown> | null) => memSupabase({
+    contacts: [{ id: BUYER3, brokerage_id: BRK, agent_id: null, first_name: "Bea", last_name: "Buyer", notes: null, created_at: "2026-11-01T00:00:00Z" }],
+    conversation_insights: [], brokerages: [{ id: BRK, name: "Alder Realty", dba: null, state: "TX" }, { id: OTHER_BRK, name: "Other Realty", dba: null, state: "TX" }],
+    brokerage_settings: settings ? [{ brokerage_id: BRK, settings }] : [],
+    listing_agreements: [],
+    listings: [
+      listing(L_ACTIVE, { address: "100 Oak St", status: "active", mls_number: "ATX12345" }),
+      listing(L_CONDO4, { address: "200 Elm St Unit 4", status: "active", primary_photo_url: "https://cdn.alder.example/own/elm4.jpg" }),
+      listing(L_DRAFT, { address: "300 Draft Ln", status: "draft" }),
+      listing(L_SIGNED, { address: "310 Signed Ln", status: "listing_signed" }),
+      listing(L_WITHDRAWN, { address: "400 Gone Rd", status: "withdrawn" }),
+      listing(L_SOLD, { address: "500 Sold Ave", status: "sold", sold_date: "2026-11-05" }),
+      listing(L_EXPIRED, { address: "600 Old Ct", status: "expired" }),
+      listing(L_ARCHIVED, { address: "700 Hidden Way", status: "active", deleted_at: "2026-11-02T00:00:00Z" }),
+      listing(L_CS, { address: "800 Soon Blvd", status: "coming_soon" }),
+      { ...listing(L_OTHER, { address: "900 Neighbor St", status: "active" }), brokerage_id: OTHER_BRK },
+    ],
+  }, { uuidIds: true })
+
+  const ext = (source: "idx" | "rentcast", externalId: string, address: string, over: Record<string, unknown> = {}) => ({
+    externalId, source, dataType: source === "idx" ? "idx_feed" : "listing_records", verifiedStatus: source === "idx" ? "feed_active" : "provider_reported", sourceLabel: source === "idx" ? "MLS feed" : "RentCast",
+    listingType: "sale", address, city: "Austin", state: "TX", zip: "78701", price: 450000, bedrooms: 3, bathrooms: 2, squareFeet: 1800, yearBuilt: 2001, propertyType: "single_family", daysOnMarket: 4,
+    photoUrl: source === "idx" ? `https://idx.example/photos/${externalId}.jpg` : `https://rentcast.example/${externalId}.jpg`, mlsName: null, mlsNumber: null, sourceStatus: "Active", ...over,
+  })
+  const seam = { client: null as unknown, external: { source: "none", listings: [] as unknown[] } }
+  ;(globalThis as Record<string, unknown>).__e3Seam = seam
+  const STUB: Record<string, string> = {
+    "@/lib/supabase/service": "export const createServiceClient = () => globalThis.__e3Seam.client",
+    "@/lib/property/external-listings-search": "export const searchExternalListings = async () => globalThis.__e3Seam.external",
+    "./parse-buyer-criteria": "export const parseBuyerCriteria = async () => ({ criteria: {} })",
+  }
+  const { registerHooks } = await import("node:module")
+  registerHooks({
+    resolve(spec: string, ctx: any, next: any) {
+      const body = STUB[spec]
+      if (body !== undefined && String(ctx?.parentURL ?? "").includes("search-engine.ts?e3")) return { url: `data:text/javascript,${encodeURIComponent(body)}`, shortCircuit: true }
+      return next(spec, ctx)
+    },
+  })
+  const engine = await import(join(root, "lib/buyer-search/search-engine.ts") + "?e3") as typeof import("../lib/buyer-search/search-engine")
+  const search = async (db: ReturnType<typeof world>, external: { source: string; listings: unknown[] }) => {
+    seam.client = db
+    seam.external = external
+    return engine.searchPropertiesCore({ contactId: BUYER3, naturalLanguageQuery: "3 bedroom home in Austin, TX", options: { minScore: 0, limit: 50, logSignals: false } }) as Promise<any>
+  }
+  const idxRows = [
+    ext("idx", "idx-oak", "100 Oak Street"),                 // the SAME house as the tenant's L_ACTIVE (St/Street)
+    ext("idx", "idx-elm5", "200 Elm St Unit 5"),             // a DIFFERENT condo in the same building as L_CONDO4
+    ext("idx", "idx-pine", "1200 Pine Rd"),                  // a home the tenant does not list
+    ext("idx", "idx-sold", "500 Sold Avenue"),               // the tenant SOLD this home; the feed still says active
+  ]
+
+  const db = world(policyEntry(true))
+  const r1 = await search(db, { source: "idx", listings: idxRows })
+  const results: any[] = r1?.results ?? []
+  const byId = (lid: string) => results.find((x) => x.listing_id === lid)
+  check("the search ran end to end on the real engine (SIMULATED)", r1?.success === true && results.length > 0, JSON.stringify(r1).slice(0, 300))
+  const own = byId(L_ACTIVE)
+  check("FOUND: the tenant's own ACTIVE listing — origin in-house (its own listing), status active, freshness = the live board (read per search, its updated_at reported)",
+    !!own && own.source === "platform" && own.source_label?.kind === "in_house" && own.listing_status === "active" && own.freshness?.basis === "live_board" && own.freshness?.source_updated_at === "2026-11-10T00:00:00Z" && typeof own.freshness?.checked_at === "string")
+  const absent = [L_DRAFT, L_SIGNED, L_WITHDRAWN, L_SOLD, L_EXPIRED, L_ARCHIVED, L_OTHER].filter((lid) => byId(lid))
+  check("NEVER SHOWN: draft, signed-not-live, withdrawn, sold, expired, archived (deleted_at) and another account's listing", absent.length === 0, absent.join(","))
+  check("POSITIVE CONTROL: the absence finder sees a listing that IS present (the condo it does return)", !!byId(L_CONDO4))
+  check("ONE HOME, ONE RESULT: the IDX copy of the tenant's listing is folded into it (no separate ext row); provenance kept on the result and in the source line the card prints",
+    !results.some((x) => x.external_id === "idx-oak") && Array.isArray(own?.also_listed_on) && own.also_listed_on.some((a: any) => a.source === "idx") && /also listed on/.test(own?.source_label?.label ?? "") && r1?.metadata?.outside_copies_folded >= 1)
+  check("PHOTO RIGHTS: the listing has no photo of its own, so the photo is borrowed from the tenant's OWN IDX feed and labelled so", own?.primary_photo_url === "https://idx.example/photos/idx-oak.jpg" && own?.photo_source === "idx_mls")
+  const condo = byId(L_CONDO4)
+  check("a DIFFERENT unit in the same building is a different home (never folded): unit 5 stays an IDX result; unit 4 keeps its OWN photo", results.some((x) => x.external_id === "idx-elm5") && condo?.primary_photo_url === "https://cdn.alder.example/own/elm4.jpg" && condo?.photo_source === "tenant_listing_media")
+  const pine = results.find((x) => x.external_id === "idx-pine")
+  check("OUTSIDE INVENTORY still searched beside it: a home the tenant does not list is shown with its own source (the MLS feed) and freshness basis", !!pine && pine.source === "idx" && pine.source_label?.kind === "idx" && pine.freshness?.basis === "mls_feed")
+  check("NO STALE ACTIVE: the tenant SOLD 500 Sold Ave — the feed copy still calling it active is suppressed and counted", !results.some((x) => x.external_id === "idx-sold") && r1?.metadata?.stale_outside_copies_suppressed === 1)
+  const cs = byId(L_CS)
+  check("COMING SOON UNDER POLICY: with the compliance-attested MLS rule permitting it, the Coming Soon listing is shown — labelled Coming Soon, never 'verified active', its street address WITHHELD (no seller authorization on file) in favor of City, ST",
+    !!cs && cs.listing_status === "coming_soon" && cs.address === null && cs.source_label?.verified_active_listing === false && /Coming Soon/.test(cs.source_label?.label ?? "") && !JSON.stringify(cs).includes("800 Soon") && r1?.metadata?.coming_soon_shown === 1)
+
+  const noPolicy = await search(world(null), { source: "idx", listings: [] })
+  const unattested = await search(world(policyEntry(false)), { source: "idx", listings: [] })
+  check("ADVERSE: no recorded MLS rule, or a rule awaiting the compliance attestation → Coming Soon is NOT shown (closed default); the active listing still is",
+    !(noPolicy?.results ?? []).some((x: any) => x.listing_id === L_CS) && !(unattested?.results ?? []).some((x: any) => x.listing_id === L_CS) && (noPolicy?.results ?? []).some((x: any) => x.listing_id === L_ACTIVE))
+
+  const rc = await search(world(policyEntry(true)), { source: "rentcast", listings: [ext("rentcast", "rc-oak", "100 Oak St.", { mlsName: "ABoR MLS", mlsNumber: "ATX-12345" })] })
+  const rcOwn = (rc?.results ?? []).find((x: any) => x.listing_id === L_ACTIVE)
+  check("RENTCAST COPY folded by its MLS number (same ZIP): one result, provenance names the MLS and number — and RentCast is NEVER a photo source (none borrowed)",
+    !!rcOwn && !(rc?.results ?? []).some((x: any) => x.external_id === "rc-oak") && /ABoR MLS #ATX-12345/.test(rcOwn.source_label?.label ?? "") && rcOwn.primary_photo_url === null && rcOwn.photo_source === null)
+
+  // STATUS CHANGES ARE REFLECTED ON THE NEXT SEARCH (the board is read live — no index to go stale)
+  const db2 = world(policyEntry(true))
+  ;(db2.tables.listings.find((l: any) => l.id === L_ACTIVE) as any).status = "pending"
+  const afterPending = await search(db2, { source: "idx", listings: idxRows })
+  check("STATUS CHANGE DE-LISTS: the listing goes under contract → gone from the next search, AND its feed copy is suppressed (never re-surfaced as an outside 'active')",
+    !(afterPending?.results ?? []).some((x: any) => x.listing_id === L_ACTIVE) && !(afterPending?.results ?? []).some((x: any) => x.external_id === "idx-oak") && afterPending?.metadata?.stale_outside_copies_suppressed === 2)
+  ;(db2.tables.listings.find((l: any) => l.id === L_ACTIVE) as any).status = "withdrawn"
+  const afterWithdrawn = await search(db2, { source: "idx", listings: idxRows })
+  check("a WITHDRAWN listing leaves the results; an outside listing of the same address is then shown on its OWN label (a re-listing elsewhere is real) — never as the tenant's listing",
+    !(afterWithdrawn?.results ?? []).some((x: any) => x.listing_id === L_ACTIVE) && (afterWithdrawn?.results ?? []).some((x: any) => x.external_id === "idx-oak" && x.source === "idx"))
+  ;(db2.tables.listings.find((l: any) => l.id === L_ACTIVE) as any).status = "active"
+  ;(db2.tables.listings.find((l: any) => l.id === L_ACTIVE) as any).deleted_at = "2026-11-12T00:00:00Z"
+  const afterArchive = await search(db2, { source: "idx", listings: [] })
+  check("an ARCHIVED listing (deleted_at) leaves the next search even while its status still reads active", !(afterArchive?.results ?? []).some((x: any) => x.listing_id === L_ACTIVE))
+
+  // SAVED HOMES (the portal card): the tenant listing's LIVE state wins over the daily watch's last check
+  check("SAVED HOME: a saved tenant listing that SOLD since reads 'Live from your agent's board · sold' (the stale 'Checked … · still listed' is outranked)",
+    homes.savedHomeVerificationLine({ listing_id: L_ACTIVE, last_verified_at: "2026-11-01T00:00:00Z", last_verified_status: "active", listings: { status: "sold", deleted_at: null } }) === "Live from your agent's board · sold")
+  check("SAVED HOME: an archived or withdrawn tenant listing reads 'no longer listed'; an active one 'still listed'",
+    homes.savedHomeVerificationLine({ listing_id: L_ACTIVE, listings: { status: "active", deleted_at: "2026-11-12" } }).endsWith("no longer listed") && homes.savedHomeVerificationLine({ listing_id: L_ACTIVE, listings: { status: "withdrawn" } }).endsWith("no longer listed") && homes.savedHomeVerificationLine({ listing_id: L_ACTIVE, listings: { status: "active" } }).endsWith("still listed"))
+  check("CONTROL: without the live embed the line is what it was (no behavior change for a row that doesn't carry it)", homes.savedHomeVerificationLine({ listing_id: L_ACTIVE }) === "Status from your agent's own board")
+
+  // WIRING (stripped source)
+  const eng = code("lib/buyer-search/search-engine.ts")
+  check("the engine folds outside copies into own listings, gates Coming Soon on the attested rule + the address door, and keeps the shoppable list at ACTIVE (the C12 partition unchanged)",
+    /foldOutsideCopiesIntoOwnListings\(\[\.\.\.\(platformListings \?\? \[\]\), \.\.\.comingSoonListings\], externalListings, ownOffMarket\)/.test(eng) && /evaluateComingSoonReadiness\(policy\.policy/.test(eng) && /resolveComingSoonCreativeAddress\(\{/.test(eng) && /BUYER_SHOPPABLE_LISTING_STATUSES = \['active'\] as const/.test(eng))
+  const CS_READ_RE = /\.eq\('brokerage_id', contact\.brokerage_id\)\s*\.in\('status', buyerComingSoonStatuses\(\)\)\s*\.is\('deleted_at', null\)/
+  check("the Coming Soon read is its OWN tenant-bound read on Coming Soon ∩ the public predicate, archive excluded, and runs only for a contact with a tenant",
+    CS_READ_RE.test(eng) && /if \(contact\.brokerage_id && buyerComingSoonStatuses\(\)\.length > 0\)/.test(eng) && /\.filter\(\(s\) => s === 'coming_soon'\)/.test(eng))
+  check("POSITIVE CONTROL: the Coming Soon read finder rejects a read without the archive exclusion", !CS_READ_RE.test(".eq('brokerage_id', contact.brokerage_id).in('status', buyerComingSoonStatuses())"))
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

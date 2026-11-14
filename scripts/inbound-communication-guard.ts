@@ -229,10 +229,19 @@ async function main() {
     }
     const conv = { id: "conv-1", brokerage_id: B1, contact_id: C1, agent_id: A1 }
 
+    // WAVE 153 (lane 153F, owner ruling 13 — "the arbiter should not hinder and cause too much of a delay"): a confidently-read
+    // ROUTINE message ("Can I see it Saturday?" — schedule_showing 85) from a known person rides the FAST path: answered with NO
+    // planning call (lib/ai-isa/followup-arbiter.ts interactiveTurnVerdict). The model's closed-menu judgment is exercised below on a
+    // message whose category the classifier could not name (`ambiguous`) — the path that still asks it.
+    const ambiguous = { intent: { primary: "question", confidence: 80, urgency: "medium" } }
     { const { c, deps } = mk(); const db = world({ conversations: [conv] })
       const r = await responder.respondToInboundCommunication(db, req(), deps())
+      check("FAST PATH (wave 153): a confident routine message is answered with NO planning call — decided deterministically, the path on the ledger row", c.decide === 0 && r.decision?.path === "fast" && r.decision?.source === "deterministic" && db.tables.agent_action_ledger[0]?.detail?.turn?.path === "fast", JSON.stringify(r.decision ?? null))
+    }
+    { const { c, deps } = mk(); const db = world({ conversations: [conv] })
+      const r = await responder.respondToInboundCommunication(db, req(ambiguous), deps())
       check("a private DM + an EXPLICIT autonomy grant + a clean screen → the reply is SENT through the tenant's account (page / sender ids from the thread)", r.action === "reply_sent" && c.send.length === 1 && c.send[0].accountId === "page-1" && c.send[0].recipientId === "psid-1" && c.propose.length === 0, JSON.stringify(r))
-      check("the model was asked ONCE over a CLOSED menu (reply / notify_human — no wait) at the inbound moment", c.decide === 1 && /"id":"reply"/.test(c.prompts[0]) && /"id":"notify_human"/.test(c.prompts[0]) && !/"id":"wait"/.test(c.prompts[0]) && /inbound_social_dm/.test(c.prompts[0]))
+      check("the model was asked ONCE over a CLOSED menu (reply / notify_human — no wait) at the inbound moment (an ambiguous message — the deliberate path)", c.decide === 1 && /"id":"reply"/.test(c.prompts[0]) && /"id":"notify_human"/.test(c.prompts[0]) && !/"id":"wait"/.test(c.prompts[0]) && /inbound_social_dm/.test(c.prompts[0]) && r.decision?.path === "deliberate")
       check("EVIDENCE: one agent_action_ledger row (inbound.message.respond, CONVERSATION_RESPONSE, the autonomy policy key) — executed", db.tables.agent_action_ledger.length === 1 && db.tables.agent_action_ledger[0].action === "inbound.message.respond" && db.tables.agent_action_ledger[0].reason_code === "CONVERSATION_RESPONSE" && db.tables.agent_action_ledger[0].status === "executed", JSON.stringify(db.tables.agent_action_ledger[0] ?? {}))
       const again = await responder.respondToInboundCommunication(db, req(), deps())
       check("IDEMPOTENT: the same inbound again REPLAYS — no second send", again.action === "replayed" && c.send.length === 1)
@@ -255,18 +264,18 @@ async function main() {
       check("POSITIVE CONTROL: with no identity match the re-engagement option is NOT on the menu (no audience is built from an unknown commenter)", !/"id":"audience_reengagement"/.test(c.prompts[0] ?? "") && c.reengage.length === 0) }
     { const { c, deps } = mk()
       const fields = { "preferences.preferred_channel": { value: "sms" }, "preferences.preferred_language": { value: "Spanish" }, "preferences.time_zone": { value: "America/Chicago" }, "identity.date_of_birth": { value: "1970-01-01" }, "enrichment.estimated_income": { value: 185000 } }
-      await responder.respondToInboundCommunication(world({ conversations: [conv] }), req(), deps({ c360Fields: fields }))
+      await responder.respondToInboundCommunication(world({ conversations: [conv] }), req(ambiguous), deps({ c360Fields: fields }))
       const asked = c.c360[0] as [string, { type: string; id: string }, { slices: string[] }] | undefined
       check("CONTRACT C6: Customer 360 is asked for ONE contact's preferences slice (brokerage, { type: contact, id }, slices = [preferences])", !!asked && asked[0] === B1 && asked[1].type === "contact" && asked[1].id === C1 && JSON.stringify(asked[2].slices) === '["preferences"]', JSON.stringify(asked ?? null))
       check("CONTRACT C6: only the mapped preference facts reach the model (channel_preference sms, language Spanish)", /"key":"channel_preference","value":"sms"/.test(c.prompts[0] ?? "") && /"key":"language","value":"Spanish"/.test(c.prompts[0] ?? ""), (c.prompts[0] ?? "").slice(0, 400))
       check("CONTRACT C6 (positive control): a date of birth, an income and an unmapped field present on the view NEVER reach the prompt", !/1970-01-01|185000|America\/Chicago|estimated_income|date_of_birth/.test(c.prompts[0] ?? "")) }
-    { const { c, deps } = mk(); await responder.respondToInboundCommunication(world({ conversations: [conv] }), req(), deps({ c360Refused: true }))
+    { const { c, deps } = mk(); await responder.respondToInboundCommunication(world({ conversations: [conv] }), req(ambiguous), deps({ c360Refused: true }))
       check("CONTRACT C6 refused → named as a BLIND SPOT to the model, never read as \"no preferences\"", /customer 360 not read \(Customer 360 refused \(contact read refused\)\)/.test(c.prompts[0] ?? ""), (c.prompts[0] ?? "").slice(0, 300)) }
     { const { c, deps } = mk(); await responder.respondToInboundCommunication(world({ conversations: [conv] }), req({ channel: "social_comment", isPublic: true }), deps())
       check("a PUBLIC comment never pulls the person's Customer 360 into the drafting context", c.c360.length === 0) }
     { const { c, deps } = mk(); const r = await responder.respondToInboundCommunication(world({ conversations: [conv] }), req({ channel: "email", surface: "sendgrid", body: "What are next steps?" }), deps())
       check("an EMAIL reply rides the existing reply-coach rail (a draft the agent sends) for the thread's agent USER (agents.id → users.id)", r.action === "reply_proposed" && c.coach.length === 1 && c.coach[0].agentUserId === U1 && c.coach[0].channel === "email" && c.send.length === 0) }
-    { const { c, deps } = mk(); const r = await responder.respondToInboundCommunication(world({ conversations: [conv] }), req(), deps({ reply: { optionId: "wait", channel: null, format: null, waitHours: 5, rationale: "Let them come back later.", evidence: ["moment"], confidence: 0.9 } }))
+    { const { c, deps } = mk(); const r = await responder.respondToInboundCommunication(world({ conversations: [conv] }), req(ambiguous), deps({ reply: { optionId: "wait", channel: null, format: null, waitHours: 5, rationale: "Let them come back later.", evidence: ["moment"], confidence: 0.9 } }))
       check("a model reply OFF the menu (wait) is refused → the planned default (propose / send within authority) stands — never silence", r.action === "reply_sent" && r.decision?.source === "deterministic" && c.send.length === 1) }
   }
 

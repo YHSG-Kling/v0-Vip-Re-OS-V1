@@ -6,7 +6,7 @@ import { QR_DESTINATION_TYPES, isQrPurpose, isQrDestinationType, type QrPurpose,
 import { qrInAppDefaultPath, type QrTokenScope, type QrConsentContext } from '@/lib/marketing/qr-contract'
 // WAVE 152 (lane 152C): the GOVERNED doors — a mint is unique per idempotency key with ledger evidence and a safe
 // destination; a destination edit is versioned; pause / resume go through the one lifecycle table.
-import { mintGovernedQr, editQrDestination, changeQrLifecycle, type QrActor } from '@/lib/marketing/qr-governance'
+import { mintGovernedQr, editQrDestination, changeQrLifecycle, authorizeQrCodeChange, type QrActor } from '@/lib/marketing/qr-governance'
 
 export const dynamic = 'force-dynamic'
 
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ success: false, error: ctx.error }, { status: 401 })
     }
     if (!ctx.brokerageId) {
-      return NextResponse.json({ success: false, error: 'No brokerage on your account' }, { status: 403 })
+      return NextResponse.json({ success: false, error: 'Your sign-in isn\'t attached to an account yet, so QR codes aren\'t available. Finish your account setup, then try again.' }, { status: 403 })
     }
 
     const body = (await req.json()) as {
@@ -99,10 +99,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // (lib/marketing/qr-governance.ts mintGovernedQr — campaign AND listing, both under the session's brokerage),
     // so every governed door checks it, not only this one. SURVIVOR: mintGovernedQr.
 
-    // qr_codes.agent_id FKs agents(id); tolerate callers already sending agents.id, else the session's.
-    const agentId = agentUserId
+    // qr_codes.agent_id FKs agents(id); tolerate callers already sending agents.id. WAVE 153 (153E): a NAMED agent is
+    // only a REQUEST — the governed mint files the code to the session's own record unless the named one is an active
+    // agent of THIS account inside the caller's scope (decideAttribution). With no name, the session's own record.
+    const namedAgentId = agentUserId
       ? ((await resolveAgentId(supabase as any, agentUserId)) ?? agentUserId)
-      : ctx.agentId
+      : null
+    const agentId = namedAgentId ?? ctx.agentId
 
     // Explicit target_url wins. Otherwise the ONE in-app default table (qr-contract.ts): the
     // home-value funnel and the agent's public profile are keyed by the minting agent's own
@@ -142,7 +145,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // WAVE 152 (152C): THE GOVERNED MINT. The tenant and the creator come from the SESSION (ctx); the
     // idempotency key makes a retried click return the SAME code; the destination is validated (https,
     // verified tenant hosts + the external allow-list, no loop, no personal data); the mint is ledgered.
-    const actor: QrActor = { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: (agentId as string | null) ?? null, userType: ctx.userType }
+    const actor: QrActor = { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: (namedAgentId as string | null) ?? null, userType: ctx.userType }
     const minted = await mintGovernedQr({
       idempotencyKey: (body.idempotencyKey ?? '').trim(),
       label,
@@ -191,8 +194,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       replayed: minted.replayed,
     })
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error'
-    return NextResponse.json({ success: false, error: message }, { status: 500 })
+    // WAVE 153 (153E): the raw exception text stays in the server log; the board reads what happened and one action.
+    console.error('[admin/qr-codes] request failed:', err instanceof Error ? err.message : err)
+    return NextResponse.json({ success: false, error: 'Something went wrong on our side, so nothing was changed. Try again in a moment.' }, { status: 500 })
   }
 }
 
@@ -222,7 +226,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ success: false, error: ctx.error }, { status: 401 })
     }
     if (!ctx.brokerageId) {
-      return NextResponse.json({ success: false, error: 'No brokerage on your account' }, { status: 403 })
+      return NextResponse.json({ success: false, error: 'Your sign-in isn\'t attached to an account yet, so QR codes aren\'t available. Finish your account setup, then try again.' }, { status: 403 })
     }
 
     // `brokerageId` is deliberately absent from this type: the tenant comes from the session and
@@ -250,21 +254,17 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ success: false, error: 'Invalid purpose.' }, { status: 400 })
     }
 
-    // Tenant ownership check before any write, against the SESSION's brokerage.
+    // WAVE 153 (153E): ONE gate before ANY change — the seat (a suspended / revoked seat changes nothing) and the code's
+    // scope (the person's own codes, their team's / office's, or every code when the whole account is theirs).
+    // TOMBSTONE: the tenant-only lookup that lived here (`select('id, brokerage_id')` compared to the session) let ANY
+    // seat in the account rename, re-purpose or re-date ANY code — and relayed the raw database message on a refusal.
+    // SURVIVOR: lib/marketing/qr-governance.ts authorizeQrCodeChange (another account's code still reads as missing).
     const supabase = createServiceClient()
-    const { data: existing, error: lookupError } = await supabase
-      .from('qr_codes')
-      .select('id, brokerage_id')
-      .eq('id', id)
-      .maybeSingle()
-    if (lookupError) {
-      return NextResponse.json({ success: false, error: lookupError.message }, { status: 500 })
-    }
-    if (!existing) return NextResponse.json({ success: false, error: 'Not found' }, { status: 404 })
-    if (existing.brokerage_id !== ctx.brokerageId) {
-      // Same answer as a missing row: whether a code exists in someone else's brokerage is not
-      // this caller's business to learn.
-      return NextResponse.json({ success: false, error: 'Not found' }, { status: 404 })
+    const actor: QrActor = { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId ?? null, userType: ctx.userType }
+    const access = await authorizeQrCodeChange(id, actor, { client: supabase })
+    if (!access.ok) {
+      const status = access.code === 'not_found' ? 404 : access.code === 'not_permitted' ? 403 : access.code === 'refused' ? 503 : 400
+      return NextResponse.json({ success: false, error: access.message }, { status })
     }
 
     // WAVE 152 (152C): THREE KINDS OF CHANGE, THREE DOORS. TOMBSTONE: this handler wrote
@@ -274,7 +274,6 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     // → editQrDestination (validated, versioned, ledgered); pause/resume → changeQrLifecycle
     // (the one transition table; a retired code never resumes). Only the board's own
     // metadata (name, purpose, end date) is a plain tenant-scoped update here.
-    const actor: QrActor = { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId ?? null, userType: ctx.userType }
     const origin = process.env.NEXT_PUBLIC_APP_URL ?? new URL(req.url).origin
     const notices: string[] = []
 
@@ -331,8 +330,9 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     }
     return NextResponse.json({ success: true, qrCode: updated, notices })
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error'
-    return NextResponse.json({ success: false, error: message }, { status: 500 })
+    // WAVE 153 (153E): the raw exception text stays in the server log; the board reads what happened and one action.
+    console.error('[admin/qr-codes] request failed:', err instanceof Error ? err.message : err)
+    return NextResponse.json({ success: false, error: 'Something went wrong on our side, so nothing was changed. Try again in a moment.' }, { status: 500 })
   }
 }
 

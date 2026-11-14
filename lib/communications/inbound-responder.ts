@@ -17,10 +17,14 @@
 
 import {
   ARBITER_INBOUND_SYSTEM,
+  ARBITER_LATENCY_BUDGET_MS,
   ARBITER_MEMORY_KEYS,
   arbitrateFollowUp,
   arbitrationLedgerDetail,
+  interactiveTurnVerdict,
+  loadConversationOwnership,
   routeToAgent,
+  type InteractiveTurnVerdict,
   type ArbiterChannel,
   type ArbiterDecide,
   type ArbiterDecision,
@@ -116,6 +120,7 @@ export interface InboundResponderDeps {
  */
 export async function respondToInboundCommunication(svc: { from: (t: string) => any }, req: InboundRespondRequest, deps: InboundResponderDeps = {}): Promise<InboundResponse> {
   const now = deps.now ?? new Date()
+  const startedAt = Date.now()
   try {
     if (!req.brokerageId || !req.recordId) return { action: "refused", reason: "no tenant / no inbound record", decision: null }
     const body = (req.body ?? "").trim()
@@ -151,6 +156,17 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
     if (!locked && (INBOUND_RISK_RE.test(body) || (req.intent && HUMAN_INTENTS.has(req.intent.primary) && req.intent.confidence >= 55))) {
       locked = { action: "human_task", reason: "a complaint, legal, fair-housing or cancellation message — a person answers it" }
     }
+    // ── WAVE 153 (lane 153F, owner ruling 13): THE TURN'S PATH — a request for a person, one conversation owner, and the FAST path for a
+    //    confidently-read routine (or person-owned) message — decided deterministically before any model is asked
+    //    (lib/ai-isa/followup-arbiter.ts interactiveTurnVerdict / loadConversationOwnership). The locks above still win. ──
+    let turn: InteractiveTurnVerdict | null = null
+    if (!locked) {
+      const own = await loadConversationOwnership(svc, { brokerageId: req.brokerageId, contactId: req.contactId, conversationId: req.conversationId, now, excludeMessageId: req.recordId })
+      if (!own.ok) blindSpots.push(own.reason)
+      turn = interactiveTurnVerdict({ body, intent: req.intent ? { primary: req.intent.primary, confidence: req.intent.confidence } : null, knownContact: !!req.contactId && !firstTimeTexter, isPublic: req.isPublic, ownership: own.ok ? own.ownership : null, now })
+      if (turn.path === "human_owns") locked = { action: "human_task", reason: turn.reason }
+    }
+    const ownerMarker = turn?.path === "human_owns" ? turn.marker : null
 
     // ── the closed menu ──
     const replyCh = replyChannelFor(req.channel)
@@ -196,10 +212,23 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
       urgency: req.intent && (req.intent.urgency === "high" || req.intent.urgency === "critical") ? "high" : "normal",
     }
 
-    const policy = deps.policy ?? (await (await import("@/lib/ai-isa/followup-policy")).loadFollowupPolicy(svc, req.brokerageId)).policy
-    const decision: ArbiterDecision | null = locked
-      ? null
-      : await arbitrateFollowUp({ brokerageId: req.brokerageId, facts, menu, planned: replyOpt, policy, system: ARBITER_INBOUND_SYSTEM }, { decide: deps.decide })
+    let decision: ArbiterDecision | null = null
+    if (!locked && turn?.path === "fast") {
+      // THE FAST PATH: the arbiter's own deterministic decision — no planning call in front of the reply (or the hand-off).
+      const opt = turn.optionId === "notify_human" ? humanOpt : replyOpt
+      decision = {
+        optionId: opt.id, kind: opt.kind, channel: opt.channels[0] ?? null, format: null, stance: opt.kind === "agent_intervention" ? "notify_human" : "act_now", waitHours: null,
+        rationale: turn.reason.slice(0, 600), evidence: ["intent", "relationship"], confidence: 1, source: "deterministic", fallbackReason: "fast path — a live conversational turn is not held for a planning call",
+        menu: menu.menu.map((o) => o.id), path: "fast",
+      }
+    } else if (!locked) {
+      const policy = deps.policy ?? (await (await import("@/lib/ai-isa/followup-policy")).loadFollowupPolicy(svc, req.brokerageId)).policy
+      // Real ambiguity: the arbiter's judgment under the expert inbound brief, inside the INTERACTIVE latency budget; its fallback is the
+      // verdict's safe default (a person when nothing could be read — high-risk ambiguity is held, never silently allowed).
+      const planned = turn?.path === "deliberate" && turn.planned === "notify_human" ? humanOpt : replyOpt
+      decision = await arbitrateFollowUp({ brokerageId: req.brokerageId, facts, menu, planned, policy, system: ARBITER_INBOUND_SYSTEM, latencyBudgetMs: ARBITER_LATENCY_BUDGET_MS.interactive }, { decide: deps.decide })
+    }
+    const decidedInMs = Date.now() - startedAt
     const chosen = locked ? (locked.action === "human_task" ? "notify_human" : "none") : decision!.optionId
 
     const autonomyPolicyKey = "autonomy_tier:ai_isa"
@@ -215,6 +244,11 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
         detail: {
           record_id: req.recordId, conversation_id: req.conversationId, surface: req.surface, public: req.isPublic, provider: req.provider,
           intent: req.intent, locked: locked?.reason ?? null, ...(decision ? { arbitration: arbitrationLedgerDetail(decision, null, { blindSpots }) } : {}),
+          // WAVE 153 (153F, LAW 5): the turn's path and how long the decision took from the record's arrival at the responder
+          // (measured); a request for a person stamps the thread theirs — the marker loadConversationOwnership reads back.
+          turn: turn ? { path: turn.path, reason: turn.reason.slice(0, 300), live: turn.path === "human_owns" ? null : turn.live } : null,
+          decided_in_ms: decidedInMs,
+          ...(ownerMarker ? { conversation_owner: ownerMarker } : {}),
         },
       },
       async () => {

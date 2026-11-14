@@ -652,6 +652,12 @@ export interface ArbiterDecision {
    *  the opportunity mode's brief and the chosen readiness play's brief, side by side. Present only when a movement reading
    *  shaped the decision and an eligible brief exists. Never the evidence itself. */
   writerBrief?: { mode: string | null; modeBrief: string | null; play: string | null; playBrief: string | null }
+  /** WAVE 153 (lane 153F): how long the decision took, measured (wall clock, ms) — the model's answer, or the moment its latency
+   *  budget expired. Absent when no model was asked (a lock, the fast path, a single option). Evidence, never a target. */
+  latencyMs?: number | null
+  /** WAVE 153 (lane 153F): which path decided — `fast` (deterministic, no planning call: a live conversational turn or a person's
+   *  stated channel), `deliberate` (the model over the closed menu, inside its latency budget), or absent (every older caller). */
+  path?: "fast" | "deliberate"
 }
 
 /** What a life-event decision hands downstream (and to the ledger): the mode, and the rules of the words. */
@@ -945,6 +951,157 @@ export const ARBITER_INBOUND_SYSTEM = [
   "OUTPUT CONTRACT. Reply with JSON only: {\"optionId\": one menu id, \"channel\": one of that option's channels or null, \"format\": null, \"waitHours\": null, \"rationale\": 1-3 plain sentences a broker would accept as the reason, \"evidence\": [the top-level evidence keys you relied on, e.g. \"intent\", \"relationship\", \"moment\"], \"confidence\": 0..1}. An answer off the menu, without evidence, or under the tenant's confidence floor is refused and a person answers instead.",
 ].join("\n")
 
+// ── WAVE 153 (lane 153F) — THE FAST GOVERNED PATH FOR A LIVE CONVERSATION; ONE CONVERSATION OWNER ───────────────────────────────
+// OWNER RULING 13 (2026-11-14): "the arbiter decides but the timing for follow up for a person differs from another … the arbiter
+// should not hinder and cause too much of a delay with the communication with the person as it needs to feel natural and not 'ai or
+// a machine' talking". Measured at 22b84783: EVERY inbound turn — a known client's "can we see it Saturday?" in a thread we answered a
+// minute ago included — waited on a model call (respondToInboundCommunication → arbitrateFollowUp) before anything was composed, with
+// no bound on how long; a person asking for a human was only the MODEL's judgment (no deterministic stop); and nothing kept the AI from
+// answering on top of an agent who was typing in the same thread. Now the split is:
+//   DETERMINISTIC, NO PLANNING CALL (this section) — a person asked for a human (the thread becomes theirs, a hard stop); a person on
+//   the team wrote in the thread just now, or owns it (the AI stays silent — one conversation owner); a confidently-read ROUTINE
+//   message from a known person (answer now — the reply is still composed in the sender's voice, screened, and released only under the
+//   tenant's autonomy grant and the SMS chokepoint's consent / quiet-hours / DNC gates); a confidently-read money / offer / lender /
+//   dispute message (a person now — the inbound brief's own escalation rule, without asking for it).
+//   THE ARBITER'S JUDGMENT (arbitrateFollowUp, ARBITER_INBOUND_SYSTEM) — only real ambiguity: a first-time texter, a public comment,
+//   an ad interaction, a message whose category the classifier could not name, inside ARBITER_LATENCY_BUDGET_MS.interactive; an
+//   unreadable message falls to a PERSON (high-risk ambiguity is held, never silently allowed).
+// The pure verdict lives here (one copy beside the brief it shortcuts); the reader is loadConversationOwnership below.
+
+/** The live-conversation bounds — they decide who owns a thread and whether it is live; none of them schedules a send. */
+const LIVE_CONVERSATION = Object.freeze({
+  /** We (AI or a person) wrote to them this recently → the exchange is LIVE. */
+  exchangeMinutes: 30,
+  /** A PERSON on the tenant's side wrote in the thread this recently → they are in it; the AI does not answer on top of them. */
+  humanEngagedMinutes: 30,
+  /** They asked for a person → the thread is a person's for this long (a later request renews it). */
+  humanOwnershipHours: 24,
+  /** They wrote to us after our last touch this recently → they are waiting on us (and how far back a thread is read for it). */
+  replyWindowHours: 72,
+})
+
+/** Classifier intents (lib/intelligence/intent-classifier.ts IntentCategory) a reply may take with no planning call: routine — nothing to invent. */
+const ROUTINE_INBOUND_INTENTS: ReadonlySet<string> = new Set(["schedule_showing", "general_question", "positive_feedback"])
+/** Intents the inbound brief's ESCALATION RULE always gives a person: money, an offer, a lender, an inspection, a referral, a dispute. */
+const PERSON_INBOUND_INTENTS: ReadonlySet<string> = new Set(["price_reduction_request", "cancel_transaction", "ready_to_offer", "financing_question", "inspection_concern", "referral_inquiry", "complaint", "refinance_interest"])
+/** The classifier's confidence (0..100) at which its reading decides a path (the inbound brief: "intent confidence under 60" → a person). */
+const CONFIDENT_INTENT = 60
+/** A person asking for a human (or asking whether they are talking to a machine) — a deterministic hard stop, never the model's call. */
+const HUMAN_HANDOFF_RE = /\b(?:(?:speak|talk|chat)\s+(?:to|with)\s+(?:a|an|the|my|your|someone|somebody)?\s*(?:real\s+|actual\s+|live\s+)?(?:person|human|agent|realtor|someone|somebody|broker)|(?:real|actual|live)\s+(?:person|human)|(?:is\s+this|are\s+you|am\s+i\s+(?:talking|texting|chatting)\s+(?:to|with))\s+(?:a\s+|an\s+)?(?:bot|robot|ai|machine|computer|automated)|(?:have|can)\s+(?:\w+\s+){0,3}(?:call|phone)\s+me|call\s+me(?:\s+back)?|human\s+please|no\s+more\s+(?:bots?|automated))\b/i
+/** Sender types the AI writers stamp (lib/communications/inbound-reply-executors.ts, lib/social/inbound-social.ts, lib/workflow/adapters,
+ *  app/actions/ai-chat.ts); any other outbound row in a thread was written by a person (lib/kernel/communications.ts writes none). */
+const AI_SENDER_TYPES: ReadonlySet<string> = new Set(["ai", "ai_assistant", "system", "automation"])
+/** Outbound `messages.type` values that are automated whatever the sender column says (app/actions/ai-auto-response.ts). */
+const AI_MESSAGE_TYPES: ReadonlySet<string> = new Set(["ai_auto_response"])
+
+interface ConversationOwnership {
+  /** A person owns the thread until then (they were asked for) — ISO, or null. */
+  humanOwnedUntil: string | null
+  ownedReason: string | null
+  /** The newest outbound row a PERSON on the tenant's side wrote in the window — ISO, or null. */
+  humanEngagedAt: string | null
+  /** The newest outbound row from anyone on our side (AI or a person) — ISO, or null. */
+  lastOutboundAt: string | null
+  /** The newest inbound row from them before the current one — ISO, or null. */
+  lastInboundAt: string | null
+}
+
+/**
+ * WHO OWNS THIS CONVERSATION, read from what actually happened: the thread's own rows (`messages`, contact-scoped, tenant-pinned —
+ * a person's outbound vs the AI writers' `sender_type`) and the human-ownership marker the responder writes on its own decision row
+ * (`agent_action_ledger` inbound.message.respond detail.conversation_owner — append-only evidence: who asked for a person, when, until
+ * when). A refused read is `{ ok: false }` and the callers FAIL CLOSED (a person answers / the planned touch holds) — "nobody checked
+ * who owns the thread" never reads as "nobody owns it". Never throws.
+ */
+export async function loadConversationOwnership(
+  svc: { from: (t: string) => any },
+  a: { brokerageId: string; contactId: string | null; conversationId: string | null; now: Date; excludeMessageId?: string | null },
+): Promise<{ ok: true; ownership: ConversationOwnership } | { ok: false; reason: string }> {
+  try {
+    if (!a.contactId && !a.conversationId) return { ok: true, ownership: { humanOwnedUntil: null, ownedReason: null, humanEngagedAt: null, lastOutboundAt: null, lastInboundAt: null } }
+    const nowMs = a.now.getTime()
+    const since = new Date(nowMs - LIVE_CONVERSATION.replyWindowHours * 3_600_000).toISOString()
+    let q = svc.from("messages").select("id, direction, sender_type, type, created_at").eq("brokerage_id", a.brokerageId)
+    q = a.contactId ? q.eq("contact_id", a.contactId) : q.eq("conversation_id", a.conversationId)
+    const { data: rows, error } = await q.gte("created_at", since).order("created_at", { ascending: false }).limit(50)
+    if (error) return { ok: false, reason: `the thread could not be read (${error.message})` }
+    let humanEngagedAt: string | null = null, lastOutboundAt: string | null = null, lastInboundAt: string | null = null
+    for (const r of (rows ?? []) as Array<{ id?: string; direction?: string | null; sender_type?: string | null; type?: string | null; created_at?: string | null }>) {
+      const at = r.created_at ?? null
+      if (!at || Date.parse(at) > nowMs + 60_000) continue
+      if (r.direction === "outbound") {
+        if (!lastOutboundAt || at > lastOutboundAt) lastOutboundAt = at
+        const automated = AI_SENDER_TYPES.has(String(r.sender_type ?? "").toLowerCase()) || AI_MESSAGE_TYPES.has(String(r.type ?? "").toLowerCase())
+        if (!automated && Date.parse(at) >= nowMs - LIVE_CONVERSATION.humanEngagedMinutes * 60_000 && (!humanEngagedAt || at > humanEngagedAt)) humanEngagedAt = at
+      } else if (r.direction === "inbound" && r.id !== a.excludeMessageId) {
+        if (!lastInboundAt || at > lastInboundAt) lastInboundAt = at
+      }
+    }
+    const subject = a.contactId ? { type: "contact", id: a.contactId } : { type: "conversation", id: a.conversationId as string }
+    const { data: led, error: lErr } = await svc.from("agent_action_ledger").select("detail, created_at")
+      .eq("brokerage_id", a.brokerageId).eq("subject_type", subject.type).eq("subject_id", subject.id).eq("action", "inbound.message.respond")
+      .gte("created_at", new Date(nowMs - LIVE_CONVERSATION.humanOwnershipHours * 3_600_000).toISOString())
+    if (lErr) return { ok: false, reason: `the conversation's owner could not be read (${lErr.message})` }
+    let humanOwnedUntil: string | null = null, ownedReason: string | null = null
+    for (const r of (led ?? []) as Array<{ detail?: Record<string, any> | null }>) {
+      const m = r.detail?.conversation_owner as { owner?: unknown; until?: unknown; reason?: unknown } | undefined
+      if (m?.owner !== "human" || typeof m.until !== "string" || !Number.isFinite(Date.parse(m.until)) || Date.parse(m.until) <= nowMs) continue
+      if (!humanOwnedUntil || m.until > humanOwnedUntil) { humanOwnedUntil = m.until; ownedReason = typeof m.reason === "string" ? m.reason : "a person owns this conversation" }
+    }
+    return { ok: true, ownership: { humanOwnedUntil, ownedReason, humanEngagedAt, lastOutboundAt, lastInboundAt } }
+  } catch (e) {
+    return { ok: false, reason: `the conversation could not be read (${e instanceof Error ? e.message : String(e)})` }
+  }
+}
+
+export type InteractiveTurnVerdict =
+  /** A person owns the turn: the AI does not answer. `marker` = the ownership this turn ESTABLISHES (they asked for a person). */
+  | { path: "human_owns"; reason: string; marker: { owner: "human"; reason: string; until: string } | null }
+  /** Decided now, deterministically — no planning call in front of the reply. */
+  | { path: "fast"; optionId: "reply" | "notify_human"; reason: string; live: boolean }
+  /** Real ambiguity: the arbiter's inbound judgment, inside the interactive latency budget; `planned` is its safe fallback. */
+  | { path: "deliberate"; planned: "reply" | "notify_human"; reason: string; live: boolean }
+
+/**
+ * PURE. Which path ONE inbound turn takes (the order is the precedence): a request for a person → the person owns it (hard stop, the
+ * thread marked theirs) · ownership unreadable → a person (fail closed) · a person owns / is writing in the thread → the AI stays silent
+ * · public / first-time texter / no confident reading → the arbiter's judgment (a person on its fallback when nothing was read) · a
+ * confident money / offer / lender / dispute reading → a person now · a confident routine reading → answer now. Nothing here sends:
+ * the reply is composed, screened and released by the responder's existing gates.
+ */
+export function interactiveTurnVerdict(i: {
+  body: string
+  intent: { primary: string; confidence: number } | null
+  /** Identity matched to a contact we already knew (not a texter met in this very message). */
+  knownContact: boolean
+  isPublic: boolean
+  /** null = the ownership read was refused (fail closed). */
+  ownership: ConversationOwnership | null
+  now: Date
+}): InteractiveTurnVerdict {
+  const nowMs = i.now.getTime()
+  if (HUMAN_HANDOFF_RE.test(i.body)) {
+    return { path: "human_owns", reason: "they asked for a person — the thread is handed to a person now and the AI does not answer (a deterministic stop, never the model's call)", marker: { owner: "human", reason: "handoff_requested", until: new Date(nowMs + LIVE_CONVERSATION.humanOwnershipHours * 3_600_000).toISOString() } }
+  }
+  if (!i.ownership) return { path: "human_owns", reason: "who owns this conversation could not be read — a person answers rather than the AI guessing (fail closed)", marker: null }
+  const o = i.ownership
+  if (o.humanOwnedUntil && Date.parse(o.humanOwnedUntil) > nowMs) return { path: "human_owns", reason: `a person owns this conversation until ${o.humanOwnedUntil} (${o.ownedReason ?? "a person was asked for"}) — the AI stays out of it`, marker: null }
+  if (o.humanEngagedAt) {
+    const mins = Math.max(0, Math.round((nowMs - Date.parse(o.humanEngagedAt)) / 60_000))
+    return { path: "human_owns", reason: `a person on the team wrote in this conversation ${mins} minute(s) ago — one conversation owner, so no AI reply lands on top of theirs`, marker: null }
+  }
+  const live = !!o.lastOutboundAt && Date.parse(o.lastOutboundAt) >= nowMs - LIVE_CONVERSATION.exchangeMinutes * 60_000
+  const confident = !!i.intent && Number.isFinite(i.intent.confidence) && i.intent.confidence >= CONFIDENT_INTENT
+  const primary = i.intent?.primary ?? ""
+  if (i.isPublic || !i.knownContact) {
+    return { path: "deliberate", planned: confident && !PERSON_INBOUND_INTENTS.has(primary) ? "reply" : "notify_human", reason: i.isPublic ? "a public message — the arbiter's judgment (a person approves any public reply)" : "a first message from someone we just met — the arbiter's judgment", live }
+  }
+  if (!confident) return { path: "deliberate", planned: "notify_human", reason: i.intent ? `the message could not be read confidently (${primary} at ${i.intent.confidence}) — the arbiter's judgment, a person if it cannot answer in time` : "the message was not classified — the arbiter's judgment, a person if it cannot answer in time", live }
+  if (PERSON_INBOUND_INTENTS.has(primary)) return { path: "fast", optionId: "notify_human", reason: `read as ${primary.replace(/_/g, " ")} (${i.intent!.confidence}) — money, an offer, a lender, an inspection, a referral or a dispute is a person's to answer; handed over now, no planning call`, live }
+  if (ROUTINE_INBOUND_INTENTS.has(primary)) return { path: "fast", optionId: "reply", reason: `read as ${primary.replace(/_/g, " ")} (${i.intent!.confidence}) from a known person${live ? " in a live exchange" : ""} — answered now in their thread with no planning call; consent, quiet hours, the content screen and the autonomy grant still decide whether it leaves unattended`, live }
+  return { path: "deliberate", planned: "reply", reason: `read as ${primary.replace(/_/g, " ") || "an unnamed category"} — not a category the fast path answers; the arbiter's judgment`, live }
+}
+
 function buildArbiterPrompt(a: { facts: ArbiterFacts; menu: ArbiterOption[]; policy: FollowupPolicy }): string {
   return JSON.stringify({
     tenant_guidance: a.policy.guidance || "(none set — use judgment)",
@@ -1014,6 +1171,42 @@ async function defaultDecide(a: { brokerageId: string; system: string; prompt: s
   return object
 }
 
+// ── WAVE 153 (lane 153F) — THE DECISION'S LATENCY BUDGET ──────────────────────────────────────────────────────────────────────
+// OWNER RULING 13 (2026-11-14): "the arbiter decides … the arbiter should not hinder and cause too much of a delay with the
+// communication with the person as it needs to feel natural and not 'ai or a machine' talking." Measured at 22b84783: the model call
+// below had NO bound — a slow or hung provider held a live reply (lib/communications/inbound-responder.ts), a speed-to-lead first
+// touch and every sweep's remaining decisions for as long as the provider took. Now every ask is raced against a budget; a model that
+// has not answered inside it is treated exactly like an outage (the planner's verdict stands, the budget named in the reason, source
+// "deterministic") and its late answer is discarded — never acted on. The budget is a CEILING on waiting for judgment, never a delay
+// added to sound human (the brief forbids artificial pauses): the fast path below asks nothing at all.
+/** The decision model's latency ceilings (ms). `interactive` = a person who wrote in and is waiting; `speed_to_lead` = a first touch;
+ *  `planned` = a sweep's planned touch (nobody is waiting on this exact second, but a hung provider must not stall the sweep). */
+export const ARBITER_LATENCY_BUDGET_MS = Object.freeze({ interactive: 2_500, speed_to_lead: 2_500, planned: 8_000 })
+const LATENCY_EXCEEDED = Symbol("arbiter_latency_exceeded")
+
+/** Race the model against the budget. The late promise is caught (never an unhandled rejection) and its answer ignored. */
+async function decideWithinBudget(run: () => Promise<ArbiterRaw>, budgetMs: number): Promise<{ raw: ArbiterRaw; ms: number } | { timedOut: true; ms: number }> {
+  const started = Date.now()
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const pending = run()
+  pending.catch(() => undefined)
+  try {
+    const out = await Promise.race([pending, new Promise<typeof LATENCY_EXCEEDED>((resolve) => { timer = setTimeout(() => resolve(LATENCY_EXCEEDED), Math.max(1, budgetMs)) })])
+    if (out === LATENCY_EXCEEDED) return { timedOut: true, ms: Date.now() - started }
+    return { raw: out, ms: Date.now() - started }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** PURE. The channel a person TOLD us to use (a stored or stated `channel_preference`), canonical, or null. */
+function statedChannelOf(preferences: ReadonlyArray<{ key: string; value: string }>): ArbiterChannel | null {
+  const v = preferences.find((p) => p.key === "channel_preference")?.value
+  if (!v) return null
+  const s = String(v).trim().toLowerCase()
+  return canonicalArbiterChannel(s === "text" || s === "texting" || s === "text_message" ? "sms" : s)
+}
+
 /**
  * Decide the next follow-up for ONE person. Never throws, never returns an option off the menu.
  * `planned` is the planner's own verdict (the thing that happens if the model does not answer).
@@ -1023,6 +1216,12 @@ export async function arbitrateFollowUp(
     brokerageId: string; facts: ArbiterFacts; menu: ArbiterMenu; planned: ArbiterOption; policy: FollowupPolicy; budget?: ArbiterBudget; priority?: ArbiterPriority | null
     /** Wave 147 (147G): the expert brief for this moment (ARBITER_INBOUND_SYSTEM for a person who wrote in); default ARBITER_SYSTEM. The validator is the same either way. */
     system?: string | null
+    /** WAVE 153 (153F): the model's latency ceiling for THIS decision (ms). Default: ARBITER_LATENCY_BUDGET_MS.speed_to_lead for a
+     *  requirement (speed-to-lead / a promised deliverable), else .planned. A person waiting in a thread passes .interactive. */
+    latencyBudgetMs?: number | null
+    /** WAVE 153 (153F): the bounded hold the planner's own `wait` verdict carries (per-Contact timing — e.g. until the window the person
+     *  asked for opens); used only when the fallback IS the wait. Null = an unbounded-by-planner wait (the caller's default). */
+    plannedWaitHours?: number | null
   },
   deps: { decide?: ArbiterDecide } = {},
 ): Promise<ArbiterDecision> {
@@ -1031,27 +1230,32 @@ export async function arbitrateFollowUp(
     const kind = over.kind ?? a.planned.kind
     const channel = over.channel !== undefined ? over.channel : (a.planned.channels[0] ?? null)
     return withStance({
-      optionId: a.planned.id, kind, channel, format: KIND_FORMAT[kind] ?? (channel ? formatsForChannel(channel)[0] ?? null : null), waitHours: null,
+      optionId: a.planned.id, kind, channel, format: KIND_FORMAT[kind] ?? (channel ? formatsForChannel(channel)[0] ?? null : null), waitHours: kind === "wait" ? (a.plannedWaitHours ?? null) : null,
       rationale: `The planner's verdict stands: ${over.fallbackReason}.`, evidence: [], confidence: 1, source: "deterministic",
       menu: a.menu.menu.map((o) => o.id), ...over,
     })
   }
+  const budgetMs = a.latencyBudgetMs ?? (a.priority ? ARBITER_LATENCY_BUDGET_MS.speed_to_lead : ARBITER_LATENCY_BUDGET_MS.planned)
   /** Ask the model over a CLOSED menu; anything it cannot or may not answer falls to `fallback` with the reason (never an unchecked send). */
   const ask = async (menu: ArbiterOption[], facts: ArbiterFacts, fallback: (why: string) => ArbiterDecision): Promise<ArbiterDecision> => {
     if (a.budget && a.budget.remaining <= 0) return fallback("this sweep's decision budget is spent")
     if (a.budget) a.budget.remaining -= 1
     let raw: ArbiterRaw
+    let ms = 0
     try {
-      raw = await (deps.decide ?? defaultDecide)({ brokerageId: a.brokerageId, system: a.system?.trim() ? a.system : ARBITER_SYSTEM, prompt: buildArbiterPrompt({ facts, menu, policy: a.policy }) })
+      const r = await decideWithinBudget(() => (deps.decide ?? defaultDecide)({ brokerageId: a.brokerageId, system: a.system?.trim() ? a.system : ARBITER_SYSTEM, prompt: buildArbiterPrompt({ facts, menu, policy: a.policy }) }), budgetMs)
+      ms = r.ms
+      if ("timedOut" in r) return { ...fallback(`the model did not answer within its ${budgetMs} ms latency budget — nobody is kept waiting on the judgment`), latencyMs: r.ms, path: "deliberate" }
+      raw = r.raw
     } catch (e) {
       return fallback(`the model was unavailable (${e instanceof Error ? e.message : String(e)})`)
     }
     const v = validateArbiterReply(raw, menu, facts, a.policy)
-    if (!v.ok) return fallback(`the model's reply was refused — ${v.why}`)
-    const decided = withStance({ ...v.decision, source: "ai", fallbackReason: null, menu: menu.map((o) => o.id) })
+    if (!v.ok) return { ...fallback(`the model's reply was refused — ${v.why}`), latencyMs: ms, path: "deliberate" }
+    const decided = withStance({ ...v.decision, source: "ai", fallbackReason: null, menu: menu.map((o) => o.id), latencyMs: ms, path: "deliberate" })
     // WAVE 150 (C38): a decision that rests on the movement reading must take a stance one of its eligible plays maps to.
     const playWhy = decided.evidence.includes("opportunity") ? playsStanceRefusal(decided.stance ?? "wait", facts.opportunity) : null
-    if (playWhy) return fallback(`the model's reply was refused — ${playWhy}`)
+    if (playWhy) return { ...fallback(`the model's reply was refused — ${playWhy}`), latencyMs: ms, path: "deliberate" }
     return decided
   }
   if (a.menu.locked) return base({ kind: a.menu.locked.kind, optionId: a.menu.locked.kind, channel: null, fallbackReason: `locked — ${a.menu.locked.reason}` })
@@ -1072,6 +1276,14 @@ export async function arbitrateFollowUp(
       ? base({ optionId: first.id, kind: first.kind, channel: first.channels[0] ?? null, menu: ids, rationale: `${label} — ${why}.`, fallbackReason: `${a.priority} — ${why}` })
       : base({ menu: ids, fallbackReason: `${a.priority} — ${why}` })
     if (!first) return fallback("no permitted channel carries a first touch and no person can take it; the planner's verdict stands")
+    // WAVE 153 (lane 153F, owner ruling 13 — "earlier lead touches is like speed to lead"): THE FAST PATH. A person who TOLD us how to
+    // reach them (a stated / stored channel_preference that the permitted touch carries) is answered there now — the arbiter's own
+    // deterministic decision, ledgered like any other, with NO planning call in front of the first response. Only a genuine choice
+    // with nothing stated reaches the model, inside the speed-to-lead latency budget.
+    const stated = a.priority === "speed_to_lead" ? statedChannelOf(a.facts.preferences) : null
+    if (stated && touch && touch.channels.includes(stated)) {
+      return { ...base({ optionId: touch.id, kind: touch.kind, channel: stated, menu: ids, rationale: `${label} — on the channel the person asked us to use (${stated}); nothing to weigh, so no planning call holds the first response.`, fallbackReason: `${a.priority} — fast path: the person's stated channel` }), path: "fast" }
+    }
     const hasChoice = answerNow.length > 1 || (touch?.channels.length ?? 0) > 1
     if (!hasChoice) return fallback("only one way to answer is permitted")
     if (!a.policy.arbiter.enabled) return fallback("the tenant turned the arbiter off")
@@ -1181,6 +1393,8 @@ async function arbitrateExperiencePlan(
 export function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | null, extra: { checks?: ChannelCheck[] | null; signals?: readonly LifeChangeSignal[]; blindSpots?: readonly string[]; helpfulActions?: HelpfulActionFrame | null } = {}): Record<string, unknown> {
   return {
     source: d.source, option: d.optionId, channel: d.channel, format: d.format ?? null, stance: d.stance ?? null, wait_hours: d.waitHours, rationale: d.rationale, evidence: d.evidence, confidence: d.confidence, fallback_reason: d.fallbackReason, menu: d.menu, policy_ref: policyRef,
+    // WAVE 153 (153F, LAW 5): which path decided and how long the judgment took — measured, so "the arbiter did not delay the person" is evidence.
+    ...(d.path ? { path: d.path } : {}), ...(typeof d.latencyMs === "number" ? { latency_ms: d.latencyMs } : {}),
     // WAVE 151 (151E, LAW 5): which helpful actions were eligible, what they were weighed against, and that no default cadence applied.
     ...(extra.helpfulActions ? { helpful_actions: { eligible: (Object.entries(extra.helpfulActions.options) as Array<[HelpfulAction, { eligible: boolean; why: string }]>).filter(([, v]) => v.eligible).map(([k]) => k), weighed: extra.helpfulActions.weighed, preferences_stated: extra.helpfulActions.preferencesStated, cadence: extra.helpfulActions.cadence, never_mention: extra.helpfulActions.neverMention.slice(0, 12) } } : {}),
     // Wave 144: every channel CONSIDERED, with the check that decided it (LAW 5 — which policy permitted, and which refused).
@@ -1401,6 +1615,125 @@ async function lawfulChannelsForContact(svc: { from: (t: string) => any }, a: { 
   return { ok: true, lawful, refusals }
 }
 
+// ── WAVE 153 (lane 153F) — PER-CONTACT TIMING AT THE PLANNER DOOR ────────────────────────────────────────────────────────────────
+// OWNER RULING 13: "the timing for follow up for a person differs from another". Measured at 22b84783: arbitratePlannedTouch handed
+// the model `preferences: []`, `fatigueRisk: null`, `localHour: null` for EVERY planner — two people with opposite signals produced
+// the same prompt and, on any outage, the same fallback; and nothing stopped a planned automated touch while a person on the team was
+// in conversation with them. Now the door reads THIS person's timing signals (what they told us — channel / time / time zone; when
+// they last wrote to us vs when we last wrote to them; relationship fatigue; who owns the conversation) and:
+//   · hands them to the model as evidence (facts.preferences / fatigueRisk / localHour / history / urgency);
+//   · shapes the PLANNER'S FALLBACK per person (fatigue high → a bounded ease-off; outside the window they asked for → wait until it
+//     opens; they wrote to us after our last touch → answer now, never a wait as the fallback) — so an outage still treats two people
+//     differently, and the model can still choose otherwise inside the closed menu;
+//   · HOLDS the touch, with no model call, while a person owns the conversation (one conversation owner) — only where the planner
+//     offered a wait (a planner whose moment cannot wait keeps its own path; the evidence still reaches the model).
+// Every signal is read fail-soft: an unreadable slice is a blind spot on the decision, never a guess (CLAUDE.md §2).
+
+/** The time-of-day words a person uses for when to reach them → the local-hour window [start, end). */
+const STATED_TIME_WINDOWS: ReadonlyArray<{ re: RegExp; start: number; end: number; label: string }> = [
+  { re: /\bmorning/i, start: 8, end: 12, label: "mornings" },
+  { re: /\b(afternoon|midday|lunch)/i, start: 12, end: 17, label: "afternoons" },
+  { re: /\b(evening|night|after\s*(work|5|five|6|six))/i, start: 17, end: 21, label: "evenings" },
+]
+
+interface ContactTimingSignals {
+  statedChannel: string | null
+  statedTime: string | null
+  timeZone: string | null
+  lastInboundAt: string | null
+  lastOutboundAt: string | null
+  fatigueRisk: string | null
+  ownership: ConversationOwnership | null
+}
+
+interface ContactTimingProfile {
+  verdict: "human_owns" | "answer_now" | "ease_off" | "wait_for_window" | "arbiter_decides"
+  reason: string
+  /** For a wait verdict: how long the fallback holds (bounded by the caller with maxDeferDays). */
+  waitHours: number | null
+  repliedSinceOurTouch: boolean
+  hoursSinceTheirReply: number | null
+  hoursSinceOurTouch: number | null
+  localHour: number | null
+  window: { start: number; end: number; label: string } | null
+  fatigueHigh: boolean
+}
+
+/** PURE. The recipient's local hour in an IANA zone (null when the zone is unknown or invalid). */
+function localHourIn(timeZone: string | null, now: Date): number | null {
+  if (!timeZone) return null
+  try {
+    const h = Number(new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone }).format(now))
+    return Number.isFinite(h) ? h % 24 : null
+  } catch { return null }
+}
+
+/**
+ * PURE. ONE person's timing reading. Precedence: a person owns the conversation → hold · they wrote to us after our last touch (inside
+ * LIVE_CONVERSATION.replyWindowHours) → answer now · relationship fatigue high → ease off for the tenant's own fatigue floor
+ * (policy.guardrails.minHoursBetweenTouches) · outside the window they asked for → wait until it opens ·
+ * otherwise the arbiter decides from the evidence (no default cadence — "if preferences are unset, the arbiter decides").
+ */
+function contactTimingProfile(s: ContactTimingSignals, now: Date, bounds: { easeOffHours: number }): ContactTimingProfile {
+  const nowMs = now.getTime()
+  const h = (iso: string | null) => (iso && Number.isFinite(Date.parse(iso)) ? Math.max(0, Math.round(((nowMs - Date.parse(iso)) / 3_600_000) * 10) / 10) : null)
+  const hoursSinceTheirReply = h(s.lastInboundAt)
+  const hoursSinceOurTouch = h(s.lastOutboundAt)
+  const repliedSinceOurTouch = !!s.lastInboundAt && (!s.lastOutboundAt || s.lastInboundAt > s.lastOutboundAt)
+  const window = s.statedTime ? STATED_TIME_WINDOWS.find((w) => w.re.test(s.statedTime as string)) ?? null : null
+  const localHour = localHourIn(s.timeZone, now)
+  const fatigueHigh = s.fatigueRisk === "high" || s.fatigueRisk === "critical"
+  const out = (verdict: ContactTimingProfile["verdict"], reason: string, waitHours: number | null = null): ContactTimingProfile =>
+    ({ verdict, reason, waitHours, repliedSinceOurTouch, hoursSinceTheirReply, hoursSinceOurTouch, localHour, window, fatigueHigh })
+  const own = s.ownership
+  if (own?.humanOwnedUntil && Date.parse(own.humanOwnedUntil) > nowMs) {
+    return out("human_owns", `a person owns the conversation with them until ${own.humanOwnedUntil} (${own.ownedReason ?? "a person was asked for"})`, Math.max(1, Math.ceil((Date.parse(own.humanOwnedUntil) - nowMs) / 3_600_000)))
+  }
+  if (own?.humanEngagedAt) return out("human_owns", `a person on the team wrote to them at ${own.humanEngagedAt} — one conversation owner`, 1)
+  if (repliedSinceOurTouch && hoursSinceTheirReply !== null && hoursSinceTheirReply <= LIVE_CONVERSATION.replyWindowHours) return out("answer_now", `they wrote to us ${hoursSinceTheirReply}h ago, after our last touch — they are waiting on us, so the planned touch is not deferred`)
+  if (fatigueHigh) return out("ease_off", `relationship fatigue is ${s.fatigueRisk} — ease off for the tenant's ${bounds.easeOffHours}h fatigue floor before another touch`, Math.max(1, bounds.easeOffHours))
+  if (window && localHour !== null && (localHour < window.start || localHour >= window.end)) {
+    const until = (window.start - localHour + 24) % 24 || 24
+    return out("wait_for_window", `they asked to be reached ${window.label} and it is ${localHour}:00 their time — wait until the window opens`, until)
+  }
+  return out("arbiter_decides", window ? `inside the window they asked for (${window.label})` : "no timing preference stated — the arbiter decides from the evidence")
+}
+
+/** Fail-soft read of ONE subject's timing signals (contact: the contact row, the thread, fatigue, ownership; lead: the lead row and its
+ *  own conversation history). Module-private — reached through arbitratePlannedTouch. */
+async function loadTimingSignals(svc: { from: (t: string) => any }, a: { brokerageId: string; subject: { type: "lead" | "contact"; id: string }; now: Date }): Promise<{ signals: ContactTimingSignals; blindSpots: string[] }> {
+  const blindSpots: string[] = []
+  const signals: ContactTimingSignals = { statedChannel: null, statedTime: null, timeZone: null, lastInboundAt: null, lastOutboundAt: null, fatigueRisk: null, ownership: null }
+  try {
+    if (a.subject.type === "contact") {
+      const { data: c, error } = await svc.from("contacts").select("id, preferred_channel, preferred_contact_time, time_zone").eq("id", a.subject.id).eq("brokerage_id", a.brokerageId).maybeSingle()
+      if (error) blindSpots.push(`timing preferences not read (${error.message})`)
+      else if (c) { signals.statedChannel = (c as any).preferred_channel ?? null; signals.statedTime = (c as any).preferred_contact_time ?? null; signals.timeZone = (c as any).time_zone ?? null }
+      const own = await loadConversationOwnership(svc, { brokerageId: a.brokerageId, contactId: a.subject.id, conversationId: null, now: a.now })
+      if (own.ok) { signals.ownership = own.ownership; signals.lastInboundAt = own.ownership.lastInboundAt; signals.lastOutboundAt = own.ownership.lastOutboundAt }
+      else blindSpots.push(own.reason)
+      const { data: f, error: fErr } = await svc.from("buyer_fatigue_scores").select("risk_level, last_calculated_at").eq("brokerage_id", a.brokerageId).eq("contact_id", a.subject.id).order("last_calculated_at", { ascending: false }).limit(1).maybeSingle()
+      if (fErr) blindSpots.push(`relationship fatigue not read (${fErr.message})`)
+      else signals.fatigueRisk = ((f as any)?.risk_level as string | null) ?? null
+    } else {
+      const { data: l, error } = await svc.from("leads").select("id, preferred_channel").eq("id", a.subject.id).eq("brokerage_id", a.brokerageId).maybeSingle()
+      if (error) blindSpots.push(`lead preferences not read (${error.message})`)
+      else if (l) signals.statedChannel = (l as any).preferred_channel ?? null
+      const since = new Date(a.now.getTime() - LIVE_CONVERSATION.replyWindowHours * 3_600_000).toISOString()
+      const { data: hist, error: hErr } = await svc.from("lead_conversation_history").select("direction, occurred_at").eq("brokerage_id", a.brokerageId).eq("lead_id", a.subject.id).gte("occurred_at", since).order("occurred_at", { ascending: false }).limit(20)
+      if (hErr) blindSpots.push(`the lead's conversation history not read (${hErr.message})`)
+      for (const r of (hist ?? []) as Array<{ direction?: string | null; occurred_at?: string | null }>) {
+        if (!r.occurred_at) continue
+        if (r.direction === "inbound" && (!signals.lastInboundAt || r.occurred_at > signals.lastInboundAt)) signals.lastInboundAt = r.occurred_at
+        if (r.direction === "outbound" && (!signals.lastOutboundAt || r.occurred_at > signals.lastOutboundAt)) signals.lastOutboundAt = r.occurred_at
+      }
+    }
+  } catch (e) {
+    blindSpots.push(`timing signals not read (${e instanceof Error ? e.message : String(e)})`)
+  }
+  return { signals, blindSpots }
+}
+
 /**
  * THE ONE DOOR A PLANNER'S PROPOSAL PASSES (contract C29). The planner builds the options from what it knows, names its own
  * verdict, and the arbiter decides (arbitrateFollowUp — the same closed-menu validator as every other decision: an option off
@@ -1460,30 +1793,59 @@ export async function arbitratePlannedTouch(
   }
   const wait: ArbiterOption = { id: "wait", kind: "wait", channels: [], why: ["hold for a bounded time if the evidence says now is the wrong moment"] }
   const menu: ArbiterMenu = { menu: [...options, ...(withWait ? [wait] : [])], locked: null }
-  const planned = menu.menu.find((o) => o.id === a.planned) ?? options[0] ?? wait
+  // WAVE 153 (153F): THIS person's timing — read once, evidence for the model, the shape of the fallback, and the one-owner hold.
+  const timing = await loadTimingSignals(svc, { brokerageId: a.brokerageId, subject: a.subject, now: a.now })
+  const profile = contactTimingProfile(timing.signals, a.now, { easeOffHours: policy.guardrails.minHoursBetweenTouches })
+  const maxWaitHours = Math.max(1, policy.arbiter.maxDeferDays * 24)
+  const timingDetail = { verdict: profile.verdict, reason: profile.reason, replied_since_our_touch: profile.repliedSinceOurTouch, hours_since_their_reply: profile.hoursSinceTheirReply, hours_since_our_touch: profile.hoursSinceOurTouch, local_hour: profile.localHour, window: profile.window?.label ?? null, fatigue_high: profile.fatigueHigh, blind_spots: timing.blindSpots.slice(0, 4) }
+  if (profile.verdict === "human_owns" && a.offerWait !== false) {
+    // ONE CONVERSATION OWNER: a person is in conversation with them — no model call, no automated touch on top of theirs. The hold
+    // is the planner's own `wait` (every door already handles it), bounded, ledgered with the reason.
+    const decision: ArbiterDecision = {
+      optionId: "wait", kind: "wait", channel: null, format: null, stance: "wait", waitHours: Math.min(maxWaitHours, profile.waitHours ?? 1),
+      rationale: `Held: ${profile.reason}. The planned touch waits; the person in the conversation decides what comes next.`.slice(0, 600),
+      evidence: ["history"], confidence: 1, source: "deterministic", fallbackReason: "human_owns_conversation", menu: [...options.map((o) => o.id), "wait"], path: "fast",
+    }
+    let recorded = false
+    let ledgerError: string | undefined
+    if (deps.record !== false) {
+      const r = await recordArbitration(svc, { brokerageId: a.brokerageId, subject: a.subject, decision, now: a.now, policyRef: null, systemSource: a.planner, cycleScope: a.planner, extraDetail: { timing: timingDetail } })
+      recorded = r.recorded
+      ledgerError = r.error
+    }
+    return { choice: decision.optionId, decision, recorded, ...(ledgerError ? { ledgerError } : {}), halt: null }
+  }
+  let planned = menu.menu.find((o) => o.id === a.planned) ?? options[0] ?? wait
+  let plannedWaitHours: number | null = null
+  if ((profile.verdict === "ease_off" || profile.verdict === "wait_for_window") && withWait) { planned = wait; plannedWaitHours = Math.min(maxWaitHours, profile.waitHours ?? 1) }
+  if (profile.verdict === "answer_now" && planned.kind === "wait") planned = options.find((o) => o.id === a.planned) ?? options[0] ?? planned
+  const statedPrefs: Array<{ key: string; value: string }> = [
+    ...(timing.signals.statedChannel ? [{ key: "channel_preference", value: String(timing.signals.statedChannel).slice(0, 40) }] : []),
+    ...(timing.signals.statedTime ? [{ key: "preferred_contact_time", value: String(timing.signals.statedTime).slice(0, 60) }] : []),
+  ]
   const facts: ArbiterFacts = {
     subject: a.subject.type,
     relationship: a.relationship ?? { type: a.subject.type, persona: null, hasAssignedAgent: false },
     intent: a.intent ?? null,
-    history: { hoursSinceAnyTouch: null, hoursSinceAgentTouch: null, campaignTouches7d: null, lastChannel: null, portalEducationViews: null, ...(a.history ?? {}) },
+    history: { hoursSinceAnyTouch: profile.hoursSinceOurTouch, hoursSinceAgentTouch: null, campaignTouches7d: null, lastChannel: null, portalEducationViews: null, ...(a.history ?? {}) },
     journey: { transactionStage: null, nextMilestone: null, openLessons: null, nextLesson: null },
-    preferences: [],
-    fatigueRisk: null,
-    localHour: null,
-    moment: { key: a.moment.key, intent: a.moment.intent, daysSinceOpen: 0 },
-    blindSpots: [...(a.blindSpots ?? [])],
-    ...(a.urgency ? { urgency: a.urgency } : {}),
+    preferences: statedPrefs,
+    fatigueRisk: timing.signals.fatigueRisk,
+    localHour: profile.localHour,
+    moment: { key: a.moment.key, intent: profile.verdict === "arbiter_decides" ? a.moment.intent : `${a.moment.intent} (this person's timing: ${profile.reason})`, daysSinceOpen: 0 },
+    blindSpots: [...(a.blindSpots ?? []), ...timing.blindSpots],
+    ...(a.urgency ? { urgency: a.urgency } : profile.verdict === "answer_now" ? { urgency: "high" as const } : {}),
   }
   let decision: ArbiterDecision
   try {
-    decision = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned, policy, budget: a.budget, system: a.system ?? null }, { decide: deps.decide })
+    decision = await arbitrateFollowUp({ brokerageId: a.brokerageId, facts, menu, planned, policy, budget: a.budget, system: a.system ?? null, plannedWaitHours }, { decide: deps.decide })
   } catch (e) {
     decision = { optionId: planned.id, kind: planned.kind, channel: planned.channels[0] ?? null, format: null, waitHours: null, rationale: `The planner's verdict stands: the arbiter threw (${e instanceof Error ? e.message : String(e)}).`, evidence: [], confidence: 1, source: "deterministic", fallbackReason: "arbiter threw", menu: menu.menu.map((o) => o.id) }
   }
   let recorded = false
   let ledgerError: string | undefined
   if (deps.record !== false) {
-    const r = await recordArbitration(svc, { brokerageId: a.brokerageId, subject: a.subject, decision, now: a.now, policyRef: null, systemSource: a.planner, cycleScope: a.planner })
+    const r = await recordArbitration(svc, { brokerageId: a.brokerageId, subject: a.subject, decision, now: a.now, policyRef: null, systemSource: a.planner, cycleScope: a.planner, extraDetail: { timing: timingDetail } })
     recorded = r.recorded
     ledgerError = r.error
   }
@@ -1589,6 +1951,8 @@ export async function recordArbitration(
     brokerageId: string; subject: { type: "lead" | "contact"; id: string }; decision: ArbiterDecision; now: Date; policyRef: string | null; systemSource: string
     /** Wave 149 (C29): a planner's own scope in the idempotency cycle, so two planners deciding about one person the same day are two rows. */
     cycleScope?: string | null
+    /** WAVE 153 (153F): extra evidence for the row (the per-Contact timing reading the decision ran under). */
+    extraDetail?: Record<string, unknown> | null
   },
 ): Promise<{ recorded: boolean; error?: string }> {
   try {
@@ -1601,7 +1965,7 @@ export async function recordArbitration(
       cycle: `arb:${a.cycleScope ? `${a.cycleScope}:` : ""}${a.subject.type}:${a.subject.id}:${a.now.toISOString().slice(0, 10)}`,
       systemSource: a.systemSource, policyKey: "followup_policy",
       until: wait && a.decision.waitHours !== null ? new Date(a.now.getTime() + a.decision.waitHours * 3_600_000).toISOString() : null,
-      detail: arbitrationLedgerDetail(a.decision, a.policyRef),
+      detail: { ...arbitrationLedgerDetail(a.decision, a.policyRef), ...(a.extraDetail ?? {}) },
     }, { client: svc as never })
     return { recorded: r.recorded, error: r.error }
   } catch (e) {

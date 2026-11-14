@@ -653,7 +653,13 @@ export interface PlanNextLeadTouchInput {
   cohort?: GenerationalCohort
   /** Lane 97B: the next-best-action context. Omitted = the plan alone decides. */
   context?: NextBestActionContext
+  /** WAVE 153 (lane 153F — convergence row 86's remaining step): the lead's OWN newest activity (its last inbound reply on the lead
+   *  door — lead_conversation_history direction 'inbound'). Newer than our last touch → the next step is authored early. */
+  lastLeadActivityAt?: Date | null
 }
+
+/** "Fresh" lead activity = at least this much newer than our last touch (our own sends also stamp activity — arbitrateCadence's rule). */
+const FRESH_ACTIVITY_MARGIN_MS = 60 * 60 * 1000
 
 function planLeadTouchCore(input: PlanNextLeadTouchInput): CorePlan {
   const s = input.settings
@@ -688,17 +694,33 @@ function planLeadTouchCore(input: PlanNextLeadTouchInput): CorePlan {
   }
 
   // CADENCE. `touch_interval_days` had no reader anywhere before this.
+  // WAVE 153 (lane 153F, owner ruling 13 — "earlier lead touches is like speed to lead"; convergence row 86's remaining step): the
+  // interval is GUIDANCE for a quiet lead, not a wall in front of an active one. A lead who did something AFTER our last touch (its own
+  // reply on the lead door, at least FRESH_ACTIVITY_MARGIN_MS newer) gets the next step authored NOW instead of waiting out the interval;
+  // whether the touch goes now or a bounded while later is the follow-up arbiter's call at release (releaseDueLeadTouches →
+  // arbitratePlannedTouch lead_touch_release). The fatigue floor stays deterministic: no early step inside
+  // guardrails.minHoursBetweenTouches of the last touch, and every gate below (cap, consent, roster, staged) still applies.
   const intervalDays = s.touch_interval_days ?? DEFAULT_AISA_SETTINGS.touch_interval_days
+  let earlyOnActivity: string | null = null
   if (input.lastTouchAt) {
     const dueAt = new Date(input.lastTouchAt.getTime() + intervalDays * 24 * 60 * 60 * 1000)
     if (dueAt.getTime() > input.now.getTime()) {
-      return {
-        code: "interval_not_elapsed",
-        step: null,
-        channel: null,
-        reason: `last touch ${input.lastTouchAt.toISOString()}; touch_interval_days=${intervalDays} makes the next one due ${dueAt.toISOString()}`,
-        dueAt,
+      const act = input.lastLeadActivityAt ?? null
+      const floorHours = (input.context?.guardrails ?? DEFAULT_FOLLOWUP_POLICY.guardrails).minHoursBetweenTouches
+      const fresh = !!act && act.getTime() >= input.lastTouchAt.getTime() + FRESH_ACTIVITY_MARGIN_MS && act.getTime() <= input.now.getTime()
+      const pastFloor = input.now.getTime() - input.lastTouchAt.getTime() >= floorHours * 3_600_000
+      if (!fresh || !pastFloor) {
+        return {
+          code: "interval_not_elapsed",
+          step: null,
+          channel: null,
+          reason: fresh
+            ? `the lead was active at ${act!.toISOString()} after our last touch, but the last touch (${input.lastTouchAt.toISOString()}) is inside the ${floorHours}h fatigue floor — the early step waits for the floor; touch_interval_days=${intervalDays} would make it due ${dueAt.toISOString()}`
+            : `last touch ${input.lastTouchAt.toISOString()}; touch_interval_days=${intervalDays} makes the next one due ${dueAt.toISOString()}`,
+          dueAt: fresh ? new Date(input.lastTouchAt.getTime() + floorHours * 3_600_000) : dueAt,
+        }
       }
+      earlyOnActivity = `the lead was active at ${act!.toISOString()}, after our last touch at ${input.lastTouchAt.toISOString()} — authored early instead of waiting until ${dueAt.toISOString()} (touch_interval_days=${intervalDays}); the arbiter decides the moment at release`
     }
   }
 
@@ -762,7 +784,7 @@ function planLeadTouchCore(input: PlanNextLeadTouchInput): CorePlan {
     code: "due",
     step: chosen,
     channel: chosen.channel,
-    reason: `plan step ${chosen.order} (${chosen.channel}) is due — produced by ${chosen.producer}`,
+    reason: `${earlyOnActivity ? `EARLY on fresh activity: ${earlyOnActivity}. ` : ""}plan step ${chosen.order} (${chosen.channel}) is due — produced by ${chosen.producer}`,
     dueAt: input.now,
   }
 }
@@ -793,6 +815,8 @@ export interface LeadTouchRelease {
   /** WAVE 152 (152I, convergence row 86): set when the follow-up arbiter held an otherwise-releasable touch a bounded time —
    *  the proposal stays `proposed` and the next sweep asks again (bounded by policy.arbiter.maxDeferDays). */
   arbiterHeld?: { until: string | null; source: string; rationale: string }
+  /** WAVE 153 (153F): set when the lead replied AFTER this touch was drafted — staged for a person, never released on its schedule. */
+  supersededByReply?: { repliedAt: string; proposedAt: string }
   reason: string
 }
 
@@ -921,6 +945,34 @@ export async function releaseDueLeadTouches(input: {
       out.staged++
       out.decisions.push({ messageId, leadId, channel: wire, mode: verdict.mode, code: verdict.code, gate: verdict.code, reason: verdict.reason })
       continue
+    }
+
+    // ── WAVE 153 (lane 153F): A REPLY SUPERSEDES THE QUEUE. A touch drafted BEFORE the lead's latest words is not released on its
+    // schedule — it would answer a conversation that has moved on. Their reply already went to the lead door (which reads it now);
+    // this proposal is staged for a person to re-read against what they said (never a wait, never a silent send). An unreadable
+    // history fails closed the same way. ──
+    if (row.proposed_at) {
+      const { data: replied, error: repliedErr } = await supabase
+        .from("lead_conversation_history")
+        .select("occurred_at")
+        .eq("brokerage_id", input.brokerageId)
+        .eq("lead_id", leadId)
+        .eq("direction", "inbound")
+        .gte("occurred_at", row.proposed_at as string)
+        .order("occurred_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (repliedErr || replied?.occurred_at) {
+        out.staged++
+        out.decisions.push({
+          messageId, leadId, channel: wire, mode: "stage_for_approval", code: "refused", gate: verdict.code,
+          ...(replied?.occurred_at ? { supersededByReply: { repliedAt: String(replied.occurred_at), proposedAt: String(row.proposed_at) } } : {}),
+          reason: repliedErr
+            ? `whether the lead wrote to us since this touch was drafted could not be read (${repliedErr.message}) — staged for a person rather than sent on a schedule`
+            : `the lead wrote to us at ${String(replied!.occurred_at)}, after this touch was drafted at ${String(row.proposed_at)} — not released on its schedule; their reply went to the lead door, and a person re-reads this touch against what they said`,
+        })
+        continue
+      }
     }
 
     // ── THE BROKERAGE SAID YES. NOW RE-CHECK EVERYTHING THAT COULD HAVE MOVED ──
@@ -1224,6 +1276,8 @@ export interface DecisionInputSnapshot {
     reelReady: boolean
     lifecycleState: string | null
     cohort: string | null
+    /** WAVE 153 (153F): the lead's own newest activity the plan read (absent on a pre-153 snapshot = none). */
+    lastLeadActivityAt?: string | null
   }
   context?: {
     intent: Omit<DecayedIntent, "evidence"> | null
@@ -1299,6 +1353,7 @@ export function decisionInputSnapshot(
       reelReady: p.reelReady,
       lifecycleState: p.lifecycleState,
       cohort: p.cohort ?? null,
+      ...(p.lastLeadActivityAt ? { lastLeadActivityAt: iso(p.lastLeadActivityAt) } : {}),
     },
     context: contextSnapshot(p.context),
   }
@@ -1346,6 +1401,7 @@ export function planFromDecisionInput(snap: DecisionInputSnapshot | null | undef
     lifecycleState: c.lifecycleState,
     cohort: (c.cohort ?? undefined) as GenerationalCohort | undefined,
     context,
+    lastLeadActivityAt: dateOf(c.lastLeadActivityAt ?? null),
   })
 }
 
@@ -1722,6 +1778,20 @@ export async function advanceLeadActionPlans(input: {
       continue
     }
 
+    // WAVE 153 (153F, row 86): the lead's OWN newest activity — its last reply on the lead door. An unreadable history only withholds
+    // the early step (said in the warnings); the plan then decides on the interval exactly as before.
+    const { data: lastIn, error: lastInError } = await supabase
+      .from("lead_conversation_history")
+      .select("occurred_at")
+      .eq("brokerage_id", input.brokerageId)
+      .eq("lead_id", leadId)
+      .eq("direction", "inbound")
+      .order("occurred_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (lastInError) out.warnings.push(`lead ${leadId}: its conversation history could not be read (${lastInError.message}) — no early step on fresh activity this sweep`)
+    const lastLeadActivityAt = !lastInError && lastIn?.occurred_at ? new Date(lastIn.occurred_at as string) : null
+
     // What the producers have ALREADY staged for this lead — so the plan never
     // asks for a second copy of a touch that is already waiting on a human.
     const { data: staged, error: stagedError } = await supabase
@@ -1781,6 +1851,7 @@ export async function advanceLeadActionPlans(input: {
       reelReady: (reelCount ?? 0) > 0,
       lifecycleState: (lead.lifecycle_state as string | null) ?? null,
       cohort: cohortFromEnrichment(lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null),
+      lastLeadActivityAt,
       context: {
         duplicateOf: (lead.duplicate_of_lead_id as string | null) ?? (lead.duplicate_of_contact_id as string | null) ?? null,
         outreachPaused: lead.ai_outreach_paused === true,

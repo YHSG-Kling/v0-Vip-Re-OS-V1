@@ -180,6 +180,31 @@ export interface FirstTouchLatencySummary {
   channelBreakdown: Record<string, number>
   /** Lane 90C — median + SLA share per channel (email / sms / phone / direct_mail / unknown). */
   perChannel: Record<string, ChannelLatencySummary>
+  /** WAVE 153 (153F): how many of the touched rows carry a MEASURED timeline (received → dispatched, off the wall clock at each hop)
+   *  vs the older claim-based inference (first_touched_at − created_at). Set by the metrics reader; absent = not counted. */
+  measuredCount?: number
+  inferredCount?: number
+}
+
+/** WAVE 153 (153F): one measured first response — the speed-to-lead completion's own timeline (lib/ai-isa/speed-to-lead.ts). */
+interface MeasuredFirstResponse { subjectId: string; receivedAt: string | null; dispatchedAt: string | null }
+
+/**
+ * PURE (wave 153, lane 153F). Prefer the MEASURED timeline over the claim-based inference: a touched row whose first-touch decision
+ * recorded both its arrival and its dispatch is timed received → dispatched; every other row keeps first_touched_at − created_at and
+ * is COUNTED as inferred, so the strip can say how much of its number is measured (a count without its basis is not a measurement).
+ */
+export function preferMeasuredFirstTouch(rows: ReadonlyArray<FirstTouchRow & { id?: string | null }>, measured: readonly MeasuredFirstResponse[]): { rows: FirstTouchRow[]; measuredCount: number; inferredCount: number } {
+  const byId = new Map<string, MeasuredFirstResponse>()
+  for (const m of measured) if (m.subjectId && m.receivedAt && m.dispatchedAt) byId.set(m.subjectId, m)
+  let measuredCount = 0
+  const out = rows.map((r) => {
+    const m = r.id ? byId.get(r.id) : undefined
+    if (!m) return { createdAt: r.createdAt, firstTouchedAt: r.firstTouchedAt, channel: r.channel }
+    measuredCount++
+    return { createdAt: m.receivedAt, firstTouchedAt: m.dispatchedAt, channel: r.channel }
+  })
+  return { rows: out, measuredCount, inferredCount: out.length - measuredCount }
 }
 
 function toMsOrNull(d: string | Date | null): number | null {

@@ -159,6 +159,13 @@ export async function updateTransaction(
   //   close_date → recordClosingDateChange below (anticipated vs an EXECUTED amendment, with proof).
   if (updates.status !== undefined) return { success: false, error: "A deal's status moves through its stage (advanceTransactionStage) — with the gate, or an override that carries its reason." }
   if (updates.close_date !== undefined) return { success: false, error: "The closing date is the contract's term — record an anticipated date or an executed amendment through recordClosingDateChange." }
+  // WAVE 153 (lane 153B, owner ruling 4: "… can change commission terms but not after a transaction has closed"). This public
+  // endpoint wrote transactions.commission_percentage — the rate the commission engine prices the deal at — with no check that
+  // the caller is on the deal, no freeze at close (a closed / payout-pending deal could be silently re-priced), no reason, no
+  // evidence and no approval. The commission rate has ONE door: requestCommissionTermChangeAction below
+  // (lib/commission/commission-term-change.ts — attached seat or finance admin, frozen at close, evidence where an executed
+  // agreement governs, the broker's decision where policy requires it, the waterfall re-run, the deal team told).
+  if (updates.commissionPercentage !== undefined) return { success: false, error: "A deal's commission rate changes through its commission terms (requestCommissionTermChangeAction) — with the reason, the evidence where an agreement governs it, and the broker's decision where your brokerage requires one. A closed deal's commission is never changed here." }
   return TransactionService.updateTransaction(transactionId, updates)
 }
 
@@ -391,6 +398,102 @@ export async function recalculateCommissionState(params: {
 
   const { recalculateCommissionStateCommand } = await import("@/lib/kernel/transactions")
   return recalculateCommissionStateCommand({ ...params, brokerageId: gate.brokerageId })
+}
+
+// ============================================
+// COMMISSION TERMS — pre-close changes (wave 153, lane 153B; owner ruling 4)
+// ============================================
+//
+// "Anyone attached to the offer/listing/transaction that holds a seat or admin can change commission terms but not after a
+// transaction has closed." Every export below is a public endpoint (CLAUDE.md §4): async, tenant + actor from the SESSION
+// (lib/agreements/session-actor.ts — the tenant-principal fact resolved fail-closed), ids shape-checked, then the ONE writer
+// (lib/commission/commission-term-change.ts) on the service client, which runs its own gate (attachment / finance roster,
+// freeze, evidence, approval, conflict, idempotency). Nothing here decides who may act or computes money.
+
+/** The writer's refusal as the person reads it: its machine code dropped, the sentence kept (the code stays in the ledger). */
+function termSentence(error: string): string {
+  const s = String(error ?? "").replace(/^[a-z0-9_]+: /, "").trim()
+  return s ? `${s[0].toUpperCase()}${s.slice(1)}` : "The commission terms could not be changed right now. Nothing was changed; try again in a moment."
+}
+
+/** One listing / offer / deal id, shape-checked — exactly one. */
+function termAnchor(input: { transactionId?: string | null; offerId?: string | null; listingId?: string | null }):
+  { ok: true; anchor: import("@/lib/commission/commission-term-change").TermChangeAnchor } | { ok: false; error: string } {
+  const named = [input?.transactionId, input?.offerId, input?.listingId].filter((v) => !!v)
+  if (named.length !== 1) return { ok: false, error: "Name the listing, the offer or the deal — exactly one." }
+  if (!named.every((v) => isValidUUID(String(v)))) return { ok: false, error: "That listing, offer or deal id is not valid." }
+  return { ok: true, anchor: { transactionId: input.transactionId ?? null, offerId: input.offerId ?? null, listingId: input.listingId ?? null } }
+}
+
+/** The commission terms of a listing / offer / deal as they stand: the governing agreement, the freeze, who decides, the history. */
+export async function getCommissionTermsAction(input: { transactionId?: string | null; offerId?: string | null; listingId?: string | null }) {
+  const a = termAnchor(input)
+  if (!a.ok) return { success: false as const, error: a.error }
+  const { resolveSessionActor } = await import("@/lib/agreements/session-actor")
+  const s = await resolveSessionActor()
+  if (!s.ok) return { success: false as const, error: s.error }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { loadCommissionTermsForChange } = await import("@/lib/commission/commission-term-change")
+  const r = await loadCommissionTermsForChange(createServiceClient() as never, s.actor, a.anchor)
+  return r.ok ? { success: true as const, view: r.view } : { success: false as const, error: termSentence(r.error) }
+}
+
+/** Submit a change to the commission terms (applied at once only where the rules allow; otherwise the broker decides). */
+export async function requestCommissionTermChangeAction(input: import("@/lib/commission/commission-term-change").TermChangeInput) {
+  const a = termAnchor(input)
+  if (!a.ok) return { success: false as const, error: a.error }
+  if (input?.evidenceDocumentId && !isValidUUID(String(input.evidenceDocumentId))) return { success: false as const, error: "That document id is not valid." }
+  const { resolveSessionActor } = await import("@/lib/agreements/session-actor")
+  const s = await resolveSessionActor()
+  if (!s.ok) return { success: false as const, error: s.error }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { requestCommissionTermChange } = await import("@/lib/commission/commission-term-change")
+  const r = await requestCommissionTermChange(createServiceClient() as never, s.actor, {
+    ...a.anchor, valueType: input.valueType, value: Number(input.value), reason: String(input.reason ?? ""),
+    effectiveDate: String(input.effectiveDate ?? ""), evidenceDocumentId: input.evidenceDocumentId ?? null, idempotencyKey: String(input.idempotencyKey ?? ""),
+  })
+  if (!r.ok) return { success: false as const, error: termSentence(r.error) }
+  if (r.record.anchor.kind === "transaction") revalidatePath(`/dashboard/transactions/${r.record.anchor.id}`)
+  revalidatePath("/dashboard/financials/agent")
+  return { success: true as const, record: r.record, applied: r.applied, replayed: r.replayed, recalculated: r.recalculated, recheck: r.recheck, noticeError: r.noticeError }
+}
+
+/** A finance administrator approves or denies a requested change (approval moves the term and re-runs the waterfall). */
+export async function decideCommissionTermChangeAction(input: { adjustmentId: string; decision: "approved" | "denied"; note?: string | null }) {
+  if (!isValidUUID(String(input?.adjustmentId ?? ""))) return { success: false as const, error: "That change id is not valid." }
+  const { resolveSessionActor } = await import("@/lib/agreements/session-actor")
+  const s = await resolveSessionActor()
+  if (!s.ok) return { success: false as const, error: s.error }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { decideCommissionTermChange } = await import("@/lib/commission/commission-term-change")
+  const r = await decideCommissionTermChange(createServiceClient() as never, s.actor, { adjustmentId: input.adjustmentId, decision: input.decision, note: input.note ?? null })
+  if (!r.ok) return { success: false as const, error: termSentence(r.error) }
+  if (r.record.anchor.kind === "transaction") revalidatePath(`/dashboard/transactions/${r.record.anchor.id}`)
+  revalidatePath("/dashboard/financials/payouts")
+  return { success: true as const, record: r.record, applied: r.applied, recalculated: r.recalculated, recheck: r.recheck, noticeError: r.noticeError }
+}
+
+/** The person who asked withdraws their own still-pending change. */
+export async function withdrawCommissionTermChangeAction(input: { adjustmentId: string }) {
+  if (!isValidUUID(String(input?.adjustmentId ?? ""))) return { success: false as const, error: "That change id is not valid." }
+  const { resolveSessionActor } = await import("@/lib/agreements/session-actor")
+  const s = await resolveSessionActor()
+  if (!s.ok) return { success: false as const, error: s.error }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { withdrawCommissionTermChange } = await import("@/lib/commission/commission-term-change")
+  const r = await withdrawCommissionTermChange(createServiceClient() as never, s.actor, { adjustmentId: input.adjustmentId })
+  return r.ok ? { success: true as const, record: r.record } : { success: false as const, error: termSentence(r.error) }
+}
+
+/** The finance administrators' queue of changes awaiting a decision. */
+export async function listPendingCommissionTermChangesAction() {
+  const { resolveSessionActor } = await import("@/lib/agreements/session-actor")
+  const s = await resolveSessionActor()
+  if (!s.ok) return { success: false as const, error: s.error }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { listPendingCommissionTermChanges } = await import("@/lib/commission/commission-term-change")
+  const r = await listPendingCommissionTermChanges(createServiceClient() as never, s.actor)
+  return r.ok ? { success: true as const, records: r.records } : { success: false as const, error: termSentence(r.error) }
 }
 
 // ============================================

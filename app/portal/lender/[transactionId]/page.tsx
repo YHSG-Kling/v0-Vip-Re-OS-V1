@@ -155,9 +155,15 @@ export default async function LenderTransactionDetailPage({
           <h1 className="text-2xl font-bold">{transaction.property_address || "Transaction Details"}</h1>
           <p className="text-muted-foreground">{lender.lender_company}</p>
         </div>
-        <Badge variant="secondary" className={`${statusConfig.color} text-sm px-3 py-1`}>
-          {statusConfig.label}
-        </Badge>
+        <div className="flex items-center gap-2">
+          {/* WAVE 153 (153C): the lender records Closing Disclosure delivery / receipt and the insurance requirement on the closing file. */}
+          <Button variant="outline" size="sm" asChild>
+            <Link href={`/lender/underwriting/${transactionId}`}>Closing Disclosure &amp; insurance</Link>
+          </Button>
+          <Badge variant="secondary" className={`${statusConfig.color} text-sm px-3 py-1`}>
+            {statusConfig.label}
+          </Badge>
+        </div>
       </div>
 
       {/* Closing Countdown */}

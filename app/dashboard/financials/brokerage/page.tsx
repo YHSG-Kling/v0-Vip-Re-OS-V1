@@ -36,6 +36,7 @@ import {
 } from "../components/os"
 import { getAgentPLSummary } from "@/app/actions/pl-truth-engine"
 import { ScopedExpenseEntry } from "./scoped-expense-entry"
+import { OfficeExpenseRollupSection } from "./office-expense-rollup"
 
 export const dynamic = "force-dynamic"
 
@@ -163,16 +164,34 @@ export default async function BrokeragePLPage() {
 
   // Teams for the scoped expense entry (team-scope option) + the most recent
   // brokerage/team-scoped expense rows (agent_id NULL = not an agent's book).
-  const [{ data: teamOptions }, { data: recentOpExpenses }] = await Promise.all([
-    supabase.from("teams").select("id, name").eq("brokerage_id", profile.brokerage_id).order("name").limit(100),
+  // WAVE 153 (lane 153A): on a multi-location tenant an office admin keeps only their office's books, so the office
+  // choices AND the recent list follow the ONE books authority (lib/finance/expense-rollup.ts — the C34 hierarchy x the
+  // books roster). A refused authority read shows no rows and offers no office (fail closed), never the whole company.
+  const { createServiceClient: booksSvc } = await import("@/lib/supabase/service")
+  const { resolveBooksAuthority, officeChoicesFor } = await import("@/lib/finance/expense-rollup")
+  const [{ data: teamOptions }, { data: recentOpExpenseRows }, { data: officeRows }, booksAuth] = await Promise.all([
+    supabase.from("teams").select("id, name, location_id").eq("brokerage_id", profile.brokerage_id).order("name").limit(100),
     supabase
       .from("business_expenses")
-      .select("id, category, description, amount, expense_date, team_id")
+      .select("id, category, description, amount, expense_date, team_id, location_id")
       .eq("brokerage_id", profile.brokerage_id)
       .is("agent_id", null)
       .order("expense_date", { ascending: false })
-      .limit(8),
+      .limit(25),
+    supabase.from("locations").select("id, name, status").eq("brokerage_id", profile.brokerage_id),
+    resolveBooksAuthority(booksSvc(), { userId: user.id, brokerageId: profile.brokerage_id, userType: (profile.user_type as string | null) ?? null }),
   ])
+  const officeName = new Map(((officeRows ?? []) as Array<{ id: string; name: string | null }>).map((o) => [o.id, o.name ?? "Office"]))
+  const teamOfficeOf = new Map(((teamOptions ?? []) as Array<{ id: string; location_id: string | null }>).map((t) => [t.id, t.location_id]))
+  const recentOpExpenses = !booksAuth.ok ? [] : ((recentOpExpenseRows ?? []) as Array<{ team_id: string | null; location_id: string | null }>)
+    .filter((e) => {
+      if (booksAuth.consolidated) return true
+      const office = e.location_id ?? (e.team_id ? teamOfficeOf.get(e.team_id) ?? null : null)
+      return office !== null && booksAuth.readOffices.includes(office)
+    })
+    .slice(0, 8)
+  // The same office picker the receipt review shows — one implementation (lib/finance/expense-rollup.ts officeChoicesFor).
+  const officeChoices = await officeChoicesFor(booksSvc(), { userId: user.id, brokerageId: profile.brokerage_id, userType: (profile.user_type as string | null) ?? null })
 
   // ─── COMPUTE CAP SUMMARY, FROM THE LEDGER THE ENGINE READS ─────────────────
   //
@@ -785,6 +804,7 @@ export default async function BrokeragePLPage() {
         <ScopedExpenseEntry
           teams={(teamOptions ?? []).map((t) => ({ id: t.id as string, name: (t.name as string) ?? "Team" }))}
           canLogAgentScope={Boolean(brokerAgentId)}
+          offices={officeChoices}
         />
         <Card>
           <CardHeader>
@@ -804,7 +824,7 @@ export default async function BrokeragePLPage() {
                     <div className="min-w-0">
                       <p className="text-sm truncate">{e.description || "Expense"}</p>
                       <p className="text-xs text-muted-foreground">
-                        {new Date(e.expense_date).toLocaleDateString()} · <Badge variant="outline" className="text-[10px]">{e.category || "other"}</Badge> · {e.team_id ? "Team" : "Brokerage"}
+                        {new Date(e.expense_date).toLocaleDateString()} · <Badge variant="outline" className="text-[10px]">{e.category || "other"}</Badge> · {e.location_id ? officeName.get(e.location_id) ?? "Office" : e.team_id ? "Team" : "Main office"}
                       </p>
                     </div>
                     <p className="text-sm font-semibold text-orange-700 shrink-0 ml-3">{formatCurrency(e.amount)}</p>
@@ -815,6 +835,11 @@ export default async function BrokeragePLPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ─── SECTION 7.6: EXPENSES BY OFFICE (wave 153, lane 153A) — renders only on a multi-location tenant ─── */}
+      <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+        <OfficeExpenseRollupSection userId={user.id} brokerageId={profile.brokerage_id} userType={(profile.user_type as string | null) ?? null} />
+      </Suspense>
 
       {/* ─── SECTION 8: P&L REPORT GENERATOR ──────────────────────────────────── */}
       {/* pass 12: the panel's report reads business_expenses.agent_id and inserts

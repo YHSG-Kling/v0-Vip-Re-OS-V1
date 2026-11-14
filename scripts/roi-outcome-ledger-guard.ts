@@ -15,7 +15,14 @@
  *   P4 unknown provider / campaign spend stays unknown;
  *   P5 a $0-cost campaign shows N/A for every spend-divided ratio;
  *   P6 a replayed event is one outcome;
- *   P7 cross-tenant, agent and team visibility (commission off an agent's display; a team lead sees the team only);
+ *   P7 cross-tenant, agent and team visibility (wave 153, owner ruling 5: an agent sees their OWN commission, never the
+ *      business's net; a team lead sees the team only);
+ *   B3 (wave 153, lane 153B) one commission truth, three money tiers — own share · team share · admin rollup — with a shared
+ *      deal proving no agent ever sees a peer's private payout, a co-agent without their own row sees no dollars, and a seat
+ *      with no agent row and no books authority sees counts only;
+ *   A3 (wave 153, lane 153B) decision metrics — cost per verified Contact / appointment / closing, attributable earned
+ *      commission, net contribution, dedup cost avoided (N/A: not recorded), lead response time — measured only, N/A with
+ *      the reason (adverse: no verified Contact, no first response, unrecorded spend, refused contacts read);
  *   P8 the CSV export agrees with the reader;
  *   R  recommendations are advisory, evidence-based on a comparable sample, and never raise spend;
  *   S  the writers / readers are wired (stripped-source census, each with a positive control).
@@ -107,7 +114,16 @@ function seed(over: Partial<Record<string, Row[]>> = {}, opts: Parameters<typeof
       { id: TB, brokerage_id: B, status: "closed", deleted_at: null, deal_name: "Other workspace deal", contract_date: "2026-10-09", close_date: "2026-10-21", actual_close_date: null, commission_amount: 5000, estimated_commission: 5000, commission_finalized_at: "2026-10-21T18:00:00.000Z", agent_id: null, buyer_agent_id: null, seller_agent_id: null, buyer_contact_id: KB, seller_contact_id: null, contact_id: null, purchase_price: 180000, updated_at: NOW },
     ],
     agent_commissions: [
-      { id: AC1, brokerage_id: A, transaction_id: T1, status: "paid", gross_commission: 12000, net_to_brokerage: 3600, brokerage_commission: 3600, net_to_agent: 8400, agent_commission: 8400, deposit_received_at: "2026-10-26T12:00:00.000Z", paid_at: "2026-10-28T12:00:00.000Z" },
+      // agent_id is the producing agent's agents.id (the live column the wave-153 own / team money tiers read)
+      { id: AC1, brokerage_id: A, transaction_id: T1, agent_id: A1, status: "paid", gross_commission: 12000, net_to_brokerage: 3600, brokerage_commission: 3600, net_to_agent: 8400, agent_commission: 8400, deposit_received_at: "2026-10-26T12:00:00.000Z", paid_at: "2026-10-28T12:00:00.000Z" },
+    ],
+    // A3 (wave 153): K1 is a verified Contact who entered in the window and got a first response in 3 minutes; K3 entered in the
+    // window with no first response yet; K2 / K4 are older and unverified.
+    contacts: [
+      { id: K1, brokerage_id: A, created_at: "2026-10-05T09:00:00.000Z", first_touched_at: "2026-10-05T09:03:00.000Z", first_touch_channel: "email", email_verified: true, phone_verified: false },
+      { id: K2, brokerage_id: A, created_at: "2026-08-01T09:00:00.000Z", first_touched_at: "2026-08-01T10:00:00.000Z", first_touch_channel: "email", email_verified: false, phone_verified: false },
+      { id: K3, brokerage_id: A, created_at: "2026-10-03T08:00:00.000Z", first_touched_at: null, first_touch_channel: null, email_verified: false, phone_verified: null },
+      { id: K4, brokerage_id: A, created_at: "2026-07-01T09:00:00.000Z", first_touched_at: null, first_touch_channel: null, email_verified: null, phone_verified: false },
     ],
     vendor_usage_tracking: [
       { id: u(101), brokerage_id: A, total_cost: 2.5, request_metadata: { coverage: "platform_covered", price_state: "fixed" }, created_at: "2026-10-05T00:00:00.000Z" },
@@ -308,15 +324,18 @@ async function main() {
     check("an agent's ledger reads (own work)", ag.ok && ag.ledger.scope.kind === "own")
     if (ag.ok) {
       const l = ag.ledger
-      check("COMMISSION OFF AN AGENT'S DISPLAY: no revenue, no attribution dollars, no campaign dollars, no journey dollars", l.revenue === null && l.attribution === null && l.campaigns.every((c) => c.revenue === null) && l.journeys.every((j) => j.earnedCents === null) && !l.scope.moneyVisible && !!l.scope.moneyNote)
-      check("…the money note is plain words with one action, and names no payer", /finance administrators/.test(l.scope.moneyNote ?? "") && /ask an account administrator/i.test(l.scope.moneyNote ?? "") && !/brokerage pays/i.test(l.scope.moneyNote ?? ""))
+      // WAVE 153 (lane 153B, owner ruling 5 — "commission amounts should be showed to the agent and team lead"; supersedes the
+      // wave-152 rule that hid every commission dollar from an agent): the agent sees THEIR OWN amounts.
+      check("OWNER RULING 5: an agent sees their OWN commission — earned $12,000 on T1, paid to them $8,400 (money tier 'own')", l.scope.moneyVisible && l.scope.moneyTier === "own" && l.revenue?.earnedCents === 1_200_000 && l.revenue?.disbursedCents === 840_000 && l.attribution?.sourcedEarnedCents === 1_200_000, `tier=${l.scope.moneyTier} earned=${l.revenue?.earnedCents}`)
+      check("…but never the business's net (the brokerage waterfall is not part of an agent's view)", l.revenue?.netBrokerageCents === null && !JSON.stringify(l).includes("360000"))
+      check("…and the note says plainly whose amounts these are (own share, no payer named)", /your own commission amounts/i.test(l.scope.moneyNote ?? "") && /other agents' payouts are not part of this view/i.test(l.scope.moneyNote ?? "") && !/brokerage pays/i.test(l.scope.moneyNote ?? ""))
       check("the agent sees only their own campaigns (not agent two's mailer)", l.campaigns.every((c) => c.agentUserId === U_AG1) && !l.campaigns.some((c) => c.campaignId === C_AG2))
       check("the agent's closings are their own (T1), not agent two's (T4)", l.results.dealsClosed === 1 && !l.journeys.some((j) => j.transactionId === T4))
       check("a deal their campaign touched but another agent owns is counted as outside the view, without its money", l.campaigns.find((c) => c.campaignId === C_MAIL)?.results.dealsOutsideView === 1)
     }
     const lead = await ledgerOf(m, U_LEAD)
     check("TEAM LEAD (L4): scoped to the team they lead — never the whole tenant on the single-office roster rule", lead.ok && lead.ledger.scope.kind === "teams")
-    check("…sees the team's deal (T1) and not the other agent's (T4), with the team's books", lead.ok && lead.ledger.attribution?.sourcedDeals === 1 && lead.ledger.attribution?.sourcedEarnedCents === 1_200_000 && lead.ledger.scope.moneyVisible)
+    check("…sees the team's deal (T1) and not the other agent's (T4), with the team's books (money tier 'team')", lead.ok && lead.ledger.attribution?.sourcedDeals === 1 && lead.ledger.attribution?.sourcedEarnedCents === 1_200_000 && lead.ledger.scope.moneyVisible && lead.ledger.scope.moneyTier === "team")
     check("POSITIVE CONTROL: the broker sees both deals", brokerL.ok && brokerL.ledger.attribution?.sourcedDeals === 2)
     const other = await ledgerOf(m, U_BBROKER, B)
     const otherJson = other.ok ? JSON.stringify(other.ledger) : ""
@@ -331,6 +350,67 @@ async function main() {
     ;(m.tables.marketing_attribution_credits as Row[]).push({ id: u(109), brokerage_id: B, campaign_id: C_MAIL, transaction_id: T1, attribution_model: "linear", attribution_weight: 1, credit_dollars: 99999, contact_id: K1, touchpoint_count: 1 })
     const afterForeign = await ledgerOf(m, U_BROKER)
     check("a credit row stamped with ANOTHER tenant cannot inflate this tenant's sourced revenue or break reconciliation", afterForeign.ok && afterForeign.ledger.attribution?.sourcedEarnedCents === 1_800_000 && !!afterForeign.ledger.attribution?.reconciled)
+  }
+
+  // ── B3 (wave 153, lane 153B) ─────────────────────────────────────────────
+  section("B3 · one commission truth, three tiers: own share · team share · admin rollup — never a peer's private payout")
+  {
+    // T1 becomes a SHARED deal: agent two (outside the team) is the co-agent with their own $5,000 commission row.
+    const PEER_ROW = u(86)
+    const shared = await credited(seed({
+      transactions: (seed().tables.transactions as Row[]).map((t) => (t.id === T1 ? { ...t, seller_agent_id: A2 } : t)),
+      agent_commissions: [
+        { id: AC1, brokerage_id: A, transaction_id: T1, agent_id: A1, status: "paid", gross_commission: 12000, net_to_brokerage: 3600, brokerage_commission: 3600, net_to_agent: 8400, agent_commission: 8400, deposit_received_at: "2026-10-26T12:00:00.000Z", paid_at: "2026-10-28T12:00:00.000Z" },
+        { id: PEER_ROW, brokerage_id: A, transaction_id: T1, agent_id: A2, status: "approved", gross_commission: 5000, net_to_brokerage: 1500, brokerage_commission: 1500, net_to_agent: 3500, agent_commission: 3500, deposit_received_at: null, paid_at: null },
+      ],
+    }))
+    const ag1 = await ledgerOf(shared, U_AG1)
+    const j1 = ag1.ok ? JSON.stringify(ag1.ledger) : ""
+    check("PEER PRIVACY: on a shared deal agent one sees their own $12,000 — not the $17,000 deal total and not agent two's $5,000 / $3,500", ag1.ok && ag1.ledger.revenue?.earnedCents === 1_200_000 && !j1.includes("500000") && !j1.includes("350000") && !j1.includes(PEER_ROW), `earned=${ag1.ok ? ag1.ledger.revenue?.earnedCents : "refused"}`)
+    const ag2 = await ledgerOf(shared, U_AG2)
+    check("…and agent two, on the same deal, sees only their own $5,000 (T1) + their own T4 deal (no ledger row: finalized $6,000, wholly theirs)", ag2.ok && ag2.ledger.revenue?.earnedCents === 1_100_000 && !(ag2.ok ? JSON.stringify(ag2.ledger) : "").includes(AC1), `earned=${ag2.ok ? ag2.ledger.revenue?.earnedCents : "refused"}`)
+    const lead = await ledgerOf(shared, U_LEAD)
+    check("TEAM SHARE: the team lead sees the team's $12,000 on T1 — the outside co-agent's $5,000 is never summed into the team's books", lead.ok && lead.ledger.scope.moneyTier === "team" && lead.ledger.revenue?.earnedCents === 1_200_000 && !(lead.ok ? JSON.stringify(lead.ledger) : "").includes("500000"))
+    const broker = await ledgerOf(shared, U_BROKER)
+    check("ADMIN ROLLUP: the broker sees every row — T1 $17,000 (both agents) + T4 $6,000 = $23,000, money tier 'full'", broker.ok && broker.ledger.scope.moneyTier === "full" && broker.ledger.revenue?.earnedCents === 2_300_000, `earned=${broker.ok ? broker.ledger.revenue?.earnedCents : "refused"}`)
+    // A co-agent with NO row of their own on a shared deal: their share is not established — never the deal total.
+    const noOwnRow = await credited(seed({
+      transactions: (seed().tables.transactions as Row[]).map((t) => (t.id === T1 ? { ...t, seller_agent_id: A2 } : t)),
+      agent_commissions: [{ id: AC1, brokerage_id: A, transaction_id: T1, agent_id: A1, status: "paid", gross_commission: 12000, net_to_brokerage: 3600, brokerage_commission: 3600, net_to_agent: 8400, agent_commission: 8400, deposit_received_at: null, paid_at: null }],
+    }))
+    const ag2b = await ledgerOf(noOwnRow, U_AG2)
+    check("ADVERSE: a co-agent whose own commission row is missing sees NO dollars for that deal (share not established, said) — never the other agent's $12,000", ag2b.ok && ag2b.ledger.revenue?.earnedCents === 600_000 && ag2b.ledger.completeness.notes.some((n) => /do not record your own share/.test(n)), `earned=${ag2b.ok ? ag2b.ledger.revenue?.earnedCents : "refused"}`)
+    check("POSITIVE CONTROL: the broker's rollup on that same seed does count the $12,000 row", (await ledgerOf(noOwnRow, U_BROKER)).ok && ((await ledgerOf(noOwnRow, U_BROKER)) as any).ledger.revenue?.earnedCents === 1_800_000)
+    // A seat with no agent row and no books authority: counts only.
+    const tcSeat = await credited(seed({ users: [...(seed().tables.users as Row[]), { id: u(17), brokerage_id: A, user_type: "tc", location_id: null, team_id: null }] }))
+    const tc = await ledgerOf(tcSeat, u(17))
+    check("ADVERSE: a coordinator seat with no agent row and no books authority sees counts only (money tier 'none', note names who sees amounts)", tc.ok && tc.ledger.scope.moneyTier === "none" && tc.ledger.revenue === null && /agent on a deal sees their own amounts/.test(tc.ledger.scope.moneyNote ?? ""), tc.ok ? `tier=${tc.ledger.scope.moneyTier}` : tc.error)
+  }
+
+  // ── A3 (wave 153, lane 153B) ─────────────────────────────────────────────
+  section("A3 · decision metrics in the same reader — measured only, N/A with the reason")
+  {
+    const m = await credited(seed())
+    const b = await ledgerOf(m, U_BROKER)
+    const dm = b.ok ? b.ledger.decisionMetrics : null
+    check("cost per VERIFIED Contact: the two fully-recorded campaigns' $1,050 ÷ 1 verified Contact reached (K1) = $1,050", dm?.costPerVerifiedContact.value === 105_000, `got ${dm?.costPerVerifiedContact.value} (${dm?.costPerVerifiedContact.na})`)
+    check("cost per appointment and per closing are the same fully-recorded spend over measured counts (1 appointment, 2 sourced closings)", dm?.costPerAppointment.value === 105_000 && dm?.costPerClosing.value === 52_500, `appt=${dm?.costPerAppointment.value} closing=${dm?.costPerClosing.value}`)
+    check("attributable earned commission = the sourced $18,000; net contribution = $12,000 credited to the fully-recorded campaigns − $1,050 = $10,950", dm?.attributableEarnedCommission.value === 1_800_000 && dm?.netContribution.value === 1_095_000, `earned=${dm?.attributableEarnedCommission.value} net=${dm?.netContribution.value}`)
+    check("acquisition cost avoided by dedup is N/A with its reason (nothing records an avoided pull) — never $0", dm?.acquisitionCostAvoidedByDedup.value === null && /records no avoided pull/.test(dm?.acquisitionCostAvoidedByDedup.na ?? ""))
+    check("lead response: K1 entered in the window and got a first response in 180 s (1 measured, within the 5-minute SLA); K3 has none yet and is not counted as zero", dm?.leadResponse.measured === 1 && dm?.leadResponse.medianSeconds === 180 && dm?.leadResponse.withinSlaShare === 1)
+    const noVerified = await credited(seed({ contacts: (seed().tables.contacts as Row[]).map((c) => ({ ...c, email_verified: false })) }))
+    const nv = await ledgerOf(noVerified, U_BROKER)
+    check("ADVERSE: no verified Contact reached → cost per verified Contact is N/A ('No verified contact yet'), never a divide-by-zero", nv.ok && nv.ledger.decisionMetrics.costPerVerifiedContact.value === null && /No verified contact yet/.test(nv.ledger.decisionMetrics.costPerVerifiedContact.na ?? ""))
+    const noTouch = await credited(seed({ contacts: (seed().tables.contacts as Row[]).map((c) => ({ ...c, first_touched_at: null })) }))
+    const nt = await ledgerOf(noTouch, U_BROKER)
+    check("ADVERSE: no recorded first response → response time is N/A with its reason (never 0 seconds)", nt.ok && nt.ledger.decisionMetrics.leadResponse.medianSeconds === null && nt.ledger.decisionMetrics.leadResponse.measured === 0 && /has a recorded first response/.test(nt.ledger.decisionMetrics.leadResponse.na ?? ""))
+    const unknown = await credited(seed({ direct_mail_campaigns: (seed().tables.direct_mail_campaigns as Row[]).map((d) => ({ ...d, per_piece_cost: null })) }))
+    const un = await ledgerOf(unknown, U_BROKER)
+    check("ADVERSE: spend not fully recorded anywhere → net contribution and every cost-per are N/A with the reason", un.ok && un.ledger.decisionMetrics.netContribution.value === null && /full spend recorded/.test(un.ledger.decisionMetrics.netContribution.na ?? "") && un.ledger.decisionMetrics.costPerVerifiedContact.value === null)
+    const agv = await ledgerOf(m, U_AG1)
+    check("the agent's decision metrics are their OWN: attributable earned commission = their $12,000 (never the tenant's $18,000)", agv.ok && agv.ledger.decisionMetrics.attributableEarnedCommission.value === 1_200_000)
+    const refusedContacts = await quiet(() => loadRoiOutcomeLedger(memSupabase({ ...(m.tables as any) }, { refuse: { contacts: "permission denied for table contacts" } }) as any, { userId: U_BROKER, brokerageId: A }, WINDOW))
+    check("FAIL CLOSED: a refused contacts read refuses the whole ledger (verified / response figures are never guessed)", !refusedContacts.ok && /contacts/.test(refusedContacts.ok ? "" : refusedContacts.error))
   }
 
   // ── P8 ───────────────────────────────────────────────────────────────────
@@ -348,8 +428,10 @@ async function main() {
       return row[3] === (c.cost.cents == null ? "" : (c.cost.cents / 100).toFixed(2)) && row[8] === (c.revenue ? (c.revenue.sourcedEarnedCents / 100).toFixed(2) : "")
     }))
     const ag = await ledgerOf(await credited(seed()), U_AG1)
-    const agCsv = ag.ok ? roiOutcomeCsv(ag.ledger) : "revenue,"
-    check("an agent's export carries no commission dollars either (the export is the reader, scope included)", ag.ok && !/^revenue,/m.test(agCsv) && !/sourcedEarnedUsd/.test(agCsv))
+    const agCsv = ag.ok ? roiOutcomeCsv(ag.ledger) : ""
+    const agLine = (prefix: string) => agCsv.split("\n").find((x) => x.startsWith(prefix))
+    check("an agent's export carries their OWN dollars and an empty business net (the export is the reader, tier included)", ag.ok && agLine("revenue,earnedUsd,")?.split(",")[2] === "12000.00" && agLine("revenue,netBrokerageUsd,")?.split(",")[2] === "" && !agCsv.includes("3600.00"))
+    check("the decision metrics are exported from the same object (net contribution $10,950; dedup N/A with its reason)", lines.find((x) => x.startsWith("decision,netContributionUsd,"))?.split(",")[2] === (l.decisionMetrics.netContribution.value! / 100).toFixed(2) && /^decision,acquisitionCostAvoidedByDedupUsd,N\/A,/m.test(csv))
   }
   {
     const m = await credited(seed())

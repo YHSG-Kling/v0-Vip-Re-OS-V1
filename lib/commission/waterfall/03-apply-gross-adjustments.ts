@@ -50,6 +50,12 @@ export async function applyGrossAdjustments(
   const holds: string[] = []
 
   for (const adj of adjustments) {
+    // WAVE 153 (lane 153B, owner ruling 4): a 'rate_override' row is a COMMISSION TERM CHANGE record
+    // (lib/commission/commission-term-change.ts) — its value is the NEW RATE, not an amount off the gross. An applied change
+    // already moved the deal's governing rate (transactions.commission_percentage, which stage 01 prices); a pending one has
+    // not been authorized. Netting it here would price the change twice (or price an unapproved one), so it never moves the
+    // gross in this stage.
+    if (adj.adjustment_type === 'rate_override') continue
     const magnitudeCents = adj.value_type === 'flat'
       ? dollarsToCents(adj.value)
       : Math.round(context.grossCommissionCents * (adj.value / 100))

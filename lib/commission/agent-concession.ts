@@ -48,6 +48,11 @@ export type AgentConcessionBeneficiary = (typeof AGENT_CONCESSION_BENEFICIARIES)
 /** Minimum stated reason — a concession without a why is not evidence. */
 export const AGENT_CONCESSION_REASON_MIN = 5
 
+/** The commission_adjustments mechanism a COMMISSION TERM CHANGE is recorded under (wave 153, lane 153B — the live
+ *  commission_adjustments_adjustment_type_check member; its one writer is lib/commission/commission-term-change.ts). Named here
+ *  because this module's readers and decider must keep the two partitions of the shared ledger apart. Module-private. */
+const TERM_CHANGE_MECHANISM = "rate_override"
+
 export const AGENT_CONCESSION_APPROVAL_LABEL: Record<AgentConcessionApprovalStatus, string> = {
   not_required: "No approval required",
   requested: "Awaiting broker approval",
@@ -422,6 +427,12 @@ export async function decideAgentConcession(
     .maybeSingle()
   if (readErr) return { ok: false, error: `concession_read_refused: ${readErr.message}` }
   if (!current) return { ok: false, error: "concession_not_found" }
+  // WAVE 153 (lane 153B): a 'rate_override' row on this same ledger is a COMMISSION TERM CHANGE, decided — and APPLIED — only
+  // by lib/commission/commission-term-change.ts decideCommissionTermChange. Approving it here would mark it approved without
+  // moving the deal's rate (an "approved" change the deal never carries), so this door refuses it by name.
+  if ((current as { adjustment_type?: string | null }).adjustment_type === TERM_CHANGE_MECHANISM) {
+    return { ok: false, error: "not_a_concession: this is a commission term change — decide it on the commission term change queue" }
+  }
   const before = toRecord(current as Record<string, unknown>)
   if (before.approvalStatus !== "requested") return { ok: false, error: `not_pending: this concession is ${before.approvalStatus}` }
   const now = new Date().toISOString()
@@ -516,7 +527,8 @@ export async function listAgentConcessions(
   if (brkErr) return { ok: false, error: `policy_read_refused: ${brkErr.message}` }
   return {
     ok: true,
-    records: ((data ?? []) as Array<Record<string, unknown>>).map(toRecord),
+    // a commission term change (rate_override, wave 153) shares the ledger but is not a concession — never listed as one
+    records: ((data ?? []) as Array<Record<string, unknown>>).filter((r) => r.adjustment_type !== TERM_CHANGE_MECHANISM).map(toRecord),
     policy: resolveAgentConcessionPolicy((brk as Record<string, unknown> | null)?.agent_concession_approval),
   }
 }
@@ -532,6 +544,9 @@ export async function listAgentConcessions(
  */
 function unauthorizedOfferConcessions(rows: ReadonlyArray<Record<string, unknown>>): Array<{ id: string; value: number; valueType: string; beneficiary: string | null }> {
   return rows
+    // a pending commission TERM CHANGE (rate_override, wave 153) has not touched the offer's terms — the offer still states the
+    // approved value — so it commits nothing and never holds a dispatch as an "unauthorized concession"
+    .filter((r) => r.adjustment_type !== TERM_CHANGE_MECHANISM)
     .filter((r) => r.is_active !== false && r.applies_to === "gross" && r.direction === "credit" && String(r.approval_status ?? "not_required") === "requested")
     .map((r) => ({ id: String(r.id), value: Number(r.value ?? 0), valueType: String(r.value_type ?? "flat"), beneficiary: (r.recipient_type as string | null) ?? null }))
 }

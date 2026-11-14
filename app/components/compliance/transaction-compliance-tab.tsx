@@ -1009,7 +1009,8 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
                 <SelectContent>
                   <SelectItem value="loan_application_date">Loan application received</SelectItem>
                   <SelectItem value="loan_estimate_delivered_date">Loan Estimate delivered</SelectItem>
-                  <SelectItem value="closing_disclosure_delivered_date">Closing Disclosure delivered</SelectItem>
+                  {/* WAVE 153 (lane 153C): the Closing Disclosure's RECEIPT is recorded from the lender's evidence on the deal's
+                      Closing Disclosure panel (app/dashboard/transactions/[id]/trid-receipt-section.tsx) — never a typed date here. */}
                   <SelectItem value="scheduled_close_date">Scheduled close date</SelectItem>
                 </SelectContent>
               </Select>

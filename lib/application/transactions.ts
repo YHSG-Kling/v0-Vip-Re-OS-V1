@@ -313,9 +313,11 @@ export async function updateTransaction(
   const supabase = gate.db
 
   const updatePayload: any = { ...updates, updated_at: new Date().toISOString() }
+  // TOMBSTONE (wave 153, lane 153B): the commissionPercentage → commission_percentage mapping lived here. Its only caller
+  // (app/actions/transactions.ts updateTransaction) now refuses commission edits; the survivor is the governed writer
+  // lib/commission/commission-term-change.ts (attachment check, evidence, approval, close freeze). Kept as a refusal, never a write.
   if (updates.commissionPercentage !== undefined) {
-    updatePayload.commission_percentage = updates.commissionPercentage
-    delete updatePayload.commissionPercentage
+    return { success: false, error: "Commission terms change through Commission terms on the deal, with the reason and any required approval — not through a deal edit." }
   }
   if (updates.property_zip !== undefined) {
     updatePayload.property_zip = normalizeZip(updates.property_zip)

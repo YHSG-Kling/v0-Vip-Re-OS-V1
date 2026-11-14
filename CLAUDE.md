@@ -177,7 +177,8 @@ Supabase project `hrvaqgvukzxfskkcrwbt`.
 - **Leads belong to the BROKERAGE.** Agents never claim leads and see CONTACTS
   only. A lead reaches an agent only once qualified or showing positive intent.
 - **Contacts, lenders and vendors see no financials** — only their own.
-- Commission is off agent-facing display.
+- Commission amounts ARE shown to the agent (their own) and the team lead (their teams') — owner change, wave 153 (2026-11-14);
+  never another agent's private payout, never the business's net to every agent.
 - **AI is platform-covered**, with per-tier overage. `ai_tool_usage` is the cost
   ledger; it feeds `meter_readings.ai_tokens` and the overage projection. A wrong
   number there is a wrong invoice.

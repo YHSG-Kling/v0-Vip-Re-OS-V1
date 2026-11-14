@@ -184,7 +184,7 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
         filters.push((r) => typeof val(r, col) === "string" && re.test(val(r, col)))
         return b
       },
-      in(col: string, vs: string[] | string) { filterCols.push(col); const set = new Set(parseList(vs)); filters.push((r) => set.has(String(val(r, col)))); return b },
+      in(col: string, vs: string[] | string) { filterCols.push(col); const set = new Set(parseList(vs).map(String)); filters.push((r) => set.has(String(val(r, col)))); return b },
       is(col: string, v: unknown) { filterCols.push(col); filters.push((r) => (v === null ? val(r, col) === null || val(r, col) === undefined : val(r, col) === v)); return b },
       not(col: string, operator: string, v: unknown) {
         filterCols.push(col)

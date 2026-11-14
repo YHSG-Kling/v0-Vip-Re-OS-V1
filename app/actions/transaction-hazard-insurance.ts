@@ -33,6 +33,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { presentTenantMessage } from "@/lib/errors"
 import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 import {
   readHazardInsurance,
@@ -219,9 +220,19 @@ export async function getTransactionHazardInsuranceAction(
     }
   }
 
+  // WAVE 153 (lane 153C): the lender-required insurance checkpoint and the deal's financing (a cash deal is never held for lender
+  // insurance). A checkpoint that cannot be read is shown as unreadable (null), never as "not required".
+  const svcForCheckpoint = createServiceClient()
+  const { loadLenderInsuranceCheckpoint } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  const cp = await loadLenderInsuranceCheckpoint(svcForCheckpoint, { brokerageId: auth.brokerageId, transactionId })
+  const { loadDealWorkAccess } = await import("@/lib/auth/deal-work-ownership")
+  const work = await loadDealWorkAccess(svcForCheckpoint, { userId: auth.userId, brokerageId: auth.brokerageId, userType: auth.userType ?? null, transactionId })
+  const cap = work.ok ? work.access : null
+
   const status = readHazardInsurance({
     service: selectHazardService(services.rows),
     closeDate: scope.closeDate,
+    financing: cp.ok ? cp.facts.financing : null,
     now: new Date(),
     representsBuyer: scope.representsBuyer,
   })
@@ -237,6 +248,11 @@ export async function getTransactionHazardInsuranceAction(
     closeDate: scope.closeDate,
     representsBuyer: scope.representsBuyer,
     sideNote,
+    checkpoint: cp.ok ? cp.facts.checkpoint : null,
+    can: {
+      recordRequirement: !!cap && cap.capabilities.assist && (cap.roles.includes("owning_agent") || cap.roles.includes("assisting_tc")),
+      acceptEvidence: !!cap && cap.capabilities.verifyLenderEvidence,
+    },
   }
 }
 
@@ -545,8 +561,112 @@ export async function recordHazardPolicyAction(
   // exactly the bug that left insurance_quote_approved dead.
   await completeHazardMilestone(scope.id, auth.brokerageId, auth.userId)
 
+  // ── WAVE 153 (lane 153C): a changed premium → the settlement / Closing Disclosure is rechecked; the checkpoint re-settles ──
+  // The previous premium is the one on the coverage record this write replaced (never a guess). Both steps are recorded or
+  // reported — a refusal here does not unbind the policy that was just written.
+  const previousPremium = existingRow?.policy?.annual_premium
+  const { requestSettlementRecheckForPremium, syncLenderInsuranceCheckpoint } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  if (typeof previousPremium === "number" && typeof input.annualPremium === "number" && previousPremium !== input.annualPremium) {
+    const recheck = await requestSettlementRecheckForPremium(svc, { brokerageId: auth.brokerageId, transactionId: input.transactionId, previousPremium, newPremium: input.annualPremium })
+    if (recheck.error) console.error(`[hazard-insurance] premium recheck request not opened: ${recheck.error}`)
+  }
+  const synced = await syncLenderInsuranceCheckpoint(svc, { brokerageId: auth.brokerageId, transactionId: input.transactionId })
+  if (!synced.ok) console.error(`[hazard-insurance] the insurance checkpoint could not be re-settled: ${synced.error}`)
+
   revalidatePath(`/dashboard/transactions/${input.transactionId}`)
   return { success: true }
+}
+
+// ─── WAVE 153 (lane 153C) — THE LENDER'S REQUIREMENT AND ITS ACCEPTANCE ─────────────
+// Who may do what is lib/auth/deal-work-ownership.ts (the session's own assignments); the one writer is
+// lib/transactions/lender-insurance-checkpoint.ts. Every door below is a public endpoint (CLAUDE.md §4).
+
+function refuseInsurance(what: string, next: "you" | "account_admin" = "you"): { success: false; error: string } {
+  return { success: false, error: presentTenantMessage({ what, work: { state: "not_saved" }, next }).sentence }
+}
+
+interface RequirementFields {
+  transactionId: string
+  required: boolean
+  coverages?: string[]
+  otherCoverage?: string | null
+  mortgageeClause?: string | null
+  escrowTreatment?: string | null
+  evidenceRecipient?: string | null
+  dueDate?: string | null
+  lenderName?: string | null
+}
+const pickRequirement = (i: RequirementFields) => ({
+  required: i?.required, coverages: Array.isArray(i?.coverages) ? i.coverages : [], otherCoverage: i?.otherCoverage ?? null, mortgageeClause: i?.mortgageeClause ?? null,
+  escrowTreatment: i?.escrowTreatment ?? null, evidenceRecipient: i?.evidenceRecipient ?? null, dueDate: i?.dueDate ?? null,
+})
+
+/** The agent or the deal's TC records what the (off-platform) lender said it requires. */
+export async function recordInsuranceRequirementFromLenderAction(input: RequirementFields): Promise<{ success: boolean; error?: string; state?: string }> {
+  const auth = await requireCallerTenant()
+  if (!auth.ok) return refuseInsurance(auth.error)
+  const svc = createServiceClient()
+  const { loadDealWorkAccess } = await import("@/lib/auth/deal-work-ownership")
+  const work = await loadDealWorkAccess(svc, { userId: auth.userId, brokerageId: auth.brokerageId, userType: auth.userType ?? null, transactionId: input?.transactionId })
+  if (!work.ok) return refuseInsurance("This deal's roles could not be checked right now")
+  const kind = work.access.roles.includes("owning_agent") ? "agent" : work.access.roles.includes("assisting_tc") ? "tc" : null
+  if (!kind || !work.access.capabilities.assist) return refuseInsurance("Only the deal's agent or its transaction coordinator can record the lender's requirement, while the deal is active")
+  const { recordLenderInsuranceRequirement } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  const r = await recordLenderInsuranceRequirement(svc, { ...pickRequirement(input), brokerageId: auth.brokerageId, transactionId: input.transactionId, actor: { userId: auth.userId, kind }, lenderName: input?.lenderName ?? null })
+  if (!r.ok) return refuseInsurance(r.error)
+  revalidatePath(`/dashboard/transactions/${input.transactionId}`)
+  return { success: true, state: r.checkpoint.state }
+}
+
+/** The assigned LENDER records its own insurance requirement on its loan file. */
+export async function recordLenderInsuranceRequirementAction(input: RequirementFields): Promise<{ success: boolean; error?: string; state?: string }> {
+  const { requireLenderVendorActor } = await import("@/lib/kernel/portal-auth")
+  let actor: { userId: string; vendorId: string; brokerageId: string }
+  try { actor = await requireLenderVendorActor(input?.transactionId) } catch { return refuseInsurance("Only the lender assigned to this loan can record its insurance requirement") }
+  const { recordLenderInsuranceRequirement } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  const r = await recordLenderInsuranceRequirement(createServiceClient(), { ...pickRequirement(input), brokerageId: actor.brokerageId, transactionId: input.transactionId, actor: { userId: actor.userId, kind: "lender", lenderVendorId: actor.vendorId } })
+  if (!r.ok) return refuseInsurance(r.error)
+  revalidatePath(`/lender/underwriting/${input.transactionId}`)
+  return { success: true, state: r.checkpoint.state }
+}
+
+/** Compliance or an account admin ACCEPTS the filed binder / declarations page against the lender's written requirement. */
+export async function acceptInsuranceEvidenceAction(input: { transactionId: string; documentId?: string | null }): Promise<{ success: boolean; error?: string; state?: string }> {
+  const auth = await requireCallerTenant()
+  if (!auth.ok) return refuseInsurance(auth.error)
+  const svc = createServiceClient()
+  const { loadDealWorkAccess } = await import("@/lib/auth/deal-work-ownership")
+  const work = await loadDealWorkAccess(svc, { userId: auth.userId, brokerageId: auth.brokerageId, userType: auth.userType ?? null, transactionId: input?.transactionId })
+  if (!work.ok) return refuseInsurance("This deal's roles could not be checked right now")
+  if (!work.access.capabilities.verifyLenderEvidence) return refuseInsurance("Only compliance or an account admin can accept insurance evidence", "account_admin")
+  const { acceptLenderInsuranceEvidence } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  const r = await acceptLenderInsuranceEvidence(svc, { brokerageId: auth.brokerageId, transactionId: input.transactionId, actor: { userId: auth.userId, kind: "staff" }, documentId: input?.documentId ?? null })
+  if (!r.ok) return refuseInsurance(r.error)
+  revalidatePath(`/dashboard/transactions/${input.transactionId}`)
+  return { success: true, state: r.checkpoint.state }
+}
+
+/** The assigned LENDER accepts the insurance evidence it received. */
+export async function lenderAcceptInsuranceEvidenceAction(input: { transactionId: string; documentId?: string | null }): Promise<{ success: boolean; error?: string; state?: string }> {
+  const { requireLenderVendorActor } = await import("@/lib/kernel/portal-auth")
+  let actor: { userId: string; vendorId: string; brokerageId: string }
+  try { actor = await requireLenderVendorActor(input?.transactionId) } catch { return refuseInsurance("Only the lender assigned to this loan can accept its insurance evidence") }
+  const { acceptLenderInsuranceEvidence } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  const r = await acceptLenderInsuranceEvidence(createServiceClient(), { brokerageId: actor.brokerageId, transactionId: input.transactionId, actor: { userId: actor.userId, kind: "lender", lenderVendorId: actor.vendorId }, documentId: input?.documentId ?? null })
+  if (!r.ok) return refuseInsurance(r.error)
+  revalidatePath(`/lender/underwriting/${input.transactionId}`)
+  return { success: true, state: r.checkpoint.state }
+}
+
+/** The assigned lender's read of the insurance checkpoint on its loan (requirement + status; never tenant financials). */
+export async function getLenderInsuranceCheckpointAction(transactionId: string): Promise<{ success: boolean; error?: string; checkpoint?: import("@/lib/transactions/hazard-insurance").LenderInsuranceCheckpoint; requirement?: import("@/lib/transactions/hazard-insurance").LenderInsuranceRequirement | null; binderOnFile?: boolean }> {
+  const { requireLenderVendorActor } = await import("@/lib/kernel/portal-auth")
+  let actor: { brokerageId: string }
+  try { actor = await requireLenderVendorActor(transactionId) } catch { return refuseInsurance("Only the lender assigned to this loan can view its insurance checkpoint") }
+  const { loadLenderInsuranceCheckpoint } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  const r = await loadLenderInsuranceCheckpoint(createServiceClient(), { brokerageId: actor.brokerageId, transactionId })
+  if (!r.ok) return refuseInsurance("The insurance checkpoint could not be read right now")
+  return { success: true, checkpoint: r.facts.checkpoint, requirement: r.facts.requirement, binderOnFile: !!r.facts.policyDocumentId }
 }
 
 /** Complete `hazard_insurance_bound` by identity. Best-effort: the policy is

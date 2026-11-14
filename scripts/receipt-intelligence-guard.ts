@@ -90,10 +90,24 @@ const MODEL_RECEIPT = {
   problems: [],
 }
 
+// WAVE 153 (lane 153A): approveReceipt now asks lib/finance/expense-rollup.ts which office's books a company-books
+// receipt goes to (the C34 hierarchy reads users / brokerages / locations / teams / organization_members). A and B are
+// SINGLE-office tenants here, so every case below keeps its prior outcome; section 17 seeds a multi-location tenant.
+const TENANT_STRUCTURE: Record<string, Row[]> = {
+  brokerages: [{ id: A, plan_tier: "brokerage" }, { id: B, plan_tier: "brokerage" }],
+  users: [
+    { id: "u-agent", brokerage_id: A, user_type: "agent", location_id: null }, { id: "u-agent-2", brokerage_id: A, user_type: "agent", location_id: null },
+    { id: "u-lead", brokerage_id: A, user_type: "team_lead", location_id: null }, { id: "u-broker", brokerage_id: A, user_type: "broker", location_id: null },
+    { id: "u-b-agent", brokerage_id: B, user_type: "agent", location_id: null },
+  ],
+  locations: [], teams: [{ id: "team-1", brokerage_id: A, location_id: null, team_lead_id: "u-lead", deleted_at: null }], organization_members: [],
+}
+
 function seed(extra: Record<string, Row[]> = {}): MemClient {
   return memSupabase({
     documents: [], document_field_extractions: [], policy_decisions: [], agent_action_ledger: [], business_expenses: [],
     transactions: [], managed_agents: [], brokerage_settings: [],
+    ...TENANT_STRUCTURE,
     ...extra,
   }, { uuidIds: true, unique: { agent_action_ledger: [["idempotency_key"]], document_field_extractions: [["document_id", "field_key"]] } })
 }
@@ -513,6 +527,57 @@ async function main() {
     check("registry: receipt_to_books owned by finance_manager, co-owned by deal_coordinator, proof test:receipt-intelligence", domain?.manager === "finance_manager" && domain?.proof === "test:receipt-intelligence" && domain?.coOwners?.includes("deal_coordinator") === true)
     const pkg = JSON.parse(src("package.json")) as { scripts: Record<string, string> }
     check("package.json registers the proof and the guard chain runs it", /receipt-intelligence-guard\.ts/.test(pkg.scripts["test:receipt-intelligence"] ?? "") && /npm run test:receipt-intelligence\b/.test(pkg.scripts.guard ?? ""))
+  }
+
+  console.log("\n[17 · WAVE 153 (lane 153A) — multi-location: a company-books receipt names its office, never guessed]")
+  {
+    const M = "brokerage-m", OA = "office-a", OB = "office-b"
+    const owner: ReceiptActor = { userId: "u-m-owner", agentId: null, teamId: null, brokerageId: M, userType: "broker_owner" }
+    const adminA: ReceiptActor = { userId: "u-m-admin-a", agentId: null, teamId: null, brokerageId: M, userType: "admin" }
+    const multi = () => memSupabase({
+      documents: [], document_field_extractions: [], policy_decisions: [], agent_action_ledger: [], business_expenses: [], transactions: [], managed_agents: [], brokerage_settings: [],
+      brokerages: [{ id: M, plan_tier: "multi_location" }],
+      users: [
+        { id: owner.userId, brokerage_id: M, user_type: "broker_owner", location_id: null },
+        { id: adminA.userId, brokerage_id: M, user_type: "admin", location_id: OA },
+      ],
+      locations: [{ id: OA, brokerage_id: M, name: "North office", status: "active", managing_broker_user_id: null }, { id: OB, brokerage_id: M, name: "South office", status: "active", managing_broker_user_id: null }],
+      teams: [],
+      organization_members: [{ brokerage_id: M, user_id: owner.userId, scope_kind: "tenant", location_id: null, team_id: null, access_level: "leadership", revoked_at: null }],
+    }, { uuidIds: true, unique: { agent_action_ledger: [["idempotency_key"]], document_field_extractions: [["document_id", "field_key"]] } })
+    const intakeAs = async (svc: MemClient, actor: ReceiptActor, tag: string) => (await intakeReceipt(svc, { actor, file: { buffer: Buffer.from(`m-${tag}`), mime: "image/jpeg", name: `${tag}.jpg` }, objectPath: `${M}/${actor.userId}/${tag}.jpg` }, { reader: visionSeams(READING).reader, extract: extractSeam(MODEL_RECEIPT), now: () => NOW })).documentId!
+
+    const s1 = multi(); const w1 = writer(s1, () => adminA)
+    const d1 = await intakeAs(s1, adminA, "no-office")
+    const noOffice = await approveReceipt(s1, { actor: adminA, documentId: d1, scope: "brokerage" }, { postExpense: w1.post, now: () => NOW })
+    check("ADVERSE: no office chosen → HELD with the question, nothing reaches the writer", !noOffice.ok && w1.calls.length === 0 && /Which office/.test(noOffice.reasons[0] ?? ""), noOffice.reasons)
+    const otherOffice = await approveReceipt(s1, { actor: adminA, documentId: d1, scope: "brokerage", locationId: OB }, { postExpense: w1.post, now: () => NOW })
+    check("ADVERSE: an office admin choosing ANOTHER office → HELD (cross-location write refused before the writer)", !otherOffice.ok && w1.calls.length === 0 && /office you manage/.test(otherOffice.reasons[0] ?? ""), otherOffice.reasons)
+    const mainAsAdmin = await approveReceipt(s1, { actor: adminA, documentId: d1, scope: "brokerage", mainOffice: true }, { postExpense: w1.post, now: () => NOW })
+    check("ADVERSE: an office admin may not book it to the MAIN office", !mainAsAdmin.ok && w1.calls.length === 0, mainAsAdmin.reasons)
+    const ownOffice = await approveReceipt(s1, { actor: adminA, documentId: d1, scope: "brokerage", locationId: OA }, { postExpense: w1.post, now: () => NOW })
+    check("the office admin's own office → posted, and the ONE writer is told that office", ownOffice.ok && w1.calls.length === 1 && w1.calls[0].locationId === OA, w1.calls)
+    const reviewA = await loadReceiptReview(s1, { actor: adminA, documentId: d1 })
+    check("the review page offers the office admin ONLY their office, requires a choice, and no main-office option", reviewA.ok && reviewA.review.offices.required === true && reviewA.review.offices.mainOfficeAllowed === false && JSON.stringify(reviewA.review.offices.choices) === JSON.stringify([{ id: OA, name: "North office" }]), reviewA.ok ? reviewA.review.offices : reviewA)
+
+    const s2 = multi(); const w2 = writer(s2, () => owner)
+    const d2 = await intakeAs(s2, owner, "main")
+    const reviewOwner = await loadReceiptReview(s2, { actor: owner, documentId: d2 })
+    check("the consolidated books keeper sees every office and the main-office option", reviewOwner.ok && reviewOwner.review.offices.choices.length === 2 && reviewOwner.review.offices.mainOfficeAllowed === true)
+    const asMain = await approveReceipt(s2, { actor: owner, documentId: d2, scope: "brokerage", mainOffice: true }, { postExpense: w2.post, now: () => NOW })
+    check("the consolidated books keeper marking it a main-office shared cost → posted with NO office (shareable later)", asMain.ok && w2.calls.length === 1 && w2.calls[0].locationId === undefined, w2.calls)
+    const ledger = s2.tables.agent_action_ledger.find((r) => r.action === "finance.expense.post_from_document")
+    check("the evidence row records the office decision (location_id null = main office)", !!ledger && ledger.detail?.location_id === null, ledger?.detail)
+
+    const s3 = memSupabase({ documents: [], document_field_extractions: [], policy_decisions: [], agent_action_ledger: [], business_expenses: [], transactions: [], managed_agents: [], brokerage_settings: [], brokerages: [{ id: M, plan_tier: "multi_location" }], users: [{ id: owner.userId, brokerage_id: M, user_type: "broker_owner", location_id: null }], teams: [], organization_members: [] }, { uuidIds: true, refuse: { locations: "permission denied for table locations" }, unique: { agent_action_ledger: [["idempotency_key"]], document_field_extractions: [["document_id", "field_key"]] } })
+    const w3 = writer(s3, () => owner)
+    const d3 = await intakeAs(s3, owner, "refused")
+    const refused = await approveReceipt(s3, { actor: owner, documentId: d3, scope: "brokerage", mainOffice: true }, { postExpense: w3.post, now: () => NOW })
+    check("ADVERSE: the office facts cannot be read → HELD (fail closed), never posted to a guessed office", !refused.ok && w3.calls.length === 0, refused.reasons)
+    const single = seed(); const w4 = writer(single, () => broker)
+    const d4 = (await intakeReceipt(single, { actor: broker, file: { buffer: Buffer.from("single-office"), mime: "image/jpeg", name: "s.jpg" }, objectPath: `${A}/u-broker/s.jpg` }, { reader: visionSeams(READING).reader, extract: extractSeam(MODEL_RECEIPT), now: () => NOW })).documentId!
+    const singleOk = await approveReceipt(single, { actor: broker, documentId: d4, scope: "brokerage" }, { postExpense: w4.post, now: () => NOW })
+    check("PC (unchanged behaviour): a SINGLE-office tenant's broker posts to the company books with no office question", singleOk.ok && w4.calls.length === 1 && w4.calls[0].locationId === undefined)
   }
 
   console.log(`\nBLIND SPOTS: a real photo's reading quality (canned readings here); whether the routed vision provider accepts a PDF data URL; the storage upload and signed-URL mint (the server action, not driven); the review page rendering; the writer stand-in replaces logScopedExpense's session (its gates: test:people-vendor-education-wiring A7/A8).`)

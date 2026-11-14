@@ -79,6 +79,8 @@ function Highlighted({ text, excerpt }: { text: string; excerpt: string | null }
   return <>{text.slice(0, i)}<mark className="bg-yellow-200 dark:bg-yellow-700">{text.slice(i, i + excerpt.length)}</mark>{text.slice(i + excerpt.length)}</>
 }
 
+const MAIN_OFFICE = "__main_office__"
+
 export function ReceiptReviewClient({ review }: { review: Review }) {
   const router = useRouter()
   const firstEvidenced = review.fields.find((f) => f.page)?.key ?? null
@@ -87,6 +89,9 @@ export function ReceiptReviewClient({ review }: { review: Review }) {
   const [scope, setScope] = useState<string>(review.proposedScope ?? "agent")
   const [confirmNotDuplicate, setConfirmNotDuplicate] = useState(false)
   const [reversalOf, setReversalOf] = useState("")
+  // WAVE 153 (lane 153A): the office a company-books receipt belongs to. Never preselected on a multi-location account —
+  // the person chooses ("" = not chosen yet; MAIN = a main-office shared cost), and the server holds the receipt until they do.
+  const [office, setOffice] = useState<string>("")
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null)
   const [message, setMessage] = useState<Message | null>(null)
   const [reasons, setReasons] = useState<string[]>([])
@@ -103,7 +108,12 @@ export function ReceiptReviewClient({ review }: { review: Review }) {
   async function approve() {
     setBusy("approve"); setMessage(null); setReasons([])
     const corrections = Object.fromEntries(Object.entries(edits).filter(([, v]) => v.trim() !== ""))
-    const r = await approveReceiptExpense({ documentId: review.documentId, corrections, scope: scope as "agent" | "team" | "brokerage", confirmNotDuplicate, reversalOfExpenseId: reversalOf.trim() || null })
+    const officeChoice = scope === "brokerage" && review.postingClass !== "reversal" ? office : ""
+    const r = await approveReceiptExpense({
+      documentId: review.documentId, corrections, scope: scope as "agent" | "team" | "brokerage", confirmNotDuplicate, reversalOfExpenseId: reversalOf.trim() || null,
+      locationId: officeChoice && officeChoice !== MAIN_OFFICE ? officeChoice : null,
+      mainOffice: officeChoice === MAIN_OFFICE,
+    })
     setMessage(r.message); setReasons(r.reasons ?? [])
     setBusy(null)
     if (r.ok) router.refresh()
@@ -236,6 +246,17 @@ export function ReceiptReviewClient({ review }: { review: Review }) {
                   {review.canPostBrokerage && <option value="brokerage">The brokerage</option>}
                 </select>
               </div>
+              {scope === "brokerage" && review.postingClass !== "reversal" && (review.offices?.required || (review.offices?.choices.length ?? 0) > 0) && (
+                <div className="space-y-1">
+                  <Label htmlFor="receipt-office">Which office</Label>
+                  <select id="receipt-office" className="h-8 w-full rounded border bg-background" value={office} onChange={(e) => setOffice(e.target.value)}>
+                    <option value="">{review.offices?.required ? "Choose the office…" : "The company (no office)"}</option>
+                    {(review.offices?.choices ?? []).map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+                    {review.offices?.required && review.offices.mainOfficeAllowed && <option value={MAIN_OFFICE}>Main office — shared cost</option>}
+                  </select>
+                  {review.offices?.required && !office && <p className="text-xs text-muted-foreground">This account has more than one office, so the receipt is recorded only after you choose where it belongs.</p>}
+                </div>
+              )}
               {review.postingClass === "reversal" && (
                 <div className="space-y-1">
                   <Label htmlFor="receipt-reversal">The expense this refund reverses</Label>

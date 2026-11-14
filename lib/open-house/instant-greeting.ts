@@ -188,6 +188,9 @@ export async function sendInstantOpenHouseGreeting(
       agent_id:   agentRowId,
       type:       channel,
       direction:  "outbound",
+      // wave 153 (153F): an automated greeting is AI-authored — without this it reads as a person in the thread for 30 minutes
+      // (loadConversationOwnership) and suppresses the fast reply path.
+      sender_type: "ai",
       subject:    channel === "email" ? `Thanks for stopping by ${address}` : null,
       body,
       status:     "queued",

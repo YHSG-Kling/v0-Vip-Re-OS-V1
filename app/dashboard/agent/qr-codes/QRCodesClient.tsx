@@ -7,6 +7,8 @@ import type {
   QrManagerCode,
   QrCampaignRollup,
   QrLinkableCampaign,
+  QrLinkableListing,
+  QrPlacementRollup,
   QrScopeKind,
 } from '@/app/actions/qr-management'
 /** The activity shape, read off the action's own result (no type import from the server-only governance module). */
@@ -22,13 +24,19 @@ interface Props {
   qrCodes: QRCodeRow[]
   /** Scans/leads rolled up by the FORWARD campaign link (qr_codes.marketing_campaign_id). */
   campaigns: QrCampaignRollup[]
-  /** Campaigns a new code may be linked to (this brokerage's). */
+  /** Campaigns a new code may be linked to (the viewer's own, shared with their team or the whole account). */
   linkableCampaigns: QrLinkableCampaign[]
+  /** WAVE 153 (153E): listings a new code may be linked to — only listings the viewer may put a code on. */
+  linkableListings: QrLinkableListing[]
+  /** WAVE 153 (153E): raw scans + consented Contacts per placement (the server's rollup). */
+  placements: QrPlacementRollup[]
+  /** WAVE 153 (153E): why the board shows this scope (shown under the heading). */
+  scopeBasis: string[]
   /** qr_codes.purpose CHECK vocabulary, handed down by the page. */
   purposes: string[]
   scope: QrScopeKind
   scopeLabel: string
-  /** agents.id — null for a broker/admin with no agent record; creation needs one. */
+  /** agents.id — null for a broker/admin with no agent record (their codes are filed to the account, not an agent). */
   agentUserId: string | null
   brokerageId: string
 }
@@ -140,6 +148,9 @@ export default function QRCodesClient({
   qrCodes: initialCodes,
   campaigns,
   linkableCampaigns,
+  linkableListings,
+  placements,
+  scopeBasis,
   purposes,
   scope,
   scopeLabel,
@@ -151,6 +162,10 @@ export default function QRCodesClient({
   const [selectedCode, setSelectedCode] = useState<QRCodeRow | null>(null)
   const [editingCode, setEditingCode] = useState<QRCodeRow | null>(null)
   const [stateFilter, setStateFilter] = useState<StateFilter>('all')
+  // WAVE 153 (153E): find a code fast — by placement, by "codes I created", by name.
+  const [placementFilter, setPlacementFilter] = useState<string>('')
+  const [mineOnly, setMineOnly] = useState(false)
+  const [search, setSearch] = useState('')
   const [createForm, setCreateForm] = useState<CreateFormState>(EMPTY_CREATE)
   const [createError, setCreateError] = useState<string | null>(null)
   const [toggleError, setToggleError] = useState<string | null>(null)
@@ -171,6 +186,9 @@ export default function QRCodesClient({
   }
 
   const visibleCodes = codes.filter((c) => {
+    if (placementFilter && (c.placement ?? 'not_stated') !== placementFilter) return false
+    if (mineOnly && !c.created_by_me) return false
+    if (search.trim() && !c.display_name.toLowerCase().includes(search.trim().toLowerCase())) return false
     if (stateFilter === 'active')   return c.lifecycle_state === 'active'
     if (stateFilter === 'inactive') return c.lifecycle_state === 'paused'
     if (stateFilter === 'expired')  return isExpired(c)
@@ -278,7 +296,7 @@ export default function QRCodesClient({
       return
     }
     if (createForm.destinationType === 'listing_detail' && !createForm.listingId.trim() && !createForm.targetUrl.trim()) {
-      setCreateError('Listing detail destination needs either a listing id or an explicit target URL.')
+      setCreateError('Pick the listing this code opens, or paste the page it should open.')
       return
     }
 
@@ -301,8 +319,8 @@ export default function QRCodesClient({
             expiresAt: createForm.expiresAt
               ? new Date(`${createForm.expiresAt}T23:59:59`).toISOString()
               : undefined,
-            agentUserId,
             brokerageId,
+            // WAVE 153 (153E): no agentUserId — the governed mint files the code to the session's own record.
             // WAVE 152 (152C): the governed mint's contract — the request key and the code's provenance.
             idempotencyKey: createKey.current,
             tokenScope: createForm.tokenScope,
@@ -337,6 +355,7 @@ export default function QRCodesClient({
           lifecycle_state: 'active', token_scope: createForm.tokenScope, placement: createForm.placement || null,
           mail_layout: null, tracking: createForm.trackingEnabled ? 'enabled' : 'disabled',
           print_size_in: Number(createForm.printSizeIn) || null, consent_context: null, destination_versions: 1, creator_name: null,
+          created_by_me: true,
           ...minted,
         } as QRCodeRow, ...prev])
         setShowCreate(false)
@@ -392,22 +411,25 @@ export default function QRCodesClient({
         <div>
           <h1 className="text-2xl font-bold text-foreground">QR Codes</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {scopeLabel} — active and paused. Generate codes to capture leads at open
-            houses, listings, and events.
+            {scopeLabel} — active and paused. Create codes for your listings, open houses, business
+            cards, guides, videos, your booking calendar and lead magnets.
           </p>
+          {scopeBasis.length > 0 && (
+            <p className="text-xs text-muted-foreground mt-0.5">Why you see these: {scopeBasis.join(' · ')}</p>
+          )}
         </div>
         <div className="text-right">
+          {/* WAVE 153 (153E): every seat that reaches this board can create its own codes — a solo agent, an agent seat,
+              a team lead, an office head or an admin (an admin with no agent record files the code to the account). */}
           <button
             onClick={() => setShowCreate(true)}
-            disabled={!agentUserId}
             className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
             + Create QR Code
           </button>
           {!agentUserId && (
             <p className="text-xs text-muted-foreground mt-1 max-w-[16rem]">
-              A new code is filed against an agent record; your account has none in
-              this brokerage, so you can manage codes here but not mint one.
+              You have no agent record here, so new codes are filed to the account rather than to an agent.
             </p>
           )}
         </div>
@@ -428,6 +450,34 @@ export default function QRCodesClient({
             {f === 'all' ? 'All' : f === 'inactive' ? 'Paused' : f[0].toUpperCase() + f.slice(1)} ({counts[f]})
           </button>
         ))}
+      </div>
+
+      {/* WAVE 153 (153E) — find a code: by where it is printed, by who created it, by name. */}
+      <div className="flex flex-wrap items-center gap-3">
+        <select
+          value={placementFilter}
+          onChange={(e) => setPlacementFilter(e.target.value)}
+          aria-label="Filter by where the code is printed"
+          className="rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground"
+        >
+          <option value="">Every placement</option>
+          {QR_PLACEMENT_TYPES.map((p) => <option key={p} value={p}>{PLACEMENT_LABELS[p]}</option>)}
+          <option value="not_stated">Placement not stated</option>
+        </select>
+        {scope !== 'agent' && (
+          <label className="flex items-center gap-1.5 text-xs text-foreground">
+            <input type="checkbox" checked={mineOnly} onChange={(e) => setMineOnly(e.target.checked)} className="h-3.5 w-3.5" />
+            Only codes I created
+          </label>
+        )}
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name"
+          aria-label="Search codes by name"
+          className="rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground"
+        />
       </div>
 
       {toggleError && (
@@ -466,6 +516,38 @@ export default function QRCodesClient({
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* WAVE 153 (153E) — PLACEMENT ANALYTICS: one design printed on a postcard, a yard sign and a social post is three
+          codes, so each placement's results stay separate. Raw scans include bots and quick repeats; open a code's
+          details for human-likely visits. Appointments and closings are on the ROI report. */}
+      {placements.length > 0 && (
+        <div className="rounded-lg border border-border bg-card p-4 space-y-2">
+          <h2 className="text-sm font-semibold text-foreground">Results by placement</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-muted-foreground text-left">
+                  <th className="py-1 pr-4 font-medium">Printed on</th>
+                  <th className="py-1 pr-4 font-medium">Codes</th>
+                  <th className="py-1 pr-4 font-medium">Raw scans</th>
+                  <th className="py-1 font-medium">Contacts (with consent)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {placements.map((p) => (
+                  <tr key={p.placement} className="border-t border-border">
+                    <td className="py-1.5 pr-4 text-foreground">{(PLACEMENT_LABELS as Record<string, string>)[p.placement] ?? 'Not stated'}</td>
+                    <td className="py-1.5 pr-4 text-muted-foreground">{p.codeCount}</td>
+                    <td className="py-1.5 pr-4 font-semibold text-foreground">{p.rawScans}</td>
+                    <td className="py-1.5 font-semibold text-foreground">{p.consentedContacts}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-xs text-muted-foreground">Raw scans include automated scans and quick repeats. Open a code&apos;s details to see likely-human visits. Appointments and closings are on your ROI report.</p>
         </div>
       )}
 
@@ -518,7 +600,7 @@ export default function QRCodesClient({
                 </select>
                 <p className="text-xs text-muted-foreground">
                   {linkableCampaigns.length === 0
-                    ? 'No marketing campaigns in this brokerage yet.'
+                    ? 'No campaigns you can link yet — your own campaigns and campaigns shared with your team or account appear here.'
                     : 'Scans on this code roll up to the campaign you pick.'}
                 </p>
               </div>
@@ -633,19 +715,31 @@ export default function QRCodesClient({
                 </span>
               </label>
 
-              {/* Listing id — only for listing_detail destination. */}
-              {createForm.destinationType === 'listing_detail' && (
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-foreground">Listing ID</label>
-                  <input
-                    type="text"
-                    value={createForm.listingId}
-                    onChange={(e) => setCreateForm((p) => ({ ...p, listingId: e.target.value }))}
-                    placeholder="UUID of the listing"
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                  />
-                </div>
-              )}
+              {/* WAVE 153 (153E): the LISTING picker — only listings you may put a code on (your own, or in a team or
+                  office you lead). It replaces a raw listing-id box; the mint refuses any other listing anyway. */}
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-foreground">
+                  Listing {createForm.destinationType === 'listing_detail'
+                    ? <span className="text-destructive">*</span>
+                    : <span className="text-muted-foreground">(optional)</span>}
+                </label>
+                <select
+                  value={createForm.listingId}
+                  onChange={(e) => setCreateForm((p) => ({ ...p, listingId: e.target.value }))}
+                  disabled={linkableListings.length === 0}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+                >
+                  <option value="">— Not linked to a listing —</option>
+                  {linkableListings.map((l) => (
+                    <option key={l.id} value={l.id}>{l.line}{l.status ? ` (${humanizePurpose(l.status)})` : ''}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {linkableListings.length === 0
+                    ? 'No listings you can link yet — your own listings, and listings in a team or office you lead, appear here.'
+                    : 'Scans on this code are counted for the listing you pick.'}
+                </p>
+              </div>
 
               {createError && (
                 <p role="alert" className="text-sm text-destructive">{createError}</p>
