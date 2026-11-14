@@ -519,6 +519,14 @@ async function main() {
   /** A module that writes a table AND reads it back for others (a co-located reader) counts as readback only when some other
    *  first-party file consumes that module. */
   const consumedElsewhere = (f: string) => (rev.get(f) ?? []).some((imp) => imp !== f)
+  // A survivor TOUCHES a provider when it is a provider client (lib/external, lib/esign), makes a network call, or imports a client —
+  // not merely because it sits under lib/providers/ (wave 153 integrator: a pure data module there — the provider capability matrix,
+  // the scorecard — decides nothing on the wire and is a read surface, not a provider loop owing a next action).
+  const PROVIDER_CALL_RE = /\bfetch\s*\(|\baxios\s*[.(]|\bnew\s+[A-Z]\w*Client\s*\(/
+  const callsProvider = (p: string): boolean => /^lib\/(?:external|esign)\//.test(p) || PROVIDER_CALL_RE.test(blanked(p)) || factsOf(p).imports.some((i) => /^lib\/(?:external|esign)\//.test(i))
+  check("POSITIVE CONTROL: provider-touching is decided by the call, not the folder (a lib/providers client and a module importing a lib/external client touch a provider; the pure capability matrix does not)",
+    callsProvider("lib/providers/zenrows/client.ts") && callsProvider("lib/providers/scrape-checkpoint.ts") && !callsProvider("lib/providers/provider-capability-matrix.ts"),
+    JSON.stringify({ zenrows: callsProvider("lib/providers/zenrows/client.ts"), checkpoint: callsProvider("lib/providers/scrape-checkpoint.ts"), matrix: callsProvider("lib/providers/provider-capability-matrix.ts") }))
   const loopOf = (key: string, row: { manager: string; proof: string; what: string }): DomainLoop => {
     const named = [...new Set([...row.what.matchAll(PATH_RE)].map((m) => m[1]).filter((p) => fileSet.has(p)))]
     const proof = proofSurvivors(row.proof)
@@ -530,7 +538,7 @@ async function main() {
     const readers = new Set(writes.flatMap(readersOf))
     const unread = writes.filter((t) => readersOf(t).length === 0).length
     const planes = [...new Set(facts.flatMap((x) => [...x.f.planes]))].sort()
-    const provider = planes.includes("D") || survivors.some((p) => /^lib\/(?:providers|external|esign)\//.test(p))
+    const provider = planes.includes("D") || survivors.some((p) => /^lib\/(?:providers|external|esign)\//.test(p) && callsProvider(p))
     const trigger = survivors.length ? triggerOf(survivors) : null
     const next = facts.some((x) => x.f.next), recovery = facts.some((x) => x.f.recovery), outcome = facts.some((x) => x.f.outcome)
     const verdict = classifyLoop({ proofRegistered: proof.registered, survivors: survivors.length, proofFirstParty: proof.files.length > 0, trigger: !!trigger, writes: writes.length, provider, unreadWrites: unread, readback: readers.size > 0, next, recovery, outcome })

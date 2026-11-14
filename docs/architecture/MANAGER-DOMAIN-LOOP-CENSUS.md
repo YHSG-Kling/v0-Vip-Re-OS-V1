@@ -10,7 +10,7 @@ sweep) → OUTCOME evidence (ledger / arbitration record / provider truth). The 
 Planes: A authority / tenant session · E Contact engagement (the follow-up arbiter) · D outbound dispatch · G manager coordination
 (delegation, missions, the signal bus) · P human approval · R resources (entitlement, vendor budget, spend, provider route) · C closing / money gates.
 
-Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 97 · `registry-only` 0 · `proof-unregistered` 0 — of 1372 rows, over 5364 source files.
+Classes: `loop-complete` 656 · `read-surface` 404 · `partial` 216 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 97 · `registry-only` 0 · `proof-unregistered` 0 — of 1374 rows, over 5366 source files.
 
 ## Deal Coordinator (`deal_coordinator`) — 106 domains
 
@@ -405,6 +405,7 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `newsletter_seo_score` | read-surface | action `actions/newsletter/get-seo-score.ts` (+1) | — | `seo-score.ts` | — | — | — | — | — | `test:newsletter-seo-score` |
 | `newsletter_template_authoring` | read-surface | action `actions/newsletter/create-template.ts` (+1) | — | `template-blueprint.ts` | — | — | — | — | — | `test:newsletter-template` |
 | `nothing_dropped_sweep` | read-surface | cron `api/cron/nothing-dropped-sweep` (+1) | — | `nothing-dropped-runner.ts` +1 | — | — | — | — | — | `test:nothing-dropped` |
+| `outbound_sender` | read-surface | cron `api/cron/queue-drain` (+1) | — | `outbound-sender.ts` | — | — | — | — | — | `test:outbound-sender` |
 | `outcome_learning` | read-surface | page `dashboard/admin/command-center` (+1) | — | `outcome-learning.ts` | — | — | — | — | — | `test:outcome-learning` |
 | `persona_copy` | read-surface | action `actions/ai-isa/engage-contact.ts` (+1) | — | `ai-copy.ts` | — | — | — | — | — | `test:ai-copy` |
 | `sequence_persona_copy` | read-surface | cron `api/cron/campaign-sequence-steps` (+4) | — | `render-step.ts` | — | — | — | — | — | `test:sequence-persona-copy` |
@@ -421,7 +422,6 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `geo_citation_share` | partial (no closure) | cron `api/cron/geo-citation-monitor` (+1) | — | `citation-share.ts` +1 | ai_search_citation_observations, ai_search_landing_citation_observations | 7 reader(s) | — | — | — | `test:citation-share` |
 | `marketing_bench` | partial (no closure) | cron `api/cron/farm-play` (+2) | — | `marketing-bench.ts` | blog_posts, direct_mail_campaigns, email_campaigns +2 | 100 reader(s) | — | — | — | `test:marketing-bench` |
 | `marketing_package` | partial (no closure) | action `actions/marketing-package-automation.ts` | A | `marketing-package-automation.ts` +1 | ai_listing_optimizations, listing_marketing_packages, listing_marketing_services +1 | 4 reader(s) | — | — | — | `test:marketing-package` |
-| `outbound_sender` | partial (no closure) | cron `api/cron/queue-drain` (+1) | — | `outbound-sender.ts` | — | — | — | — | — | `test:outbound-sender` |
 | `portal_value_card` | partial (no closure) | action `actions/home-value.ts` (+1) | — | `portal-value.ts` | transparency_updates | 16 reader(s) | — | — | — | `test:portal-value` |
 | `readiness_statistics_tenant_scope` | partial (no closure) | action `actions/campaign-readiness.ts` (+2) | — | `readiness-logger.ts` | activities | 95 reader(s) | — | — | — | `test:readiness-tenant-scope` |
 | `search_visibility` | partial (no closure) | cron `api/cron/permit-signal-scan` (+1) | — | `socrata-market-registry.ts` +4 | embedding_queue, help_topics_kb, knowledge_articles | 8 reader(s) | — | — | — | `test:search-visibility` |
@@ -557,11 +557,11 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `audience_source_rules` | read-surface | cron `api/cron/lifetime-npv-forecast-rollup` (+1) | — | `audience-source-rules.ts` +3 | — | — | — | — | — | `test:audience-source-rules` |
 | `fb_audience_templates` | read-surface | action `actions/fb-audience-templates.ts` | — | `fb-audience-templates.ts` +1 | — | — | — | — | — | `test:fb-audience-templates` |
 | `spend_governance` | read-surface | action `actions/vendor-budget.ts` (+1) | R | `budget-eval.ts` | — | — | — | — | — | `test:spend-governance` |
+| `vibe_ctv_live_dispatch` | read-surface | page `dashboard/campaigns/ads` (+1) | — | `vibe.ts` | — | — | — | — | — | `test:vibe-ctv-dispatch` |
 | `ad_connector` | partial (no closure) | cron `api/cron/ad-performance-sync` (+1) | — | `ad-performance-ingest.ts` +5 | ad_campaigns, ad_performance, audience_sync_runs +1 | 44 reader(s) | — | — | — | `test:ad-connector` |
 | `ad_creative_consent` | partial (no closure) | cron `api/cron/ads-manager-sweep` (+1) | P | `ad-creative-engine.ts` +2 | ad_campaigns, ad_creative_variations, ad_lead_form_legal_content | 39 reader(s) | — | — | — | `test:ad-creative-consent` |
 | `lifetime_audience_promotion` | partial (no closure) | cron `api/cron/audience-sync-runner` (+1) | — | `audience-sync.ts` | audience_members | 2 reader(s) | — | — | — | `test:lifetime-audience` |
 | `lookalike_audience` | partial (no closure) | cron `api/cron/lookalike-audience` (+1) | — | `lookalike-audience.ts` | ad_campaigns, content_topic_bank, lead_scraping_keywords | 54 reader(s) | — | — | — | `test:lookalike` |
-| `vibe_ctv_live_dispatch` | partial (no closure) | page `dashboard/campaigns/ads` (+1) | — | `vibe.ts` | — | — | — | — | — | `test:vibe-ctv-dispatch` |
 
 ## AI ISA (`ai_isa`) — 99 domains
 
@@ -667,20 +667,20 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `lead_magnet_flow` | guard-only | — | — | — | — | — | — | — | — | `test:lead-magnet-flow` |
 | `office_chat_and_kb_recall` | guard-only | — | — | — | — | — | — | — | — | `test:knowledge-lead-wiring` |
 
-## Data Steward (`data_steward`) — 461 domains
+## Data Steward (`data_steward`) — 463 domains
 
 | Domain | Class | Trigger | Planes | Survivor | Writes (state) | Readback | Next | Recovery | Outcome | Proof |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `access_matrix` | loop-complete | action `actions/admin/invite-user.ts` (+1) | A | `navigation-config.ts` +9 | activities, buyer_financial_profiles, credit_partner_referrals +5 | 501 reader(s) | ✓ | — | ✓ | `test:access-matrix` |
 | `accessibility_preferences` | loop-complete | action `actions/contacts/accessibility-preferences.ts` | — | `accessibility-preferences.ts` +4 | contacts, learning_assignments, learning_modules | 612 reader(s) | ✓ | — | — | `test:accessibility-preferences` |
 | `accuracy_gate_telemetry` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | — | `self-heal-ledger.ts` +1 | self_heal_events | 16 reader(s) | — | ✓ | — | `test:accuracy-gate-telemetry` |
-| `acquisition_door` | loop-complete | cron `api/cron/lead-scraping` (+1) | GR | `subject-identity.ts` +11 | cron_execution_logs, lead_deduplication_log, lead_enrichment_queue +3 | 93 reader(s) | ✓ | ✓ | — | `test:acquisition-door` |
+| `acquisition_door` | loop-complete | cron `api/cron/deal-health-scan` (+1) | AGR | `subject-identity.ts` +13 | cron_execution_logs, ingress_dead_letters, lead_deduplication_log +6 | 149 reader(s) | ✓ | ✓ | — | `test:acquisition-door` |
 | `adaptive_vocabulary` | loop-complete | action `actions/admin/assignment-rules.ts` (+1) | — | `contact-sources.ts` +12 | tenant_policy_versions | 4 reader(s) | ✓ | — | ✓ | `test:adaptive-vocabulary` |
 | `addressing_memory` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | DGP | `video-generation.ts` +75 | ad_lead_form_legal_content, agent_client_messages, chat_messages +21 | 991 reader(s) | ✓ | ✓ | — | `test:doc-kernel` |
 | `agent_assistant_tool_call_observability` | loop-complete | action `actions/admin/agent-assistant-tool-calls.ts` | A | `agent-assistant-tool-calls.ts` +3 | activities, agent_assistant_sessions, agent_assistant_tool_calls +6 | 745 reader(s) | ✓ | — | ✓ | `test:orphan-readers-percentile` |
 | `ai_by_your_side` | loop-complete | action `actions/support.ts` | AEGR | `support.ts` +11 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 945 reader(s) | ✓ | ✓ | — | `test:ai-by-your-side` |
 | `ai_sentinel` | loop-complete | action `actions/ai-isa/handle-inbound-email.ts` (+1) | G | `ai-sentinel.ts` | activities, contacts, leads +2 | 803 reader(s) | ✓ | — | — | `test:ai-sentinel` |
-| `apify_run_cursor` | loop-complete | cron `api/cron/actor-health` (+1) | GR | `agent-credentials.ts` +54 | agent_credentials, agentic_invocation_log, api_response_logs +2 | 21 reader(s) | ✓ | ✓ | — | `test:scrapers` |
+| `apify_run_cursor` | loop-complete | cron `api/cron/actor-health` (+1) | GR | `agent-credentials.ts` +56 | agent_credentials, agentic_invocation_log, api_response_logs +8 | 113 reader(s) | ✓ | ✓ | — | `test:scrapers` |
 | `assignment_rules_authz` | loop-complete | action `actions/admin/assignment-rules.ts` | A | `assignment-rules.ts` | assignment_rules | 10 reader(s) | — | — | ✓ | `test:assignment-rules-authz` |
 | `audit_echo_handlers` | loop-complete | cron `api/cron/ai-callback-dispatch` (+1) | — | `dispatcher-registry.ts` +4 | lifecycle_events, notifications | 120 reader(s) | ✓ | ✓ | — | `test:audit-echo-handlers` |
 | `auto_conversion_history_carry` | loop-complete | action `actions/ai-isa/accept-handoff.ts` (+1) | — | `history-carry.ts` +1 | assignment_log, automation_errors, lead_score_history +3 | 225 reader(s) | ✓ | — | — | `test:auto-conversion-carry` |
@@ -743,7 +743,7 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `lead_identity_gate` | loop-complete | cron `api/cron/lead-scraping` (+1) | R | `email-verifier.ts` +4 | — | — | ✓ | ✓ | — | `test:lead-identity-gate` |
 | `lead_intake_pipeline` | loop-complete | cron `api/cron/buyer-market-watch` (+1) | R | `peopledata-client.ts` +9 | automation_errors, cron_execution_logs, lead_deduplication_log +5 | 238 reader(s) | ✓ | ✓ | — | `test:lead-intake-pipeline` |
 | `lead_recipient` | loop-complete | webhook `api/webhooks/anthropic-agent` (+1) | D | `agent-client-messages.ts` | agent_client_messages, notifications, transparency_updates | 176 reader(s) | ✓ | — | — | `test:lead-recipient` |
-| `lead_source_catalogue` | loop-complete | cron `api/cron/actor-health` (+1) | R | `us-states.ts` +15 | cron_execution_logs, lead_deduplication_log, lead_enrichment_queue +5 | 231 reader(s) | ✓ | ✓ | — | `test:lead-source-catalogue` |
+| `lead_source_catalogue` | loop-complete | cron `api/cron/actor-health` (+1) | R | `us-states.ts` +15 | cron_execution_logs, lead_deduplication_log, lead_enrichment_queue +5 | 232 reader(s) | ✓ | ✓ | — | `test:lead-source-catalogue` |
 | `lifetime_touchpoint_reaper` | loop-complete | cron `api/cron/manager-signals` (+2) | — | `lifetime-touchpoint-reaper-policy.ts` +1 | lifetime_customer_touchpoints, notifications | 88 reader(s) | ✓ | ✓ | — | `test:lifetime-touchpoint-reaper` |
 | `listing_inventory_radar` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | EG | `listing-inventory-radar.ts` +2 | ad_manager_actions, ai_isa_activities, ai_video_projects +12 | 907 reader(s) | ✓ | — | — | `test:inventory-radar` |
 | `loan_milestone_sync` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | EG | `loan-milestone-sync-runner.ts` +2 | ad_manager_actions, ai_isa_activities, ai_video_projects +12 | 907 reader(s) | ✓ | — | — | `test:loan-milestone-sync` |
@@ -757,13 +757,13 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `movement_signals` | loop-complete | cron `api/cron/enrichment-processor` (+1) | AER | `followup-arbiter.ts` +9 | activities, market_dataset_verifications, movement_signals +2 | 101 reader(s) | — | — | ✓ | `test:movement-signals` |
 | `multi_role_seat_reads` | loop-complete | action `actions/admin/invitations.ts` (+1) | — | `role-grants.ts` +1 | agent_commission_profiles, agent_onboarding, agents +5 | 1076 reader(s) | ✓ | ✓ | — | `test:multi-role-seat` |
 | `network_intelligence` | loop-complete | cron `api/cron/network-intelligence` | A | `network-intelligence.ts` +8 | assignment_log, improvement_proposals, network_benchmarks +1 | 20 reader(s) | ✓ | — | ✓ | `test:network-intelligence` |
-| `new_construction_intent_lane` | loop-complete | cron `api/cron/lead-scraping` | GR | `route.ts` +55 | agent_credentials, agentic_invocation_log, api_response_logs +6 | 66 reader(s) | ✓ | ✓ | — | `test:scrapers` |
+| `new_construction_intent_lane` | loop-complete | cron `api/cron/lead-scraping` | GR | `route.ts` +57 | agent_credentials, agentic_invocation_log, api_response_logs +10 | 124 reader(s) | ✓ | ✓ | — | `test:scrapers` |
 | `one_door_consent` | loop-complete | webhook `api/webhooks/inbound-suppression` (+1) | G | `ConsentBoxes.tsx` +6 | activities, compliance_events, contact_consent_events +6 | 746 reader(s) | ✓ | — | — | `test:one-door-consent` |
 | `one_pull` | loop-complete | cron `api/cron/lead-scraping` | GR | `route.ts` +2 | batchdata_smart_search_subscriptions, lead_scraping_markets, raw_scraped_leads +1 | 47 reader(s) | ✓ | ✓ | — | `test:one-pull` |
-| `os_arbitration_canaries` | loop-complete | webhook `api/webhooks/batchdata-smart-search` (+1) | ACEGPR | `followup-arbiter.ts` +10 | activities, agent_action_ledger, contract_term_versions +4 | 476 reader(s) | ✓ | ✓ | ✓ | `test:os-arbitration-canaries` |
+| `os_arbitration_canaries` | loop-complete | webhook `api/webhooks/batchdata-smart-search` (+1) | ACEGPR | `followup-arbiter.ts` +10 | activities, agent_action_ledger, contract_term_versions +5 | 479 reader(s) | ✓ | ✓ | ✓ | `test:os-arbitration-canaries` |
 | `outcome_ledger` | loop-complete | cron `api/cron/retry-errors` (+1) | — | `auto-retry.ts` | automation_errors, error_resolution_log | 12 reader(s) | — | ✓ | — | `test:outcome-ledger` |
 | `parent_child_graph` | loop-complete | cron `api/cron/source-conversion-learning` (+1) | P | `exceptions-first.ts` +4 | activities, audit_log, client_friendly_updates +13 | 1194 reader(s) | ✓ | ✓ | ✓ | `test:parent-child-graph` |
-| `permit_prelisting_intent_lane` | loop-complete | cron `api/cron/lead-scraping` | GR | `route.ts` +56 | agent_credentials, agentic_invocation_log, api_response_logs +6 | 66 reader(s) | ✓ | ✓ | — | `test:scrapers` |
+| `permit_prelisting_intent_lane` | loop-complete | cron `api/cron/lead-scraping` | GR | `route.ts` +58 | agent_credentials, agentic_invocation_log, api_response_logs +10 | 124 reader(s) | ✓ | ✓ | — | `test:scrapers` |
 | `person_identity` | loop-complete | action `actions/lead-intelligence.ts` | R | `lead-intelligence.ts` +6 | activities, ai_message_drafts, behavioral_signals +24 | 732 reader(s) | ✓ | — | — | `test:person-identity` |
 | `platform_live_agent` | loop-complete | cron `api/cron/connector-health` (+1) | D | `embed-widget.tsx` +13 | agent_avatar_assets, agent_voice_profiles, platform_reception_calls +1 | 71 reader(s) | ✓ | ✓ | — | `test:platform-live-agent` |
 | `platform_prospect_funnel` | loop-complete | action `actions/superadmin/platform-growth.ts` | ADGR | `platform-growth.ts` +15 | calendar_events, notifications, open_house_rsvp_tracking +6 | 185 reader(s) | ✓ | ✓ | — | `test:platform-prospect-funnel` |
@@ -784,8 +784,9 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `prospect_conversion_stamp` | loop-complete | action `actions/superadmin/platform-growth.ts` (+1) | — | `prospect-conversion.ts` | brokerages, calendar_events, platform_prospects +1 | 426 reader(s) | ✓ | ✓ | — | `test:prospect-conversion` |
 | `protected_research_store` | loop-complete | cron `api/cron/enrichment-processor` (+1) | — | `lifetime-change-action.ts` +4 | contacts, lifetime_customer_touchpoints, signal_reactivations | 586 reader(s) | — | — | ✓ | `test:lifetime-signals` |
 | `provider_adapter_contract` | loop-complete | cron `api/cron/connector-auto-applier` (+1) | R | `google.ts` +17 | api_response_logs, connector_healing_proposals | 13 reader(s) | ✓ | ✓ | — | `test:provider-adapter` |
+| `provider_capability_matrix` | loop-complete | page `dashboard/superadmin/connector-healing` | R | `page.tsx` +14 | lead_scraping_jobs | 4 reader(s) | — | ✓ | — | `test:provider-gap-matrix` |
+| `provider_gap_matrix` | loop-complete | cron `api/cron/lead-scraping` (+1) | R | `property-lookup-rail.ts` +13 | lead_scraping_jobs | 4 reader(s) | — | ✓ | — | `test:provider-gap-matrix` |
 | `provider_posture_board` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | DGP | `video-generation.ts` +75 | ad_lead_form_legal_content, agent_client_messages, chat_messages +21 | 991 reader(s) | ✓ | ✓ | — | `test:doc-kernel` |
-| `provider_readiness_scope` | loop-complete | cron `api/cron/health-check` (+1) | — | `provider-posture.ts` +1 | — | — | — | ✓ | — | `test:provider-readiness` |
 | `public_market_research` | loop-complete | cron `api/cron/lead-scraping` (+1) | — | `topic-themes.ts` +6 | cron_execution_logs, lead_deduplication_log, lead_enrichment_queue +3 | 93 reader(s) | ✓ | ✓ | — | `test:public-market-research` |
 | `qr_and_card_scanner` | loop-complete | action `actions/business-card/business-card-actions.ts` | R | `business-card-actions.ts` +5 | business_card_scans, contacts, notifications +3 | 718 reader(s) | ✓ | — | — | `test:qr-and-card-scanner` |
 | `rawdata_producer_contract` | loop-complete | cron `api/cron/lead-scraping` (+1) | — | `subject-identity.ts` +4 | cron_execution_logs, lead_deduplication_log, lead_enrichment_queue +3 | 93 reader(s) | ✓ | ✓ | — | `test:rawdata-ingress` |
@@ -800,6 +801,7 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `roi_outcome_ledger` | loop-complete | cron `api/cron/marketing-attribution-engine` (+1) | A | `roi-calculator.ts` +3 | campaign_roi, channel_performance, marketing_attribution_credits +1 | 24 reader(s) | ✓ | — | — | `test:roi-outcome-ledger` |
 | `scan_contact_writeback` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | DGP | `video-generation.ts` +75 | ad_lead_form_legal_content, agent_client_messages, chat_messages +21 | 991 reader(s) | ✓ | ✓ | — | `test:doc-kernel` |
 | `scrape_gaps` | loop-complete | cron `api/cron/lead-scraping` (+1) | R | `batchdata-client.ts` +9 | batchdata_incremental_search_state, leads, market_active_listings +1 | 171 reader(s) | — | ✓ | — | `test:scrape-gaps` |
+| `scrape_snapshot_checkpoint` | loop-complete | cron `api/cron/actor-health` (+1) | GR | `agent-credentials.ts` +56 | agent_credentials, agentic_invocation_log, api_response_logs +8 | 113 reader(s) | ✓ | ✓ | — | `test:scrapers` |
 | `sdk_rollout_part2` | loop-complete | cron `api/cron/audience-sync-runner` | — | `route.ts` +9 | agent_api_credentials, audience_members, audience_sync_runs +3 | 61 reader(s) | ✓ | ✓ | — | `test:sdk-rollout-2` |
 | `seat_user_convergence` | loop-complete | action `actions/admin/invite-user.ts` | A | `invite-user.ts` +9 | activities, agent_commission_profiles, agent_onboarding +10 | 1313 reader(s) | ✓ | ✓ | — | `test:seat-user-convergence` |
 | `secrets_fail_closed` | loop-complete | cron `api/cron/automation-error-monitor` (+1) | AGR | `connection-manager.ts` +10 | notifications, skill_marketplace_listings | 78 reader(s) | ✓ | ✓ | ✓ | `test:secrets-rls` |
@@ -842,7 +844,7 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `wave148_canaries` | loop-complete | cron `api/cron/manager-signals` (+1) | ADEGPR | `audience-persona-basis.ts` +24 | ai_message_drafts, buyer_criteria_changes, buyer_criteria_utterances +16 | 903 reader(s) | ✓ | ✓ | ✓ | `test:wave148-canaries` |
 | `wave149_canaries` | loop-complete | action `actions/listings-kernel.ts` | ADEGPR | `listings-kernel.ts` +31 | activities, ad_campaigns, ai_message_drafts +32 | 1133 reader(s) | ✓ | ✓ | ✓ | `test:wave149-canaries` |
 | `wave150_canaries` | loop-complete | cron `lib/kernel/cron-dispatch.ts` | ACEGPR | `ad-payload.ts` +52 | activities, agent_action_ledger, brokerages +33 | 1636 reader(s) | ✓ | ✓ | ✓ | `test:wave150-canaries` |
-| `wave151_canaries` | loop-complete | cron `api/cron/lead-scraping` (+1) | ACEGR | `navigation-config.ts` +33 | activities, agent_action_ledger, buyer_financial_profiles +14 | 863 reader(s) | ✓ | — | ✓ | `test:wave151-canaries` |
+| `wave151_canaries` | loop-complete | cron `api/cron/lead-scraping` (+1) | ACEGR | `navigation-config.ts` +33 | activities, agent_action_ledger, buyer_financial_profiles +15 | 866 reader(s) | ✓ | — | ✓ | `test:wave151-canaries` |
 | `wave152_canaries` | loop-complete | cron `api/cron/deal-health-scan` (+1) | ACGR | `lead-visibility.ts` +31 | closing_cost_accuracy_observations, contract_term_versions, direct_mail_recipients +14 | 331 reader(s) | ✓ | ✓ | ✓ | `test:wave152-canaries` |
 | `webhook_event_subscriptions` | loop-complete | cron `api/cron/webhook-deliveries` (+1) | G | `tenant-webhooks-core.ts` +1 | tenant_webhook_deliveries, tenant_webhook_subscriptions | 5 reader(s) | ✓ | ✓ | ✓ | `test:webhook-subscriptions` |
 | `zapier_outbound_only` | loop-complete | cron `lib/kernel/cron-dispatch.ts` | G | `route.ts` +4 | sequence_enrollments, tenant_webhook_deliveries, tenant_webhook_subscriptions +1 | 25 reader(s) | ✓ | ✓ | ✓ | `test:zapier-outbound-only` |
@@ -858,6 +860,7 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `audience_eligibility` | read-surface | cron `api/cron/audience-sync-runner` (+1) | — | `audience-eligibility.ts` | — | — | — | — | — | `test:audience-eligibility` |
 | `automatic_contact_enrichment` | read-surface | webhook `api/webhooks/inbound-mail` (+2) | — | `canonical-lead-eligibility.ts` | — | — | — | — | — | `test:conversion-gate-enrichment` |
 | `brokerage_admin_role_grant` | read-surface | action `actions/a2p-registration.ts` (+1) | — | `require-brokerage-admin.ts` +1 | — | — | — | — | — | `test:brokerage-admin-grant` |
+| `calendar_sync_adapters` | read-surface | page `dashboard/settings/calendar` (+1) | — | `graph-event-shape.ts` +1 | — | — | — | — | — | `test:calendar-sync-adapter` |
 | `client_bundle_kernel_boundary` | read-surface | page `crm/contacts/[contactId]` (+1) | — | `buyer-overview-client.tsx` | — | — | — | — | — | `test:client-server-only` |
 | `client_framing` | read-surface | cron `api/cron/anniversary-equity` (+2) | — | `client-framing.ts` | — | — | — | — | — | `test:client-framing` |
 | `climate` | read-surface | page `portal/[contactId]` (+3) | — | `climate.ts` | — | — | — | — | — | `test:climate` |
@@ -872,6 +875,7 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `continuous_manager_eval` | read-surface | cron `api/cron/manager-eval` (+1) | — | `manager-eval-harness.ts` | — | — | — | — | — | `test:manager-eval` |
 | `coordination_kind` | read-surface | cron `api/cron/affiliate-commissions` (+2) | — | `coordination-kind.ts` | — | — | — | — | — | `test:coordination-kind` |
 | `coordination_status` | read-surface | action `actions/ai-transaction-coordinator.ts` (+1) | — | `coordination-status.ts` | — | — | — | — | — | `test:coordination-status` |
+| `credential_cascade_refusal` | read-surface | cron `api/cron/connector-health` (+1) | R | `resolve-scoped.ts` +3 | — | — | — | — | — | `test:credential-cascade-refusal` |
 | `crm_sync_credential` | read-surface | cron `api/cron/affiliate-commissions` (+2) | — | `coordination-kind.ts` | — | — | — | — | — | `test:crm-sync-credential` |
 | `cross_tenant_read_boundary` | read-surface | action `actions/a2p-registration.ts` (+1) | — | `resolve-user-role.ts` | — | — | — | — | — | `test:cross-tenant-read` |
 | `data_guard` | read-surface | action `actions/ai-agent-goals.ts` (+2) | — | `index.ts` | — | — | — | — | — | `test:data-guard` |
@@ -917,6 +921,7 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `lifetime_segment` | read-surface | action `actions/portal-lifetime.ts` (+1) | — | `lifetime-segment.ts` | — | — | — | — | — | `test:lifetime-segment` |
 | `lossless_promotion` | read-surface | action `actions/lead-import/import-actions.ts` (+1) | — | `field-steward.ts` +1 | — | — | — | — | — | `test:data-steward` |
 | `lossless_property_specs` | read-surface | cron `api/cron/investor-offmarket-refresh` (+2) | — | `investor-offmarket-match.ts` +1 | — | — | — | — | — | `test:property-specs` |
+| `mailing_address_cass_gate` | read-surface | action `actions/contact-quick-actions.ts` (+1) | — | `mailing-cass-gate.ts` | — | — | — | — | — | `test:mailing-cass` |
 | `manager_boundaries` | read-surface | cron `lib/kernel/cron-dispatch.ts` | P | `approval-sources.ts` +1 | — | — | — | — | — | `test:manager-ownership` |
 | `manager_cross_cooperation` | read-surface | cron `api/cron/manager-signals` (+1) | GP | `cross-referral.ts` | — | — | ✓ | — | — | `test:manager-cross-cooperation` |
 | `manager_governance` | read-surface | page `dashboard/admin/compliance-eval` (+1) | — | `manager-governance-scorecard.ts` | — | — | — | — | — | `test:manager-governance` |
@@ -927,6 +932,7 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `movement_outcome_learning` | read-surface | cron `api/cron/network-intelligence` (+1) | — | `strategy-learning.ts` +1 | — | — | — | — | — | `test:movement-outcome-learning` |
 | `next_move` | read-surface | action `actions/portal-lifetime.ts` (+1) | — | `next-move.ts` | — | — | — | — | — | `test:next-move` |
 | `notification_preferences` | read-surface | cron `api/cron/publish-newsletters` (+1) | — | `buyer-preferences.ts` | — | — | — | — | — | `test:notification-preferences` |
+| `operations_docs` | read-surface | cron `lib/kernel/cron-dispatch.ts` | CR | `connector-probe.ts` +9 | — | — | — | — | — | `test:operations-docs` |
 | `org_recipients` | read-surface | action `actions/onboarding/mentor-session.ts` (+1) | — | `org-recipients.ts` | — | — | — | — | — | `test:org-recipients` |
 | `outcome_attribution` | read-surface | cron `api/cron/source-conversion-learning` (+1) | A | `roi-ledger.ts` +1 | — | — | — | — | — | `test:outcome-attribution` |
 | `outcome_autopsy` | read-surface | cron `api/cron/source-conversion-learning` (+2) | — | `outcome-autopsy.ts` | — | — | — | — | — | `test:outcome-autopsy` |
@@ -940,11 +946,14 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `product_promo_video` | read-surface | cron `api/cron/director-reel-render` (+1) | — | `product-content.ts` +1 | — | — | — | — | — | `test:product-video` |
 | `product_social_content` | read-surface | action `actions/superadmin/platform-content.ts` (+1) | — | `product-content.ts` | — | — | — | — | — | `test:product-content` |
 | `property_buyer_match` | read-surface | action `actions/ai-buyer-search-push.ts` (+2) | — | `match-scorer.ts` | — | — | — | — | — | `test:property-buyer-match` |
+| `provider_readiness_scope` | read-surface | cron `api/cron/health-check` (+1) | — | `provider-posture.ts` +1 | — | — | — | ✓ | — | `test:provider-readiness` |
+| `provider_scorecard` | read-surface | action `actions/ai-listing-intake.ts` (+1) | R | `property-lookup-rail.ts` +2 | — | — | — | — | — | `test:provider-scorecard` |
 | `proxy_graph_budget` | read-surface | action `actions/ai-content-generation.tsx` (+1) | R | `billing-access.ts` +1 | — | — | — | — | — | `test:proxy-graph-budget` |
 | `raw_lead_promotion` | read-surface | page `dashboard/admin/lead-intake` (+2) | — | `index.ts` +1 | — | — | — | — | — | `test:raw-lead-promotion` |
 | `raw_lead_promotion_identity` | read-surface | webhook `api/webhooks/inbound-mail` (+2) | A | `canonical-lead-eligibility.ts` +1 | — | — | — | — | — | `test:conversion-gate-enrichment` |
 | `raw_processing_vocabulary` | read-surface | action `actions/lead-promotion/promote-lead.ts` (+1) | — | `processing-status.ts` | — | — | — | — | — | `test:processing-status` |
 | `readiness_gate` | read-surface | action `actions/buyer-offer/submit-for-signature.ts` (+1) | — | `agent-readiness-gate.ts` | — | — | — | — | — | `test:readiness-gate` |
+| `release_blockers` | read-surface | cron `api/cron/health-check` (+2) | — | `webhook-contract.ts` | — | — | — | — | — | `test:release-blockers` |
 | `rentcast_eligibility` | read-surface | action `actions/ai-predictions.ts` (+1) | R | `comp-provider.ts` +2 | — | — | — | — | — | `test:rentcast-eligibility` |
 | `role_union_navigation` | read-surface | cron `api/cron/compliance-monitoring` (+1) | — | `navigation-config.ts` +2 | — | — | — | — | — | `test:role-union-nav` |
 | `role_vocabulary_match` | read-surface | cron `api/cron/compliance-monitoring` (+1) | — | `types.ts` | — | — | — | — | — | `test:role-vocabulary` |
@@ -993,8 +1002,9 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `voice_coverage` | read-surface | route `api/agent-assistant/tool-call` (+1) | A | `tool-registry.ts` +1 | — | — | — | — | — | `test:voice-coverage` |
 | `voice_task_command` | read-surface | route `api/internal/voice-command` (+1) | — | `task-command.ts` | — | — | — | — | — | `test:voice-task-command` |
 | `wealth_lifecycle` | read-surface | action `actions/predictive-surfaces.ts` | — | `predictive-surfaces.ts` +1 | — | — | — | — | — | `test:wealth-lifecycle` |
+| `webhook_contract` | read-surface | cron `api/cron/health-check` (+2) | — | `webhook-contract.ts` | — | — | — | — | — | `test:webhook-contract` |
 | `writerless_arrivals` | read-surface | cron `api/cron/connector-health` (+1) | — | `credential-secret.ts` +1 | — | — | — | — | — | `test:writerless-arrivals` |
-| `acquisition_coverage` | partial (no closure) | cron `lib/kernel/cron-dispatch.ts` | R | `source-analytics.ts` +11 | email_queue, lead_scraping_jobs | 4 reader(s) | — | — | — | `test:acquisition-coverage` |
+| `acquisition_coverage` | partial (no closure) | cron `lib/kernel/cron-dispatch.ts` | R | `source-analytics.ts` +11 | email_queue, lead_scraping_jobs | 6 reader(s) | — | — | — | `test:acquisition-coverage` |
 | `act_as_read_path` | partial (no closure) | action `actions/settings/revenue-share-setting.ts` | A | `revenue-share-setting.ts` +2 | brokerages, global_settings | 409 reader(s) | — | — | — | `test:act-as-read-path` |
 | `ai_agent_surfaces_catalog` | partial (no closure) | action `actions/ai-agent-onboarding.ts` (+1) | R | `brand-voice-prompt.ts` +2 | compliance_flags | 14 reader(s) | — | — | — | `test:ai-agent-surfaces` |
 | `ai_insight_tenant` | partial (no closure) | action `actions/ai-predictions.ts` | A | `ai-predictions.ts` +4 | activities, ai_autopilot_plans, ai_insights +8 | 714 reader(s) | — | — | — | `test:ai-insight-tenant` |
@@ -1005,13 +1015,11 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `batchdata_mcp_adapter_contract` | partial (no closure) | cron `api/cron/lead-scraping` (+1) | — | `batchdata-client.ts` +2 | — | — | — | — | — | `test:batchdata-mcp` |
 | `batchdata_seller_signals` | partial (no closure) | action `actions/lead-intelligence.ts` | R | `lead-intelligence.ts` +8 | ad_campaigns, audience_members, audience_sync_runs +19 | 57 reader(s) | — | — | — | `test:batchdata-seller-signals` |
 | `broker_brief_intel` | partial (no closure) | action `actions/briefing-actions.ts` (+2) | — | `broker.ts` | ai_daily_briefings | 7 reader(s) | — | — | — | `test:broker-brief-intel` |
-| `calendar_sync_adapters` | partial (no closure) | page `dashboard/settings/calendar` (+1) | — | `graph-event-shape.ts` +1 | — | — | — | — | — | `test:calendar-sync-adapter` |
 | `config_snapshots` | partial (no closure) | action `actions/superadmin/config-snapshots.ts` (+1) | — | `config-snapshots.ts` | brand_voice_profile, brokerage_brand_settings, brokerages +2 | 428 reader(s) | — | — | — | `test:config-snapshots` |
 | `contact_inheritance` | partial (no closure) | reactor `lib/kernel/event-reactor.ts` (+1) | — | `lead-visibility.ts` +1 | contacts, leads | 654 reader(s) | — | — | — | `test:contact-inheritance` |
 | `contact_intent_vocabulary` | partial (no closure) | cron `api/cron/lifetime-npv-forecast-rollup` (+1) | — | `contact-creator.ts` +1 | contacts, leads | 654 reader(s) | — | — | — | `test:contact-intent-vocabulary` |
 | `conversation_memory` | partial (no closure) | cron `api/cron/context-spine-refresh` (+1) | — | `conversation-memory.ts` | contacts | 582 reader(s) | — | — | — | `test:conversation-memory` |
 | `creation_path_snapshots` | partial (no closure) | action `actions/superadmin/config-snapshots.ts` (+1) | — | `config-snapshots.ts` | brand_voice_profile, brokerage_brand_settings, brokerages +2 | 428 reader(s) | — | — | — | `test:config-snapshots` |
-| `credential_cascade_refusal` | partial (no closure) | cron `api/cron/connector-health` (+1) | R | `resolve-scoped.ts` +3 | — | — | — | — | — | `test:credential-cascade-refusal` |
 | `data_guard_guard` | partial (no closure) | action `actions/ai-agent-goals.ts` (+1) | AR | `generate.ts` +1 | compliance_flags | 14 reader(s) | — | — | — | `test:data-guard-guard` |
 | `decision_window_forecaster` | partial (no closure) | cron `api/cron/network-intelligence` (+1) | R | `ai-prediction-outcomes.ts` +4 | ai_predictions, movement_signals | 7 reader(s) | — | — | — | `test:decision-window` |
 | `director_eval` | partial (no closure) | cron `api/cron/director-reel-render` (+1) | — | `rule-evaluators.ts` +2 | ai_video_projects | 94 reader(s) | — | — | — | `test:director-eval` |
@@ -1029,13 +1037,11 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `lead_signal_ingest` | partial (no closure) | action `actions/lead-signal-ingest.ts` (+1) | — | `interest-level.ts` +1 | contacts, lead_score_history | 582 reader(s) | — | — | — | `test:lead-signal-ingest` |
 | `learning_outcomes` | partial (no closure) | cron `api/cron/source-conversion-learning` (+2) | — | `learning-outcomes-runner.ts` +1 | ai_feedback_log | 5 reader(s) | — | — | — | `test:learning-outcomes` |
 | `location_literal_census` | partial (no closure) | cron `api/cron/network-intelligence` (+1) | — | `network-benchmarks.ts` | network_benchmarks | 1 reader(s) | — | — | — | `test:location-literal-census` |
-| `mailing_address_cass_gate` | partial (no closure) | action `actions/contact-quick-actions.ts` (+1) | — | `mailing-cass-gate.ts` | — | — | — | — | — | `test:mailing-cass` |
 | `market_watch` | partial (no closure) | cron `api/cron/buyer-market-watch` (+1) | — | `market-watch.ts` | property_matches | 7 reader(s) | — | — | — | `test:market-watch` |
 | `meeting_followthrough` | partial (no closure) | action `actions/superadmin/parked-retention.ts` (+1) | — | `meeting-followthrough.ts` +1 | contacts, leads | 654 reader(s) | — | — | — | `test:meeting-followthrough` |
 | `meeting_recap` | partial (no closure) | cron `api/cron/voice-call-analysis` (+2) | — | `meeting-followthrough.ts` +1 | contacts | 582 reader(s) | — | — | — | `test:meeting-recap` |
 | `meta_webhook_fail_closed` | partial (no closure) | webhook `api/webhooks/whatsapp` | — | `route.ts` +1 | contacts | 581 reader(s) | — | — | — | `test:meta-webhook-fail-closed` |
 | `moving_moments` | partial (no closure) | action `actions/contact-enrichment.ts` (+1) | R | `life-event-vocabulary.ts` +3 | movement_signals | 4 reader(s) | — | — | — | `test:moving-moments` |
-| `operations_docs` | partial (no closure) | cron `lib/kernel/cron-dispatch.ts` | CR | `connector-probe.ts` +9 | — | — | — | — | — | `test:operations-docs` |
 | `opportunity_discovery` | partial (no closure) | cron `api/cron/enrichment-processor` (+1) | R | `life-event-vocabulary.ts` +3 | movement_signals, movement_source_items, movement_source_polls | 5 reader(s) | — | — | — | `test:opportunity-discovery` |
 | `orphaned_child_census` | partial (no closure) | action `actions/agent-public-profile.ts` (+2) | — | `history-carry.ts` | leads | 164 reader(s) | — | — | — | `test:orphaned-children` |
 | `person_spend_attribution` | partial (no closure) | webhook `api/webhooks/batchdata-smart-search` (+1) | R | `models.ts` +5 | automation_errors, compliance_flags, vendor_usage_tracking | 45 reader(s) | — | — | — | `test:person-spend-attribution` |
@@ -1047,10 +1053,7 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `platform_impersonation` | partial (no closure) | action `actions/superadmin/impersonation.ts` (+1) | — | `impersonation.ts` | platform_impersonation_sessions | 2 reader(s) | — | — | — | `test:impersonation` |
 | `platform_providers` | partial (no closure) | action `actions/direct-mail.ts` (+1) | — | `providers.ts` +1 | provider_overrides | 10 reader(s) | — | — | — | `test:platform-providers` |
 | `provider_dedup_no_silent_overwrite` | partial (no closure) | cron `api/cron/enrichment-processor` (+1) | R | `property-lookup-rail.ts` +12 | ad_campaigns, contacts, content_topic_bank +1 | 627 reader(s) | — | — | — | `test:versium-capability-matrix` |
-| `provider_gap_matrix` | partial (no closure) | webhook `api/webhooks/batchdata-smart-search` (+1) | R | `property-lookup-rail.ts` +10 | — | — | — | — | — | `test:provider-gap-matrix` |
-| `provider_scorecard` | partial (no closure) | action `actions/ai-listing-intake.ts` (+1) | R | `property-lookup-rail.ts` +2 | — | — | — | — | — | `test:provider-scorecard` |
 | `provider_waterfall` | partial (no closure) | webhook `api/webhooks/batchdata-smart-search` (+1) | R | `property-lookup-rail.ts` +4 | — | — | — | — | — | `test:provider-waterfall` |
-| `release_blockers` | partial (no closure) | cron `api/cron/health-check` (+2) | — | `webhook-contract.ts` | — | — | — | — | — | `test:release-blockers` |
 | `rentcast_platform` | partial (no closure) | cron `api/cron/buyer-market-watch` (+1) | R | `property-lookup-rail.ts` +9 | — | — | — | — | — | `test:rentcast-platform` |
 | `rls_anon_tenant_escape` | partial (no closure) | action `actions/calculators.ts` | A | `calculators.ts` +1 | calculator_history, saved_calculations, tool_usage_sessions | 3 reader(s) | — | — | — | `test:rls-anon-escape` |
 | `schema_drift_guard` | partial (no closure) | action `actions/admin/billing.ts` (+1) | — | `address-suppression.ts` +1 | billing_invoices, billing_usage, contact_suppression_list +2 | 53 reader(s) | — | — | — | `test:schema-drift` |
@@ -1064,7 +1067,6 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `travel_time_capability` | partial (no closure) | action `actions/ai-client-portal.ts` (+1) | R | `property-lookup-rail.ts` +12 | buyer_criteria_changes, buyer_criteria_utterances, property_preferences | 18 reader(s) | — | — | — | `test:buyer-explanation` |
 | `versium_capability_matrix` | partial (no closure) | cron `api/cron/enrichment-processor` (+1) | R | `property-lookup-rail.ts` +12 | ad_campaigns, contacts, content_topic_bank +1 | 627 reader(s) | — | — | — | `test:versium-capability-matrix` |
 | `voice_billing_rail` | partial (no closure) | action `actions/voice-tenancy.ts` (+1) | — | `twilio-tenancy.ts` | platform_credentials | 51 reader(s) | — | — | — | `test:voice-billing-rail` |
-| `webhook_contract` | partial (no closure) | cron `api/cron/health-check` (+2) | — | `webhook-contract.ts` | — | — | — | — | — | `test:webhook-contract` |
 | `zoom_embed` | partial (no closure) | cron `api/cron/zoom-transcript-reconcile` (+1) | — | `zoom.ts` | platform_credentials | 51 reader(s) | — | — | — | `test:zoom-embed` |
 | `zoom_lane` | partial (no closure) | cron `api/cron/connector-health` (+1) | — | `field-spec.ts` +4 | calendar_events, communications, platform_credentials +1 | 129 reader(s) | — | — | — | `test:zoom-lane` |
 | `dashboard_data_survivor_ledger` | untriggered | — | — | `data-survivors.ts` | — | — | — | — | — | `test:dashboard-data-layer` |
@@ -1274,6 +1276,7 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `outcome_reconciliation` | read-surface | webhook `api/webhooks/lob-events` (+1) | — | `coordination-kind.ts` +1 | — | — | — | — | — | `test:outcome-reconciliation` |
 | `page_role_gate_roster` | read-surface | action `actions/demo-auth.ts` (+1) | A | `role-gate-notice.tsx` +5 | — | — | — | — | — | `test:page-role-gate-roster` |
 | `platform_discriminator` | read-surface | action `actions/admin/agent-assistant-tool-calls.ts` (+1) | — | `platform-staff-roster.ts` | — | — | — | — | — | `test:platform-discriminator` |
+| `proxy_sessionless_doors` | read-surface | cron `lib/kernel/cron-dispatch.ts` | — | `route.ts` +4 | — | — | — | — | — | `test:proxy-sessionless-doors` |
 | `public_media_scope` | read-surface | action `actions/fair-housing-older-persons.ts` (+1) | — | `fair-housing-older-persons-store.ts` +2 | — | — | — | — | — | `test:public-media-scope` |
 | `video_script_compliance_falsifiability` | read-surface | action `actions/ai-isa/engage-contact.ts` (+1) | — | `brand-voice-prompt.ts` | — | — | — | — | — | `test:video-script-compliance-negative` |
 | `ad_audience_persona_basis` | partial (no closure) | action `actions/campaign-presets.ts` | A | `campaign-presets.ts` +8 | ad_campaigns, audience_members, audience_sync_runs +3 | 82 reader(s) | — | — | — | `test:audience-persona-basis` |
@@ -1286,7 +1289,6 @@ Classes: `loop-complete` 654 · `read-surface` 393 · `partial` 227 · `writes-u
 | `mail_address_suppression` | partial (no closure) | page `dashboard/analytics` (+1) | — | `prediction-accuracy.ts` +1 | contact_suppression_list | 9 reader(s) | — | — | — | `test:mail-address-suppression` |
 | `manager_dissent` | partial (no closure) | cron `api/cron/manager-signals` (+1) | — | `manager-dissent.ts` | agent_client_messages | 102 reader(s) | — | — | — | `test:manager-dissent` |
 | `offer_flag_loop` | partial (no closure) | action `actions/buyer-offer/submit-to-compliance.ts` (+1) | — | `offer-flag-resolution.ts` | activities | 95 reader(s) | — | — | — | `test:offer-flag-loop` |
-| `proxy_sessionless_doors` | partial (no closure) | cron `lib/kernel/cron-dispatch.ts` | — | `route.ts` +4 | — | — | — | — | — | `test:proxy-sessionless-doors` |
 | `public_bucket_egress` | partial (no closure) | cron `api/cron/document-retention-scan` (+1) | — | `document-custody.ts` +2 | document_access_log | 1 reader(s) | — | — | — | `test:public-bucket-egress` |
 | `regulatory_curriculum` | partial (no closure) | cron `api/cron/director-reel-render` (+1) | — | `regulatory-curriculum.ts` +1 | learning_modules | 33 reader(s) | — | — | — | `test:regulatory-curriculum` |
 | `state_fair_housing` | partial (no closure) | cron `api/cron/manager-signals` (+1) | — | `state-fair-housing-format.ts` +2 | agent_client_messages | 102 reader(s) | — | — | — | `test:state-fair-housing` |

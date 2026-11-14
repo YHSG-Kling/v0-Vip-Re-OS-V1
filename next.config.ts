@@ -223,6 +223,36 @@ const nextConfig: NextConfig = {
     // compile. Bound the parallelism, not the heap.
     cpus: 1,
   },
+  // WAVE 153 (lane 153J) — A RENDER FUNCTION MUST SHIP WHAT ITS RUNTIME BUNDLE READS.
+  // The render routes run @remotion/bundler INSIDE the function (lib/remotion/bundle-cache.ts getBundle) against
+  // remotion/index.ts, so webpack reads every composition, the pure lib modules they import and the composition-only
+  // packages FROM THE FUNCTION'S DISK, and the renderer spawns the compositor's native binaries. Next's tracer follows
+  // none of that: measured with its own @vercel/nft, a render route shipped remotion/index.ts + Root.tsx and nothing
+  // else first-party, no @remotion/{media,motion-blur,google-fonts}, and only index.js of the compositor. A replay of
+  // those traced files failed `Can't resolve '../lib/video/duration-model'`; with the globs below it rendered a
+  // playable MP4. scripts/remotion-deploy-trace-guard.ts (test:remotion-deploy-trace) DERIVES the required set (the
+  // bundle graph, each composition package's ESM closure, the linux-x64-gnu compositor) and fails when a file escapes.
+  // The musl variants are excluded: the Vercel runtime is glibc, and they are ~90 MB of a 250 MB function budget
+  // (replay: 214 MB → 153 MB, still rendering playable) before render-composition's ffmpeg-static (77 MB).
+  outputFileTracingIncludes: {
+    "/api/internal/remotion/**": [
+      "./remotion/**/*.{ts,tsx}",
+      "./lib/{ai,charts,format,remotion,video}/**/*.{ts,tsx}",
+      "./node_modules/@remotion/media/**/*",
+      "./node_modules/@remotion/motion-blur/**/*",
+      "./node_modules/@remotion/google-fonts/package.json",
+      "./node_modules/@remotion/google-fonts/dist/esm/Inter.mjs",
+      "./node_modules/mediabunny/package.json",
+      "./node_modules/mediabunny/dist/modules/**/*.js",
+      "./node_modules/@remotion/compositor-linux-x64-gnu/**/*",
+    ],
+  },
+  outputFileTracingExcludes: {
+    "/api/internal/remotion/**": [
+      "./node_modules/@rspack/binding-linux-x64-musl/**/*",
+      "./node_modules/@remotion/compositor-linux-x64-musl/**/*",
+    ],
+  },
   // Skip bundling for packages that ship platform-specific native binaries
   // or otherwise can't be analysed by Turbopack. They get plain Node
   // `require()` at server runtime instead of being walked + chunked.

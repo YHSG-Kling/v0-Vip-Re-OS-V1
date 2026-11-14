@@ -263,6 +263,14 @@ async function main() {
     check("egress: office expense with books that track offices but no mapping → BUSINESS_UNIT_NOT_MAPPED sync error (not filed under the company)", /expense\.locationId && unit\.tracked && !unit\.departmentRef/.test(egress) && /errorCode: "BUSINESS_UNIT_NOT_MAPPED"/.test(egress))
     check("egress: the mapping is read from the office's own settings, tenant-pinned, and a refused read refuses the push", /from\("locations"\)\.select\("id, settings"\)\.eq\("brokerage_id", brokerageId\)/.test(egress) && /if \(!unit\.ok\)/.test(egress))
     check("egress: the snapshot a retry reads records the office and the unit", /location_id: expense\.locationId \?\? null/.test(egress) && /failed\.payload\.business_unit =/.test(egress))
+    // Wave 153, lane 153G (carried 153A Outside-lane 2): the QuickBooks Purchase builder SENDS the office's location. The provider
+    // module imports "server-only" (plain tsx cannot load it), so the emission is proved on its stripped source: createPurchase
+    // takes departmentRef and puts it on the payload as QuickBooks' DepartmentRef ONLY when one is mapped (company level otherwise).
+    const qboSrc = stripComments(src("lib/providers/accounting/quickbooks.ts"))
+    const purchaseBody = (s: string) => { const i = s.indexOf("async createPurchase("); if (i < 0) return ""; const j = s.indexOf("async createJournalEntry(", i); return s.slice(i, j < 0 ? undefined : j) }
+    const DEPT_EMIT = /departmentRef\?: string[\s\S]{0,400}\.\.\.\(params\.departmentRef \? \{ DepartmentRef: \{ value: params\.departmentRef \} \} : \{\}\)/
+    check("QuickBooks Purchase: createPurchase takes the office's departmentRef and emits DepartmentRef only when mapped (lane 153G)", DEPT_EMIT.test(purchaseBody(qboSrc)))
+    check("PC: a Purchase builder that drops the department is caught", !DEPT_EMIT.test(`async createPurchase(params: { amount: number }) { const payload = { PaymentType: "Cash" } } async createJournalEntry(`))
     const intake = stripComments(src("lib/documents/receipt-intake.ts"))
     check("receipt approval HOLDS a multi-location company-books receipt until an office is named (driven in test:receipt-intelligence §17)", /receiptOfficeDecision\(svc, actor/.test(intake) && /Which office is this expense for\?/.test(intake))
     const page = stripComments(src("app/dashboard/financials/brokerage/page.tsx"))
@@ -280,7 +288,7 @@ async function main() {
     check("package.json registers this proof and the guard chain runs it", /expense-office-rollup-guard\.ts/.test(pkg.scripts["test:expense-office-rollup"] ?? "") && /npm run test:expense-office-rollup\b/.test(pkg.scripts.guard ?? ""))
   }
 
-  console.log("\nBLIND SPOTS: SIMULATED on the in-memory client — m900's deferred 100% trigger and RLS policy are asserted on the migration text, not executed (the integrator applies m900); logScopedExpense / deleteExpense / allocateSharedExpense need a Next session, so their wiring is proved on stripped source and their gates by driving the real survivors they call; the QuickBooks Purchase builder does not yet send DepartmentRef (lane 153G Outside-lane request) and retrySyncError does not yet re-read location_id (Outside-lane request); the brokerage P&L page's OTHER sections (commissions, production) still show the whole company to any finance-roster user on a multi-location tenant — out of this lane's ownership, reported.")
+  console.log("\nBLIND SPOTS: SIMULATED on the in-memory client — m900's deferred 100% trigger and RLS policy are asserted on the migration text, not executed (the integrator applies m900); logScopedExpense / deleteExpense / allocateSharedExpense need a Next session, so their wiring is proved on stripped source and their gates by driving the real survivors they call; the QuickBooks Purchase builder sends DepartmentRef (lane 153G — proved on stripped source, the provider is server-only; no live QuickBooks call) and retrySyncError does not yet re-read location_id (Outside-lane request); the brokerage P&L page's OTHER sections (commissions, production) still show the whole company to any finance-roster user on a multi-location tenant — out of this lane's ownership, reported.")
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   process.exit(failed > 0 ? 1 : 0)
 }

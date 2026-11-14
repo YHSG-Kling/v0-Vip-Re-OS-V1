@@ -1069,6 +1069,35 @@ SELECT count(*) AS signed_contracts,
 SELECT count(*) AS rows FROM public.market_dataset_verifications;
 ```
 
+## O. Wave 153 — owner SQL (2026-11-14)
+
+### O.J Lane 153J — the render-claim stamp (m933)
+
+**Nothing here is needed to APPLY m933.** `supabase/migrations/m933-render-claim-stamp-so-a-killed-render-is-found.sql` adds a
+nullable column, a trigger function, a trigger and a partial index — the integrator applies it through the Supabase MCP. The code
+only READS `claimed_at`; before m933 is applied the composition-render-queue's dead-claim sweep reports a refused read and moves
+nothing (the queue drain is unaffected). Live on 2026-11-14 the table held 0 rows, so there is no backfill.
+
+Read-back after the integrator applies it (expected: 1 · 1 · 1):
+
+```sql
+SELECT
+  (SELECT count(*) FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'remotion_composition_renders' AND column_name = 'claimed_at') AS claimed_at_column,
+  (SELECT count(*) FROM pg_trigger
+     WHERE tgrelid = 'public.remotion_composition_renders'::regclass AND tgname = 'trg_stamp_render_claimed_at') AS stamp_trigger,
+  (SELECT count(*) FROM pg_indexes
+     WHERE schemaname = 'public' AND indexname = 'idx_remotion_renders_rendering_claimed') AS rendering_claim_index;
+```
+
+**Owner SQL only if m933 must be rolled back** (after the integrator has dropped the trigger and the function, which are not
+owner-only):
+
+```sql
+DROP INDEX IF EXISTS public.idx_remotion_renders_rendering_claimed;
+ALTER TABLE public.remotion_composition_renders DROP COLUMN IF EXISTS claimed_at;
+```
+
 ## After you run anything on this page
 
 1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.

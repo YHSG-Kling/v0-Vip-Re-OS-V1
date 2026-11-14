@@ -13,6 +13,8 @@
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolvePolicyScopeAccess } from "@/lib/identity/policy-scope"
 import { createServiceClient } from "@/lib/supabase/service"
+import { presentTenantError } from "@/lib/errors"
+import { presentRenderFailure } from "@/lib/remotion/render-escalation"
 import {
   listAllCompositions,
   estimateCompositionCost,
@@ -172,7 +174,10 @@ export interface CompositionRenderHistoryRow {
   id:                string
   render_status:     string | null
   requested_via:     string | null
-  error_message:     string | null
+  /** WHY it failed / was cancelled, as the tenant-facing contract sentence (lib/remotion/render-escalation.ts
+   *  presentRenderFailure). The raw error_message stays on the row for platform staff and is never sent here (wave 153,
+   *  lane 153J: it used to be printed verbatim — storage paths with the tenant id, bucket names, webpack/ffmpeg text). */
+  failure:           string | null
   used_voiceover:    boolean | null
   used_did_avatar:   boolean | null
   output_url:        string | null
@@ -201,20 +206,23 @@ export async function getCompositionRenderHistory(
   const { data, error } = await svc
     .from("remotion_composition_renders")
     .select(
-      "id, render_status, requested_via, error_message, used_intro_asset_id, used_outro_asset_id, used_music_asset_id, used_voiceover, used_did_avatar, output_url, completed_at, created_at",
+      "id, render_status, requested_via, error_message, retry_count, used_intro_asset_id, used_outro_asset_id, used_music_asset_id, used_voiceover, used_did_avatar, output_url, completed_at, created_at",
     )
     .eq("brokerage_id", ctx.brokerageId)
     .eq("composition_id", compositionId)
     .order("created_at", { ascending: false })
     .limit(20)
 
-  if (error) return { success: false, error: error.message }
+  if (error) {
+    return { success: false, error: presentTenantError({ what: "The render history couldn't be loaded", raw: error, context: "composition-library:render-history", work: { state: "unchanged" } }).sentence }
+  }
 
   type RenderRow = {
     id: string
     render_status: string | null
     requested_via: string | null
     error_message: string | null
+    retry_count: number | null
     used_intro_asset_id: string | null
     used_outro_asset_id: string | null
     used_music_asset_id: string | null
@@ -260,7 +268,7 @@ export async function getCompositionRenderHistory(
       id: r.id,
       render_status: r.render_status,
       requested_via: r.requested_via,
-      error_message: r.error_message,
+      failure: presentRenderFailure(r)?.sentence ?? null,
       used_voiceover: r.used_voiceover,
       used_did_avatar: r.used_did_avatar,
       output_url: r.output_url,

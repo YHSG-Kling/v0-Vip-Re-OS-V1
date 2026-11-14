@@ -94,7 +94,9 @@ const PLATFORM_ACQUISITION_VENDORS = ["batchdata", "apify", "zenrows", "zyte", "
 // source→vendor contract (source-intent-map.ts::SOURCE_VENDOR via source-cost-ledger.ts), which
 // itself rides meterVendorSpend. The composite "apify_social" row is gone (see the social block).
 import { bookSourceSpend } from "@/lib/lead-pipeline/source-cost-ledger"
-import { scrapeSiteWithBestProvider } from "@/lib/external/zenrows-client"
+// Wave 153 (lane 153G): the portal page fetch no longer calls the provider picker directly — it rides
+// lib/providers/scrape-checkpoint.ts fetchCheckpointedSnapshot (imported where used), which calls the SAME picker
+// (lib/external/zenrows-client.ts scrapeSiteWithBestProvider) behind robots / terms / spend / backoff / the digest.
 import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
 import { KernelEvent } from "@/lib/kernel/events"
 import {
@@ -183,6 +185,9 @@ export async function GET(request: Request) {
   // Enrichment (PeopleData/OSINT/validation) runs inside processRawRecord during
   // the promotion pass — not here — so only the scrape clients are needed.
   const zenrows   = new ZenrowsClient()
+  // Wave 153 (lane 153G, row 55 backpressure): ONE run's budget of paid page fetches (ZenRows / Zyte) across every
+  // territory and site — the snapshot checkpoint decrements it per request and holds the rest for the next tick.
+  const pageFetchBudget = { fetchesLeft: 40 }
   // Wave 93 (lane 93B): the per-territory `new BatchDataClient()` is gone from this route — every
   // BatchData lead pull runs ONCE per cycle in the pooled phase (runPooledVendorPhase below).
 
@@ -530,28 +535,53 @@ export async function GET(request: Request) {
             // local-classifieds / neighborhood forums). The page-level ZenRows normalizer now
             // scores buyer + seller + investor + agent + generic intent so the same page can yield
             // a buyer record OR a seller record depending on which scored highest.
+            // Wave 153 (lane 153G, row 55): every page fetch rides its REPLAY-SAFE SNAPSHOT CHECKPOINT
+            // (lib/providers/scrape-checkpoint.ts) — robots.txt + contract terms before any paid request, this
+            // territory's budget as the spend gate, the run's page-fetch budget, backoff on vendor failures, and a
+            // content digest against the PROCESSED watermark: an unchanged page forwards ZERO records (no RawData, no
+            // paid record booked — the request itself is booked once below), only records not committed inside the
+            // rescan window reach the producer, and the watermark moves only after the producer accepted the batch.
+            const { fetchCheckpointedSnapshot } = await import("@/lib/providers/scrape-checkpoint")
+            const territorySpendGate = (estimateUsd: number) => {
+              const cap = market.monthly_budget_usd ?? 100
+              const spent = (market.spend_this_month ?? 0) + territorySpendUsd + sourceCostUsd
+              return spent + estimateUsd <= cap
+                ? { allowed: true, reason: `within ${market.name}'s monthly budget ($${spent.toFixed(2)} + $${estimateUsd} of $${cap})` }
+                : { allowed: false, reason: `${market.name}'s monthly budget would be exceeded ($${spent.toFixed(2)} + $${estimateUsd} of $${cap})` }
+            }
             for (const site of propertyParams.target_sites || ["zillow", "realtor", "redfin"]) {
               const searchUrl = buildPropertySearchUrl(site, market, propertyParams)
               // Lane 82B — the portal hosts go through the ONE provider picker (Zyte first on
               // zillow/realtor/homes/redfin per the 2026 benchmarks, ZenRows fallback) instead of a
               // hard-wired ZenRows call, and each site's spend books under its OWN source.
-              const scraped = await scrapeSiteWithBestProvider(searchUrl, { jsRender: true, premiumProxy: true })
-              sourceCostUsd += scraped.cost ?? 0
+              const snap = await fetchCheckpointedSnapshot(
+                { url: searchUrl, scope: { brokerageId: market.brokerage_id ?? null, marketId: market.id, purpose: "zillow_behavior" }, jsRender: true, premiumProxy: true, maxPages: 1 },
+                { ledgerClient: supabase, spendGate: territorySpendGate, tickBudget: pageFetchBudget },
+              )
+              sourceCostUsd += snap.costUsd
               await bookSourceSpend({
-                source: site, cost: scraped.cost ?? 0, brokerageId: market.brokerage_id,
-                marketId: market.id, providerOverride: scraped.provider,
+                source: site, cost: snap.costUsd, brokerageId: market.brokerage_id,
+                marketId: market.id, providerOverride: snap.provider,
               })
+              if (snap.status !== "fetched_changed") {
+                // unchanged / not_modified / skipped_interval are the checkpoint WORKING; a hold or a failure is said.
+                if (!["unchanged", "not_modified", "skipped_interval"].includes(snap.status)) results.errors.push(`Property search ${site} for ${market.name}: ${snap.status} — ${snap.reason}`)
+                continue
+              }
 
-              if (scraped.ok && scraped.html) {
+              for (const pageHtml of snap.html) {
                 // Same page yields BOTH online behaviors: FSBO sellers
                 // (parsePropertySearchResults) AND saved-search/favorited buyers
                 // (parseBuyerSavedSearches). Both are filtered by the viability gate.
-                const sellerRecords = parsePropertySearchResults(scraped.html, site, market)
-                const buyerRecords = parseBuyerSavedSearches(scraped.html, site, market)
+                const sellerRecords = parsePropertySearchResults(pageHtml, site, market)
+                const buyerRecords = parseBuyerSavedSearches(pageHtml, site, market)
                 // Expired listings are sourced from BatchData (the 'expired' motivation trigger),
                 // not scraped from portal HTML — see the BatchData block below.
-                const siteRecords = [...sellerRecords, ...buyerRecords]
-                sourceItemsFound += siteRecords.length
+                const parsedRecords = [...sellerRecords, ...buyerRecords]
+                sourceItemsFound += parsedRecords.length
+                // Only records NOT committed inside the checkpoint's rescan window reach the producer.
+                const fresh = snap.selectNew(parsedRecords)
+                const siteRecords = fresh.records
 
                 // Rich page-level normalization (buyer + seller + investor intent, FSBO marker,
                 // property-alert profile, page meta). Computed ONCE per page and attached to every
@@ -560,7 +590,7 @@ export async function GET(request: Request) {
                 // parser. The per-record parsers still set the canonical intentType; this adds
                 // structured persona + matched phrases without overriding.
                 const { normalizeZenRowsHtml } = await import("@/lib/external/zenrows-normalizer")
-                const zen = normalizeZenRowsHtml(scraped.html)
+                const zen = normalizeZenRowsHtml(pageHtml)
                 for (const r of siteRecords) {
                   if (!r.intent) {
                     r.intent = {
@@ -588,14 +618,17 @@ export async function GET(request: Request) {
                   source:       "zillow_behavior",
                   sourceFamily: "property_search",
                   sourceChannel: site,
-                  // ZenRows returns a per-scrape cost (scraped.cost, metered above into
-                  // sourceCostUsd); the kernel spreads it across this site's records as
-                  // raw_scraped_leads.cost_per_record, same as the nextdoor/social call sites.
-                  batchCostUsd: scraped.cost ?? null,
+                  // The fetch's cost (snap.costUsd, metered above into sourceCostUsd) is spread across the
+                  // NEW records only (raw_scraped_leads.cost_per_record); a page with no new record books
+                  // no paid record (null — the request was booked once above, as a request).
+                  batchCostUsd: siteRecords.length > 0 && snap.html.length === 1 ? snap.costUsd : null,
                 })
                 sourceLeadsCreated += siteInserted
                 results.total_leads_created += siteInserted
                 results.total_leads_found += siteRecords.length
+                // The producer accepted the batch → the PROCESSED watermark moves and these records are remembered.
+                const committed = await snap.commit({ ok: true, forwarded: siteRecords })
+                if (!committed.persisted) results.errors.push(`Property search ${site} for ${market.name}: checkpoint not saved (${committed.error}) — the next tick re-reads; a replay is one observation`)
               }
             }
 
@@ -1122,15 +1155,29 @@ export async function GET(request: Request) {
           if (enabledSources.has("craigslist") && market.city) {
             // Lane 83A — Craigslist ANDs space-joined words; each lane now sends its own OR query
             // (`"by owner" | "fsbo" | …`) built from its resolved per-population keyword set.
+            // Wave 153 (lane 153G, row 55): the ZenRows HTML fallback rides the snapshot checkpoint (craigslist's terms hold it
+            // until a written agreement is recorded); `commit` moves its processed watermark after the producer accepted the batch.
+            const craigslistCheckpoint = {
+              ledgerClient: supabase, scope: { brokerageId: market.brokerage_id ?? null, marketId: market.id }, tickBudget: pageFetchBudget,
+              spendGate: (estimateUsd: number) => {
+                const cap = market.monthly_budget_usd ?? 100
+                const spent = (market.spend_this_month ?? 0) + territorySpendUsd + sourceCostUsd
+                return spent + estimateUsd <= cap ? { allowed: true, reason: `within ${market.name}'s monthly budget` } : { allowed: false, reason: `${market.name}'s monthly budget would be exceeded ($${spent.toFixed(2)} + $${estimateUsd} of $${cap})` }
+              },
+            }
             const forSale = await sourceCraigslist(
-              market.city, renderKeywordQuery("craigslist_fsbo", kw.clForSale.terms), socialMarket,
+              market.city, renderKeywordQuery("craigslist_fsbo", kw.clForSale.terms), socialMarket, craigslistCheckpoint,
             )
             sourceCostUsd += forSale.cost
+            if (forSale.held) results.errors.push(`Craigslist fallback for ${market.name}: ${forSale.held}`)
             await insertSocial(forSale.records, "craigslist", "social_intent", forSale.cost)
+            await forSale.commit(true)
             // Buyer intent: "housing wanted" / ISO posts.
-            const wanted = await sourceCraigslistWanted(market.city, socialMarket, renderKeywordQuery("craigslist_wanted", kw.clWanted.terms))
+            const wanted = await sourceCraigslistWanted(market.city, socialMarket, renderKeywordQuery("craigslist_wanted", kw.clWanted.terms), craigslistCheckpoint)
             sourceCostUsd += wanted.cost
+            if (wanted.held) results.errors.push(`Craigslist wanted fallback for ${market.name}: ${wanted.held}`)
             await insertSocial(wanted.records, "craigslist_wanted", "social_intent", wanted.cost)
+            await wanted.commit(true)
           }
 
           // ── Google phrase intent (Apify) — buyer + seller searches ───────────
@@ -1281,10 +1328,24 @@ export async function GET(request: Request) {
           // SEPARATELY per real provider below (not folded into sourceCostUsd) so the "apify_social"
           // composite ledger entry after this block never double-counts ZenRows/Zyte spend.
           if (enabledSources.has("realty_chatter") && market.city && market.state) {
+            // Wave 153 (lane 153G, row 55): each page rides its snapshot checkpoint (robots, terms, this territory's
+            // budget, the run's page-fetch budget, the digest) — see lib/lead-pipeline/social-sourcer.ts.
+            const chatterSpendGate = (estimateUsd: number) => {
+              const cap = market.monthly_budget_usd ?? 100
+              const spent = (market.spend_this_month ?? 0) + territorySpendUsd + sourceCostUsd + realtyChatterCostUsd
+              return spent + estimateUsd <= cap
+                ? { allowed: true, reason: `within ${market.name}'s monthly budget` }
+                : { allowed: false, reason: `${market.name}'s monthly budget would be exceeded ($${spent.toFixed(2)} + $${estimateUsd} of $${cap})` }
+            }
             for (const site of ["zillow", "realtor", "homes"] as const) {
-              const chatter = await sourceRealtySiteChatter(site, { city: market.city, state: market.state })
+              const chatter = await sourceRealtySiteChatter(site, { city: market.city, state: market.state }, {
+                ledgerClient: supabase, scope: { brokerageId: market.brokerage_id ?? null, marketId: market.id }, spendGate: chatterSpendGate, tickBudget: pageFetchBudget,
+              })
+              if (chatter.held) results.errors.push(`Realty chatter ${site} for ${market.name}: ${chatter.held}`)
               realtyChatterCostUsd += chatter.cost
-              await insertSocial(chatter.records, `${site}_chatter`, "social_intent", chatter.cost, true)
+              await insertSocial(chatter.records, `${site}_chatter`, "social_intent", chatter.records.length > 0 ? chatter.cost : null, true)
+              // The producer accepted the batch → the processed watermark moves (a throw above leaves it for re-processing).
+              await chatter.commit(true)
               if (chatter.cost > 0) {
                 await bookSourceSpend({
                   source: `${site}_chatter`, cost: chatter.cost, brokerageId: market.brokerage_id,

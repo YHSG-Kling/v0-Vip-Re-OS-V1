@@ -103,6 +103,80 @@ console.log("\n── §bundle · the Remotion bundle graph resolves no tsconfig
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+console.log("\n── §shadow · a bare package name never binds to the repo's own top-level folder of that name ──")
+// WAVE 153 (lane 153J) — THE "REMOTION ERRORS" OF ROW 96, ROOT-CAUSED. The repo has a top-level remotion/ folder AND imports
+// the npm package `remotion` by its bare name (52 files, remotion/index.ts among them). With "baseUrl" at the repo root, the
+// TypeScript resolver tries <root>/remotion BEFORE node_modules, so `import { registerRoot } from "remotion"` in
+// remotion/index.ts binds to remotion/index.ts ITSELF ("declares 'registerRoot' locally, but it is not exported") and every
+// AbsoluteFill / Sequence / interpolate import is TS2305. MEASURED: the same 88-root scoped program gave 196 errors WITH
+// baseUrl and 0 WITHOUT it (tsc --traceResolution: 'remotion' → <root>/remotion/index.ts vs node_modules/remotion/dist/cjs/
+// index.d.ts). The repo tsconfig has no baseUrl ("@/*" is a paths mapping), so the whole-project check was always clean and
+// the errors lived only in lane scratch configs that added one. The package import is never renamed; instead the RULE is held
+// with the REAL resolver under every committed tsconfig, and the shadowed set is DERIVED (a top-level folder whose name is an
+// installed package), not pinned to "remotion". Next's webpack honors a tsconfig baseUrl too, so a committed one would break
+// more than tsc.
+{
+  const ts = (await import("typescript")).default
+  const { readdirSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs")
+  const { tmpdir } = await import("node:os")
+  const SKIP = new Set(["node_modules", ".next", ".git", ".claude", ".vercel", "coverage"])
+  const shadowedIn = (base: string) => readdirSync(base, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith(".") && d.name !== "node_modules" && existsSync(join(base, "node_modules", d.name, "package.json")))
+    .map((d) => d.name)
+  const configsIn = (base: string) => {
+    const out: string[] = []
+    const walk = (dir: string, depth: number) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) { if (!SKIP.has(e.name) && depth < 4) walk(join(dir, e.name), depth + 1) }
+        else if (/^(ts|js)config(\..+)?\.json$/.test(e.name)) out.push(join(dir, e.name))
+      }
+    }
+    walk(base, 0)
+    return out
+  }
+  const optionsOf = (configPath: string, extra: Record<string, unknown> = {}) => {
+    const read = ts.readConfigFile(configPath, ts.sys.readFile)
+    const host = { ...ts.sys, readDirectory: () => [] as string[] } // options only — never enumerate the tree
+    const parsed = ts.parseJsonConfigFileContent(read.config ?? {}, host, dirname(configPath), extra as never, configPath)
+    return parsed.options
+  }
+  /** Where does `name`, imported from a file inside <base>/<name>/, bind under these options? */
+  const bindOf = (name: string, base: string, options: object) =>
+    ts.resolveModuleName(name, join(base, name, "index.ts"), options as never, ts.sys).resolvedModule?.resolvedFileName ?? "(unresolved)"
+  const binds = (name: string, base: string, options: object) => /[\\/]node_modules[\\/]/.test(bindOf(name, base, options))
+
+  const shadowed = shadowedIn(root)
+  const configs = configsIn(root)
+  console.log(`  denominator: ${configs.length} committed ts/jsconfig file(s) × ${shadowed.length} shadowed package name(s) [${shadowed.join(", ") || "none"}]`)
+  const offenders: string[] = []
+  for (const cfg of configs) for (const name of shadowed) {
+    const opts = optionsOf(cfg)
+    if (!binds(name, root, opts)) offenders.push(`${relative(root, cfg)}: "${name}" → ${relative(root, bindOf(name, root, opts))}`)
+  }
+  check("under EVERY committed tsconfig, each shadowed package name binds to node_modules — never to the repo folder of that name",
+    configs.length > 0 && offenders.length === 0, offenders.join("; "))
+  check("CONTROL (live): injecting baseUrl = repo root makes each shadowed name bind to the repo's own folder — the hazard is real today",
+    shadowed.every((name) => !binds(name, root, optionsOf(join(root, "tsconfig.json"), { baseUrl: root }))),
+    shadowed.map((n) => `${n} → ${relative(root, bindOf(n, root, optionsOf(join(root, "tsconfig.json"), { baseUrl: root })))}`).join("; "))
+  // CONTROL (synthetic): the finder must flag the defect even if the repo's folder were ever renamed (no waypoint on "remotion").
+  const tmp = mkdtempSync(join(tmpdir(), "shadow-ctrl-"))
+  try {
+    mkdirSync(join(tmp, "node_modules", "fakepkg"), { recursive: true })
+    writeFileSync(join(tmp, "node_modules", "fakepkg", "package.json"), JSON.stringify({ name: "fakepkg", version: "1.0.0", types: "index.d.ts" }))
+    writeFileSync(join(tmp, "node_modules", "fakepkg", "index.d.ts"), "export declare const real: 1\n")
+    mkdirSync(join(tmp, "fakepkg"))
+    writeFileSync(join(tmp, "fakepkg", "index.ts"), 'import { real } from "fakepkg"\nexport { real }\n')
+    writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({ compilerOptions: { moduleResolution: "bundler", module: "esnext", baseUrl: "." } }))
+    writeFileSync(join(tmp, "tsconfig.clean.json"), JSON.stringify({ compilerOptions: { moduleResolution: "bundler", module: "esnext" } }))
+    const sShadowed = shadowedIn(tmp)
+    check("CONTROL (synthetic): the derivation finds a top-level folder named after an installed package", sShadowed.join() === "fakepkg")
+    check("CONTROL (synthetic): a config WITH baseUrl at the root is flagged; the same config without it passes",
+      !binds("fakepkg", tmp, optionsOf(join(tmp, "tsconfig.json"))) && binds("fakepkg", tmp, optionsOf(join(tmp, "tsconfig.clean.json"))))
+  } finally { rmSync(tmp, { recursive: true, force: true }) }
+  void statSync
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 console.log("\n── §start · where the narration audio starts, derived from each composition's source ──")
 /** The in-frame voiceover <Audio> and whether it sits inside an open <Sequence from=…>. */
 function audioPlacement(src: string): "root" | "nested" | null {

@@ -26,6 +26,7 @@ import { HEALING_PROPOSAL_STATUSES, type HealingProposalStatus } from "@/lib/ker
 // queue, because activating a provider is the one provider-config change the healer may NEVER make (classifyProviderConfigChange).
 import { PROVIDER_ACTIVATION, PROVIDER_FIELD_SCORECARD, PROVIDER_RECOMMENDATION, PROVIDER_SELECTION_STATUS, activationVerdict, providerFieldMatrix, providerGapMatrix, type ScorecardProvider } from "@/lib/providers/provider-scorecard"
 import { MATCHED_COHORT_DESIGN, projectMonthlyWaterfall } from "@/lib/providers/provider-pilot"
+import { NEEDLE_PLAYBOOKS, providerCapabilityMatrix } from "@/lib/providers/provider-capability-matrix"
 import { simulateProviderPilot } from "@/lib/providers/provider-pilot"
 // Wave 151 (lane 151F): the owner's platform acquisition caps (null = stop before spend), the internal acquisition economics and
 // each provider's TENANT-connectability (route B) sit beside the provider stack — one console for what the platform may spend,
@@ -117,6 +118,7 @@ export default async function ConnectorHealingPage() {
   // field-by-field gap matrix and the matched-cohort DESIGN with its labelled-variable waterfall (a projection, never a quote).
   const selection = PROVIDER_SELECTION_STATUS
   const gapMatrix = providerGapMatrix()
+  const capabilityMatrix = providerCapabilityMatrix()
   const cohortDesign = MATCHED_COHORT_DESIGN
   const waterfall = projectMonthlyWaterfall({ field: "owner_email" })
   // C39 — the matched pilot is a DESIGN. After the platform gate above, the design check runs over whatever cohort rows
@@ -360,6 +362,38 @@ export default async function ConnectorHealingPage() {
                 ))}
               </tbody>
             </table>
+          </CardContent>
+        </Card>
+        {/* Wave 153 (153G): THE PROVIDER CHOICES — every provider the owner can choose, its connector routes, producer door,
+            preview, documented incremental support and honest state per route (the same function §9 of the doc renders). */}
+        <Card>
+          <CardContent className="p-0 overflow-x-auto">
+            <h3 className="p-3 font-medium">Provider choices — connector, producer door, preview, incremental support, validation and honest state (no provider is selected)</h3>
+            <table className="w-full text-xs">
+              <thead className="text-left text-muted-foreground">
+                <tr><th className="p-2">Provider</th><th className="p-2">Connector</th><th className="p-2">Acquisition</th><th className="p-2">Producer door</th><th className="p-2">Preview before paid pull</th><th className="p-2">Incremental (documented)</th><th className="p-2">Validation</th><th className="p-2">Honest state</th></tr>
+              </thead>
+              <tbody>
+                {capabilityMatrix.map((r) => (
+                  <tr key={r.provider} className="border-t align-top">
+                    <td className="p-2 font-medium">{r.label}</td>
+                    <td className="p-2">{r.connector}</td>
+                    <td className="p-2">{r.kinds.join(", ")}</td>
+                    <td className="p-2">{r.producer.door.replace(/_/g, " ")} — {r.producer.path}</td>
+                    <td className="p-2">{r.preview.kind.replace(/_/g, " ")}: {r.preview.note}</td>
+                    <td className="p-2">{r.incremental}</td>
+                    <td className="p-2 text-muted-foreground">{r.validation}</td>
+                    <td className="p-2"><Badge variant={r.states.platform === "simulated" || r.states.tenant === "simulated" ? "secondary" : "outline"}>{r.honestState}</Badge></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="space-y-1 p-3 text-xs">
+              <p className="font-medium">Needle-in-a-haystack playbooks (run by existing survivors)</p>
+              {NEEDLE_PLAYBOOKS.map((p) => (
+                <p key={p.key}><span className="font-medium">{p.combination}</span> — {p.output}. <span className="text-muted-foreground">Never: {p.neverClaims}.</span></p>
+              ))}
+            </div>
           </CardContent>
         </Card>
         <Card>

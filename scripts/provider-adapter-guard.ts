@@ -110,7 +110,12 @@ function censusSignals(files: Array<{ path: string; src: string }>): CensusSigna
   // TENANT's own provider account — no client, no key, no egress (test:provider-waterfall F and test:tenant-provider-connections A
   // prove "no transport" on stripped source). Its one provider with a transport (batchdata) is already declared by its own adapter;
   // the dormant ones have no route row by construction. Own proof: test:tenant-provider-connections.
-  const GENERIC = new Set(["accounting", "calendar", "email", "esign", "messaging", "payment", "content-safety", "dispatch", "inbound-router", "index", "mailing-cass-gate", "outbound-sender", "tenancy-matrix", "webhook-contract", "permissions", "channel-provider-matrix", "provider-scorecard", "provider-pilot", "dormant-adapters", "tenant-provider-connections"])
+  // Wave 153 (lane 153G): provider-capability-matrix is DATA derived from the registries above (no client, no key, no egress —
+  // own proof test:provider-gap-matrix §J); scrape-checkpoint is the transport-agnostic checkpoint IN FRONT of the ZenRows / Zyte
+  // picker (both already declared by their own adapters) — it holds no vendor key and reaches a vendor only through the picker;
+  // its one direct request is the target site's free robots.txt (RFC 9309), no vendor relationship (like `rss`). Own proof:
+  // test:scrapers §Wave 153.
+  const GENERIC = new Set(["provider-capability-matrix", "scrape-checkpoint","accounting", "calendar", "email", "esign", "messaging", "payment", "content-safety", "dispatch", "inbound-router", "index", "mailing-cass-gate", "outbound-sender", "tenancy-matrix", "webhook-contract", "permissions", "channel-provider-matrix", "provider-scorecard", "provider-pilot", "dormant-adapters", "tenant-provider-connections"])
   for (const { path, src } of files) {
     const p = path.replace(/^\.\//, "")
     const s = stripComments(src)

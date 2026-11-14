@@ -182,6 +182,16 @@ async function main() {
     check("each refusal of the person path names its rule (handle alone · not first-person · a name alone · the page's terms)", /handle alone/.test(why) && /not a first-person statement/.test(why) && /a name alone never joins/.test(why) && /terms do not permit/.test(why), why)
     check("a stale request is dropped, not stored", /days ago/.test(r.blindSpots.join()) && !rows.some((x) => /7703/.test(String(x.raw_data?.url))))
     check("an EXISTING Contact by their own published email → THE arbiter (respondToLifeChangeSignal), NO new row", responds.length === 1 && responds[0].subject?.id === CONTACT && responds[0].signalType === "buying_intent" && !rows.some((x) => x.email === "known.contact@example.com") && r.actions.some((x) => x.kind === "arbiter"))
+    // Wave 153 (lane 153G, directive G3 proof): a person candidate WITHOUT grounding is refused even when its words would pass
+    // every other gate — a first-person request with a published email but NO openable URL, and one with a URL but nothing
+    // quotable. Neither may become a person row (nor any row): grounded evidence (URL + date + quote) comes first.
+    const ungroundedNoUrl = norm(page({ id: "u1", url: null, title: "Need an agent", publishedDate: daysAgo(2), text: "I'm looking for a real estate agent in Pensacola. Email me at no.url.person@example.com.", highlights: ["I'm looking for a real estate agent in Pensacola."] }))
+    const ungroundedNoQuote = norm(page({ id: "u2", url: "https://pensacola.craigslist.org/hsw/d/blank/7709.html", title: null, publishedDate: daysAgo(2), text: "", highlights: [] }))
+    const dbU = freshDb()
+    const rU = await quiet(() => request.runPublicRequestPlay(dbU, { market, hunt: null, results: [ungroundedNoUrl, ungroundedNoQuote], now: NOW }, { ingest: ingestRawSourceBatch as never }))
+    const rowsU = dbU.tables.raw_scraped_leads as any[]
+    check("ADVERSE (G3) · an ungrounded person candidate is refused: no openable URL or nothing quotable → dropped, NO person row, NO row at all, nothing ingested", rowsU.length === 0 && !rowsU.some((x) => x.email === "no.url.person@example.com") && rU.actions.length === 0 && /no openable URL or nothing quotable/.test(rU.blindSpots.join()), JSON.stringify({ rows: rowsU.length, blind: rU.blindSpots }))
+    check("POSITIVE CONTROL (G3): the SAME words on an openable, dated page DO become the one person row (q1 above) — the grounding is what refused it", persons.length === 1)
     const src = code("lib/acquisition-plays/public-request.ts")
     const OUTBOUND = /\b(dispatch(Email|Sms|DirectMail)?|sendSms|sendEmail|sendMessage|twilio|createDraft|postReply|replyTo)\s*\(/
     check("the module contains NO outbound dispatch (stripped source)", !OUTBOUND.test(src))

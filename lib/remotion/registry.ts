@@ -26,7 +26,10 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { compositionSeconds } from "@/lib/remotion/composition-geometry"
-import { consumesVoiceover } from "@/lib/remotion/content-contract"
+import { consumesVoiceover, missingContentProps } from "@/lib/remotion/content-contract"
+import {
+  MAX_AUTO_REQUEUE_ATTEMPTS, shouldAutoRequeueFailedRender, isStalledRender, stalledRenderError,
+} from "@/lib/remotion/render-decision"
 import { didRenderUsdForSeconds, elevenLabsUsdForChars } from "@/lib/video/realism-profile"
 import { wordsForSeconds, AVERAGE_CHARS_PER_WORD } from "@/lib/video/duration-model"
 
@@ -358,4 +361,93 @@ export async function recordRenderCompleted(args: {
     }
   }
   return { ok: true }
+}
+
+interface RenderSweepOutcome {
+  /** Rows this sweep moved, with why. */
+  moved:   Array<{ id: string; reason: string }>
+  /** Rows it looked at and left, with why — a skip is never silent. */
+  skipped: Array<{ id: string; reason: string }>
+  /** A refused read: REPORTED, never read as an empty queue (CLAUDE.md §3). */
+  error?:  string
+}
+
+/**
+ * DEAD-CLAIM RECOVERY (wave 153, lane 153J) — called by the composition-render-queue
+ * tick BEFORE the bounded requeue, so a recovered claim is retried in the same tick.
+ *
+ * A `rendering` row whose claim (m933 `claimed_at`, stamped by trigger) is older than
+ * RENDER_STALL_AFTER_MS — or, with no stamp, whose `created_at` is older than
+ * LEGACY_RENDER_STALL_AFTER_MS — is a render whose function was killed. It is failed
+ * with stalledRenderError (census bucket `render_stalled`, transient). The flip is
+ * guarded on the state AND the claim stamp it was judged on, so a row re-claimed in
+ * between matches nothing; every update is `.select()`ed and counted.
+ *
+ * Before m933 is applied the `claimed_at` read is refused; the sweep then reports the
+ * refusal and moves nothing — it degrades this step, never the queue drain beneath it.
+ */
+export async function recoverStalledRenders(svc: any, opts: { now?: Date; limit?: number } = {}): Promise<RenderSweepOutcome> {
+  const now = opts.now ?? new Date()
+  const out: RenderSweepOutcome = { moved: [], skipped: [] }
+  const { data, error } = await svc.from("remotion_composition_renders")
+    .select("id, composition_id, claimed_at, created_at")
+    .eq("render_status", "rendering")
+    .order("created_at", { ascending: true })
+    .limit(opts.limit ?? 50)
+  if (error) return { ...out, error: `stalled-render read refused: ${error.message}` }
+  for (const r of (data ?? []) as Array<{ id: string; composition_id: string; claimed_at: string | null; created_at: string | null }>) {
+    if (!isStalledRender(r, now)) { out.skipped.push({ id: r.id, reason: "claim is younger than the stall horizon — may still be rendering" }); continue }
+    let q = svc.from("remotion_composition_renders")
+      .update({ render_status: "failed", error_message: stalledRenderError(r, now), completed_at: now.toISOString() })
+      .eq("id", r.id)
+      .eq("render_status", "rendering")
+    q = r.claimed_at ? q.eq("claimed_at", r.claimed_at) : q.is("claimed_at", null)
+    const { data: flipped, error: flipErr } = await q.select("id")
+    if (flipErr) out.skipped.push({ id: r.id, reason: `stall flip refused: ${flipErr.message}` })
+    else if (!flipped || flipped.length === 0) out.skipped.push({ id: r.id, reason: "finished or re-claimed between the read and the flip" })
+    else out.moved.push({ id: r.id, reason: `dead claim (${r.composition_id}) → failed render_stalled` })
+  }
+  return out
+}
+
+/**
+ * BOUNDED AUTO-REQUEUE (wave 57, moved here from app/api/cron/composition-render-queue/route.ts
+ * by wave 153 lane 153J so it can be driven by a proof; the cron is its one caller).
+ *
+ * THE POISON WINDOW IT CLOSES. The cron read the 5 OLDEST `failed` rows with no
+ * filter, so five rows whose retries were spent sat at the head of that window
+ * forever and no newer transient failure was ever retried again. Spent rows are now
+ * excluded in the query (retry_count is NOT NULL DEFAULT 0, m622), and terminal ones
+ * (census `retry: "terminal"`) are refused by shouldAutoRequeueFailedRender without
+ * spending budget; the window is wide enough that the few terminal rows it can still
+ * hold cannot crowd out a retryable one.
+ */
+export async function requeueFailedRenders(svc: any, opts: { window?: number } = {}): Promise<RenderSweepOutcome> {
+  const out: RenderSweepOutcome = { moved: [], skipped: [] }
+  const { data, error } = await svc.from("remotion_composition_renders")
+    .select("id, composition_id, render_status, retry_count, input_props, error_message")
+    .eq("render_status", "failed")
+    .lt("retry_count", MAX_AUTO_REQUEUE_ATTEMPTS)
+    .order("created_at", { ascending: true })
+    .limit(opts.window ?? 25)
+  if (error) return { ...out, error: `failed-render read refused: ${error.message}` }
+  for (const f of (data ?? []) as Array<{
+    id: string; composition_id: string; render_status: string; retry_count: number | null
+    input_props: Record<string, unknown> | null; error_message: string | null
+  }>) {
+    const decision = shouldAutoRequeueFailedRender(f, missingContentProps(f.composition_id, f.input_props ?? {}))
+    if (!decision.requeue) { out.skipped.push({ id: f.id, reason: decision.reason }); continue }
+    // Guarded on 'failed' AND the retry_count it was judged on, so a row the Asset
+    // Manager (or another tick) already claimed or requeued matches zero rows.
+    const { data: updated, error: rqErr } = await svc.from("remotion_composition_renders")
+      .update({ render_status: "queued", retry_count: (f.retry_count ?? 0) + 1, error_message: null })
+      .eq("id", f.id)
+      .eq("render_status", "failed")
+      .eq("retry_count", f.retry_count ?? 0)
+      .select("id")
+    if (rqErr) out.skipped.push({ id: f.id, reason: `update refused: ${rqErr.message}` })
+    else if (!updated || updated.length === 0) out.skipped.push({ id: f.id, reason: "already claimed by another tick/action" })
+    else out.moved.push({ id: f.id, reason: decision.reason })
+  }
+  return out
 }

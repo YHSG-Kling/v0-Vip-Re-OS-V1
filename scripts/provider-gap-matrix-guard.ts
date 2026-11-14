@@ -34,6 +34,12 @@
  *   H  THE COHORT DESIGN — seven disjoint cohorts (hard_identity assigned first), constants, a blinded sample share in (0,1),
  *      the directive's six questions each with a basis, explicit unknowns, the arms = R9's pair + the two dormant survivors.
  *   I  OWNERSHIP — the proof has an accountable manager (MAINTENANCE_DOMAINS.provider_gap_matrix).
+ *   J  THE CAPABILITY MATRIX (wave 153, lane 153G — directive G1) — every provider G1 names has a thirteen-column row; every
+ *      code anchor is a real DECLARATION in stripped, string-blanked source (an import or a tombstone is not one — controlled);
+ *      every proof is registered and run by the chain; every honest state is RE-DERIVED here per route (no transport can never
+ *      read simulated — controlled; nothing reads ready without live evidence); the tenant-owned column follows the rulings
+ *      (built only where a transport takes a tenant key; RentCast and the scrapers stay platform-gated); Exa is both doors;
+ *      Datafiniti is unavailable with rights NOT READ; a count never claims contacts; every needle playbook is a real survivor.
  *
  * BLIND SPOTS (published): no vendor is called (every price is a published page figure or UNKNOWN; every hit rate ASSUMED); the
  * research execution proves the labelling, not RentCast's data; the engine's in-house-first order is read from stripped source,
@@ -68,6 +74,7 @@ async function renderers(): Promise<Renderers> {
   const { TENANT_ACQUISITION_PROVIDERS } = await import("../lib/providers/tenant-provider-connections")
   const { VERSIUM_PRODUCT_MATRIX, VERSIUM_REACH_MCP } = await import("../lib/external/versium-client")
   const els = await import("../lib/property/external-listings-search")
+  const cm = await import("../lib/providers/provider-capability-matrix")
   const label: Record<string, string> = { rentcast: "RentCast", versium: "Versium", batchdata: "BatchData", peopledata: "PeopleData", tracerfy: "Tracerfy", datazapp: "DataZapp", propertyradar: "PropertyRadar", data_axle: "Data Axle" }
   const providers = Object.keys(sc.PROVIDER_ACTIVATION) as Array<keyof typeof sc.PROVIDER_ACTIVATION>
   const routesNaming = (p: string) => Object.entries(CONTACT_PROVIDER_ROUTES).filter(([, rows]) => rows.some((r) => r.provider === p)).map(([cap]) => cap)
@@ -141,6 +148,18 @@ async function renderers(): Promise<Renderers> {
       out.push("Variable labels:", "", ...Object.entries(pilot.projectMonthlyWaterfall().variableLabels).map(([k, v]) => `- \`${k}\` — ${v}`))
       return out.join("\n")
     },
+    // Wave 153 (lane 153G, directive G1): the thirteen-column capability matrix + the needle playbooks.
+    "capability-matrix": () => table(
+      ["Provider", "1 · Connector (platform / tenant-owned)", "2 · Endpoint / contract", "3 · Acquisition", "4 · Auth / secret ownership", "5 · Producer entry", "6 · Field mapping / provenance", "7 · Preview / count before paid pull", "8 · Freshness / dedup", "9 · Incremental (documented)", "10 · Rate limits / retries / webhooks / idempotency / cost", "11 · Rights (SaaS / AI / storage / photo)", "12 · Validation evidence", "13 · Honest state"],
+      cm.providerCapabilityMatrix().map((r) => [
+        `**${r.label}**`, r.connector, r.endpoint, r.kinds.join(", "), r.auth,
+        `${r.producer.door}${r.producer.anchor ? ` — \`${r.producer.anchor.module}\` ${r.producer.anchor.symbol}` : ""}: ${r.producer.path}`,
+        `${r.mapping.anchor ? `\`${r.mapping.anchor.module}\` ${r.mapping.anchor.symbol} — ` : ""}${r.mapping.provenance}`,
+        `${r.preview.kind}${r.preview.anchor ? ` (\`${r.preview.anchor.module}\` ${r.preview.anchor.symbol})` : ""}: ${r.preview.note}`,
+        r.freshnessDedup, r.incremental, r.limitsCost, r.rights, r.validation, `**${r.honestState}**`,
+      ]),
+    ),
+    "needle-playbooks": () => table(["Playbook", "Combination", "Providers", "Survivor that runs it", "Output", "Never claims"], cm.NEEDLE_PLAYBOOKS.map((p) => [p.key, p.combination, p.providers.join(", "), `\`${p.survivor.module}\` ${p.survivor.symbol}`, p.output, p.neverClaims])),
   }
 }
 
@@ -375,7 +394,7 @@ async function main() {
 
   section("G. LICENSE spelling")
   {
-    const FILES = [DOC, "lib/providers/provider-scorecard.ts", "lib/providers/provider-pilot.ts", "lib/providers/dormant-adapters.ts", "lib/market-reports/contract.ts", "lib/market-reports/research.ts", "lib/market-reports/market-twin.ts", "lib/market-reports/producer.ts", "lib/property/external-listings-search.ts", "lib/buyer-search/external-match.ts", "scripts/provider-gap-matrix-guard.ts", "scripts/provider-scorecard-guard.ts", "scripts/market-twin-guard.ts"]
+    const FILES = [DOC, "lib/providers/provider-scorecard.ts", "lib/providers/provider-pilot.ts", "lib/providers/dormant-adapters.ts", "lib/market-reports/contract.ts", "lib/market-reports/research.ts", "lib/market-reports/market-twin.ts", "lib/market-reports/producer.ts", "lib/property/external-listings-search.ts", "lib/buyer-search/external-match.ts", "scripts/provider-gap-matrix-guard.ts", "scripts/provider-scorecard-guard.ts", "scripts/market-twin-guard.ts", "lib/providers/provider-capability-matrix.ts"]
     const BRITISH = /licen[c]e/i
     const hits = FILES.filter((f) => BRITISH.test(raw(f).replace(/licen\[c\]e/g, "")))
     check(`LICENSE, never the British spelling, in the doc and the lane's modules and proofs (${FILES.length} files)`, hits.length === 0, hits.join(", "))
@@ -399,6 +418,67 @@ async function main() {
     check("explicit unknowns are listed (≥ 6) and the measures cover license, storage rights and read/write/update capabilities", d.unknowns.length >= 6 && d.measures.some((m) => /LICENSE/.test(m)) && d.measures.some((m) => /storage/.test(m)) && d.measures.some((m) => /read \/ write \/ update/.test(m)))
     const sim = pilot.simulateProviderPilot
     check("the executable simulation names the design it runs the half of", typeof sim === "function" && /design: MATCHED_COHORT_DESIGN\.id/.test(code("lib/providers/provider-pilot.ts")))
+  }
+
+  section("J. the capability matrix — every choosable provider, every anchor real, every state derived (wave 153, lane 153G)")
+  {
+    const cm = await import("../lib/providers/provider-capability-matrix")
+    const { SNAPSHOT_TRANSPORT_FACTS } = await import("../lib/providers/scrape-checkpoint")
+    const { PROVIDER_TENANCY } = await import("../lib/providers/tenancy-matrix")
+    const { TENANT_ACQUISITION_PROVIDERS } = await import("../lib/providers/tenant-provider-connections")
+    const rows = cm.providerCapabilityMatrix()
+    const DIRECTIVE = ["rentcast", "versium", "exa", "apify", "zyte", "zenrows", "batchdata", "tracerfy", "datazapp", "peopledata", "datafiniti", "data_axle", "propertyradar", "idxbroker"]
+    const missingRows = DIRECTIVE.filter((p) => !rows.some((r) => r.provider === p))
+    check(`every provider directive G1 names has a row (${DIRECTIVE.length}, incl. IDX / MLS) — plus the connected sources (${rows.length - DIRECTIVE.length})`, missingRows.length === 0, missingRows.join(", "))
+    // An ANCHOR is a DECLARATION in stripped, string-blanked source — a tombstone, an import or a quoted name is not one (CLAUDE.md §2).
+    const anchorProblem = (a: { module: string; symbol: string } | null): string | null => {
+      if (!a) return null
+      if (!existsSync(join(ROOT, a.module))) return `${a.module} does not exist`
+      const s = blankStrings(code(a.module))
+      return new RegExp(`\\b(?:function\\*?|const|let|var|class)\\s+${a.symbol.replace(/\$/g, "\\$")}\\b`).test(s) ? null : `${a.module} declares no ${a.symbol}`
+    }
+    const anchors = rows.flatMap((r) => [r.transport, r.producer.anchor, r.mapping.anchor, r.preview.anchor].filter((a): a is { module: string; symbol: string } => !!a).map((a) => ({ who: r.provider, a })))
+    const badAnchors = anchors.map(({ who, a }) => { const p = anchorProblem(a); return p ? `${who}: ${p}` : null }).filter(Boolean)
+    check(`every code anchor (${anchors.length}: transport / producer / mapping / preview) is a real declaration in stripped source`, badAnchors.length === 0, badAnchors.join(" | "))
+    check("POSITIVE CONTROL: a missing symbol, an IMPORTED-only name and a missing module are all refused as anchors", anchorProblem({ module: "lib/providers/scrape-checkpoint.ts", symbol: "noSuchSymbol153" }) !== null && anchorProblem({ module: "lib/providers/scrape-checkpoint.ts", symbol: "isRobotsAllowed" }) !== null && anchorProblem({ module: "lib/providers/nope-153.ts", symbol: "x" }) !== null && anchorProblem({ module: "lib/providers/scrape-checkpoint.ts", symbol: "fetchCheckpointedSnapshot" }) === null)
+    const pkg = JSON.parse(raw("package.json")) as { scripts: Record<string, string> }
+    const badProofs = rows.filter((r) => r.proofScript).filter((r) => { const cmd = pkg.scripts[r.proofScript!] ?? ""; const file = cmd.match(/scripts\/[\w.-]+\.ts/)?.[0]; return !file || !existsSync(join(ROOT, file)) || !pkg.scripts.guard.includes(`npm run ${r.proofScript}`) }).map((r) => `${r.provider}: ${r.proofScript}`)
+    check("every row's validation proof is a registered package.json script whose file exists and which the guard chain runs", badProofs.length === 0, badProofs.join(", "))
+    // THE HONEST STATE, re-derived here by the rule (never read off the row): no transport → license / unavailable; no proof →
+    // unavailable; a dormant survivor's platform route → awaiting key; else simulated; ready only with live evidence (none).
+    const expectState = (r: (typeof rows)[number], route: "platform" | "tenant", over: { transport?: null } = {}) => {
+      const transport = "transport" in over ? over.transport : r.transport
+      const act = (sc.PROVIDER_ACTIVATION as Record<string, { state: string } | undefined>)[r.provider]
+      if (!transport) return act?.state === "dormant_pending_rights" ? "awaiting_license" : "unavailable"
+      if (!r.proofScript) return "unavailable"
+      if (route === "platform" && act?.state === "dormant_survivor") return "awaiting_key"
+      return "simulated"
+    }
+    const stateMismatch = rows.filter((r) => (r.states.platform !== null && r.states.platform !== expectState(r, "platform")) || (r.states.tenant !== null && r.states.tenant !== expectState(r, "tenant"))).map((r) => `${r.provider}: ${JSON.stringify(r.states)}`)
+    check("every honest state equals the rule re-derived from the registries (per route: platform / tenant-owned)", stateMismatch.length === 0, stateMismatch.join(" | "))
+    check("nothing reads READY (no live call with a real credential is on record) and only the five honest labels are used", rows.every((r) => r.states.platform !== "ready" && r.states.tenant !== "ready") && rows.every((r) => /^(platform|tenant-owned): (simulated|awaiting license|awaiting key|unavailable)( · tenant-owned: (simulated|awaiting license|awaiting key|unavailable))?$/.test(r.honestState)), rows.map((r) => r.honestState).join(" | "))
+    check("POSITIVE CONTROL: the same row with its transport removed can never read simulated (Zyte → unavailable, Tracerfy stays awaiting license)", expectState(rows.find((r) => r.provider === "zyte")!, "platform", { transport: null }) === "unavailable" && expectState(rows.find((r) => r.provider === "tracerfy")!, "platform") === "awaiting_license")
+    const empty = rows.flatMap((r) => (["connector", "endpoint", "auth", "freshnessDedup", "incremental", "limitsCost", "rights", "validation", "honestState"] as const).filter((k) => !String(r[k] ?? "").trim()).map((k) => `${r.provider}.${k}`).concat(r.kinds.length ? [] : [`${r.provider}.kinds`], r.producer.path.trim() ? [] : [`${r.provider}.producer`], r.preview.note.trim() ? [] : [`${r.provider}.preview`], r.mapping.provenance.trim() ? [] : [`${r.provider}.mapping`]))
+    check("all thirteen columns are filled for every row (an unknown is written as unknown / not read — never blank)", empty.length === 0, empty.join(", "))
+    const z = rows.find((r) => r.provider === "zyte")!, zr = rows.find((r) => r.provider === "zenrows")!
+    check("Zyte / ZenRows incremental column says NO cursor is documented and carries the documented conditional rule from SNAPSHOT_TRANSPORT_FACTS", /cursor: none/.test(z.incremental) && z.incremental.includes(SNAPSHOT_TRANSPORT_FACTS.zyte.conditionalRequests.how) && /cursor: none/.test(zr.incremental) && zr.incremental.includes(SNAPSHOT_TRANSPORT_FACTS.zenrows.conditionalRequests.how))
+    // The tenant-owned column follows the owner's rulings, not a wish: built only where a transport takes a tenant key.
+    const tenancyOf = (p: string) => PROVIDER_TENANCY.find((t) => t.provider === (["zyte", "zenrows", "apify"].includes(p) ? "scrapers" : p))
+    const tenantMismatch = rows.filter((r) => {
+      const built = /tenant-owned: built/.test(r.connector)
+      const catalogueBuilt = TENANT_ACQUISITION_PROVIDERS[r.provider]?.adapter.state === "transport_built"
+      const tenancyKey = tenancyOf(r.provider)?.models.includes("tenant_optional_key") ?? false
+      return built !== (catalogueBuilt || tenancyKey)
+    }).map((r) => r.provider)
+    check("the tenant-owned route reads 'built' exactly where the tenant catalogue has a transport or the tenancy model is tenant_optional_key (BatchData, IDX)", tenantMismatch.length === 0, tenantMismatch.join(", "))
+    check("RentCast and the scraper fleet keep the owner's PLATFORM-GATED ruling (tenant-owned: ruled out)", ["rentcast", "zyte", "zenrows", "apify"].every((p) => /tenant-owned: ruled out/.test(rows.find((r) => r.provider === p)!.connector)) && !(tenancyOf("rentcast")?.models.includes("tenant_optional_key")))
+    const exa = rows.find((r) => r.provider === "exa")!
+    check("Exa is BOTH: persons through THE ONE RawData door (grounded) and content / market to research — never the Lead door for content", exa.kinds.includes("person") && exa.kinds.includes("content") && exa.producer.door === "rawdata" && /grounded/.test(exa.producer.path) && /never the Lead door/.test(exa.producer.path))
+    const df = rows.find((r) => r.provider === "datafiniti")!
+    check("Datafiniti: no adapter → unavailable, rights NOT READ, its documented free count recorded as documented-not-built", df.states.platform === "unavailable" && df.transport === null && /NOT READ/.test(df.rights) && df.preview.kind === "documented_no_transport")
+    check("a preview that is a COUNT never claims contacts (Versium estimate / BatchData observed count)", ["versium", "batchdata"].every((p) => /count/i.test(rows.find((r) => r.provider === p)!.preview.note) && /(never contacts|not contacts|≠ delivered contacts)/.test(rows.find((r) => r.provider === p)!.preview.note)))
+    const badPlays = cm.NEEDLE_PLAYBOOKS.flatMap((p) => [anchorProblem(p.survivor), ...p.providers.filter((x) => !rows.some((r) => r.provider === x)).map((x) => `${p.key}: ${x} is not a matrix row`), p.neverClaims.trim() ? null : `${p.key}: no 'never claims'`]).filter(Boolean)
+    check(`every needle playbook (${cm.NEEDLE_PLAYBOOKS.length}) is run by a REAL survivor, composes matrix providers and states what it never claims`, cm.NEEDLE_PLAYBOOKS.length >= 3 && badPlays.length === 0, badPlays.join(" | "))
   }
 
   section("I. ownership")

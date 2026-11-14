@@ -34,6 +34,11 @@ export interface ZyteResponse {
   statusCode: number | null
   cost: number
   error: string | null
+  /** Wave 153 (lane 153G): the TARGET's response headers (lowercased) when `withHeaders` asked for them — `httpResponseHeaders:
+   *  true`, documented for any mode except serp. Read by lib/providers/scrape-checkpoint.ts for ETag / Last-Modified only. */
+  headers?: Record<string, string> | null
+  /** Wave 153: the source answered 304 Not Modified to OUR validator — a successful (charged) response with no body. */
+  notModified?: boolean
 }
 
 /** True when ZYTE_API_KEY is configured — the provider picker's fallback gate. */
@@ -50,7 +55,15 @@ export function zyteConfigured(): boolean {
  */
 export async function scrapeWithZyte(
   url: string,
-  options: { jsRender?: boolean } = {},
+  options: {
+    jsRender?: boolean
+    /** Wave 153: request headers (If-None-Match / If-Modified-Since from the snapshot checkpoint). Zyte documents
+     *  `customHttpRequestHeaders` ONLY with httpResponseBody (a browser request may set Referer alone), so they are sent in
+     *  HTTP mode only and dropped — never smuggled — in browser mode. */
+    requestHeaders?: Record<string, string> | null
+    /** Wave 153: ask for the target's response headers (`httpResponseHeaders: true`). */
+    withHeaders?: boolean
+  } = {},
 ): Promise<ZyteResponse> {
   const apiKey = process.env.ZYTE_API_KEY
   if (!apiKey) {
@@ -61,13 +74,20 @@ export async function scrapeWithZyte(
 
   // Single egress: route through the connector-gateway (one way in/out).
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
-  const res = await callConnector<{ url?: string; statusCode?: number; browserHtml?: string; httpResponseBody?: string }>({
+  const customHeaders = mode === "httpResponseBody" && options.requestHeaders
+    ? Object.entries(options.requestHeaders).map(([name, value]) => ({ name, value }))
+    : []
+  const res = await callConnector<{ url?: string; statusCode?: number; browserHtml?: string; httpResponseBody?: string; httpResponseHeaders?: Array<{ name: string; value: string }> }>({
     connector: "zyte",
     baseUrl:   ZYTE_BASE,
     path:      "/extract",
     method:    "POST",
     auth:      { style: "basic", username: apiKey, password: "" },
-    body:      { url, [mode]: true },
+    body:      {
+      url, [mode]: true,
+      ...(options.withHeaders ? { httpResponseHeaders: true } : {}),
+      ...(customHeaders.length ? { customHttpRequestHeaders: customHeaders } : {}),
+    },
     timeoutMs: 60_000,
   })
 
@@ -76,6 +96,14 @@ export async function scrapeWithZyte(
       ok: false, html: "", mode: null, statusCode: res.status ?? null, cost: 0,
       error: res.error ?? `Zyte API error: ${res.status ?? "network"}`,
     }
+  }
+
+  const headers = options.withHeaders && Array.isArray(res.data.httpResponseHeaders)
+    ? Object.fromEntries(res.data.httpResponseHeaders.filter((h) => h && typeof h.name === "string").map((h) => [h.name.toLowerCase(), String(h.value ?? "")]))
+    : null
+  // A 304 to OUR validator is the source saying "unchanged" — a successful, charged Zyte response with no body.
+  if (res.data.statusCode === 304 && customHeaders.length > 0) {
+    return { ok: true, html: "", mode, statusCode: 304, cost: estimateZyteCost(mode), error: null, headers, notModified: true }
   }
 
   const html = mode === "browserHtml"
@@ -91,7 +119,7 @@ export async function scrapeWithZyte(
 
   return {
     ok: true, html, mode, statusCode: res.data.statusCode ?? res.status ?? null,
-    cost: estimateZyteCost(mode), error: null,
+    cost: estimateZyteCost(mode), error: null, headers,
   }
 }
 

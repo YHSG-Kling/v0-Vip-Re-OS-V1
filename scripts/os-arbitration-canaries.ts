@@ -132,7 +132,10 @@ async function main() {
     const replay = planPrePullDedup([{ ...A, ref: "batchdata:1-replay" }], known as never, { lookupKind: "person" })
     check("C2 · provider A's own replay of the same record is never re-bought (known_source_id)", replay.verdicts[0]?.reason === "known_source_id" && replay.buy.length === 0)
     const inBatch = planPrePullDedup([{ ref: "p:1", source: "batchdata", sourceRecordId: "x-1", apn: "123-45", countyFips: "12033" }, { ref: "p:2", source: "batchdata", sourceRecordId: "x-2", apn: "123-45", countyFips: "12033" }], { ...known, propertyKeys: new Set(), sourceRecordIds: new Set() } as never, { lookupKind: "property" })
-    console.log(`    FINDING (Outside-lane → 153G, lib/lead-pipeline/pre-pull-dedup.ts): two candidates for ONE property inside ONE batch → ${inBatch.buy.length} bought (the planner judges each against the pre-batch keys only). Not asserted here — the exact diff is in the lane notes.`)
+    // FIXED in wave 153 (153G, integrated): the planner holds a key bought earlier in the SAME batch — asserted, no longer a printed finding.
+    check("C2 · two candidates for ONE property inside ONE batch → exactly one bought (never pay twice inside a batch)", inBatch.buy.length === 1, `bought ${inBatch.buy.length}`)
+    const twoProps = planPrePullDedup([{ ref: "p:3", source: "batchdata", sourceRecordId: "x-3", apn: "123-46", countyFips: "12033" }, { ref: "p:4", source: "batchdata", sourceRecordId: "x-4", apn: "123-47", countyFips: "12033" }], { ...known, propertyKeys: new Set(), sourceRecordIds: new Set() } as never, { lookupKind: "property" })
+    check("C2 NEGATIVE · two DIFFERENT properties in one batch are both bought (the in-batch hold matches keys, not the batch)", twoProps.buy.length === 2, `bought ${twoProps.buy.length}`)
   }
 
   // ══ C3 ══

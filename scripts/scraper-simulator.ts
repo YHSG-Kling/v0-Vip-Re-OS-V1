@@ -2075,6 +2075,250 @@ async function testZyteClientAndProviderPicker() {
   if (savedZyteKey === undefined) delete process.env.ZYTE_API_KEY; else process.env.ZYTE_API_KEY = savedZyteKey
 }
 
+// ── WAVE 153 (lane 153G) — ROW 55: REPLAY-SAFE SNAPSHOT CHECKPOINTS FOR ZYTE / ZENROWS ─────────────────────────────────
+// Drives the REAL lib/providers/scrape-checkpoint.ts fetchCheckpointedSnapshot with injected seams (fetcher, robots, spend,
+// store), the REAL job-ledger store and the REAL RawData producer (ingestRawSourceBatch) on the in-memory client.
+// SIMULATED — no provider, no network, no key.
+async function testWave153SnapshotCheckpoint() {
+  console.log("\n[Wave 153 · row 55 — Zyte / ZenRows snapshot checkpoint: digest, watermarks, robots, terms, spend, backoff, conditional, pagination]")
+  const { fetchCheckpointedSnapshot, SNAPSHOT_TRANSPORT_FACTS } = await import("../lib/providers/scrape-checkpoint")
+  const { memSupabase } = await import("./in-memory-supabase")
+  const { ingestRawSourceBatch } = await import("../lib/kernel/scraping")
+  const T = "11111111-1111-4111-8111-111111111111", M = "33333333-3333-4333-8333-333333333333"
+  let clock = Date.parse("2026-11-14T12:00:00.000Z")
+  const now = () => new Date(clock)
+  const advance = (h: number) => { clock += h * 3_600_000 }
+
+  // An in-memory store (the store contract) and a counting fetcher.
+  const rows = new Map<string, { id: string; state: any }>()
+  const store = {
+    async load(key: string) { const r = rows.get(key); return r ? { id: r.id, state: JSON.parse(JSON.stringify(r.state)) } : undefined },
+    async save(id: string | null, state: any) { const rid = id ?? `ck-${rows.size + 1}`; rows.set(state.key, { id: rid, state: JSON.parse(JSON.stringify(state)) }); return { ok: true, id: rid, error: null } },
+  }
+  let page = "<html><body><ul><li data-id='a'>123 Main St FSBO</li><li data-id='b'>9 Oak Ave saved search</li></ul></body></html>"
+  let fetches = 0
+  const seenOpts: any[] = []
+  let nextResult: any = null
+  const fetcher = async (_url: string, opts: any) => {
+    fetches++; seenOpts.push(opts)
+    if (nextResult) { const r = nextResult; nextResult = null; return r }
+    return { ok: true, html: page, provider: "zyte" as const, cost: 0.004, costBasis: "estimated" as const, statusCode: 200, vendorStatus: null, headers: { etag: "\"v1\"" }, notModified: false, error: null }
+  }
+  const robotsAllow = async () => ({ status: 200, text: "User-agent: *\nAllow: /" })
+  const allowSpend = () => ({ allowed: true, reason: "test budget" })
+  const deps = (extra: Record<string, unknown> = {}) => ({ store, fetcher, robots: robotsAllow, spendGate: allowSpend, configuredProviders: ["zyte"] as const, now, ...extra }) as any
+  const URL1 = "https://www.example-fsbo-site.com/listings/austin?utm_source=x&b=2&a=1"
+  const input = { url: URL1, scope: { brokerageId: T, marketId: M, purpose: "test" }, jsRender: false }
+  const rec = (id: string, extra: Record<string, unknown> = {}) => ({ sourceRecordId: `bp-${id}`, source: "zillow", behaviorType: "fsbo_listing", intentType: "seller" as const, intentSignals: ["fsbo"], propertyAddress: `${id} Main St`, city: "Austin", state: "TX", zip: "78701", sourceUrl: "https://www.example-fsbo-site.com/x", rawPayload: { card: id }, ...extra }) as any
+
+  check("Zyte / ZenRows document NO cursor — the checkpoint invents none (SNAPSHOT_TRANSPORT_FACTS.*.cursor === 'none')", SNAPSHOT_TRANSPORT_FACTS.zyte.cursor === "none" && SNAPSHOT_TRANSPORT_FACTS.zenrows.cursor === "none")
+  check("documented conditional modes: Zyte HTTP mode only (browser = Referer alone); ZenRows custom_headers", SNAPSHOT_TRANSPORT_FACTS.zyte.conditionalRequests.httpMode && !SNAPSHOT_TRANSPORT_FACTS.zyte.conditionalRequests.browserMode && SNAPSHOT_TRANSPORT_FACTS.zenrows.conditionalRequests.browserMode)
+
+  // 1. first observation → changed; every record is new; commit moves the processed watermark.
+  const s1 = await fetchCheckpointedSnapshot(input, deps())
+  const new1 = s1.selectNew([rec("a"), rec("b")])
+  check("first observation → fetched_changed, one paid request, every record new", s1.status === "fetched_changed" && fetches === 1 && new1.records.length === 2 && s1.costUsd === 0.004, `${s1.status} ${fetches} ${new1.records.length}`)
+  check("before commit the PROCESSED watermark is behind the OBSERVED one", s1.watermarks.processedBehindObserved === true && s1.watermarks.processedAt === null)
+  // The REAL producer: the forwarded batch, then the commit.
+  const db = memSupabase({ raw_scraped_leads: [], scraper_executions: [], lifecycle_events: [], lead_scraping_markets: [] }, { unique: { raw_scraped_leads: [["idempotency_key"]] } })
+  const geo = { city: "Austin", state: "TX", zip_codes: ["78701"] }
+  const ingest = (records: any[]) => ingestRawSourceBatch({ brokerageId: T, marketId: M, source: "zillow_behavior", sourceFamily: "property_search", sourceChannel: "zillow", records, executionId: "exec-1", marketGeo: geo, batchCostUsd: records.length ? s1.costUsd : null, client: db as any })
+  const ing1 = await ingest(new1.records)
+  const c1 = await s1.commit({ ok: true, forwarded: new1.records })
+  const k1 = [...rows.values()][0]?.state
+  check("the producer wrote the two new observations and the commit persisted the processed watermark", ing1.inserted === 2 && db.tables.raw_scraped_leads.length === 2 && c1.persisted && k1.processedDigest === k1.observedDigest && k1.seen.length === 2, JSON.stringify({ ins: ing1.inserted, k1: { p: k1?.processedDigest, o: k1?.observedDigest } }))
+  check("the target key is the NORMALIZED url (tracking params dropped, query sorted)", k1.targetUrl === "https://www.example-fsbo-site.com/listings/austin?a=1&b=2", k1.targetUrl)
+
+  // 2. inside the minimum re-fetch interval → no paid request at all.
+  advance(1)
+  const s2 = await fetchCheckpointedSnapshot(input, deps())
+  check("inside the re-fetch interval → skipped_interval, NO paid request", s2.status === "skipped_interval" && fetches === 1 && s2.costUsd === 0)
+
+  // 3. after the interval, same content (volatile markup only changed) → unchanged: zero records, no paid record booked.
+  advance(7)
+  page = page.replace("<body>", "<body><script nonce='r4nd'>window.__t=Date.now()</script><input name='authenticity_token' value='zz'>")
+  const s3 = await fetchCheckpointedSnapshot(input, deps())
+  const new3 = s3.selectNew([rec("a"), rec("b")])
+  check("re-fetch of the same page (only scripts / nonces / CSRF changed) → unchanged; the request is booked, zero records forwarded", s3.status === "unchanged" && fetches === 2 && s3.html.length === 0 && s3.costUsd === 0.004 && new3.records.length === 0, `${s3.status} new=${new3.records.length}`)
+  const before3 = db.tables.raw_scraped_leads.length
+  check("…so no RawData row and no paid record exist for it (the producer is never called with records)", db.tables.raw_scraped_leads.length === before3 && before3 === 2)
+
+  // 4. the page changes: one new card + two known → only the new one is forwarded.
+  advance(7)
+  page = "<html><body><ul><li data-id='a'>123 Main St FSBO</li><li data-id='b'>9 Oak Ave saved search</li><li data-id='c'>5 Elm Ct FSBO</li></ul></body></html>"
+  const s4 = await fetchCheckpointedSnapshot(input, deps())
+  const new4 = s4.selectNew([rec("a"), rec("b"), rec("c")])
+  check("changed page → only the record not committed inside the rescan window is forwarded (2 skipped as seen)", s4.status === "fetched_changed" && new4.records.length === 1 && new4.records[0].sourceRecordId === "bp-c" && new4.skippedSeen === 2)
+
+  // 5. crash between fetch and ingest (no commit) → the next tick re-processes; the producer replays it as ONE observation.
+  advance(7)
+  const s5 = await fetchCheckpointedSnapshot(input, deps())
+  const new5 = s5.selectNew([rec("a"), rec("b"), rec("c")])
+  check("ingest never committed → the next tick re-processes the same snapshot (processed watermark stayed behind)", s5.status === "fetched_changed" && new5.records.length === 1 && s5.watermarks.processedBehindObserved)
+  const ingA = await ingest(new5.records)
+  const ingB = await ingest(new5.records) // the replay a second crash would cause
+  await s5.commit({ ok: true, forwarded: new5.records })
+  check("a replayed batch is ONE observation at the RawData door (no duplicate RawData)", ingA.inserted === 1 && ingB.inserted === 0 && ingB.replayed === 1 && db.tables.raw_scraped_leads.filter((r: any) => r.source_record_id === "bp-c").length === 1, JSON.stringify({ a: ingA.inserted, b: ingB.inserted, rep: ingB.replayed }))
+  check("POSITIVE CONTROL: a checkpoint-less read (a fresh state) WOULD forward every record again — the checkpoint is what stops it", (await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-fsbo-site.com/other" }, deps())).selectNew([rec("a"), rec("b"), rec("c")]).records.length === 3)
+
+  // 6. conditional request: the source published an ETag; Zyte documents request headers in HTTP mode only.
+  advance(7)
+  nextResult = { ok: true, html: "", provider: "zyte", cost: 0.00044, costBasis: "estimated", statusCode: 304, vendorStatus: null, headers: null, notModified: true, error: null }
+  const s6 = await fetchCheckpointedSnapshot(input, deps())
+  check("HTTP mode + a source validator → If-None-Match sent; a 304 → not_modified, nothing to process (the 304 is a charged Zyte response)", s6.status === "not_modified" && seenOpts[seenOpts.length - 1].requestHeaders?.["If-None-Match"] === "\"v1\"" && s6.costUsd === 0.00044, JSON.stringify(seenOpts[seenOpts.length - 1]))
+  advance(7)
+  const s6b = await fetchCheckpointedSnapshot({ ...input, jsRender: true }, deps())
+  check("browser (JS-rendered) mode on Zyte → NO conditional header (Zyte forwards Referer alone there)", seenOpts[seenOpts.length - 1].requestHeaders === null && s6b.status !== "held_robots")
+  advance(7)
+  await fetchCheckpointedSnapshot({ ...input, jsRender: true }, deps({ configuredProviders: ["zenrows"] }))
+  check("browser mode on ZenRows → the conditional header IS sent (custom_headers + original_status documented)", !!seenOpts[seenOpts.length - 1].requestHeaders?.["If-None-Match"])
+
+  // 7. robots.txt (RFC 9309) and contract terms — held BEFORE any paid request.
+  const f0 = fetches
+  const rDis = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-fsbo.com/listings?q=austin" }, deps({ robots: async () => ({ status: 200, text: "User-agent: *\nDisallow: /listings" }) }))
+  check("ADVERSE · robots-disallowed target → held_robots, no paid request, no spend", rDis.status === "held_robots" && fetches === f0 && rDis.costUsd === 0, rDis.reason)
+  const r5xx = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-fsbo2.com/x" }, deps({ robots: async () => ({ status: 503, text: null }) }))
+  const rNet = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-fsbo3.com/x" }, deps({ robots: async () => ({ status: null, text: null }) }))
+  const r404 = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-fsbo4.com/x" }, deps({ robots: async () => ({ status: 404, text: null }) }))
+  check("RFC 9309: robots 5xx / unreachable → full disallow; 404 (no file) → allowed", r5xx.status === "held_robots" && rNet.status === "held_robots" && r404.status === "fetched_changed")
+  const ua = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-fsbo5.com/x" }, deps({ robots: async () => ({ status: 200, text: "User-agent: VipReOS-AcquisitionBot\nDisallow: /\n\nUser-agent: *\nAllow: /" }) }))
+  check("a group naming OUR token is honoured even when * allows", ua.status === "held_robots")
+  const f1 = fetches
+  const tz = await fetchCheckpointedSnapshot({ ...input, url: "https://www.zillow.com/austin-tx/fsbo/" }, deps())
+  const tc = await fetchCheckpointedSnapshot({ ...input, url: "https://austin.craigslist.org/search/rea" }, deps())
+  const tf = await fetchCheckpointedSnapshot({ ...input, url: "https://nextdoor.com/city/austin--tx/" }, deps())
+  check("ADVERSE · terms-restricted hosts (portal / classified / forum) → held_terms, no paid request", tz.status === "held_terms" && tc.status === "held_terms" && tf.status === "held_terms" && fetches === f1, `${tz.status} ${tc.status} ${tf.status}`)
+  const ta = await fetchCheckpointedSnapshot({ ...input, url: "https://www.zillow.com/austin-tx/fsbo/" }, deps({ agreements: { "zillow.com": { reference: "TEST-AGREEMENT-1", recordedAt: "2026-11-14", scope: "fsbo pages" } } }))
+  check("POSITIVE CONTROL: a recorded written agreement (a reviewed change) admits the same host", ta.status === "fetched_changed")
+
+  // 8. spend, tick budget, checkpoint unreadable — all refuse BEFORE any paid request.
+  const f2 = fetches
+  const sp = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-a.com/x" }, deps({ spendGate: () => ({ allowed: false, reason: "budget would be exceeded" }) }))
+  const np = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-b.com/x" }, deps({ spendGate: undefined }))
+  const tb = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-c.com/x" }, deps({ tickBudget: { fetchesLeft: 0 } }))
+  const ur = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-d.com/x" }, deps({ store: { load: async () => null, save: store.save } }))
+  const ns = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-e.com/x" }, { fetcher, robots: robotsAllow, spendGate: allowSpend, now } as any)
+  check("ADVERSE · spend refused / no spend policy / tick budget spent / checkpoint unreadable / no store → held or refused, no paid request", sp.status === "held_spend" && np.status === "held_spend" && tb.status === "held_tick_budget" && ur.status === "refused_checkpoint_unreadable" && ns.status === "refused_checkpoint_unreadable" && fetches === f2, [sp.status, np.status, tb.status, ur.status, ns.status].join(" "))
+  const budget = { fetchesLeft: 1 }
+  await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-f.com/x" }, deps({ tickBudget: budget }))
+  const tb2 = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-g.com/x" }, deps({ tickBudget: budget }))
+  check("backpressure: the shared tick budget is decremented per paid request and holds the next target", budget.fetchesLeft === 0 && tb2.status === "held_tick_budget")
+
+  // 9. vendor failures: retry (rate limit / ban) with backoff; hold (auth); timeout; no provider.
+  const URLF = { ...input, url: "https://www.example-fail.com/x" }
+  nextResult = { ok: false, html: "", provider: "zyte", cost: 0, costBasis: "none", statusCode: null, vendorStatus: 429, headers: null, notModified: false, error: "over-user-limit" }
+  const e1 = await fetchCheckpointedSnapshot(URLF, deps())
+  const fb = fetches
+  const e2 = await fetchCheckpointedSnapshot(URLF, deps())
+  check("ADVERSE · quota / rate limit (429) → failed with a retry window; the next call inside it → held_backoff, no paid request", e1.status === "failed" && /retry after/.test(e1.reason) && e2.status === "held_backoff" && fetches === fb, e1.reason)
+  advance(3)
+  const e3 = await fetchCheckpointedSnapshot(URLF, deps())
+  check("after the backoff the target is fetched again and the attempt counter resets", e3.status === "fetched_changed" && [...rows.values()].find((r) => r.state.targetUrl === "https://www.example-fail.com/x")?.state.attempts === 0)
+  nextResult = { ok: false, html: "", provider: "zyte", cost: 0, costBasis: "none", statusCode: null, vendorStatus: 401, headers: null, notModified: false, error: "auth/key-not-found" }
+  advance(7)
+  // The hold is ESCALATED to the connector-healing ledger (wave 153 integrator) — a capture client stands in for self_heal_events.
+  const healed: Array<Record<string, unknown>> = []
+  const healClient = { from: (t: string) => ({ insert: async (row: Record<string, unknown>) => { if (t === "self_heal_events") healed.push(row); return { error: null } } }) }
+  const e4 = await fetchCheckpointedSnapshot(URLF, deps({ ledgerClient: healClient }))
+  check("ADVERSE · bad key (401) → held for a day (a retry cannot fix it)", e4.status === "failed" && /held/.test(e4.reason), e4.reason)
+  check("a held target is ESCALATED once to the connector-healing ledger (self_heal_events, domain connector, outcome escalated) — never a silent stop",
+    healed.length === 1 && healed[0].domain === "connector" && healed[0].outcome === "escalated" && healed[0].action === "scrape_target_held" && String(healed[0].subject).includes("example-fail.com"), JSON.stringify(healed))
+  nextResult = { ok: false, html: "", provider: "zyte", cost: 0, costBasis: "none", statusCode: null, vendorStatus: 429, headers: null, notModified: false, error: "rate limited" }
+  advance(30)
+  const before = healed.length
+  await fetchCheckpointedSnapshot({ ...URLF, url: "https://www.example-retry-only.com/x" }, deps({ ledgerClient: healClient }))
+  check("NEGATIVE · a first retryable failure (429) escalates nothing (the backoff handles it)", healed.length === before, JSON.stringify(healed.slice(before)))
+  const slow = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-slow.com/x", timeoutMs: 20 }, deps({ fetcher: () => new Promise((r) => setTimeout(() => r({ ok: true, html: "<p>late</p>", provider: "zenrows", cost: 0.01, costBasis: "estimated", statusCode: 200, vendorStatus: null, headers: null, notModified: false, error: null }), 200)) }))
+  check("a bounded timeout → failed + retry (the vendor may still bill — said in the reason)", slow.status === "failed" && /timed out/.test(slow.reason))
+  const nop = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-nop.com/x" }, deps({ fetcher: async () => ({ ok: false, html: "", provider: null, cost: 0, costBasis: "none", statusCode: null, vendorStatus: null, headers: null, notModified: false, error: "no scrape provider configured (ZENROWS_API_KEY / ZYTE_API_KEY both unset)" }) }))
+  check("no transport key → no_provider (WAITING_EXTERNAL by name), nothing invented", nop.status === "no_provider" && nop.costUsd === 0)
+
+  // 10. source-defined pagination only, and the bounded rescan window.
+  const pages: Record<string, string> = {
+    "https://www.example-p.com/list": "<html><link rel='next' href='/list?page=2'><li>p1</li></html>",
+    "https://www.example-p.com/list?page=2": "<html><a rel=\"next\" href=\"https://evil.example.org/list?page=3\">n</a><li>p2</li></html>",
+  }
+  const pf = async (u: string) => ({ ok: true, html: pages[u] ?? "<html>none</html>", provider: "zenrows" as const, cost: 0.01, costBasis: "final" as const, statusCode: 200, vendorStatus: null, headers: null, notModified: false, error: null })
+  const pg = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-p.com/list", maxPages: 5 }, deps({ fetcher: pf }))
+  check("pagination follows ONLY the source's rel=next on the same host (an off-host next link is never followed)", pg.status === "fetched_changed" && pg.pages === 2 && pg.html.length === 2 && pg.costBasis === "final", `${pg.pages}`)
+  const pg1 = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-p2.com/list", maxPages: 1 }, deps({ fetcher: async () => ({ ...(await pf("https://www.example-p.com/list")) }) }))
+  check("the page cap stops the walk and says the next tick starts from page 1 (no stored cursor)", pg1.pages === 1 && pg1.notes.some((n: string) => /starts again from page 1/.test(n)))
+  const dated = (id: string, iso: string) => rec(id, { rawPayload: { card: id, posted_at: iso, date: iso } })
+  const w1 = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-w.com/x", rescanWindowDays: 14 }, deps())
+  const recent = dated("n1", "2026-11-13T00:00:00.000Z")
+  const wf = w1.selectNew([recent])
+  await w1.commit({ ok: true, forwarded: wf.records })
+  advance(7)
+  page = page + "<!-- -->x"
+  const w2 = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-w.com/x", rescanWindowDays: 14 }, deps())
+  const old = w2.selectNew([dated("o1", "2026-09-01T00:00:00.000Z"), dated("n2", "2026-11-12T00:00:00.000Z")])
+  check("bounded rescan: the committed record's own date moved maxSourceEventAt (the ONE signal_at derivation)", w2.watermarks.maxSourceEventAt === "2026-11-13T00:00:00.000Z", String(w2.watermarks.maxSourceEventAt))
+  check("bounded rescan: a dated record older than (max source event − window) is outside the re-read region; a recent one is new", old.skippedOutsideWindow === 1 && old.records.length === 1 && old.records[0].sourceRecordId === "bp-n2", JSON.stringify({ max: w2.watermarks.maxSourceEventAt, skipped: old.skippedOutsideWindow }))
+
+  // 11. the REAL job-ledger store on the in-memory client (lead_scraping_jobs, job_type scrape_snapshot_checkpoint).
+  const led = memSupabase({ lead_scraping_jobs: [] }, { stampCreatedAt: true, uuidIds: true })
+  const l1 = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-l.com/x" }, { ledgerClient: led, fetcher, robots: robotsAllow, spendGate: allowSpend, configuredProviders: ["zyte"], now } as any)
+  await l1.commit({ ok: true, forwarded: [rec("l1")] })
+  const ledRows = (led as any).tables.lead_scraping_jobs
+  advance(7)
+  const l2 = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-l.com/x" }, { ledgerClient: led, fetcher, robots: robotsAllow, spendGate: allowSpend, configuredProviders: ["zyte"], now } as any)
+  check("job-ledger store: ONE checkpoint row (job_type scrape_snapshot_checkpoint, tenant + market scoped) reloaded across ticks", ledRows.length === 1 && ledRows[0].job_type === "scrape_snapshot_checkpoint" && ledRows[0].brokerage_id === T && ledRows[0].market_id === M && l2.status === "unchanged" && l2.selectNew([rec("l1")]).records.length === 0, JSON.stringify(ledRows.map((r: any) => r.job_type)))
+  const refused = memSupabase({ lead_scraping_jobs: [] }, { refuse: { lead_scraping_jobs: "permission denied for table lead_scraping_jobs" } })
+  const l3 = await fetchCheckpointedSnapshot({ ...input, url: "https://www.example-l2.com/x" }, { ledgerClient: refused, fetcher, robots: robotsAllow, spendGate: allowSpend, configuredProviders: ["zyte"], now } as any)
+  check("ADVERSE · a refused checkpoint read (RLS-shaped) → refused_checkpoint_unreadable, no paid request (fail closed)", l3.status === "refused_checkpoint_unreadable")
+
+  // 12. the transports: what reaches the vendor.
+  const realFetch = globalThis.fetch
+  const savedZyte = process.env.ZYTE_API_KEY, savedZen = process.env.ZENROWS_API_KEY
+  const bodies: any[] = []
+  process.env.ZYTE_API_KEY = "sim-zyte"
+  globalThis.fetch = (async (_u: any, init: any) => { bodies.push(JSON.parse(String(init?.body ?? "{}"))); return { ok: true, status: 200, statusText: "OK", json: async () => ({ statusCode: 200, httpResponseBody: Buffer.from("<p>x</p>").toString("base64"), browserHtml: "<p>x</p>", httpResponseHeaders: [{ name: "ETag", value: "\"z1\"" }] }), text: async () => "" } }) as any
+  const { scrapeWithZyte } = await import("../lib/external/zyte-client")
+  const zb = await scrapeWithZyte("https://www.example-z.com/x", { jsRender: true, requestHeaders: { "If-None-Match": "\"z0\"" }, withHeaders: true })
+  const zh = await scrapeWithZyte("https://www.example-z.com/x", { jsRender: false, requestHeaders: { "If-None-Match": "\"z0\"" }, withHeaders: true })
+  check("Zyte browser request: validators DROPPED (customHttpRequestHeaders is HTTP-mode only); response headers asked for", bodies[0]?.browserHtml === true && bodies[0]?.customHttpRequestHeaders === undefined && bodies[0]?.httpResponseHeaders === true && zb.headers?.etag === "\"z1\"", JSON.stringify(bodies[0]))
+  check("Zyte HTTP request: validators sent as customHttpRequestHeaders", bodies[1]?.httpResponseBody === true && bodies[1]?.customHttpRequestHeaders?.[0]?.name === "If-None-Match" && zh.ok)
+  delete process.env.ZYTE_API_KEY
+  process.env.ZENROWS_API_KEY = "sim-zen"
+  const urls: string[] = []
+  globalThis.fetch = (async (u: any) => { urls.push(String(u)); return { ok: true, status: 200, statusText: "OK", headers: new Headers({ "X-Request-Cost": "0.0025", "Zr-Etag": "\"r1\"" }), text: async () => "<p>zen</p>" } }) as any
+  const { scrapeSiteWithBestProvider } = await import("../lib/external/zenrows-client")
+  const zr = await scrapeSiteWithBestProvider("https://www.example-zr.com/x", { jsRender: true, withHeaders: true })
+  check("CORRECTED · ZenRows: wait_for (a CSS selector) is no longer sent as the load state 'networkidle'", urls.length === 1 && !/wait_for=/.test(urls[0]), urls[0])
+  check("ZenRows: X-Request-Cost is booked as the FINAL cost and the target's Zr- validator is read", zr.ok && zr.cost === 0.0025 && zr.costBasis === "final" && zr.headers?.etag === "\"r1\"", JSON.stringify({ c: zr.cost, b: zr.costBasis, h: zr.headers }))
+  globalThis.fetch = (async () => ({ ok: false, status: 402, statusText: "Payment Required", headers: new Headers(), text: async () => "insufficient credits" })) as any
+  const zq = await scrapeSiteWithBestProvider("https://www.example-zr.com/x", { jsRender: true })
+  check("ADVERSE · ZenRows quota (402) carries the vendor status to the checkpoint's hold rule", !zq.ok && zq.vendorStatus === 402, JSON.stringify(zq))
+  globalThis.fetch = realFetch
+  if (savedZyte === undefined) delete process.env.ZYTE_API_KEY; else process.env.ZYTE_API_KEY = savedZyte
+  if (savedZen === undefined) delete process.env.ZENROWS_API_KEY; else process.env.ZENROWS_API_KEY = savedZen
+
+  // 13. the realty-chatter lane fetches NOTHING without its checkpoint; the cron wires both lanes through it.
+  const { sourceCraigslist } = await import("../lib/lead-pipeline/social-sourcer")
+  const savedApify = process.env.APIFY_API_TOKEN, savedZen2 = process.env.ZENROWS_API_KEY
+  delete process.env.APIFY_API_TOKEN
+  process.env.ZENROWS_API_KEY = "sim-zen"
+  let zenCalls = 0
+  let anyCalls = 0
+  globalThis.fetch = (async (u: any) => { anyCalls++; if (/zenrows/.test(String(u?.url ?? u))) zenCalls++; return { ok: true, status: 200, statusText: "OK", headers: new Headers(), text: async () => "<html></html>", json: async () => ({}) } }) as any
+  const clNoDeps = await sourceCraigslist("Austin", "fsbo", { city: "Austin", state: "TX" } as any)
+  const clDeps = await sourceCraigslist("Austin", "fsbo", { city: "Austin", state: "TX" } as any, { ledgerClient: memSupabase({ lead_scraping_jobs: [] }, { uuidIds: true }), scope: { brokerageId: T, marketId: M }, spendGate: allowSpend })
+  globalThis.fetch = realFetch
+  if (savedApify === undefined) delete process.env.APIFY_API_TOKEN; else process.env.APIFY_API_TOKEN = savedApify
+  if (savedZen2 === undefined) delete process.env.ZENROWS_API_KEY; else process.env.ZENROWS_API_KEY = savedZen2
+  check("craigslist ZenRows fallback: no checkpoint deps → nothing fetched; with deps → held on craigslist's terms BEFORE any request (no ZenRows call, not even robots.txt)", clNoDeps.records.length === 0 && /no snapshot checkpoint/.test(clNoDeps.held ?? "") && /held_terms/.test(clDeps.held ?? "") && zenCalls === 0 && anyCalls === 0, JSON.stringify({ a: clNoDeps.held, b: clDeps.held, zenCalls, anyCalls }))
+  const cronCl = blankComments(readFileSync(join(process.cwd(), "app/api/cron/lead-scraping/route.ts"), "utf8"))
+  check("the cron passes the craigslist fallback its checkpoint and commits after insertSocial", /sourceCraigslist\([\s\S]{0,200}craigslistCheckpoint/.test(cronCl) && cronCl.indexOf("forSale.commit(true)") > cronCl.indexOf("await insertSocial(forSale.records"))
+  check("no acquisition sourcer calls the raw ZenRows transport any more (social-sourcer reaches pages only through the checkpoint)", !/scrapeWithZenRows\(|scrapeSiteWithBestProvider\(/.test(blankComments(readFileSync(join(process.cwd(), "lib/lead-pipeline/social-sourcer.ts"), "utf8"))))
+  const noCk = await sourceRealtySiteChatter("homes", { city: "Austin", state: "TX" })
+  check("sourceRealtySiteChatter without checkpoint deps → held, nothing fetched, no cost", noCk.records.length === 0 && noCk.cost === 0 && /no snapshot checkpoint/.test(noCk.held ?? ""))
+  const cron = blankComments(readFileSync(join(process.cwd(), "app/api/cron/lead-scraping/route.ts"), "utf8"))
+  check("the cron's portal property search fetches through fetchCheckpointedSnapshot and commits AFTER insertRawBatch", /fetchCheckpointedSnapshot\(/.test(cron) && cron.indexOf("snap.commit(") > cron.indexOf("insertRawBatch({", cron.indexOf("fetchCheckpointedSnapshot(")) && !/scrapeSiteWithBestProvider\(/.test(cron))
+  check("the cron's realty chatter passes its checkpoint deps and commits after insertSocial", /sourceRealtySiteChatter\(site, \{ city: market\.city, state: market\.state \}, \{[\s\S]{0,200}ledgerClient: supabase/.test(cron) && cron.indexOf("chatter.commit(true)") > cron.indexOf("await insertSocial(chatter.records"))
+  const misordered = "const snap = await fetchCheckpointedSnapshot(a); await snap.commit({ ok: true }); await insertRawBatch({ records })"
+  check("POSITIVE CONTROL: the commit-order finder rejects a commit placed before the producer", !(misordered.indexOf("snap.commit(") > misordered.indexOf("insertRawBatch({", misordered.indexOf("fetchCheckpointedSnapshot("))))
+}
+
 // ── WAVE 70 — SITE VISITOR INTENT (behavioral acquisition coverage audit) ────────────────────
 // $0-cost lane: own first-party website_visitors traffic, never a vendor call. Proves the pure
 // classifier + the SOURCE_MAP/SOURCE_VENDOR/GATE_TOKEN wiring, mirroring the wave-65 lane pattern.
@@ -2233,6 +2477,7 @@ async function main() {
   await testLane74DRemainingAcquisitionLanes()
   testActorRegistryFreshness()
   await testZyteClientAndProviderPicker()
+  await testWave153SnapshotCheckpoint()
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

@@ -1372,7 +1372,20 @@ export async function loadRoiOutcomeLedger(
         : eligible.length === 0 ? naRatio(rows.length === 0 ? "No campaigns are in this view yet." : "No campaign in this view has its full spend recorded, so a net contribution cannot be calculated.")
           : eligibleContribution == null ? naRatio("A closed deal's commission is not finalized yet, so what was earned is not established.")
             : { value: eligibleContribution - eligibleSpend, na: null },
-      acquisitionCostAvoidedByDedup: naRatio("The duplicate check before a paid pull decides in memory and records no avoided pull, so the cost it saved is not measured yet."),
+      acquisitionCostAvoidedByDedup: await (async (): Promise<RoiRatio> => {
+        // wave 153 (153G): each paid pull's skipped duplicates are persisted (lib/lead-pipeline/pre-pull-dedup.ts
+        // recordPrePullDedupSavings → lead_scraping_jobs pre_pull_dedup, metadata.avoided_usd). Account-level, like the other
+        // provider economics; an unpriced skip makes the total unknown (never a partial sum shown as the whole).
+        if (moneyNa) return naRatio(moneyNa)
+        if (v.kind !== "tenant") return naRatio("Duplicate-check savings are shown on the account-wide view.")
+        const { data: dedupRows, error: dedupErr } = await svc.from("lead_scraping_jobs").select("metadata, completed_at")
+          .eq("brokerage_id", brokerageId).eq("job_type", "pre_pull_dedup").gte("completed_at", sinceIso).lte("completed_at", untilIso).limit(5000)
+        if (dedupErr) return naRatio("The duplicate-check savings could not be read just now, so they are not shown.")
+        const rowsD = (dedupRows ?? []) as Array<{ metadata?: { avoided_usd?: number | null } | null }>
+        if (rowsD.length === 0) return naRatio("No paid pull in this window skipped a record you already had, so no saving is recorded.")
+        if (rowsD.some((r) => r.metadata?.avoided_usd == null)) return naRatio("Some skipped pulls have no known unit price, so the saving cannot be totalled honestly.")
+        return { value: Math.round(rowsD.reduce((s, r) => s + Number(r.metadata?.avoided_usd ?? 0) * 100, 0)), na: null }
+      })(),
       leadResponse: latency.touchedCount > 0
         ? { medianSeconds: latency.medianSeconds, withinSlaShare: latency.pctWithinSla, measured: latency.touchedCount, na: null }
         : { medianSeconds: null, withinSlaShare: null, measured: 0, na: entered.length === 0 ? "No Contact your campaigns reached entered in this window, so a response time is not measured." : "None of the Contacts your campaigns reached in this window has a recorded first response yet, so a response time is not measured." },
@@ -1510,7 +1523,7 @@ export async function loadRoiOutcomeLedger(
         aiPlatformFundedCents: aiPlatform, aiTenantCents: aiTenant,
         rawRecords, rawPromoted,
         costPerPromotedRecord: !accountLevel ? naRatio("Provider costs are shown on the account-wide view.") : rawUnpriced > 0 ? naRatio(`${rawUnpriced} acquired record(s) carry no price, so a cost per promoted record would understate it.`) : costPer(rawKnown, true, rawPromoted, "promoted record"),
-        notMeasured: ["Duplicates avoided: the pre-pull duplicate check decides in memory and records no avoided pull, so there is nothing to count yet."],
+        notMeasured: [],
       },
       recommendations, completeness: { label, notes },
       why: {

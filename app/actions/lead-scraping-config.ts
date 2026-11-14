@@ -591,6 +591,8 @@ export async function getScrapingJobs(limit = 50) {
         *,
         lead_scraping_markets(name, city, state)
       `)
+      // The job ledger also carries bookkeeping rows (run cursors, snapshot checkpoints, dedup savings) — list real jobs only.
+      .not("job_type", "in", "(apify_run_cursor,scrape_snapshot_checkpoint,pre_pull_dedup)")
       .order("created_at", { ascending: false })
       .limit(limit)
 

@@ -71,8 +71,9 @@ export function CompositionLibraryClient({ snapshot }: { snapshot: CompositionLi
 
   // Per-row render-history inspection — the half the header of
   // app/actions/composition-library.ts promised in wave 39. Clicking a row
-  // toggles its recent renders: outcome, WHY a failure failed
-  // (error_message), which door requested it (requested_via), and which
+  // toggles its recent renders: outcome, WHY a failure failed (`failure` — the
+  // tenant-facing contract sentence; the raw error_message is never sent to the
+  // browser, wave 153 lane 153J), which door requested it (requested_via), and which
   // brand assets the coordinator actually baked in (used_* attribution).
   const [openHistory, setOpenHistory] = useState<string | null>(null)
   const [history, setHistory] = useState<Record<string, HistoryState>>({})
@@ -336,9 +337,9 @@ function RenderHistory({ state }: { state: HistoryState | undefined }) {
               open
             </a>
           )}
-          {h.error_message && (
-            <span className="w-full font-mono text-red-700 truncate" title={h.error_message}>
-              {h.error_message}
+          {h.failure && (
+            <span className="w-full text-red-700">
+              {h.failure}
             </span>
           )}
         </div>

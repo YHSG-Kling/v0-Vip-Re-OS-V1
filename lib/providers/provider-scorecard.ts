@@ -164,7 +164,7 @@ export const PROVIDER_RECOMMENDATION: Readonly<Record<ScorecardProvider, Provide
     tier: "PRIMARY", decision: "waiting_owner",
     role: "the property-data survivor: property record + sale history (recorded sales), AVM, ZIP LISTING statistics, listing records for buyers without a connected IDX",
     uniqueValue: ["ZIP-level sale + rental listing statistics (/markets)", "property record with sale history and a saleDateRange sold-records filter (/properties)", "AVM with comparable listings (/avm/value)", "listing records with the originating MLS name (/listings/sale)"],
-    conditions: ["the Terms of Use read by counsel for consumer display of listing facts, attribution and retention", "the plan tier chosen by measured monthly volume (Foundation / Growth / Scale overage)", "the area sold-records reader built on the ONE client (RENTCAST_DATA_TYPES.sold_records — no reader today)"],
+    conditions: ["the Terms of Use read by counsel for consumer display of listing facts, attribution and retention", "the plan tier chosen by measured monthly volume (Foundation / Growth / Scale overage)", "a first LIVE sold-records read on a real key — the area sold-records reader IS built (wave 152: getRentcastSoldRecords → lib/avm/provider-chain.ts getAreaSoldRecords → the market report; corrected wave 153, lane 153G — the condition read \"no reader today\")"],
     why: "already the owner-ordered primary for property facts / valuation / market (R9, wave 92); the recorded-sale evidence lives in its property record, not in /markets — the readers now label the three data types apart",
   },
   versium: {

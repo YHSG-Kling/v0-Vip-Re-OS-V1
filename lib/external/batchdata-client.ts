@@ -1469,6 +1469,12 @@ export const BATCHDATA_SKIP_TRACE_COST_USD = 0.07
  *  carried since wave 6x — kept (never understate), named so two `* 0.05` literals cannot drift. */
 export const BATCHDATA_PROPERTY_SEARCH_RECORD_COST_USD = 0.05
 
+/** ONE name for the per-id ESTIMATE a by-id property lookup (lookupBatchDataPropertiesByIds — the Smart Search hydrate) books:
+ *  priced like the address-keyed V1 search (COST_PER_AVM_LOOKUP-adjacent); NO per-lookup price is confirmed by the vendor.
+ *  Wave 153 (lane 153G): named so the hydrate's booking and the pre-pull dedup's AVOIDED-cost figure
+ *  (lib/lead-pipeline/pre-pull-dedup.ts recordPrePullDedupSavings, price_basis 'estimated') can never drift apart. */
+export const BATCHDATA_PROPERTY_LOOKUP_ESTIMATE_USD = 0.02
+
 /** PURE — one V3 skip-trace response row → phones[]/emails[], read defensively across
  *  the plausible shapes (a `persons[]` array, a flat `phoneNumbers`/`emails`, or the
  *  V1-style `phone`/`email` singular fields this repo already reads elsewhere). */
@@ -1867,7 +1873,7 @@ export async function lookupBatchDataPropertiesByIds(
       if (!res.ok || !res.data) continue // best-effort hydrate — a failed chunk yields fewer hydrated rows, never throws
       const rows: any[] = res.data?.results?.properties ?? res.data?.results ?? []
       for (const r of rows) if (r && typeof r === "object") properties.push(r)
-      cost += chunk.length * 0.02 // property lookup is priced like the address-keyed V1 search (COST_PER_AVM_LOOKUP-adjacent); no per-lookup price confirmed
+      cost += chunk.length * BATCHDATA_PROPERTY_LOOKUP_ESTIMATE_USD
     } catch {
       // best-effort — a network failure on one chunk does not fail the others already hydrated
     }

@@ -29,7 +29,8 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
-import { PICKABLE_RENDER_STATUS, shouldAutoRequeueFailedRender } from "@/lib/remotion/render-decision"
+import { PICKABLE_RENDER_STATUS } from "@/lib/remotion/render-decision"
+import { recoverStalledRenders, requeueFailedRenders } from "@/lib/remotion/registry"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -60,51 +61,39 @@ export async function GET(req: NextRequest) {
   const { refreshLivingVideos } = await import("@/lib/video/living-video-sweep")
   const livingRefresh = await refreshLivingVideos({ limit: 200 })
 
-  // AUTONOMOUS FAILED-RENDER RE-QUEUE (wave 57) — see this file's header.
-  // Best-effort and wrapped whole: `retry_count` (m622) may not exist yet on
-  // an environment where that migration has not been applied, and a missing
-  // column must degrade this loop to a no-op, never break the queue drain
-  // beneath it (§4 fail closed — but closed on THIS step, not the cron).
-  const autoRequeue: { requeued: Array<{ id: string; reason: string }>; skipped: Array<{ id: string; reason: string }> } =
+  // DEAD-CLAIM RECOVERY, then the AUTONOMOUS FAILED-RENDER RE-QUEUE (wave 57) — see
+  // this file's header. TOMBSTONE (wave 153, lane 153J): the requeue loop that lived
+  // inline here moved to lib/remotion/registry.ts requeueFailedRenders (the survivor,
+  // now proof-driven by test:render-queue-recovery); it read the 5 oldest failed rows
+  // unfiltered, so five spent rows starved every newer retry, and it never read
+  // error_message, so terminal failures burned both retries. recoverStalledRenders
+  // runs FIRST: a claim the route never finished (killed at its 300 s cap / memory /
+  // recycle) used to sit 'rendering' forever; it is failed `render_stalled` here and
+  // retried by the requeue below in the same tick. Each step is wrapped whole and
+  // reports its own refusal: a missing column (m622 retry_count, m933 claimed_at) on
+  // an environment that has not applied the migration degrades THAT step to a
+  // reported no-op, never the queue drain beneath it (§4 fail closed, on this step).
+  const stallRecovery: { recovered: Array<{ id: string; reason: string }>; skipped: Array<{ id: string; reason: string }>; error?: string } =
+    { recovered: [], skipped: [] }
+  try {
+    const r = await recoverStalledRenders(svc)
+    stallRecovery.recovered = r.moved
+    stallRecovery.skipped = r.skipped
+    if (r.error) { stallRecovery.error = r.error; console.error(`[composition-render-queue] ${r.error} (dead-claim recovery degraded to a no-op this tick)`) }
+    if (r.moved.length > 0) console.warn(`[composition-render-queue] recovered ${r.moved.length} dead render claim(s): ${r.moved.map((m) => m.id).join(", ")}`)
+  } catch (e) {
+    stallRecovery.error = (e as Error).message
+    console.error("[composition-render-queue] dead-claim recovery failed (degrading to no-op):", (e as Error).message)
+  }
+  const autoRequeue: { requeued: Array<{ id: string; reason: string }>; skipped: Array<{ id: string; reason: string }>; error?: string } =
     { requeued: [], skipped: [] }
   try {
-    const { data: failedRows } = await svc.from("remotion_composition_renders")
-      .select("id, composition_id, render_status, retry_count, input_props")
-      .eq("render_status", "failed")
-      .order("created_at", { ascending: true })
-      .limit(5)
-    if (failedRows && failedRows.length > 0) {
-      const { missingContentProps } = await import("@/lib/remotion/content-contract")
-      for (const f of failedRows as Array<{
-        id: string; composition_id: string; render_status: string;
-        retry_count: number | null; input_props: Record<string, unknown> | null
-      }>) {
-        const missing = missingContentProps(f.composition_id, f.input_props ?? {})
-        const decision = shouldAutoRequeueFailedRender(f, missing)
-        if (!decision.requeue) {
-          autoRequeue.skipped.push({ id: f.id, reason: decision.reason })
-          continue
-        }
-        // Guard the flip with .eq("render_status","failed") so a row the Asset
-        // Manager (or another tick) already claimed cannot be double-requeued —
-        // the update simply matches zero rows in that race, which is fine.
-        const { data: updated, error: rqErr } = await svc
-          .from("remotion_composition_renders")
-          .update({ render_status: "queued", retry_count: (f.retry_count ?? 0) + 1, error_message: null })
-          .eq("id", f.id)
-          .eq("render_status", "failed")
-          .select("id")
-        if (rqErr) {
-          console.error(`[composition-render-queue] auto-requeue failed for ${f.id}: ${rqErr.message}`)
-          autoRequeue.skipped.push({ id: f.id, reason: `update refused: ${rqErr.message}` })
-        } else if (!updated || updated.length === 0) {
-          autoRequeue.skipped.push({ id: f.id, reason: "already claimed by another tick/action" })
-        } else {
-          autoRequeue.requeued.push({ id: f.id, reason: decision.reason })
-        }
-      }
-    }
+    const r = await requeueFailedRenders(svc)
+    autoRequeue.requeued = r.moved
+    autoRequeue.skipped = r.skipped
+    if (r.error) { autoRequeue.error = r.error; console.error(`[composition-render-queue] ${r.error} (auto-requeue degraded to a no-op this tick)`) }
   } catch (e) {
+    autoRequeue.error = (e as Error).message
     console.error("[composition-render-queue] auto-requeue sweep failed (degrading to no-op):", (e as Error).message)
   }
 
@@ -145,7 +134,7 @@ export async function GET(req: NextRequest) {
   if (!rows || rows.length === 0) {
     return NextResponse.json({
       ran_at: new Date().toISOString(), processed: 0,
-      leak_sweep: leakSweep, living_refresh: livingRefresh, auto_requeue: autoRequeue,
+      leak_sweep: leakSweep, living_refresh: livingRefresh, stall_recovery: stallRecovery, auto_requeue: autoRequeue,
       failure_census: failureCensus,
     })
   }
@@ -175,6 +164,7 @@ export async function GET(req: NextRequest) {
       render_body:    renderBody,
       leak_sweep:     leakSweep,
       living_refresh: livingRefresh,
+      stall_recovery: stallRecovery,
       auto_requeue:   autoRequeue,
       failure_census: failureCensus,
     })

@@ -42,6 +42,8 @@ type RenderFailureBucket =
   | "media_decode"
   | "host_refused"
   | "function_timeout"
+  | "render_stalled"
+  | "deploy_sources_missing"
   | "memory"
   | "provider"
   | "not_renderable"
@@ -56,6 +58,15 @@ interface RenderFailureSignature {
   evidence: string
   /** Where the fix lives, or what the operator does. */
   fix: string
+  /**
+   * WAVE 153 (lane 153J) — does another attempt of the SAME row have a chance? `transient` rides the queue's bounded
+   * auto-requeue (lib/remotion/render-decision.ts shouldAutoRequeueFailedRender); `terminal` would fail identically
+   * (the file is gone, the code cannot bundle, the props are wrong) so it is NOT retried and waits for the human / the
+   * OS-health incident with this signature's fix. Before this field the requeue never read error_message at all, so the
+   * media_decode fix below ("treat a 404 as TERMINAL — the auto-requeue must not re-fetch a file that is gone") was a
+   * sentence, not a behavior: every terminal failure burned both auto-retries first.
+   */
+  retry: "transient" | "terminal"
 }
 
 /**
@@ -71,6 +82,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "The bytes handed to the host were not a playable container (empty, truncated, no moov/mdat, zero duration) — before wave 142 these were hosted and stamped succeeded.",
     evidence: "lib/video/playable-output.ts probePlayableOutput, run inside lib/remotion/media-host.ts hostRenderedMedia for every video/* upload",
     fix: "The row is failed with the probe's reasons and escalated to the Asset Manager (lib/remotion/render-escalation.ts); the queue retries once (transient), then a human looks at the composition.",
+    retry: "transient",
   },
   {
     bucket: "content_contract",
@@ -78,6 +90,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "A producer staged a render without the composition's CLAIM props; Remotion merges {} over Studio defaultProps, so the render would have come out confident and wrong (123 Main Street at $625,000).",
     evidence: "lib/remotion/content-contract.ts + render-composition/route.ts §2c (the backstop; cancelled, not failed)",
     fix: "The producer threads the facts (director-content.ts); the row is CANCELLED with the missing prop names and never auto-retried (shouldAutoRequeueFailedRender refuses a doomed retry).",
+    retry: "terminal",
   },
   {
     bucket: "claim_refused",
@@ -85,6 +98,15 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "The queued→rendering claim was REFUSED (PGRST204 on a column, a PostgREST 5xx, a multi-row maybeSingle) and used to read as 'nothing queued' — the same oldest row was picked forever.",
     evidence: "app/api/internal/remotion/render-composition/route.ts :100-117 (commit 0b37d7b28: 'three render routes read a refused claim as nothing to do')",
     fix: "The route answers 500 with the refusal; the cron's own response carries it. Check the column list in the claim's .update()/.select() against the live schema.",
+    retry: "transient",
+  },
+  {
+    bucket: "render_stalled",
+    pattern: /render_stalled/i,
+    rootCause: "A render was CLAIMED (queued → rendering) and its function never wrote a terminal status: the 300 s route cap, a memory kill or an instance recycle ends the process mid-render, and before wave 153 nothing ever read a 'rendering' row again — the auto-requeue, this census and the OS-health detector all read 'failed' only, and the pipeline reaper reads ai_video_projects only — so the very timeouts this census calls 'transient for ONE bounded retry' were never retried, never escalated, and showed a spinner forever.",
+    evidence: "lane 153J notes: app/api/internal/remotion/render-composition/route.ts claim (queued → rendering) has no other reader of 'rendering' (grep of render_status writers/readers); m933 stamps claimed_at on the transition (trigger) and lib/remotion/registry.ts recoverStalledRenders fails a claim older than three route lifetimes",
+    fix: "recoverStalledRenders (composition-render-queue tick) fails the row with this token and the claim time; the bounded auto-requeue retries it like any transient failure, and an exhausted row reaches the OS-health media_render_failures incident. Sustained stalls on one composition are the Lambda migration remotion/LAMBDA_DEPLOYMENT.md documents.",
+    retry: "transient",
   },
   {
     bucket: "asset_load_timeout",
@@ -92,6 +114,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "A delayRender() handle — an <Img> still loading (SafeImg), the ProductPromoReel's Google font via loadFont(), a <Video>/<Audio> element's metadata — was not cleared within the renderer's timeoutInMilliseconds (the installed default, 30 000 ms; the render route sets none), so Remotion aborted the WHOLE render: a slow or blocked asset host, a bucket that answers late, or the sandbox proxy refusing the fetch.",
     evidence: "node_modules/remotion@4.0.521 dist/cjs/delay-render.js:42 (the exact message: 'was called but not cleared after ${timeout}ms. See https://remotion.dev/docs/timeout for help.'); remotion/components/SafeImg.tsx:29-32 (delayRenderRetries={1}, the 30 s default named); remotion/ProductPromoReel.tsx:36 loadFont; app/api/internal/remotion/render-composition/route.ts:290 (no timeoutInMilliseconds override). The official page is linked from the message itself — WebFetch of remotion.dev was refused in this sandbox (DNS), so the installed package is the citation.",
     fix: "SafeImg gives up after ONE retry (cancelRender) so a dead photo fails loud instead of hanging 30 s per frame; a slow host is transient for the queue's one bounded retry; raise timeoutInMilliseconds on renderMedia only for a composition PROVEN to load remote media, never globally (it multiplies the 300 s route cap exposure).",
+    retry: "transient",
   },
   {
     bucket: "browser_network",
@@ -99,6 +122,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "A fetch made INSIDE the headless page failed — and one such fetch fails the whole render. MEASURED 2026-10-23 with a real render (scripts/remotion-real-render-probe.ts): remotion/ProductPromoReel.tsx called @remotion/google-fonts loadFont('Inter') at MODULE scope, remotion/Root.tsx imports it, so the bundle of EVERY composition requested https://fonts.gstatic.com/…woff2 and, with that host unreachable or untrusted (a locked-down egress, an interception proxy: net::ERR_CERT_AUTHORITY_INVALID), all renders — a lead-magnet card, a postcard, a CMA reel — died with the bare `NetworkError: A network error occurred.`; 0 of 3 rendered. Any remote photo, font or provider URL fails the same way.",
     evidence: "scripts/remotion-real-render-probe.ts (before: 0 of 3 compositions rendered, every one NetworkError on fonts.gstatic.com; after the lazy font load: 3 of 3, two playable MP4s that decode clean + one PNG); remotion/ProductPromoReel.tsx (loadedInter — the font is now requested only when THAT composition renders); the stored message is the bare NetworkError, so the page's console line (the URL) is the only place the host is named",
     fix: "Fonts and every other page-time fetch must be LOCAL or confined to the composition that needs it (done for Inter; a composition that adds loadFont/staticFile of a remote URL at module scope reintroduces it). The queue's bounded retry covers a transient blip; a sustained one means the egress cannot reach the host — host the font in the bundle (public/ + staticFile) rather than the CDN. Never mask it with a fallback: a render without its font is a different render.",
+    retry: "transient",
   },
   {
     bucket: "media_decode",
@@ -106,6 +130,15 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "A referenced asset could not be fetched or decoded by the headless browser: a photo that 404s on a public bucket (SafeImg cancels after one retry), a D-ID result URL that expired before the frame was reached, or an mp4/audio codec Chromium cannot decode inside one of the 24 compositions that mount <Video>/<Audio>/<OffthreadVideo>.",
     evidence: "remotion/components/SafeImg.tsx:12 (the cancelRender text 'Error loading image with src:'); 24 files under remotion/ mount <Video>/<Audio>/<OffthreadVideo> (grep 2026-10-19); lib/did/result-url-rehost-sweep.ts (provider URLs expire → re-hosted on our bucket before any render reads them)",
     fix: "Re-host provider media before it is staged into input_props (the D-ID rehost sweep + hostRenderedMedia), conform every muxed source (lib/video/stitch-graph.ts), and treat a 404 as TERMINAL — the auto-requeue must not re-fetch a file that is gone.",
+    retry: "terminal",
+  },
+  {
+    bucket: "deploy_sources_missing",
+    pattern: /Can't resolve '\.\.?\/[^']*'|Cannot find module '\.\.?\/[^']*'|ENOENT[^\n]*\bremotion\/(index\.ts|Root\.tsx)/i,
+    rootCause: "The runtime bundle (getBundle → @remotion/bundler) reads remotion/** and the pure lib modules it imports FROM THE FUNCTION'S DISK, and the deployment did not ship them: Next's file tracer follows remotion/index.ts to Root.tsx and stops (it does not follow JSX imports), so 72 of the 74 bundle-graph files and @remotion/{media,motion-blur,google-fonts} are absent from a render route's trace unless next.config.ts outputFileTracingIncludes names them. A RELATIVE specifier that cannot be resolved is this class; an `@/` specifier is bundle_resolve below.",
+    evidence: "lane 153J notes: Next's own @vercel/nft (node_modules/next/dist/compiled/@vercel/nft, the options collect-build-traces.js passes) over the render route's runtime references shipped remotion/index.ts + remotion/Root.tsx only; the function-filesystem replay bundled from the traced files alone and failed `Can't resolve './…'`, then bundled and rendered once the includes were added",
+    fix: "next.config.ts outputFileTracingIncludes for every route that bundles at runtime (the render routes) — test:remotion-deploy-trace derives the bundle graph and fails when a file or package escapes the globs. Terminal for the row: the same deploy fails identically, so it is not retried; redeploy, then restart the render.",
+    retry: "terminal",
   },
   {
     bucket: "bundle_resolve",
@@ -113,6 +146,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "A file under remotion/ imported an app module through the `@/` alias (or a server/app graph); the Remotion bundler's webpack resolves relative imports to PURE lib modules only, so the production bundle did not compile and every render died at getBundle.",
     evidence: "lane 85E notes: `bundle({entryPoint: remotion/index.ts}) … failed with Can't resolve '@/lib/format/math' / '@/lib/remotion/content-contract'`; commit 29acdca03 'Remotion bundle compiles again'; commit 187aaa2bb (a server producer reached a Remotion component file)",
     fix: "Relative imports from remotion/** to pure lib modules only; test:remotion-setup holds the bundle; the bundle cache evicts a rejected promise so the next tick retries (lib/remotion/bundle-cache.ts).",
+    retry: "terminal",
   },
   {
     bucket: "chromium_launch",
@@ -120,6 +154,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "The headless browser could not be launched or could not reach the network: on Vercel the @sparticuz/chromium-min pack must download (CHROMIUM_PACK_URL, pinned v149), in CI the Playwright cache must exist, and in this sandbox the agent proxy refuses chromium's CONNECT.",
     evidence: "lib/remotion/chromium-executable.ts (three inline copies merged, lane 78B); lane 78 notes: `https://example.com failed with net::ERR_TUNNEL_CONNECTION_FAILED — the sandbox's agent proxy refuses chromium's CONNECT`; wave 93 CI: 'real Chromium timed out launching in test:capture-dns-pin'",
     fix: "resolveChromiumExecutable is the ONE resolver (serverless → the pack; local → Remotion-managed or CHROMIUM_EXECUTABLE_PATH); a launch failure is transient for the queue's bounded auto-requeue.",
+    retry: "transient",
   },
   {
     bucket: "frame_interpolation",
@@ -127,6 +162,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "A composition built an interpolate() inputRange that was not strictly increasing (a fade longer than the clip collapsed [0, fadeIn, dur, dur]) — Remotion throws for the frame and the WHOLE render fails.",
     evidence: "remotion/components/KenBurnsPhoto.tsx:63 (the comment records the exact failing range [0,10,36,36]; fixed lane 86B); commit 7db8dde60 'every interpolate clamps'",
     fix: "Clamp both extrapolations and guard degenerate ranges (fadeIn >= dur → constant); scripts/video-timeline-integrity-guard.ts walks every composition.",
+    retry: "terminal",
   },
   {
     bucket: "ffmpeg_stitch",
@@ -134,6 +170,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "The post-render ffmpeg pass (bookend stitch, narration mux, music bed, loudness master) failed: historically a segment with NO audio stream made `[i:a]` invalid and killed the whole stitch, a tpad placed after a trim added nothing (5.7 s of picture lost), renders came out BT.601 against BT.709 clips, and hard cuts clicked mid-waveform.",
     evidence: "lib/video/stitch-graph.ts header (lane 86B measurements) + lib/video/composite-attribution.ts concatIntroOutro; lane 86B notes items 3 and 5",
     fix: "Every segment is conformed (fps, yuv420p, BT.709, 48 kHz), silent sources are synthesized in-graph, joins are dissolves on handles; a failed pass keeps the unstitched buffer (best-effort) — so an ffmpeg failure in the error_message means the FIRST pass (the render itself) or the host raised it.",
+    retry: "transient",
   },
   {
     bucket: "function_timeout",
@@ -141,6 +178,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "The synchronous Vercel render route is capped at 300 s (maxDuration) and bundle + Chromium + encode + ffmpeg passes compete for one instance: a 15 s reel measured 115 s at scale 0.5 / concurrency 2 on a dev box, and the 706-frame memory film ran 40 minutes with motion blur on.",
     evidence: "app/api/internal/remotion/render-composition/route.ts (maxDuration 300, concurrency 1); lane 86B / 90E2 notes (render times, the blur-window finding, 3.3× saving from the blur rule); remotion/LAMBDA_DEPLOYMENT.md (the parked Lambda path)",
     fix: "Blur only where the purpose model allows, 30 fps for social, concurrency 1 on Vercel, the bundle cache; a timeout is transient for ONE bounded retry; sustained timeouts are the Lambda migration the deployment note documents.",
+    retry: "transient",
   },
   {
     bucket: "memory",
@@ -148,6 +186,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "A V8 heap or container memory limit. Every exit-134 / 'Ineffective mark-compacts' in this repo's history is the TypeScript or next-build compile (CI), not a render — but a Vercel function below the ~1.6 GB the Sparticuz pack recommends can die the same way mid-encode.",
     evidence: ".github/workflows/build.yml measurement notes (compile-phase heap aborts); lane 78 notes: 'Sparticuz recommends ≥512 MB, ideally 1600 MB RAM'",
     fix: "Function memory on the render routes; never more than one render per instance (the cron serializes); the row is transient for one retry.",
+    retry: "transient",
   },
   {
     bucket: "host_refused",
@@ -155,6 +194,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "Supabase Storage refused the finished bytes (missing bucket, bucket limit, mime, a signing failure) — the Vercel Blob fallback that used to swallow this behind `catch {}` was removed on the owner's ruling, so the refusal is loud.",
     evidence: "lib/remotion/media-host.ts header (2026-08-26 ruling); lib/storage/file-limits.ts checkUpload",
     fix: "Read the reason in error_message (bucket + limit are named); the stored object, when the URL issue failed, is removed or recorded on storage_orphaned_objects.",
+    retry: "transient",
   },
   {
     bucket: "provider",
@@ -162,6 +202,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "An upstream media provider (D-ID avatar, ElevenLabs narration) refused or failed; the structured D-ID error classes separate terminal (402/451/400) from transient (429/5xx).",
     evidence: "lib/did/contract.ts classifyDidError (MAINTENANCE_DOMAINS.did_integration)",
     fix: "Terminal classes stop retrying and name the human action; transient ones ride the poller's bounded retry.",
+    retry: "transient",
   },
   {
     bucket: "not_renderable",
@@ -169,6 +210,7 @@ export const RENDER_FAILURE_SIGNATURES: readonly RenderFailureSignature[] = [
     rootCause: "Nothing broke: the composition is inactive or above the tenant's tier — the row is CANCELLED, not failed.",
     evidence: "app/api/internal/remotion/render-composition/route.ts §2 / §2b",
     fix: "None (by design); it is listed so a census never mistakes a cancellation for a failure.",
+    retry: "terminal",
   },
 ]
 
@@ -253,9 +295,11 @@ select
     when error_message ~* 'output not playable|unplayable' then 'unplayable_output'
     when error_message ~* 'content_props_missing|missing required content|composition_not_registered' then 'content_contract'
     when error_message ~* 'claim_refused' then 'claim_refused'
+    when error_message ~* 'render_stalled' then 'render_stalled'
     when error_message ~* 'delayRender\\(\\) was called but not cleared|not cleared after [0-9]+ ?ms|remotion\\.dev/docs/timeout' then 'asset_load_timeout'
     when error_message ~* 'NetworkError: A network error occurred|net::ERR_(CERT|NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|CONNECTION|PROXY)|fonts\\.gstatic\\.com|fonts\\.googleapis\\.com|google-fonts' then 'browser_network'
     when error_message ~* 'Error loading image with src|Could not (extract|get) (a )?frame|Failed to (load|decode)|MEDIA_ERR|NotSupportedError|OffthreadVideo|cancelRender' then 'media_decode'
+    when error_message ~* 'Can''t resolve ''\\.\\.?/|Cannot find module ''\\.\\.?/|ENOENT.*remotion/(index\\.ts|Root\\.tsx)' then 'deploy_sources_missing'
     when error_message ~* 'Can''t resolve|Cannot find module|Module not found|webpack' then 'bundle_resolve'
     when error_message ~* 'chromium|browserExecutable|Failed to launch|ERR_TUNNEL|Target closed|Protocol error' then 'chromium_launch'
     when error_message ~* 'inputRange must be strictly monotonically increasing|interpolate' then 'frame_interpolation'

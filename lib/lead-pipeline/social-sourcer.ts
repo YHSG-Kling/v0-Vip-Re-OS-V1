@@ -218,13 +218,35 @@ function craigslistSearchUrl(city: string, query: string, section: string): stri
   return `https://${city.toLowerCase().replace(/ /g, "")}.craigslist.org/search/${section}?query=${encodeURIComponent(query)}`
 }
 
+/** The snapshot-checkpoint deps a page fetch needs (wave 153, lane 153G — row 55); the cron passes its own. */
+interface PageFetchCheckpoint {
+  ledgerClient: { from: (t: string) => any }
+  scope: { brokerageId: string | null; marketId: string | null }
+  spendGate: (estimateUsd: number) => { allowed: boolean; reason: string }
+  tickBudget?: { fetchesLeft: number }
+}
+type CraigslistResult = { records: NormalizedScrapedRecord[]; cost: number; held: string | null; commit: (ok: boolean) => Promise<unknown> }
+const NO_COMMIT = async () => ({ persisted: false })
+
+// WAVE 153 (lane 153G, row 55): the ZenRows fallback rides the snapshot checkpoint (robots, terms, spend, backoff, digest)
+// like every page fetch — never a bare transport call. Craigslist's terms of use prohibit automated collection, so the
+// checkpoint HOLDS the host until a written agreement is recorded (lib/providers/scrape-checkpoint.ts SCRAPE_TARGET_AGREEMENTS);
+// without the caller's checkpoint deps nothing is fetched. `commit` runs after the producer accepted the batch.
 async function craigslistHtmlFallback(
-  city: string, query: string, section: "rea" | "hhh", market: SocialMarket,
-): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+  city: string, query: string, section: "rea" | "hhh", market: SocialMarket, checkpoint?: PageFetchCheckpoint,
+): Promise<CraigslistResult> {
+  if (!checkpoint) return { records: [], cost: 0, held: "no snapshot checkpoint supplied — the HTML fallback fetched nothing", commit: NO_COMMIT }
   try {
-    const { scrapeWithZenRows } = await import("@/lib/external/zenrows-client")
-    const res = await scrapeWithZenRows(craigslistSearchUrl(city, query, section), { premiumProxy: true })
-    const parsed = parseCraigslistHtml(res.body)
+    const { fetchCheckpointedSnapshot } = await import("@/lib/providers/scrape-checkpoint")
+    const snap = await fetchCheckpointedSnapshot(
+      { url: craigslistSearchUrl(city, query, section), scope: { ...checkpoint.scope, purpose: `craigslist_${section}_fallback` }, jsRender: false, premiumProxy: true, maxPages: 1 },
+      { ledgerClient: checkpoint.ledgerClient, spendGate: checkpoint.spendGate, tickBudget: checkpoint.tickBudget },
+    )
+    if (snap.status !== "fetched_changed") {
+      const quiet = snap.status === "unchanged" || snap.status === "not_modified" || snap.status === "skipped_interval"
+      return { records: [], cost: snap.costUsd, held: quiet ? null : `${snap.status} — ${snap.reason}`, commit: NO_COMMIT }
+    }
+    const parsed = snap.html.flatMap((html) => parseCraigslistHtml(html))
     // parseCraigslistHtml hardcodes seller intent (it parses the 'rea'/for-sale shape);
     // the 'hhh' housing-wanted section is buyer/ISO intent — remap here, same rule
     // normalizeCraigslistItem applies to the Apify path, so both paths agree.
@@ -235,19 +257,20 @@ async function craigslistHtmlFallback(
           city: market.city, state: market.state,
         }))
       : parsed.map((r) => ({ ...r, city: market.city, state: market.state }))
-    return { records: records.filter(isViableRecord), cost: res.cost ?? 0 }
+    const fresh = snap.selectNew(records.filter(isViableRecord)).records
+    return { records: fresh, cost: snap.costUsd, held: null, commit: (ok: boolean) => snap.commit({ ok, forwarded: ok ? fresh : [] }) }
   } catch (e) {
     console.warn("[social-sourcer] craigslist HTML fallback failed:", e instanceof Error ? e.message : e)
-    return { records: [], cost: 0 }
+    return { records: [], cost: 0, held: null, commit: NO_COMMIT }
   }
 }
 
-export async function sourceCraigslist(city: string, query: string, market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+export async function sourceCraigslist(city: string, query: string, market: SocialMarket, checkpoint?: PageFetchCheckpoint): Promise<CraigslistResult> {
   const r = await scrapeCraigslistPosts({ city, query, limit: 100, section: "rea" }).catch(() => ({ posts: [], cost: 0 }))
   const records = (r.posts ?? []).map((p) => normalizeCraigslistItem(p, market)).filter(isViableRecord)
-  if (records.length > 0) return { records, cost: r.cost ?? 0 }
-  const fallback = await craigslistHtmlFallback(city, query, "rea", market)
-  return { records: fallback.records, cost: (r.cost ?? 0) + fallback.cost }
+  if (records.length > 0) return { records, cost: r.cost ?? 0, held: null, commit: NO_COMMIT }
+  const fallback = await craigslistHtmlFallback(city, query, "rea", market, checkpoint)
+  return { ...fallback, cost: (r.cost ?? 0) + fallback.cost }
 }
 
 /**
@@ -257,14 +280,14 @@ export async function sourceCraigslist(city: string, query: string, market: Soci
  * words ("wanted to buy ISO looking to buy home") and matched next to nothing; it stays only as
  * the fallback when a caller passes no query.
  */
-export async function sourceCraigslistWanted(city: string, market: SocialMarket, query?: string): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
+export async function sourceCraigslistWanted(city: string, market: SocialMarket, query?: string, checkpoint?: PageFetchCheckpoint): Promise<CraigslistResult> {
   const wantedQuery = query?.trim() || '"wanted to buy" | "ISO house" | "looking for a house"'
   const r = await scrapeCraigslistPosts({ city, query: wantedQuery, limit: 100, section: "hhh" }).catch(() => ({ posts: [], cost: 0 }))
   // normalizeCraigslistItem classifies "wanted"/ISO titles as buyer intent.
   const records = (r.posts ?? []).map((p) => normalizeCraigslistItem(p, market)).filter(isViableRecord)
-  if (records.length > 0) return { records, cost: r.cost ?? 0 }
-  const fallback = await craigslistHtmlFallback(city, wantedQuery, "hhh", market)
-  return { records: fallback.records, cost: (r.cost ?? 0) + fallback.cost }
+  if (records.length > 0) return { records, cost: r.cost ?? 0, held: null, commit: NO_COMMIT }
+  const fallback = await craigslistHtmlFallback(city, wantedQuery, "hhh", market, checkpoint)
+  return { ...fallback, cost: (r.cost ?? 0) + fallback.cost }
 }
 
 export async function sourceGoogle(queries: string[], market: SocialMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
@@ -632,23 +655,51 @@ export async function sourceNewConstructionIntent(market: SocialMarket): Promise
 // Homes.com as NEW coverage — reuses the SAME parseBuyerSavedSearches signal plus the new
 // parseContactAgentChatter DOM reader, over whichever provider is configured (ZenRows primary,
 // Zyte fallback — lib/external/zenrows-client.ts::scrapeSiteWithBestProvider).
+//
+// WAVE 153 (lane 153G, row 55): the fetch rides the REPLAY-SAFE SNAPSHOT CHECKPOINT (lib/providers/scrape-checkpoint.ts
+// fetchCheckpointedSnapshot — robots + terms + spend + backoff + the content digest against the processed watermark).
+// Without the caller's checkpoint deps NOTHING is fetched (a page fetch with no checkpoint could re-buy the same page every
+// tick). Only records not committed inside the rescan window come back, and `commit` — called by the caller AFTER the
+// producer accepted them — moves the processed watermark. `held` names a hold / refusal (robots, terms, budget, backoff).
 export async function sourceRealtySiteChatter(
   site: "zillow" | "realtor" | "homes", market: { city: string; state: string },
-): Promise<{ records: NormalizedScrapedRecord[]; cost: number; provider: "zenrows" | "zyte" | null }> {
-  if (!market.city || !market.state) return { records: [], cost: 0, provider: null }
-  const { scrapeSiteWithBestProvider } = await import("@/lib/external/zenrows-client")
+  checkpoint?: {
+    ledgerClient: { from: (t: string) => any }
+    scope: { brokerageId: string | null; marketId: string | null }
+    spendGate: (estimateUsd: number) => { allowed: boolean; reason: string }
+    tickBudget?: { fetchesLeft: number }
+  },
+): Promise<{
+  records: NormalizedScrapedRecord[]; cost: number; provider: "zenrows" | "zyte" | null
+  held: string | null
+  commit: (ok: boolean) => Promise<{ persisted: boolean; error: string | null }>
+}> {
+  const noCommit = async () => ({ persisted: false, error: "nothing to commit" })
+  if (!market.city || !market.state) return { records: [], cost: 0, provider: null, held: null, commit: noCommit }
+  if (!checkpoint) return { records: [], cost: 0, provider: null, held: "no snapshot checkpoint supplied — nothing fetched", commit: noCommit }
+  const { fetchCheckpointedSnapshot } = await import("@/lib/providers/scrape-checkpoint")
   const url = buildRealtySiteChatterUrl(site, market)
-  const res = await scrapeSiteWithBestProvider(url, { jsRender: true, premiumProxy: true }).catch(
-    () => ({ ok: false, html: "", provider: null as "zenrows" | "zyte" | null, cost: 0, error: "scrape threw" }),
+  const snap = await fetchCheckpointedSnapshot(
+    { url, scope: { ...checkpoint.scope, purpose: `${site}_chatter` }, jsRender: true, premiumProxy: true, maxPages: 1 },
+    { ledgerClient: checkpoint.ledgerClient, spendGate: checkpoint.spendGate, tickBudget: checkpoint.tickBudget },
   )
-  if (!res.ok || !res.html) return { records: [], cost: res.cost ?? 0, provider: res.provider }
+  if (snap.status !== "fetched_changed") {
+    const quiet = snap.status === "unchanged" || snap.status === "not_modified" || snap.status === "skipped_interval"
+    return { records: [], cost: snap.costUsd, provider: snap.provider, held: quiet ? null : `${snap.status} — ${snap.reason}`, commit: noCommit }
+  }
 
   const { parseBuyerSavedSearches } = await import("./scraper-parsers")
-  const savedSearch = parseBuyerSavedSearches(res.html, site, market)
-  const contactAgent = parseContactAgentChatter(res.html, site, market)
-  // Lane 83A — SELL-side chatter on the same page (Make Me Move, valuation requests, owner-claimed).
-  const sellerChatter = parseSellerChatter(res.html, site, market)
-  return { records: [...savedSearch, ...contactAgent, ...sellerChatter], cost: res.cost, provider: res.provider }
+  const parsed: NormalizedScrapedRecord[] = []
+  for (const html of snap.html) {
+    parsed.push(...parseBuyerSavedSearches(html, site, market), ...parseContactAgentChatter(html, site, market))
+    // Lane 83A — SELL-side chatter on the same page (Make Me Move, valuation requests, owner-claimed).
+    parsed.push(...parseSellerChatter(html, site, market))
+  }
+  const fresh = snap.selectNew(parsed).records
+  return {
+    records: fresh, cost: snap.costUsd, provider: snap.provider, held: null,
+    commit: (ok: boolean) => snap.commit({ ok, forwarded: ok ? fresh : [] }),
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

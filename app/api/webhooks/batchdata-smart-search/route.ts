@@ -169,7 +169,15 @@ async function handleTenantDelivery(request: Request, connectionId: string): Pro
         const plan = known ? planPrePullDedup(candidates, known, { lookupKind: "property" }) : null
         const toHydrate = plan ? plan.buy.map((c) => c.ref) : ids
         if (!known) console.warn("[batchdata-smart-search] pre-pull dedup could not read the known keys — hydrating every id as before")
-        else if (plan && plan.skipped > 0) console.log(`[batchdata-smart-search] pre-pull dedup saved ${plan.skipped} paid hydrate(s) of ${ids.length} for tenant ${String(row.brokerage_id)}`)
+        else if (plan && plan.skipped > 0) {
+          console.log(`[batchdata-smart-search] pre-pull dedup saved ${plan.skipped} paid hydrate(s) of ${ids.length} for tenant ${String(row.brokerage_id)}`)
+          // Wave 153 (lane 153G): the AVOIDED spend is RECORDED (one counted scrape-job row), so the ROI ledger can measure it.
+          // The tenant's own key → coverage tenant_paid; the unit is the hydrate's own per-id ESTIMATE (no vendor price confirmed).
+          const { recordPrePullDedupSavings } = await import("@/lib/lead-pipeline/pre-pull-dedup")
+          const { BATCHDATA_PROPERTY_LOOKUP_ESTIMATE_USD } = await import("@/lib/external/batchdata-client")
+          const saved = await recordPrePullDedupSavings(svc, { brokerageId: String(row.brokerage_id), provider: "batchdata", door: "smart_search_hydrate", plan, unitUsd: BATCHDATA_PROPERTY_LOOKUP_ESTIMATE_USD, priceBasis: "estimated", coverage: "tenant_paid" })
+          if (!saved.recorded) console.error("[batchdata-smart-search] pre-pull dedup savings NOT recorded:", saved.error)
+        }
         if (toHydrate.length === 0) return { ok: true, properties: [], cost: 0 } as Awaited<ReturnType<typeof lookupBatchDataPropertiesByIds>>
         return lookupBatchDataPropertiesByIds(toHydrate, { apiKey: key, brokerageId: String(row.brokerage_id) })
       },

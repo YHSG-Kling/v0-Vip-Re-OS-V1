@@ -125,12 +125,19 @@ export class ZenrowsClient {
   }
 }
 
-const ZENROWS_API_KEY = process.env.ZENROWS_API_KEY!
+/** The flat per-call estimate booked when ZenRows does not state the request's cost (X-Request-Cost absent). */
+const ZENROWS_ESTIMATED_CALL_USD = 0.01
 
 export interface ZenRowsResponse {
   statusCode: number
   body: string
   cost: number
+  /** Wave 153 (lane 153G): `final` = ZenRows' own X-Request-Cost; `estimated` = the flat per-call estimate. */
+  costBasis?: "final" | "estimated"
+  /** Wave 153: the TARGET's headers (ZenRows' `Zr-` prefix removed, lowercased) — validators for the snapshot checkpoint. */
+  headers?: Record<string, string>
+  /** Wave 153: the source answered 304 Not Modified to OUR validator (original_status) — nothing new. */
+  notModified?: boolean
 }
 
 export async function scrapeWithZenRows(
@@ -140,26 +147,39 @@ export async function scrapeWithZenRows(
     customHeaders?: Record<string, string>
     premiumProxy?: boolean
     jsRender?: boolean
+    /** Wave 153: If-None-Match / If-Modified-Since from the snapshot checkpoint — sent with original_status so a 304 reads. */
+    conditionalHeaders?: Record<string, string> | null
   } = {}
 ): Promise<ZenRowsResponse> {
   // Official ZenRows SDK adapter (lib/providers/zenrows/client.ts) — same
-  // request shape, same credit-per-request price.
+  // request shape, same credit-per-request price. The key is read per CALL (not at module load).
   const { scrapePage } = await import("@/lib/providers/zenrows/client")
-  const res = await scrapePage(ZENROWS_API_KEY, url, {
+  const conditional = options.conditionalHeaders && Object.keys(options.conditionalHeaders).length ? options.conditionalHeaders : null
+  const headers = conditional || options.customHeaders ? { ...(options.customHeaders ?? {}), ...(conditional ?? {}) } : undefined
+  const res = await scrapePage(process.env.ZENROWS_API_KEY ?? "", url, {
     jsRender: options.jsRender,
-    waitFor: options.loadingWait ?? 'networkidle',
+    waitFor: options.loadingWait,
     premiumProxy: options.premiumProxy,
-    customHeaders: options.customHeaders,
+    customHeaders: headers,
+    originalStatus: !!conditional,
   })
+  const cost = res.requestCostUsd ?? ZENROWS_ESTIMATED_CALL_USD
+  const costBasis: "final" | "estimated" = res.requestCostUsd !== null ? "final" : "estimated"
 
+  if (conditional && res.status === 304) {
+    return { statusCode: 304, body: "", cost, costBasis, headers: res.targetHeaders, notModified: true }
+  }
   if (!res.ok) {
-    throw new Error(`ZenRows API error: ${res.status ?? "network"} ${res.error ?? ""}`.trim())
+    // The vendor's HTTP status rides the error so the caller's retry rule (scrape-checkpoint failureDisposition) can read it.
+    throw Object.assign(new Error(`ZenRows API error: ${res.status ?? "network"} ${res.error ?? ""}`.trim()), { status: res.status })
   }
 
   return {
     statusCode: res.status ?? 200,
     body: res.data ?? "",
-    cost: 0.01,
+    cost,
+    costBasis,
+    headers: res.targetHeaders,
   }
 }
 
@@ -211,6 +231,18 @@ export interface SiteHtmlResult {
   provider: "zenrows" | "zyte" | null
   cost: number
   error: string | null
+  // ── wave 153 (lane 153G) — what the snapshot checkpoint (lib/providers/scrape-checkpoint.ts) reads; always present on
+  //    every return below, and read by nobody else, so every earlier caller is unchanged ──
+  /** `final` = the vendor stated the cost (ZenRows X-Request-Cost); `estimated` = the published-rate estimate. */
+  costBasis: "final" | "estimated" | "none"
+  /** The TARGET's status where the transport reports it (Zyte statusCode; ZenRows original_status). */
+  statusCode: number | null
+  /** The transport's own HTTP status on a refusal (429 / 520 / 401 …) — the checkpoint's retry rule reads it. */
+  vendorStatus: number | null
+  /** The target's response headers (lowercased) when `withHeaders` asked — validators only are read. */
+  headers: Record<string, string> | null
+  /** The source answered 304 Not Modified to the checkpoint's validator. */
+  notModified: boolean
 }
 
 // LANE 82B — ORDER BY HOST, CHEAPEST SUCCESSFUL PROVIDER FIRST (research 2026-09-25, Exa):
@@ -232,33 +264,48 @@ export function scrapeProviderOrder(url: string): Array<"zenrows" | "zyte"> {
 
 export async function scrapeSiteWithBestProvider(
   url: string,
-  options: { jsRender?: boolean; premiumProxy?: boolean } = {},
+  options: {
+    jsRender?: boolean
+    premiumProxy?: boolean
+    /** Wave 153: conditional validators from the snapshot checkpoint — each transport sends them only where it documents
+     *  request headers in that mode (Zyte: HTTP mode only; ZenRows: custom_headers + original_status). */
+    requestHeaders?: Record<string, string> | null
+    /** Wave 153: return the target's response headers (Zyte httpResponseHeaders; ZenRows Zr- headers). */
+    withHeaders?: boolean
+  } = {},
 ): Promise<SiteHtmlResult> {
   const { scrapeWithZyte, zyteConfigured } = await import("./zyte-client")
   let lastError: string | null = null
   let lastProvider: "zenrows" | "zyte" | null = null
+  let lastVendorStatus: number | null = null
   for (const provider of scrapeProviderOrder(url)) {
     if (provider === "zenrows") {
       if (!process.env.ZENROWS_API_KEY) continue
       lastProvider = "zenrows"
       try {
-        const r = await scrapeWithZenRows(url, { jsRender: options.jsRender, premiumProxy: options.premiumProxy })
-        if (r.body) return { ok: true, html: r.body, provider: "zenrows", cost: r.cost, error: null }
+        const r = await scrapeWithZenRows(url, { jsRender: options.jsRender, premiumProxy: options.premiumProxy, conditionalHeaders: options.requestHeaders ?? null })
+        const headers = options.withHeaders ? (r.headers ?? null) : null
+        if (r.notModified) return { ok: true, html: "", provider: "zenrows", cost: r.cost, error: null, costBasis: r.costBasis ?? "estimated", statusCode: 304, vendorStatus: null, headers, notModified: true }
+        if (r.body) return { ok: true, html: r.body, provider: "zenrows", cost: r.cost, error: null, costBasis: r.costBasis ?? "estimated", statusCode: r.statusCode, vendorStatus: null, headers, notModified: false }
         lastError = "ZenRows returned an empty body"
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err)
+        const st = (err as { status?: unknown } | null)?.status
+        lastVendorStatus = typeof st === "number" ? st : null
         console.warn("[scrapeSiteWithBestProvider] ZenRows failed, trying the next provider:", lastError)
       }
     } else {
       if (!zyteConfigured()) continue
       lastProvider = "zyte"
-      const z = await scrapeWithZyte(url, { jsRender: options.jsRender })
-      if (z.ok) return { ok: true, html: z.html, provider: "zyte", cost: z.cost, error: null }
+      const z = await scrapeWithZyte(url, { jsRender: options.jsRender, requestHeaders: options.requestHeaders ?? null, withHeaders: options.withHeaders })
+      const headers = options.withHeaders ? (z.headers ?? null) : null
+      if (z.ok) return { ok: true, html: z.html, provider: "zyte", cost: z.cost, error: null, costBasis: "estimated", statusCode: z.statusCode, vendorStatus: null, headers, notModified: z.notModified === true }
       lastError = z.error
+      lastVendorStatus = z.mode === null ? z.statusCode : null
     }
   }
-  if (lastProvider) return { ok: false, html: "", provider: lastProvider, cost: 0, error: lastError }
-  return { ok: false, html: "", provider: null, cost: 0, error: "no scrape provider configured (ZENROWS_API_KEY / ZYTE_API_KEY both unset)" }
+  if (lastProvider) return { ok: false, html: "", provider: lastProvider, cost: 0, error: lastError, costBasis: "none", statusCode: null, vendorStatus: lastVendorStatus, headers: null, notModified: false }
+  return { ok: false, html: "", provider: null, cost: 0, error: "no scrape provider configured (ZENROWS_API_KEY / ZYTE_API_KEY both unset)", costBasis: "none", statusCode: null, vendorStatus: null, headers: null, notModified: false }
 }
 
 export async function extractContactsFromHtml(html: string): Promise<{

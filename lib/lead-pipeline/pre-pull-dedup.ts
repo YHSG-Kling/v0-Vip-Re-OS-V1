@@ -120,7 +120,9 @@ function candidateKeys(c: PrePullCandidate): { person: string[]; property: strin
  * PURE — which candidates to BUY and which are already held. Order: a known observation (source id) is never re-bought;
  * a fresh paid answer on the same person is never re-bought; a known person is not bought again for a person / list
  * lookup; a known property is the duplicate only for a PROPERTY lookup (for a person it is a relation); a stale candidate
- * (its own freshness policy) is held; everything else is new.
+ * (its own freshness policy) is held; everything else is new. A key bought EARLIER IN THE SAME BATCH counts as held, under
+ * the same rules and reasons (wave 153, lane 153G — two events for one property buy it once; two owners of one property in
+ * a person lookup are still two people).
  * @proofSeam the candidate-level production reader is the smart-search hydrate (app/api/webhooks/batchdata-smart-search/
  *  route.ts:142, the one paid per-property lookup fed by provider ids — outside lane 151C's files; the exact wiring is in
  *  lane 151C's notes, Outside-lane 5). The aggregate half (previewAggregateList) is live in the planner today.
@@ -136,25 +138,35 @@ export function planPrePullDedup(
   const buy: PrePullCandidate[] = []
   const byReason: Partial<Record<PrePullDedupReason, number>> = {}
   const tally = (r: PrePullDedupReason) => { byReason[r] = (byReason[r] ?? 0) + 1 }
+  // IN-BATCH duplicates (wave 153, lane 153G — lane 153H's request): two events for one property, or two providers' rows for
+  // one person, in ONE batch were BOTH bought. A key bought EARLIER IN THIS BATCH is held exactly like a key already known —
+  // the same reasons (no new vocabulary), the same lookup-kind rules (a property is a duplicate only for a property lookup).
+  const batch = { sourceIds: new Set<string>(), person: new Set<string>(), property: new Set<string>() }
   for (const c of candidates) {
     const keys = candidateKeys(c)
     const relations: string[] = []
     const emit = (action: "buy" | "skip", reason: PrePullDedupReason, matchedKey: string | null, freshness: FreshnessAssessment | null, why: string) => {
       verdicts.push({ ref: c.ref, action, reason, matchedKey, relations, freshness, why })
       tally(reason)
-      if (action === "buy") buy.push(c)
+      if (action === "buy") {
+        buy.push(c)
+        if (keys.sourceId) batch.sourceIds.add(keys.sourceId)
+        for (const k of keys.person) batch.person.add(k)
+        for (const k of keys.property) batch.property.add(k)
+      }
     }
-    if (keys.sourceId && known.sourceRecordIds.has(keys.sourceId)) { emit("skip", "known_source_id", keys.sourceId, null, "this observation is already held — a replay is never bought"); continue }
+    const inBatch = (set: ReadonlySet<string>, k: string) => (set.has(k) ? " (bought earlier in this same batch)" : "")
+    if (keys.sourceId && (known.sourceRecordIds.has(keys.sourceId) || batch.sourceIds.has(keys.sourceId))) { emit("skip", "known_source_id", keys.sourceId, null, `this observation is already held — a replay is never bought${inBatch(batch.sourceIds, keys.sourceId)}`); continue }
     const priorKey = keys.person.find((k) => known.priorProviderResults.has(k))
     if (priorKey && opts.lookupKind !== "property") {
       const prior = known.priorProviderResults.get(priorKey)!
       if (isFresh(prior.at, days, nowDate)) { emit("skip", "prior_provider_result_fresh", priorKey, null, `${prior.provider} answered for this person on ${prior.at} — within ${days} days, not re-bought`); continue }
     }
-    const personKey = keys.person.find((k) => known.personKeys.has(k))
-    if (personKey && opts.lookupKind !== "property") { emit("skip", "known_person", personKey, null, "this person is already a Lead, Contact or raw observation of this tenant — not bought again"); continue }
+    const personKey = keys.person.find((k) => known.personKeys.has(k) || batch.person.has(k))
+    if (personKey && opts.lookupKind !== "property") { emit("skip", "known_person", personKey, null, `this person is already a Lead, Contact or raw observation of this tenant — not bought again${inBatch(batch.person, personKey)}`); continue }
     if (personKey) relations.push(`known_person:${personKey}`)
-    const propertyKey = keys.property.find((k) => known.propertyKeys.has(k))
-    if (propertyKey && opts.lookupKind === "property") { emit("skip", "known_property", propertyKey, null, "this property is already observed for this tenant — the record is not bought again"); continue }
+    const propertyKey = keys.property.find((k) => known.propertyKeys.has(k) || batch.property.has(k))
+    if (propertyKey && opts.lookupKind === "property") { emit("skip", "known_property", propertyKey, null, `this property is already observed for this tenant — the record is not bought again${inBatch(batch.property, propertyKey)}`); continue }
     if (propertyKey) relations.push(`same_property:${propertyKey}`)
     const freshness = c.signalAt || c.observedAt
       ? evaluateFreshness({ source: c.source, behaviorType: c.behaviorType, intentSignals: c.intentSignals, subjectKind: c.subjectKind, signalAt: c.signalAt ?? null, observedAt: c.observedAt ?? null, now: nowDate })
@@ -226,6 +238,60 @@ const chunk = <T,>(xs: readonly T[], n: number): T[][] => { const out: T[][] = [
 const PROBE_CHUNK = 100
 /** The identity keys one call will read for (persons first) — a bound on the per-key reads, published in the header. */
 const MAX_IDENTITY_KEY_READS = 50
+
+// ─── the AVOIDED spend, persisted (wave 153, lane 153G — carried lane 153B Outside-lane 8) ─────────────────────────────
+// The plan above decides in memory; until now nothing recorded what it SAVED, so the ROI ledger's "acquisition cost avoided
+// through dedup" metric was N/A ("decides in memory and records no avoided pull"). Each decision that skipped at least one
+// paid lookup now leaves ONE counted row on the scrape JOB ledger (lead_scraping_jobs — job_type `pre_pull_dedup`; job_type
+// has no CHECK; the apify_run_cursor precedent; no new table): candidates, bought, skipped by reason, the unit the skipped
+// lookups would have cost and its basis (an ESTIMATE when the vendor confirms no per-lookup price), who pays (coverage) and
+// the door. A decision that skipped nothing writes nothing (no zero rows). Reader: lib/intelligence/roi-ledger.ts
+// decisionMetrics.acquisitionCostAvoidedByDedup (the exact reader diff is lane 153G's Outside-lane request to that file).
+
+/** The scrape-job row kind that records one pre-pull dedup decision's avoided spend (one constant). */
+const PRE_PULL_DEDUP_JOB_TYPE = "pre_pull_dedup"
+
+/**
+ * Persist one decision's avoided spend. Never throws; every refusal is READ and the insert is COUNTED (CLAUDE.md §3).
+ * `unitUsd` null = the unit is unknown → `avoided_usd` null (never 0 as a claim). Tenant-pinned: the row carries the tenant
+ * whose lookup was skipped, and no person data (counts and reasons only).
+ */
+export async function recordPrePullDedupSavings(
+  client: { from: (t: string) => any },
+  input: {
+    brokerageId: string | null
+    provider: string
+    door: string
+    plan: PrePullDedupPlan
+    unitUsd: number | null
+    priceBasis: "published" | "estimated"
+    coverage: "tenant_paid" | "platform_covered"
+    now?: Date
+  },
+): Promise<{ recorded: boolean; avoidedUsd: number | null; error: string | null }> {
+  const { plan } = input
+  if (plan.skipped <= 0) return { recorded: false, avoidedUsd: 0, error: null }
+  const avoidedUsd = input.unitUsd === null ? null : Math.round(plan.skipped * input.unitUsd * 1e6) / 1e6
+  const at = (input.now ?? new Date()).toISOString()
+  try {
+    const { data, error } = await client.from("lead_scraping_jobs").insert({
+      job_type: PRE_PULL_DEDUP_JOB_TYPE, source: `${input.provider}:${input.door}`, status: "completed",
+      brokerage_id: input.brokerageId, market_id: null,
+      leads_found: plan.verdicts.length, leads_created: plan.buy.length,
+      started_at: at, completed_at: at, error_message: null,
+      metadata: {
+        provider: input.provider, door: input.door, skipped: plan.skipped, by_reason: plan.byReason,
+        unit_usd: input.unitUsd, price_basis: input.priceBasis, avoided_usd: avoidedUsd, coverage: input.coverage,
+        judged_against: plan.judgedAgainst, overlap_ratio: plan.overlapRatio,
+      },
+    }).select("id")
+    if (error) return { recorded: false, avoidedUsd, error: error.message }
+    if (!Array.isArray(data) || data.length !== 1) return { recorded: false, avoidedUsd, error: `the savings row insert returned ${Array.isArray(data) ? data.length : 0} rows` }
+    return { recorded: true, avoidedUsd, error: null }
+  } catch (e) {
+    return { recorded: false, avoidedUsd, error: e instanceof Error ? e.message : String(e) }
+  }
+}
 
 /**
  * THE READER (injectable client). Loads, for ONE tenant, the known keys a set of candidates could collide with: raw

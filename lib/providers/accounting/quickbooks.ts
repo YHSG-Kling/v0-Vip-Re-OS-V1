@@ -153,11 +153,16 @@ export class QuickBooksProvider implements IAccountingProvider {
     paymentAccountRef: string
     description?: string
     txnDate?: string
+    /** QuickBooks Location (the Department entity) of the office that owns the expense — wave 153, lanes 153A/153G:
+     *  lib/finance/accounting-egress.ts passes the office's `settings.accounting.quickbooks_department_id` when the office is
+     *  mapped, so a multi-location tenant's office expense lands under that office in the books. Absent = company level. */
+    departmentRef?: string
   }): Promise<AccountingWriteResult> {
     try {
       const payload = {
         PaymentType: "Cash",
         AccountRef: { value: params.paymentAccountRef },
+        ...(params.departmentRef ? { DepartmentRef: { value: params.departmentRef } } : {}),
         ...(params.txnDate ? { TxnDate: params.txnDate } : {}),
         ...(params.description ? { PrivateNote: params.description } : {}),
         Line: [

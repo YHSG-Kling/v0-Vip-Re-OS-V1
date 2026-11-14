@@ -269,6 +269,25 @@ async function main() {
   check("the overlap ratio and the judged-against set are published", plan.overlapRatio === Math.round((4 / 7) * 100) / 100 && plan.judgedAgainst.personKeys === 1 && plan.skipped === 4, String(plan.overlapRatio))
   const propPlan = pd.planPrePullDedup([{ ref: "p", source: "rentcast", propertyAddress: "12 Palafox St", zip: "32501" }], known, { lookupKind: "property", now: NOW })
   check("for a PROPERTY lookup the known property IS the duplicate (not re-bought)", propPlan.verdicts[0].action === "skip" && propPlan.verdicts[0].reason === "known_property")
+  // Wave 153 (lane 153G — lane 153H's request; its canary C2 asserts inBatch.buy.length === 1): IN-BATCH duplicates are bought
+  // ONCE, under the existing reasons. Judged against an EMPTY known set so only the batch itself can hold anything.
+  const none: import("../lib/lead-pipeline/pre-pull-dedup").KnownAcquisitionKeys = { sourceRecordIds: new Set(), personKeys: new Set(), propertyKeys: new Set(), priorProviderResults: new Map(), scope: { brokerageId: T1, includesPlatformPool: false } }
+  const inBatch = pd.planPrePullDedup([
+    { ref: "evt-1", source: "batchdata_smart_search", sourceRecordId: "bd-p1", propertyAddress: "77 Garden St", zip: "32502" },
+    { ref: "evt-2", source: "batchdata_smart_search", sourceRecordId: "bd-p1b", propertyAddress: "77 garden street", zip: "32502-0001" },
+  ], none, { lookupKind: "property", now: NOW })
+  check("IN-BATCH · two events for ONE property in one batch → exactly ONE bought; the second held as known_property (said: earlier in this batch)", inBatch.buy.length === 1 && inBatch.buy[0].ref === "evt-1" && inBatch.verdicts[1].action === "skip" && inBatch.verdicts[1].reason === "known_property" && /earlier in this same batch/.test(inBatch.verdicts[1].why), JSON.stringify(inBatch.verdicts.map((x) => [x.ref, x.action, x.reason])))
+  const twoProps = pd.planPrePullDedup([
+    { ref: "evt-1", source: "batchdata_smart_search", sourceRecordId: "bd-p1", propertyAddress: "77 Garden St", zip: "32502" },
+    { ref: "evt-3", source: "batchdata_smart_search", sourceRecordId: "bd-p3", propertyAddress: "79 Garden St", zip: "32502" },
+  ], none, { lookupKind: "property", now: NOW })
+  check("IN-BATCH ADVERSE · a second candidate for a DIFFERENT property is bought too (both bought)", twoProps.buy.length === 2 && twoProps.skipped === 0)
+  const sameId = pd.planPrePullDedup([{ ref: "a", source: "batchdata_smart_search", sourceRecordId: "bd-9" }, { ref: "b", source: "batchdata_smart_search", sourceRecordId: "bd-9" }], none, { lookupKind: "property", now: NOW })
+  check("IN-BATCH · the same provider id twice in one batch → one bought, the repeat held as known_source_id", sameId.buy.length === 1 && sameId.verdicts[1].reason === "known_source_id")
+  const twoProviders = pd.planPrePullDedup([{ ref: "versium-row", source: "versium", email: "dana@example.org" }, { ref: "pdl-row", source: "peopledata", email: "DANA@example.org" }], none, { lookupKind: "person", now: NOW })
+  check("IN-BATCH · two providers' rows for ONE person (case-blind email) in one person lookup → one bought, the other known_person", twoProviders.buy.length === 1 && twoProviders.verdicts[1].reason === "known_person")
+  const twoOwners = pd.planPrePullDedup([{ ref: "owner-a", source: "x", email: "a@x.org", propertyAddress: "77 Garden St", zip: "32502" }, { ref: "owner-b", source: "x", email: "b@x.org", propertyAddress: "77 Garden St", zip: "32502" }], none, { lookupKind: "person", now: NOW })
+  check("IN-BATCH CONTROL · two OWNERS of one property in a PERSON lookup stay two people (both bought; the second carries a same_property relation)", twoOwners.buy.length === 2 && twoOwners.verdicts[1].relations.some((r) => r.startsWith("same_property:")))
   const m1 = fm.calculateFuzzyMatch({ first_name: "Maria", last_name: "Lopez", email: "maria@lopez.org" }, { first_name: "Robert", last_name: "Chen", email: "robert@chen.org" })
   check("the pipeline's confident-match rule never merges two different owners of one address (no strong identifier in common)", !fm.isConfidentMatch(m1))
   const hhKeys = sid.subjectIdentityKeys({ lastName: "Lopez", propertyAddress: "12 Palafox St", mailingAddress: "12 Palafox St", zip: "32501", email: "maria@lopez.org" })
@@ -288,6 +307,24 @@ async function main() {
   check("…and never another tenant's person", !!loaded && !loaded.personKeys.has("email:other@tenant.org"))
   const refused = await pd.loadKnownAcquisitionKeys(memSupabase({ raw_scraped_leads: [] }, { refuse: { raw_scraped_leads: "permission denied" } }) as any, { brokerageId: T1, marketIds: [MARKET] }, { candidates: [{ ref: "a", source: "x", sourceRecordId: "1" }] })
   check("a refused read returns null (the caller cannot dedup against a half-set — fail closed on spend)", refused === null)
+
+  // Wave 153 (lane 153G — carried lane 153B Outside-lane 8): the AVOIDED spend is PERSISTED, one counted scrape-job row per
+  // decision that skipped a paid lookup, so the ROI ledger can measure "acquisition cost avoided through dedup" (was N/A).
+  console.log("\n[E2] the pre-pull dedup's avoided spend is recorded (measured, not inferred)")
+  const dbSave = memSupabase({ lead_scraping_jobs: [] }, { uuidIds: true })
+  const sv1 = await pd.recordPrePullDedupSavings(dbSave as any, { brokerageId: T1, provider: "batchdata", door: "smart_search_hydrate", plan, unitUsd: 0.02, priceBasis: "estimated", coverage: "tenant_paid", now: NOW })
+  const svRow = (dbSave as any).tables.lead_scraping_jobs[0]
+  check("a decision that skipped 4 of 7 writes ONE row: job_type pre_pull_dedup, tenant-pinned, avoided = skipped × unit, basis + coverage + reasons stated, no person data", sv1.recorded && (dbSave as any).tables.lead_scraping_jobs.length === 1 && svRow.job_type === "pre_pull_dedup" && svRow.brokerage_id === T1 && svRow.metadata.skipped === 4 && svRow.metadata.avoided_usd === 0.08 && svRow.metadata.price_basis === "estimated" && svRow.metadata.coverage === "tenant_paid" && svRow.leads_found === 7 && svRow.leads_created === 3 && svRow.metadata.by_reason.known_source_id === 1 && !/@|\d{10}/.test(JSON.stringify(svRow.metadata)), JSON.stringify(svRow))
+  const sv0 = await pd.recordPrePullDedupSavings(dbSave as any, { brokerageId: T1, provider: "batchdata", door: "smart_search_hydrate", plan: pd.planPrePullDedup([{ ref: "n", source: "x", sourceRecordId: "new-1" }], known, { lookupKind: "property", now: NOW }), unitUsd: 0.02, priceBasis: "estimated", coverage: "tenant_paid" })
+  check("a decision that skipped nothing writes NOTHING (no zero rows inflate the metric)", !sv0.recorded && (dbSave as any).tables.lead_scraping_jobs.length === 1)
+  const svNull = await pd.recordPrePullDedupSavings(memSupabase({ lead_scraping_jobs: [] }, { uuidIds: true }) as any, { brokerageId: T1, provider: "x", door: "y", plan, unitUsd: null, priceBasis: "published", coverage: "platform_covered" })
+  check("an UNKNOWN unit records the skips with avoided_usd NULL — never $0 claimed as a saving", svNull.recorded && svNull.avoidedUsd === null)
+  const svRef = await pd.recordPrePullDedupSavings(memSupabase({ lead_scraping_jobs: [] }, { refuse: { lead_scraping_jobs: "permission denied" } }) as any, { brokerageId: T1, provider: "x", door: "y", plan, unitUsd: 0.02, priceBasis: "estimated", coverage: "tenant_paid" })
+  check("ADVERSE · a refused insert is READ and reported (recorded false, the error named) — never a silent success", !svRef.recorded && /permission denied/.test(String(svRef.error)))
+  const hook = blankStrings(stripComments(readFileSync(join(process.cwd(), "app/api/webhooks/batchdata-smart-search/route.ts"), "utf8")))
+  const hydrateAt = hook.indexOf("planPrePullDedup("), recordAt = hook.indexOf("recordPrePullDedupSavings("), buyAt = hook.indexOf("lookupBatchDataPropertiesByIds(toHydrate")
+  check("the paid Smart Search hydrate records the avoided spend after the plan and before the paid lookup, priced by the hydrate's OWN named estimate", hydrateAt > 0 && recordAt > hydrateAt && buyAt > recordAt && /unitUsd: BATCHDATA_PROPERTY_LOOKUP_ESTIMATE_USD/.test(hook) && /cost \+= chunk\.length \* BATCHDATA_PROPERTY_LOOKUP_ESTIMATE_USD/.test(stripComments(readFileSync(join(process.cwd(), "lib/external/batchdata-client.ts"), "utf8"))))
+  check("POSITIVE CONTROL: the order finder rejects a record placed after the paid lookup", (() => { const f = "planPrePullDedup(a); lookupBatchDataPropertiesByIds(toHydrate); recordPrePullDedupSavings(b)"; return !(f.indexOf("recordPrePullDedupSavings(") < f.indexOf("lookupBatchDataPropertiesByIds(toHydrate")) })())
 
   console.log("\n[F] the pre-pull value formula")
   const base = { factors: { territoryMatch: 1, freshness: 0.9, sourceReliability: 0.5, expectedNewUsableFields: 0.8, identityMatchLikelihood: 0.6, usefulOpportunityFactor: 0.7 }, cost: { recordCount: 400, providerUnitUsd: 0.05, paid: true }, budget: { authorizedUsd: 100 } }

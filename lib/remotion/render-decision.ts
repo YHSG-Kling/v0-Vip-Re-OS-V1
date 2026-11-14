@@ -17,6 +17,7 @@
 import type { CompositionTier, RemotionCompositionRow } from "./registry"
 import type { RenderIntent } from "./render-coordinator"
 import { compositionKeepsBrandIntro } from "../video/duration-model"
+import { classifyRenderFailure } from "./render-failure-census"
 
 /** A composition with <=1 frame is a still card (renderStill → PNG):
  *  thumbnails, postcards, lead-magnet, newsletter-thumb. Everything
@@ -201,6 +202,8 @@ export interface FailedRenderRow {
   render_status: string
   /** NULL on a row from before this column existed — treated as 0 attempts. */
   retry_count:   number | null | undefined
+  /** What the failure said — classified by lib/remotion/render-failure-census.ts. Absent/empty reads as `unknown` (transient, bounded). */
+  error_message?: string | null
 }
 
 export interface AutoRequeueDecision {
@@ -222,7 +225,12 @@ export interface AutoRequeueDecision {
  *     never failed at all — no-op, not an error);
  *   · MAX_AUTO_REQUEUE_ATTEMPTS is already spent;
  *   · the render is DOOMED — the same content the row failed with is still
- *     missing required props, so a retry fails the identical way.
+ *     missing required props, so a retry fails the identical way;
+ *   · the failure is TERMINAL by the census (wave 153, lane 153J): its
+ *     error_message lands in a signature whose `retry` is "terminal" — a media
+ *     file that is gone, a bundle the deploy cannot build, props that throw in
+ *     interpolate(). Another attempt of the same row fails identically, so the
+ *     budget is not spent and the reason names the signature's fix.
  */
 export function shouldAutoRequeueFailedRender(
   row: FailedRenderRow,
@@ -238,6 +246,13 @@ export function shouldAutoRequeueFailedRender(
       reason: `already auto-retried ${attempts}/${MAX_AUTO_REQUEUE_ATTEMPTS} times — needs a human look, not another blind retry`,
     }
   }
+  const failure = classifyRenderFailure(row.error_message)
+  if (failure.signature?.retry === "terminal") {
+    return {
+      requeue: false,
+      reason: `terminal failure (${failure.bucket}) — another attempt of this row would fail identically; ${failure.signature.fix}`,
+    }
+  }
   if (missingProps.length > 0) {
     return {
       requeue: false,
@@ -245,4 +260,48 @@ export function shouldAutoRequeueFailedRender(
     }
   }
   return { requeue: true, reason: `transient failure, content-contract satisfied, ${MAX_AUTO_REQUEUE_ATTEMPTS - attempts} auto-retr${MAX_AUTO_REQUEUE_ATTEMPTS - attempts === 1 ? "y" : "ies"} remaining` }
+}
+
+// ── A CLAIMED RENDER THAT NEVER FINISHED (wave 153, lane 153J) ───────────────
+//
+// render-composition claims a row `queued → rendering` and then has ONE function
+// lifetime (its segment `maxDuration`, 300 s) to write `succeeded` / `failed` /
+// `cancelled`. A process the platform kills at the cap, on a memory limit or on an
+// instance recycle writes nothing — and nothing read a `rendering` row again: the
+// auto-requeue above, the failure census and the OS-health detector all read
+// `failed`, and the pipeline reaper reads ai_video_projects. The row spun forever,
+// and its readers (lead magnets, the product-content autopilot) waited on it forever.
+//
+// m933 stamps `claimed_at` on the transition (a trigger — the claim's own update
+// names no new column, so a lagging migration can never turn every claim into a
+// PGRST204 refusal). A claim older than THREE route lifetimes cannot still be
+// running; it is failed with RENDER_STALLED_TOKEN, which the census classifies
+// `render_stalled` (transient), so the bounded requeue above retries it next tick.
+
+/** The render routes' segment `maxDuration` — a literal Next reads statically
+ *  (app/api/internal/remotion/render-composition/route.ts), so it is restated here;
+ *  test:render-queue-recovery holds the stall threshold to ≥ 2× the route's real value. */
+const RENDER_ROUTE_MAX_DURATION_SECONDS = 300
+
+/** A claim older than this has outlived three route lifetimes and is dead. */
+const RENDER_STALL_AFTER_MS = 3 * RENDER_ROUTE_MAX_DURATION_SECONDS * 1000
+
+/** A `rendering` row with NO claim stamp was claimed before m933 (or the trigger is
+ *  absent); its only clock is `created_at`, which can sit hours in the queue first, so
+ *  it is judged on a far longer horizon rather than reaped early. */
+const LEGACY_RENDER_STALL_AFTER_MS = 24 * 3_600_000
+
+/** PURE. Is this `rendering` row a dead claim at `now`? */
+export function isStalledRender(row: { claimed_at?: string | null; created_at?: string | null }, now: Date): boolean {
+  const at = row.claimed_at ? Date.parse(row.claimed_at) : NaN
+  if (Number.isFinite(at)) return now.getTime() - at >= RENDER_STALL_AFTER_MS
+  const created = row.created_at ? Date.parse(row.created_at) : NaN
+  return Number.isFinite(created) && now.getTime() - created >= LEGACY_RENDER_STALL_AFTER_MS
+}
+
+/** The error_message a recovered dead claim carries (the census keys on `render_stalled`). */
+export function stalledRenderError(row: { claimed_at?: string | null; created_at?: string | null }, now: Date): string {
+  const since = row.claimed_at ?? row.created_at ?? "an unknown time"
+  const clock = row.claimed_at ? "claimed" : "created (no claim stamp — claimed before m933)"
+  return `render_stalled: ${clock} at ${since} and no terminal status was written by ${now.toISOString()} — the render function was killed (route cap, memory limit or instance recycle); a transient failure for the bounded auto-requeue`
 }

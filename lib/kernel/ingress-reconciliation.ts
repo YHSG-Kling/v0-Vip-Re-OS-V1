@@ -207,6 +207,13 @@ async function defaultTenantPushReplayDeps(svc: Svc, brokerageId: string): Promi
       const known = await loadKnownAcquisitionKeys(svc as never, { brokerageId, marketIds: [] }, { candidates })
       const plan = known ? planPrePullDedup(candidates, known, { lookupKind: "property" }) : null
       const toHydrate = plan ? plan.buy.map((c) => c.ref) : ids
+      // wave 153 (153G outside 3): the replay hydrate records its avoided spend too (the ROI ledger's dedup savings reader).
+      if (plan && plan.skipped > 0) {
+        const { recordPrePullDedupSavings } = await import("@/lib/lead-pipeline/pre-pull-dedup")
+        const { BATCHDATA_PROPERTY_LOOKUP_ESTIMATE_USD } = await import("@/lib/external/batchdata-client")
+        const saved = await recordPrePullDedupSavings(svc as never, { brokerageId, provider: "batchdata", door: "push_replay_hydrate", plan, unitUsd: BATCHDATA_PROPERTY_LOOKUP_ESTIMATE_USD, priceBasis: "estimated", coverage: "tenant_paid" })
+        if (!saved.recorded) console.error("[ingress-reconciliation] pre-pull dedup savings NOT recorded:", saved.error)
+      }
       if (toHydrate.length === 0) return { ok: true, properties: [], cost: 0 }
       const { lookupBatchDataPropertiesByIds } = await import("@/lib/external/batchdata-client")
       return lookupBatchDataPropertiesByIds(toHydrate, { apiKey: key, brokerageId })

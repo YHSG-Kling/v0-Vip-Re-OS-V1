@@ -1365,11 +1365,18 @@ function aiVideoRealismSection() {
 
   // Wired into the cron, not just defined — the missing autonomous half the
   // task named explicitly ("confirm... that a failed render re-queues").
+  // WAVE 153 (lane 153J): the loop moved from the cron into lib/remotion/registry.ts requeueFailedRenders so a proof can
+  // drive it (test:render-queue-recovery runs it on the in-memory client). The MOUNT is now two hops, and BOTH are held:
+  // the cron calls requeueFailedRenders, and that function — read from its own body, not the whole file — calls the judgment.
   const cronSrc = readStripped("app/api/cron/composition-render-queue/route.ts")
-  check("composition-render-queue cron calls shouldAutoRequeueFailedRender (the autonomous half is MOUNTED, not just built)",
-    /shouldAutoRequeueFailedRender\(/.test(cronSrc))
-  check("the cron's auto-requeue path is content-contract-gated (missingContentProps), same judgment as the human-approved restart",
-    /missingContentProps\(/.test(cronSrc))
+  const registrySrc = readStripped("lib/remotion/registry.ts")
+  const requeueBody = (() => { const at = registrySrc.indexOf("export async function requeueFailedRenders("); if (at < 0) return ""; const next = registrySrc.indexOf("\nexport ", at + 1); return registrySrc.slice(at, next < 0 ? undefined : next) })()
+  check("composition-render-queue cron calls requeueFailedRenders, whose body calls shouldAutoRequeueFailedRender (the autonomous half is MOUNTED, not just built)",
+    /requeueFailedRenders\(svc\)/.test(cronSrc) && /shouldAutoRequeueFailedRender\(/.test(requeueBody))
+  check("the auto-requeue path is content-contract-gated (missingContentProps), same judgment as the human-approved restart",
+    /missingContentProps\(/.test(requeueBody))
+  check("CONTROL: the body locator returns nothing for a function that does not exist (a moved/renamed survivor fails, it does not pass on the file)",
+    registrySrc.indexOf("export async function noSuchRequeueZz9(") < 0 && requeueBody.length > 0)
   check("the cron's auto-requeue sweep is wrapped in try/catch — a pre-migration environment (no retry_count column yet) degrades to a no-op, never breaks the queue drain",
     /catch \(e\) \{[\s\S]{0,200}auto-requeue sweep failed/.test(cronSrc))
 }

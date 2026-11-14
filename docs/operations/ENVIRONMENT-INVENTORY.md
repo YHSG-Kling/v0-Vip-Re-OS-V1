@@ -194,7 +194,7 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 | `TWILIO_INTELLIGENCE_SERVICE_SID` | OPTIONAL | server config | platform | Twilio Voice Intelligence service SID (app/api/voice/twilio/inbound/route.ts:34). | 3 @ app/api/voice/twilio/inbound/route.ts:34 | .env.example |
 | `TWILIO_PHONE_NUMBER` | REQUIRED | server config | platform_subaccount + byo_top_tier | Platform default sending/receiving number (E.164). | 11 @ app/actions/superadmin/platform-reception.ts:41 | .env.example |
 | `TWILIO_STATUS_WEBHOOK_SECRET` | OPTIONAL | server secret | platform | Shared secret for the Twilio status-callback door. | 1 @ app/api/webhooks/twilio-sms-status/route.ts:48 | .env.example |
-| `VAPI_ISA_ASSISTANT_ID` | RETIRED | server config | platform | RETIRED Vapi lane (replaced by Twilio-native). The census sees it only because lib/kernel/manager-registry.ts quotes it in prose (the voice manager's RETIRED-lane note). | 1 @ lib/kernel/manager-registry.ts:990 | .env.example |
+| `VAPI_ISA_ASSISTANT_ID` | RETIRED | server config | platform | RETIRED Vapi lane (replaced by Twilio-native). The census sees it only because lib/kernel/manager-registry.ts quotes it in prose (the voice manager's RETIRED-lane note). | 1 @ lib/kernel/manager-registry.ts:991 | .env.example |
 | `VOICE_TOOL_ROUND_DEADLINE_MS` | OPTIONAL | server config | platform | Voice tool-round deadline in ms; default 4000 (lib/voice/twilio-voice.ts:420). | 1 @ lib/voice/twilio-voice.ts:420 | .env.example |
 
 ### Email (SendGrid egress, inbound parsers, sender identity)
@@ -286,7 +286,7 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 | `BATCHDATA_MCP_URL` | DEGRADED | server config | platform | BatchData MCP endpoint (the funded MCP route; launch-degraded without it). | 1 @ lib/platform/go-live-readiness.ts:289 | .env.example |
 | `BATCHDATA_SKIP_TRACE_TOKEN` | OPTIONAL | server secret | platform | Optional dedicated skip-trace token; falls back to BATCHDATA_API_KEY. | 1 @ lib/external/batchdata-tokens.ts:49 | .env.example |
 | `BATCHDATA_SMART_SEARCH_WEBHOOK_SECRET` | OPTIONAL | server secret | platform | Shared secret for the Smart Search event-push door (/api/webhooks/batchdata-smart-search). | 2 @ app/api/webhooks/batchdata-smart-search/route.ts:98 | .env.example |
-| `BATCHDATA_SMART_SEARCH_WEBHOOK_URL` | OPTIONAL | server config | platform | URL registered with BatchData Smart Search for event push (app/api/cron/lead-scraping/route.ts:1462). | 3 @ app/api/cron/lead-scraping/route.ts:1526 | .env.example |
+| `BATCHDATA_SMART_SEARCH_WEBHOOK_URL` | OPTIONAL | server config | platform | URL registered with BatchData Smart Search for event push (app/api/cron/lead-scraping/route.ts:1462). | 3 @ app/api/cron/lead-scraping/route.ts:1587 | .env.example |
 | `BATCHDATA_TOOL_MONTHLY_CAP_CENTS` | OPTIONAL | server config | platform | Monthly cap in cents for the BatchData tools (lib/ai-isa/persona-tool-policy.ts:336). | 1 @ lib/ai-isa/persona-tool-policy.ts:336 | .env.example |
 | `BATCHDATA_TOOL_TIER` | OPTIONAL | server config | platform | Tier label gating which BatchData tools personas may use (lib/ai-isa/persona-tool-policy.ts:327). | 1 @ lib/ai-isa/persona-tool-policy.ts:327 | .env.example |
 | `DATAZAPP_API_KEY` | OPTIONAL | server secret | platform | DataZapp demographic / Signal Seller Score / email append — DORMANT until a signed license covering storage and platform use; obtained by request to DataZapp; the only verification is a paid test (never run unasked). | declared @ lib/ai-isa/property-lookup-rail.ts:1777 | .env.example |
@@ -327,7 +327,7 @@ In-product (presence only, no value ever carried into the result): **Superadmin 
 | `SOCRATA_APP_TOKEN` | OPTIONAL | server secret | platform | Socrata open-data app token; optional, calls run anonymously without it. | 1 @ lib/external/socrata-client.ts:51 | .env.example |
 | `TAVILY_API_KEY` | OPTIONAL | server secret | platform_metered | Tavily search key. | 2 @ app/actions/superadmin/platform-brand.ts:108 | .env.example |
 | `ZENROWS_API_KEY` | OPTIONAL | server secret | platform_metered | ZenRows scraping key. | 9 @ app/actions/lead-intelligence.ts:657 | .env.example |
-| `ZYTE_API_KEY` | OPTIONAL | server secret | platform_metered | Zyte API key. | 2 @ lib/external/zyte-client.ts:41 | .env.example |
+| `ZYTE_API_KEY` | OPTIONAL | server secret | platform_metered | Zyte API key. | 2 @ lib/external/zyte-client.ts:46 | .env.example |
 
 ### Maps and weather (Google Maps, Mapbox, Open-Meteo)
 
