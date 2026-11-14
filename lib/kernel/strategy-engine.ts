@@ -240,6 +240,8 @@ export async function activateStrategy(input: ActivateStrategyInput, client?: Cl
       const r = await requestDelegation({
         brokerageId: input.brokerageId, missionId: mission.id, requestingManager: def.ownerManager, assignedManager: step.manager, capability,
         objective: `${def.title} — step ${i + 1}: ${step.purpose}`, authority: rung, deadline: mission.deadline, ownerWorkOrder: ownStep,
+        // The step deadline IS the strategy horizon — a campaign opportunity (without a source the governance record drops it as unsourced).
+        deadlineSource: "campaign_opportunity",
         inputEntities: { subject_type: input.subject.type, subject_id: input.subject.id, strategy: ref, step: i + 1, playbooks: step.playbooks, ...(input.subject.type === "contact" ? { contactId: input.subject.id } : {}), ...(input.subject.type === "listing" ? { listingId: input.subject.id } : {}) },
         actor: { type: "manager", id: def.ownerManager },
       }, svc, { ...(deps.delegation ?? {}), mission: deps.delegation?.mission ?? deps.mission })

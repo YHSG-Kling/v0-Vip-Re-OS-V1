@@ -218,8 +218,19 @@ export async function POST(request: NextRequest) {
     if (governance.released_hold) {
       // LAW 5: the FINANCIAL state change a released hold authorizes is claimed → run → settled on agent_action_ledger, keyed by
       // the hold — a racing or replayed confirm of the same read-back can never execute twice (the claim replays instead).
-      const { ledgerToolCall } = await import("@/lib/kernel/action-ledger")
+      const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
       const contactRef = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      // WAVE 153 (153H, directive H3): the released change carries the decision contract on its ledger row — the boundary's
+      // `allow` (read as ALLOW), who approved (the speaker who confirmed the persisted read-back), the hold it released, the
+      // instruction's manager as the candidate, and the authority / identity gates it passed as policy constraints.
+      const decision = governanceRecord({
+        plane: "tool_boundary", verdict: "allow", scope: { brokerageId: session.brokerage_id, userId: session.user_id }, actor: { type: "user", id: session.user_id },
+        entity: contactRef ? { type: "contact", id: contactRef, version: null } : { type: "agent_assistant_session", id: session.id, version: null },
+        objective: `spoken ${toolName.replace(/_/g, " ")}`, candidates: [String(instruction.manager ?? "")],
+        policyConstraints: [`authority: ${String(instruction.authority ?? "")}`, "declared identity gates passed", "persisted read-back hold released once (compare-and-set)"],
+        rationale: "the speaker confirmed exactly the read-back this session persisted, inside the hold window", evidenceRefs: [`agent_assistant_tool_calls:${governance.released_hold}`],
+        approver: { required: true, userIds: [String(session.user_id ?? "")], expiresAt: null },
+      })
       result = await ledgerToolCall({
         brokerageId: session.brokerage_id,
         action: `ai.tool.${toolName}`,
@@ -230,7 +241,7 @@ export async function POST(request: NextRequest) {
         systemSource: "voice_assistant",
         cycle: `voice_hold:${governance.released_hold}`,
         reasonDetail: "spoken confirm of a read-back held at the tool boundary",
-        detail: { tool: toolName, hold_id: governance.released_hold, session_id: session.id },
+        detail: { tool: toolName, hold_id: governance.released_hold, session_id: session.id, governance: decision },
       }, () => runTool(toolName, dispatchParams, session, supabase), { client: supabase })
     } else {
       result = await runTool(toolName, dispatchParams, session, supabase)

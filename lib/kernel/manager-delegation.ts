@@ -50,6 +50,7 @@ import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { currentCausation } from "@/lib/kernel/causation"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { AuthorityLevel } from "@/lib/ai-isa/persona-tool-policy"
+import type { DeadlineSource } from "@/lib/kernel/action-ledger"
 import { CAPABILITY_MANAGER } from "@/lib/agentic-os/capability-ownership"
 import { APP_CAPABILITY_REGISTRY, type AppCapability } from "@/lib/agentic-os/app-capability-registry"
 import { reviewDelegation, REVIEW_MARK, type ReviewVerdict } from "@/lib/kernel/manager-dissent"
@@ -137,7 +138,11 @@ export interface DelegationDeps {
   /** Seams handed to the mission service for the calls this one makes into it. */
   mission?: MissionDeps
 }
-interface LedgerCtx { brokerageId: string; action: string; actor: DelegationActor; delegation: Pick<DelegationRow, "id" | "mission_id" | "requested_capability" | "requesting_manager" | "assigned_manager">; from: DelegationStatus | null; to: DelegationStatus; reason: string; causationId: string | null; correlationId: string | null; costUsd?: number | null }
+interface LedgerCtx {
+  brokerageId: string; action: string; actor: DelegationActor; delegation: Pick<DelegationRow, "id" | "mission_id" | "requested_capability" | "requesting_manager" | "assigned_manager">; from: DelegationStatus | null; to: DelegationStatus; reason: string; causationId: string | null; correlationId: string | null; costUsd?: number | null
+  /** WAVE 153 (153H, directive H3): the decision facts this transition persists on detail.governance (lib/kernel/action-ledger.ts governanceRecord). */
+  governance?: { objective?: string | null; deadline?: string | null; deadlineSource?: DeadlineSource | null; conflicts?: string[]; evidenceRefs?: string[]; resourceConstraints?: string[]; policyConstraints?: string[] }
+}
 interface EmitCtx { brokerageId: string; event: string; delegationId: string; metadata: Record<string, unknown>; actorUserId: string | null; causationId: string | null; correlationId: string | null }
 interface SignalCtx { brokerageId: string; fromManager: ManagerKey; toManager: ManagerKey; signalType: string; message: string; delegationId: string; payload: Record<string, unknown> }
 
@@ -153,7 +158,18 @@ const defaultDeps: Required<Omit<DelegationDeps, "mission">> & { mission: Missio
     return resolveAgentAuthorityLevel(brokerageId, manager, client as any)
   },
   ledger: async (ctx, client) => {
-    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    const { withActionLedger, governanceRecord } = await import("@/lib/kernel/action-ledger")
+    // H3: the transition IS a governance decision (REQUESTED = DELEGATE, ESCALATED = ESCALATE, REJECTED = DENY, …) — the
+    // facts ride detail.governance on the row the flight recorder already reads; the status pair is the version decided on.
+    const governance = governanceRecord({
+      plane: "delegation", verdict: ctx.to, scope: { brokerageId: ctx.brokerageId }, actor: { type: ctx.actor.type, id: ctx.actor.id ?? null },
+      missionId: ctx.delegation.mission_id, causationId: ctx.causationId, correlationId: ctx.correlationId,
+      entity: { type: "manager_delegation", id: ctx.delegation.id, version: ctx.from ?? "new" },
+      objective: ctx.governance?.objective ?? null, candidates: [ctx.delegation.assigned_manager],
+      deadline: ctx.governance?.deadline ?? null, deadlineSource: ctx.governance?.deadlineSource ?? null,
+      policyConstraints: ctx.governance?.policyConstraints, resourceConstraints: ctx.governance?.resourceConstraints,
+      conflicts: ctx.governance?.conflicts, rationale: ctx.reason, evidenceRefs: ctx.governance?.evidenceRefs,
+    })
     await withActionLedger(
       {
         brokerageId: ctx.brokerageId, action: ctx.action,
@@ -162,7 +178,7 @@ const defaultDeps: Required<Omit<DelegationDeps, "mission">> & { mission: Missio
         reasonCode: MISSION_LIFECYCLE_REASON, reasonDetail: `delegation ${ctx.delegation.requested_capability} ${ctx.delegation.requesting_manager}→${ctx.delegation.assigned_manager}: ${ctx.reason}`,
         causationId: ctx.causationId, correlationId: ctx.correlationId,
         riskClass: "LOW_RISK_WRITE", systemSource: "manager-delegation",
-        detail: { delegation_id: ctx.delegation.id, mission_id: ctx.delegation.mission_id, capability: ctx.delegation.requested_capability, requesting_manager: ctx.delegation.requesting_manager, assigned_manager: ctx.delegation.assigned_manager, from_status: ctx.from, to_status: ctx.to },
+        detail: { delegation_id: ctx.delegation.id, mission_id: ctx.delegation.mission_id, capability: ctx.delegation.requested_capability, requesting_manager: ctx.delegation.requesting_manager, assigned_manager: ctx.delegation.assigned_manager, from_status: ctx.from, to_status: ctx.to, governance },
       },
       async () => ({ status: "executed" as const, outcome: `${ctx.from ?? "∅"}→${ctx.to}` }),
       { settle: (r) => ({ status: r.status, outcome: r.outcome, costUsd: ctx.costUsd ?? null }), replay: () => ({ status: "executed" as const, outcome: "replay" }) },
@@ -217,6 +233,50 @@ export function missionRemaining(m: Pick<MissionRow, "budget" | "spent_usd" | "s
     usd: typeof b.usd === "number" ? Math.max(0, b.usd - Number(m.spent_usd ?? 0)) : null,
     tokens: typeof b.tokens === "number" ? Math.max(0, b.tokens - Number(m.spent_tokens ?? 0)) : null,
   }
+}
+
+// ─── WAVE 153 (lane 153H) — FAILURE CONTAINMENT ON THE DELEGATION MACHINE (directive H5, canary 7) ────────────────
+// Measured at 34124d98: (1) nothing refused an ask that CLOSED a wait-for cycle (A waits on B, B asks A for work A can only
+// do after B returns — a lock cycle neither side can break); (2) a REJECTED ask could be re-filed against the same owner
+// forever (ping-pong); (3) nothing bounded how many open asks one manager could be handed in one tenant; (4) a REJECTED
+// delegation is terminal and drops out of pendingDelegationsFor, while the mission it served stayed ACTIVE with nobody told —
+// a lost mission. Each rule below is deterministic; none asks a model.
+
+/** A manager rejected the same capability on the same mission this many times → the next ask is refused and the mission
+ *  goes to a human (bounded attempts, no ping-pong reassignment). */
+const DELEGATION_MAX_REJECTED_ASKS = 2
+/** Open (non-terminal) asks one manager may hold for ONE capability in ONE tenant. Counted per tenant, so a large tenant
+ *  can never starve another tenant's capacity; a full queue is a refusal the mission's human sees, never a silent drop. */
+const DELEGATION_OPEN_CAPACITY = 25
+
+/**
+ * PURE. The wait-for path a new ask `from → to` would CLOSE, or null. An open delegation is the edge
+ * requesting → assigned ("requesting waits on assigned"); the new edge closes a cycle iff `to` already waits — directly or
+ * through others — on `from`. Returned as [from, to, …, from] for the refusal's reason. Self-edges (a mission owner's work
+ * order) never wait on anyone else and are ignored.
+ */
+function delegationWaitCycle(open: ReadonlyArray<{ requesting_manager: string; assigned_manager: string }>, from: string, to: string): string[] | null {
+  if (from === to) return null
+  const next = new Map<string, Set<string>>()
+  for (const e of open) {
+    if (e.requesting_manager === e.assigned_manager) continue
+    if (!next.has(e.requesting_manager)) next.set(e.requesting_manager, new Set())
+    next.get(e.requesting_manager)!.add(e.assigned_manager)
+  }
+  const prev = new Map<string, string>()
+  const seen = new Set<string>([to])
+  const queue = [to]
+  while (queue.length) {
+    const cur = queue.shift()!
+    if (cur === from) {
+      const path: string[] = [from]
+      let p = from
+      while (p !== to) { p = prev.get(p)!; path.unshift(p) }
+      return [from, ...path]
+    }
+    for (const n of next.get(cur) ?? []) if (!seen.has(n)) { seen.add(n); prev.set(n, cur); queue.push(n) }
+  }
+  return null
 }
 
 // ─── reads ────────────────────────────────────────────────────────────────────────────────────
@@ -294,6 +354,9 @@ export interface RequestDelegationInput {
   authority?: AuthorityLevel
   budget?: DelegationBudget
   deadline?: string | null
+  /** WAVE 153 (153H, H3): where `deadline` came from (contractual / human_requested / consumer_reply / provider_deadline /
+   *  campaign_opportunity). Unstated = `none` on the governance record — the deadline column is kept, never re-labelled. */
+  deadlineSource?: DeadlineSource | null
   actor?: DelegationActor
   /** Wave 108: the mission OWNER's own step, as a work order to itself — admitted only for a capability
    *  with a worker (DELEGATION_WORKERS) on a mission that manager owns. Anything else stays self_delegation. */
@@ -335,6 +398,38 @@ export async function requestDelegation(input: RequestDelegationInput, client?: 
   }
   if (workOrder && mission?.owner_manager !== input.assignedManager) return { ok: false, reason: "self_delegation" }
 
+  // WAVE 153 (153H): a POLICY refusal of a mission's step never strands the mission — it goes to its owner manager + a
+  // human (APPROVAL_REQUIRED, an attention state on the Missions card) with the reason. Bounded: an already-escalated
+  // mission refuses the second transition (invalid_transition), so N refused steps raise ONE escalation, not N.
+  const policyRefusal = async (reason: string): Promise<DelegationResult> => {
+    if (mission && !MISSION_TERMINAL_STATES.has(mission.state)) {
+      const e = await escalateMission({ brokerageId: input.brokerageId, missionId: mission.id, reason: `step ${input.capability} (${MANAGERS[input.requestingManager].label} → ${MANAGERS[input.assignedManager].label}) refused: ${reason}`, actor: input.actor ?? { type: "manager", id: input.requestingManager }, needsHuman: true }, svc, d.mission)
+      if (!e.ok && !e.reason.startsWith("invalid_transition")) console.error(`[manager-delegation] mission ${mission.id} NOT escalated after a refused step: ${e.reason}`)
+    }
+    return { ok: false, reason }
+  }
+
+  // H5 CONTAINMENT — read from the tenant's own rows; a refused read refuses (fail closed, never "nobody checked").
+  if (!workOrder) {
+    const openStatuses = DELEGATION_STATUSES.filter((s) => !DELEGATION_TERMINAL_STATUSES.has(s))
+    const subjectKey = (["contactId", "listingId", "subject_id"] as const).find((k) => typeof input.inputEntities?.[k] === "string")
+    if (mission || subjectKey) {
+      let q = svc.from("manager_delegations").select("id, requesting_manager, assigned_manager, requested_capability, status").eq("brokerage_id", input.brokerageId)
+      q = mission ? q.eq("mission_id", mission.id) : q.is("mission_id", null).eq(`input_entities->>${subjectKey}`, String(input.inputEntities![subjectKey!]))
+      const { data: peers, error: peerErr } = await q.limit(500)
+      if (peerErr) return { ok: false, reason: `read_refused:${peerErr.message}` }
+      const rows = (peers ?? []) as Array<Pick<DelegationRow, "id" | "requesting_manager" | "assigned_manager" | "requested_capability" | "status">>
+      const cycle = delegationWaitCycle(rows.filter((r) => !DELEGATION_TERMINAL_STATUSES.has(r.status)), input.requestingManager, input.assignedManager)
+      if (cycle) return policyRefusal(`circular_delegation:${cycle.join("→")} — ${MANAGERS[input.assignedManager].label} is already waiting on ${MANAGERS[input.requestingManager].label} here; asking back would deadlock both`)
+      const rejected = rows.filter((r) => r.status === "REJECTED" && r.requested_capability === input.capability && r.assigned_manager === input.assignedManager).length
+      if (rejected >= DELEGATION_MAX_REJECTED_ASKS) return policyRefusal(`attempts_exhausted:${input.capability} was rejected ${rejected} time(s) by ${MANAGERS[input.assignedManager].label} here — a person decides instead of a third ask`)
+    }
+    const { data: queue, error: queueErr } = await svc.from("manager_delegations").select("id").eq("brokerage_id", input.brokerageId)
+      .eq("assigned_manager", input.assignedManager).eq("requested_capability", input.capability).in("status", openStatuses).limit(DELEGATION_OPEN_CAPACITY + 1)
+    if (queueErr) return { ok: false, reason: `read_refused:${queueErr.message}` }
+    if ((queue ?? []).length >= DELEGATION_OPEN_CAPACITY) return policyRefusal(`overloaded:${MANAGERS[input.assignedManager].label} already holds ${DELEGATION_OPEN_CAPACITY} open ${input.capability} asks in this account`)
+  }
+
   // AUTHORITY ≤ ceiling (mission + ladder) and BUDGET ≤ remaining — the ONE evaluator (manager-dissent).
   const authority = (input.authority ?? 0) as AuthorityLevel
   const budget: DelegationBudget = input.budget ?? {}
@@ -343,12 +438,12 @@ export async function requestDelegation(input: RequestDelegationInput, client?: 
     { requestingManager: input.requestingManager, assignedManager: input.assignedManager, capability: input.capability, objective: input.objective, authority, budget, deadline: input.deadline ?? null },
     { capabilityOwner: owner, authorityCeiling: ctx.ceiling, remainingUsd: ctx.remaining.usd, remainingTokens: ctx.remaining.tokens, now: ctx.now },
   )
-  if (review.verdict !== "pass") return { ok: false, reason: `${review.codes[0]}:${review.objections[0]}` }
+  if (review.verdict !== "pass") return policyRefusal(`${review.codes[0]}:${review.objections[0]}`)
 
   // ENTITLEMENT — the capability's paid lanes (fail closed: a refused answer is a refusal).
   for (const lane of paidCapabilitiesFor(input.capability, budget)) {
     const afford = await d.afford(input.brokerageId, lane.capability, { estCostUsd: lane.estCostUsd, estTokens: lane.estTokens }, svc)
-    if (!afford.allowed) return { ok: false, reason: `entitlement:${lane.capability}:${afford.reason}` }
+    if (!afford.allowed) return policyRefusal(`entitlement:${lane.capability}:${afford.reason}`)
   }
 
   const actor: DelegationActor = input.actor ?? { type: "manager", id: input.requestingManager }
@@ -362,7 +457,8 @@ export async function requestDelegation(input: RequestDelegationInput, client?: 
   const row = data as DelegationRow
 
   const c = currentCausation()
-  const ledgerId = await d.ledger({ brokerageId: row.brokerage_id, action: "delegation.request.create", actor, delegation: row, from: null, to: "REQUESTED", reason: `requested: ${row.objective}`, causationId: c.causationId, correlationId: c.correlationId }, svc)
+  const ledgerId = await d.ledger({ brokerageId: row.brokerage_id, action: "delegation.request.create", actor, delegation: row, from: null, to: "REQUESTED", reason: `requested: ${row.objective}`, causationId: c.causationId, correlationId: c.correlationId,
+    governance: { objective: row.objective, deadline: row.deadline, deadlineSource: input.deadlineSource ?? null, policyConstraints: [`authority ${authority} ≤ ceiling ${ctx.ceiling}`, `capability owner ${owner}`], resourceConstraints: [`budget ${JSON.stringify(budget)}`, `mission remaining ${JSON.stringify(ctx.remaining)}`], evidenceRefs: mission ? [`mission:${mission.id}`] : [] } }, svc)
   await appendEvent(svc, row, { kind: "requested", to: "REQUESTED", reason: "requested", actor, ledgerEntryId: ledgerId, evidence: { capability: row.requested_capability, authority, authority_ceiling: ctx.ceiling, budget, mission_remaining: ctx.remaining, deadline: row.deadline, input_entities: row.input_entities } })
   await d.emit({ brokerageId: row.brokerage_id, event: KernelEvent.MANAGER_DELEGATION_REQUESTED, delegationId: row.id, metadata: { delegation_id: row.id, mission_id: row.mission_id, capability: row.requested_capability, requesting_manager: row.requesting_manager, assigned_manager: row.assigned_manager, status: "REQUESTED" }, actorUserId: actor.type === "user" ? actor.id ?? null : null, causationId: c.causationId, correlationId: c.correlationId }, svc)
   await d.signal({ brokerageId: row.brokerage_id, fromManager: row.requesting_manager, toManager: row.assigned_manager, signalType: DELEGATION_REQUESTED_SIGNAL, message: `${MANAGERS[row.requesting_manager].label} asks ${MANAGERS[row.assigned_manager].label} for ${row.requested_capability}: ${row.objective}`, delegationId: row.id, payload: { capability: row.requested_capability, authority, budget, deadline: row.deadline, mission_id: row.mission_id } }, svc)
@@ -392,7 +488,8 @@ async function transitionDelegation(input: TransitionInput, svc: Client, d: type
   const next = updated[0] as DelegationRow
 
   const c = currentCausation()
-  const ledgerId = await d.ledger({ brokerageId: row.brokerage_id, action: "delegation.status.transition", actor, delegation: row, from, to: input.to, reason: input.reason, causationId: c.causationId, correlationId: c.correlationId, costUsd: input.costUsd ?? null }, svc)
+  const ledgerId = await d.ledger({ brokerageId: row.brokerage_id, action: "delegation.status.transition", actor, delegation: row, from, to: input.to, reason: input.reason, causationId: c.causationId, correlationId: c.correlationId, costUsd: input.costUsd ?? null,
+    governance: { objective: row.objective, evidenceRefs: row.mission_id ? [`mission:${row.mission_id}`] : [] } }, svc)
   await appendEvent(svc, row, { kind: "transition", from, to: input.to, reason: input.reason, actor, ledgerEntryId: ledgerId, evidence: input.evidence })
   await d.emit({ brokerageId: row.brokerage_id, event: KernelEvent.MANAGER_DELEGATION_STATE_CHANGED, delegationId: row.id, metadata: { delegation_id: row.id, mission_id: row.mission_id, capability: row.requested_capability, from_status: from, to_status: input.to, reason: input.reason, requesting_manager: row.requesting_manager, assigned_manager: row.assigned_manager }, actorUserId: actor.type === "user" ? actor.id ?? null : null, causationId: c.causationId, correlationId: c.correlationId }, svc)
   return { ok: true, delegation: next, ledgerEntryId: ledgerId }
@@ -451,7 +548,14 @@ export async function rejectDelegation(p: Door & { reason: string }, client?: Cl
   const d = withDeps(deps); const svc = await svcOf(client)
   if (!p.reason?.trim()) return { ok: false, reason: "reason_required" }
   const r = await transitionDelegation({ brokerageId: p.brokerageId, delegationId: p.delegationId, to: "REJECTED", reason: p.reason.trim(), actor: p.actor }, svc, d)
-  if (r.ok) await noteOnMission(svc, r.delegation, "delegation_rejected", p.actor ?? { type: "manager", id: r.delegation.assigned_manager }, { reason: p.reason.trim() }, d.mission)
+  if (r.ok) {
+    const actor = p.actor ?? { type: "manager" as const, id: r.delegation.assigned_manager }
+    await noteOnMission(svc, r.delegation, "delegation_rejected", actor, { reason: p.reason.trim() }, d.mission)
+    // WAVE 153 (153H): REJECTED is terminal and leaves pendingDelegationsFor — so the refusal is RAISED, never stranded. The
+    // capability has ONE registered owner (CAPABILITY_MANAGER), so there is no lawful second manager to reroute to: the safe
+    // reroute IS the escalation — the requester (or the mission's owner) and a human decide, with the rejection's reason.
+    await raiseEscalation(svc, r.delegation, actor, `rejected by ${MANAGERS[r.delegation.assigned_manager].label}: ${p.reason.trim()}`, d, "rejected")
+  }
   return r
 }
 
@@ -481,13 +585,13 @@ export async function dissentDelegation(p: Door & { objections: string[] }, clie
 }
 
 /** The escalation fan-out: the signal to whoever can act, and the mission (owner manager + human). */
-async function raiseEscalation(svc: Client, row: DelegationRow, actor: DelegationActor, reason: string, d: typeof defaultDeps): Promise<void> {
+async function raiseEscalation(svc: Client, row: DelegationRow, actor: DelegationActor, reason: string, d: typeof defaultDeps, kind: "escalated" | "rejected" = "escalated"): Promise<void> {
   const mission = row.mission_id ? await getMission(row.brokerage_id, row.mission_id, svc) : null
   const fromMgr: ManagerKey = actor.type === "manager" && isManagerKey(actor.id) ? actor.id : "cron_manager"
   const toMgr: ManagerKey = mission && mission.owner_manager !== fromMgr ? mission.owner_manager : row.requesting_manager !== fromMgr ? row.requesting_manager : row.assigned_manager
-  await d.signal({ brokerageId: row.brokerage_id, fromManager: fromMgr, toManager: toMgr, signalType: DELEGATION_ESCALATED_SIGNAL, message: `Delegation ${row.requested_capability} (${MANAGERS[row.requesting_manager].label} → ${MANAGERS[row.assigned_manager].label}) is ESCALATED: ${reason}`, delegationId: row.id, payload: { reason, deadline: row.deadline, mission_id: row.mission_id, capability: row.requested_capability } }, svc)
+  await d.signal({ brokerageId: row.brokerage_id, fromManager: fromMgr, toManager: toMgr, signalType: DELEGATION_ESCALATED_SIGNAL, message: `Delegation ${row.requested_capability} (${MANAGERS[row.requesting_manager].label} → ${MANAGERS[row.assigned_manager].label}) is ${kind === "rejected" ? "REJECTED — the step needs a decision" : "ESCALATED"}: ${reason}`, delegationId: row.id, payload: { reason, kind, deadline: row.deadline, mission_id: row.mission_id, capability: row.requested_capability } }, svc)
   if (mission && !MISSION_TERMINAL_STATES.has(mission.state)) {
-    const e = await escalateMission({ brokerageId: row.brokerage_id, missionId: mission.id, reason: `delegation ${row.requested_capability} escalated: ${reason}`, actor, needsHuman: true }, svc, d.mission)
+    const e = await escalateMission({ brokerageId: row.brokerage_id, missionId: mission.id, reason: `delegation ${row.requested_capability} ${kind}: ${reason}`, actor, needsHuman: true }, svc, d.mission)
     if (!e.ok && !e.reason.startsWith("invalid_transition")) console.error(`[manager-delegation] mission ${mission.id} NOT escalated for delegation ${row.id}: ${e.reason}`)
   }
 }

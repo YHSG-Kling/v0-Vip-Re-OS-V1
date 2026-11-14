@@ -170,6 +170,9 @@ export async function generateAIResponse(params: {
     agent_id: agentId,
     type: "ai_auto_response",
     direction: "outbound",
+    // The automated reply says it is automated (wave 153, 153H outside 1): the Unified Inbox AI label and the analytics AI
+    // count read sender_type; messages.sender_type carries no CHECK.
+    sender_type: "ai",
     body: aiResponse,
     status: "queued",
     compliance_checked: false,

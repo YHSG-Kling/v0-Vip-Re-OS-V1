@@ -685,6 +685,136 @@ export function ledgerToolExecutions<T extends Record<string, unknown>>(
   return out as T
 }
 
+// ─── WAVE 153 (lane 153H) — THE GOVERNANCE DECISION CONTRACT (directive H3) ─────────────────
+// OWNER RULING 14 (2026-11-14): arbitration is OS-wide governance spread across the EXISTING planes, never a new
+// central arbiter. Each plane keeps its OWN verdict vocabulary (the tool boundary's allow/deny/hold/rewrite, the
+// delegation statuses, the arbiter's experience kinds, the decision rows' wait/do_nothing, the dispatch gates,
+// the approval states). The eight governance verbs below are a READING of those spellings, made HERE and nowhere
+// else (CLAUDE.md §6 — one mapping table, the planes are not respelled), and they ride the EXISTING
+// `agent_action_ledger.detail.governance` jsonb (no DB enum, no migration: nothing in the readback was blocked by a
+// missing column — causation/correlation, policy_ref, subject, actor, risk and status are already columns).
+
+/** The eight governance verbs (directive H3). A code vocabulary on `detail.governance.decision` — never a CHECK. */
+const GOVERNANCE_DECISIONS = ["ALLOW", "DENY", "REWRITE", "HOLD", "DELEGATE", "RESCHEDULE", "ESCALATE", "CANCEL"] as const
+type GovernanceDecision = (typeof GOVERNANCE_DECISIONS)[number]
+
+/** Where a decision's urgency came from — the KIND of obligation behind it (directive H3's own list). "Never invent a deadline":
+ *  a deadline whose source is not one of these is dropped and recorded as `none`. Not a second spelling of
+ *  lib/intent/moving-moments.ts KnownDeadlineSource, which records a different fact (the PROVENANCE of a known date — who stated it). */
+const DEADLINE_SOURCES = ["contractual", "human_requested", "consumer_reply", "provider_deadline", "campaign_opportunity", "none"] as const
+export type DeadlineSource = (typeof DEADLINE_SOURCES)[number]
+
+/** The planes whose verdicts the contract reads (the six of the ownership matrix + the resource / money / closing rails). */
+type GovernancePlane = "tool_boundary" | "delegation" | "contact_engagement" | "ledger_decision" | "dispatch" | "approval" | "resource" | "closing"
+
+/** THE ONE MAPPING TABLE: a plane's own verdict spelling → the governance verb. A spelling with no entry reads null. */
+const GOVERNANCE_VERB_MAP: Readonly<Record<GovernancePlane, Readonly<Record<string, GovernanceDecision>>>> = {
+  tool_boundary: { allow: "ALLOW", deny: "DENY", hold: "HOLD", rewrite: "REWRITE" },
+  delegation: { REQUESTED: "DELEGATE", ACCEPTED: "ALLOW", WORKING: "ALLOW", RETURNED: "ALLOW", REJECTED: "DENY", DISSENTED: "HOLD", ESCALATED: "ESCALATE", CANCELLED: "CANCEL" },
+  contact_engagement: { communication: "ALLOW", experience: "ALLOW", wait: "RESCHEDULE", agent_intervention: "DELEGATE", halt_no_lawful_channel: "DENY", human_owns: "DELEGATE", notify_human: "DELEGATE", reply: "ALLOW" },
+  ledger_decision: { wait: "RESCHEDULE", do_nothing: "CANCEL", send_touch: "ALLOW", convert: "ALLOW" },
+  dispatch: { accepted: "ALLOW", gate: "DENY", provider_error: "ALLOW", provider_timeout: "ALLOW" },
+  approval: { pending: "HOLD", approved: "ALLOW", rejected: "DENY", expired: "CANCEL", escalated: "ESCALATE" },
+  resource: { allowed: "ALLOW", refused: "DENY", over_budget: "HOLD", rerouted: "REWRITE" },
+  closing: { pass: "ALLOW", hold: "HOLD", blocked: "DENY", correction_requested: "ESCALATE" },
+}
+
+/** PURE. The verb a plane's own verdict reads as (null when the spelling is not mapped — a finding, never a guess). */
+function governanceVerb(plane: GovernancePlane, verdict: string | null | undefined): GovernanceDecision | null {
+  if (!verdict) return null
+  const v = GOVERNANCE_VERB_MAP[plane]?.[verdict] ?? GOVERNANCE_VERB_MAP[plane]?.[verdict.toLowerCase()] ?? null
+  return v && (GOVERNANCE_DECISIONS as readonly string[]).includes(v) ? v : null
+}
+
+/** The H3 facts a consequential / cross-manager decision persists on `detail.governance`. */
+interface GovernanceRecordInput {
+  plane: GovernancePlane
+  /** The plane's OWN verdict spelling (e.g. a delegation status, the tool boundary's `deny`). */
+  verdict: string
+  /** Who decided and for which scope — the VERIFIED tenant, never a body (CLAUDE.md §4). */
+  scope: { brokerageId: string; officeId?: string | null; teamId?: string | null; userId?: string | null }
+  actor: { type: string; id?: string | null }
+  missionId?: string | null
+  causationId?: string | null
+  correlationId?: string | null
+  /** The entity decided on, with the version the decision READ (a later write on a different version is a conflict). */
+  entity?: { type: string; id?: string | null; version?: string | number | null } | null
+  objective?: string | null
+  /** The candidate managers / options the decision chose among. */
+  candidates?: string[]
+  deadline?: string | null
+  deadlineSource?: string | null
+  policyConstraints?: string[]
+  resourceConstraints?: string[]
+  conflicts?: string[]
+  rationale: string
+  evidenceRefs?: string[]
+  /** A hold names who can release it and when it is reassessed. */
+  approver?: { required: boolean; userIds?: string[]; expiresAt?: string | null } | null
+}
+
+/**
+ * PURE. Normalize the H3 facts into the `detail.governance` block. The verb is READ from the plane's own verdict (an
+ * unmapped verdict keeps `decision: null` and says so — never a guessed ALLOW). A deadline whose source is not one of
+ * DEADLINE_SOURCES is DROPPED (source `none`): a decision never carries an invented deadline.
+ */
+export function governanceRecord(i: GovernanceRecordInput): Record<string, unknown> {
+  const source = (DEADLINE_SOURCES as readonly string[]).includes(String(i.deadlineSource ?? "")) ? (i.deadlineSource as DeadlineSource) : "none"
+  const deadline = source !== "none" && i.deadline && Number.isFinite(Date.parse(i.deadline)) ? i.deadline : null
+  const list = (x?: string[]) => [...new Set((x ?? []).filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim().slice(0, 200)))].slice(0, 20)
+  return {
+    decision: governanceVerb(i.plane, i.verdict),
+    plane: i.plane,
+    verdict: i.verdict,
+    scope: { brokerage_id: i.scope.brokerageId, office_id: i.scope.officeId ?? null, team_id: i.scope.teamId ?? null, user_id: i.scope.userId ?? null },
+    actor: { type: i.actor.type, id: i.actor.id ?? null },
+    mission_id: i.missionId ?? null,
+    causation_id: i.causationId ?? null,
+    correlation_id: i.correlationId ?? null,
+    entity: i.entity ? { type: i.entity.type, id: i.entity.id ?? null, version: i.entity.version ?? null } : null,
+    objective: i.objective ? i.objective.slice(0, 300) : null,
+    candidates: list(i.candidates),
+    urgency: { deadline, deadline_source: deadline ? source : "none" },
+    constraints: { policy: list(i.policyConstraints), resource: list(i.resourceConstraints) },
+    conflicts: list(i.conflicts),
+    rationale: i.rationale.slice(0, 600),
+    evidence_refs: list(i.evidenceRefs),
+    approver: i.approver ? { required: i.approver.required, user_ids: list(i.approver.userIds), expires_at: i.approver.expiresAt ?? null } : null,
+  }
+}
+
+/**
+ * The ledger's FIVE facts (directive H3: decided ≠ attempted ≠ provider accepted ≠ completed ≠ outcome), READ from the
+ * columns a row already carries:
+ *   decided           — a `*.decision.*` row, or a `skipped` row (a gate refused: nothing left the building);
+ *   attempted         — claimed and not finished (`proposed`), or finished without effect (`failed` / `unknown`);
+ *   provider_accepted — `executed` with the provider's acceptance (`accepted` + a provider) — handed over, not proven landed;
+ *   completed         — `executed` with provider truth (`reconciled_confirmed`) or a domain write that IS the completion
+ *                       (a tool completed, a state transition — no provider in between).
+ * OUTCOME (a reply / appointment / contract / closed GCI credited back to the row) is the attribution reader's
+ * (lib/intelligence/roi-ledger.ts loadLedgerAttribution), returned beside the chain by the flight recorder — a single
+ * row cannot know it. PURE.
+ */
+type ActionPhase = "decided" | "attempted" | "provider_accepted" | "completed"
+function actionPhase(a: { action: string; status: string; outcome?: string | null; provider?: string | null; provider_ref?: string | null }): ActionPhase {
+  if (/\.decision\./.test(a.action) || a.status === "skipped") return "decided"
+  if (a.status !== "executed") return "attempted"
+  if (a.outcome === "reconciled_confirmed") return "completed"
+  if (a.outcome === "accepted" || /^reconciled_/.test(a.outcome ?? "") || ((a.provider || a.provider_ref) && a.outcome !== "tool_completed")) return "provider_accepted"
+  return "completed"
+}
+
+/** PURE. The governance verb a ledger row reads as: the persisted `detail.governance.decision`, else the row's own shape. */
+function rowGovernanceDecision(a: { action: string; status: string; outcome?: string | null; detail?: Record<string, unknown> | null }): GovernanceDecision | null {
+  const g = a.detail?.governance as { decision?: unknown } | undefined
+  if (typeof g?.decision === "string" && (GOVERNANCE_DECISIONS as readonly string[]).includes(g.decision)) return g.decision as GovernanceDecision
+  const verdict = /\.decision\.([a-z_]+)$/.exec(a.action)?.[1]
+  if (verdict) return governanceVerb("ledger_decision", verdict)
+  if (a.status === "skipped" && /_gate$/.test(a.outcome ?? "")) return governanceVerb("dispatch", "gate")
+  if (a.status === "executed" && a.outcome === "accepted") return governanceVerb("dispatch", "accepted")
+  return null
+}
+
 // ─── flight recorder: the causal chain ────────────────────────────────────────
 
 export interface ChainEvent {
@@ -746,6 +876,10 @@ export interface ChainLink {
   detail?: Record<string, unknown> | null
   /** 102D — which policy permitted: `policy_key@version` (LAW 5). */
   policyRef?: string | null
+  /** WAVE 153 (153H, directive H3): which of decided / attempted / provider_accepted / completed this row proves. */
+  phase?: ActionPhase
+  /** WAVE 153 (153H): the governance verb (ALLOW / DENY / REWRITE / HOLD / DELEGATE / RESCHEDULE / ESCALATE / CANCEL) the row reads as. */
+  decision?: GovernanceDecision | null
   /** For an action: the event chain that caused it, ROOT first ("why did the AI send this?"). */
   because?: string[]
 }
@@ -783,6 +917,7 @@ export function assembleCausalChain(events: ChainEvent[], actions: ChainAction[]
       costUsd: a.cost_usd == null ? null : Number(a.cost_usd), riskClass: a.risk_class ?? null,
       source: a.system_source ?? null, subjectRef: a.subject_ref ?? null, detail: a.detail ?? null,
       policyRef: a.policy_ref ?? (typeof a.detail?.policy_ref === "string" ? (a.detail.policy_ref as string) : null),
+      phase: actionPhase(a), decision: rowGovernanceDecision(a),
       because: ancestry(a.causation_id),
     })),
   ]
