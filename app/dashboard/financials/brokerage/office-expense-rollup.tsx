@@ -30,6 +30,11 @@ export async function OfficeExpenseRollupSection({ userId, brokerageId, userType
   // A single-office tenant has nothing to break down by office — the company books above ARE the whole picture.
   if (!authority.multiLocation) return null
 
+  // The split audit trail (who split which main-office cost, on what rule, and who replaced it) — consolidated readers only.
+  const { loadExpenseSplitHistory } = await import("@/lib/finance/expense-rollup")
+  const history = rollup.consolidated ? await loadExpenseSplitHistory(svc, { userId, brokerageId, userType }, { limit: 60 }) : null
+  const recentSplits = history && history.ok ? history.entries.slice(0, 8) : []
+
   let centralRows: Array<{ id: string; description: string; amount: number; expenseDate: string }> = []
   if (authority.writeCentral) {
     const { data, error } = await svc
@@ -129,6 +134,29 @@ export async function OfficeExpenseRollupSection({ userId, brokerageId, userType
           <p className="text-sm text-destructive">
             The office totals and the company total do not agree, so these figures are held for review. Nothing was changed; contact support with this page open.
           </p>
+        )}
+        {rollup.consolidated && rollup.staleSplits > 0 && (
+          <p className="text-sm text-amber-800">
+            {rollup.staleSplits} split{rollup.staleSplits === 1 ? " was" : "s were"} recorded before the expense amount changed. The office totals above already use the current amount by each office&apos;s share; split {rollup.staleSplits === 1 ? "it" : "them"} again to refresh the recorded amounts.
+          </p>
+        )}
+        {history && !history.ok && (
+          <p className="text-xs text-muted-foreground">The split history could not be loaded right now.</p>
+        )}
+        {recentSplits.length > 0 && (
+          <div className="space-y-1 text-sm">
+            <p className="font-medium">Recent splits</p>
+            <ul className="space-y-1">
+              {recentSplits.map((h) => (
+                <li key={h.allocationSetId} className="flex flex-wrap gap-x-2 rounded border p-2 text-muted-foreground">
+                  <span className="text-foreground">{h.ruleLabel ?? "Split"}</span>
+                  <span className="tabular-nums">{usd2Grouped(h.total)} across {h.shareCount} share{h.shareCount === 1 ? "" : "s"}</span>
+                  <span>by {h.createdBy ?? "unknown"} on {h.createdAt.slice(0, 10)}</span>
+                  {h.supersededAt && <span>— replaced{h.supersededBy ? ` by ${h.supersededBy}` : ""} on {h.supersededAt.slice(0, 10)}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
         {authority.writeCentral && centralRows.length > 0 && (
           <OfficeExpenseSplitForm

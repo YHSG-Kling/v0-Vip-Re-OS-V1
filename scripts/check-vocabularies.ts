@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 485 tables, 955 columns.
+ * MEASURED AT GENERATION: 486 tables, 963 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-12
+ * generated: 2026-11-14
  * source: public.live_check_constraints_json()
- * body-sha256: 1856f3dc43ee770e1211092732ab2bf80033cc4bacd9cbd29d47de10604b360d
+ * body-sha256: 92a475abdcf2320974304df13699a01a7705213e54424f75a172c8509e17b75f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1815,6 +1815,16 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   trend_alerts: {
     alert_type: ["budget_spike", "competitor_launch", "content_trend", "copy_trend", "creative_trend", "market_shift_prediction", "platform_shift"],
     severity: ["critical", "high", "low", "medium"],
+  },
+  trid_disclosure_receipts: {
+    delivery_method: ["courier", "electronic_portal", "email", "fax", "in_person", "mail", "other"],
+    lender_new_wait_determination: ["new_wait_required", "no_new_wait"],
+    receipt_basis: ["actual_receipt", "deemed_mailbox_rule", "in_person", "none"],
+    receipt_evidence: ["consumer_acknowledged_receipt", "in_person_delivery", "lender_esign_receipt", "lender_statement", "mailbox_rule"],
+    sender_role: ["creditor", "settlement_agent"],
+    source: ["agent_reported", "compliance_verified", "lender_portal", "tc_reported"],
+    transaction_regularity: ["irregular", "regular"],
+    verification_status: ["lender_confirmed", "pending_lender_confirmation", "rejected"],
   },
   trid_timeline: {
     compliance_status: ["at_risk", "closed", "compliant", "in_progress", "violation"],

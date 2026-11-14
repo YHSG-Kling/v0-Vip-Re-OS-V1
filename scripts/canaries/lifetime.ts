@@ -67,7 +67,14 @@ export async function run() {
     ;(svc.tables.documents ??= []).push({ id: uuid(), brokerage_id: brokerageId, transaction_id: transactionId, classification: "closing_disclosure", classification_confidence: "high", signature_completeness: null, created_at: nowIso(), updated_at: nowIso(), metadata: null, extracted_fields: { sales_price: String(price), cash_to_close: (price + 1000).toFixed(2) } })
     const asked = await cv.ensureClosingAttestationAsked(svc as never, { brokerageId, transactionId })
     const answered = await cv.recordClosingAttestation(svc as never, { userId: agentUserId, agentId, brokerageId, userType: "agent" } as never, { transactionId, answer: "no_unrecorded_change" } as never)
-    return asked.ok && answered.ok
+    // WAVE 153 (lane 153D): a BROKERAGE's closing waits for final closing compliance — the closing check runs (the settlement record is
+    // reconciled), then the brokerage's compliance officer approves the readiness list through the REAL writer.
+    const cc = await import("../../lib/transactions/closing-compliance")
+    await cc.runClosingCompliance(svc as never, { transactionId, brokerageId, trigger: "final_check" }, { notify: async () => 0, audit: async () => {} })
+    const coId = uuid()
+    ;(svc.tables.users ??= []).push({ id: coId, brokerage_id: brokerageId, user_type: "compliance_officer" })
+    const approved = await cc.recordClosingReviewDecision(svc as never, { userId: coId, brokerageId, userType: "compliance_officer" }, { transactionId, decision: "approve" })
+    return asked.ok && answered.ok && approved.ok
   }
   // POSITIVE CONTROL first: the same gate-passing deal WITHOUT the settlement record is refused CLOSED by the settlement gate.
   let unrecorded: { success: boolean; error?: string } = { success: false, error: "not run" }

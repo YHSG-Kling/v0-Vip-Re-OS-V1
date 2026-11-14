@@ -45,10 +45,13 @@ import type { AgentConcessionApprovalStatus, ConcessionSettlementTreatment } fro
 // WAVE 152 (lane 152E): + the term ledger's row shape and the ONE per-term evidence rule (re-asked of the document's current readings).
 import { termEvidenceFor, type UnresolvedTermConflict, type TermLedgerRow } from "@/lib/offers/governing-terms-rule"
 import { isValidUUID } from "@/lib/validations"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 // WAVE 152 (lane 152G): the reconciliation's result shape — TYPE only (the reconciler is loaded at the run's tail, below).
 import type { SettlementReconciliationRun } from "@/lib/offers/closing-cost-accuracy"
-import { auditTransactionDocuments } from "@/lib/compliance/required-documents"
+import { auditTransactionDocuments, loadChecklistRules, checklistRulesForDeal, DEAL_CHECKLIST_TARGET, type ChecklistChange } from "@/lib/compliance/required-documents"
 import { documentClassificationLabel } from "@/lib/compliance/required-documents"
+// WAVE 153 (lane 153D): a version an issuer REPLACED is never the latest statement; a corrected final inherits the final stage.
+import { isSupersededDocument, followSupersession } from "@/lib/compliance/required-documents"
 import { financingKindFor } from "@/lib/compliance/checklist-dimensions"
 import { evaluateExecution } from "@/lib/compliance/signature-completeness"
 import { assessClosingParticipants, closingPolicyAgeDays, VERIFY_EVERY_DAYS } from "@/lib/state-forms/closing-participants"
@@ -79,6 +82,16 @@ import {
   type TermsInstrument,
   type ClosingTermKey,
   type InstrumentKind,
+  buildClosingReadiness,
+  closingReviewRequired,
+  closingReviewStanding,
+  decideClosingReview,
+  readinessDigest,
+  type ClosingReadiness,
+  type ClosingReadinessInput,
+  type ClosingReviewDecision,
+  type ClosingReviewStandingState,
+  type LatestClosingReview,
 } from "./closing-compliance-core"
 
 type Svc = SupabaseClient<any, any, any>
@@ -126,6 +139,8 @@ export interface RunClosingComplianceInput {
   /** wave 145: "contract_addendum" — an executed addendum / amendment changed the governing terms (compliance re-review,
    *  lib/offers/governing-terms-consequences.ts). */
   trigger: "settlement_scanned" | "contract_document_scanned" | "final_check" | "manual" | "contract_addendum"
+    /** WAVE 153 (lane 153D): an issuer filed a corrected version of its own document (lib/documents/vendor-document-correction.ts). */
+    | "document_corrected"
   actorUserId?: string | null
   /**
    * WAVE 151 (lane 151K — "re-run compliance … ONLY for changed terms"): on a `contract_addendum` trigger, the governing term keys
@@ -583,9 +598,15 @@ async function loadSettlement(svc: Svc, tx: TransactionRow): Promise<{ ok: true;
     .limit(8)
   if (error) return { ok: false, error: `the settlement statements could not be read: ${error.message}` }
   type SettlementDocRow = { id: string; classification: string; classification_confidence: string | null; extracted_fields: unknown; stage: "final" | "preliminary" | "unlabeled" }
-  const docs: SettlementDocRow[] = ((data ?? []) as Array<Record<string, any>>).map((d) => ({
+  // WAVE 153 (lane 153D): an issuer's correction REPLACES a statement — the replaced version is left out (it is history, not the
+  // record), and the version that replaced the CDA's final / preliminary statement carries that stage forward.
+  const loaded = (data ?? []) as Array<Record<string, any>>
+  const versions = loaded.map((d) => ({ id: String(d.id), metadata: d.metadata }))
+  const finalId = followSupersession(cdaRow?.final_cd_document_id, versions)
+  const prelimId = followSupersession(cdaRow?.preliminary_cd_document_id, versions)
+  const docs: SettlementDocRow[] = loaded.filter((d) => !isSupersededDocument(d.metadata)).map((d) => ({
     id: String(d.id), classification: String(d.classification), classification_confidence: (d.classification_confidence as string | null) ?? null, extracted_fields: d.extracted_fields,
-    stage: d.id === cdaRow?.final_cd_document_id ? "final" as const : d.id === cdaRow?.preliminary_cd_document_id ? "preliminary" as const : "unlabeled" as const,
+    stage: d.id === finalId ? "final" as const : d.id === prelimId ? "preliminary" as const : "unlabeled" as const,
   }))
   // FINAL beats PRELIMINARY beats unlabeled; within a stage the newest scan.
   const rank = { final: 0, preliminary: 1, unlabeled: 2 } as const
@@ -623,6 +644,8 @@ const FAULT_ROW_TYPES = [
   `${CLOSING_DOC_CHECK_PREFIX}checklist`,
   // WAVE 152 (lane 152E): the executed terms' evidence could not be read (the evidence hold could not run — a blocking fault)
   `${CLOSING_TERM_CHECK_PREFIX}evidence_ledger`,
+  // WAVE 153 (lane 153D): the brokerage's checklist changed after this deal's version was set (advisory; clears once amended)
+  `${CLOSING_DOC_CHECK_PREFIX}checklist_version`,
 ] as const
 
 async function applyLogRowsOnce(svc: Svc, tx: TransactionRow, specs: LogRowSpec[], opts: { partial?: boolean } = {}): Promise<{ counts: RowWriteCounts; changed: LogRowSpec[]; cleared: LogRowSpec[]; error: string | null; raced?: boolean }> {
@@ -726,7 +749,96 @@ async function applyLogRows(svc: Svc, tx: TransactionRow, specs: LogRowSpec[], o
 
 // ── The checks that are not term comparisons ─────────────────────────────────────
 
-async function documentSpecs(svc: Svc, tx: TransactionRow): Promise<{ specs: LogRowSpec[]; unavailable: string | null; policyVersion: number | null }> {
+/**
+ * WAVE 153 (lane 153D) — THE DEAL'S CHECKLIST VERSION (directive D1: "each deal keeps its effective version; admins update
+ * prospectively"). Read off the policy ledger; on the deal's first full check today's rule set IS recorded as its version (insert-only,
+ * the ONE writer recordPolicyDecision). A refused read is "the checklist could not run" — never today's rules by default.
+ */
+type DealChecklist = { ok: true; rules: Array<Record<string, unknown>>; changes: ChecklistChange[]; pinnedAt: string | null; recorded: boolean } | { ok: false; error: string }
+async function dealChecklistRules(svc: Svc, tx: TransactionRow): Promise<DealChecklist> {
+  const { data, error } = await svc
+    .from("policy_decisions")
+    .select("id, evidence_json, created_at")
+    .eq("brokerage_id", tx.brokerage_id)
+    .eq("transaction_id", tx.id)
+    .eq("target_type", DEAL_CHECKLIST_TARGET)
+    .order("created_at", { ascending: false })
+    .limit(1)
+  if (error) return { ok: false, error: `the deal's checklist version could not be read: ${error.message}` }
+  const live = await loadChecklistRules(svc, tx.brokerage_id)
+  if (!live.ok) return live
+  const pin = ((data ?? []) as Array<{ evidence_json: { rules?: unknown } | null; created_at: string | null }>)[0]
+  const pinnedRules = Array.isArray(pin?.evidence_json?.rules) ? (pin!.evidence_json!.rules as Array<Record<string, unknown>>) : null
+  if (pinnedRules) {
+    const merged = checklistRulesForDeal(pinnedRules, live.rows)
+    return { ok: true, rules: merged.rules, changes: merged.changes, pinnedAt: pin!.created_at ?? null, recorded: false }
+  }
+  const now = new Date().toISOString()
+  const { recordPolicyDecision } = await import("@/lib/documents/policy-decisions")
+  const rec = await recordPolicyDecision(svc, {
+    brokerageId: tx.brokerage_id, transactionId: tx.id, targetType: DEAL_CHECKLIST_TARGET, targetId: tx.id,
+    verdict: { decision: "green", reasons: [`checklist version set for this deal: ${live.rows.length} rule(s) in force`], recommendedAction: "apply_this_version_to_the_deal", requiredApproverRole: null },
+    evidence: { kind: "deal_checklist_version", source: "first_check", pinned_at: now, rules: live.rows },
+  })
+  if (!rec.recorded) console.error(`[closing-compliance] the checklist version of ${tx.id} was not recorded (it is retried on the next check): ${rec.error ?? "unknown"}`)
+  return { ok: true, rules: live.rows, changes: [], pinnedAt: rec.recorded ? now : null, recorded: rec.recorded }
+}
+
+/**
+ * WAVE 153 (lane 153D) — THE GOVERNED AMENDMENT of ONE deal's checklist version (directive D1: "with a governed migration path if
+ * explicitly amended"). A compliance reviewer (the CDA approval roster, or a team / solo subscription's principal) applies TODAY's
+ * checklist to this deal with a written reason: a new version row (insert-only — the earlier version stays as history), ledgered
+ * (who, why), then the closing check re-runs against it. Never retroactive to a closed deal (its record is final).
+ */
+export async function amendDealChecklistVersion(
+  svc: Svc,
+  actor: { userId: string; brokerageId: string; userType: string; isTenantPrincipal?: boolean },
+  input: { transactionId: string; reason: string },
+  deps: { recheck?: (svc: Svc, i: RunClosingComplianceInput) => Promise<ClosingComplianceOutcome> } = {},
+): Promise<{ ok: true; rules: number; rechecked: boolean; openBlocking: number } | { ok: false; error: string }> {
+  if (!mayReviewClosing(actor)) return { ok: false, error: "Only compliance, the broker or an account admin can apply the current checklist to a deal." }
+  const reason = String(input.reason ?? "").trim()
+  if (reason.length < 10) return { ok: false, error: "Say why this deal should use the current checklist (at least a short sentence)." }
+  const { data: tx, error: txErr } = await svc.from("transactions").select("id, stage, status").eq("id", input.transactionId).eq("brokerage_id", actor.brokerageId).maybeSingle()
+  if (txErr) return { ok: false, error: "The deal couldn't be read, so nothing changed. Try again shortly." }
+  if (!tx) return { ok: false, error: "This deal isn't in your account, so nothing changed." }
+  const t = tx as { stage: string | null; status: string | null }
+  if (t.stage === "CLOSED" || ["closed", "funded"].includes(String(t.status ?? "").toLowerCase())) return { ok: false, error: "This deal has closed, so its checklist is final. Nothing changed." }
+  const live = await loadChecklistRules(svc, actor.brokerageId)
+  if (!live.ok) return { ok: false, error: "The checklist couldn't be read, so nothing changed. Try again shortly." }
+  const now = new Date().toISOString()
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { recordPolicyDecision } = await import("@/lib/documents/policy-decisions")
+  const rec = await withActionLedger<{ recorded: boolean; error?: string }>(
+    {
+      brokerageId: actor.brokerageId, action: "compliance.deal_checklist.amend", actor: { type: "user", userId: actor.userId },
+      subject: { type: "transaction", id: input.transactionId }, reasonCode: "HUMAN_REQUESTED", reasonDetail: reason.slice(0, 500),
+      riskClass: "LOW_RISK_WRITE", systemSource: "closing_compliance", detail: { rules: live.rows.length, role: actor.userType },
+    },
+    async () => recordPolicyDecision(svc, {
+      brokerageId: actor.brokerageId, transactionId: input.transactionId, targetType: DEAL_CHECKLIST_TARGET, targetId: input.transactionId,
+      verdict: { decision: "green", reasons: [reason], recommendedAction: "apply_this_version_to_the_deal", requiredApproverRole: null },
+      evidence: { kind: "deal_checklist_version", source: "amended", pinned_at: now, amended_by: actor.userId, reason, rules: live.rows },
+    }),
+    { settle: (r) => (r.recorded ? { status: "executed", outcome: "checklist_version_amended" } : { status: "failed", outcome: "not_recorded", error: r.error ?? "not recorded" }), replay: (claim) => ({ recorded: false, error: claim.kind === "refused" ? `the action ledger refused the amendment: ${claim.error}` : "already being applied" }) },
+    { client: svc as never },
+  ).catch((e: unknown) => ({ recorded: false, error: e instanceof Error ? e.message : String(e) }))
+  if (!rec.recorded) return { ok: false, error: `The current checklist was not applied (${rec.error ?? "unknown"}). Nothing changed — try again.` }
+  // A manual run re-checks the documents only once a settlement statement is on file (the runner's own rule); otherwise the amended
+  // version applies at the next full closing check (the pre-CDA check, the gated close) — said, never claimed as "checked".
+  const run = await (deps.recheck ?? runClosingCompliance)(svc, { transactionId: input.transactionId, brokerageId: actor.brokerageId, trigger: "manual", actorUserId: actor.userId })
+  return { ok: true, rules: live.rows.length, rechecked: run.ran, openBlocking: run.openBlocking }
+}
+
+async function documentSpecs(svc: Svc, tx: TransactionRow): Promise<{ specs: LogRowSpec[]; unavailable: string | null; policyVersion: number | null; checklistChanges?: ChecklistChange[] }> {
+  const checklist = await dealChecklistRules(svc, tx)
+  if (!checklist.ok) {
+    return {
+      unavailable: checklist.error, policyVersion: null,
+      specs: [{ check_type: `${CLOSING_DOC_CHECK_PREFIX}checklist`, check_label: "Closing: required-document checklist could run", status: "fail", is_blocking: true,
+        failure_reason: `The closing checklist could not be read or applied (${checklist.error}). Nothing was verified.`, signature: `unavailable|${checklist.error}` }],
+    }
+  }
   const contactIds = [tx.buyer_contact_id, tx.seller_contact_id, tx.contact_id]
   const dealType = tx.deal_type === "seller" || tx.deal_type === "dual" ? tx.deal_type : "buyer"
   // The deal's financing TERM (wave 145, lane 145Z — m871): the brokerage term carried onto the transaction
@@ -742,7 +854,7 @@ async function documentSpecs(svc: Svc, tx: TransactionRow): Promise<{ specs: Log
   }
   const audit = await auditTransactionDocuments(svc, {
     transactionId: tx.id, brokerageId: tx.brokerage_id, offerId: tx.offer_id, listingId: tx.listing_id, contactIds,
-    dealType, stateCode: tx.property_state, stage: "closing", financing,
+    dealType, stateCode: tx.property_state, stage: "closing", financing, rules: checklist.rules,
   })
   // An audit that could not run is a BLOCKING row: "nobody checked" must not read as "checked and fine".
   if (audit.unavailable_reason) {
@@ -784,7 +896,19 @@ async function documentSpecs(svc: Svc, tx: TransactionRow): Promise<{ specs: Log
       signature: `unexecuted|${bits.join("+")}`,
     })
   }
-  return { specs, unavailable: null, policyVersion: audit.policy_version ?? null }
+  // WAVE 153 (lane 153D): what changed in the brokerage's checklist after this deal's version was set — said, never applied
+  // silently (a cited state requirement already applies; everything else applies to new deals unless an admin amends this deal).
+  const pending = checklist.changes.filter((c) => !c.appliesNow)
+  if (pending.length > 0) {
+    const words = pending.slice(0, 6).map((c) => `${documentClassificationLabel(c.classification)} (${c.change})`).join(", ")
+    specs.push({
+      check_type: `${CLOSING_DOC_CHECK_PREFIX}checklist_version`, check_label: "Closing: the brokerage's checklist changed after this deal's version was set",
+      status: "needs_review", is_blocking: false,
+      failure_reason: `This deal is checked against the checklist in force when it was set${checklist.pinnedAt ? ` (${checklist.pinnedAt.slice(0, 10)})` : ""}. Changed since: ${words}${pending.length > 6 ? ` and ${pending.length - 6} more` : ""}. The changes apply to new deals; a compliance admin can apply the current checklist to this deal with a reason.`,
+      signature: `changed|${pending.map((c) => `${c.ruleId}:${c.change}`).sort().join("+")}`,
+    })
+  }
+  return { specs, unavailable: null, policyVersion: audit.policy_version ?? null, checklistChanges: checklist.changes }
 }
 
 /** The brokerage-wide closing setting (lib/brokerage/get-brokerage-settings.ts) — one default, which a state that requires an attorney overrides. */
@@ -1274,6 +1398,7 @@ export async function runClosingCompliance(
     metadata: {
       written: written.counts, open_blocking: openBlocking, open_review: open.length - openBlocking,
       checklist_policy_version: docs.policyVersion,
+      checklist_changes_since_version: (docs as { checklistChanges?: ChecklistChange[] }).checklistChanges?.length ?? 0,
       governing_applied: gov.ok ? gov.governing.applied.map((a) => ({ id: a.id, kind: a.kind, executedAt: a.executedAt })) : [],
       governing_ignored: gov.ok ? gov.governing.ignored : [],
       scope: scope ? [...scope] : null, unresolved_terms: [...unresolvedTerms],
@@ -1301,5 +1426,186 @@ export async function runClosingCompliance(
     evidenceHolds,
     corrections,
     reconciliation,
+  }
+}
+
+// ═══ WAVE 153 (lane 153D) — FINAL CLOSING COMPLIANCE TAKES CHARGE: THE READS, THE DECISION, THE CLOSE GATE ═════════════════════
+//
+// Owner (verbatim, 2026-11-14): "when the transaction is closing and goes through a compliance review, they take charge of approving
+// and making sure all docs are accurate and submitted (settlement statement and cda-if required are part of the check), will get
+// broker signed cda if it is a cda brokerage."
+//
+// ONE READINESS LIST, assembled from the survivors — never a second checker (the pure rule: ./closing-compliance-core.ts
+// buildClosingReadiness): the closing rows THIS file's runClosingCompliance writes (required documents at the deal's checklist version,
+// their execution, term and commission rows), 152G's latest reconciliation snapshot (the final settlement statement / Closing Disclosure),
+// trid_timeline (153C), any insurance rows on the compliance log (153C), the deal's CDA RECORD when one exists — compliance approved,
+// broker signed, delivered to title (never the brokerage's CDA setting: 152H's census) — the closing question (152G), and documents whose text tried to give
+// instructions (the scanner flags them). THE DECISION IS PERSISTED AND IT BLOCKS: approve / hold / reject + notes is an insert-only row
+// on the policy ledger (policy_decisions, target_type CLOSING_REVIEW_TARGET, the ONE writer recordPolicyDecision) under withActionLedger,
+// carrying the FINGERPRINT of the list it was made on; the gated close (stage-progression canAdvanceStage, CLOSED) recomputes the list
+// live and closes only on an approval whose fingerprint still matches — a corrected document, a new statement, a term change or a
+// reopened check after the approval REOPENS it. Approval is never an override. REQUIRED for a tenant that is a brokerage by its own plan
+// tier; a team / solo subscription closes on the closing attestation (152G) and may still record a review.
+
+/** THE reviewer roster: the tenant-admin roster MINUS team_lead (by named subtraction, CLAUDE.md §4 — the same seats that approve a CDA
+ *  and override a closing hold), or the principal of a team / solo subscription. */
+const CLOSING_REVIEWER_USER_TYPES: ReadonlySet<string> = new Set([...TENANT_ADMIN_USER_TYPES].filter((t) => t !== "team_lead"))
+export function mayReviewClosing(actor: { userType: string | null | undefined; isTenantPrincipal?: boolean }): boolean {
+  return CLOSING_REVIEWER_USER_TYPES.has(String(actor.userType ?? "").toLowerCase().trim()) || !!actor.isTenantPrincipal
+}
+
+/** policy_decisions.target_type of a reviewer's closing decision (no CHECK on target_type — census, lane 152G). */
+export const CLOSING_REVIEW_TARGET = "closing_compliance_review"
+
+// ── I/O ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+interface LoadedClosingReadiness {
+  readiness: ClosingReadiness
+  required: boolean
+  latest: LatestClosingReview | null
+  standing: { state: ClosingReviewStandingState; blocker: string | null }
+  checklistVersionAt: string | null
+}
+
+/**
+ * Read everything the list is built from, tenant-pinned to the caller's (session-derived) brokerage, on the caller's client. FAILS
+ * CLOSED: any refused read is ok:false with its reason — never a list that silently omits what it could not read.
+ */
+export async function loadClosingReadiness(svc: Svc, input: { brokerageId: string; transactionId: string }): Promise<{ ok: true; loaded: LoadedClosingReadiness } | { ok: false; error: string }> {
+  const B = input.brokerageId, T = input.transactionId
+  if (!B || !T) return { ok: false, error: "no tenant or transaction" }
+  const { data: tx, error: txErr } = await svc.from("transactions").select("id, brokerage_id, offer_id, listing_id, buyer_contact_id, seller_contact_id, contact_id").eq("id", T).eq("brokerage_id", B).maybeSingle()
+  if (txErr) return { ok: false, error: `the transaction could not be read: ${txErr.message}` }
+  if (!tx) return { ok: false, error: "transaction not found in this account" }
+  const t = tx as { offer_id: string | null; listing_id: string | null; buyer_contact_id: string | null; seller_contact_id: string | null; contact_id: string | null }
+
+  const { CLOSING_ATTESTATION_CHECK_TYPE } = await import("@/lib/commission/closing-verification")
+  const [rows, trid, cdaRows, recon, review, pin, flagged] = await Promise.all([
+    svc.from("transaction_compliance_log").select("check_type, check_label, status, is_blocking, failure_reason").eq("brokerage_id", B).eq("transaction_id", T),
+    svc.from("trid_timeline").select("id, closing_disclosure_delivered_date").eq("brokerage_id", B).eq("transaction_id", T).maybeSingle(),
+    svc.from("closing_disclosure_agreement").select("id, status, compliance_approved_at, broker_approved_at, sent_to_title_at").eq("brokerage_id", B).eq("transaction_id", T).order("updated_at", { ascending: false }).limit(1),
+    svc.from("policy_decisions").select("id, evidence_json").eq("brokerage_id", B).eq("transaction_id", T).eq("target_type", "settlement_reconciliation").order("created_at", { ascending: false }).limit(1),
+    svc.from("policy_decisions").select("decision, evidence_json, created_at").eq("brokerage_id", B).eq("transaction_id", T).eq("target_type", CLOSING_REVIEW_TARGET).order("created_at", { ascending: false }).limit(1),
+    svc.from("policy_decisions").select("created_at").eq("brokerage_id", B).eq("transaction_id", T).eq("target_type", "required_document_checklist").order("created_at", { ascending: false }).limit(1),
+    svc.from("documents").select("id, classification").eq("brokerage_id", B).eq("transaction_id", T).filter("metadata->>untrusted_text_flagged", "eq", "true"),
+  ])
+  for (const [name, r] of [["compliance log", rows], ["TRID timeline", trid], ["CDA", cdaRows], ["settlement check", recon], ["closing review", review], ["checklist version", pin], ["flagged documents", flagged]] as const) {
+    const err = (r as { error?: { message: string } | null }).error
+    if (err) return { ok: false, error: `the ${name} could not be read: ${err.message}` }
+  }
+
+  const { loadDealFileDocuments } = await import("@/lib/compliance/required-documents")
+  const file = await loadDealFileDocuments(svc as never, { brokerageId: B, transactionId: T, offerId: t.offer_id, listingId: t.listing_id, contactIds: [t.buyer_contact_id, t.seller_contact_id, t.contact_id] })
+  if (!file.ok) return { ok: false, error: file.error }
+
+  const cda =(((cdaRows.data ?? []) as Array<{ status: string | null; compliance_approved_at: string | null; broker_approved_at: string | null; sent_to_title_at: string | null }>)[0]) ?? null
+  const reconEv = ((((recon.data ?? []) as Array<{ evidence_json: Record<string, any> | null }>)[0])?.evidence_json) ?? null
+  const logRows = (rows.data ?? []) as ClosingReadinessInput["complianceRows"]
+  const { documentClassificationLabel } = await import("@/lib/compliance/document-classifications")
+  const readiness = buildClosingReadiness({
+    complianceRows: logRows,
+    dealFileDocumentIds: file.rows.map((d) => d.id),
+    settlement: reconEv ? { state: (reconEv.state as string | undefined) ?? null, finalOnFile: (reconEv.record?.finalOnFile as boolean | undefined) ?? null, fingerprint: (reconEv.fingerprint as string | undefined) ?? null } : null,
+    trid: { tracked: !!trid.data, deliveredDate: ((trid.data as { closing_disclosure_delivered_date?: string | null } | null)?.closing_disclosure_delivered_date) ?? null },
+    cda: cda ? { status: cda.status ?? null, complianceApprovedAt: cda.compliance_approved_at ?? null, brokerSignedAt: cda.broker_approved_at ?? null, deliveredAt: cda.sent_to_title_at ?? null } : null,
+    attestationStatus: logRows.find((r) => r.check_type === CLOSING_ATTESTATION_CHECK_TYPE)?.status ?? null,
+    attestationCheckType: CLOSING_ATTESTATION_CHECK_TYPE,
+    flaggedDocuments: ((flagged.data ?? []) as Array<{ id: string; classification: string | null }>).map((d) => ({ id: d.id, label: documentClassificationLabel(d.classification) })),
+  })
+
+  const { resolveTenantPayer } = await import("@/lib/errors")
+  const kind = (await resolveTenantPayer(svc as never, B)).kind
+  const required = closingReviewRequired(kind)
+  const lr = (((review.data ?? []) as Array<{ decision: "green" | "amber" | "red"; evidence_json: Record<string, any> | null; created_at: string | null }>)[0]) ?? null
+  const latest: LatestClosingReview | null = lr ? { decision: lr.decision, fingerprint: (lr.evidence_json?.fingerprint as string | undefined) ?? null, notes: (lr.evidence_json?.notes as string | undefined) ?? null, decidedBy: (lr.evidence_json?.decided_by as string | undefined) ?? null, decidedAt: lr.created_at } : null
+  return {
+    ok: true,
+    loaded: {
+      readiness, required, latest,
+      standing: closingReviewStanding({ required, latest, currentFingerprint: readiness.fingerprint }),
+      checklistVersionAt: ((((pin.data ?? []) as Array<{ created_at: string | null }>)[0])?.created_at) ?? null,
+    },
+  }
+}
+
+/** The close gate's question (canAdvanceStage, CLOSED): does the reviewer's standing hold this closing? A list that cannot be read holds it. */
+export async function closingReviewGate(svc: Svc, input: { brokerageId: string; transactionId: string }): Promise<{ blockers: string[] }> {
+  const r = await loadClosingReadiness(svc, input)
+  if (!r.ok) return { blockers: [`Final closing compliance could not be checked (${r.error}) — nothing was verified, so the closing waits.`] }
+  return { blockers: r.loaded.standing.blocker ? [r.loaded.standing.blocker] : [] }
+}
+
+/**
+ * Record a reviewer's decision on the FRESH list (the reviewer saw a list; the writer re-reads it so the fingerprint is what is true
+ * now). Ledgered (LAW 5: who, why, on which list), insert-only, idempotent per (deal, decision, list, notes). A hold / reject tells
+ * the deal's agent and TC what to fix.
+ */
+export async function recordClosingReviewDecision(
+  svc: Svc,
+  actor: { userId: string; brokerageId: string; userType: string; isTenantPrincipal?: boolean },
+  input: { transactionId: string; decision: ClosingReviewDecision; notes?: string | null },
+  deps: { notify?: (svc: Svc, a: { brokerageId: string; transactionId: string; title: string; body: string }) => Promise<number> } = {},
+): Promise<{ ok: true; standing: ClosingReviewStandingState; fingerprint: string; replay: boolean } | { ok: false; error: string }> {
+  const loaded = await loadClosingReadiness(svc, { brokerageId: actor.brokerageId, transactionId: input.transactionId })
+  if (!loaded.ok) return { ok: false, error: `The closing file could not be read, so nothing was recorded (${loaded.error}).` }
+  const { readiness } = loaded.loaded
+  const verdict = decideClosingReview({ readiness, decision: input.decision, notes: input.notes, reviewer: { isReviewer: mayReviewClosing(actor) } })
+  if (!verdict.ok) return verdict
+  const notes = String(input.notes ?? "").trim() || null
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { recordPolicyDecision } = await import("@/lib/documents/policy-decisions")
+  const written = await withActionLedger<{ recorded: boolean; replay: boolean; error?: string }>(
+    {
+      brokerageId: actor.brokerageId,
+      action: "compliance.closing_review.decide",
+      actor: { type: "user", userId: actor.userId },
+      subject: { type: "transaction", id: input.transactionId, ref: input.decision },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: `final closing compliance ${input.decision} on readiness ${readiness.fingerprint}${notes ? ` — ${notes}` : ""}`.slice(0, 500),
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "closing_review",
+      idempotencyKey: `closing-review:${actor.brokerageId}:${input.transactionId}:${input.decision}:${readiness.fingerprint}:${readinessDigest(notes ?? "")}`,
+      detail: { decision: input.decision, fingerprint: readiness.fingerprint, blocking: readiness.blocking, open: readiness.open, role: actor.userType },
+    },
+    async () => {
+      const rec = await recordPolicyDecision(svc, {
+        brokerageId: actor.brokerageId, transactionId: input.transactionId, targetType: CLOSING_REVIEW_TARGET, targetId: input.transactionId,
+        verdict: { decision: verdict.color, reasons: notes ? [notes] : ["approved: every item on the closing readiness list is satisfied"], recommendedAction: input.decision === "approve" ? "close" : "correct_and_resubmit", requiredApproverRole: null },
+        evidence: { kind: "closing_compliance_review", decision: input.decision, notes, fingerprint: readiness.fingerprint, decided_by: actor.userId, role: actor.userType, items: readiness.items.map((i) => ({ key: i.key, state: i.state })) },
+      })
+      if (!rec.recorded) throw new Error(rec.error ?? "the decision was not written")
+      return { recorded: true, replay: false }
+    },
+    {
+      settle: (r) => (r.recorded ? { status: "executed", outcome: `closing_review_${input.decision}` } : { status: "failed", outcome: "not_recorded", error: r.error ?? "not recorded" }),
+      replay: (claim) => (claim.kind === "refused" ? { recorded: false, replay: false, error: `the action ledger refused the decision: ${claim.error}` } : { recorded: true, replay: true }),
+    },
+    { client: svc as never },
+  ).catch((e: unknown) => ({ recorded: false, replay: false, error: e instanceof Error ? e.message : String(e) }))
+  if (!written.recorded) return { ok: false, error: `The decision was not recorded (${written.error ?? "unknown"}). Nothing changed — try again.` }
+  if (input.decision !== "approve" && !written.replay) {
+    const title = input.decision === "hold" ? "Closing on hold — compliance needs a correction" : "Closing rejected by compliance"
+    await (deps.notify ?? notifyClosingReviewTeam)(svc, { brokerageId: actor.brokerageId, transactionId: input.transactionId, title, body: `${notes ?? ""}\nThe closing waits until compliance approves it. Nothing on the signed contract was changed.`.trim() })
+  }
+  const after = closingReviewStanding({ required: loaded.loaded.required, latest: { decision: verdict.color, fingerprint: readiness.fingerprint, notes, decidedBy: actor.userId, decidedAt: new Date().toISOString() }, currentFingerprint: readiness.fingerprint })
+  return { ok: true, standing: after.state, fingerprint: readiness.fingerprint, replay: written.replay }
+}
+
+/** The deal's agent(s) and TC are told (the existing compliance-flag notifier widens to the deal's TCs). Never fails the decision. */
+const notifyClosingReviewTeam = async (svc: Svc, a: { brokerageId: string; transactionId: string; title: string; body: string }): Promise<number> => {
+  try {
+    const { data: tx } = await svc.from("transactions").select("agent_id, buyer_agent_id, seller_agent_id").eq("id", a.transactionId).eq("brokerage_id", a.brokerageId).maybeSingle()
+    const ids = [...new Set([(tx as any)?.agent_id, (tx as any)?.buyer_agent_id, (tx as any)?.seller_agent_id].filter(Boolean) as string[])]
+    const users: string[] = []
+    if (ids.length) {
+      const { data: ag } = await svc.from("agents").select("user_id").eq("brokerage_id", a.brokerageId).in("id", ids)
+      for (const r of (ag ?? []) as Array<{ user_id: string | null }>) if (r.user_id) users.push(r.user_id)
+    }
+    const { notifyComplianceFlag } = await import("@/lib/notifications/notify-helpers")
+    const r = await notifyComplianceFlag(svc as never, { brokerageId: a.brokerageId, agentUserId: users[0] ?? null, alsoNotifyUserIds: users.slice(1), transactionId: a.transactionId, flag: { type: "compliance.closing_review", severity: "high", title: a.title, body: a.body, entityType: "transaction", entityId: a.transactionId } })
+    return r.notified_count
+  } catch (e) {
+    console.error("[closing-review] the deal team was not told (the decision stands):", e instanceof Error ? e.message : String(e))
+    return 0
   }
 }

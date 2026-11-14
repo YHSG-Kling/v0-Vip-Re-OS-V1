@@ -264,6 +264,10 @@ interface AllocationRow {
   allocation_set_id: string
   rule_label?: string | null
   superseded_at?: string | null
+  /** The share's dollar amount FROZEN when the split was recorded (allocateSharedExpenseCore). The rollup splits the
+   *  expense's CURRENT amount by share_bps; a set whose frozen amounts no longer sum to that amount was made before the
+   *  expense was edited, and is reported as a stale split (the figures stay right — the books keeper re-splits). */
+  allocated_amount?: number | string | null
 }
 
 interface OfficeExpenseLine {
@@ -290,6 +294,8 @@ interface ExpenseRollup {
   balanced: boolean
   rowsCounted: number
   reversals: { count: number; amount: number }
+  /** Active splits whose frozen share amounts no longer add up to the expense's current amount (consolidated only). */
+  staleSplits: number
   consolidated: boolean
 }
 
@@ -319,12 +325,17 @@ function buildExpenseRollup(input: {
   const allocIn = new Map<string, number>()
   const counts = new Map<string, number>()
   const activeSets = new Map<string, AllocationShare[]>()
+  const frozenCents = new Map<string, number | null>()
   for (const a of input.allocations) {
     if (a.superseded_at) continue
     const list = activeSets.get(a.expense_id) ?? []
     list.push({ locationId: a.location_id ?? null, shareBps: Number(a.share_bps) })
     activeSets.set(a.expense_id, list)
+    // A share with no frozen amount makes the set's frozen total unknown (never a guessed match).
+    const prior = frozenCents.has(a.expense_id) ? frozenCents.get(a.expense_id)! : 0
+    frozenCents.set(a.expense_id, prior == null || a.allocated_amount == null ? null : prior + toCents(a.allocated_amount))
   }
+  let staleSplits = 0
   let tenant = 0, central = 0, retained = 0, rowsCounted = 0, revCount = 0, revSum = 0
   const add = (m: Map<string, number>, k: string, c: number) => m.set(k, (m.get(k) ?? 0) + c)
   for (const r of input.rows) {
@@ -338,6 +349,10 @@ function buildExpenseRollup(input: {
     tenant += cents
     if (office) { add(owned, office, cents); add(counts, office, 1); continue }
     const shares = activeSets.get(origin ?? r.id)
+    if (shares && !origin) {
+      const frozen = frozenCents.get(r.id)
+      if (frozen != null && frozen !== cents) staleSplits++
+    }
     const split = shares ? allocateByShares(fromCents(cents), shares) : null
     if (!split || !split.ok) { central += cents; continue }
     for (const l of split.lines) {
@@ -367,6 +382,7 @@ function buildExpenseRollup(input: {
     balanced,
     rowsCounted: consolidated ? rowsCounted : officeLines.filter((l) => visible.has(l.locationId)).reduce((s, l) => s + l.rowCount, 0),
     reversals: consolidated ? { count: revCount, amount: fromCents(revSum) } : { count: 0, amount: 0 },
+    staleSplits: consolidated ? staleSplits : 0,
     consolidated,
   }
 }
@@ -392,7 +408,7 @@ export async function loadExpenseRollup(svc: Svc, viewer: BooksViewer, period: {
   const sourceIds = [...new Set(rows.map((r) => reversalOriginOf(r.description) ?? r.id))]
   let allocations: AllocationRow[] = []
   if (sourceIds.length) {
-    const { data, error } = await svc.from("business_expense_allocations").select("expense_id, location_id, share_bps, allocation_set_id, rule_label, superseded_at")
+    const { data, error } = await svc.from("business_expense_allocations").select("expense_id, location_id, share_bps, allocation_set_id, rule_label, superseded_at, allocated_amount")
       .eq("brokerage_id", viewer.brokerageId).is("superseded_at", null).in("expense_id", sourceIds)
     if (error) return { ok: false, error: `allocations read refused (${error.message})` }
     allocations = (data ?? []) as AllocationRow[]
@@ -405,6 +421,59 @@ export async function loadExpenseRollup(svc: Svc, viewer: BooksViewer, period: {
   })
   const { ok: _ok, ...authority } = auth
   return { ok: true, rollup, authority }
+}
+
+interface SplitHistoryEntry {
+  allocationSetId: string
+  expenseId: string
+  ruleLabel: string | null
+  /** The share amounts as they were frozen when the split was recorded (sum of allocated_amount). */
+  total: number
+  shareCount: number
+  createdAt: string
+  createdBy: string | null
+  supersededAt: string | null
+  supersededBy: string | null
+}
+
+/**
+ * THE SPLIT HISTORY (the audit read of business_expense_allocations): who split which main-office cost, when, on what rule,
+ * and who replaced it. Consolidated books keepers only (an office admin sees office totals, not the company's re-split
+ * decisions). Superseded sets are history, never deleted — this is where that history is read. Every error is READ.
+ */
+export async function loadExpenseSplitHistory(svc: Svc, viewer: BooksViewer, opts: { limit?: number } = {}): Promise<{ ok: true; entries: SplitHistoryEntry[] } | { ok: false; error: string }> {
+  const auth = await resolveBooksAuthority(svc, viewer)
+  if (!auth.ok) return { ok: false, error: auth.error }
+  if (!auth.consolidated) return { ok: false, error: "forbidden_central_books" }
+  const { data, error } = await svc.from("business_expense_allocations")
+    .select("allocation_set_id, expense_id, rule_label, allocated_amount, created_at, created_by_user_id, superseded_at, superseded_by_user_id")
+    .eq("brokerage_id", viewer.brokerageId).order("created_at", { ascending: false }).limit(Math.min(Math.max(opts.limit ?? 200, 1), 500))
+  if (error) return { ok: false, error: `split history read refused (${error.message})` }
+  type Row = { allocation_set_id: string; expense_id: string; rule_label: string | null; allocated_amount: number | string | null; created_at: string; created_by_user_id: string | null; superseded_at: string | null; superseded_by_user_id: string | null }
+  const sets = new Map<string, { row: Row; cents: number; n: number }>()
+  for (const r of (data ?? []) as Row[]) {
+    const cur = sets.get(r.allocation_set_id)
+    if (cur) { cur.cents += toCents(r.allocated_amount); cur.n++ }
+    else sets.set(r.allocation_set_id, { row: r, cents: toCents(r.allocated_amount), n: 1 })
+  }
+  const userIds = [...new Set([...sets.values()].flatMap((v) => [v.row.created_by_user_id, v.row.superseded_by_user_id]).filter((x): x is string => !!x))]
+  const names = new Map<string, string>()
+  if (userIds.length) {
+    const { data: people, error: pErr } = await svc.from("users").select("id, first_name, last_name").eq("brokerage_id", viewer.brokerageId).in("id", userIds)
+    if (pErr) return { ok: false, error: `split history people read refused (${pErr.message})` }
+    for (const p of (people ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+      const n = [p.first_name, p.last_name].filter(Boolean).join(" ").trim()
+      if (n) names.set(p.id, n)
+    }
+  }
+  const who = (id: string | null) => (id ? names.get(id) ?? "A former user" : null)
+  return {
+    ok: true,
+    entries: [...sets.values()].map(({ row, cents, n }) => ({
+      allocationSetId: row.allocation_set_id, expenseId: row.expense_id, ruleLabel: row.rule_label, total: fromCents(cents), shareCount: n,
+      createdAt: row.created_at, createdBy: who(row.created_by_user_id), supersededAt: row.superseded_at, supersededBy: who(row.superseded_by_user_id),
+    })),
+  }
 }
 
 // ─── 4. ALLOCATING A SHARED COST (the allocation writer's core) ────────────────

@@ -68,6 +68,57 @@ import {
 } from "./checklist-dimensions"
 import { checklistVocabularyFor, financingTypeResolver, loadTenantVocabulary } from "./adaptive-vocabulary"
 
+// ─── WAVE 153 (lane 153D): A DOCUMENT THAT WAS REPLACED ──────────────────────────────────────────────────────────────────────
+//
+// ONE VOCABULARY FOR A REPLACED VERSION (CLAUDE.md §6), held HERE beside the deal file it decides. `documents` carries no version
+// column and no status CHECK, so a corrected version is a NEW row and the link lives in the existing `documents.metadata` jsonb, both
+// ways: the new row names what it replaces (supersedes_document_id, version_no, issuer, content_sha256), the replaced row names its
+// successor (superseded_by_document_id, superseded_at). The replaced row is never deleted or overwritten — it is history: it is never
+// counted as present and never judged for execution (loadDealFileDocuments), and never the "latest statement" a settlement comparison
+// reads (lib/transactions/closing-compliance.ts loadSettlement, lib/offers/closing-cost-accuracy.ts reconcileClosingSettlement), while
+// a corrected FINAL statement inherits the final stage of the version it replaced (followSupersession). The writer is the issuer's
+// correction (lib/documents/vendor-document-correction.ts); who may correct what is lib/documents/document-versions.ts.
+
+/** The metadata keys of the version link. */
+export const DOCUMENT_VERSION_KEYS = {
+  supersedes: "supersedes_document_id",
+  supersededBy: "superseded_by_document_id",
+  supersededAt: "superseded_at",
+  versionNo: "version_no",
+  issuer: "issuer",
+  contentSha256: "content_sha256",
+  postCloseAdjustmentOf: "post_close_adjustment_of",
+} as const
+
+const versionLinkOf = (metadata: unknown): string | null => {
+  const m = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? (metadata as Record<string, unknown>) : null
+  const v = m?.[DOCUMENT_VERSION_KEYS.supersededBy]
+  return typeof v === "string" && v.trim() ? v.trim() : null
+}
+
+/** True when a later version replaced this document (the replaced row keeps its history but satisfies and blocks nothing). */
+export function isSupersededDocument(metadata: unknown): boolean {
+  return !!versionLinkOf(metadata)
+}
+
+/**
+ * The CURRENT version of a document among the rows loaded: walk superseded_by links until a row nothing replaced (or a link that leaves
+ * the loaded set). A pointer (the CDA's final / preliminary statement id) therefore follows a correction to the version that replaced
+ * it. Cycle-safe (a malformed loop stops where it started).
+ */
+export function followSupersession(id: string | null | undefined, rows: ReadonlyArray<{ id: string; metadata?: unknown }>): string | null {
+  if (!id) return null
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  let cur = id
+  const seen = new Set<string>([cur])
+  for (;;) {
+    const next = versionLinkOf(byId.get(cur)?.metadata)
+    if (!next || seen.has(next) || !byId.has(next)) return cur
+    seen.add(next)
+    cur = next
+  }
+}
+
 /**
  * Wave 144A — the brokerage's ADAPTIVE VOCABULARY, read only when it can matter: a stored rule or the
  * question names a contract type / representation that is not a platform value (a brokerage term, an
@@ -166,6 +217,12 @@ function checklistEvidence(docs: ResolvedRequiredDoc[]): { policy_version: numbe
 export async function resolveRequiredDocuments(
   supabase: SupabaseClient,
   ctx: ResolveContext,
+  /**
+   * WAVE 153 (lane 153D): THE DEAL'S OWN CHECKLIST VERSION. When given, the brokerage's rule rows AS THEY STOOD when this deal's
+   * version was set (checklistRulesForDeal) are resolved instead of today's table — so an admin's edit applies prospectively and a
+   * deal keeps the checklist it was opened under. Absent → today's rules (every caller before this wave, unchanged).
+   */
+  opts: { rules?: ReadonlyArray<Record<string, unknown>> } = {},
 ): Promise<ResolveRequiredDocsOutcome> {
   // A missing tenant anchor is NOT "nothing required" — it is a gate that cannot
   // run, and it must refuse.
@@ -173,24 +230,31 @@ export async function resolveRequiredDocuments(
     return { ok: false, docs: [], error: "no brokerage on the deal — the required-document checklist cannot be resolved" }
   }
 
-  // Pull all rows for the brokerage matching deal_type (+ optional state).
-  //
-  // `select("*")`, not a column list: the m806 dimensions (required_stage, financing_kind,
-  // contract_subtype, representation, policy_version) are WRITTEN, NOT APPLIED until the integrator
-  // applies them, and a select that NAMES an absent column is refused whole (42703) — which this
-  // resolver would then report as ok:false and EVERY gate would refuse. A star select returns the
-  // columns that exist; the absent ones read as undefined = "any" (the wildcard every pre-m806 row is).
-  const q = supabase
-    .from("brokerage_required_documents")
-    .select("*")
-    .eq("brokerage_id", ctx.brokerageId)
-    .eq("is_required",  true)
-    .or(`deal_type.eq.${ctx.dealType},deal_type.eq.dual`)
+  let rows: any[] | null
+  if (opts.rules) {
+    // The pinned rule set, narrowed exactly as the query below narrows the table: this brokerage, required, this deal type or dual.
+    rows = opts.rules.filter((r) => r.brokerage_id === ctx.brokerageId && r.is_required === true && (r.deal_type === ctx.dealType || r.deal_type === "dual")) as any[]
+  } else {
+    // Pull all rows for the brokerage matching deal_type (+ optional state).
+    //
+    // `select("*")`, not a column list: the m806 dimensions (required_stage, financing_kind,
+    // contract_subtype, representation, policy_version) are WRITTEN, NOT APPLIED until the integrator
+    // applies them, and a select that NAMES an absent column is refused whole (42703) — which this
+    // resolver would then report as ok:false and EVERY gate would refuse. A star select returns the
+    // columns that exist; the absent ones read as undefined = "any" (the wildcard every pre-m806 row is).
+    const q = supabase
+      .from("brokerage_required_documents")
+      .select("*")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("is_required",  true)
+      .or(`deal_type.eq.${ctx.dealType},deal_type.eq.dual`)
 
-  // supabase-js RESOLVES refusals — read the error (CLAUDE.md §3).
-  const { data: rows, error } = await q
-  if (error) {
-    return { ok: false, docs: [], error: `required-document checklist could not be read: ${error.message}` }
+    // supabase-js RESOLVES refusals — read the error (CLAUDE.md §3).
+    const { data, error } = await q
+    if (error) {
+      return { ok: false, docs: [], error: `required-document checklist could not be read: ${error.message}` }
+    }
+    rows = data
   }
   if (!rows || rows.length === 0) return { ok: true, docs: [], policy_version: null, checklist_fingerprint: null }
 
@@ -310,7 +374,8 @@ export interface DealFileDocument {
 }
 
 export type DealFileOutcome =
-  | { ok: true;  rows: DealFileDocument[] }
+  /** `supersededIds` (wave 153, lane 153D): rows a later version replaced — read, and left out of `rows` on purpose. */
+  | { ok: true;  rows: DealFileDocument[]; supersededIds?: string[] }
   | { ok: false; rows: [];              error: string }
 
 /**
@@ -342,10 +407,15 @@ export async function loadDealFileDocuments(
   if (!params.brokerageId) {
     return { ok: false, rows: [], error: "no brokerage on the deal — the deal file cannot be read" }
   }
-  const COLUMNS = "id, classification, signature_completeness, status"
+  // WAVE 153 (lane 153D) — PRESENCE IS NECESSARY, NOT SUFFICIENT: a document a later version REPLACED (an issuer's correction —
+  // the version link above) is read but never counted as present and never judged for execution, so a superseded or
+  // voided version can neither satisfy a requirement nor hold a deal on its stale signatures. `metadata` is read for that link only.
+  const COLUMNS = "id, classification, signature_completeness, status, metadata"
   const byId = new Map<string, DealFileDocument>()
+  const superseded = new Set<string>()
   const absorb = (rows: any[] | null) => {
     for (const d of rows ?? []) {
+      if (isSupersededDocument(d.metadata)) { superseded.add(d.id as string); continue }
       byId.set(d.id as string, {
         id:                     d.id as string,
         classification:         (d.classification ?? null) as DocumentClassification | null,
@@ -412,7 +482,7 @@ export async function loadDealFileDocuments(
     absorb(data)
   }
 
-  return { ok: true, rows: Array.from(byId.values()) }
+  return { ok: true, rows: Array.from(byId.values()), ...(superseded.size ? { supersededIds: [...superseded] } : {}) }
 }
 
 // ─── Audit ──────────────────────────────────────────────────────────────────
@@ -675,6 +745,8 @@ export async function auditTransactionDocuments(
     financing?:      ChecklistContext["financing"]
     contractSubtype?: ChecklistContext["contractSubtype"]
     representation?:  ChecklistContext["representation"]
+    /** WAVE 153 (lane 153D): the deal's pinned checklist version (checklistRulesForDeal) — absent = today's rules. */
+    rules?:          ReadonlyArray<Record<string, unknown>>
   },
 ): Promise<AuditResult> {
   // WAVE 145 (ruling 21): the closing audit used to be asked with NO agent and NO team, so every team- and agent-scope
@@ -697,7 +769,7 @@ export async function auditTransactionDocuments(
     financing:    params.financing ?? null,
     contractSubtype: params.contractSubtype ?? null,
     representation:  params.representation ?? null,
-  })
+  }, params.rules ? { rules: params.rules } : {})
   if (!required.ok) return unavailableAudit(required.error)
 
   const file = await loadDealFileDocuments(supabase, {
@@ -710,4 +782,68 @@ export async function auditTransactionDocuments(
   if (!file.ok) return unavailableAudit(file.error)
 
   return auditAgainst(required, file.rows)
+}
+
+// ─── WAVE 153 (lane 153D): THE DEAL KEEPS ITS CHECKLIST VERSION ──────────────────────────────────────────────────────────────
+//
+// Directive 153D-D1: "Allow brokerage/compliance admins to update required-document policies prospectively using existing settings.
+// Preserve effective version per deal, with a governed migration path if explicitly amended." What a deal keeps is the brokerage's
+// RULE SET as it stood when the deal's version was set — not the resolved list — so the deal's own facts (a cash deal that becomes
+// financed, a stage it reaches) still decide which of those rules apply, while an admin's later edit applies to new deals only.
+// A CITED STATE REQUIREMENT (legal_basis 'state_requirement', approved against an official source) is the law, not brokerage
+// preference: one added or edited after the pin applies to the deal as well. The version is stored on the policy ledger
+// (policy_decisions, target_type DEAL_CHECKLIST_TARGET, insert-only through recordPolicyDecision); an admin's amendment of ONE deal
+// records a new version with who / why (app/actions/compliance/closing-review.ts amendDealChecklistAction).
+
+/** policy_decisions.target_type of a deal's checklist version (no CHECK on target_type — census, lane 152G). */
+export const DEAL_CHECKLIST_TARGET = "required_document_checklist"
+
+/** Every required rule row of the brokerage, any deal type / scope — what a deal's version pins. A refused read is ok:false. */
+export async function loadChecklistRules(
+  supabase: SupabaseClient,
+  brokerageId: string,
+): Promise<{ ok: true; rows: Array<Record<string, unknown>> } | { ok: false; error: string }> {
+  if (!brokerageId) return { ok: false, error: "no brokerage — the checklist cannot be read" }
+  const { data, error } = await supabase.from("brokerage_required_documents").select("*").eq("brokerage_id", brokerageId).eq("is_required", true)
+  if (error) return { ok: false, error: `required-document checklist could not be read: ${error.message}` }
+  return { ok: true, rows: (data ?? []) as Array<Record<string, unknown>> }
+}
+
+const ruleKey = (r: Record<string, unknown>): string => `${String(r.id ?? r.classification)}@${typeof r.policy_version === "number" ? r.policy_version : 1}`
+
+export interface ChecklistChange { ruleId: string; classification: string; change: "added" | "edited" | "removed"; appliesNow: boolean }
+
+/**
+ * PURE. The rule set this deal is checked against: its PINNED rules, plus any cited state requirement added or edited since (the law
+ * applies now) — and the list of what changed in the brokerage's checklist since the pin, so the deal can say so. No pin yet → today's
+ * rules (the caller records them as the deal's version).
+ */
+export function checklistRulesForDeal(
+  pinned: ReadonlyArray<Record<string, unknown>> | null,
+  live: ReadonlyArray<Record<string, unknown>>,
+): { rules: Array<Record<string, unknown>>; changes: ChecklistChange[] } {
+  if (!pinned) return { rules: [...live], changes: [] }
+  const pinnedById = new Map(pinned.map((r) => [String(r.id ?? r.classification), r]))
+  const liveById = new Map(live.map((r) => [String(r.id ?? r.classification), r]))
+  const law = (r: Record<string, unknown>) => r.legal_basis === "state_requirement"
+  const rules: Array<Record<string, unknown>> = []
+  const changes: ChecklistChange[] = []
+  for (const [id, p] of pinnedById) {
+    const l = liveById.get(id)
+    if (!l) { changes.push({ ruleId: id, classification: String(p.classification), change: "removed", appliesNow: false }); rules.push(p); continue }
+    if (ruleKey(l) !== ruleKey(p)) {
+      const now = law(l)
+      changes.push({ ruleId: id, classification: String(l.classification), change: "edited", appliesNow: now })
+      rules.push(now ? l : p)
+      continue
+    }
+    rules.push(p)
+  }
+  for (const [id, l] of liveById) {
+    if (pinnedById.has(id)) continue
+    const now = law(l)
+    changes.push({ ruleId: id, classification: String(l.classification), change: "added", appliesNow: now })
+    if (now) rules.push(l)
+  }
+  return { rules, changes }
 }

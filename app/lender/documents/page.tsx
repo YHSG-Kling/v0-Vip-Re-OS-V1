@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Folder, ArrowLeft, FileText } from 'lucide-react'
 import Link from 'next/link'
 import { lenderVendorForUser, lenderVendorTransactionIds } from '@/lib/kernel/lender-linkage'
+import { IssuerCorrectionButton } from './issuer-correction-button'
 
 export const dynamic = 'force-dynamic'
 
@@ -89,16 +90,20 @@ export default async function LenderDocumentsPage() {
                     </p>
                   </div>
                 </div>
-                {doc.storage_url ? (
-                  <a href={doc.storage_url} target="_blank" rel="noopener noreferrer">
-                    <Button size="sm" variant="outline">View</Button>
-                  </a>
-                ) : (
-                  // No storage_url on the row means there is no file to open. A
-                  // disabled "View" button promised an action that does not exist;
-                  // state the observed fact instead.
-                  <span className="text-xs text-gray-500">No file attached</span>
-                )}
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {doc.storage_url ? (
+                    <a href={doc.storage_url} target="_blank" rel="noopener noreferrer">
+                      <Button size="sm" variant="outline">View</Button>
+                    </a>
+                  ) : (
+                    // No storage_url on the row means there is no file to open. A
+                    // disabled "View" button promised an action that does not exist;
+                    // state the observed fact instead.
+                    <span className="text-xs text-gray-500">No file attached</span>
+                  )}
+                  {/* WAVE 153 (lane 153D): the lender corrects ITS OWN document (the server checks issuer, assignment and tenant). */}
+                  <IssuerCorrectionButton transactionId={doc.transaction_id} documentId={doc.id} as="vendor" />
+                </div>
               </CardContent>
             </Card>
           ))}

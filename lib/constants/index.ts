@@ -18,8 +18,8 @@
 // column through lib/platform/demo-tenant.ts:
 //   · :264 findDemoTenant / :269 `.eq("is_demo", true)` — locate the demo tenant
 //   · :279 the HARD GUARD every destructive demo op re-checks against the DB
-//   · :300 ensureDemoTenant, :371 seedDemoData, :416 resetDemoTenant,
-//     :427 getDemoTenantSnapshot
+//   · seedDemoData, getDemoTenantSnapshot (ensureDemoTenant / resetDemoTenant moved to
+//     lib/platform/demo-tenant-provisioning.ts in wave 153 — the write half)
 // plus app/actions/superadmin/demo-tenant.ts and lib/platform/deal-room-demo.ts.
 // That answer is persisted, tenant-scoped and re-verified at the point of use;
 // a string compare in a client-importable constants barrel was none of those.

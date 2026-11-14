@@ -45,7 +45,7 @@ export async function driveVerifiedClosing(rule: Rule): Promise<{ cleanup: Canar
   const B_NOCDA = uuid(), B_CDA = uuid(), B_HOLD = uuid(), U = uuid(), AG = uuid(), U2 = uuid(), AG2 = uuid()
   const T_NOCDA = uuid(), T_CDA = uuid(), T_CDA_DONE = uuid(), T_CONT = uuid(), T_UC = uuid(), O_CONT = uuid()
   const contractDate = new Date(Date.now() - 45 * 86_400_000).toISOString().slice(0, 10)
-  const tx = (id: string, b: string, stage: string | null, extra: Record<string, unknown> = {}) => ({ id, brokerage_id: b, agent_id: AG, stage, status: "clear_to_close", contract_date: contractDate, compliance_passed_at: now, contact_id: null, offer_id: null, notes: CANARY_TAG, ...extra })
+  const tx = (id: string, b: string, stage: string | null, extra: Record<string, unknown> = {}) => ({ id, brokerage_id: b, agent_id: AG, stage, status: "clear_to_close", contract_date: contractDate, compliance_passed_at: now, contact_id: null, offer_id: null, financing_type: "cash" /* wave 153 (153C): a cash deal is not TRID — the lender-receipt gate holds a deal whose financing is unknown (proved in test:trid-clock / test:closing-readiness) */, notes: CANARY_TAG, ...extra })
   const svc = canaryClient({
     brokerages: [
       { id: B_NOCDA, name: `${CANARY_TAG} close no-CDA`, offers_cda: false, non_cda_payout_default: "direct_deposit" },

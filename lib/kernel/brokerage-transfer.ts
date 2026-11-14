@@ -251,7 +251,9 @@ const CHILD_CLASS_GROUPS: ReadonlyArray<{ cls: ChildTransferClass; rule: string;
   { cls: "historical_immutable", rule: "AUDIT, EVIDENCE AND PROVENANCE — policy decisions, compliance and fair-housing logs, privacy acceptances, e-sign envelopes, extraction / field audits, dedup / assignment / distribution logs, support tickets", tables: [
     "communication_audit_log", "outbound_message_compliance_log", "transaction_compliance_log", "policy_decisions", "fair_housing_logs", "privacy_acceptances",
     "document_field_audit", "document_extraction_log", "signature_requests", "deconflict_suppression_log", "assignment_log", "lead_deduplication_log", "data_health_logs",
-    "automation_errors", "outcome_reconciliations", "platform_lead_distributions", "lead_sla_tracking", "seo_optimization_log", "support_tickets", "business_card_scans"] },
+    "automation_errors", "outcome_reconciliations", "platform_lead_distributions", "lead_sla_tracking", "seo_optimization_log", "support_tickets", "business_card_scans",
+    // wave 153 (lane 153C, m905): the insert-only Closing Disclosure delivery / receipt evidence the source's deal ran on.
+    "trid_disclosure_receipts"] },
   { cls: "historical_immutable", rule: "JOBS AND RUNS — renders, enhancement jobs, packet jobs and workflow runs the source executed (and paid for)", tables: [
     "workflow_runs", "workflow_webhook_events", "video_render_log", "remotion_composition_renders", "photo_enhancement_jobs", "listing_packet_jobs"] },
   // ── derived / read-only ──

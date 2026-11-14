@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1942 of 2022 pairs) — storing them would be
+ * overwhelming majority (1951 of 2033 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,18 +75,18 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 3 columns are in that state.
  *
- * MEASURED AT GENERATION: 2127 edges across 756 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 2022 unordered
- * table pairs carry at least one FK; 80
- * carry more than one and are listed below. 21 of the constraints are self-referential.
+ * MEASURED AT GENERATION: 2140 edges across 758 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 2033 unordered
+ * table pairs carry at least one FK; 82
+ * carry more than one and are listed below. 22 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-12
+ * generated: 2026-11-14
  * source: public.live_foreign_keys_json()
- * body-sha256: b17fcefa2049a1b5e6146eb27a9a177ef31009333fe8403e07101bf4a384ee3f
+ * body-sha256: 12684480d283b583fd5316ef3ebe372befa85e13d9bffe77bfc019f391b9f288
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -238,7 +238,8 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "brokerages": { "ai_isa_system_user_id": "users" },
   "budgets": { "agent_id": "agents", "brokerage_id": "brokerages" },
   "business_card_scans": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "recruit_id": "recruits", "reviewed_by": "users", "subject_user_id": "users", "vendor_id": "vendors" },
-  "business_expenses": { "agent_id": "agents", "brokerage_id": "brokerages", "team_id": "teams" },
+  "business_expense_allocations": { "brokerage_id": "brokerages", "created_by_user_id": "users", "expense_id": "business_expenses", "location_id": "locations", "superseded_by_user_id": "users" },
+  "business_expenses": { "agent_id": "agents", "brokerage_id": "brokerages", "location_id": "locations", "team_id": "teams" },
   "buyer_behavior_log": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings" },
   "buyer_behavior_predictions": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "buyer_broker_agreements": { "agent_id": "agents", "brokerage_id": "brokerages", "buyer_contact_id": "contacts", "cancelled_by": "users", "created_by": "users", "superseded_by": "buyer_broker_agreements" },
@@ -295,7 +296,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "collaborative_search_members": { "brokerage_id": "brokerages", "collaborative_search_id": "collaborative_searches", "invited_by_user_id": "users" },
   "collaborative_search_properties": { "added_by_contact_id": "contacts", "collaborative_search_id": "collaborative_searches" },
   "collaborative_searches": { "brokerage_id": "brokerages", "contact_id": "contacts", "created_by_contact_id": "contacts", "feedback_consent_by_user_id": "users" },
-  "commission_adjustments": { "approval_decided_by": "users", "approved_by_agent_id": "agents", "brokerage_id": "brokerages", "concession_agent_id": "agents", "created_by_agent_id": "agents", "offer_id": "offers", "transaction_id": "transactions" },
+  "commission_adjustments": { "approval_decided_by": "users", "approved_by_agent_id": "agents", "brokerage_id": "brokerages", "concession_agent_id": "agents", "created_by_agent_id": "agents", "evidence_document_id": "documents", "listing_id": "listings", "offer_id": "offers", "requested_by_user_id": "users", "transaction_id": "transactions" },
   "commission_calculations": { "agent_id": "agents", "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "commission_distributions": { "adjusts_distribution_id": "commission_distributions", "agent_id": "agents", "brokerage_id": "brokerages", "commission_id": "agent_commissions", "corrected_by": "users", "referral_partner_id": "referral_partners", "rule_id": "commission_rules", "team_id": "teams", "transaction_id": "transactions" },
   "commission_rules": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -793,6 +794,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "transactions": { "agent_id": "agents", "brokerage_id": "brokerages", "buyer_agent_id": "agents", "buyer_contact_id": "contacts", "contact_id": "contacts", "coordinator_id": "transaction_coordinators", "listing_id": "listings", "offer_id": "offers", "seller_agent_id": "agents", "seller_contact_id": "contacts" },
   "transparency_updates": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions" },
   "trend_alerts": { "brokerage_id": "brokerages" },
+  "trid_disclosure_receipts": { "brokerage_id": "brokerages", "reported_by": "users", "supersedes_id": "trid_disclosure_receipts", "transaction_id": "transactions" },
   "trid_timeline": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "unified_lead_profile": { "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
   "usage_counters": { "brokerage_id": "brokerages" },
@@ -906,12 +908,14 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "brokerages|leads": 2,
   "brokerages|users": 2,
   "business_card_scans|users": 2,
+  "business_expense_allocations|users": 2,
   "buyer_broker_agreements|users": 2,
   "buyer_financial_profiles|users": 2,
   "client_agreement_fees|users": 2,
   "client_documents|users": 2,
   "closing_disclosure_agreement|users": 8,
   "collaborative_searches|contacts": 2,
+  "commission_adjustments|users": 2,
   "contacts|listings": 2,
   "contacts|referrals": 2,
   "contacts|transactions": 3,

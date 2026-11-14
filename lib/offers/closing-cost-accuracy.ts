@@ -796,7 +796,7 @@ export async function reconcileClosingSettlement(
   const [brk, trid, docs, cda, otherRail, logRows, tasks, prior] = await Promise.all([
     svc.from("brokerages").select("offers_cda, non_cda_payout_default").eq("id", B).maybeSingle(),
     svc.from("trid_timeline").select("id, closing_disclosure_delivered_date").eq("brokerage_id", B).eq("transaction_id", T).maybeSingle(),
-    svc.from("documents").select("id, classification, classification_confidence, extracted_fields, created_at").eq("brokerage_id", B).eq("transaction_id", T).in("classification", [...STATEMENT_CLASSES]).order("created_at", { ascending: false }).limit(8),
+    svc.from("documents").select("id, classification, classification_confidence, extracted_fields, created_at, metadata").eq("brokerage_id", B).eq("transaction_id", T).in("classification", [...STATEMENT_CLASSES]).order("created_at", { ascending: false }).limit(8),
     svc.from("closing_disclosure_agreement").select("id, final_cd_document_id, preliminary_cd_document_id, field_values").eq("brokerage_id", B).eq("transaction_id", T).order("updated_at", { ascending: false }).limit(1),
     svc.from("transaction_documents").select("id, doc_type").eq("brokerage_id", B).eq("transaction_id", T).in("doc_type", STATEMENT_DOC_TYPES_OTHER_RAIL).limit(5),
     svc.from("transaction_compliance_log").select("check_type, check_label, status, is_blocking").eq("brokerage_id", B).eq("transaction_id", T),
@@ -807,13 +807,33 @@ export async function reconcileClosingSettlement(
     if ((r as { error?: { message: string } | null }).error) faults.push(`the ${name} could not be read: ${(r as { error: { message: string } }).error.message}`)
   }
 
-  type DocRow = { id: string; classification: string; classification_confidence: string | null; extracted_fields: unknown; created_at: string | null }
+  // WAVE 153 (lane 153C, integrator): the LENDER's own revision classification (regular / irregular APR tolerance, new-wait or not)
+  // from its newest lender-confirmed receipt row. A refused or absent read leaves it null — the assessment then escalates any
+  // ambiguous APR change to the lender (the safe path), never decides it here.
+  let lenderDetermination: { regularity: string | null; newWaitDetermination: string | null } | null = null
+  {
+    const { data: lr, error: lrErr } = await svc.from("trid_disclosure_receipts").select("transaction_regularity, lender_new_wait_determination, created_at")
+      .eq("brokerage_id", B).eq("transaction_id", T).eq("verification_status", "lender_confirmed").order("created_at", { ascending: false }).limit(1)
+    if (lrErr) console.warn(`[closing-cost-accuracy] lender TRID determination not read (escalation path stands): ${lrErr.message}`)
+    else {
+      const row = ((lr ?? []) as Array<{ transaction_regularity: string | null; lender_new_wait_determination: string | null }>)[0]
+      if (row) lenderDetermination = { regularity: row.transaction_regularity ?? null, newWaitDetermination: row.lender_new_wait_determination ?? null }
+    }
+  }
+
+  type DocRow = { id: string; classification: string; classification_confidence: string | null; extracted_fields: unknown; created_at: string | null; metadata?: unknown }
   const cdaRow = (((cda.data ?? []) as Array<{ final_cd_document_id: string | null; preliminary_cd_document_id: string | null; field_values: Record<string, unknown> | null }>)[0]) ?? null
+  // WAVE 153 (lane 153D): an issuer's corrected statement carries the stage of the version it replaced (required-documents.ts version link),
+  // and a REPLACED version is never "the latest statement" — it stays readable as the prior CD the TRID assessment compares against.
+  const { followSupersession, isSupersededDocument } = await import("@/lib/compliance/required-documents")
+  const loadedDocs = (docs.data ?? []) as DocRow[]
+  const finalId = followSupersession(cdaRow?.final_cd_document_id, loadedDocs)
+  const prelimId = followSupersession(cdaRow?.preliminary_cd_document_id, loadedDocs)
   // the SAME order 152E's settlement snapshot reads (final › preliminary › unlabeled; newest first within a stage)
-  const stageOf = (d: DocRow): "final" | "preliminary" | "unlabeled" => d.id === cdaRow?.final_cd_document_id ? "final" : d.id === cdaRow?.preliminary_cd_document_id ? "preliminary" : "unlabeled"
+  const stageOf = (d: DocRow): "final" | "preliminary" | "unlabeled" => d.id === finalId ? "final" : d.id === prelimId ? "preliminary" : "unlabeled"
   const rank = { final: 0, preliminary: 1, unlabeled: 2 } as const
-  const docList = ((docs.data ?? []) as DocRow[]).map((d, i) => ({ d, i, stage: stageOf(d) })).sort((a, b) => rank[a.stage] - rank[b.stage] || a.i - b.i)
-  const latest = docList[0] ?? null
+  const docList = loadedDocs.map((d, i) => ({ d, i, stage: stageOf(d) })).sort((a, b) => Number(isSupersededDocument(a.d.metadata)) - Number(isSupersededDocument(b.d.metadata)) || rank[a.stage] - rank[b.stage] || a.i - b.i)
+  const latest = docList[0] && !isSupersededDocument(docList[0].d.metadata) ? docList[0] : null
   const priorCd = latest && latest.d.classification === "closing_disclosure" ? docList.slice(1).find((x) => x.d.classification === "closing_disclosure") ?? null : null
 
   let ledger: Array<LedgerFieldRow & { document_id: string }> = []
@@ -843,7 +863,7 @@ export async function reconcileClosingSettlement(
     figures: latest ? figuresFor(latest.d.id, latest.d.extracted_fields, latest.d.classification_confidence, ledger) : {},
     priorCdFigures: priorCd ? figuresFor(priorCd.d.id, priorCd.d.extracted_fields, priorCd.d.classification_confidence, ledger) : null,
     dealRecord: { loanAmount: tx.loan_amount != null && Number.isFinite(Number(tx.loan_amount)) ? Number(tx.loan_amount) : null },
-    trid: trid.data ? { cdDeliveredDate: ((trid.data as { closing_disclosure_delivered_date?: string | null }).closing_disclosure_delivered_date ?? null) } : null,
+    trid: trid.data ? { cdDeliveredDate: ((trid.data as { closing_disclosure_delivered_date?: string | null }).closing_disclosure_delivered_date ?? null), lender: lenderDetermination } : null,
     cdaMode,
     cdaRail: {
       finalAttached: !!cdaRow?.final_cd_document_id,

@@ -729,7 +729,7 @@ export async function seedDealRoomDemo(): Promise<DealRoomSeedReport> {
   const gatewayConfigured = !!process.env.AI_GATEWAY_API_KEY
 
   // 1 · The sanctioned tenant — canonical provisioning, then the HARD re-check.
-  const demoTenantMod = await import("@/lib/platform/demo-tenant")
+  const demoTenantMod = await import("@/lib/platform/demo-tenant-provisioning")
   const ensured = await demoTenantMod.ensureDemoTenant()
   if (!ensured.ok || !ensured.brokerage) {
     return { ok: false, error: ensured.error ?? "demo tenant unavailable", steps, gatewayConfigured }
@@ -757,7 +757,7 @@ export async function seedDealRoomDemo(): Promise<DealRoomSeedReport> {
 
   // 4 · The canonical round-21 baseline (deterministic wipe + re-seed — its own
   //     hard guard re-checks is_demo internally).
-  const baseline = await demoTenantMod.seedDemoData(brokerageId)
+  const baseline = await (await import("@/lib/platform/demo-tenant")).seedDemoData(brokerageId)
   if (!baseline.ok) return { ok: false, error: `baseline seed failed: ${baseline.error}`, steps, gatewayConfigured }
   steps.push({ beat: "stage · canonical showcase baseline (round-21 seeder, deterministic)", rail: "real", ok: true, detail: "wiped + re-seeded through lib/platform/demo-tenant.ts" })
 

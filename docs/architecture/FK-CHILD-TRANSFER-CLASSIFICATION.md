@@ -199,15 +199,15 @@ The closure report names each table and its count. For each one, the Data Stewar
 ## Generated classification (do not edit by hand — `tsx --conditions=react-server scripts/transfer-classification-guard.ts --write`)
 
 <!-- BEGIN GENERATED: fk-child-classification (scripts/transfer-classification-guard.ts --write) -->
-Census: 438 FKs from 309 child tables into the 41 moved families (288 tables carry brokerage_id; 21 have no tenant column and follow their parent's tenancy implicitly). 75 further FKs run between families (follows_parent by construction).
+Census: 441 FKs from 310 child tables into the 41 moved families (289 tables carry brokerage_id; 21 have no tenant column and follow their parent's tenancy implicitly). 75 further FKs run between families (follows_parent by construction).
 
 | Class | Tables | FKs |
 |---|---|---|
 | `follows_parent` | 72 | 108 |
 | `shared_remains` | 13 | 19 |
-| `historical_immutable` | 101 | 154 |
+| `historical_immutable` | 102 | 155 |
 | `explicit_transfer` | 12 | 19 |
-| `not_transferable` | 28 | 37 |
+| `not_transferable` | 28 | 39 |
 | `derived_readonly` | 83 | 101 |
 
 ### `follows_parent`
@@ -431,6 +431,7 @@ Census: 438 FKs from 309 child tables into the 41 moved families (288 tables car
 - `seo_optimization_log` — blog_post_id → blog_posts · campaign_orchestrator
 - `support_tickets` — contact_id → contacts · data_steward
 - `business_card_scans` — contact_id → contacts · data_steward
+- `trid_disclosure_receipts` — transaction_id → transactions · deal_coordinator
 
 **JOBS AND RUNS — renders, enhancement jobs, packet jobs and workflow runs the source executed (and paid for)**
 
@@ -476,7 +477,7 @@ Census: 438 FKs from 309 child tables into the 41 moved families (288 tables car
 **MONEY — commission, payout, earnest-money (trust), books, cost, invoice and referral-fee records stay with the brokerage that booked them; money never crosses tenants (m765; ruling 9: a referral obligation is the executing brokerage's)**
 
 - `agent_commissions` — transaction_id → transactions · finance_manager
-- `commission_adjustments` — offer_id → offers, transaction_id → transactions · finance_manager
+- `commission_adjustments` — evidence_document_id → documents, listing_id → listings, offer_id → offers, transaction_id → transactions · finance_manager
 - `commission_calculations` — transaction_id → transactions · finance_manager
 - `commission_distributions` — transaction_id → transactions · finance_manager
 - `commission_splits` — transaction_id → transactions · finance_manager

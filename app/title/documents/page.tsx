@@ -4,6 +4,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { FileText, ArrowLeft } from 'lucide-react'
 import Link from 'next/link'
+import { IssuerCorrectionButton } from '@/app/lender/documents/issuer-correction-button'
 
 export const dynamic = 'force-dynamic'
 
@@ -42,13 +43,14 @@ export default async function TitleDocumentsPage() {
     status: string | null
     created_at: string | null
     storage_url: string | null
+    transaction_id: string
   }> = []
   let loadError: string | null = escrowError
 
   if (!loadError && transactionIds.length > 0) {
     const { data, error } = await supabase
       .from('transaction_documents')
-      .select('id, doc_type, doc_label, status, created_at, storage_url')
+      .select('id, doc_type, doc_label, status, created_at, storage_url, transaction_id')
       .in('transaction_id', transactionIds)
       .order('created_at', { ascending: false })
       .limit(60)
@@ -96,15 +98,19 @@ export default async function TitleDocumentsPage() {
                     </p>
                   </div>
                 </div>
-                {doc.storage_url ? (
-                  <a href={doc.storage_url} target="_blank" rel="noopener noreferrer">
-                    <Button size="sm" variant="outline">View</Button>
-                  </a>
-                ) : (
-                  // No storage_url means there is no file to open. A disabled "View"
-                  // button promised an action that does not exist.
-                  <span className="text-xs text-gray-500">No file attached</span>
-                )}
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {doc.storage_url ? (
+                    <a href={doc.storage_url} target="_blank" rel="noopener noreferrer">
+                      <Button size="sm" variant="outline">View</Button>
+                    </a>
+                  ) : (
+                    // No storage_url means there is no file to open. A disabled "View"
+                    // button promised an action that does not exist.
+                    <span className="text-xs text-gray-500">No file attached</span>
+                  )}
+                  {/* WAVE 153 (lane 153D): title corrects ITS OWN document (the server checks issuer, assignment and tenant). */}
+                  <IssuerCorrectionButton transactionId={doc.transaction_id} documentId={doc.id} as="title" />
+                </div>
               </CardContent>
             </Card>
           ))}

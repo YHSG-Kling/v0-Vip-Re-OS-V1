@@ -12,6 +12,7 @@ import { ClosingProofCard } from "./closing-proof-card"
 import { CdaCoachCard } from "./cda-coach-card"
 // WAVE 152 (lane 152G): the contract-to-settlement reconciliation — both CDA modes (the record must be correct either way).
 import { SettlementReconciliationCard } from "./settlement-reconciliation-card"
+import { ClosingReadinessCard } from "./closing-readiness-card"
 import { resolveCdaMode } from "@/lib/transactions/cda-closing-policy"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 
@@ -277,6 +278,8 @@ export default async function CDAPage({ params }: PageProps) {
       {/* WAVE 151 (lane 151K): CDA enabled → the coach beside the form the agent fills; CDA disabled → the honest closing proof. */}
       {cdaMode.mode === "cda" && cda?.id ? <CdaCoachCard cdaId={String(cda.id)} /> : null}
       <SettlementReconciliationCard transactionId={id} />
+      {/* WAVE 153 (lane 153D, owner rulings 8/9): the ONE closing readiness list and compliance's approve / hold / reject — both CDA modes. */}
+      <ClosingReadinessCard transactionId={id} />
       {cdaMode.mode === "no_cda" ? <ClosingProofCard transactionId={id} /> : null}
       <AgentConcessionsCard transactionId={id} />
       {/* WAVE 145 (lane 145C, owner rulings 5/6/7/9): client-agreement fees, the referral agreement a payout needs, and the

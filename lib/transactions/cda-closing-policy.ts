@@ -983,7 +983,7 @@ interface SettlementReconciliationInput {
   /** the previous Closing Disclosure version's figures, for the TRID re-wait comparison (null = no earlier CD) */
   priorCdFigures: StatementIssuerFigures | null
   dealRecord: { loanAmount: number | null }
-  trid: { cdDeliveredDate: string | null } | null
+  trid: { cdDeliveredDate: string | null; lender?: { regularity: string | null; newWaitDetermination: string | null } | null } | null
   /** the brokerage's ONE switch (resolveCdaMode) and what the CDA workflow holds for the statement */
   cdaMode: "cda" | "no_cda"
   cdaRail: { finalAttached: boolean; preliminaryReviewed: boolean; correctionRequestedAt: string | null; correctionRoute: string | null }
@@ -1225,7 +1225,7 @@ export function reconcileSettlement(input: SettlementReconciliationInput): Settl
   }
 
   // 4 · TRID — a corrected CD vs a new three-business-day wait
-  const trid = tridRevisionAssessment({ kind: kind.kind, prior: input.priorCdFigures, current: fig, currentReceivedAt: input.statement?.receivedAt ?? null, cdDeliveredDate: input.trid?.cdDeliveredDate ?? null })
+  const trid = tridRevisionAssessment({ kind: kind.kind, prior: input.priorCdFigures, current: fig, currentReceivedAt: input.statement?.receivedAt ?? null, cdDeliveredDate: input.trid?.cdDeliveredDate ?? null, lender: input.trid?.lender ?? null })
   if (trid.path === "new_waiting_period") {
     push({ key: "trid.waiting_period", label: "TRID waiting period after the revised Closing Disclosure", basis: "authoritative_required", side: "buyer", staffOnly: false, contractSays: null, documentSays: trid.triggers.join(", "),
       status: trid.waitingPeriodOutstanding ? "not_on_file" : "agrees", blocking: trid.waitingPeriodOutstanding && !postClose, bucket: "awaiting_revised_document", responsible: PARTY_WORDS.lender,

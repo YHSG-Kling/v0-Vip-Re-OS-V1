@@ -129,7 +129,7 @@ async function writeRequirement(svc: Svc, input: { brokerageId: string; transact
       if (error) return { error: error.message }
       return { error: (data ?? []).length === 1 ? null : "the lender record was not written" }
     },
-    { settle: (x) => x.error ? { status: "failed", outcome: "refused", error: x.error } : { status: "executed", outcome: "recorded" }, replay: () => ({ error: null }) },
+    { settle: (x) => x.error ? { status: "failed", outcome: "refused", error: x.error } : { status: "executed", outcome: "recorded" }, replay: (claim) => (claim.kind === "refused" ? { error: `the action ledger refused the requirement: ${claim.error}` } : { error: null }) },
     { client: svc as never },
   )
   if (result.error) return { ok: false, code: "unavailable", error: "The insurance requirement could not be saved right now. Nothing was saved." }
@@ -248,7 +248,7 @@ export async function requestSettlementRecheckForPremium(svc: Svc, input: { brok
       if (error) throw new Error(`the recheck request was not written: ${error.message}`)
       return { inserted: (ins ?? []).length }
     },
-    { settle: (x) => x.inserted === 1 ? { status: "executed", outcome: "recheck_requested" } : { status: "failed", outcome: "no_row" }, replay: () => ({ inserted: 0 }) },
+    { settle: (x) => x.inserted === 1 ? { status: "executed", outcome: "recheck_requested" } : { status: "failed", outcome: "no_row" }, replay: (claim) => { if (claim.kind === "refused") console.error(`[lender-insurance] settlement recheck for ${T} not opened — the action ledger refused the claim: ${claim.error}`); return { inserted: 0 } } },
     { client: svc as never },
   )
   return { opened: made.inserted, refreshed: 0, error: null }

@@ -141,20 +141,44 @@ interface ReceiptView {
   id: string; version: number; source: string; verification: string; deliveryMethod: string; evidence: string
   deliveredAt: string | null; receivedAt: string | null; timezone: string; issuerName: string; lenderContactName: string | null
   supersedesId: string | null; revisionChanges: string[]; createdAt: string
+  /** The filed document the row rests on (the lender's written confirmation, or the CD itself). */
+  documentId: string | null
+  /** WHO recorded the row — the person behind every TRID statement (a name; tenant staff only, never shown to the lender). */
+  reportedByName: string | null
+  /** The dates computed and frozen WHEN the row was recorded — shown beside the live readiness so a re-derivation that
+   *  disagrees (a calendar or rule correction since) is visible, not silently rewritten. */
+  recordedReceiptDate: string | null
+  recordedEarliestConsummationDate: string | null
 }
 
 async function receiptViews(svc: ReturnType<typeof createServiceClient>, brokerageId: string, transactionId: string): Promise<{ ok: true; rows: ReceiptView[] } | { ok: false }> {
   const { data, error } = await svc.from("trid_disclosure_receipts")
-    .select("id, disclosure_version, source, verification_status, delivery_method, receipt_evidence, delivered_at, received_at, receipt_timezone, issuer_name, lender_contact_name, supersedes_id, revision_changes, created_at")
+    .select("id, disclosure_version, source, verification_status, delivery_method, receipt_evidence, delivered_at, received_at, receipt_timezone, issuer_name, lender_contact_name, supersedes_id, revision_changes, created_at, document_id, reported_by, effective_receipt_date, earliest_consummation_date")
     .eq("brokerage_id", brokerageId).eq("transaction_id", transactionId).order("created_at", { ascending: true })
   if (error) return { ok: false }
+  const raw = (data ?? []) as Array<Record<string, any>>
+  const reporterIds = [...new Set(raw.map((r) => r.reported_by).filter((v): v is string => typeof v === "string" && v.length > 0))]
+  const names = new Map<string, string>()
+  if (reporterIds.length > 0) {
+    const { data: people, error: pErr } = await svc.from("users").select("id, first_name, last_name").in("id", reporterIds).eq("brokerage_id", brokerageId)
+    // A refused name read degrades the label only — the row, its dates and its verification still render.
+    if (pErr) console.warn("[trid-receipts] reporter names could not be read:", pErr.message)
+    for (const p of (people ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+      const n = [p.first_name, p.last_name].filter(Boolean).join(" ").trim()
+      if (n) names.set(p.id, n)
+    }
+  }
   return {
     ok: true,
-    rows: ((data ?? []) as Array<Record<string, any>>).map((r) => ({
+    rows: raw.map((r) => ({
       id: String(r.id), version: Number(r.disclosure_version), source: String(r.source), verification: String(r.verification_status),
       deliveryMethod: String(r.delivery_method), evidence: String(r.receipt_evidence), deliveredAt: r.delivered_at ?? null, receivedAt: r.received_at ?? null,
       timezone: String(r.receipt_timezone), issuerName: String(r.issuer_name), lenderContactName: r.lender_contact_name ?? null,
       supersedesId: r.supersedes_id ?? null, revisionChanges: Array.isArray(r.revision_changes) ? r.revision_changes : [], createdAt: String(r.created_at ?? ""),
+      documentId: (r.document_id as string | null) ?? null,
+      reportedByName: r.reported_by ? names.get(String(r.reported_by)) ?? null : null,
+      recordedReceiptDate: r.effective_receipt_date ? String(r.effective_receipt_date).slice(0, 10) : null,
+      recordedEarliestConsummationDate: r.earliest_consummation_date ? String(r.earliest_consummation_date).slice(0, 10) : null,
     })),
   }
 }
@@ -162,7 +186,7 @@ async function receiptViews(svc: ReturnType<typeof createServiceClient>, brokera
 /** The status panel's read for tenant staff with read access to the deal (agent, TC, compliance, admins, the team lead). */
 export async function getTridDisclosureStatusAction(transactionId: string): Promise<Result<{
   item: { status: string; blocking: boolean; detail: string; nextAction: string }
-  readiness: { state: string; coaching: string | null; earliestConsummationDate: string | null; effectiveReceiptDate: string | null; reasons: string[]; reportedPendingId: string | null }
+  readiness: { state: string; coaching: string | null; earliestConsummationDate: string | null; effectiveReceiptDate: string | null; reasons: string[]; reportedPendingId: string | null; governingId: string | null }
   lender: { name: string | null; onPlatform: boolean }
   receipts: ReceiptView[]
   documents: Array<{ id: string; label: string }>
@@ -188,7 +212,7 @@ export async function getTridDisclosureStatusAction(transactionId: string): Prom
   return {
     success: true,
     item: { status: item.status, blocking: item.blocking, detail: item.detail, nextAction: item.nextAction },
-    readiness: { state: r.state, coaching: r.coaching, earliestConsummationDate: r.governing?.earliestConsummationDate ?? null, effectiveReceiptDate: r.governing?.effectiveReceiptDate ?? null, reasons: r.reasons, reportedPendingId: r.reportedPending?.id ?? null },
+    readiness: { state: r.state, coaching: r.coaching, earliestConsummationDate: r.governing?.earliestConsummationDate ?? null, effectiveReceiptDate: r.governing?.effectiveReceiptDate ?? null, reasons: r.reasons, reportedPendingId: r.reportedPending?.id ?? null, governingId: r.governing?.id ?? null },
     lender: { name: snap.snapshot.lender.name, onPlatform: snap.snapshot.lender.onPlatform },
     receipts: rows.rows,
     documents: ((docs.data ?? []) as Array<{ id: string; doc_label: string | null; doc_type: string | null }>).map((d) => ({ id: d.id, label: d.doc_label ?? d.doc_type ?? "Document" })),
@@ -216,6 +240,6 @@ export async function getLenderTridStatusAction(transactionId: string): Promise<
   return {
     success: true,
     readiness: { state: r.state, earliestConsummationDate: r.governing?.earliestConsummationDate ?? null, effectiveReceiptDate: r.governing?.effectiveReceiptDate ?? null, reasons: r.reasons, nextAction: r.nextAction, reportedPendingId: r.reportedPending?.id ?? null },
-    receipts: rows.rows.map((x) => ({ ...x, lenderContactName: null })),
+    receipts: rows.rows.map((x) => ({ ...x, lenderContactName: null, reportedByName: null })),
   }
 }

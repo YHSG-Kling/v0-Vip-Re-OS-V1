@@ -617,7 +617,9 @@ export function findingToLogRow(f: TermFinding): LogRowSpec {
 // holds the override authority.
 
 const COMPUTED_CHECK_PREFIXES = [CLOSING_TERM_CHECK_PREFIX, CLOSING_DOC_CHECK_PREFIX, CLOSING_PARTICIPANT_CHECK_PREFIX] as const
-const isComputedCheck = (checkType: string): boolean => COMPUTED_CHECK_PREFIXES.some((p) => checkType.startsWith(p))
+// WAVE 153 (lane 153C, integrator): settled from the receipt ledger / the lender insurance checkpoint — cleared by evidence, never by a person
+const COMPUTED_CHECK_TYPES: ReadonlySet<string> = new Set(["trid_timing", "lender_insurance_evidence"])
+const isComputedCheck = (checkType: string): boolean => COMPUTED_CHECK_TYPES.has(checkType) || COMPUTED_CHECK_PREFIXES.some((p) => checkType.startsWith(p))
 
 export function decideComplianceCheckChange(input: {
   checkType: string
@@ -642,4 +644,174 @@ export function decideComplianceCheckChange(input: {
     return { ok: true, override: true }
   }
   return { ok: true, override: false }
+}
+
+// ═══ WAVE 153 (lane 153D) — FINAL CLOSING COMPLIANCE: THE PURE RULE ═══════════════════════════════════════════════════════════
+//
+// Owner (verbatim, 2026-11-14): "when the transaction is closing and goes through a compliance review, they take charge of approving
+// and making sure all docs are accurate and submitted (settlement statement and cda-if required are part of the check)". The ONE
+// readiness list a closing reviewer reads (buildClosingReadiness), who may record a decision on it and when approval is refused
+// (decideClosingReview), whether the review is required for this tenant (closingReviewRequired) and where the closing stands with its
+// reviewer (closingReviewStanding). Pure and client-safe (no import added). The reads, the writer and the close gate are
+// lib/transactions/closing-compliance.ts (loadClosingReadiness / recordClosingReviewDecision / closingReviewGate).
+
+type ReadinessGroup = "required_documents" | "execution" | "terms" | "commission" | "settlement" | "trid" | "insurance" | "cda" | "attestation" | "document_safety" | "other_compliance"
+type ReadinessState = "ready" | "open" | "blocked" | "not_applicable"
+
+interface ReadinessItem { key: string; group: ReadinessGroup; label: string; state: ReadinessState; blocking: boolean; detail: string | null }
+
+export const READINESS_GROUP_LABEL: Record<ReadinessGroup, string> = {
+  required_documents: "Required documents", execution: "Signed and initialed", terms: "Contract terms", commission: "Commission",
+  settlement: "Settlement statement / Closing Disclosure", trid: "TRID", insurance: "Insurance", cda: "CDA", attestation: "Closing question",
+  document_safety: "Document safety", other_compliance: "Other compliance checks",
+}
+
+export interface ClosingReadinessInput {
+  complianceRows: ReadonlyArray<{ check_type: string; check_label: string | null; status: string; is_blocking: boolean | null; failure_reason: string | null }>
+  /** The CURRENT (non-superseded) documents in the deal file — their identities are part of what was approved. */
+  dealFileDocumentIds: ReadonlyArray<string>
+  settlement: { state: string | null; finalOnFile: boolean | null; fingerprint: string | null } | null
+  trid: { tracked: boolean; deliveredDate: string | null }
+  /** The deal's CDA RECORD when one exists (null = no CDA on this deal) — never the brokerage's CDA setting. */
+  cda: { status: string | null; complianceApprovedAt: string | null; brokerSignedAt: string | null; deliveredAt: string | null } | null
+  /** The closing question row's status (152G), or null when it was never asked. */
+  attestationStatus: string | null
+  /** The closing question's compliance-row type (lib/commission/closing-verification.ts CLOSING_ATTESTATION_CHECK_TYPE — passed in so this module stays client-safe). */
+  attestationCheckType: string
+  flaggedDocuments: ReadonlyArray<{ id: string; label: string }>
+}
+
+export interface ClosingReadiness { items: ReadinessItem[]; blocking: number; open: number; ready: boolean; fingerprint: string }
+
+const READINESS_SIG_RE = /\[sig:([^\]]*)\]\s*$/
+
+function readinessGroupOf(checkType: string, attestationCheckType: string): ReadinessGroup {
+  if (checkType === attestationCheckType) return "attestation"
+  if (checkType.startsWith("closing_docs.executed.")) return "execution"
+  if (checkType.startsWith("closing_docs.")) return "required_documents"
+  if (/^closing_terms\.(?:record\.|evidence\.)?commission/.test(checkType)) return "commission"
+  if (checkType.startsWith("closing_terms.")) return "terms"
+  if (/insurance/i.test(checkType)) return "insurance"
+  if (/trid/i.test(checkType)) return "trid"
+  return "other_compliance"
+}
+
+/** FNV-1a (32-bit) — a stable, dependency-free digest of the list (client-safe; the readiness card and the gate compute the same one). */
+export function readinessDigest(text: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+  return h.toString(16).padStart(8, "0")
+}
+
+/** PURE. The ONE readiness list a closing reviewer reads, with what holds the closing and the fingerprint an approval is pinned to. */
+export function buildClosingReadiness(input: ClosingReadinessInput): ClosingReadiness {
+  const items: ReadinessItem[] = []
+  const ATT = input.attestationCheckType
+  const reason = (r: string | null) => (r ?? "").replace(READINESS_SIG_RE, "").trim() || null
+  const sigs: string[] = []
+  for (const row of input.complianceRows) {
+    const group = readinessGroupOf(row.check_type, ATT)
+    const blockingRow = row.is_blocking === true
+    // Seeded, non-blocking checks that are not part of the closing file stay on the compliance tab; the closing list carries the rest.
+    if (group === "other_compliance" && !blockingRow && !row.check_type.startsWith("closing_")) continue
+    const passed = row.status === "pass" || row.status === "waived"
+    const state: ReadinessState = passed ? "ready" : blockingRow ? "blocked" : "open"
+    items.push({ key: row.check_type, group, label: (row.check_label ?? row.check_type).replace(/^Closing:\s*/, ""), state, blocking: state === "blocked", detail: passed ? (row.status === "waived" ? "Waived by an authorized reviewer" : null) : reason(row.failure_reason) })
+    sigs.push(`${row.check_type}:${row.status}:${blockingRow ? 1 : 0}:${READINESS_SIG_RE.exec(row.failure_reason ?? "")?.[1] ?? ""}`)
+  }
+
+  const s = input.settlement
+  if (!s) {
+    items.push({ key: "settlement.reconciled", group: "settlement", label: "The settlement record agrees with the executed contract", state: "blocked", blocking: true, detail: "No settlement statement or Closing Disclosure has been reconciled against the executed contract yet." })
+  } else {
+    const ok = s.state === "ready"
+    items.push({ key: "settlement.reconciled", group: "settlement", label: "The settlement record agrees with the executed contract", state: ok ? "ready" : "blocked", blocking: !ok, detail: ok ? null : `Settlement check: ${String(s.state ?? "not reconciled").replace(/_/g, " ")}.` })
+    items.push({ key: "settlement.final_on_file", group: "settlement", label: "The final settlement statement / Closing Disclosure is on file", state: s.finalOnFile ? "ready" : "blocked", blocking: !s.finalOnFile, detail: s.finalOnFile ? null : "Only a preliminary statement is on file — the final one from title / the lender is needed before closing." })
+  }
+
+  if (input.trid.tracked) {
+    const ok = !!input.trid.deliveredDate
+    items.push({ key: "trid.cd_delivered", group: "trid", label: "The Closing Disclosure delivery to the buyer is recorded", state: ok ? "ready" : "blocked", blocking: !ok, detail: ok ? `Delivered ${input.trid.deliveredDate}` : "The lender's Closing Disclosure delivery date is not on file — the three-business-day wait cannot be confirmed." })
+  } else {
+    items.push({ key: "trid.not_tracked", group: "trid", label: "TRID", state: "not_applicable", blocking: false, detail: "No TRID timeline on this deal (cash, or not a TRID-covered loan)." })
+  }
+
+  // THE CDA IF THIS DEAL HAS ONE — read off the deal's CDA RECORD, never the brokerage's CDA setting (lane 152H's census: no CDA setting
+  // can clear a hold). Whether a deal NEEDS a CDA stays the close gate's own step (stage-progression step 5, the delivered-CDA milestone
+  // under the deal's effective policy); a CDA that exists is reviewed here step by step, and one created after an approval reopens it.
+  const c = input.cda
+  if (c) {
+    const steps: Array<[string, string, string | null, string]> = [
+      ["cda.compliance_approved", "Compliance approved the CDA", c.complianceApprovedAt, "Compliance has not approved the agent's CDA yet."],
+      ["cda.broker_signed", "The broker signed the CDA", c.brokerSignedAt, "The broker has not signed the approved CDA yet."],
+      ["cda.delivered", "The signed CDA was delivered to title / the closing party", c.deliveredAt, "The broker-signed CDA has not been delivered to the closing party yet."],
+    ]
+    for (const [key, label, at, missing] of steps) items.push({ key, group: "cda", label, state: at ? "ready" : "blocked", blocking: !at, detail: at ? `Recorded ${at.slice(0, 10)}` : missing })
+  } else {
+    items.push({ key: "cda.none", group: "cda", label: "No CDA on this deal", state: "not_applicable", blocking: false, detail: "No CDA record exists for this deal. A deal that closes without one needs the same document, settlement and commission accuracy, and the closing question answered." })
+  }
+  // The closing question (152G) — asked at CDA submit with a CDA, at the gated close without one; never answered → it holds the approval.
+  if (!input.complianceRows.some((r) => r.check_type === ATT)) {
+    items.push({ key: ATT, group: "attestation", label: "The closing question is answered", state: "blocked", blocking: true, detail: "Before closing, the agent or TC confirms no executed change is unrecorded." })
+    sigs.push(`${ATT}:unasked`)
+  }
+
+  for (const d of input.flaggedDocuments) {
+    items.push({ key: `document_safety.${d.id}`, group: "document_safety", label: `${d.label}: contains text that tries to give instructions`, state: "open", blocking: false, detail: "The words were treated as data and nothing was done because of them. Check the document's readings by hand before relying on them." })
+  }
+
+  const blocking = items.filter((i) => i.blocking).length
+  const open = items.filter((i) => i.state === "open").length
+  const canon = [
+    ...items.filter((i) => !i.key.startsWith("closing_")).map((i) => `${i.key}=${i.state}`),
+    ...sigs,
+    `docs=${[...input.dealFileDocumentIds].sort().join(",")}`,
+    `settlement=${s?.fingerprint ?? s?.state ?? "none"}`,
+  ].sort().join("|")
+  return { items, blocking, open, ready: blocking === 0, fingerprint: readinessDigest(canon) }
+}
+
+// ── The reviewer's decision ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+export type ClosingReviewDecision = "approve" | "hold" | "reject"
+const REVIEW_DECISION_COLOR: Record<ClosingReviewDecision, "green" | "amber" | "red"> = { approve: "green", hold: "amber", reject: "red" }
+const REVIEW_NOTES_MIN = 10
+
+/** Is the in-app review REQUIRED to close? For a tenant that is a BROKERAGE by its own plan tier (lib/errors resolveTenantPayer) — the
+ *  supervising licensee's compliance staff take charge. A team / solo subscription closes on the agent's closing attestation (152G). */
+export function closingReviewRequired(tenantKind: "brokerage" | "team" | "solo" | "unknown"): boolean {
+  return tenantKind === "brokerage"
+}
+
+/** PURE. May this reviewer record this decision on this readiness list? Approval is refused while anything holds the closing. */
+export function decideClosingReview(input: {
+  readiness: ClosingReadiness
+  decision: ClosingReviewDecision
+  notes: string | null | undefined
+  /** Decided by the I/O layer against THE reviewer roster (lib/transactions/closing-compliance.ts mayReviewClosing). */
+  reviewer: { isReviewer: boolean }
+}): { ok: true; color: "green" | "amber" | "red" } | { ok: false; error: string } {
+  if (!input.reviewer.isReviewer) return { ok: false, error: "Only compliance, the broker or an account admin can record the closing review. Ask your compliance officer." }
+  if (!REVIEW_DECISION_COLOR[input.decision]) return { ok: false, error: "Choose approve, hold or reject." }
+  const notes = String(input.notes ?? "").trim()
+  if (input.decision !== "approve" && notes.length < REVIEW_NOTES_MIN) return { ok: false, error: "Say what needs to change (at least a short sentence) so the agent and TC know what to fix." }
+  if (input.decision === "approve" && input.readiness.blocking > 0) {
+    return { ok: false, error: `${input.readiness.blocking} item${input.readiness.blocking === 1 ? " still holds" : "s still hold"} this closing. Approval is not an override — clear them (or hold the closing with a note) first.` }
+  }
+  return { ok: true, color: REVIEW_DECISION_COLOR[input.decision] }
+}
+
+export interface LatestClosingReview { decision: "green" | "amber" | "red"; fingerprint: string | null; notes: string | null; decidedBy: string | null; decidedAt: string | null }
+
+export type ClosingReviewStandingState = "approved" | "reopened" | "on_hold" | "rejected" | "awaiting_review" | "not_required"
+
+/** PURE. Where the closing stands with its reviewer — and the blocker the gated close reads (null = the review does not hold it). */
+export function closingReviewStanding(input: { required: boolean; latest: LatestClosingReview | null; currentFingerprint: string }): { state: ClosingReviewStandingState; blocker: string | null } {
+  const l = input.latest
+  const at = l?.decidedAt ? ` on ${l.decidedAt.slice(0, 10)}` : ""
+  if (l?.decision === "red") return { state: "rejected", blocker: `Final closing compliance REJECTED this closing${at}: ${l.notes ?? "see the review notes"}` }
+  if (l?.decision === "amber") return { state: "on_hold", blocker: `Final closing compliance put this closing ON HOLD${at}: ${l.notes ?? "see the review notes"}` }
+  if (l?.decision === "green" && l.fingerprint === input.currentFingerprint) return { state: "approved", blocker: null }
+  if (l?.decision === "green") return { state: "reopened", blocker: input.required ? `Final closing compliance approved this closing${at}, but the closing file changed since (a document was corrected or added, a statement or term changed, or a check reopened) — compliance re-reviews before closing.` : null }
+  return { state: input.required ? "awaiting_review" : "not_required", blocker: input.required ? "Final closing compliance has not approved this closing yet — compliance reviews the closing file and approves it before closing." : null }
 }

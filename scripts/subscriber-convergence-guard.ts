@@ -333,7 +333,7 @@ console.log("\n[Layer 6 · SOURCE — one insert, every door delegates, lifecycl
     "platform-staff creation": [stripped("app/actions/admin/create-subscriber.ts"), /createTenantCore\(service, \{/],
     "sales-assisted conversion": [stripped("lib/platform/prospect-conversion.ts"), /deps\.provisionTenant \?\? \(await import\("@\/lib\/kernel\/tenant-creation"\)\)\.createTenantCore/],
     "brokerage-of-one adoption": [stripped("app/actions/onboarding/ensure-agent-brokerage.ts"), /createTenantCore\(svc, \{[\s\S]{0,900}adoptExistingOwner: \{ userId: u\.id/],
-    "demo tenant": [stripped("lib/platform/demo-tenant.ts"), /signupBrokerageAction\(\{/],
+    "demo tenant": [stripped("lib/platform/demo-tenant-provisioning.ts"), /signupBrokerageAction\(\{/],
   } as Record<string, [string, RegExp]>
   for (const [name, [src, re]] of Object.entries(doorsSrc)) check(`door delegates to the core: ${name}`, re.test(src) && !insertRe.test(src))
   check("the staff door's thin wrapper (manual-subscriber.ts) delegates to createSubscriber and spells no insert", /createSubscriber\(\{/.test(stripped("app/actions/superadmin/manual-subscriber.ts")) && !insertRe.test(stripped("app/actions/superadmin/manual-subscriber.ts")))

@@ -329,7 +329,7 @@ check("the core derives the stamp outcome from the billing mode (active → 'con
 check("DIRECT PATH LINK-BACK: the core's stamp always includes the admin email (the same key upsertPlatformProspect uses), so a signer who was never a prospect is a clean zero and a prospect is linked", /emails: \[adminEmail, input\.brokerageEmail, \.\.\.\(input\.prospect\?\.emails \?\? \[\]\)\]/.test(coreSrc) && /prospectIds: input\.prospect\?\.prospectIds \?\? \[\]/.test(coreSrc))
 check("the core mints the brokerage id and returns it — no door passes a brokerage id in (CLAUDE.md §4)",
   (() => { const body = coreSrc.slice(coreSrc.indexOf("export async function createTenantCore(")); return !/input\.brokerageId/.test(body) && /brokerageId = \(brokerage as \{ id: string \}\)\.id/.test(body) && !/brokerageId\??:/.test(coreSrc.slice(coreSrc.indexOf("export interface TenantCreationInput"), coreSrc.indexOf("export interface TenantCreationResult"))) })())
-check("the demo showcase tenant still provisions through the self-serve door (no forked provisioning)", stripped("lib/platform/demo-tenant.ts").includes("signupBrokerageAction({"))
+check("the demo showcase tenant still provisions through the self-serve door (no forked provisioning)", stripped("lib/platform/demo-tenant-provisioning.ts").includes("signupBrokerageAction({"))
 check("tenant-scope guard: the core's global owner-email lookup is a documented exemption (the tenant does not exist yet)", /"lib\/kernel\/tenant-creation\.ts":/.test(raw("scripts/tenant-scope-guard.ts")))
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -48,9 +48,6 @@ import { governingListingAgreementTerms } from "@/lib/listings/listing-agreement
 import { resolveComingSoonCreativeAddress } from "@/lib/marketing/listing-public-address"
 import { ListingAgreementTermsPanel } from "./listing-agreement-terms-panel"
 // WAVE 153 (153C + 153B, integrator): compliance review notes / coordinator flags on the listing, and its governed commission terms.
-import { DealOwnershipSection } from "@/app/dashboard/transactions/[id]/deal-ownership-section"
-import { listDealReviewNotesAction } from "@/app/actions/deal-review-notes"
-import { CommissionTermsPanel } from "@/app/dashboard/financials/agent/components/commission-terms-panel"
 import { CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
@@ -208,8 +205,6 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   const { createServiceClient: serviceForAgreementTerms } = await import("@/lib/supabase/service")
   const termsSvc = serviceForAgreementTerms()
   const agreementTerms = await governingListingAgreementTerms(termsSvc as any, { brokerageId: listing.brokerage_id as string, listingId })
-  // WAVE 153 (153C): the listing's review notes + who works it — the session-gated door decides what this seat may read.
-  const listingRolesAndNotes = await listDealReviewNotesAction({ entityType: "listing", entityId: listingId })
   const amendmentDocsRead = await supabase
     .from("documents")
     .select("id, document_type, classification, metadata, created_at")
@@ -866,10 +861,15 @@ const { data: listingVendorBookings } = await supabase
           canAmend={isAdminOrBroker({ user_type: userRow.user_type }) || (userRow.user_type ?? "agent") === "agent"}
         />
 
-        {/* WAVE 153 (153C): compliance review notes and coordinator flags on the listing (the doors support listings). */}
-        <DealOwnershipSection entityType="listing" entityId={listingId} initial={listingRolesAndNotes} />
-        {/* WAVE 153 (153B): the listing's commission terms — changed only through the governed door, never after close. */}
-        <CommissionTermsPanel listingId={listingId} label={listing.address ?? null} />
+        {/* WAVE 153 (153B + 153C): the listing's deal team, review notes and commission terms live on their own page
+            (app/dashboard/listings/[id]/deal-team/page.tsx) — this page sits at the module-graph budget. */}
+        <div className="mb-6 rounded-lg border p-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="font-medium">Deal team and commission</p>
+            <p className="text-sm text-muted-foreground">Who works this listing, compliance review notes, and the commission terms (changeable until close).</p>
+          </div>
+          <Link href={`/dashboard/listings/${listingId}/deal-team`} className="text-sm font-medium underline underline-offset-4">Open</Link>
+        </div>
 
         <div className="mb-6">
           <LaunchReadinessChecklist

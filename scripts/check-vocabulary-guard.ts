@@ -1096,6 +1096,14 @@ console.log("\n[code-side vocabularies mirrored by a CHECK]")
     { file: "lib/marketing/qr-contract.ts", constant: "QR_RETIRED_REASONS", table: "qr_codes", column: "retired_reason", constraint: "qr_codes_retired_reason_check" },
     { file: "lib/marketing/qr-contract.ts", constant: "QR_TRAFFIC_CLASSES", table: "qr_scan_events", column: "traffic_class", constraint: "qr_scan_events_traffic_class_check" },
     { file: "lib/marketing/qr-contract.ts", constant: "QR_DEVICE_CLASSES", table: "qr_scan_events", column: "device_class", constraint: "qr_scan_events_device_class_check" },
+    // Wave 153 (153C, m905 applied 2026-11-14): the lender Closing Disclosure receipt ledger — one code constant per CHECK.
+    { file: "lib/compliance/trid-disclosure-clock.ts", constant: "TRID_SENDER_ROLES", table: "trid_disclosure_receipts", column: "sender_role", constraint: "trid_disclosure_receipts_sender_role_check" },
+    { file: "lib/compliance/trid-disclosure-clock.ts", constant: "TRID_DELIVERY_METHODS", table: "trid_disclosure_receipts", column: "delivery_method", constraint: "trid_disclosure_receipts_delivery_method_check" },
+    { file: "lib/compliance/trid-disclosure-clock.ts", constant: "TRID_RECEIPT_EVIDENCE", table: "trid_disclosure_receipts", column: "receipt_evidence", constraint: "trid_disclosure_receipts_receipt_evidence_check" },
+    { file: "lib/compliance/trid-disclosure-clock.ts", constant: "TRID_RECEIPT_SOURCES", table: "trid_disclosure_receipts", column: "source", constraint: "trid_disclosure_receipts_source_check" },
+    { file: "lib/compliance/trid-disclosure-clock.ts", constant: "TRID_VERIFICATION_STATUSES", table: "trid_disclosure_receipts", column: "verification_status", constraint: "trid_disclosure_receipts_verification_status_check" },
+    { file: "lib/compliance/trid-disclosure-clock.ts", constant: "TRID_TRANSACTION_REGULARITY", table: "trid_disclosure_receipts", column: "transaction_regularity", constraint: "trid_disclosure_receipts_transaction_regularity_check" },
+    { file: "lib/compliance/trid-disclosure-clock.ts", constant: "TRID_NEW_WAIT_DETERMINATIONS", table: "trid_disclosure_receipts", column: "lender_new_wait_determination", constraint: "trid_disclosure_receipts_lender_new_wait_determination_check" },
     // wave 151 (151L, closing — the mirrors lanes 151A / 151B / 151C / 151D requested once their migrations were live; every CHECK below
     // is APPLIED LIVE 2026-11-09 and in the regenerated cache): one code constant per vocabulary.
     { file: "lib/lead-pipeline/freshness.ts", constant: "FRESHNESS_VERDICTS", table: "raw_scraped_leads", column: "freshness_verdict", constraint: "raw_scraped_leads_freshness_verdict_check" },

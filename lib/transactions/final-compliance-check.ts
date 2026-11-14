@@ -124,6 +124,19 @@ export async function runFinalComplianceCheck(
   } catch {
     // If the gate can't be evaluated, don't fabricate a pass — leave it to the other checks.
   }
+  // WAVE 153 (lane 153C, integrator): name the lender items (TRID receipt + lender-required insurance) on the closing list —
+  // both are rows the gate already counts, so they are added to closingBlockingRows and subtracted once below.
+  const { tridClosingReadinessItem } = await import("@/lib/compliance/trid-disclosure-clock-evidence")
+  const tridItem = await tridClosingReadinessItem(svc as never, { brokerageId, transactionId })
+  const tridNamed = tridItem.blocking && tridItem.status !== "waiting"
+  if (tridNamed) closingFindings.push(`${tridItem.label}: ${tridItem.detail}`)
+  const { loadLenderInsuranceCheckpoint } = await import("@/lib/transactions/lender-insurance-checkpoint")
+  const ins = await loadLenderInsuranceCheckpoint(svc as never, { brokerageId, transactionId })
+  const insNamed = ins.ok && ins.facts.checkpoint.hold === "blocking"
+  if (!ins.ok) closingFindings.push("Lender-required insurance could not be checked — closing stays on hold.")
+  else if (insNamed) closingFindings.push(`Lender-required insurance: ${ins.facts.checkpoint.detail}`)
+  closingBlockingRows += (tridNamed ? 1 : 0) + (insNamed ? 1 : 0)
+
   // The closing findings are rows in that same log, so the gate has already counted the blocking ones:
   // report them once, by name, not twice.
   blockingComplianceFailures = Math.max(0, blockingComplianceFailures - closingBlockingRows)

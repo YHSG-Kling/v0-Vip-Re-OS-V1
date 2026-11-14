@@ -266,7 +266,8 @@ async function syncCoachingTask(svc: Svc, snap: TridDealSnapshot): Promise<{ ope
     },
     {
       settle: (x) => x.inserted === 1 ? { status: "executed", outcome: "coaching_task_opened" } : { status: "failed", outcome: "no_row", error: "the coaching task insert matched no row" },
-      replay: () => ({ inserted: 0 }),
+      // Claim-aware (integrator, wave 153): a REFUSED claim opened nothing and is said; a replay is the same coaching task already open.
+      replay: (claim) => { if (claim.kind === "refused") console.error(`[trid-receipt] coaching task for ${T} not opened — the action ledger refused the claim: ${claim.error}`); return { inserted: 0 } },
     },
     { client: svc as never },
   )
@@ -498,7 +499,8 @@ export async function recordTridReceiptEvidence(svc: Svc, input: TridReceiptEvid
     },
     {
       settle: (x) => x.error ? { status: "failed", outcome: "refused", error: x.error } : x.replayed ? { status: "skipped", outcome: "already_recorded" } : { status: "executed", outcome: verification },
-      replay: () => ({ id: null, replayed: true, error: null }),
+      // Claim-aware (integrator, wave 153): a REFUSED claim saved nothing — never reported as "already recorded".
+      replay: (claim) => (claim.kind === "refused" ? { id: null, replayed: false, error: `the action ledger refused the receipt claim: ${claim.error}` } : { id: null, replayed: true, error: null }),
     },
     { client: svc as never },
   )

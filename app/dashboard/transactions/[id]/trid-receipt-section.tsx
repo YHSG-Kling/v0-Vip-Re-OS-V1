@@ -120,6 +120,12 @@ export function TridReceiptSection({ transactionId, initial }: { transactionId: 
                   <span>{r.verification === "lender_confirmed" ? "Lender-confirmed" : r.verification === "pending_lender_confirmation" ? "Waiting for the lender's confirmation" : "Rejected"}</span>
                   <span className="text-muted-foreground">{r.receivedAt ? `received ${new Date(r.receivedAt).toLocaleString("en-US", { timeZone: r.timezone })} (${r.timezone})` : r.deliveredAt ? `delivered ${new Date(r.deliveredAt).toLocaleString("en-US", { timeZone: r.timezone })} (${r.timezone})` : ""}</span>
                   {r.lenderContactName && <span className="text-muted-foreground">per {r.lenderContactName}</span>}
+                  {r.reportedByName && <span className="text-muted-foreground">recorded by {r.reportedByName}</span>}
+                  {r.recordedEarliestConsummationDate && <span className="text-muted-foreground">earliest closing when recorded: {r.recordedEarliestConsummationDate}</span>}
+                  {r.id === s.readiness.governingId && r.recordedEarliestConsummationDate && s.readiness.earliestConsummationDate && r.recordedEarliestConsummationDate !== s.readiness.earliestConsummationDate && (
+                    <span className="text-amber-800">now {s.readiness.earliestConsummationDate} — the live date governs</span>
+                  )}
+                  {r.documentId && <span className="text-muted-foreground">{s.documents.find((d) => d.id === r.documentId)?.label ?? "document on file"}</span>}
                 </li>
               ))}
             </ul>

@@ -10,7 +10,8 @@ import "server-only"
 // Design rules:
 //   • Provisioning goes through the SAME canonical path self-serve signup uses
 //     (signupBrokerageAction → provisionTenantOwner → seedStarterAssistant →
-//     day-one /site/[slug] website) — no forked provisioning logic here.
+//     day-one /site/[slug] website) — no forked provisioning logic. That write
+//     half lives in lib/platform/demo-tenant-provisioning.ts (wave 153).
 //   • The tenant never bills: its subscription is set to 'paused' (the comp
 //     mechanism brokerage-management already uses) and its trial window is
 //     pushed a decade out so trial-expiry crons never nag it.
@@ -29,7 +30,6 @@ import "server-only"
 // until the snapshot is regenerated against the live schema.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { signupBrokerageAction } from "@/app/actions/auth/signup-brokerage"
 
 // ── Identity ─────────────────────────────────────────────────────────────────
 
@@ -301,90 +301,12 @@ async function assertIsDemoBrokerage(svc: Service, brokerageId: string): Promise
   return { ok: true }
 }
 
-// ── ensureDemoTenant ─────────────────────────────────────────────────────────
-
-/**
- * Find the demo brokerage (is_demo = true) or provision one through the SAME
- * canonical path self-serve signup uses (signupBrokerageAction), then flag it
- * is_demo, pin the stable slug, and neutralize billing (subscription paused,
- * trial pushed a decade out). Idempotent — safe to call repeatedly.
- */
-export async function ensureDemoTenant(): Promise<EnsureDemoTenantResult> {
-  const svc = createServiceClient()
-
-  const existing = await findDemoBrokerage(svc)
-  if (existing) return { ok: true, created: false, brokerage: existing }
-
-  // Canonical provisioning: brokerage row + slug'd /site website + tenant owner
-  // (auth user + users/agents/teams rows) + starter assistant + trial
-  // subscription + onboarding curriculum — exactly what a real signup gets.
-  // Tier "team" so the owner carries an agents row (the seeded CRM rows hang
-  // off agents.id).
-  const signup = await signupBrokerageAction({
-    brokerageName: DEMO_TENANT_NAME,
-    adminFirstName: "Demi",
-    adminLastName: "Showcase",
-    adminEmail: DEMO_OWNER_EMAIL,
-    tier: "team",
-    brokerageCity: "Austin",
-    brokerageState: "TX",
-  })
-  if (!signup.ok || !signup.brokerageId) {
-    return { ok: false, created: false, error: `Demo provisioning failed: ${signup.error ?? "unknown"}` }
-  }
-  const brokerageId = signup.brokerageId
-  const now = new Date().toISOString()
-
-  // Flag + pin identity. Stable slug first; if another tenant somehow owns
-  // 'demo-showcase', fall back to keeping the signup-generated slug.
-  const { error: flagErr } = await svc
-    .from("brokerages")
-    .update({
-      is_demo: true,
-      slug: DEMO_TENANT_SLUG,
-      signup_source: "superadmin",
-      onboarding_status: "completed",
-      trial_ends_at: daysAhead(3650),
-      updated_at: now,
-    })
-    .eq("id", brokerageId)
-  if (flagErr) {
-    const { error: retryErr } = await svc
-      .from("brokerages")
-      .update({
-        is_demo: true,
-        signup_source: "superadmin",
-        onboarding_status: "completed",
-        trial_ends_at: daysAhead(3650),
-        updated_at: now,
-      })
-      .eq("id", brokerageId)
-    if (retryErr) return { ok: false, created: true, error: `Provisioned but could not flag is_demo: ${retryErr.message}` }
-  }
-
-  // Never bills: pause the trial subscription (the same comp mechanism
-  // brokerage-management uses; there is no Stripe customer at signup).
-  // If this pause does not land, the demo tenant stays billable — the one thing
-  // "never bills" has to guarantee. The provisioning result said ok either way.
-  // COUNTED (CLAUDE.md §3): an UPDATE that matches nothing also resolves with error null —
-  // byte-identical to a pause that worked — so the rows are selected back and counted. Zero
-  // rows here is not "nothing to pause": canonical provisioning just wrote the subscription,
-  // so zero means the predicate found no row and the demo tenant WOULD bill (lane 140O).
-  const { data: paused, error: pauseError } = await svc
-    .from("subscriptions")
-    .update({ status: "paused", updated_at: now })
-    .eq("brokerage_id", brokerageId)
-    .select("id")
-  if (pauseError) {
-    return { ok: false, created: true, error: `Provisioned but could not pause billing on the demo subscription: ${pauseError.message}` }
-  }
-  if (((paused ?? []) as unknown[]).length === 0) {
-    return { ok: false, created: true, error: "Provisioned but the billing pause matched no subscription row — the demo tenant would bill, so it is not reported as never-billing." }
-  }
-
-  const brokerage = await findDemoBrokerage(svc)
-  return { ok: true, created: true, brokerage: brokerage ?? { id: brokerageId, name: DEMO_TENANT_NAME, slug: DEMO_TENANT_SLUG, status: "active", created_at: now } }
-}
+// ── ensureDemoTenant — MOVED ─────────────────────────────────────────────────
+// TOMBSTONE (orphan doctrine §1.3, wave 153): ensureDemoTenant and resetDemoTenant now live in
+// lib/platform/demo-tenant-provisioning.ts:1 — the WRITE half (the only code here that called the brokerage signup
+// action). This module keeps the READ half (findDemoBrokerage, the constants, the seed plan, seedDemoData and the
+// snapshot), so the screenshot pipeline and the D-ID cron that only LOOK UP the demo tenant no longer reach
+// app/actions/auth/signup-brokerage.ts at all (the sessionless census had to adjudicate that over-reach).
 
 // ── seedDemoData ─────────────────────────────────────────────────────────────
 
@@ -435,16 +357,7 @@ export async function seedDemoData(brokerageId: string): Promise<SeedDemoDataRes
   return { ok: true, counts }
 }
 
-// ── resetDemoTenant ──────────────────────────────────────────────────────────
-
-/** Ensure the demo tenant exists, then wipe + re-seed it. Idempotent. */
-export async function resetDemoTenant(): Promise<EnsureDemoTenantResult & { counts?: Record<DemoSeededTable, number> }> {
-  const ensured = await ensureDemoTenant()
-  if (!ensured.ok || !ensured.brokerage) return ensured
-  const seeded = await seedDemoData(ensured.brokerage.id)
-  if (!seeded.ok) return { ...ensured, ok: false, error: seeded.error }
-  return { ...ensured, counts: seeded.counts }
-}
+// ── resetDemoTenant — MOVED: lib/platform/demo-tenant-provisioning.ts (see the tombstone above) ──
 
 // ── getDemoTenantSnapshot ────────────────────────────────────────────────────
 

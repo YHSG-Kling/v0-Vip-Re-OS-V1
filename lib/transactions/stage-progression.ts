@@ -192,6 +192,18 @@ export async function canAdvanceStage(
       },
     })
     blockers.push(...settlementGate.blockers)
+
+    // 8c. FINAL CLOSING COMPLIANCE TAKES CHARGE (wave 153, lane 153D). Owner, verbatim (2026-11-14): "when the transaction is closing
+    //     and goes through a compliance review, they take charge of approving and making sure all docs are accurate and submitted
+    //     (settlement statement and cda-if required are part of the check)". The ONE readiness list (required documents at the deal's
+    //     checklist version + execution, term and commission rows, the final settlement record, TRID, insurance, the CDA if this deal
+    //     uses one or the closing question if not) is recomputed HERE, after 8b refreshed the checks, and the deal closes only on a
+    //     reviewer's APPROVAL made on that same list (lib/transactions/closing-compliance.ts closingReviewGate). A hold or a rejection holds it
+    //     by name; a change since the approval reopens it. Required where the review runs in the app for a brokerage; a team / solo
+    //     subscription closes on the closing question (8b). A list that cannot be read holds the close (fail closed).
+    const { closingReviewGate } = await import("./closing-compliance")
+    const review = await closingReviewGate(supabase, { brokerageId, transactionId })
+    blockers.push(...review.blockers)
   }
 
   // 9. Block CLOSING_PREP — AND the CLOSE itself — if any blocking transaction compliance check has failed or is
@@ -214,28 +226,12 @@ export async function canAdvanceStage(
   //     applies when a trid_timeline row exists (a financed deal with TRID tracking);
   //     cash deals have no row and are not gated.
   if (targetStage === "CLOSED") {
-    const { data: trid } = await supabase
-      .from("trid_timeline")
-      .select("closing_disclosure_delivered_date")
-      .eq("transaction_id", transactionId)
-      .maybeSingle()
-    if (trid) {
-      if (!trid.closing_disclosure_delivered_date) {
-        blockers.push("TRID: the Closing Disclosure must be delivered to the buyer at least 3 business days before closing — no delivery date is on file.")
-      } else {
-        const { computeTridClock } = await import("@/lib/compliance/trid-disclosure-clock")
-        const today = new Date().toISOString().slice(0, 10)
-        const clock = computeTridClock({
-          today,
-          closingDisclosureDeliveredDate: trid.closing_disclosure_delivered_date,
-          scheduledCloseDate: today, // consummation is happening now
-        })
-        const cd = clock.deadlines.find((d) => d.kind === "closing_disclosure")
-        if (cd && cd.status !== "ok") {
-          blockers.push(`TRID: ${cd.message}`)
-        }
-      }
-    }
+    // WAVE 153 (lane 153C, integrator): TRID from the lender's receipt ledger (lender-confirmed / deemed receipt on the federal
+    // business-day calendar, revisions classified by the lender) — covers a financed deal with no timeline row and names a
+    // pending report or an escalated revision; a cash deal is not TRID. lib/compliance/trid-disclosure-clock-evidence.ts.
+    const { tridClosingReadinessItem } = await import("@/lib/compliance/trid-disclosure-clock-evidence")
+    const trid = await tridClosingReadinessItem(supabase as never, { brokerageId, transactionId })
+    if (trid.blocking) blockers.push(`TRID: ${trid.detail} Next step: ${trid.nextAction}`)
   }
 
   return {

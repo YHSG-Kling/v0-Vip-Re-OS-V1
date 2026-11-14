@@ -227,8 +227,8 @@ export function SeedPageClient() {
             button could only ever fail — and it failed with a JSON-parse error
             from the 404's HTML body rather than anything a reader could act on.
             Contact seeding belongs to the canonical demo-tenant lane
-            (lib/platform/demo-tenant.ts: ensureDemoTenant / seedDemoData /
-            resetDemoTenant), which tags what it creates and can undo it.
+            (lib/platform/demo-tenant-provisioning.ts: ensureDemoTenant / resetDemoTenant;
+            lib/platform/demo-tenant.ts: seedDemoData), which tags what it creates and can undo it.
             Building a second seeder here would have been the drift, not the
             fix. */}
 

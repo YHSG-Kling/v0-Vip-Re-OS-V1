@@ -76,6 +76,8 @@ export function LenderClosingFileForms({ transactionId, trid, insurance }: { tra
               <li key={r.id} className="flex flex-wrap gap-2 rounded border p-2">
                 <span>Version {r.version}</span><Badge variant="secondary">{r.verification === "lender_confirmed" ? "Confirmed" : r.verification === "pending_lender_confirmation" ? "Reported by the agent — needs your confirmation" : "Rejected"}</Badge>
                 <span className="text-gray-500">{r.receivedAt ? `received ${new Date(r.receivedAt).toLocaleString("en-US", { timeZone: r.timezone })}` : r.deliveredAt ? `delivered ${new Date(r.deliveredAt).toLocaleString("en-US", { timeZone: r.timezone })}` : ""} ({r.timezone})</span>
+                {r.recordedReceiptDate && <span className="text-gray-500">counted from {r.recordedReceiptDate}</span>}
+                {r.recordedEarliestConsummationDate && <span className="text-gray-500">earliest closing {r.recordedEarliestConsummationDate}</span>}
               </li>
             ))}</ul>
           )}

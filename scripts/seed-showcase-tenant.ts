@@ -11,7 +11,7 @@
  * returns 503". Owner: test data is allowed if it is removed — hence `--remove`.
  *
  * ALREADY EXISTED — REUSED (CLAUDE.md §1, never a second implementation):
- *   · lib/platform/demo-tenant.ts  ensureDemoTenant / findDemoBrokerage /
+ *   · lib/platform/demo-tenant.ts  findDemoBrokerage / (ensureDemoTenant: lib/platform/demo-tenant-provisioning.ts) /
  *     seedDemoData / DEMO_SEEDED_TABLES — THE is_demo tenant and its dataset
  *     (canonical signup path, hard-guarded on is_demo = true, deterministic
  *     ids → idempotent re-seed).
@@ -82,11 +82,12 @@ async function readRawProductBrand(svc: Svc): Promise<Record<string, unknown>> {
 // ── seed ─────────────────────────────────────────────────────────────────────
 async function seed(svc: Svc) {
   const demo = await import("../lib/platform/demo-tenant")
+  const provisioning = await import("../lib/platform/demo-tenant-provisioning")
   const brandMod = await import("../lib/platform/product-brand")
 
   console.log("\n[1 · the showcase tenant (brokerages.is_demo = true)]")
   const before = await demo.findDemoBrokerage(svc)
-  const ensured = before ? { ok: true as const, created: false, brokerage: before } : await demo.ensureDemoTenant()
+  const ensured = before ? { ok: true as const, created: false, brokerage: before } : await provisioning.ensureDemoTenant()
   if (!ensured.ok || !ensured.brokerage) refuse(`showcase tenant could not be ensured: ${"error" in ensured ? ensured.error : "no brokerage returned"}`)
   const brokerageId = ensured.brokerage.id
   console.log(`  ${ensured.created ? "created" : "found"} ${ensured.brokerage.name} (${brokerageId}, slug ${ensured.brokerage.slug})`)

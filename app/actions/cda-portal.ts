@@ -97,6 +97,18 @@ async function dealCdaMode(brokerageId: string, transactionId: string): Promise<
 }
 const CDA_MODE_UNREADABLE = "This deal's CDA treatment couldn't be confirmed, so nothing was saved. Try again shortly; if it keeps happening, contact platform support."
 
+// WAVE 153 (lane 153D) — THE CLOSING FILE IS RE-CHECKED AT EVERY CDA STEP THAT AUTHORIZES MONEY. Owner (verbatim, 2026-11-14): "final
+// closing compliance should be checking to be sure the required docs are at least in the file in order to release a cda". The final
+// compliance check (lib/transactions/final-compliance-check.ts — the brokerage's required documents at the deal's checklist version and
+// their execution, the contract-to-settlement comparison and reconciliation, every blocking check) ran at SUBMIT only, so a document an
+// issuer corrected, a statement that arrived or a check that reopened after submit was invisible to compliance's approval, the broker's
+// signature (which finalizes the commission) and the release to title. It is re-run fresh at each of the three — never a stored verdict.
+async function freshClosingFileGate(transactionId: string, brokerageId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { runFinalComplianceCheck } = await import("@/lib/transactions/final-compliance-check")
+  const file = await runFinalComplianceCheck(transactionId, brokerageId)
+  return file.passed ? { ok: true } : { ok: false, error: `closing_file_not_ready: ${file.blockers.slice(0, 6).join(" ")}` }
+}
+
 // WAVE 152 (lane 152H — integrator request from lane 152G): A STATEMENT THAT IS UPLOADED IS ALSO READ. The CDA doors file title's
 // preliminary / final statement on the transaction_documents rail, but 152E's term comparison and 152G's settlement reconciliation read
 // the `documents` rail (its scanner's classification + extraction ledger) — so a statement uploaded here was on file yet never compared,
@@ -967,6 +979,9 @@ export async function approveCdaAction(input: { cdaId: string }) {
       error: "contract_check_failed_use_manual_override",
     }
   }
+  // WAVE 153 (lane 153D): the closing file as it stands NOW (required documents, settlement comparison, blocking checks).
+  const fileGate = await freshClosingFileGate(cda.transaction_id, cda.brokerage_id)
+  if (!fileGate.ok) return { success: false as const, error: fileGate.error }
 
   const now = new Date().toISOString()
   // Compliance APPROVES — it does NOT apply the broker's signature. broker_approved_at
@@ -1096,6 +1111,9 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
   const verdict = canBrokerSignCda({ status: cda.status, brokerSigned: !!cda.broker_approved_at, role: auth.userType })
   if (cda.broker_approved_at) return { success: true as const } // idempotent
   if (!verdict.ok) return { success: false as const, error: verdict.error }
+  // WAVE 153 (lane 153D): the broker's signature finalizes the commission — it is given on the closing file as it stands NOW.
+  const signFileGate = await freshClosingFileGate(cda.transaction_id, cda.brokerage_id)
+  if (!signFileGate.ok) return { success: false as const, error: signFileGate.error }
 
   const now = new Date().toISOString()
 
@@ -1569,6 +1587,10 @@ export async function sendCdaToTitleAction(input: {
   // signed before submit → compliance approved → broker signed → then sent).
   const sendVerdict = canSendCdaToTitle({ status: cda.status, brokerSigned: !!cda.broker_approved_at })
   if (!sendVerdict.ok) return { success: false as const, error: sendVerdict.error }
+  // WAVE 153 (lane 153D): NO CDA RELEASE unless the brokerage's required documents are in the file and the settlement comparison
+  // passes NOW (the broker's signature above is the other half). A retry of a delivery already recorded is refused below either way.
+  const releaseFileGate = await freshClosingFileGate(cda.transaction_id, cda.brokerage_id)
+  if (!releaseFileGate.ok) return { success: false as const, error: releaseFileGate.error }
 
   // ── NEVER DUPLICATE A DELIVERY ON RETRY (wave 142, lane 142C) ───────────────
   // A recorded delivery (sent_to_title_at) is the record; a retry of the same send is refused by

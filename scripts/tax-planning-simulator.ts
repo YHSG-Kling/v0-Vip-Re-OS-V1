@@ -216,7 +216,8 @@ function sourceLayer() {
   const summary = stripComments(src("app/dashboard/financials/components/planning/planning-ai-summary-panel.tsx"))
   check("the summary panel ignores the parent's invented liability and reads the one plan", !/netIncome - estimatedTaxLiability/.test(summary) && /getTaxPlanAction\(/.test(summary))
   const m901 = src("supabase/migrations/m901-tax-assumptions-user-entered-no-default-rate.sql")
-  check("m901 line 1 is the charter's exact WRITTEN-NOT-APPLIED line", m901.split("\n")[0] === "-- WRITTEN, NOT APPLIED (wave 153, lane 153A) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL")
+  // The RULE, not the waypoint (CLAUDE.md §2): the lane's WRITTEN line until applied, then the integrator's APPLIED LIVE stamp.
+  check("m901 line 1 is a status line — the charter's WRITTEN-NOT-APPLIED line or the integrator's APPLIED LIVE stamp for lane 153A", m901.split("\n")[0] === "-- WRITTEN, NOT APPLIED (wave 153, lane 153A) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL" || /^-- ── APPLIED LIVE \d{4}-\d{2}-\d{2} via Supabase MCP \(project hrvaqgvukzxfskkcrwbt\) — wave 153, lane 153A ── read back: \S/.test(m901.split("\n")[0]))
   check("m901 drops the database's invented defaults (0.12 / 25), makes them nullable, adds assumptions + append-only history, with a ROLLBACK note", /estimated_effective_rate DROP DEFAULT/.test(m901) && /set_aside_percent DROP DEFAULT/.test(m901) && /estimated_effective_rate DROP NOT NULL/.test(m901) && /ADD COLUMN IF NOT EXISTS assumptions jsonb/.test(m901) && /ADD COLUMN IF NOT EXISTS assumption_history jsonb/.test(m901) && /-- ROLLBACK:/.test(m901))
   const reg = src("lib/kernel/manager-registry.ts")
   check("agent_tax_profile is owned by the Finance Manager", /agent_tax_profile:\s*"finance_manager"/.test(reg))
