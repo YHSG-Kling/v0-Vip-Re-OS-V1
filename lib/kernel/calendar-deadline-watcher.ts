@@ -136,14 +136,29 @@ export async function checkUpcomingDeadlines(
     }
 
     try {
-      await emitKernelEvent({
+      // emitKernelEvent NEVER THROWS — it RESOLVES a refusal as `{ error }` (lib/kernel/emit.ts). This loop
+      // used to ignore the result, so a refused lifecycle insert (or a missing service credential) still
+      // pushed the id below and marked the deadline notified: the inspection / appraisal / financing / CD
+      // reminder was lost for good and nothing retried it (wave 153, lane 153Q). Now a refusal leaves the
+      // row unnotified for the next run, the event lands on the SAME client as the mark (the injected one
+      // in a proof), and a per-calendar-event dedupe key keeps a retry after a failed MARK from firing twice.
+      const emitted = await emitKernelEvent({
         event:       kernelEventType,
         brokerageId: calEvent.brokerage_id,
         entityType:  calEvent.entity_type,
         entityId:    calEvent.entity_id,
         source:      "cron",
         metadata:    { calendar_event_id: calEvent.id, start_at: calEvent.start_at, event_type: calEvent.event_type },
+        client:      supabase,
+        dedupeKey:   `deadline:${calEvent.id}`,
+        dedupeWindowSec: 7 * 86_400,
       })
+      if (emitted.error) {
+        console.error(
+          `[calendar-deadline-watcher] emit REFUSED for calendar_event ${calEvent.id} — left unnotified for the next run: ${emitted.error}`
+        )
+        continue
+      }
 
       notifiedIds.push(calEvent.id)
     } catch (err) {

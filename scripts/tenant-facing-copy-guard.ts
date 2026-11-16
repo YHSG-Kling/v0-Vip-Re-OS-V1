@@ -156,6 +156,11 @@ async function main() {
     "lib/providers/tenant-provider-connections.ts",
     "lib/kernel/immediate-operations.ts",
     "lib/support/ticket-triage.ts",
+    // 153D-8 (wave 153, lane 153Q): the issuer-correction and closing-review refusals now leave through the presenter.
+    "lib/documents/document-versions.ts",
+    "lib/documents/vendor-document-correction.ts",
+    "app/actions/vendor-document-corrections.ts",
+    "app/actions/compliance/closing-review.ts",
   ]
   const payerHits = SURFACES.flatMap((f) => decode(stripComments(read(f))).split("\n").map((l, i) => ({ f, i: i + 1, l })).filter((x) => PAYER.test(x.l)).map((x) => `${x.f}:${x.i}`))
   check(`no brokerage-payer claim on the ${SURFACES.length} rewired surfaces (${payerHits.length} found)`, payerHits.length === 0, payerHits.join(", "))

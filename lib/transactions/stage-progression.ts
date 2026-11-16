@@ -450,7 +450,7 @@ export async function advanceStage(params: {
       const dealType = String(txForCosts?.deal_type ?? "")
       const price = Number(txForCosts?.purchase_price ?? 0)
       const costsTag = `[CLOSING_COSTS_READY] [${params.transactionId}]`
-      if (buyerContactId && Number.isFinite(price) && price > 0 && dealType !== "seller" && dealType !== "sale") {
+      if (buyerContactId && Number.isFinite(price) && price > 0 && dealType !== "seller") {
         const { data: dupMsg } = await supabase
           .from("agent_client_messages")
           .select("id")

@@ -42,6 +42,22 @@ export async function captureRenderAsMarketingAsset(
   if (render.render_status !== "succeeded" || !render.output_url) return { ok: false, skipped: "render not finished" }
   if (!render.brokerage_id) return { ok: false, skipped: "render has no brokerage" }
 
+  // A RENDER ADDRESSED TO ONE CONTACT IS NOT A LIBRARY ASSET (146C-SO-04, wave 153, lane 153Q). The
+  // personal welcome video's cut is hosted PRIVATE (media-host.ts renderHostBucketFor), but both render
+  // doors then captured it here as a "reusable" marketing_assets row any agent's ads, social and email
+  // resolvers could pick up — re-publishing a contact-only video. Same tenant-pinned read as the host
+  // decision; an unreadable project is NOT captured (fail closed: capture is best-effort, a leak is not).
+  if (render.entity_type === "video_project" && render.entity_id) {
+    const { data: proj, error: projErr } = await supabase
+      .from("ai_video_projects")
+      .select("contact_id")
+      .eq("id", render.entity_id)
+      .eq("brokerage_id", render.brokerage_id)
+      .maybeSingle()
+    if (projErr) return { ok: false, skipped: `video project unreadable — not captured: ${projErr.message}` }
+    if ((proj as { contact_id?: string | null } | null)?.contact_id) return { ok: false, skipped: "contact-only render — never a library asset" }
+  }
+
   // Idempotency — already captured?
   const { data: existing } = await supabase
     .from("marketing_assets")

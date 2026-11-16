@@ -253,10 +253,22 @@ export async function POST(req: NextRequest) {
       // 4a. STILL — renderStill → PNG → blob. No coordinator (stills
       //     have no audio to mix or bookends to concat).
       const bytes = await renderStillToBuffer(bundleLocation, row.composition_id, inputProps, executablePath, row.id)
-      const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+      const { hostRenderedMedia, renderHostBucketFor, RENDER_MEDIA_BUCKET } = await import("@/lib/remotion/media-host")
+      // 146C-SO-04 (wave 153, lane 153Q): the MOVING path (render-coordinator.ts) and the card below already
+      // host a project addressed to ONE contact in the private bucket; this STILL path took the public
+      // default, so a contact-only still of a welcome-video project landed in `video-assets`. Same rule,
+      // same tenant-pinned read: an unreadable project FAILS the render (the outer catch) rather than
+      // hosting a possibly-personal still publicly.
+      let stillBucket = RENDER_MEDIA_BUCKET
+      if (row.entity_type === "video_project" && row.entity_id) {
+        const { data: proj, error: projErr } = await svc.from("ai_video_projects")
+          .select("contact_id").eq("id", row.entity_id).eq("brokerage_id", row.brokerage_id).maybeSingle()
+        if (projErr) throw new Error(`still host bucket undecidable — project ${row.entity_id} unreadable: ${projErr.message}`)
+        stillBucket = renderHostBucketFor(proj as { contact_id?: string | null } | null)
+      }
       // Extension + content type come from the ONE decision helper the
       // simulator proves (render-decision.ts), not a literal restated here.
-      const uploaded = { url: await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}.${outputExtension(composition.duration_frames)}`, bytes, outputContentType(composition.duration_frames)) }
+      const uploaded = { url: await hostRenderedMedia(svc, `compositions/${row.brokerage_id}/${row.composition_id}/${row.id}.${outputExtension(composition.duration_frames)}`, bytes, outputContentType(composition.duration_frames), stillBucket) }
       await recordRenderCompleted({
         renderId: row.id, compositionId: row.composition_id,
         status: "succeeded", outputUrl: uploaded.url, thumbnailUrl: uploaded.url,
@@ -264,6 +276,7 @@ export async function POST(req: NextRequest) {
       // Stills join the reusable marketing_assets library too (flyers,
       // hangers, carousel slides) — the ads media resolver and the asset
       // library must see every finished deliverable, not just videos.
+      // (A contact-only still is refused by captureRenderAsMarketingAsset itself — the one rule.)
       try {
         const { captureRenderAsMarketingAsset } = await import("@/lib/marketing/capture-render-asset")
         await captureRenderAsMarketingAsset(row.id, svc)

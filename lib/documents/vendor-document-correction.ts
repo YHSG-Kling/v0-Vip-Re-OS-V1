@@ -65,7 +65,7 @@ type IssuerCorrectionOutcome =
       notified: number
       tasks: string[]
     }
-  | { ok: false; code: IssuerCorrectionRefusal | "unreadable" | "not_found" | "write_failed"; message: string }
+  | { ok: false; code: IssuerCorrectionRefusal | "unreadable" | "not_found" | "write_failed"; message: string; detail?: string }
 
 interface IssuerCorrectionDeps {
   /** THE ONE documents writer (default lib/documents/upload-document.ts uploadDocument); a proof injects one on its in-memory client. */
@@ -75,7 +75,9 @@ interface IssuerCorrectionDeps {
   notify?: (svc: Svc, a: { brokerageId: string; transactionId: string; agentUserIds: string[]; alsoUserIds: string[]; title: string; body: string }) => Promise<number>
 }
 
-const UNREADABLE = (what: string, e: { message: string }) => ({ ok: false as const, code: "unreadable" as const, message: `The ${what} couldn't be read, so nothing was filed. Try again shortly. (${e.message})` })
+// `message` is the person's sentence; the raw database text rides `detail` for staff logs ONLY (153D-8, wave 153 lane 153Q:
+// it used to be spliced into the sentence the vendor reads). The doors present it through presentTenantError.
+const UNREADABLE = (what: string, e: { message: string }) => ({ ok: false as const, code: "unreadable" as const, message: `The ${what} couldn't be read, so nothing was filed. Try again shortly.`, detail: e.message })
 
 export async function fileIssuerCorrection(svc: Svc, req: IssuerCorrectionRequest, deps: IssuerCorrectionDeps = {}): Promise<IssuerCorrectionOutcome> {
   const B = req.brokerageId, T = req.transactionId
@@ -243,7 +245,7 @@ export async function fileIssuerCorrection(svc: Svc, req: IssuerCorrectionReques
     },
     { client: svc as never },
   ).catch((e: unknown): Written => ({ documentId: null, transactionDocumentId: null, superseded: 0, replay: false, error: e instanceof Error ? e.message : String(e) }))
-  if (written.error) return { ok: false, code: "write_failed", message: `The corrected version was not filed (${written.error}). Nothing changed — try again.` }
+  if (written.error) return { ok: false, code: "write_failed", message: "The corrected version was not filed. Nothing changed — try again.", detail: written.error }
   if (written.replay) return { ok: true, replay: true, mode: verdict.mode, documentId: null, transactionDocumentId: null, superseded: 0, recheck: null, approvalReopened: false, notified: 0, tasks: [] }
 
   // 5 · re-run the comparisons (before close) and learn whether a passed approval stood on the replaced version

@@ -238,10 +238,9 @@ const nextConfig: NextConfig = {
     "/api/internal/remotion/**": [
       "./remotion/**/*.{ts,tsx}",
       "./lib/{ai,charts,format,remotion,video}/**/*.{ts,tsx}",
+      "./public/fonts/inter/**/*",
       "./node_modules/@remotion/media/**/*",
       "./node_modules/@remotion/motion-blur/**/*",
-      "./node_modules/@remotion/google-fonts/package.json",
-      "./node_modules/@remotion/google-fonts/dist/esm/Inter.mjs",
       "./node_modules/mediabunny/package.json",
       "./node_modules/mediabunny/dist/modules/**/*.js",
       "./node_modules/@remotion/compositor-linux-x64-gnu/**/*",

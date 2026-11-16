@@ -37,6 +37,8 @@ function report() {
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
+  // A count of zero is not a verification (CLAUDE.md §2): say SKIPPED, and name where the offline proof lives (wave 153, lane 153Q).
+  if (passed === 0) { console.log(" ⊘ Deadline watcher NOT verified here (live layer skipped) — the offline proof is test:deal-automation §A"); return }
   console.log(" ✅ Deadline watcher verified")
 }
 

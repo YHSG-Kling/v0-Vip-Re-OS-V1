@@ -141,8 +141,11 @@ export async function GET() {
       // Lenders are vendors — a lender's pipeline counts under the vendor branch.
       Promise.resolve({ count: 0 }),
 
-      // Title open orders (title_agent role only)
-      userType === "title_agent"
+      // Title open orders. TITLE IS A VENDOR CATEGORY (CLAUDE.md §4): 'title_agent' left the
+      // users.user_type CHECK in m307, so the old `userType === "title_agent"` branch could never
+      // match and every title seat's badge read 0 (wave 153, lane 153Q). The title seat is a vendor
+      // seat; the read is keyed on THIS user's title_company_users rows, so a non-title vendor counts 0.
+      userType === "vendor"
         ? supabase
             .from("title_company_users")
             .select("id", { count: "exact", head: true })

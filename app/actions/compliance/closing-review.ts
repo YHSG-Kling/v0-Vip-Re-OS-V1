@@ -18,6 +18,15 @@ type Gate =
   | { ok: true; actor: { userId: string; agentId: string | null; brokerageId: string; userType: string; isTenantPrincipal?: boolean }; svc: ReturnType<typeof import("@/lib/supabase/service").createServiceClient> }
   | { ok: false; error: string }
 
+/** A refusal the reviewer reads, through THE PRESENTER (153D-8, wave 153 lane 153Q): raw database / ledger detail is LOGGED with a
+ *  reference by presentTenantError and never shown; the sentence itself is gated by tenantCopyVerdict. Module-private. */
+async function presentRefusal(what: string, detail?: string): Promise<string> {
+  const { presentTenantError, presentTenantMessage } = await import("@/lib/errors")
+  return (detail
+    ? presentTenantError({ what, raw: detail, next: "you", action: null, context: "closing-review" })
+    : presentTenantMessage({ what, next: "you" })).sentence
+}
+
 /** The session actor, admitted to THIS deal (its agent, its TC, or tenant staff). Module-private. */
 async function gateDeal(transactionId: string): Promise<Gate> {
   if (!UUID.test(String(transactionId ?? ""))) return { ok: false, error: "Choose a deal." }
@@ -91,7 +100,7 @@ export async function recordClosingReviewDecisionAction(input: { transactionId: 
   if (!["approve", "hold", "reject"].includes(String(input?.decision))) return { success: false as const, error: "Choose approve, hold or reject." }
   const { recordClosingReviewDecision } = await import("@/lib/transactions/closing-compliance")
   const r = await recordClosingReviewDecision(g.svc as never, g.actor, { transactionId: input.transactionId, decision: input.decision, notes: input.notes ?? null })
-  if (!r.ok) return { success: false as const, error: r.error }
+  if (!r.ok) return { success: false as const, error: await presentRefusal(r.error, r.detail) }
   const { revalidatePath } = await import("next/cache")
   revalidatePath(`/dashboard/transactions/${input.transactionId}`)
   return { success: true as const, standing: r.standing, replay: r.replay }
@@ -103,7 +112,7 @@ export async function amendDealChecklistAction(input: { transactionId: string; r
   if (!g.ok) return { success: false as const, error: g.error }
   const { amendDealChecklistVersion } = await import("@/lib/transactions/closing-compliance")
   const r = await amendDealChecklistVersion(g.svc as never, g.actor, { transactionId: input.transactionId, reason: String(input?.reason ?? "") })
-  if (!r.ok) return { success: false as const, error: r.error }
+  if (!r.ok) return { success: false as const, error: await presentRefusal(r.error, r.detail) }
   const { revalidatePath } = await import("next/cache")
   revalidatePath(`/dashboard/transactions/${input.transactionId}`)
   return { success: true as const, rules: r.rules, rechecked: r.rechecked, openBlocking: r.openBlocking }

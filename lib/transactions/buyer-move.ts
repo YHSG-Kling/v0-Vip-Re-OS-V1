@@ -199,24 +199,32 @@ export async function ensureBuyerMoveCase(
   svc: Svc,
   params: { transactionId: string; brokerageId: string; now?: Date },
 ): Promise<{ created: boolean; case: BuyerMoveCase | null }> {
-  const { data: txn } = await svc
+  const { data: txn, error: txnErr } = await svc
     .from("transactions")
     .select("id, deal_type, buyer_contact_id, agent_id, close_date, estimated_close_date")
     .eq("id", params.transactionId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
+  // A refused read is not "no deal" (CLAUDE.md §3) — both callers catch and report it.
+  if (txnErr) throw new Error(`[buyer-move] transaction ${params.transactionId} unreadable: ${txnErr.message}`)
   if (!txn) return { created: false, case: null }
-  // Buyer-side only: a move-in concierge needs a buyer to serve. An explicit seller-side (listing) deal
-  // or a deal with no buyer contact has nobody to move in — skip honestly rather than fabricate a case.
-  if ((txn as any).deal_type === "listing") return { created: false, case: null }
+  // Buyer-side only: a move-in concierge needs a buyer WE REPRESENT. A seller-only deal ('seller' — our
+  // listing, an outside buyer logged for the paperwork) or a deal with no buyer contact has nobody of ours
+  // to move in — skip honestly rather than fabricate a case. WAS `=== "listing"` (wave 153, lane 153Q): a
+  // spelling transactions.deal_type's CHECK refuses (buyer | dual | seller — lib/transactions/deal-type-resolver.ts
+  // DealType), so the skip never fired and the OTHER side's buyer got our move-in concierge.
+  if ((txn as any).deal_type === "seller") return { created: false, case: null }
   if (!(txn as any).buyer_contact_id) return { created: false, case: null }
 
   const closingDate = (txn as any).close_date ?? (txn as any).estimated_close_date ?? null
-  const { data: existing } = await svc
+  const { data: existing, error: existingErr } = await svc
     .from("buyer_move_cases")
     .select("*")
     .eq("transaction_id", params.transactionId)
+    .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
+  // An unread case is not an absent case: inserting over it would duplicate (or be refused by the unique key).
+  if (existingErr) throw new Error(`[buyer-move] move case for ${params.transactionId} unreadable: ${existingErr.message}`)
 
   const dtc = daysToClose(closingDate, params.now)
 

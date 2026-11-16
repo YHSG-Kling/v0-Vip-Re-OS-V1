@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { readRoleGrants, selectPrimaryRole, selectTenantBrokerageId, selectVendorId } from "@/lib/auth/role-grants"
+import { lenderVendorForUser, lenderVendorTransactionIds } from "@/lib/kernel/lender-linkage"
 import { generateTextRouted } from "@/lib/ai/models"
 import { NextRequest, NextResponse } from "next/server"
 
@@ -64,6 +65,13 @@ export async function POST(req: NextRequest) {
   if (vendorAmbiguous) {
     console.error("[ai-note] user", user.id, "is linked to more than one vendor — vendor note targets suppressed")
   }
+  // A LENDER IS A VENDOR CATEGORY, NOT A ROLE SPELLING (CLAUDE.md §4; wave 153, lane 153Q). This route
+  // used to branch on `role === "lender"` — a grant/role string no vendor-category lender's seat
+  // carries (the seat is user_type 'vendor' + vendors.category 'lender') — and then appended to
+  // transaction_lenders.notes with the SERVICE client by a model-extracted transactionId, with no proof
+  // that the caller was that deal's lender. The ONE resolver decides lender-ness; the deal write below
+  // additionally requires that lender vendor to be assigned to the transaction in its own tenant.
+  const lenderVendor = await lenderVendorForUser(supabase, user.id)
 
   const body = await req.json()
   const { action } = body as { action: string }
@@ -77,7 +85,7 @@ export async function POST(req: NextRequest) {
     }
 
     const extraTypes =
-      role === "lender"
+      lenderVendor
         ? "loan_update"
         : role === "vendor"
         ? "vendor_update"
@@ -271,12 +279,20 @@ Rules:
       await sentinelWrite(service, service.from("leads").update({ notes: appended }).eq("id", leadId), { table: "leads", flow: "lead_note_append", reason: "appends the AI note to the lead for display; the note is recorded on its own rows" })
     }
 
-    // ── 5. transaction_lenders.notes (role=lender + entity=transaction) ───────
-    if (role === "lender" && transactionId) {
+    // ── 5. transaction_lenders.notes (lender VENDOR assigned to this deal + entity=transaction) ──
+    // Fail closed: a refused assignment read returns [] (lenderVendorTransactionIds), so an
+    // unverifiable assignment writes nothing to the deal — the note itself is already saved above.
+    const lenderOnDeal = !!(lenderVendor && transactionId) &&
+      (await lenderVendorTransactionIds(supabase, lenderVendor!.vendorId, lenderVendor!.brokerageId)).includes(transactionId as string)
+    if (lenderVendor && transactionId && !lenderOnDeal) {
+      console.warn(`[ai-note] lender vendor ${lenderVendor.vendorId} is not assigned to transaction ${transactionId} — deal lender note not appended`)
+    }
+    if (lenderVendor && transactionId && lenderOnDeal) {
       const { data: tl } = await service
         .from("transaction_lenders")
         .select("id, notes")
         .eq("transaction_id", transactionId)
+        .eq("brokerage_id", lenderVendor.brokerageId)
         .limit(1)
         .maybeSingle()
       if (tl) {

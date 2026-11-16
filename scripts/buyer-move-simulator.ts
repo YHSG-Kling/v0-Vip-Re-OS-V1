@@ -73,7 +73,13 @@ function sourceLayer() {
   const stage = src("lib/transactions/stage-progression.ts")
   check("stage-progression stands up the move case at CLOSING_PREP", /CLOSING_PREP[\s\S]*?ensureBuyerMoveCase/.test(stage))
   const mod = src("lib/transactions/buyer-move.ts")
-  check("buyer-side only — skips listing deals / deals with no buyer contact", /deal_type[\s\S]*?listing[\s\S]*?buyer_contact_id/.test(mod))
+  // WAS a regex for the word "listing" — it pinned the DEFECT (a deal_type the CHECK refuses). The rule is now DRIVEN on an
+  // in-memory client by scripts/deal-automation-guard.ts (seller-only deal → no case; buyer/dual → a case); this keeps only the
+  // vocabulary half: the skip names a value transactions.deal_type actually admits (wave 153, lane 153Q).
+  const vocab = src("scripts/check-vocabularies.ts")
+  const dealTypes = (vocab.match(/  transactions: \{[\s\S]*?deal_type: \[([^\]]*)\]/)?.[1] ?? "").match(/"([^"]+)"/g)?.map((x) => x.slice(1, -1)) ?? []
+  const skipped = mod.match(/deal_type\s*===\s*"([^"]+)"\)\s*return \{ created: false/)?.[1] ?? ""
+  check(`buyer-side only — the seller-side skip names a live deal_type ("${skipped}" ∈ [${dealTypes.join(", ")}])`, dealTypes.length > 0 && dealTypes.includes(skipped))
   check("writes to the single buyer_move_cases table (no parallel task system)", /from\("buyer_move_cases"\)/.test(mod))
   const actions = src("app/actions/buyer-move.ts")
   check("handoff EXECUTION is gated behind FEATURES.BUYER_MOVE_UTILITY_CONNECT", /FEATURES\.BUYER_MOVE_UTILITY_CONNECT/.test(actions))
@@ -91,7 +97,7 @@ async function liveLayer() {
   if (!url || !key) { console.log("\n[live] ⊘ skipped (no SUPABASE creds) — pure + source layers proved the logic"); return }
   const svc = createClient(url, key)
   console.log("\n[live] seed buyer-side txn → ensure → assert → mark a task done → idempotent → clean up")
-  const { data: txn } = await svc.from("transactions").select("id, brokerage_id, buyer_contact_id, deal_type, close_date").not("buyer_contact_id", "is", null).neq("deal_type", "listing").limit(1).maybeSingle()
+  const { data: txn } = await svc.from("transactions").select("id, brokerage_id, buyer_contact_id, deal_type, close_date").not("buyer_contact_id", "is", null).neq("deal_type", "seller").limit(1).maybeSingle()
   if (!txn) { console.log("  ⊘ no buyer-side transaction with a buyer contact — skipping"); return }
   const brokerageId = (txn as any).brokerage_id, transactionId = (txn as any).id
   const cleanup: Array<{ table: string; id: string }> = []

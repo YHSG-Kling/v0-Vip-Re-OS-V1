@@ -14,6 +14,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { FEATURES } from "@/lib/constants"
@@ -38,15 +39,20 @@ async function authAndScope(params: ScopedParams) {
   if (!isValidUUID(params.transactionId) || !isValidUUID(params.brokerageId)) {
     return { supabase: null, error: "Invalid id" as const }
   }
+  // TENANT FROM THE SESSION (CLAUDE.md §4; wave 153, lane 153Q). The body's brokerageId is only a claim:
+  // requireCallerTenant refuses one that names a different brokerage, and the session's tenant is what
+  // every read and the move-case insert below are pinned to (params.brokerageId is overwritten with it).
+  const caller = await requireCallerTenant(params.brokerageId)
+  if (!caller.ok) return { supabase: null, error: "Unauthorized" as const }
+  params.brokerageId = caller.brokerageId
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { supabase: null, error: "Unauthorized" as const }
-  const { data: tx } = await supabase
+  const { data: tx, error: txErr } = await supabase
     .from("transactions")
     .select("id")
     .eq("id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", caller.brokerageId)
     .maybeSingle()
+  if (txErr) return { supabase: null, error: "The deal couldn't be read just now. Try again shortly." as const }
   if (!tx) return { supabase: null, error: "Transaction not found in your brokerage" as const }
   return { supabase, error: null }
 }

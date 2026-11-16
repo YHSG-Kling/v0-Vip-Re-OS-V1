@@ -814,7 +814,7 @@ export async function amendDealChecklistVersion(
   actor: { userId: string; brokerageId: string; userType: string; isTenantPrincipal?: boolean },
   input: { transactionId: string; reason: string },
   deps: { recheck?: (svc: Svc, i: RunClosingComplianceInput) => Promise<ClosingComplianceOutcome> } = {},
-): Promise<{ ok: true; rules: number; rechecked: boolean; openBlocking: number } | { ok: false; error: string }> {
+): Promise<{ ok: true; rules: number; rechecked: boolean; openBlocking: number } | { ok: false; error: string; detail?: string }> {
   if (!mayReviewClosing(actor)) return { ok: false, error: "Only compliance, the broker or an account admin can apply the current checklist to a deal." }
   const reason = String(input.reason ?? "").trim()
   if (reason.length < 10) return { ok: false, error: "Say why this deal should use the current checklist (at least a short sentence)." }
@@ -842,7 +842,7 @@ export async function amendDealChecklistVersion(
     { settle: (r) => (r.recorded ? { status: "executed", outcome: "checklist_version_amended" } : { status: "failed", outcome: "not_recorded", error: r.error ?? "not recorded" }), replay: (claim) => ({ recorded: false, error: claim.kind === "refused" ? `the action ledger refused the amendment: ${claim.error}` : "already being applied" }) },
     { client: svc as never },
   ).catch((e: unknown) => ({ recorded: false, error: e instanceof Error ? e.message : String(e) }))
-  if (!rec.recorded) return { ok: false, error: `The current checklist was not applied (${rec.error ?? "unknown"}). Nothing changed — try again.` }
+  if (!rec.recorded) return { ok: false, error: "The current checklist was not applied. Nothing changed — try again.", detail: rec.error ?? "unknown" }
   // A manual run re-checks the documents only once a settlement statement is on file (the runner's own rule); otherwise the amended
   // version applies at the next full closing check (the pre-CDA check, the gated close) — said, never claimed as "checked".
   const run = await (deps.recheck ?? runClosingCompliance)(svc, { transactionId: input.transactionId, brokerageId: actor.brokerageId, trigger: "manual", actorUserId: actor.userId })
@@ -1567,9 +1567,10 @@ export async function recordClosingReviewDecision(
   actor: { userId: string; brokerageId: string; userType: string; isTenantPrincipal?: boolean },
   input: { transactionId: string; decision: ClosingReviewDecision; notes?: string | null },
   deps: { notify?: (svc: Svc, a: { brokerageId: string; transactionId: string; title: string; body: string }) => Promise<number> } = {},
-): Promise<{ ok: true; standing: ClosingReviewStandingState; fingerprint: string; replay: boolean } | { ok: false; error: string }> {
+): Promise<{ ok: true; standing: ClosingReviewStandingState; fingerprint: string; replay: boolean } | { ok: false; error: string; detail?: string }> {
   const loaded = await loadClosingReadiness(svc, { brokerageId: actor.brokerageId, transactionId: input.transactionId })
-  if (!loaded.ok) return { ok: false, error: `The closing file could not be read, so nothing was recorded (${loaded.error}).` }
+  // `error` is the reviewer's sentence; raw database / ledger text rides `detail` for the staff log only (153D-8, wave 153 lane 153Q).
+  if (!loaded.ok) return { ok: false, error: "The closing file could not be read, so nothing was recorded. Try again shortly.", detail: loaded.error }
   const { readiness } = loaded.loaded
   const verdict = decideClosingReview({ readiness, decision: input.decision, notes: input.notes, reviewer: { isReviewer: mayReviewClosing(actor) } })
   if (!verdict.ok) return verdict
@@ -1604,7 +1605,7 @@ export async function recordClosingReviewDecision(
     },
     { client: svc as never },
   ).catch((e: unknown) => ({ recorded: false, replay: false, error: e instanceof Error ? e.message : String(e) }))
-  if (!written.recorded) return { ok: false, error: `The decision was not recorded (${written.error ?? "unknown"}). Nothing changed — try again.` }
+  if (!written.recorded) return { ok: false, error: "The decision was not recorded. Nothing changed — try again.", detail: written.error ?? "unknown" }
   if (input.decision !== "approve" && !written.replay) {
     const title = input.decision === "hold" ? "Closing on hold — compliance needs a correction" : "Closing rejected by compliance"
     await (deps.notify ?? notifyClosingReviewTeam)(svc, { brokerageId: actor.brokerageId, transactionId: input.transactionId, title, body: `${notes ?? ""}\nThe closing waits until compliance approves it. Nothing on the signed contract was changed.`.trim() })

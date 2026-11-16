@@ -13,8 +13,7 @@
  * pulse) · CTA 330–450.
  */
 import React from "react"
-import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig } from "remotion"
-import { loadFont } from "@remotion/google-fonts/Inter"
+import { AbsoluteFill, Sequence, cancelRender, continueRender, delayRender, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
@@ -40,9 +39,26 @@ import type { CaptionCue } from "../lib/video/caption-plan"
 // host (a locked-down egress, a proxy, a CDN blip) failed `NetworkError: A network error occurred.` on all ~38 compositions,
 // including the ones that never use Inter (a lead-magnet card, a postcard, a CMA reel). It is now requested the first time THIS
 // composition renders, so only the product promo depends on the font host (render-failure-census bucket `font_load`).
+//
+// WAVE 153 (lane 153Q) — THE FONT IS BUNDLED NOW, NOT FETCHED. Lane 153J's real-render run: 33 of 34 compositions rendered; the
+// one failure was THIS reel, `NetworkError` from @remotion/google-fonts reaching fonts.gstatic.com through a TLS-intercepting
+// proxy — and lib/remotion/render-failure-census.ts's own fix line says page-time fetches "must be LOCAL". Inter (SIL OFL 1.1,
+// public/fonts/inter/OFL.txt) ships as ONE variable-weight latin WOFF2 (400–800, the Google Fonts v20 latin subset, 48,256 bytes)
+// at public/fonts/inter/, loaded through Remotion's documented local-font pattern (FontFace + staticFile + delayRender). This is
+// NOT a fallback that masks a missing font: the SAME Inter renders, and a font that fails to load CANCELS the render with its
+// error (cancelRender) instead of silently drawing system-ui. Still lazy (requested the first time this composition renders),
+// so no other composition depends on it. The render host must ship public/fonts/** with the bundle (Outside-lane, R1 globs).
+const INTER_FONT_FILE = "fonts/inter/inter-latin-wght-normal.woff2"
 let interFamily: string | null = null
 function loadedInter(): string {
-  if (interFamily === null) interFamily = loadFont("normal", { weights: ["400", "700", "800"], subsets: ["latin"] }).fontFamily
+  if (interFamily === null) {
+    const handle = delayRender(`Loading the bundled Inter font (public/${INTER_FONT_FILE})`)
+    const face = new FontFace("Inter", `url('${staticFile(INTER_FONT_FILE)}') format('woff2')`, { weight: "400 800", style: "normal" })
+    face.load()
+      .then((loaded) => { document.fonts.add(loaded); continueRender(handle) })
+      .catch((err: unknown) => cancelRender(err instanceof Error ? err : new Error(`Inter font failed to load: ${String(err)}`)))
+    interFamily = "Inter"
+  }
   return interFamily
 }
 
@@ -169,14 +185,13 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
   const frame = useCurrentFrame()
   const { width, height } = useVideoConfig()
   const pad = Math.round(width * 0.09)
-  // FONT: `loadedInterFamily` (module scope, above) is the real, loaded Inter
-  // family name @remotion/google-fonts hands back — never the bare string
-  // "Inter" again, which is the exact lie this line used to tell. The
-  // system-ui fallback chain stays appended so this composition keeps the
-  // SAME fallback vocabulary the other 37 compositions in remotion/ use
-  // (§6) for the (offline-render / font-block-timeout) case where the
-  // Google Font hasn't resolved yet — it is a fallback tail now, not the
-  // primary declaration.
+  // FONT: `loadedInter()` (above) registers the BUNDLED Inter face and holds the
+  // frame (delayRender) until it has loaded — so "Inter" here names a face that
+  // is really present, never the unloaded-name lie this line used to tell; a
+  // load failure cancels the render rather than drawing the tail. The
+  // system-ui chain stays appended only to keep the SAME fallback vocabulary
+  // the other compositions in remotion/ use (§6); it is never reached by a
+  // render that completes.
   const base: React.CSSProperties = {
     backgroundColor: primary, color: "white",
     fontFamily: `${loadedInter()}, system-ui, -apple-system, sans-serif`, padding: pad, justifyContent: "center",

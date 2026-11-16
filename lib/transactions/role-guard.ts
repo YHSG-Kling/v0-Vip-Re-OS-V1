@@ -137,7 +137,10 @@ export function canViewFinancials(
     return { allowed: false, reason: 'Contacts cannot view internal financial details' }
   }
 
-  if (role === 'lender' || role === 'title_agent') {
+  // A lender or title company is a VENDOR CATEGORY on a user_type='vendor' seat (CLAUDE.md §4), so the
+  // stored role of every live lender/title user is 'vendor' — which used to fall through to allowed:true
+  // here (wave 153, lane 153Q). 'lender' / 'title_agent' stay as canonical permission roles.
+  if (role === 'vendor' || role === 'lender' || role === 'title_agent') {
     return { allowed: false, reason: 'External parties cannot view commission details' }
   }
 

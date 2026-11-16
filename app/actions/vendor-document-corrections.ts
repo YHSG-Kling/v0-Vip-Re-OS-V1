@@ -46,8 +46,18 @@ async function storeCorrectionFile(brokerageId: string, transactionId: string, f
   return { ok: true, storageUrl: stored.signedUrl, path: stored.path, sha256: createHash("sha256").update(bytes).digest("hex"), name }
 }
 
-function plainResult(out: Awaited<ReturnType<typeof import("@/lib/documents/vendor-document-correction").fileIssuerCorrection>>): Result {
-  if (!out.ok) return { success: false, error: out.message }
+/** A refusal the person reads, through THE PRESENTER (153D-8, wave 153 lane 153Q). A raw database / ledger detail is LOGGED with a
+ *  reference by presentTenantError and never shown; every other refusal is the contract sentence, gated by tenantCopyVerdict. */
+async function refusal(what: string, audience: "vendor" | "account", detail?: string): Promise<{ success: false; error: string }> {
+  const { presentTenantError, presentTenantMessage } = await import("@/lib/errors")
+  const m = detail
+    ? presentTenantError({ what, raw: detail, next: "you", action: null, context: "issuer-document-correction", audience })
+    : presentTenantMessage({ what, next: "you", audience })
+  return { success: false, error: m.sentence }
+}
+
+async function plainResult(out: Awaited<ReturnType<typeof import("@/lib/documents/vendor-document-correction").fileIssuerCorrection>>, audience: "vendor" | "account"): Promise<Result> {
+  if (!out.ok) return refusal(out.message, audience, out.detail)
   if (out.replay) return { success: true, message: "This corrected file was already filed — nothing was filed twice.", documentId: null, reopenedApproval: false }
   const message = out.mode === "post_close_adjustment"
     ? "The deal has closed, so the closed record was not changed. Your corrected version was filed as a post-closing adjustment and the brokerage was asked to review it."
@@ -101,7 +111,7 @@ export async function submitIssuerDocumentCorrectionAction(input: {
     file: { storageUrl: stored.storageUrl, storagePath: stored.path, fileName: stored.name, sha256: stored.sha256 },
     correctedFields: input.correctedFields ?? null, note: input.note ?? null,
   })
-  return plainResult(out)
+  return plainResult(out, "vendor")
 }
 
 /** The deal's agent, TC or tenant staff file what an issuer sent OFF the platform, with the proof of how it arrived. */
@@ -148,5 +158,5 @@ export async function recordOffPlatformIssuerDocumentAction(input: {
     file: { storageUrl: stored.storageUrl, storagePath: stored.path, fileName: stored.name, sha256: stored.sha256 },
     note: input.note ?? null,
   })
-  return plainResult(out)
+  return plainResult(out, "account")
 }
