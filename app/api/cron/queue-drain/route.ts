@@ -31,6 +31,10 @@
 //                               instead of running a second (double-publish)
 //                               rail. The service's own publishToSocialMedia is
 //                               a simulation and is deliberately NOT used.
+//                               WAVE 153 (153I, row 71): 'bundle_follow_on' rows
+//                               (persisted campaign-bundle follow-ons) are
+//                               EXECUTED by their orchestrator
+//                               (executeBundleFollowOnTask) — see section 3.
 //   4. drip_campaigns         — queued by startSmartDrip / aiGenerateDripCampaign.
 //                               Rows carry NO message content, only a drip_type.
 //                               When an active, compliance-gated campaign_sequences
@@ -398,9 +402,21 @@ async function drainPushQueue(supabase: Svc): Promise<PushQueueCounts> {
 // service's own publishToSocialMedia is a SIMULATION (fake external ids) that
 // must not be used. So the drain reconciles each due task against its post's
 // canonical outcome and closes it honestly.
+//
+// WAVE 153 (lane 153I — convergence row 71): the campaign orchestrator's PERSISTED BUNDLE FOLLOW-ONS ride this same queue
+// (task_type BUNDLE_FOLLOW_ON_TASK, written by lib/direct-mail/orchestrate-bundle-send.ts after each bundle item finishes).
+// Their executor is the bundle orchestrator itself — executeBundleFollowOnTask CLAIMS the row (pending → running, counted),
+// asks the Contact-engagement arbiter for a person-facing piece, sends through the channel orchestrator and settles — so
+// this drain only routes the row and counts the verdict (it never writes a bundle task's status itself). Until this
+// branch existed the fallback below closed every such row "no executor registered". Stale claims (a drain that died
+// mid-send) are closed "outcome unknown" once per tick by recoverStaleBundleFollowOns — never re-sent.
 async function drainOrchestratorTasks(supabase: Svc): Promise<QueueCounts> {
   const counts = emptyCounts()
   const nowIso = new Date().toISOString()
+  const bundleFollowOns = await import("@/lib/direct-mail/orchestrate-bundle-send")
+  const stale = await bundleFollowOns.recoverStaleBundleFollowOns(supabase)
+  if (stale.recovered > 0) counts.failed += stale.recovered
+  counts.errors.push(...stale.errors.map((e) => `bundle follow-on recovery: ${e}`))
   const { data: tasks, error } = await supabase
     .from("orchestrator_tasks")
     .select("id, task_type, payload, attempts, scheduled_for")
@@ -430,6 +446,15 @@ async function drainOrchestratorTasks(supabase: Svc): Promise<QueueCounts> {
         if (updErr) counts.errors.push(`task ${task.id}: close failed: ${updErr.message}`)
         else if (status === "completed") counts.sent++
         else counts.failed++
+      }
+
+      if (task.task_type === bundleFollowOns.BUNDLE_FOLLOW_ON_TASK) {
+        const r = await bundleFollowOns.executeBundleFollowOnTask(supabase, task)
+        if (r.verdict === "sent") counts.sent++
+        else if (r.verdict === "failed" || r.verdict === "cancelled") counts.failed++
+        else counts.deferred++
+        if (r.verdict === "skipped" && /refused|threw/.test(r.reason)) counts.errors.push(`bundle follow-on ${task.id}: ${r.reason}`)
+        continue
       }
 
       if (task.task_type !== "publish_scheduled_post") {

@@ -193,6 +193,69 @@ export default async function BrokeragePLPage() {
   // The same office picker the receipt review shows — one implementation (lib/finance/expense-rollup.ts officeChoicesFor).
   const officeChoices = await officeChoicesFor(booksSvc(), { userId: user.id, brokerageId: profile.brokerage_id, userType: (profile.user_type as string | null) ?? null })
 
+  // WAVE 153 (lane 153K — lane 153A outside-lane 7): THE COMPANY-WIDE MONEY FOLLOWS THE SAME BOOKS AUTHORITY. The finance roster
+  // admits an office admin pinned to ONE office of a multi-location tenant, and every section below this line is the whole
+  // company's (commissions MTD / YTD, production by team and office, the cap card, the P&L, the forecast, agent P&L). Only the
+  // consolidated books keeper (resolveBooksAuthority → consolidated; on a single-office tenant that is the finance roster, as
+  // before) sees them. An office admin gets their office's expense entry and rollup; a refused authority read shows NEITHER the
+  // company figures nor an office (fail closed) and says so.
+  if (!booksAuth.ok || !booksAuth.consolidated) {
+    return (
+      <div className="space-y-6 p-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Office books</h1>
+          <p className="text-muted-foreground">
+            {!booksAuth.ok
+              ? "We couldn't confirm which books you keep, so the company-wide figures are not shown and nothing was changed. Reload in a moment; if this keeps happening, ask your account admin."
+              : "You keep the books for your office. The company-wide commissions, production by office and cap card belong to the company's books keeper, so they are not shown here. Your office's expenses are below."}
+          </p>
+        </div>
+        {booksAuth.ok && (
+          <>
+            <div className="grid gap-6 lg:grid-cols-2">
+              <ScopedExpenseEntry
+                teams={(teamOptions ?? []).filter((t) => booksAuth.readOffices.includes(String((t as { location_id?: string | null }).location_id ?? ""))).map((t) => ({ id: t.id as string, name: (t.name as string) ?? "Team" }))}
+                canLogAgentScope={Boolean(brokerAgentId)}
+                offices={officeChoices}
+              />
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <PieChart className="w-5 h-5 text-orange-600" />
+                    Recent office expenses
+                  </CardTitle>
+                  <CardDescription>The offices whose books you keep or read</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {recentOpExpenses.length === 0 ? (
+                    <p className="text-sm text-muted-foreground py-4">No expenses logged for your office yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {recentOpExpenses.map((e: any) => (
+                        <div key={e.id} className="flex items-center justify-between border-b last:border-0 pb-2 last:pb-0">
+                          <div className="min-w-0">
+                            <p className="text-sm truncate">{e.description || "Expense"}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {new Date(e.expense_date).toLocaleDateString()} · {e.location_id ? officeName.get(e.location_id) ?? "Office" : "Team"}
+                            </p>
+                          </div>
+                          <p className="text-sm font-semibold text-orange-700 shrink-0 ml-3">{usdFormat(Number(e.amount ?? 0))}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+            <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+              <OfficeExpenseRollupSection userId={user.id} brokerageId={profile.brokerage_id} userType={(profile.user_type as string | null) ?? null} />
+            </Suspense>
+          </>
+        )}
+      </div>
+    )
+  }
+
   // ─── COMPUTE CAP SUMMARY, FROM THE LEDGER THE ENGINE READS ─────────────────
   //
   // This block used to derive every figure on the cap card from

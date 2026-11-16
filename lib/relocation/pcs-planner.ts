@@ -18,9 +18,9 @@
 // comparison is an ILLUSTRATION over stated inputs with every assumption labelled — not tax, legal or lending advice; the tax
 // question (IRC §121's military suspension of the 5-year test) and the loan belong to a CPA and a lender (the handoffs).
 //
-// Consumer: lib/market-reports/topics.ts (territory_guide mode — the relocation guide evidence over verified twin facts). The
-// person mode is the door the AI ISA / portal assistant call once wired (lane 150KLMO notes, Registry entries needed). Pure,
-// never throws.
+// Consumers: lib/market-reports/topics.ts (territory_guide mode — the relocation guide evidence over verified twin facts) and
+// lib/relocation/pcs-portal-door.ts (person mode — wave 153, lane 153K, convergence row 61: the military persona's portal journey,
+// the person only, consent first, the stated report date recorded through the canonical movement writer). Pure, never throws.
 
 import { decisionWindowForDays, type DecisionWindow } from "@/lib/intent/moving-moments"
 

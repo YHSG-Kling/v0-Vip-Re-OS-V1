@@ -1096,7 +1096,113 @@ owner-only):
 ```sql
 DROP INDEX IF EXISTS public.idx_remotion_renders_rendering_claimed;
 ALTER TABLE public.remotion_composition_renders DROP COLUMN IF EXISTS claimed_at;
+
+### O.153I — campaign-bundle follow-ons (lane 153I, convergence row 71)
+
+Nothing to run now. m931 (`supabase/migrations/m931-bundle-follow-ons-ride-the-orchestrator-queue-once.sql`) only CREATES a
+partial unique index, which the integrator applies. Its rollback is a DROP INDEX, which is yours — run it only if the bundle
+follow-on design is ever withdrawn (the writer keeps its pre-read either way; only the race guard goes):
+
+```sql
+-- O.153I-rollback — only to withdraw m931
+DROP INDEX IF EXISTS public.orchestrator_tasks_bundle_follow_on_key;
+-- verify: 0 rows
+SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'orchestrator_tasks_bundle_follow_on_key';
 ```
+
+### O.K Lane 153K — live read-backs and owner decisions carried by the convergence lane (2026-11-14)
+
+Nothing in this section was applied or run with write access. Every measurement below is a READ-ONLY `SELECT` through Supabase
+MCP `execute_sql` on project `hrvaqgvukzxfskkcrwbt`, quoted with its time. No migration is owed by lane 153K (m939 / m940 unused).
+
+### O.1 Convergence row 9 — anonymous reads of public views (m999): the live catalog holds; the SESSION probe is yours
+
+**Measured 2026-11-14 06:49 UTC (catalog only, no role switch):** 11 public views; **0** without `security_invoker`; **1** view
+anon-selectable by GRANT — `contact_lead_history`, which §K / lane 150BAA Q2 excludes by name — and it runs as INVOKER over
+`contacts` and `leads`, both RLS-on, where every policy admitting role `public` keys on `auth.uid()` or a session function
+(`current_user_brokerage_id()`, `is_platform_admin()`, `is_lead_visible_role()`). POSITIVE CONTROL: the same query reads
+**9** authenticated-selectable views, so the privilege finder is not blind. This is catalog evidence, NOT an anonymous read.
+
+**The remaining step (privileged — run as the integrator or in the SQL editor; it executes RLS as `anon`, read-only, rolled back):**
+```sql
+-- O.1 Q3 — an anon session reads nothing through a public view. Expected: a permission error ("permission denied for …")
+--   or 0 on every column. Measured 2026-11-06 BEFORE m999: margin 2, onboarding 2, quota 2, brokerages_via_rls 0.
+begin; set local role anon;
+select (select count(*) from public.v_platform_margin) margin,
+       (select count(*) from public.v_brokerage_onboarding_progress) onboarding,
+       (select count(*) from public.v_brokerage_ai_quota) quota,
+       (select count(*) from public.contact_lead_history) contact_lead_history,
+       (select count(*) from public.brokerages) brokerages_via_rls;
+rollback;
+-- O.1 catalog re-check (no role switch) — every number 0 except the named contact_lead_history grant:
+select (select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace and n.nspname='public'
+          where c.relkind='v' and not coalesce(array_to_string(c.reloptions,',') ~ 'security_invoker=(true|on)', false)) as views_without_invoker,
+       (select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace and n.nspname='public'
+          where c.relkind in ('v','m') and has_table_privilege('anon', c.oid, 'SELECT') and c.relname <> 'contact_lead_history') as views_anon_selectable;
+```
+Read-back to paste into the release report: the Q3 row (or its error text). Row 9 closes only on that session read.
+
+### O.2 Convergence row 85 — the executed-contract reader's hit rate stays 0/0 until real contracts exist
+
+Re-measured **2026-11-14 07:07 UTC**: `signed_contracts 0, with_readable_text 0, transactions_total 2` (§N.5a, unchanged). The
+rate is now READ IN PRODUCT: Platform → Data health → "Executed-contract reader — closing wording" (`lib/platform/self-audit-rollup.ts`
+→ `lib/transactions/contract-terms.ts measureClosingWordingReader`), which reports "not measurable yet" on 0/0, never 100 %, and runs
+four synthetic controls through the same reader every time (a misread control withholds the rate). **Owner step:** none to run — open
+that card after the first real executed contracts are filed; the first real rate is the read-back.
+
+### O.3 Convergence row 89 — public-record property facts: the first production run is the live validation
+
+Built (lane 153K): `lib/intent/public-record-facts.ts`, called by the daily public-record sweep (`/api/cron/permit-signal-scan`),
+reads the VERIFIED NYC ACRIS deed (master + legals) and Cambridge MA street-use datasets for any market a tenant territory names,
+files a property fact only at an address the tenant's own lead / contact carries (never a person, never a party name), and hands each
+read to the C19 observation writer. Measured 2026-11-14: `market_dataset_verifications` **0 rows** (no run has read them yet).
+```sql
+-- O.3a after the first daily run: one sweep_observation row per dataset read (0 rows is CORRECT when no tenant territory names
+--   NY / New York boroughs or MA / Cambridge — the sweep reads nothing it has no market for).
+select dataset_key, status, observed_at, (freshness->>'rows')::int as rows, evidence->>'error' as error
+  from public.market_dataset_verifications
+ where dataset_key in ('data.cityofnewyork.us/bnx9-e6tj','data.cityofnewyork.us/8h5j-fqxa','data.cambridgema.gov/8xmj-thsm')
+ order by observed_at desc limit 20;
+-- O.3b the facts filed, per tenant and type (expected: only tenants whose territories name those markets; never a person's name in signal_details)
+select brokerage_id, signal_type, count(*) from public.motivated_seller_signals
+ where signal_type in ('deed_recorded','street_use_permit') group by 1, 2 order by 1, 2;
+```
+**Decision (safe default built):** the reads are free, keyless public open data on the same client the permit sweep already uses;
+NYC Open Data terms govern ACRIS reuse (the platform keeps a derived fact, never republishes rows); Cambridge is PDDL. *"Keep the
+ACRIS / Cambridge reads on in the daily sweep?"* Default: on, for tenants whose territories name those markets only.
+
+### O.4 Convergence row 91 — persisting listing coordinates (your spend / usage-policy call; nothing built on a guess)
+
+Today (the safe default, verified): the buyer search page NEVER geocodes (`lib/buyer-search/location-evidence.ts geocodeCached`,
+`allowNetwork: false` → cache only); the per-home "why this home?" door geocodes once, cache-first, through the canonical free
+geocoder within Nominatim's 1 request/second policy; tour stops resolve at read time. Internal listings therefore show commute
+evidence only on demand. *"Persist listing coordinates?"* Options: **(a)** keep read-time, cache-first (default); **(b)** a capped
+nightly batch through Nominatim (≤ 1 req/s, ≤ a few hundred listings a night, cache-first) writing `listings.metadata.geo` — no
+migration, a third-party call per NEW listing; **(c)** a licensed geocoder whose terms permit storing results (a paid plan — needs
+your provider approval; storing a free-tier or Mapbox temporary-geocoding result is not permitted by those terms).
+
+### O.5 Convergence rows 84 / 78 — IDX photos
+
+Row 84 is CLOSED on built code: the buyer search shows the tenant's IDX feed photo at DISPLAY time only
+(`lib/buyer-search/explanation-evidence.ts licensedResultPhotoUrl` admits only an `idx` source URL, labelled `idx_mls`), and nothing
+stores it (`lib/buyer-search/external-match.ts primary_photo_url: null`; no `listing_media` writer uses `idx_mls`). Row 78 stays
+yours: a photo for a SAVED IDX home that has left the account's featured / sold-pending sets needs a listing-by-id read IDX Broker
+does not document for a client key — an IDX BulkData / MLS media agreement. *"Obtain an IDX BulkData (or MLS media) license?"*
+Default: no — the saved home is held by name (`idx_by_id_unavailable`), never a guessed or stored photo.
+
+### O.6 Owner decisions carried from wave-153 batch 1 (each built on its safe default; NOT built further here)
+
+| From | Question | Built default |
+|---|---|---|
+| 153A D1 | Should the planner estimate a BROKERAGE ENTITY's quarterly taxes (not only an agent's)? | no — agent / solo self-employment estimates only; the entity's taxes stay with its accountant |
+| 153A D3 | Per-campaign expense attribution (`business_expenses.marketing_campaign_id` + a receipt-flow field + dedupe against `ad_performance`)? | not built — campaign cost stays `ad_performance` spend + direct-mail piece cost; expenses roll up by office only |
+| 153D D5 | A "commission statement" document class on the required-documents packet? | not added — the packet uses the existing document classes |
+| 153D | Checklist rules that depend on the lender / title company (e.g. a lender-required document only when that lender is on the deal)? | not built — packets vary by tenant settings, not by vendor |
+
+### O.7 Not owner SQL — for the integrator (lane 153K notes, Outside-lane requests)
+
+Row 5 (CI peak RSS on a green build half) is a `.github/` change: the exact diff is in the lane-153K notes; the row closes only on a
+real CI run's printed "Maximum resident set size".
 
 ## After you run anything on this page
 

@@ -204,6 +204,34 @@ export default function DataHealthPage() {
         </Card>
       )}
 
+      {/* WAVE 153 (lane 153K — convergence row 85): the executed-contract closing-wording reader, measured with its
+          synthetic controls. 0/0 stays 0/0 — no rate until real signed contracts with text are on file. */}
+      {selfAudit?.contractReader && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Executed-contract reader — closing wording</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            {selfAudit.contractReader.readError ? (
+              <p className="text-red-700">The signed contracts could not be read, so no rate is shown (this is not &ldquo;none on file&rdquo;).</p>
+            ) : (
+              <>
+                <p className="font-medium">
+                  {selfAudit.contractReader.hitRate === null
+                    ? "Hit rate: not measurable yet"
+                    : `Hit rate: ${selfAudit.contractReader.hitRate}% (${selfAudit.contractReader.hits} of ${selfAudit.contractReader.readable} readable)`}
+                </p>
+                <p className="text-muted-foreground">{selfAudit.contractReader.note}</p>
+              </>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Synthetic controls read correctly: {selfAudit.contractReader.controls.matched} of {selfAudit.contractReader.controls.expected} (fixed specimens, never counted in the rate).
+            </p>
+            {selfAudit.findingsError && <p className="text-xs text-red-700">The self-audit findings could not be read, so the card above may be incomplete.</p>}
+          </CardContent>
+        </Card>
+      )}
+
       {fetchError && (
         <div className="flex items-start gap-3 p-4 rounded-lg border border-red-200 bg-red-50 text-red-800">
           <XCircle className="h-5 w-5 text-red-600 mt-0.5 shrink-0" />

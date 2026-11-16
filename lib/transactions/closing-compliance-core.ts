@@ -679,6 +679,13 @@ export interface ClosingReadinessInput {
   /** The closing question's compliance-row type (lib/commission/closing-verification.ts CLOSING_ATTESTATION_CHECK_TYPE — passed in so this module stays client-safe). */
   attestationCheckType: string
   flaggedDocuments: ReadonlyArray<{ id: string; label: string }>
+  /**
+   * WAVE 153 (lane 153K — lane 153B outside-lane 7): the deal's APPLIED commission-term changes (lib/commission/commission-term-change.ts
+   * rate_override rows with applied_at), as a stable version string. Part of what an approval is pinned to, so ANY applied change after
+   * compliance approved re-opens the review. Absent / null when the deal has none — the fingerprint is then byte-identical to before
+   * (an existing approval on a deal with no term change does not re-open on deploy).
+   */
+  commissionTermsVersion?: string | null
 }
 
 export interface ClosingReadiness { items: ReadinessItem[]; blocking: number; open: number; ready: boolean; fingerprint: string }
@@ -767,6 +774,7 @@ export function buildClosingReadiness(input: ClosingReadinessInput): ClosingRead
     ...sigs,
     `docs=${[...input.dealFileDocumentIds].sort().join(",")}`,
     `settlement=${s?.fingerprint ?? s?.state ?? "none"}`,
+    ...(input.commissionTermsVersion ? [`commission_terms=${input.commissionTermsVersion}`] : []),
   ].sort().join("|")
   return { items, blocking, open, ready: blocking === 0, fingerprint: readinessDigest(canon) }
 }

@@ -16,6 +16,7 @@ import { getClientJourneyPreferences } from "@/app/actions/multi-persona"
 import JourneyClient from "./journey-client"
 import JourneyChecklist, { type ChecklistStage } from "./journey-checklist"
 import JourneyPreferencesEditor from "./journey-preferences-editor"
+import PcsMovePlanner from "./pcs-move-planner"
 
 // Which getTaskFormFields() form a persona task gets. The mapping is decided ONCE,
 // here on the server, so the form shape the client renders and the task_type the
@@ -222,6 +223,9 @@ export default async function PortalJourneyPage({
         </div>
       )}
       <JourneyPreferencesEditor contactId={contactId} initialMustHaves={clientMustHaves} />
+      {/* The PCS planner's person mode (wave 153, lane 153K — convergence row 61): the military persona's own move plan, beside
+          its "PCS Planning" stage. The island's action refuses anyone but the person and anything without their consent. */}
+      {persona === "military_buyer" && <PcsMovePlanner contactId={contactId} />}
       <JourneyChecklist
         contactId={contactId}
         transactionId={transaction?.id ?? null}

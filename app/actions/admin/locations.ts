@@ -58,6 +58,9 @@ export interface OfficeLocation {
   state: string | null
   agentCount: number
   createdAt: string
+  /** settings.accounting.quickbooks_department_id — the QuickBooks Location (department) this office's expenses post to
+   *  (lib/finance/accounting-egress.ts reads it). Null = not mapped. */
+  quickbooksDepartmentId: string | null
 }
 
 export async function listLocationsAction(): Promise<
@@ -73,7 +76,7 @@ export async function listLocationsAction(): Promise<
   // many people had no agents row, and a headcount that contradicts the list
   // under it is worse than no headcount.
   const [{ data: locs, error }, { data: people }, { data: agentOffices }] = await Promise.all([
-    svc.from("locations").select("id, name, address, city, state, created_at").eq("brokerage_id", auth.brokerageId).order("name"),
+    svc.from("locations").select("id, name, address, city, state, created_at, settings").eq("brokerage_id", auth.brokerageId).order("name"),
     svc.from("users").select("id, location_id").eq("brokerage_id", auth.brokerageId)
       .not("user_type", "in", "(contact,vendor,lender,system)"),
     svc.from("agents").select("user_id, location_id").eq("brokerage_id", auth.brokerageId),
@@ -104,6 +107,7 @@ export async function listLocationsAction(): Promise<
       state: (l.state as string | null) ?? null,
       agentCount: counts.get(l.id as string) ?? 0,
       createdAt: l.created_at as string,
+      quickbooksDepartmentId: trimOr((l.settings as { accounting?: { quickbooks_department_id?: unknown } } | null)?.accounting?.quickbooks_department_id, 64),
     })),
   }
 }
@@ -162,6 +166,9 @@ export async function updateLocationAction(
     legalName?: string; dba?: string; licenseNumber?: string; licenseState?: string
     territories?: string[]; brandOverrides?: Record<string, unknown>; settings?: Record<string, unknown>
     seatCap?: number | null; status?: "active" | "archived"
+    /** WAVE 153 (lane 153K — lane 153A outside-lane 5): the QuickBooks Location (department) id, MERGED into settings.accounting
+     *  (never replacing the rest of the office's settings). "" / null clears the mapping. */
+    quickbooksDepartmentId?: string | null
   },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const auth = await requireAdmin({ officeId: id })
@@ -194,6 +201,22 @@ export async function updateLocationAction(
   if (patch.settings !== undefined) {
     if (!patch.settings || typeof patch.settings !== "object" || Array.isArray(patch.settings)) return { ok: false, error: "Office settings must be an object" }
     update.settings = patch.settings
+  }
+  // The office's QuickBooks Location (department): read the office's CURRENT settings (tenant-pinned) and merge the one key into
+  // settings.accounting, so a save from the office editor never wipes another settings key. A refused read changes nothing.
+  if (patch.quickbooksDepartmentId !== undefined) {
+    const qb = trimOr(patch.quickbooksDepartmentId, 64)
+    if (qb && !/^[A-Za-z0-9_-]+$/.test(qb)) return { ok: false, error: "The QuickBooks location ID is the ID QuickBooks shows for the location (letters, numbers, - or _). Nothing was changed." }
+    let base = update.settings as Record<string, unknown> | undefined
+    if (!base) {
+      const { data: cur, error: curErr } = await createServiceClient().from("locations").select("settings").eq("id", id).eq("brokerage_id", auth.brokerageId).maybeSingle()
+      if (curErr) return { ok: false, error: "The office's settings could not be read, so nothing was changed. Try again in a moment." }
+      if (!cur) return { ok: false, error: "Office not found in your workspace" }
+      const s = (cur as { settings?: unknown }).settings
+      base = s && typeof s === "object" && !Array.isArray(s) ? (s as Record<string, unknown>) : {}
+    }
+    const prior = base.accounting && typeof base.accounting === "object" && !Array.isArray(base.accounting) ? (base.accounting as Record<string, unknown>) : {}
+    update.settings = { ...base, accounting: { ...prior, quickbooks_department_id: qb } }
   }
   if (patch.seatCap !== undefined) {
     if (patch.seatCap !== null && (!Number.isInteger(patch.seatCap) || patch.seatCap < 0)) return { ok: false, error: "Seat ownership must be a whole number of seats (0 or more)" }

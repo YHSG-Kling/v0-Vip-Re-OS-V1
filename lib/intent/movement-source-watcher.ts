@@ -242,7 +242,7 @@ function readSince(now: Date, lastSuccessAt: string | null): string {
 
 /** motivated_seller_signals — the stored output of the permit / violation (Socrata, ArcGIS) and BatchData quickList sweeps. */
 export const STORED_SELLER_SIGNALS_SOURCE: MovementPollSource = {
-  key: "stored:motivated_seller_signals", registryKeys: ["pr_permit_activity", "pr_code_violation", "pr_batchdata_quicklist"], cadenceMinutes: 60,
+  key: "stored:motivated_seller_signals", registryKeys: ["pr_permit_activity", "pr_code_violation", "pr_batchdata_quicklist", "pr_property_transfer_open_data", "pr_street_use_permit"], cadenceMinutes: 60,
   async fetch({ svc, brokerageId, now, lastSuccessAt }) {
     const { data, error } = await svc.from("motivated_seller_signals").select("id, lead_id, contact_id, signal_type, signal_strength, detected_via, detected_at, signal_details")
       .eq("brokerage_id", brokerageId).gte("detected_at", readSince(now, lastSuccessAt)).order("detected_at", { ascending: true }).limit(500)

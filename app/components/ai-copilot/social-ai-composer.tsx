@@ -19,7 +19,7 @@ import { Sparkles, Loader2, Copy, Check, Calendar, Send, Wand2, RefreshCw } from
 import { scheduleSocialPost } from "@/app/actions/social-media-automation"
 import { generateSocialPostContent, stampPostBrandCompliance } from "@/app/actions/social/generate-social-post"
 import { toast } from "sonner"
-import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
+// TOMBSTONE (wave 153, lane 153I): `awardPointsForAction(...)` — a client call into app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door that awarded on a click with no verified outcome and no once-key — is retired. SURVIVOR: lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES via the event reactor (lib/gamification/lifecycle-awards.ts awardLifecycleMilestones) — awarded once per post on SOCIAL_POST_PUBLISHED by the publisher.
 
 interface SocialAiComposerProps {
   agentId: string
@@ -176,7 +176,7 @@ export function SocialAiComposer({
       }
 
       toast.success("Post scheduled successfully!")
-      awardPointsForAction(agentId, "social_posted").catch(() => {})
+      // TOMBSTONE (wave 153, lane 153I): `awardPointsForAction(...)` — a client call into app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door that awarded on a click with no verified outcome and no once-key — is retired. SURVIVOR: lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES via the event reactor (lib/gamification/lifecycle-awards.ts awardLifecycleMilestones). Points come when the post actually PUBLISHES (app/api/cron/publish-social-posts), never at scheduling.
 
       // Reset form
       setGeneratedContent("")

@@ -11,6 +11,8 @@ import type { Disposition } from "./open-loop-ledger"
 // Wave 149 (lane 149J, owner ruling 20): the 575 rows wave 148 left `unverified`, each re-read and dispositioned. Kept in
 // its own module for review; spread into the one map at the end of this file (a manual row written above wins).
 import { WAVE149J_DISPOSITIONS } from "./open-loop-ledger-dispositions-149j"
+// Wave 153 (lane 153K, owner ruling 16): launch-critical rows re-read at 34124d98; spread LAST so the later re-evaluation wins.
+import { WAVE153K_DISPOSITIONS } from "./open-loop-ledger-dispositions-153k"
 
 const Z147 = "wave 147 convergence (lane 147Z closure table)"
 const I147 = "wave 147 integrator (WIP 14) / lane 147I"
@@ -188,4 +190,5 @@ export const MANUAL_DISPOSITIONS: Record<string, Disposition> = {
   // TOMBSTONE (wave 148 integrator, WIP 3): CS-M-m275 — m275 now carries the line-1 APPLIED stamp (live table vendor_tax_documents), so the
   // capability-surface audit no longer emits the row and the ledger id no longer exists; the disposition went with it.
   "147R-RP-04": { s: "carried", k: "owner-decision", o: "owner", r: `${R22} — embed consent box (148B), unknown texter kept, scraper terms kept, lifestyle data Mapbox first (148E), DealMachine platform-paid evaluation (148J).` },
+  ...WAVE153K_DISPOSITIONS,
 }

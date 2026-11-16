@@ -95,6 +95,9 @@ const AI_NOTE_SOURCE = "ai_assistant"
 /** Injectable model call (the guard drives the core with a fixture; production uses generateObjectRouted). */
 export interface ReviewRequestDraftDeps {
   generate?: (args: { brokerageId: string; prompt: string }) => Promise<{ object: ReviewRequestDraft }>
+  /** WAVE 153 (lane 153I — I1 census): THE sender-voice brief, rendered (lib/kernel/brand-voice.ts), so the ask is in the agent's
+   *  own voice from the FIRST draft. null = drafted without it. */
+  senderVoiceBlock?: (a: { brokerageId: string; agentId: string }) => Promise<string | null>
 }
 
 export async function draftReviewRequest(
@@ -154,7 +157,14 @@ export async function draftReviewRequest(
   }
 
   const agentName = `${(agent.users as any)?.first_name ?? ""} ${(agent.users as any)?.last_name ?? ""}`.trim()
-  const basePrompt = `Generate a ${channel} review request for ${platform}:
+  // WAVE 153 (lane 153I — I1 census, owner rule "copy in the sender's voice from the first draft"): measured at 34124d98 the
+  // ask was drafted from the agent's NAME alone. The voice brief (the ONE reader, tenant-pinned, never throws) now conditions
+  // the first draft; an unreadable brief drafts without it (fail-soft — the ask is still screened before anything is staged).
+  const voiceBlock = await (deps.senderVoiceBlock ?? (async (a) => {
+    const { loadSenderVoiceBrief, renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+    return renderSenderVoiceBrief(await loadSenderVoiceBrief(svc as never, { brokerageId: a.brokerageId, agentId: a.agentId }))
+  }))({ brokerageId, agentId }).catch(() => null)
+  const basePrompt = `${voiceBlock ? `${voiceBlock}\n\n` : ""}Generate a ${channel} review request for ${platform}:
 
 Agent: ${agentName}
 Client: ${client?.first_name ?? ""} ${client?.last_name ?? ""}

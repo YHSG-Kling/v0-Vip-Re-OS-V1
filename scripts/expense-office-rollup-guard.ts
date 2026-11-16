@@ -271,10 +271,25 @@ async function main() {
     const DEPT_EMIT = /departmentRef\?: string[\s\S]{0,400}\.\.\.\(params\.departmentRef \? \{ DepartmentRef: \{ value: params\.departmentRef \} \} : \{\}\)/
     check("QuickBooks Purchase: createPurchase takes the office's departmentRef and emits DepartmentRef only when mapped (lane 153G)", DEPT_EMIT.test(purchaseBody(qboSrc)))
     check("PC: a Purchase builder that drops the department is caught", !DEPT_EMIT.test(`async createPurchase(params: { amount: number }) { const payload = { PaymentType: "Cash" } } async createJournalEntry(`))
+    // WAVE 153 (lane 153K — lane 153A outside-lane 5): THE MAPPING NOW HAS A WRITER — the office editor's field, merged into the same key.
+    const locAct = stripComments(src("app/actions/admin/locations.ts")), locUi = stripComments(src("app/dashboard/admin/locations/locations-client.tsx"))
+    const qbBranch = locAct.slice(locAct.indexOf("if (patch.quickbooksDepartmentId !== undefined)"))
+    check("WRITER: updateLocationAction MERGES quickbooks_department_id into settings.accounting (never replacing the office's other settings)", /update\.settings = \{ \.\.\.base, accounting: \{ \.\.\.prior, quickbooks_department_id: qb \} \}/.test(qbBranch))
+    check("WRITER: the current settings are read tenant-pinned and a refused read changes nothing (fail closed)", /\.from\("locations"\)\.select\("settings"\)\.eq\("id", id\)\.eq\("brokerage_id", auth\.brokerageId\)/.test(qbBranch) && /if \(curErr\) return \{ ok: false/.test(qbBranch) && qbBranch.indexOf("if (curErr)") < qbBranch.indexOf("update.settings ="))
+    check("ONE KEY: the editor's field → the action → settings.accounting.quickbooks_department_id → the egress reads that same key", /quickbooksDepartmentId: qbDept/.test(locUi) && /QuickBooks location \(department\) ID/.test(locUi) && /accounting\?\.quickbooks_department_id/.test(egress) && /quickbooks_department_id: qb/.test(locAct))
     const intake = stripComments(src("lib/documents/receipt-intake.ts"))
     check("receipt approval HOLDS a multi-location company-books receipt until an office is named (driven in test:receipt-intelligence §17)", /receiptOfficeDecision\(svc, actor/.test(intake) && /Which office is this expense for\?/.test(intake))
     const page = stripComments(src("app/dashboard/financials/brokerage/page.tsx"))
     check("the brokerage page mounts the office rollup and scopes its recent company expenses by the books authority", /<OfficeExpenseRollupSection/.test(page) && /booksAuth\.consolidated/.test(page) && /booksAuth\.readOffices\.includes\(office\)/.test(page))
+    // WAVE 153 (lane 153K — lane 153A outside-lane 7): the page's COMPANY-WIDE money follows the same authority §1 drives (an office
+    // admin → consolidated false; a single-office broker → true). The gate returns BEFORE any company figure is formatted or rendered.
+    const pageGateAt = page.indexOf("if (!booksAuth.ok || !booksAuth.consolidated) {")
+    const pageGateEnd = pageGateAt > 0 ? page.indexOf("\n  }\n", pageGateAt) : -1
+    const officeOnly = pageGateAt > 0 && pageGateEnd > pageGateAt ? page.slice(pageGateAt, pageGateEnd) : ""
+    const firstCompany = Math.min(...["const formatCurrency", "<PLTrendChart", "<AgentPLTable", "gross_commission_income)}"].map((t) => { const i = page.indexOf(t); return i < 0 ? Number.MAX_SAFE_INTEGER : i }))
+    check("ADVERSE · an office admin of a multi-location tenant (consolidated false, §1) and a refused authority read get the office page — the gate returns BEFORE any company-wide figure", pageGateAt > 0 && pageGateAt < firstCompany && /return \(/.test(officeOnly), `gate@${pageGateAt} firstCompany@${firstCompany}`)
+    check("…the office page carries the office expense entry + rollup and NO commission / production / cap figure", /<ScopedExpenseEntry/.test(officeOnly) && /<OfficeExpenseRollupSection/.test(officeOnly) && !/gross_commission|capSummary|<PLTrendChart|<AgentPLTable|mtdEarnings|ytdEarnings/.test(officeOnly))
+    check("POSITIVE CONTROL · the finder sees the company figures on the full page (so 'none in the office block' is not a blind slice)", /gross_commission_income/.test(page.slice(pageGateEnd)) && /<AgentPLTable/.test(page.slice(pageGateEnd)))
     const section = stripComments(src("app/dashboard/financials/brokerage/office-expense-rollup.tsx"))
     check("the office section reads THE ONE reader and renders a refusal as 'could not be loaded', never $0", /loadExpenseRollup\(svc, \{ userId, brokerageId, userType \}/.test(section) && /could not be loaded/.test(section))
     const m900 = src("supabase/migrations/m900-expense-office-attribution-and-shared-allocations.sql")
@@ -288,7 +303,7 @@ async function main() {
     check("package.json registers this proof and the guard chain runs it", /expense-office-rollup-guard\.ts/.test(pkg.scripts["test:expense-office-rollup"] ?? "") && /npm run test:expense-office-rollup\b/.test(pkg.scripts.guard ?? ""))
   }
 
-  console.log("\nBLIND SPOTS: SIMULATED on the in-memory client — m900's deferred 100% trigger and RLS policy are asserted on the migration text, not executed (the integrator applies m900); logScopedExpense / deleteExpense / allocateSharedExpense need a Next session, so their wiring is proved on stripped source and their gates by driving the real survivors they call; the QuickBooks Purchase builder sends DepartmentRef (lane 153G — proved on stripped source, the provider is server-only; no live QuickBooks call) and retrySyncError does not yet re-read location_id (Outside-lane request); the brokerage P&L page's OTHER sections (commissions, production) still show the whole company to any finance-roster user on a multi-location tenant — out of this lane's ownership, reported.")
+  console.log("\nBLIND SPOTS: SIMULATED on the in-memory client — m900's deferred 100% trigger and RLS policy are asserted on the migration text, not executed (the integrator applies m900); logScopedExpense / deleteExpense / allocateSharedExpense need a Next session, so their wiring is proved on stripped source and their gates by driving the real survivors they call; the QuickBooks Purchase builder sends DepartmentRef (lane 153G — proved on stripped source, the provider is server-only; no live QuickBooks call) and retrySyncError re-reads location_id (wave 153 integrator); the brokerage P&L page's company-wide sections (commissions, production, cap, P&L) now follow the same authority (wave 153, lane 153K — the gate is proved on stripped source; the authority itself is driven in §1).")
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   process.exit(failed > 0 ? 1 : 0)
 }

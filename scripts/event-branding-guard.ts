@@ -119,6 +119,15 @@ async function main(): Promise<void> {
     check("the model is told it writes for the TENANT, in the host's brand and website (no platform name in its facts)", d1.ok && /TENANT EVENT/.test(prompt) && /HOSTED BY: Dana Host, Harbor Realty/.test(prompt) && /HOST WEBSITE: harborrealty\.example/.test(prompt) && reg.platformBrandHits(prompt).length === 0, prompt.slice(0, 300))
     const d2 = await mk.draftEventMarketing(svc as never, EV, { brandContext: cascade as never, productBrand: product, generate: async () => ({ ...good, invitation_body: "VIPAgents invites you", handout_subject: "h", handout_body: "{{handout_link}}" }) as never })
     check("POSITIVE CONTROL: a draft that names the platform on a tenant event is stored as needs_revision, not approvable", d2.ok && d2.status === "needs_revision" && d2.findings.some((f) => f.field === "invitation_body"))
+    // WAVE 153 (lane 153I — I1 census): the host's SENDER VOICE conditions the FIRST draft (owner rule), and an unreadable brief is said.
+    let sys = ""
+    const VOICE = "SENDER VOICE — Dana Host: warm, plain-spoken, Gulf Coast references, signs off 'See you there'."
+    const dv = await mk.draftEventMarketing(svc as never, EV, { brandContext: cascade as never, productBrand: product, senderVoiceBlock: async () => VOICE, generate: async (r) => { sys = r.system; return { ...good, handout_subject: "h", handout_body: "{{handout_link}}" } as never } })
+    const evAfterVoice = ((svc as any).tables.open_house_events as any[]).find((e) => e.id === EV)
+    check("153I: the host's sender-voice brief is in the model's instructions for the FIRST draft, and the draft records it applied", dv.ok && sys.startsWith(mk.EVENT_MARKETING_SYSTEM) && sys.includes(VOICE) && evAfterVoice?.marketing_assets?.sender_voice === "applied")
+    const dn = await mk.draftEventMarketing(svc as never, EV, { brandContext: cascade as never, productBrand: product, senderVoiceBlock: async () => { throw new Error("voice tables refused") }, generate: async (r) => { sys = r.system; return { ...good, handout_subject: "h", handout_body: "{{handout_link}}" } as never } })
+    const evAfterNone = ((svc as any).tables.open_house_events as any[]).find((e) => e.id === EV)
+    check("153I ADVERSE: an unreadable voice brief still drafts (no stand-in voice) and the draft SAYS the voice was unavailable", dn.ok && sys === mk.EVENT_MARKETING_SYSTEM && evAfterNone?.marketing_assets?.sender_voice === "unavailable")
 
     // ── C ── QR + the page inside the tenant website
     console.log("\n── C  rulings 11 + 12: the registration page on the tenant's website, and its QR ──")

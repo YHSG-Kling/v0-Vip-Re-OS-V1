@@ -21,7 +21,7 @@ import {
 } from "@/app/actions/ai-review-automation"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 import { ContextualAiAssistBar } from "@/app/components/ai-copilot"
-import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
+// TOMBSTONE (wave 153, lane 153I): `awardPointsForAction(...)` — a client call into app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door that awarded on a click with no verified outcome and no once-key — is retired. SURVIVOR: lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES via the event reactor (lib/gamification/lifecycle-awards.ts awardLifecycleMilestones).
 import { sendThankYouNoteAction, respondToReviewAction } from "@/app/actions/reputation-kernel"
 import { toast } from "sonner"
 
@@ -84,7 +84,7 @@ export function ReviewRequestPanel({
 
       if (result.success && result.message) {
         setDraft(result.message)
-        awardPointsForAction(agentId, "review_received").catch(() => {})
+        // TOMBSTONE (wave 153, lane 153I): `awardPointsForAction(...)` — a client call into app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door that awarded on a click with no verified outcome and no once-key — is retired. SURVIVOR: lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES via the event reactor (lib/gamification/lifecycle-awards.ts awardLifecycleMilestones). It booked VENDOR_REVIEW_WRITTEN for GENERATING a review-request draft — neither a review nor an outcome; no award survives here.
         // checkThemFirstCompliance returns { score, themFirstCount,
         // agentFirstCount, feedback } — never an `isCompliant` flag. Reading one
         // yielded undefined, and `complianceOk !== null` is TRUE for undefined,

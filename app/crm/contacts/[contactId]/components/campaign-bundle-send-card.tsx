@@ -56,6 +56,7 @@ export function CampaignBundleSendCard({
   const [error, setError] = useState<string | null>(null)
   const [outcomes, setOutcomes] = useState<Array<{ channel: string; success: boolean; error?: string }> | null>(null)
   const [sentBundleName, setSentBundleName] = useState<string | null>(null)
+  const [followOn, setFollowOn] = useState<{ scheduled: boolean; channel: string | null; remaining: number } | null>(null)
 
   function send() {
     if (!bundleId) {
@@ -66,12 +67,14 @@ export function CampaignBundleSendCard({
       setError(null)
       setOutcomes(null)
       setSentBundleName(null)
+      setFollowOn(null)
       const result = await sendCampaignBundleToContactAction({ bundleId, contactId })
       // The dispatcher reports per-channel outcomes and an overall ok that is
       // "at least one channel succeeded". Both halves are shown: claiming a
       // send for a piece the compliance gate refused is exactly the failure
       // this card exists not to repeat.
       setOutcomes(result.channelOutcomes ?? null)
+      setFollowOn(result.followOn ?? null)
       if (!result.success) {
         setError(result.error ?? "The bundle did not send.")
         return
@@ -88,8 +91,9 @@ export function CampaignBundleSendCard({
           Send a campaign bundle
         </CardTitle>
         <CardDescription>
-          Fires every step of a saved bundle at this contact. Each piece still passes its own
-          compliance gate, so a bundle can partly deliver — the result below says which parts did.
+          Sends the bundle&apos;s first piece now. Each later piece waits until the OS judges the moment right
+          for this person, and every piece still passes its own consent and compliance checks — so a bundle
+          can partly deliver. The result below says what happened.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -122,6 +126,14 @@ export function CampaignBundleSendCard({
             {sentBundleName && (
               <p className="text-sm text-muted-foreground">
                 Dispatched <strong>{sentBundleName}</strong>.
+              </p>
+            )}
+
+            {followOn && followOn.remaining > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {followOn.scheduled
+                  ? `${followOn.remaining} more piece${followOn.remaining === 1 ? "" : "s"} saved — the next (${followOn.channel ?? "piece"}) goes when the moment is right for this contact. You can watch them under Settings → Campaign bundles.`
+                  : "The remaining pieces could not be saved for later, so only the first piece went out. Try sending again in a moment."}
               </p>
             )}
 

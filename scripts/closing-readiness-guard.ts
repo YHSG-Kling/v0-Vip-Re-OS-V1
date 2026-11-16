@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto"
 import { stripComments, blankStrings } from "./strip-comments"
 import { memSupabase, type MemOptions } from "./in-memory-supabase"
 import { loadDealFileDocuments, auditTransactionDocuments, checklistRulesForDeal, isSupersededDocument, followSupersession, DOCUMENT_VERSION_KEYS } from "../lib/compliance/required-documents"
-import { runClosingCompliance, amendDealChecklistVersion } from "../lib/transactions/closing-compliance"
+import { runClosingCompliance, amendDealChecklistVersion, pinDealChecklistAtCreation } from "../lib/transactions/closing-compliance"
 import { runFinalComplianceCheck } from "../lib/transactions/final-compliance-check"
 import { decideIssuerCorrection } from "../lib/documents/document-versions"
 import { fileIssuerCorrection } from "../lib/documents/vendor-document-correction"
@@ -333,6 +333,38 @@ async function main() {
     const held = await quiet(() => recordClosingReviewDecision(w as never, { userId: U_CO, brokerageId: B, userType: "compliance_officer" }, { transactionId: TX, decision: "hold", notes: "The final CD shows the wrong seller credit — title must reissue it." }, { notify: async () => 1 }))
     const heldGate = await quiet(() => closingReviewGate(w as never, { brokerageId: B, transactionId: TX }))
     check("HOLD with notes is persisted and BLOCKS the close by its notes (not a banner)", held.ok && held.standing === "on_hold" && heldGate.blockers.some((b) => /ON HOLD/.test(b) && /seller credit/.test(b)))
+
+    // WAVE 153 (lane 153K — lane 153B outside-lane 7): ANY applied commission-term change after compliance approved re-opens the review.
+    check("PURE: no applied term change → the fingerprint is BYTE-IDENTICAL to before (an existing approval does not re-open on deploy)", buildClosingReadiness({ ...clean, commissionTermsVersion: null }).fingerprint === r1.fingerprint && buildClosingReadiness({ ...clean, commissionTermsVersion: "" }).fingerprint === r1.fingerprint)
+    check("PURE: an applied term change MOVES the fingerprint, and a second one moves it again", buildClosingReadiness({ ...clean, commissionTermsVersion: "a1@2026-11-21" }).fingerprint !== r1.fingerprint && buildClosingReadiness({ ...clean, commissionTermsVersion: "a1@2026-11-21,a2@2026-11-22" }).fingerprint !== buildClosingReadiness({ ...clean, commissionTermsVersion: "a1@2026-11-21" }).fingerprint)
+    const cw = readyWorld()
+    const cApproved = await quiet(() => recordClosingReviewDecision(cw as never, { userId: U_CO, brokerageId: B, userType: "compliance_officer" }, { transactionId: TX, decision: "approve" }))
+    const termRow = (over: Record<string, unknown> = {}) => ({ id: randomUUID(), brokerage_id: B, transaction_id: TX, adjustment_type: "rate_override", is_active: true, applied_at: "2026-11-21T00:00:00Z", approval_status: "approved", ...over })
+    ;(cw.tables.commission_adjustments ??= []).push(termRow({ applied_at: null, approval_status: "pending" }))
+    const pendingGate = await quiet(() => closingReviewGate(cw as never, { brokerageId: B, transactionId: TX }))
+    check("a PENDING (not yet applied) commission-term request does not re-open an approval", cApproved.ok && pendingGate.blockers.length === 0, pendingGate.blockers.join(" | "))
+    ;(cw.tables.commission_adjustments as Array<Record<string, unknown>>).push(termRow({ brokerage_id: B2 }))
+    const foreignGate = await quiet(() => closingReviewGate(cw as never, { brokerageId: B, transactionId: TX }))
+    check("ADVERSE · another tenant's applied row on the same transaction id is never read (tenant-pinned)", foreignGate.blockers.length === 0, foreignGate.blockers.join(" | "))
+    ;(cw.tables.commission_adjustments as Array<Record<string, unknown>>).push(termRow())
+    const termGate = await quiet(() => closingReviewGate(cw as never, { brokerageId: B, transactionId: TX }))
+    check("REOPEN: an APPLIED commission-term change after the approval re-opens it — the close holds until compliance re-reviews", termGate.blockers.length === 1 && /changed since/.test(termGate.blockers[0]), termGate.blockers.join(" | "))
+    const termRefused = readyWorld("brokerage", { commission_adjustments: "permission denied for table commission_adjustments" })
+    const termRefusedGate = await quiet(() => closingReviewGate(termRefused as never, { brokerageId: B, transactionId: TX }))
+    check("FAIL CLOSED: an unreadable commission-term history holds the close (could not be checked)", termRefusedGate.blockers.length === 1 && /could not be checked/.test(termRefusedGate.blockers[0]))
+
+    // WAVE 153 (lane 153K — lane 153D outside-lane 5): the checklist version is pinned AT CREATION, by the same writer and row shape.
+    const pw = readyWorld()
+    const pins = () => pw.tables.policy_decisions.filter((r) => r.target_type === "required_document_checklist")
+    const pinned = await quiet(() => pinDealChecklistAtCreation(pw as never, { brokerageId: B, transactionId: TX }))
+    check("PIN AT CREATION: one required_document_checklist version row, source transaction_created, the rules in force", pinned.pinned && pins().length === 1 && pins()[0].evidence_json?.source === "transaction_created" && Array.isArray(pins()[0].evidence_json?.rules), JSON.stringify({ pinned, rows: pins().map((p) => p.evidence_json?.source) }))
+    const pinnedAgain = await quiet(() => pinDealChecklistAtCreation(pw as never, { brokerageId: B, transactionId: TX }))
+    await quiet(() => runClosingCompliance(pw as never, { transactionId: TX, brokerageId: B, trigger: "final_check" }, { notify: async () => 0, audit: async () => {} }))
+    check("…an existing pin is KEPT: a repeat call and the first closing check add no second version (insert-only)", pinnedAgain.pinned && pins().length === 1)
+    const pinRefused = await quiet(() => pinDealChecklistAtCreation(readyWorld("brokerage", { policy_decisions: "permission denied for table policy_decisions" }) as never, { brokerageId: B, transactionId: TX }))
+    check("ADVERSE: a refused read never pins a guessed version and never throws (the creation stands; the first check retries)", !pinRefused.pinned && !!pinRefused.error)
+    const doors = [["lib/transactions/offer-bridge.ts", "transaction.id"], ["lib/kernel/transactions.ts", "data.id"], ["lib/application/transactions.ts", "data.id"]] as const
+    check("every transaction creation door pins right after its row lands (offer bridge, kernel manual create, application create)", doors.every(([f, id]) => { const c = stripComments(raw(f)); const ins = c.indexOf('.from("transactions")'); const pinAt = c.indexOf("pinDealChecklistAtCreation(", ins); return ins > 0 && pinAt > ins && c.slice(pinAt, pinAt + 200).includes(`transactionId: ${id}`) }))
 
     const team = readyWorld("team")
     const teamGate = await quiet(() => closingReviewGate(team as never, { brokerageId: B, transactionId: TX }))

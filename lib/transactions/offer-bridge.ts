@@ -424,6 +424,13 @@ export async function createTransactionFromOffer(params: {
     throw new Error(`[offer-bridge] Failed to create transaction: ${txnError?.message}`)
   }
 
+  // WAVE 153 (lane 153K — 153D outside-lane 5): the deal's required-document checklist version is pinned AT CREATION (never blocks).
+  {
+    const { pinDealChecklistAtCreation } = await import("@/lib/transactions/closing-compliance")
+    const pin = await pinDealChecklistAtCreation(supabase as any, { brokerageId: params.brokerageId, transactionId: transaction.id })
+    if (pin.error) console.warn(`[offer-bridge] transaction ${transaction.id}: checklist version not pinned at creation (the first closing check pins it) — ${pin.error}`)
+  }
+
   // THE FINANCING TERM FOLLOWS THE OFFER (wave 145, lane 145Z — m871): the brokerage term the offer was written with is
   // carried 1:1 onto the transaction beside its platform roll-up (financing_type, copied above with the contract terms).
   // Through the column's one reader / writer — never in the insert or a select list, so a database without m871 still

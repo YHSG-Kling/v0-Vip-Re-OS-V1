@@ -244,7 +244,10 @@ function wiringLayer() {
   check(`award_agent_points RPC is called from award-points.ts only (${rpcSites.length} site)`, rpcSites.length === 1 && rpcSites[0] === "lib/gamification/award-points.ts")
   const badgeInserts = all.filter((f) => /from\(\s*"agent_badges"\s*\)\s*\.insert\(/.test(src(f)))
   const lifecycleSrc = src("lib/gamification/lifecycle-awards.ts")
-  check(`agent_badges is inserted from lifecycle-awards.ts only (${badgeInserts.length} site) — app/actions/gamification.ts delegates`, badgeInserts.length === 1 && badgeInserts[0] === "lib/gamification/lifecycle-awards.ts" && /awardBadgeToAgent\(supabase, data\)/.test(src("app/actions/gamification.ts")))
+  // WAVE 153 (lane 153I): the private wrapper the old check pinned (`awardBadgeToAgent(supabase, data)`) was retired with the
+  // threshold loop it served; the RULE is unchanged — one insert site, and the action module DELEGATES (now to the stored-total
+  // threshold awarder) rather than writing agent_badges itself.
+  check(`agent_badges is inserted from lifecycle-awards.ts only (${badgeInserts.length} site) — app/actions/gamification.ts delegates`, badgeInserts.length === 1 && badgeInserts[0] === "lib/gamification/lifecycle-awards.ts" && /awardThresholdBadges\(supabase,/.test(src("app/actions/gamification.ts")) && !/from\(\s*"agent_badges"\s*\)\s*\.insert/.test(src("app/actions/gamification.ts")))
   check("positive control: the finder sees an insert when one exists", /from\(\s*"agent_badges"\s*\)\s*\.insert\(/.test(lifecycleSrc))
   check("award-points.ts (imported by a Client Component) carries NO edge into the server-only emit graph; lifecycle-awards.ts carries it", !/lib\/kernel\/emit/.test(awardSrc) && /import\("@\/lib\/kernel\/emit"\)/.test(lifecycleSrc))
 
@@ -254,8 +257,11 @@ function wiringLayer() {
   check("confirmed-showings-list no longer awards client-side; markShowingCompleted emits SHOWING_COMPLETED", !/awardPointsForAction/.test(showings) && /KernelEvent\.SHOWING_COMPLETED/.test(src("app/actions/seller-showings.ts")))
   check("referrals-os-client no longer awards client-side; createReferral emits REFERRAL_RECEIVED", !/awardPointsForAction/.test(referrals) && /KernelEvent\.REFERRAL_RECEIVED/.test(src("app/actions/referrals/referral-actions.ts")))
   check("positive control: the raw source still carries the tombstones that name the survivor", /awardPointsForAction/.test(raw("app/components/dashboard/listings/showings/confirmed-showings-list.tsx")))
-  const actionMap = src("app/lib/gamification/award-on-action.ts")
-  check("ACTION_MAP carries no key for a moment the reactor awards (showing_completed / deal_closed / referral_received)", !/showing_completed|deal_closed|referral_received/.test(actionMap) && /offer_submitted:/.test(actionMap))
+  // WAVE 153 (lane 153I): the old check required `offer_submitted:` to STAY in app/lib/gamification/award-on-action.ts's
+  // ACTION_MAP (a waypoint). That module — a public "use server" door awarding on a click — is retired; its last three keys
+  // moved onto verified moments (OFFER_SUBMITTED, SOCIAL_POST_PUBLISHED) or were dropped (a review-request DRAFT is not a
+  // review). The RULE it served is asserted in [verified outcomes only] below: no client-callable award door exists.
+  check("no product source (app/, lib/) imports the retired client award door (app/lib/gamification/award-on-action.ts)", !all.filter((f) => !f.startsWith("scripts/")).some((f) => /from\s+["']@\/app\/lib\/gamification\/award-on-action["']/.test(src(f))))
   check("mentor-session emits MENTOR_SESSION_HELD and awards nothing itself", /KernelEvent\.MENTOR_SESSION_HELD/.test(src("app/actions/onboarding/mentor-session.ts")) && !/awardAgentPoints/.test(src("app/actions/onboarding/mentor-session.ts")))
   check("ce-provider emits CE_COMPLETED on a NEW completion row (inside the !existing branch)", /if \(!existing\) \{[\s\S]*?KernelEvent\.CE_COMPLETED/.test(src("app/actions/ce-provider.ts")))
   check("the weekly recruit-outreach cron runs runWorkAnniversariesAll (same cron as the leaderboard writer)", /runWorkAnniversariesAll\(supabase\)/.test(src("app/api/cron/recruit-outreach/route.ts")) && /runLeaderboardSnapshotAll\(supabase\)/.test(src("app/api/cron/recruit-outreach/route.ts")))
@@ -321,7 +327,8 @@ function wiringLayer() {
   const ruleReasons = new Set(LIFECYCLE_AWARD_RULES.map((r) => r.reason as string))
   check(`m705 seeds ${seeded.length} milestone badges and every trigger_event is a reason the reactor awards`, seeded.length >= 9 && seeded.every((s) => ruleReasons.has(s) && s in POINT_VALUES))
   check("m705 opens with a status header", /^-- ──/.test(m705))
-  check("threshold badges and milestone badges never overlap: the threshold awarder filters to points_threshold", /trigger_event \?\? "points_threshold"\) === "points_threshold"/.test(src("app/actions/gamification.ts")))
+  // WAVE 153 (lane 153I): the threshold awarder moved to lifecycle-awards.ts awardThresholdBadges — the rule follows it.
+  check("threshold badges and milestone badges never overlap: the threshold awarder filters to points_threshold", /trigger_event \?\? "points_threshold"\) === "points_threshold"/.test(src("lib/gamification/lifecycle-awards.ts")) && /export async function awardThresholdBadges/.test(src("lib/gamification/lifecycle-awards.ts")))
 
   // Ownership + registration.
   const reg = src("lib/kernel/manager-registry.ts")
@@ -337,10 +344,78 @@ function listSources(): string[] {
   return execSync("git ls-files --cached --others --exclude-standard 'app/**/*.ts' 'app/**/*.tsx' 'lib/**/*.ts' 'lib/**/*.tsx' 'scripts/*.ts'", { cwd: process.cwd(), encoding: "utf8" }).split("\n").filter(Boolean)
 }
 
+// ─── WAVE 153 (lane 153I) — VERIFIED OUTCOMES ONLY ────────────────────────────
+// Owner ruling 17 ("check that the gamification system works properly") + directive I4 ("credit from real verified outcomes;
+// avoid reward farming or double points on event retries"). Measured at 34124d98: two PUBLIC "use server" exports awarded on
+// a click — app/actions/gamification.ts addPoints(agentId, ANY POINT_VALUES reason) and app/lib/gamification/award-on-action.ts
+// awardPointsForAction — and m484's RPC admits an agent crediting itself, so a seat could farm FIRST_CLOSE in a loop; the
+// public checkAndAwardBadges awarded threshold badges against a caller-supplied total; /dashboard/motivation advertised points
+// for four actions nothing awarded; reactor awards (closings, showings) never reached the threshold badges at all.
+async function verifiedOutcomesLayer() {
+  console.log("\n[wave 153 · verified outcomes only — no farming door, no double award, no promise nothing keeps]")
+  const now = new Date("2026-11-14T12:00:00Z")
+  // Pure: the two moments the client awards moved onto.
+  const offer = planLifecycleAwards(KernelEvent.OFFER_SUBMITTED, { entityId: CONTACT, now, entityType: "buyer_lifecycle" })
+  check("OFFER_SUBMITTED on the buyer lifecycle plans OFFER_SUBMITTED once per buyer contact", offer.length === 1 && offer[0].reason === "OFFER_SUBMITTED" && offer[0].once.referenceId === CONTACT)
+  const pubPost = planLifecycleAwards(KernelEvent.SOCIAL_POST_PUBLISHED, { entityId: U(60), now, entityType: "social_post" })
+  check("the publisher's SOCIAL_POST_PUBLISHED (entity social_post) plans SOCIAL_POST_PUBLISHED once per post", pubPost.length === 1 && pubPost[0].once.referenceId === U(60))
+  const draft = planLifecycleAwards(KernelEvent.SOCIAL_POST_PUBLISHED, { entityId: U(61), now, entityType: "ai_generated_content" })
+  check("ADVERSE: the same event emitted for a generated DRAFT (entity ai_generated_content) earns nothing", draft.length === 0)
+  check("ADVERSE: an emitter that names no entity type earns nothing on an entity-keyed rule", planLifecycleAwards(KernelEvent.SOCIAL_POST_PUBLISHED, { entityId: U(62), now }).length === 0)
+
+  // Memory: a double event lands once; the threshold badge rides the STORED total.
+  const POST = U(63), TBADGE = U(51)
+  const m = memoryClient({
+    agents: [{ id: AGENT, brokerage_id: BRK, user_id: U(5), gamification_points: 90 }, { id: AGENT2, brokerage_id: BRK, user_id: U(6), gamification_points: 0 }],
+    social_posts: [{ id: POST, brokerage_id: BRK, agent_id: null, user_id: U(6) }],
+    contacts: [{ id: CONTACT, brokerage_id: BRK, agent_id: AGENT }],
+    gamification_badges: [{ id: TBADGE, brokerage_id: null, badge_name: "Century", badge_tier: "bronze", trigger_event: "points_threshold", is_active: true, required_points: 100 }],
+  })
+  const p1 = await awardLifecycleMilestones(m, { event: KernelEvent.SOCIAL_POST_PUBLISHED, brokerageId: BRK, entityType: "social_post", entityId: POST, metadata: { platform: "facebook" } })
+  const p2 = await awardLifecycleMilestones(m, { event: KernelEvent.SOCIAL_POST_PUBLISHED, brokerageId: BRK, entityType: "social_post", entityId: POST, metadata: { platform: "facebook" } })
+  check("a published post with no agent_id resolves its author through social_posts.user_id → agents.user_id and awards ONCE; the double event lands nothing",
+    p1.awarded.length === 1 && p1.awarded[0].agentId === AGENT2 && p1.awarded[0].points === POINT_VALUES.SOCIAL_POST_PUBLISHED && p2.awarded.length === 0 && p2.alreadyAwarded === 1)
+  const o1 = await awardLifecycleMilestones(m, { event: KernelEvent.OFFER_SUBMITTED, brokerageId: BRK, entityType: "buyer_lifecycle", entityId: CONTACT })
+  check("OFFER_SUBMITTED credits the buyer's agent (contacts.agent_id) and crosses 100 → the threshold badge lands from the STORED total",
+    o1.awarded.length === 1 && o1.awarded[0].agentId === AGENT && o1.badgesAwarded === 1 && m.tables.agent_badges.some((b) => b.badge_id === TBADGE && b.agent_id === AGENT))
+  const o2 = await awardLifecycleMilestones(m, { event: KernelEvent.OFFER_SUBMITTED, brokerageId: BRK, entityType: "buyer_lifecycle", entityId: CONTACT })
+  check("ADVERSE: the buyer's stage re-entered (a retried / repeated OFFER_SUBMITTED) awards nothing and mints no second badge",
+    o2.awarded.length === 0 && m.tables.agent_badges.filter((b) => b.badge_id === TBADGE).length === 1)
+  const { awardThresholdBadges } = await import("../lib/gamification/lifecycle-awards")
+  const low = await awardThresholdBadges(m, { agentId: AGENT2 })
+  check("ADVERSE: an agent whose stored total is below the bar gets no threshold badge (the total is read, never handed in)", low.awarded.length === 0 && !m.tables.agent_badges.some((b) => b.agent_id === AGENT2 && b.badge_id === TBADGE))
+
+  // Census: no client-callable award door remains.
+  const all = listSources()
+  const useServer = all.filter((f) => f.startsWith("app/") && /^\s*["']use server["']/.test(raw(f)))
+  const AWARD_CALL = /awardAgentPoints(Once)?\s*\(/
+  const exportedAwarders = useServer.filter((f) => /export\s+async\s+function\s+\w+/.test(src(f)) && AWARD_CALL.test(src(f)))
+  // Each remaining award inside a public module is decided by the SERVER on a verified fact, never on the caller's say-so.
+  const SERVER_VERIFIED: Record<string, string> = {
+    "app/actions/contact-reassignment.ts": "CONTACT_ASSIGNED after the reassignment itself is authorized and written (no canonical event exists — wave 103 blind spot)",
+    "app/actions/challenges.ts": "challenge prizes awarded by the scorer on a challenge that ENDED",
+  }
+  const unexpected = exportedAwarders.filter((f) => !SERVER_VERIFIED[f])
+  check(`no "use server" module awards points on a caller's say-so (${exportedAwarders.length} award site(s) inside public modules, each server-verified: ${exportedAwarders.join(", ") || "none"})`, unexpected.length === 0)
+  check("POSITIVE CONTROL: the census sees an award call inside a public export, and not inside a comment", AWARD_CALL.test(stripComments("export async function x() { await awardAgentPoints(db, {}) }")) && !AWARD_CALL.test(stripComments("// awardAgentPoints(db, {})\nexport async function y() {}")))
+  check("POSITIVE CONTROL: the retired-door import finder sees a real import", /from\s+["']@\/app\/lib\/gamification\/award-on-action["']/.test('import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"'))
+  const gam = src("app/actions/gamification.ts")
+  check("app/actions/gamification.ts exports no addPoints and calls no award wrapper", !/export\s+async\s+function\s+addPoints\b/.test(gam) && !AWARD_CALL.test(gam))
+  check("checkAndAwardBadges ignores a caller-supplied total (the argument is never read; awardThresholdBadges reads agents.gamification_points)",
+    /export async function checkAndAwardBadges\(agentId: string, _currentPoints\?: number\)/.test(gam) && (gam.match(/_currentPoints/g) ?? []).length === 1 && /select\("id, brokerage_id, gamification_points"\)/.test(src("lib/gamification/lifecycle-awards.ts")))
+
+  // The surface promises only what is awarded.
+  const { POINT_EARNING_ACTIONS } = await import("../lib/gamification/award-points")
+  const ruleReasons = new Set(LIFECYCLE_AWARD_RULES.map((r) => r.reason as string))
+  check(`every action /dashboard/motivation advertises has a live award rule (${POINT_EARNING_ACTIONS.length} advertised)`, POINT_EARNING_ACTIONS.length > 0 && POINT_EARNING_ACTIONS.every((a) => ruleReasons.has(a.reason)))
+  check("POSITIVE CONTROL: the label catalogue still names an unawarded action (training), so the filter is doing work", /reason: "TRAINING_COMPLETED"/.test(src("lib/gamification/award-points.ts")) && !ruleReasons.has("TRAINING_COMPLETED") && !POINT_EARNING_ACTIONS.some((a) => a.reason === "TRAINING_COMPLETED"))
+}
+
 async function main() {
   pureLayer()
   await memoryLayer()
   wiringLayer()
+  await verifiedOutcomesLayer()
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ GAMIFICATION_FAIL\n" + fails.map((f) => `   - ${f}`).join("\n")); process.exit(1) }
   console.log(" ✅ GAMIFICATION_OK")

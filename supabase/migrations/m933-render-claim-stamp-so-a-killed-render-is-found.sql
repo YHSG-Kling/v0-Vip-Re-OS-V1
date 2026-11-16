@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 153, lane 153J) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL
+-- ── APPLIED LIVE 2026-11-16 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 153, lane 153J ── read back: remotion_composition_renders.claimed_at timestamptz NULL; trigger trg_stamp_render_claimed_at enabled (O); partial index idx_remotion_renders_rendering_claimed (claimed_at) WHERE render_status = 'rendering'; 0 rows live
 --
 -- A CLAIMED RENDER THAT NEVER FINISHED IS FOUND (wave 153, lane 153J; owner ruling 15 "remotion errors need to be resolved";
 -- directive §153J "crash/retry/poison jobs … no rendered success if the output is absent").

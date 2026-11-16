@@ -5,9 +5,9 @@
 // THE AGENT-FACING GAMIFICATION READS + THE BADGE AWARDER.
 //
 // "use server" IS NEW AND IT IS NOT COSMETIC. This module is imported directly by
-// three CLIENT components (app/dashboard/motivation/motivation-client.tsx,
-// app/academy/components/os/embedded-leaderboard-widget.tsx, and
-// app/lib/gamification/award-on-action.ts's callers) while itself importing
+// CLIENT components (app/dashboard/motivation/motivation-client.tsx and
+// app/academy/components/os/embedded-leaderboard-widget.tsx; the third,
+// app/lib/gamification/award-on-action.ts, was retired in wave 153) while itself importing
 // @/lib/supabase/server, which reaches for next/headers. Without the directive
 // these are not server actions at all — the module is pulled into the client
 // bundle and the import fails. The Motivation surface could not have rendered
@@ -166,122 +166,39 @@ export async function getAgentPointsAndTier(agentId: string) {
   }
 }
 
-// ─── AWARD BADGE ──────────────────────────────────────────────────────────────
-// NOT EXPORTED, deliberately. This file carries "use server", so every export is
-// a public HTTP endpoint that receives whatever a caller POSTs — and this
-// function takes the agent and the badge as ARGUMENTS and writes the award. As
-// an export it was a badge-forging endpoint: any signed-in user could award any
-// badge, including the top rung, to any agent in their own brokerage (RLS scopes
-// the tenant but does not ask whether the badge was EARNED). That is the same
-// class m484 just closed on agent_points_log, one table over, on a board the
-// owner asked to be competitive.
-//
-// The only legitimate awarder is checkAndAwardBadges below, which awards against
-// a points threshold the agent actually reached. Module-private is what makes
-// that the ONLY path.
-//
-// TOMBSTONE (wave 103, lane 103C, CLAUDE.md §1): the body that stood here — the
-// pre-read, the tenant-from-the-agent stamp, the agent_badges insert, the
-// GAMIFICATION_BADGE_AWARDED emit and the agent notification — was MERGED onto
-// lib/gamification/lifecycle-awards.ts:awardBadgeToAgent so the event reactor (a lib
-// caller, which cannot reach a "use server" module's private function) awards
-// milestone badges through the SAME writer. This wrapper keeps the module-private
-// door and the RLS client the threshold path always used.
-async function awardBadge(data: {
-  agentId: string
-  badgeId: string
-  reason: string
-}): Promise<{ alreadyAwarded: true } | { alreadyAwarded: false; badge: { id: string } }> {
-  const supabase = await createClient()
-  const { awardBadgeToAgent } = await import("@/lib/gamification/lifecycle-awards")
-  const res = await awardBadgeToAgent(supabase, data)
-  if (!res.ok) throw new Error(`awardBadge: ${res.error}`)
-  if (res.alreadyAwarded) return { alreadyAwarded: true }
-  return { alreadyAwarded: false, badge: { id: res.badgeRowId } }
-}
+// ─── AWARD BADGE — module-private wrapper RETIRED (wave 153, lane 153I) ──────
+// TOMBSTONE (CLAUDE.md §1): the private `awardBadge` that wrapped lib/gamification/lifecycle-awards.ts awardBadgeToAgent for
+// the threshold loop stood here. The threshold loop itself moved to lifecycle-awards.ts awardThresholdBadges (which reads the
+// stored total and calls awardBadgeToAgent — still the ONE agent_badges writer), so the wrapper had no caller left.
+// It was never exported, deliberately: a badge-forging endpoint is what this file must not hold (wave 103 note, preserved in
+// awardBadgeToAgent's header).
 
 // ─── CHECK AND AWARD BADGES ───────────────────────────────────────────────────
-export async function checkAndAwardBadges(agentId: string, currentPoints: number) {
-  const supabase = await createClient()
-
-  // Every active badge this agent's total has reached. RLS on gamification_badges
-  // is (brokerage_id IS NULL OR brokerage_id = mine), so this returns the platform
-  // defaults plus whatever this brokerage added on top — and nothing else.
-  const { data: eligibleBadges, error: badgesError } = await supabase
-    .from("gamification_badges")
-    .select("id, badge_name, badge_tier, required_points, trigger_event")
-    .eq("is_active", true)
-    .lte("required_points", currentPoints)
-    .order("required_points", { ascending: true })
-
-  if (badgesError) throw badgesError
-
-  const awardedBadges = []
-
-  // Only badges seeded 'points_threshold' award off a points total (m484's seed
-  // comment, verbatim: "a badge whose trigger_event named an event nothing
-  // emits would be exactly the inert catalog this migration is fixing"). This
-  // is the ONE awarder that exists, so a future event-triggered badge (a
-  // distinct trigger_event value) must NOT be awarded here on points alone —
-  // it stays un-awarded, honestly, until an event-based awarder is built for
-  // it, rather than being silently mis-awarded by whichever awarder runs first.
-  for (const badge of (eligibleBadges ?? []).filter((b) => (b.trigger_event ?? "points_threshold") === "points_threshold")) {
-    const result = await awardBadge({
-      agentId,
-      badgeId: badge.id,
-      reason: `Reached ${Number(badge.required_points).toLocaleString()} points`,
-    })
-
-    if (!result.alreadyAwarded && result.badge) {
-      awardedBadges.push({
-        id: (result.badge as any).id,
-        name: badge.badge_name,
-        tier: badge.badge_tier,
-        requiredPoints: Number(badge.required_points) || 0,
-      })
-    }
-  }
-
-  return awardedBadges
-}
-
-// ─── ADD POINTS ───────────────────────────────────────────────────────────────
 /**
- * ONE ATOMIC AWARD. The increment and the ledger row happen inside
- * public.award_agent_points() (m484), in one transaction, with the tenant derived
- * from the agents row. What stood here was read-modify-write — SELECT the total,
- * add, UPDATE it back, then a best-effort ledger insert — so two awards racing
- * each other kept only one, and agents.gamification_points could drift from
- * SUM(agent_points_log.points) forever with nothing to reconcile them.
+ * Threshold badges for an agent, against the total the DATABASE holds. WAVE 153 (lane 153I): `currentPoints` is RETAINED
+ * AND IGNORED (house pattern — the caller keeps type-checking). This is a public endpoint, and it awarded against whatever
+ * number it was handed, so any seat could hand its own agents.id and 999999 and take every rung. The award now delegates to
+ * lib/gamification/lifecycle-awards.ts awardThresholdBadges, which reads agents.gamification_points itself (the cookie client:
+ * RLS confines the agent to the caller's tenant) — calling it can only award what the agent already earned.
  */
-export async function addPoints(agentId: string, pointType: string) {
-  const { POINT_VALUES, awardAgentPoints } = await import("@/lib/gamification/award-points")
-  const pointsToAdd = (POINT_VALUES as Record<string, number>)[pointType]
-  if (!pointsToAdd) {
-    return { ok: false as const, error: `"${pointType}" is not a point value this platform awards.` }
-  }
-
+export async function checkAndAwardBadges(agentId: string, _currentPoints?: number) {
   const supabase = await createClient()
-  const awarded = await awardAgentPoints(supabase, {
-    agentId,
-    points: pointsToAdd,
-    reason: pointType,
-    referenceType: "gamification_event",
-  })
-  if (!awarded.ok) return { ok: false as const, error: awarded.error }
-
-  // Badges are checked against the total the DATABASE now holds, not against the
-  // caller's own arithmetic.
-  const newBadges = await checkAndAwardBadges(agentId, awarded.newTotal)
-
-  return {
-    ok: true as const,
-    pointsAdded: awarded.pointsAdded,
-    newPoints: awarded.newTotal,
-    previousPoints: awarded.newTotal - awarded.pointsAdded,
-    newBadgesAwarded: newBadges,
-  }
+  const { awardThresholdBadges } = await import("@/lib/gamification/lifecycle-awards")
+  const res = await awardThresholdBadges(supabase, { agentId })
+  if (res.refused.length > 0) console.error(`[checkAndAwardBadges] ${agentId}: ${res.refused.join(" | ")}`)
+  return res.awarded
 }
+
+// ─── ADD POINTS — RETIRED (wave 153, lane 153I) ───────────────────────────────
+// TOMBSTONE (CLAUDE.md §1). `export async function addPoints(agentId, pointType)` stood here. This file is "use server",
+// so it was a PUBLIC endpoint: any signed-in seat could POST (its own agents.id, "FIRST_CLOSE") in a loop — m484's
+// award_agent_points() admits an agent crediting ITSELF, and nothing asked whether the outcome happened. Every POINT_VALUES
+// reason (LISTING_CLOSED, CAP_HIT, CERTIFICATION_EARNED…) was one click away, with no reference and no once-key, on the board
+// the owner asked to be competitive ("credit from verified outcomes only"). Its one caller,
+// app/lib/gamification/award-on-action.ts, is retired with it. SURVIVOR: lib/gamification/lifecycle-awards.ts
+// awardLifecycleMilestones — called by lib/kernel/event-reactor.ts (L6) on the canonical event that PROVES the outcome, once
+// per (agent, reason, reference | window) through lib/gamification/award-points.ts awardAgentPointsOnce. The threshold badge
+// awarder (checkAndAwardBadges above) still runs against a total the database already holds.
 
 // ─── RECENT POINT AWARDS ──────────────────────────────────────────────────────
 /**

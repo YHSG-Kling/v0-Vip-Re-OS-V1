@@ -6,9 +6,11 @@
  * THE SEND SIDE OF A CAMPAIGN BUNDLE.
  *
  * `lib/direct-mail/orchestrate-bundle-send.ts:orchestrateBundleSend` is the
- * multi-channel dispatcher — it walks a bundle's ordered items and fires each
- * one through its channel orchestrator (postcard / letter / email / sms /
- * voicedrop / portal push / social / podcast / ad retarget), stamps a shared
+ * multi-channel dispatcher — it sends the bundle's FIRST item now and persists
+ * each later item as a follow-on the arbiter times (wave 153, lane 153I — row 71;
+ * drained by app/api/cron/queue-drain), each through its channel orchestrator
+ * (postcard / letter / email / sms / voicedrop / portal push / social / podcast /
+ * ad retarget), stamps a shared
  * bundle_dispatch_id on every resulting campaign row, and writes the
  * campaign_bundle_dispatches audit row that /api/cron/bundle-attribution-rollup
  * reads to answer "what did THIS bundle drive across channels".
@@ -53,7 +55,24 @@ export interface SendCampaignBundleResult {
     success: boolean
     error?: string
   }>
+  /** WAVE 153 (153I, row 71): the next piece, persisted as a follow-on the OS times for this person (null = one-piece bundle). */
+  followOn?: { scheduled: boolean; channel: string | null; remaining: number } | null
 }
+
+/** The dispatcher's codes in the sender's words (what happened · whether it is saved · what to do) — never a raw code. */
+const OUTCOME_WORDS: Readonly<Record<string, string>> = Object.freeze({
+  no_recipient_email: "Not sent — there is no email address on file for this contact.",
+  no_recipient_phone: "Not sent — there is no phone number on file for this contact.",
+  preset_deactivated: "Not sent — this piece was turned off in the bundle's presets.",
+  preset_not_found: "Not sent — this piece no longer exists; edit the bundle to replace it.",
+  preset_id_required: "Not sent — this step has no piece picked; edit the bundle to choose one.",
+  bundle_not_found: "That bundle no longer exists.",
+  bundle_deactivated: "That bundle is turned off. Turn it back on under Settings → Campaign bundles to send it.",
+  bundle_has_no_items: "That bundle has no pieces yet. Add one under Settings → Campaign bundles.",
+  bundle_items_unreadable: "The bundle's pieces could not be loaded right now, so nothing was sent. Try again in a moment.",
+  tenant_mismatch: "That bundle is not part of your account.",
+})
+const inWords = (code: string | undefined): string | undefined => (code ? OUTCOME_WORDS[code] ?? code : code)
 
 export async function sendCampaignBundleToContactAction(params: {
   bundleId: string
@@ -159,16 +178,21 @@ export async function sendCampaignBundleToContactAction(params: {
     systemSource:       "crm_contact_bundle_send",
   })
 
+  const followOn = result.followOn
+    ? { scheduled: result.followOn.scheduled, channel: result.followOn.channel, remaining: result.followOn.remaining }
+    : null
+
   if (!result.ok) {
     return {
       success: false,
-      error: result.error ?? "The bundle did not send.",
+      error: inWords(result.error) ?? "The bundle did not send.",
       bundleName: result.bundleName,
       channelOutcomes: result.channelOutcomes.map((o) => ({
         channel: o.channel,
         success: o.success,
-        error:   o.error,
+        error:   inWords(o.error),
       })),
+      followOn,
     }
   }
 
@@ -179,7 +203,8 @@ export async function sendCampaignBundleToContactAction(params: {
     channelOutcomes: result.channelOutcomes.map((o) => ({
       channel: o.channel,
       success: o.success,
-      error:   o.error,
+      error:   inWords(o.error),
     })),
+    followOn,
   }
 }

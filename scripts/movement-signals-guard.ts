@@ -718,6 +718,77 @@ async function main() {
     ok(est?.experience === "education" && chk?.experience === "communication" && [est, chk].every((h) => !!h && h.never.some((n) => /alludes|alluding/.test(n))), "the sensitive neighbourly helpers are warm, automated-capable help that never names or alludes to the event (was: person-only)")
   }
 
+  console.log("\nR89. PUBLIC-RECORD PROPERTY FACTS — the ACRIS deed + Cambridge street-use readers (wave 153, lane 153K — convergence row 89)")
+  {
+    const prf = await import("../lib/intent/public-record-facts")
+    const NOWR = new Date("2026-11-14T12:00:00Z")
+    const calls: Array<{ dataset: string; select: string; where: string }> = []
+    const MASTER = [
+      { document_id: "D1", doc_type: "DEED", recorded_datetime: "2026-09-20T00:00:00.000" },
+      { document_id: "D2", doc_type: "MTGE", recorded_datetime: "2026-09-21T00:00:00.000" },
+      { document_id: "D3", doc_type: "DEED", recorded_datetime: "2026-09-22T00:00:00.000" },
+    ]
+    const LEGALS = [
+      { document_id: "D1", street_number: "123", street_name: "MAIN STREET", borough: "3", block: "100", lot: "7", party_name: "NEVER READ" },
+      { document_id: "D2", street_number: "9", street_name: "ELM AVENUE", borough: "3", block: "1", lot: "1" },
+    ]
+    const CAMB = [{ address: "45 Elm Street", issue_date: "2026-11-10T00:00:00.000", street_or_private: "Street", contractor_or_client: "A PERSON'S NAME" }]
+    const query = async (p: { host: string; datasetId: string; query: { select?: string; where?: string; offset?: number } }) => {
+      calls.push({ dataset: `${p.host}/${p.datasetId}`, select: p.query.select ?? "*", where: p.query.where ?? "" })
+      if ((p.query.offset ?? 0) > 0) return { ok: true, status: 200, data: [], error: null }
+      const data = p.datasetId === "bnx9-e6tj" ? MASTER : p.datasetId === "8h5j-fqxa" ? LEGALS : p.datasetId === "8xmj-thsm" ? CAMB : []
+      return { ok: true, status: 200, data: data as Array<Record<string, unknown>>, error: null }
+    }
+    const verified = async () => ({ status: "verified", reason: "verified" })
+    const both = await prf.readPublicRecordFacts(db(), { territories: [{ state: "NY", city: "Brooklyn" }, { state: "MA", city: "Cambridge" }], now: NOWR }, { query: query as never, ceiling: verified })
+    const deeds = both.facts.filter((f) => f.signalType === "deed_recorded"), su = both.facts.filter((f) => f.signalType === "street_use_permit")
+    ok(deeds.length === 1 && deeds[0].recordId === "D1" && deeds[0].address === "123 MAIN STREET" && deeds[0].city === "Brooklyn" && deeds[0].eventAt.startsWith("2026-09-20"), "R89 · ACRIS: master DEEDs joined to Legals on document_id → one deed fact (the MTGE is not a transfer; a deed with no address half is dropped)", JSON.stringify(deeds))
+    ok(calls.every((c) => !/party|name_|contractor|client|grantor|grantee/i.test(c.select)) && !JSON.stringify(both.facts).includes("NEVER READ") && !JSON.stringify(both.facts).includes("A PERSON'S NAME"), "R89 · PROPERTY FACTS, NEVER PEOPLE: no query selects a party / applicant column and no name a provider returns rides a fact", JSON.stringify(calls.map((c) => c.select)))
+    ok(su.length === 1 && su[0].detail.on_street === true && /never either alone/.test(String(su[0].detail.reads_as)), "R89 · Cambridge: a street-use (dumpster) permit → one fact, on the street, read as neither a renovation nor a move alone")
+    const acrisWhere = calls.find((c) => c.dataset === "data.cityofnewyork.us/bnx9-e6tj")?.where ?? ""
+    ok(/doc_type='DEED'/.test(acrisWhere) && /recorded_datetime >= '2026-09-23'/.test(acrisWhere), "R89 · the ACRIS window is the dataset's own maxLagDays (45) + 7 days (2026-11-14 − 52 days) — a 7-day window would read nothing from a feed published ~5 weeks late", acrisWhere)
+    ok(both.probes.length === 3 && both.probes.every((p) => p.ok && typeof p.rows === "number"), "R89 · every dataset read is a probe (the cron hands them to recordDatasetObservations → the C19 log row)", JSON.stringify(both.probes.map((p) => [p.dataset, p.rows])))
+    const before = calls.length
+    const refused = await prf.readPublicRecordFacts(db(), { territories: [{ state: "NY", city: "Queens" }], now: NOWR }, { query: query as never, ceiling: async () => ({ status: "drifted", reason: "the feed refused" }) })
+    ok(refused.facts.length === 0 && calls.length === before && refused.refused.some((r) => /drifted/.test(r)), "R89 · ADVERSE: a dataset the C19 gate does not lend a ceiling to (drifted) is refused by name and NEVER queried")
+    const none = await prf.readPublicRecordFacts(db(), { territories: [{ state: "TX", city: "Austin" }], now: NOWR }, { query: query as never, ceiling: verified })
+    ok(none.facts.length === 0 && none.probes.length === 0 && calls.length === before, "R89 · a territory in neither market reads nothing")
+
+    const T2 = "00000000-0000-4000-8000-0000000000f2"
+    const world = memSupabase({
+      contacts: [
+        { id: "ct1", brokerage_id: B, address: "123 Main St, Apt 4", city: "Brooklyn", deleted_at: null },
+        { id: "ct9", brokerage_id: T2, address: "123 Main Street", city: "Brooklyn", deleted_at: null },
+        { id: "ct2", brokerage_id: B, address: "45 Elm St", city: null, deleted_at: null },
+      ],
+      leads: [{ id: "ld1", brokerage_id: B, address: "77 Other Rd", city: "Brooklyn" }],
+      motivated_seller_signals: [],
+    } as never, { uuidIds: true }) as never
+    const filed = await prf.filePublicRecordFacts(world, { brokerageId: B, territories: [{ state: "NY", city: "Brooklyn" }], facts: both.facts, now: NOWR })
+    const rows = ((world as any).tables.motivated_seller_signals as Array<Record<string, any>>)
+    ok(filed.written === 1 && rows.length === 1 && rows[0].contact_id === "ct1" && rows[0].brokerage_id === B && rows[0].signal_type === "deed_recorded" && rows[0].detected_via === "socrata" && rows[0].signal_details.dataset_host === "data.cityofnewyork.us" && rows[0].signal_details.dataset_id === "bnx9-e6tj", "R89 · FILED only at the address THIS tenant's contact carries (unit dropped, suffix folded); another tenant's identical address is never touched", JSON.stringify({ filed, rows }))
+    ok(!rows.some((r) => r.signal_type === "street_use_permit"), "R89 · ADVERSE: a Cambridge fact is never filed for a tenant whose territories are NYC only — even against a city-less address that matches")
+    const again = await prf.filePublicRecordFacts(world, { brokerageId: B, territories: [{ state: "NY", city: "Brooklyn" }], facts: both.facts, now: NOWR })
+    ok(again.written === 0 && again.alreadyRecorded === 1 && rows.length === 1, "R89 · idempotent: a re-run files nothing twice (signal_details.dedupe_key)")
+    const blind = memSupabase({ contacts: [{ id: "ct1", brokerage_id: B, address: "123 Main St", city: "Brooklyn", deleted_at: null }], leads: [] } as never, { missingTables: ["motivated_seller_signals"] }) as never
+    const noDedupe = await prf.filePublicRecordFacts(blind, { brokerageId: B, territories: [{ state: "NY", city: "Brooklyn" }], facts: both.facts, now: NOWR })
+    ok(noDedupe.written === 0 && noDedupe.errors.some((e) => /nothing filed/.test(e)), "R89 · ADVERSE: an unreadable dedupe read files NOTHING (never writes twice on a blind read)")
+
+    const mvRow = mv.movementSignalFromSellerSignalRow(B, rows[0] as never)
+    ok(mvRow.ok && mvRow.record.sourceKey === "pr_property_transfer_open_data" && mvRow.record.eventRelevance === "property_event" && mvRow.record.observedAt.startsWith("2026-09-20"), "R89 · the watcher's stored-sweep reader turns the filed deed into a movement record on its OWN source, observed at the RECORDED date (not the filing day)", JSON.stringify(mvRow.ok ? { k: mvRow.record.sourceKey, at: mvRow.record.observedAt } : mvRow))
+    const suRow = mv.movementSignalFromSellerSignalRow(B, { id: "x", contact_id: "ct2", signal_type: "street_use_permit", detected_via: "socrata", detected_at: NOWR.toISOString(), signal_details: { event_at: "2026-11-10T00:00:00.000Z", dataset_host: "data.cambridgema.gov", dataset_id: "8xmj-thsm", dedupe_key: "k", address: "45 Elm Street" } } as never)
+    ok(suRow.ok && suRow.record.sourceKey === "pr_street_use_permit" && suRow.record.eventRelevance === "relocation", "R89 · a street-use permit → pr_street_use_permit, relocation relevance (side unknown)")
+    const permitRow = mv.movementSignalFromSellerSignalRow(B, { id: "p", contact_id: "ct1", signal_type: "permit_activity", detected_via: "socrata", detected_at: NOWR.toISOString(), signal_details: {} } as never)
+    ok(permitRow.ok && permitRow.record.sourceKey === "pr_permit_activity", "R89 · POSITIVE CONTROL: an ordinary permit row still maps to pr_permit_activity (the new branch is not a catch-all)")
+
+    const watcher = src("lib/intent/movement-source-watcher.ts"), reg = src("lib/intent/movement-source-registry.ts"), cron = src("app/api/cron/permit-signal-scan/route.ts")
+    ok(/registryKeys: \[[^\]]*"pr_property_transfer_open_data"[^\]]*"pr_street_use_permit"/.test(watcher), "R89 · the EXISTING stored-sweep source owns both registry keys (no new watcher source)")
+    const regRow = (k: string) => reg.split("\n").find((l) => l.includes(`key: "${k}"`)) ?? ""
+    ok(["pr_property_transfer_open_data", "pr_street_use_permit"].every((k) => /status: "live"/.test(regRow(k)) && /lib\/intent\/public-record-facts\.ts/.test(regRow(k))) && existsSync(join(process.cwd(), "lib/intent/public-record-facts.ts")), "R89 · both registry rows name the built survivor and read live (they were configuration-only)")
+    const readAt = cron.indexOf("readPublicRecordFacts(supabase"), loopAt = cron.indexOf("for (const [brokerageId, territories] of byBrokerage)"), fileAt = cron.indexOf("filePublicRecordFacts(supabase"), obsAt = cron.indexOf("recordDatasetObservations(supabase")
+    ok(readAt > 0 && readAt < loopAt && fileAt > loopAt && fileAt < obsAt && /for \(const p of pr\.probes\) if \(!datasetHealth\.has\(p\.dataset\)\) datasetHealth\.set\(p\.dataset, p\)/.test(cron), "R89 · the daily public-record sweep reads ONCE before the tenant loop, files per tenant inside it, and its probes reach the C19 observation writer")
+  }
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ❌ MOVEMENT_SIGNALS_FAIL"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }

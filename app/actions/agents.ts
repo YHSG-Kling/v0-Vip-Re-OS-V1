@@ -501,8 +501,9 @@ export async function createAgent(agentData: {
 // already proved exactly that above"), and the commission rail resolves its
 // agent through the session-anchored kernel context.
 //
-// The checked PUBLIC path for awarding points remains `addPoints` in
-// app/actions/gamification.ts.
+// WAVE 153 (lane 153I): there is no longer a PUBLIC point-award path at all — `addPoints` in
+// app/actions/gamification.ts was retired (an agent could credit itself any reason on a click). Points come only from
+// the event reactor on the canonical event that proves the outcome (lib/gamification/lifecycle-awards.ts).
 
 /**
  * THE SECOND LEADERBOARD READER IS GONE.

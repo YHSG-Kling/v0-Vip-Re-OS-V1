@@ -228,6 +228,9 @@ export async function ensureEventQr(svc: Db, ev: { id: string; brokerage_id: str
 export interface DraftDeps extends EventBrandDeps {
   generate?: (req: { brokerageId: string; system: string; prompt: string }) => Promise<EventMarketingDraft>
   now?: () => Date
+  /** WAVE 153 (lane 153I — I1 census): THE sender-voice brief (lib/kernel/brand-voice.ts loadSenderVoiceBrief → renderSenderVoiceBrief),
+   *  rendered, so the copy is written in the host's own voice from the FIRST draft. null = written without it (said on the record). */
+  senderVoiceBlock?: (a: { brokerageId: string; agentUserId: string | null; agentId: string | null }) => Promise<string | null>
 }
 
 export type DraftResult = { ok: true; status: "awaiting_approval" | "needs_revision"; findings: CopyFinding[]; missing: string[] } | { ok: false; error: string }
@@ -257,13 +260,21 @@ export async function draftEventMarketing(svc: Db, eventId: string, deps: DraftD
   const now = (deps.now ?? (() => new Date()))().toISOString()
   let draft: EventMarketingDraft | null = null
   let failure: string | null = null
+  // WAVE 153 (lane 153I — I1 census, owner rule "copy in the sender's voice from the first draft"): measured at 34124d98 this
+  // drafter handed the model the brand's DISPLAY facts only (name, website) — never the host's voice brief — so every event's
+  // invitation read in one house voice. The brief is compiled through the ONE reader (tenant-pinned, never throws) and appended
+  // to the system prompt; an unreadable brief is recorded on the draft, never guessed.
+  const voiceBlock = await (deps.senderVoiceBlock ?? (async (a) => {
+    const { loadSenderVoiceBrief, renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+    return renderSenderVoiceBrief(await loadSenderVoiceBrief(svc as never, { brokerageId: a.brokerageId, agentUserId: a.agentUserId, agentId: a.agentId }))
+  }))({ brokerageId: ev.brokerage_id, agentUserId: ev.created_by ?? null, agentId: ev.agent_id ?? null }).catch(() => null)
   try {
     const generate = deps.generate ?? (async (req) => {
       const { generateObjectRouted } = await import("@/lib/ai/models")
       const { object } = await generateObjectRouted({ feature: "social_post_generation", brokerageId: req.brokerageId, system: req.system, prompt: req.prompt, schema: EventMarketingDraftSchema, temperature: 0.7, maxTokens: 2600 })
       return object as EventMarketingDraft
     })
-    draft = EventMarketingDraftSchema.parse(await generate({ brokerageId: ev.brokerage_id, system: EVENT_MARKETING_SYSTEM, prompt: buildEventMarketingPrompt(facts) }))
+    draft = EventMarketingDraftSchema.parse(await generate({ brokerageId: ev.brokerage_id, system: voiceBlock ? `${EVENT_MARKETING_SYSTEM}\n\n${voiceBlock}` : EVENT_MARKETING_SYSTEM, prompt: buildEventMarketingPrompt(facts) }))
   } catch (e) {
     failure = e instanceof Error ? e.message : String(e)
   }
@@ -271,7 +282,7 @@ export async function draftEventMarketing(svc: Db, eventId: string, deps: DraftD
   const scanCtx = { online, brandOwner: brand.owner, promisesHandout: spec.deliverables.includes("session_handout") }
   const scan = draft ? scanEventCopy(draft, scanCtx) : { findings: [], blocking: true, missing: [...PUBLISHED_COPY_FIELDS] }
   const status = draft && !scan.blocking ? "awaiting_approval" : "needs_revision"
-  const assets = { ...prior, status, draft: draft ?? prior.draft ?? null, fair_housing: scan.findings, missing: scan.missing, drafted_at: now, brand: { owner: brand.owner, display_name: brand.displayName }, ...(failure ? { draft_error: failure.slice(0, 300) } : { draft_error: null }) }
+  const assets = { ...prior, status, draft: draft ?? prior.draft ?? null, fair_housing: scan.findings, missing: scan.missing, drafted_at: now, brand: { owner: brand.owner, display_name: brand.displayName }, sender_voice: voiceBlock ? "applied" : "unavailable", ...(failure ? { draft_error: failure.slice(0, 300) } : { draft_error: null }) }
   const { data: upd, error: uErr } = await svc.from("open_house_events").update({ marketing_assets: assets }).eq("id", ev.id).eq("brokerage_id", ev.brokerage_id).select("id")
   if (uErr || !Array.isArray(upd) || upd.length !== 1) return { ok: false, error: `draft not stored: ${uErr?.message ?? "matched no row"}` }
   return { ok: true, status, findings: scan.findings, missing: scan.missing }

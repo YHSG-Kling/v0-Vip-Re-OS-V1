@@ -56,6 +56,9 @@ export interface BundlePerformance {
   total_leads:         number
   /** ISO timestamp of the most recent dispatch, or null if never sent. */
   last_dispatched_at:  string | null
+  /** WAVE 153 (153I, row 71): the persisted bundle pieces (orchestrator_tasks bundle_follow_on) — waiting on the arbiter /
+   *  the drain, sent, and stopped (cancelled by a gate / a change, or failed). null = the follow-on read was refused. */
+  follow_ons: { waiting: number; sent: number; stopped: number } | null
 }
 
 export interface BundleRow {
@@ -138,7 +141,8 @@ export async function listCampaignBundles(): Promise<
   if (bundles.length === 0) return { success: true, bundles: [] }
 
   const bundleIds = bundles.map((b) => b.id)
-  const [itemsR, dispatchesR] = await Promise.all([
+  const { BUNDLE_FOLLOW_ON_TASK } = await import("@/lib/direct-mail/orchestrate-bundle-send")
+  const [itemsR, dispatchesR, followOnsR] = await Promise.all([
     svc.from("campaign_bundle_items")
       .select("id, bundle_id, channel, preset_id, order_index, send_after_minutes")
       .in("bundle_id", bundleIds)
@@ -151,7 +155,25 @@ export async function listCampaignBundles(): Promise<
     svc.from("campaign_bundle_dispatches")
       .select("bundle_id, scans_count, leads_count, dispatched_at")
       .in("bundle_id", bundleIds),
+    svc.from("orchestrator_tasks")
+      .select("status, payload")
+      .eq("brokerage_id", anchorBrokerageId)
+      .eq("task_type", BUNDLE_FOLLOW_ON_TASK)
+      .order("created_at", { ascending: false })
+      .limit(5000),
   ])
+  const followOnsByBundle = new Map<string, { waiting: number; sent: number; stopped: number }>()
+  if (!followOnsR.error) {
+    for (const t of (followOnsR.data ?? []) as Array<{ status: string; payload: { bundle_id?: string } | null }>) {
+      const id = t.payload?.bundle_id
+      if (!id) continue
+      const f = followOnsByBundle.get(id) ?? { waiting: 0, sent: 0, stopped: 0 }
+      if (t.status === "pending" || t.status === "running") f.waiting++
+      else if (t.status === "completed") f.sent++
+      else f.stopped++
+      followOnsByBundle.set(id, f)
+    }
+  }
 
   const items = (itemsR.data ?? []) as BundleItemRow[]
   const itemsByBundle = new Map<string, BundleItemRow[]>()
@@ -162,7 +184,10 @@ export async function listCampaignBundles(): Promise<
 
   const perfByBundle = new Map<string, BundlePerformance>()
   for (const id of bundleIds) {
-    perfByBundle.set(id, { dispatch_count: 0, total_scans: 0, total_leads: 0, last_dispatched_at: null })
+    perfByBundle.set(id, {
+      dispatch_count: 0, total_scans: 0, total_leads: 0, last_dispatched_at: null,
+      follow_ons: followOnsR.error ? null : (followOnsByBundle.get(id) ?? { waiting: 0, sent: 0, stopped: 0 }),
+    })
   }
   for (const d of (dispatchesR.data ?? []) as Array<{
     bundle_id: string; scans_count: number | null;
@@ -183,7 +208,7 @@ export async function listCampaignBundles(): Promise<
     bundles: bundles.map((b) => ({
       ...b,
       items:       itemsByBundle.get(b.id) ?? [],
-      performance: perfByBundle.get(b.id) ?? { dispatch_count: 0, total_scans: 0, total_leads: 0, last_dispatched_at: null },
+      performance: perfByBundle.get(b.id) ?? { dispatch_count: 0, total_scans: 0, total_leads: 0, last_dispatched_at: null, follow_ons: null },
     })),
   }
 }
@@ -350,6 +375,54 @@ function resolveTargetScope(
   return { ok: true, scope_type: "brokerage", scope_id: id }
 }
 
+/**
+ * Module-private (this is a "use server" file — an export would be a public endpoint). Reconciles a bundle's stored items
+ * with the edited list by the natural key (channel, preset_id): kept pieces keep their id and take their new position,
+ * removed pieces are deleted, new pieces are inserted. Every write is tenant-pinned and counted.
+ */
+async function syncBundleItems(
+  svc: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  bundleId: string,
+  wanted: UpsertBundleInput["items"],
+): Promise<{ ok: true; kept: number; inserted: number; removed: number } | { ok: false; error: string }> {
+  const keyOf = (channel: string, presetId: string | null) => `${channel}::${presetId ?? ""}`
+  const { data: existingRows, error: readErr } = await svc.from("campaign_bundle_items")
+    .select("id, channel, preset_id, order_index").eq("bundle_id", bundleId).eq("brokerage_id", brokerageId)
+  if (readErr) return { ok: false, error: `Could not read the bundle's items: ${readErr.message}` }
+  const existing = new Map<string, { id: string; order_index: number }>()
+  for (const r of (existingRows ?? []) as Array<{ id: string; channel: string; preset_id: string | null; order_index: number }>) existing.set(keyOf(r.channel, r.preset_id), { id: r.id, order_index: r.order_index })
+
+  const seen = new Set<string>()
+  const toInsert: Array<Record<string, unknown>> = []
+  const toMove: Array<{ id: string; order_index: number }> = []
+  wanted.forEach((it, idx) => {
+    const key = keyOf(it.channel, it.preset_id)
+    if (seen.has(key)) return // the same piece twice in one bundle is one item (m160's UNIQUE)
+    seen.add(key)
+    const prior = existing.get(key)
+    if (prior) { if (prior.order_index !== idx) toMove.push({ id: prior.id, order_index: idx }) }
+    else toInsert.push({ bundle_id: bundleId, brokerage_id: brokerageId, channel: it.channel, preset_id: it.preset_id, order_index: idx, send_after_minutes: Math.max(0, it.send_after_minutes | 0) })
+  })
+  const removedIds = [...existing.entries()].filter(([k]) => !seen.has(k)).map(([, v]) => v.id)
+
+  if (removedIds.length > 0) {
+    const { data: gone, error: delErr } = await svc.from("campaign_bundle_items").delete().in("id", removedIds).eq("bundle_id", bundleId).eq("brokerage_id", brokerageId).select("id")
+    if (delErr) return { ok: false, error: `Could not remove the dropped items: ${delErr.message}` }
+    if ((gone ?? []).length !== removedIds.length) return { ok: false, error: `Removed ${(gone ?? []).length} of ${removedIds.length} dropped items — the bundle changed under this save; reload and save again.` }
+  }
+  for (const m of toMove) {
+    const { data: moved, error: mvErr } = await svc.from("campaign_bundle_items").update({ order_index: m.order_index }).eq("id", m.id).eq("bundle_id", bundleId).eq("brokerage_id", brokerageId).select("id")
+    if (mvErr) return { ok: false, error: `Could not reorder an item: ${mvErr.message}` }
+    if ((moved ?? []).length !== 1) return { ok: false, error: "An item moved under this save — reload and save again." }
+  }
+  if (toInsert.length > 0) {
+    const { error: insErr } = await svc.from("campaign_bundle_items").insert(toInsert)
+    if (insErr) return { ok: false, error: insErr.message }
+  }
+  return { ok: true, kept: existing.size - removedIds.length, inserted: toInsert.length, removed: removedIds.length }
+}
+
 export async function upsertCampaignBundle(input: UpsertBundleInput): Promise<{
   success: boolean
   bundleId?: string
@@ -398,12 +471,19 @@ export async function upsertCampaignBundle(input: UpsertBundleInput): Promise<{
       (ex.scope_type === "brokerage" && access.canEditBrokerage && ex.scope_id === access.brokerageScopeId)
     if (!canEditExisting) return { success: false, error: "scope_forbidden_existing" }
 
-    const { error } = await svc.from("campaign_bundles").update(row).eq("id", input.id)
+    const { error } = await svc.from("campaign_bundles").update(row).eq("id", input.id).eq("brokerage_id", brokerageId)
     if (error) return { success: false, error: error.message }
     bundleId = input.id
-    // Replace items: simpler than diffing, and items are small.
-    const { error: itemsClearErr } = await svc.from("campaign_bundle_items").delete().eq("bundle_id", bundleId)
-    if (itemsClearErr) return { success: false, error: `Could not replace the bundle's items: ${itemsClearErr.message}` }
+    // WAVE 153 (lane 153I — row 71): THE STABLE ITEM IDENTITY. This used to delete every item and re-insert the list on
+    // each save ("simpler than diffing"), so campaign_bundle_items.id changed on every edit and a follow-on persisted for
+    // an in-flight dispatch pointed at a row that no longer existed. An item IS its piece: m160's UNIQUE (bundle_id,
+    // channel, preset_id) makes (channel, preset) the natural key, so a kept piece keeps its id (only its order moves), a
+    // removed piece is deleted (counted — an unmatched delete resolves too, CLAUDE.md §3) and a new piece is inserted.
+    // A follow-on whose item was removed is cancelled honestly by the drain (lib/direct-mail/orchestrate-bundle-send.ts).
+    const synced = await syncBundleItems(svc, brokerageId, bundleId, input.items)
+    if (!synced.ok) return { success: false, error: synced.error }
+    revalidatePath("/settings/campaign-bundles")
+    return { success: true, bundleId }
   } else {
     const { data, error } = await svc.from("campaign_bundles").insert(row).select("id").single()
     if (error) {

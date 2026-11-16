@@ -247,9 +247,33 @@ async function main() {
     check("POSITIVE CONTROL: the finder recognises a specimen", BAD.test(`{ photo_source: "rentcast" }`))
   }
 
+  // ── wave 153 (lane 153K — convergence row 85): the reader's hit rate, measured honestly ────────────
+  section("H · the contract reader's hit rate — 0/0 stays 0/0, synthetic controls every run (row 85)")
+  {
+    const { measureClosingWordingReader } = await import("../lib/transactions/contract-terms")
+    const empty = measureClosingWordingReader([])
+    check("NO executed contracts on file (the live state measured 2026-11-12) → hitRate NULL, verdict no_population — never 100% or 0%", empty.hitRate === null && empty.verdict === "no_population" && /0\/0/.test(empty.note) && empty.population === 0, JSON.stringify(empty))
+    check("the synthetic controls run every time and all read correctly (4 fixed specimens: each wording, a bare label, a contradiction)", empty.controls.expected === 4 && empty.controls.matched === 4, JSON.stringify(empty.controls))
+    const blank = measureClosingWordingReader([{ content: null }, { content: "  " }])
+    check("contracts on file with NO readable text → hitRate NULL, verdict no_readable_text (the denominator is readable text, not files)", blank.hitRate === null && blank.verdict === "no_readable_text" && blank.population === 2 && blank.readable === 0)
+    const mixed = measureClosingWordingReader([
+      { content: "Terms follow. Closing shall occur on or before 12/15/2026. Balance at closing." },
+      { content: "Terms follow. The closing shall take place on December 15, 2026. Possession at closing." },
+      { content: "Closing Date: 12/15/2026. Buyer and seller named below sign this agreement in full." },
+      { content: "Closing shall occur on 12/15/2026. Closing will occur on or before 12/15/2026. Time is of the essence." },
+      { content: "Terms follow. Closing shall occur on or before 12/15/2026. Balance due.", expectedDate: "2026-12-20" },
+    ])
+    check("SYNTHETIC population: 2 hits of 5 readable (a bare label = no wording; two wordings and a differing recorded date = a person reads it) → 40%", mixed.verdict === "measured" && mixed.readable === 5 && mixed.hits === 2 && mixed.noWording === 1 && mixed.ambiguous === 2 && mixed.hitRate === 40, JSON.stringify(mixed))
+    const reader = code("lib/transactions/contract-terms.ts")
+    const fn = reader.slice(reader.indexOf("export function measureClosingWordingReader"))
+    check("ADVERSE · a misread control blocks the rate (measurement_blind returns BEFORE any rate is computed)", fn.indexOf("measurement_blind") > 0 && fn.indexOf("measurement_blind") < fn.indexOf("hits / readable"))
+    const rollup = code("lib/platform/self-audit-rollup.ts")
+    check("its product reader: the platform self-audit rollup measures the signed contracts on file (counts only) and SAYS a refused read (readError), never \"none on file\"", /measureClosingWordingReader\(/.test(rollup) && /\.eq\("classification", "signed_contract"\)/.test(rollup) && /readError: contractsErr \? contractsErr\.message : null/.test(rollup) && /contractReader\.readError/.test(code("app/dashboard/admin/data-health/page.tsx")))
+  }
+
   console.log("\nBLIND SPOTS: storage.objects policies for listing-media are OWNER SQL (written in the lane notes, not applied, not read live here);")
   console.log("  the media-grid upload and the action were judged on stripped source + the lib driven on memSupabase (no browser, no live RLS);")
-  console.log("  documents.content of live signed contracts is not measured (an empty content reads 'unknown' — correct, but the hit rate is unknown);")
+  console.log("  the LIVE hit rate is read by the platform data-health page (self-audit rollup, §H); live read-only count 2026-11-14: 0 signed contracts → 0/0, undefined — §H drives synthetic text only;")
   console.log("  the reader knows English contract phrasing only; vendor (photographer) deliveries via processVendorPhotos carry no attestation (owner decision).")
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail) { console.log(` FAILED: ${failures.join(" · ")}`); process.exit(1) }

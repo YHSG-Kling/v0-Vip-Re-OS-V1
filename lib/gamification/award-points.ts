@@ -84,11 +84,11 @@ export const POINT_VALUES = {
 export type PointReason = keyof typeof POINT_VALUES
 
 /**
- * The earning actions a surface may advertise, and the ONE place their point value
- * comes from. Anything not on this list is awarded by the system rather than chosen
- * by the agent, so it is not something to put a "go do this" card in front of them.
+ * Every earning action a surface could name, with its label. The list a surface may ADVERTISE is POINT_EARNING_ACTIONS
+ * below — derived from this by "a live award rule exists" — because advertising points nothing awards is the same lie as
+ * advertising the wrong number (see POINT_VALUES).
  */
-export const POINT_EARNING_ACTIONS: ReadonlyArray<{ reason: PointReason; label: string }> = [
+const EARNING_ACTION_LABELS: ReadonlyArray<{ reason: PointReason; label: string }> = [
   { reason: "LISTING_CLOSED", label: "Close a deal" },
   { reason: "REFERRAL_CREATED", label: "Send a referral" },
   { reason: "SHOWING_COMPLETED", label: "Complete a showing" },
@@ -257,6 +257,10 @@ export interface LifecycleAwardRule {
   /** Where the idempotency reference comes from; default = the event's entityId. */
   referenceFrom?: "entity" | "metadata.stepId" | "metadata.referral_id"
   referenceType: string
+  /** WAVE 153 (lane 153I): the emitter's entity the rule is keyed on. Another emitter of the SAME event with a different
+   *  entity never earns (app/actions/ai-content-generation.tsx emits SOCIAL_POST_PUBLISHED for a generated DRAFT,
+   *  entityType 'ai_generated_content' — only the publisher's 'social_post' is a published post). */
+  entityType?: string
 }
 
 /**
@@ -295,7 +299,26 @@ export const LIFECYCLE_AWARD_RULES: readonly LifecycleAwardRule[] = [
   { event: KernelEvent.REFERRAL_RECEIVED, reason: "REFERRAL_CREATED", scope: "per_reference", party: "acting", referenceFrom: "metadata.referral_id", referenceType: "referral" },
   { event: KernelEvent.REFERRAL_CONVERTED, reason: "REFERRAL_CONVERTED", scope: "per_reference", party: "acting", referenceType: "referral" },
   { event: KernelEvent.TRANSACTION_CLOSED, reason: "REPEAT_CLIENT_CLOSED", scope: "per_reference", party: "acting", when: "repeat_client", referenceType: "transaction" },
+  // ── WAVE 153 (lane 153I — owner ruling 17: "check that the gamification system works properly") ──
+  // The last two client-fired awards (app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door any signed-in
+  // seat could call in a loop) move onto the moments that PROVE the outcome:
+  //   · an offer: the buyer's lifecycle crossing into BUYER_OFFER_SUBMITTED (app/actions/buyer-offers.ts → lifecycle-logger
+  //     → OFFER_SUBMITTED on entity buyer_lifecycle = the buyer contact). transitionLifecycle forwards no metadata, so the
+  //     reference is the buyer contact: once per buyer, however often the stage is re-entered — never per click.
+  //   · a social post: the publisher's SOCIAL_POST_PUBLISHED (app/api/cron/publish-social-posts, entity social_post), after
+  //     approval and a real external post id — no longer the moment a post was merely SCHEDULED. Once per post.
+  { event: KernelEvent.OFFER_SUBMITTED, reason: "OFFER_SUBMITTED", scope: "per_reference", party: "acting", entityType: "buyer_lifecycle", referenceType: "contact" },
+  { event: KernelEvent.SOCIAL_POST_PUBLISHED, reason: "SOCIAL_POST_PUBLISHED", scope: "per_reference", party: "acting", entityType: "social_post", referenceType: "social_post" },
 ]
+
+/**
+ * The earning actions a surface may advertise, and the ONE place their point value comes from: only reasons a LIVE award
+ * rule grants (LIFECYCLE_AWARD_RULES). Training, vendor reviews, open houses and follow-ups have no verified-outcome awarder
+ * (wave 153, lane 153I census — a completed module earns nothing by design, wave 106; a vendor review has no emitter; an
+ * open house is self-attested), so /dashboard/motivation no longer promises points for them.
+ */
+export const POINT_EARNING_ACTIONS: ReadonlyArray<{ reason: PointReason; label: string }> =
+  EARNING_ACTION_LABELS.filter((a) => LIFECYCLE_AWARD_RULES.some((r) => r.reason === a.reason))
 
 export interface MilestonePlan {
   reason: PointReason
@@ -311,6 +334,8 @@ export interface MilestoneContext {
   now: Date
   /** TRANSACTION_CLOSED only: the closing contact already closed with this agent before. */
   repeatClient?: boolean
+  /** The event's entity type — a rule keyed on one (LifecycleAwardRule.entityType) skips every other emitter. */
+  entityType?: string | null
 }
 
 function referenceFor(rule: LifecycleAwardRule, ctx: MilestoneContext): string | null {
@@ -328,6 +353,7 @@ export function planLifecycleAwards(event: string, ctx: MilestoneContext): Miles
   const plans: MilestonePlan[] = []
   for (const rule of LIFECYCLE_AWARD_RULES) {
     if (rule.event !== event) continue
+    if (rule.entityType && ctx.entityType !== rule.entityType) continue
     if (rule.when === "repeat_client" && !ctx.repeatClient) continue
     if (rule.when === "seller_side" && (ctx.metadata as { side?: unknown } | null | undefined)?.side !== "seller") continue
     const ref = referenceFor(rule, ctx)

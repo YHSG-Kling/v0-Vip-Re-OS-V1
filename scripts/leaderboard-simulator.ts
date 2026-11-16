@@ -96,7 +96,11 @@ function sourceLayer() {
   console.log("\n[wiring — ledger consolidation, radar feed, cron]")
   const gam = src("app/actions/gamification.ts")
   check("gamification.ts is a real server-action module (three client components import it)", /^"use server"/.test(gam))
-  check("addPoints rides the ONE atomic award path, not read-modify-write", /awardAgentPoints\(/.test(gam) && !/gamification_points: newPoints/.test(gam))
+  // WAVE 153 (lane 153I): `addPoints` — the public award door this check pinned — is retired (an agent could credit itself any
+  // reason on a click); points now come only from the reactor through lib/gamification/award-points.ts (test:gamification
+  // [verified outcomes only]). The RULE stands: the board's ledger is never advanced by read-modify-write, and the action
+  // module holds no award door.
+  check("the board's ledger is never read-modify-written and gamification.ts holds no award door (the atomic RPC lives in award-points.ts)", !/awardAgentPoints\(/.test(gam) && !/gamification_points: newPoints/.test(gam) && /rpc\(\s*"award_agent_points"/.test(src("lib/gamification/award-points.ts")))
   check("every reader validates against the shared vocabulary", /leaderboard-vocabulary/.test(gam) && /isLeaderboardScope/.test(gam))
   const awardLib = src("lib/gamification/award-points.ts")
   check("the award wrapper calls the atomic RPC", /rpc\("award_agent_points"/.test(awardLib))

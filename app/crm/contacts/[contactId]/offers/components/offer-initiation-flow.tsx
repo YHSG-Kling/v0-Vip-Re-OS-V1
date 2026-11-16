@@ -66,7 +66,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Loader2, Check, AlertTriangle, ExternalLink, Sparkles, Building2, FileText } from "lucide-react"
-import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
+// TOMBSTONE (wave 153, lane 153I): `awardPointsForAction(...)` — a client call into app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door that awarded on a click with no verified outcome and no once-key — is retired. SURVIVOR: lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES via the event reactor (lib/gamification/lifecycle-awards.ts awardLifecycleMilestones) — awarded once per buyer on OFFER_SUBMITTED (app/actions/buyer-offers.ts).
 import { createClient } from "@/lib/supabase/client"
 import { getOfferContext, type OfferContext } from "@/lib/contacts/ownership-model"
 import { FormSelectorStep, type FormFieldValues } from "@/app/components/forms/form-selector-step"
@@ -963,7 +963,7 @@ export function OfferInitiationFlow({
         offerIntentId={initialOfferIntentId}
         onBack={() => setFlowStep("contingencies")}
         onSuccess={(newOfferId?: string) => {
-          awardPointsForAction(agentUserId, "offer_submitted").catch(() => {})
+          // TOMBSTONE (wave 153, lane 153I): `awardPointsForAction(...)` — a client call into app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door that awarded on a click with no verified outcome and no once-key — is retired. SURVIVOR: lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES via the event reactor (lib/gamification/lifecycle-awards.ts awardLifecycleMilestones). The submit action emits OFFER_SUBMITTED; the reactor awards once per buyer.
           if (newOfferId) {
             setCreatedOfferId(newOfferId)
             setFlowStep("send_for_signatures")

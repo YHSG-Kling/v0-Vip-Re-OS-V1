@@ -47,7 +47,7 @@ export function LocationsClient({
   // office. Renaming or fixing an address meant deleting the office (which
   // unassigns every agent in it) and rebuilding it. updateLocationAction already
   // existed, admin-gated and brokerage-scoped; it just had no caller.
-  async function handleEdit(loc: OfficeLocation, patch: { name: string; address: string; city: string; state: string }) {
+  async function handleEdit(loc: OfficeLocation, patch: { name: string; address: string; city: string; state: string; quickbooksDepartmentId: string }) {
     const prev = locations
     const next: OfficeLocation = {
       ...loc,
@@ -55,6 +55,7 @@ export function LocationsClient({
       address: patch.address.trim() || null,
       city: patch.city.trim() || null,
       state: patch.state.trim() || null,
+      quickbooksDepartmentId: patch.quickbooksDepartmentId.trim() || null,
     }
     setLocations((cur) => cur.map((l) => (l.id === loc.id ? next : l)).sort((a, b) => a.name.localeCompare(b.name)))
     const r = await updateLocationAction(loc.id, {
@@ -62,6 +63,8 @@ export function LocationsClient({
       address: patch.address,
       city: patch.city,
       state: patch.state,
+      // Sent only when it changed — the action merges it into settings.accounting (a no-op save never rewrites settings).
+      ...((patch.quickbooksDepartmentId.trim() || null) !== (loc.quickbooksDepartmentId ?? null) ? { quickbooksDepartmentId: patch.quickbooksDepartmentId } : {}),
     })
     if (!r.ok) {
       // Roll the optimistic edit back — the action refuses an empty name and a
@@ -190,7 +193,7 @@ function NewOfficeDialog({ onCreated }: { onCreated: (loc: OfficeLocation) => vo
     try {
       const r = await createLocationAction({ name, address, city, state })
       if (!r.ok) { toast({ title: "Could not create office", description: r.error, variant: "destructive" }); return }
-      onCreated({ id: r.id, name: name.trim(), address: address.trim() || null, city: city.trim() || null, state: state.trim() || null, agentCount: 0, createdAt: new Date().toISOString() })
+      onCreated({ id: r.id, name: name.trim(), address: address.trim() || null, city: city.trim() || null, state: state.trim() || null, agentCount: 0, createdAt: new Date().toISOString(), quickbooksDepartmentId: null })
       toast({ title: "Office created" })
       setName(""); setAddress(""); setCity(""); setState(""); setOpen(false)
     } finally { setSubmitting(false) }
@@ -223,7 +226,7 @@ function EditOfficeDialog({
   onSave,
 }: {
   location: OfficeLocation
-  onSave: (patch: { name: string; address: string; city: string; state: string }) => Promise<boolean>
+  onSave: (patch: { name: string; address: string; city: string; state: string; quickbooksDepartmentId: string }) => Promise<boolean>
 }) {
   const { toast } = useToast()
   const [open, setOpen] = useState(false)
@@ -231,6 +234,7 @@ function EditOfficeDialog({
   const [address, setAddress] = useState(location.address ?? "")
   const [city, setCity] = useState(location.city ?? "")
   const [state, setState] = useState(location.state ?? "")
+  const [qbDept, setQbDept] = useState(location.quickbooksDepartmentId ?? "")
   const [submitting, setSubmitting] = useState(false)
 
   function openChange(v: boolean) {
@@ -240,6 +244,7 @@ function EditOfficeDialog({
       setAddress(location.address ?? "")
       setCity(location.city ?? "")
       setState(location.state ?? "")
+      setQbDept(location.quickbooksDepartmentId ?? "")
     }
     setOpen(v)
   }
@@ -248,7 +253,7 @@ function EditOfficeDialog({
     if (!name.trim()) { toast({ title: "Office name required", variant: "destructive" }); return }
     setSubmitting(true)
     try {
-      const ok = await onSave({ name, address, city, state })
+      const ok = await onSave({ name, address, city, state, quickbooksDepartmentId: qbDept })
       if (ok) setOpen(false)
     } finally { setSubmitting(false) }
   }
@@ -268,6 +273,12 @@ function EditOfficeDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1"><Label htmlFor={`e-city-${location.id}`}>City</Label><Input id={`e-city-${location.id}`} value={city} onChange={(e) => setCity(e.target.value)} /></div>
             <div className="space-y-1"><Label htmlFor={`e-state-${location.id}`}>State</Label><Input id={`e-state-${location.id}`} value={state} onChange={(e) => setState(e.target.value)} /></div>
+          </div>
+          {/* WAVE 153 (lane 153K — lane 153A outside-lane 5): where this office's expenses land in QuickBooks. */}
+          <div className="space-y-1">
+            <Label htmlFor={`e-qb-${location.id}`}>QuickBooks location (department) ID</Label>
+            <Input id={`e-qb-${location.id}`} value={qbDept} onChange={(e) => setQbDept(e.target.value)} placeholder="Optional" />
+            <p className="text-xs text-muted-foreground">If your books track locations, enter the ID QuickBooks shows for this office&apos;s location so its expenses post there. Leave blank to leave this office unmapped.</p>
           </div>
         </div>
         <DialogFooter>

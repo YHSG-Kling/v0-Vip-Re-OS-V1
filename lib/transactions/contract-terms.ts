@@ -198,3 +198,57 @@ export function readClosingDateWording(text: string | null | undefined, opts: { 
   if (expected && date && expected !== date) return { terms: null, date, quote: readings[0].quote, reason: `the contract text's closing date (${date}) differs from the recorded contractual date (${expected}) — a person reads it` }
   return { terms: readings[0].terms, date, quote: readings[0].quote, reason: readings[0].terms === "on_or_before" ? "the executed contract says closing occurs on or before its date" : "the executed contract fixes the closing day" }
 }
+
+// ─── THE READER'S HIT RATE, MEASURED HONESTLY (wave 153, lane 153K — convergence row 85) ──────────────────────────────────────
+//
+// Wave 152 measured the reader read-only: 0 signed-contract documents live → a hit rate of 0/0. That number is UNDEFINED, not
+// 100 % and not 0 %: this measurement says so (`hitRate: null`, verdict `no_population` / `no_readable_text`) until real executed
+// contracts are on file. Every run also passes FIXED SYNTHETIC CONTROLS through the SAME reader — a hit of each wording, a bare
+// label and a two-way contradiction — so "0 hits" can never be a blind reader reporting a clean bill: if a control misreads, the
+// verdict is `measurement_blind` and no rate is reported. Synthetic controls are labelled as such and never counted in the rate.
+// Consumer: lib/platform/self-audit-rollup.ts (the platform data-health page). Pure, never throws.
+
+const CLOSING_WORDING_CONTROLS: ReadonlyArray<{ text: string; expect: "on" | "on_or_before" | null }> = Object.freeze([
+  { text: "The parties agree as follows. Closing shall occur on or before 12/15/2026. Buyer shall deliver the balance at closing.", expect: "on_or_before" },
+  { text: "Purchase terms are set out below. Closing shall take place on January 20, 2027. Possession at closing.", expect: "on" },
+  { text: "Closing Date: 12/15/2026. Buyer: the named buyer. Seller: the named seller.", expect: null },
+  { text: "Closing shall occur on 12/15/2026. Closing will occur on or before 12/15/2026. Time is of the essence.", expect: null },
+])
+
+interface ClosingWordingReaderMetric {
+  /** Executed-contract documents examined. */
+  population: number
+  /** Of those, documents carrying enough text to read (≥ 20 characters). */
+  readable: number
+  /** Confident readings (on / on or before). */
+  hits: number
+  /** A closing sentence was found but the reader refused to choose (two wordings, two dates, a differing date). */
+  ambiguous: number
+  /** Readable text with no closing-wording sentence. */
+  noWording: number
+  /** hits / readable — NULL whenever readable is 0 or the controls failed (0/0 is undefined, never a percentage). */
+  hitRate: number | null
+  verdict: "no_population" | "no_readable_text" | "measured" | "measurement_blind"
+  controls: { expected: number; matched: number }
+  note: string
+}
+
+export function measureClosingWordingReader(docs: ReadonlyArray<{ content?: string | null; expectedDate?: string | null }>): ClosingWordingReaderMetric {
+  const matched = CLOSING_WORDING_CONTROLS.filter((c) => readClosingDateWording(c.text).terms === c.expect).length
+  const controls = { expected: CLOSING_WORDING_CONTROLS.length, matched }
+  let readable = 0, hits = 0, ambiguous = 0, noWording = 0
+  for (const d of docs) {
+    const body = typeof d.content === "string" ? d.content.replace(/\s+/g, " ").trim() : ""
+    if (body.length < 20) continue
+    readable++
+    const r = readClosingDateWording(body, { expectedDate: d.expectedDate ?? null })
+    if (r.terms) hits++
+    else if (r.quote) ambiguous++
+    else noWording++
+  }
+  const population = docs.length
+  if (matched !== controls.expected) return { population, readable, hits, ambiguous, noWording, hitRate: null, verdict: "measurement_blind", controls, note: `the reader misread ${controls.expected - matched} of ${controls.expected} synthetic controls — no rate is reported until it reads them all` }
+  if (population === 0) return { population, readable, hits, ambiguous, noWording, hitRate: null, verdict: "no_population", controls, note: "no executed contracts are on file yet — the hit rate is 0/0 (undefined, not 100%); it is measured once real signed contracts are filed" }
+  if (readable === 0) return { population, readable, hits, ambiguous, noWording, hitRate: null, verdict: "no_readable_text", controls, note: `${population} executed contract(s) on file, none with readable text — the hit rate is undefined until text is extracted` }
+  return { population, readable, hits, ambiguous, noWording, hitRate: Math.round((hits / readable) * 1000) / 10, verdict: "measured", controls, note: `${hits} of ${readable} readable executed contract(s) state their closing wording unambiguously; ${ambiguous} need a person, ${noWording} carry no wording sentence` }
+}

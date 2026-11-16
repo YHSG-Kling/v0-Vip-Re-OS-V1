@@ -427,8 +427,24 @@ export function movementSignalFromSellerSignalRow(brokerageId: string, row: { id
   const via = String(row.detected_via ?? "")
   const subject = row.contact_id ? { type: "contact" as const, id: row.contact_id } : row.lead_id ? { type: "lead" as const, id: row.lead_id } : null
   if (!subject) return { ok: false, code: "bad_subject", reason: "a seller-signal row with no person" }
-  const at = row.detected_at ?? new Date().toISOString()
   const issuer = via === "socrata" || via === "arcgis"
+  // WAVE 153 (lane 153K — convergence row 89): the public-record property facts lib/intent/public-record-facts.ts files — an ACRIS
+  // deed recorded at an owned address, a street-use (dumpster) permit at one. Their own registry sources; the source's EVENT date
+  // (recorded / issued) is the observation, not the day the sweep filed it (ACRIS publishes weeks late). A dumpster reads as a
+  // possible move (relocation) and is never read as a renovation or a move-out alone (side unknown).
+  if (issuer && (type === "deed_recorded" || type === "street_use_permit")) {
+    const d = row.signal_details ?? {}
+    const eventAt = typeof d.event_at === "string" && Number.isFinite(Date.parse(d.event_at)) ? d.event_at : (row.detected_at ?? new Date().toISOString())
+    const deed = type === "deed_recorded"
+    const datasetKey = typeof d.dataset_host === "string" && typeof d.dataset_id === "string" ? `${d.dataset_host}/${d.dataset_id}` : null
+    return buildMovementSignal({
+      brokerageId, subject, sourceKey: deed ? "pr_property_transfer_open_data" : "pr_street_use_permit", eventRelevance: deed ? "property_event" : "relocation",
+      identity: "verified_match", capturedBy: "automation", observedAt: eventAt, intents: deed ? ["home_sale", "home_purchase"] : ["moving"], side: "unknown",
+      evidence: { confidence: "verified", reference: { kind: "permit_record", id: String(d.dedupe_key ?? d.record_id ?? row.id), url: typeof d.source_url === "string" ? d.source_url : null, retrievedAt: row.detected_at ?? eventAt }, summary: deed ? "a deed was recorded at the address (NYC ACRIS open data)" : "a street-use container permit was issued at the address (city open data) — a renovation or a move, never read as either alone" },
+      propertyAddress: typeof d.address === "string" ? d.address : null, datasetKey,
+    })
+  }
+  const at = row.detected_at ?? new Date().toISOString()
   const sourceKey = issuer ? (type === "code_violation" ? "pr_code_violation" : "pr_permit_activity") : "pr_batchdata_quicklist"
   const inherited = /inherit|probate|estate/.test(type)
   const relevance: MovementRelevance = inherited && !issuer ? "probate_estate" : "property_event"

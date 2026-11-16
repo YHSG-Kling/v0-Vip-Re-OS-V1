@@ -169,7 +169,7 @@ export async function spawnCampaignOrchestratorForBrokerage(params: {
   const selection = await selectStrategies({ brokerageId: params.brokerageId, manager: "campaign_orchestrator", facts: null })
   const strategyLines = selection.readRefused
     ? [`(active strategies unreadable: ${selection.readRefused} — compose from the snapshot only)`]
-    : selection.ranked.map((r) => `${r.rank}. ${strategyLabel(r.definition)} [${r.definition.key}]: ${r.definition.objective}; your steps: ${r.definition.steps.filter((s) => s.manager === "campaign_orchestrator").map((s) => `${s.purpose} (${s.capabilities.join(", ")}; playbooks ${s.playbooks.map((p) => p.key).join(", ") || "—"})`).join(" / ")}; cadence ${r.adaptation.timing.cadenceDays}d; budget $${r.adaptation.budget.usd}; ${r.performance ? `learned n=${r.performance.sample}` : `performance ${selection.learning}`}`)
+    : selection.ranked.map((r) => `${r.rank}. ${strategyLabel(r.definition)} [${r.definition.key}]: ${r.definition.objective}; your steps: ${r.definition.steps.filter((s) => s.manager === "campaign_orchestrator").map((s) => `${s.purpose} (${s.capabilities.join(", ")}; playbooks ${s.playbooks.map((p) => p.key).join(", ") || "—"})`).join(" / ")}; no more often than every ${r.adaptation.timing.cadenceDays}d (a ceiling — arbitratePlannedTouch times each touch per person); budget $${r.adaptation.budget.usd}; ${r.performance ? `learned n=${r.performance.sample}` : `performance ${selection.learning}`}`)
 
   const kickoff = params.kickoff ?? [
     renderBrokerageContextForKickoff(brokerage),

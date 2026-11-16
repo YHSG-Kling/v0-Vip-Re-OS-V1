@@ -178,6 +178,27 @@ export async function GET(request: Request) {
       leads_skipped_converted: 0,
       signals_written_lead: 0,
       signals_written_contact: 0,
+      // WAVE 153 (lane 153K — row 89): public-record property facts (ACRIS deeds, Cambridge street-use permits) read once per
+      // run and filed per tenant only at addresses its leads / contacts already carry.
+      public_record_facts_read: 0,
+      public_record_signals_written: 0,
+      public_record_already_recorded: 0,
+    }
+
+    // ── WAVE 153 (lane 153K — convergence row 89): PUBLIC-RECORD PROPERTY FACTS ─────────────────────
+    // The verified ACRIS deed / Cambridge street-use datasets for any market a tenant territory names, read ONCE per run (a
+    // dataset's health is a fact about the portal). Each probe joins datasetHealth, so the C19 observation below records it in
+    // market_dataset_verifications. Datasets the C19 gate does not lend a ceiling to are refused by name (unavailableReasons).
+    let publicFacts: Awaited<ReturnType<typeof import("@/lib/intent/public-record-facts")["readPublicRecordFacts"]>>["facts"] = []
+    try {
+      const { readPublicRecordFacts } = await import("@/lib/intent/public-record-facts")
+      const pr = await readPublicRecordFacts(supabase, { territories: resolution.territories as PermitScanTerritory[] })
+      publicFacts = pr.facts
+      totals.public_record_facts_read = pr.facts.length
+      for (const p of pr.probes) if (!datasetHealth.has(p.dataset)) datasetHealth.set(p.dataset, p)
+      for (const r of pr.refused) unavailableReasons.add(`public record: ${r}`)
+    } catch (e) {
+      errors.push(`public records: ${e instanceof Error ? e.message : String(e)}`)
     }
 
     for (const [brokerageId, territories] of byBrokerage) {
@@ -209,6 +230,18 @@ export async function GET(request: Request) {
         for (const e of r.errors) errors.push(`${brokerageId}: ${e}`)
       } catch (e) {
         errors.push(`${brokerageId}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+      // Row 89 — file the public-record facts for THIS tenant (its own territory markets, its own owned addresses).
+      if (publicFacts.length > 0) {
+        try {
+          const { filePublicRecordFacts } = await import("@/lib/intent/public-record-facts")
+          const f = await filePublicRecordFacts(supabase, { brokerageId, territories, facts: publicFacts })
+          totals.public_record_signals_written += f.written
+          totals.public_record_already_recorded += f.alreadyRecorded
+          for (const e of f.errors) errors.push(`${brokerageId} public records: ${e}`)
+        } catch (e) {
+          errors.push(`${brokerageId} public records: ${e instanceof Error ? e.message : String(e)}`)
+        }
       }
     }
 

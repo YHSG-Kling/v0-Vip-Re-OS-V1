@@ -687,6 +687,20 @@ async function sections4to7(c: Ctx): Promise<void> {
     const rrs = (svc: ReturnType<typeof mkWorld>) => (svc.tables.review_requests ?? []) as Row[]
     const run = (svc: ReturnType<typeof mkWorld>, deps = mkDeps(), brokerageId = B) => engine.askForReviewAtClose(svc, { brokerageId, transactionId: TX, source: "cron" }, deps)
 
+    // WAVE 153 (lane 153I — I1 census): the agent's SENDER VOICE conditions the FIRST draft of the ask (owner rule); an
+    // unreadable brief drafts without it (fail-soft — the ask is still screened before anything is staged).
+    {
+      resetR()
+      const svc = mkWorld()
+      const VOICE = "SENDER VOICE — Alex Agent: friendly, brief, never salesy, signs off 'Thanks again'."
+      const input = { brokerageId: B, transactionId: TX, agentId: AG, platform: "google", channel: "email", contactId: BUYER } as never
+      const dv = await draftMod.draftReviewRequest(svc, input, { senderVoiceBlock: async () => VOICE, generate: async (a) => { R.prompts.push(a.prompt); return { object: cleanMsg(GOOGLE) as never } } })
+      check("153I the agent's sender-voice brief opens the FIRST drafting prompt (before the request itself)", (dv as { success?: boolean }).success !== false && R.prompts.length === 1 && R.prompts[0].startsWith(VOICE) && R.prompts[0].includes(GOOGLE), R.prompts[0]?.slice(0, 160))
+      resetR()
+      await draftMod.draftReviewRequest(svc, input, { senderVoiceBlock: async () => { throw new Error("voice tables refused") }, generate: async (a) => { R.prompts.push(a.prompt); return { object: cleanMsg(GOOGLE) as never } } })
+      check("153I ADVERSE: an unreadable voice brief drafts WITHOUT a stand-in voice (the prompt starts at the request)", R.prompts.length === 1 && /^Generate a email review request for google/.test(R.prompts[0]))
+    }
+
     // E1 + E2
     {
       resetR()

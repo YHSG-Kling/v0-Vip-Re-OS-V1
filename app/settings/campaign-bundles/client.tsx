@@ -476,6 +476,16 @@ function BundleCard({ bundle, catalog, onEdit, onDeactivate, pending }: {
             />
           </div>
           <div className="text-xs text-gray-400 mt-1">Last fired: {lastFiredLabel}</div>
+          {/* WAVE 153 (153I, row 71): the first piece goes on the send; each later piece waits for the OS to judge the
+              moment for that person. These are the persisted pieces — waiting, sent, and stopped by a gate or a change. */}
+          {p.follow_ons && (p.follow_ons.waiting + p.follow_ons.sent + p.follow_ons.stopped) > 0 && (
+            <div className="text-xs text-gray-600 mt-1">
+              Pieces: {p.follow_ons.sent} sent · {p.follow_ons.waiting} waiting for the right moment · {p.follow_ons.stopped} stopped
+            </div>
+          )}
+          {p.follow_ons === null && (
+            <div className="text-xs text-amber-700 mt-1">Piece-by-piece status could not be loaded right now.</div>
+          )}
           <ol className="mt-3 space-y-1">
             {bundle.items.map((it, idx) => (
               <li key={it.id} className="text-xs text-gray-700 flex gap-2">

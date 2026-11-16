@@ -69,6 +69,18 @@ async function resolveMilestoneAgents(
     case "agent_onboarding":    acting = await one("agent_onboarding", "agent_id", p.entityId); break
     case "agent_ce_completion": acting = await one("agent_ce_completions", "agent_id", p.entityId); break
     case "referral":            acting = await one("referrals", "agent_id", p.entityId); break
+    // WAVE 153 (lane 153I): the two moments the retired client-side awards moved onto.
+    // OFFER_SUBMITTED rides the BUYER lifecycle (entity = the buyer contact) — the contact's owning agent (contacts.agent_id).
+    case "buyer_lifecycle":     acting = await one("contacts", "agent_id", p.entityId); break
+    // SOCIAL_POST_PUBLISHED from the publisher: social_posts.agent_id (FK → agents), else the author's seat via users.id.
+    case "social_post": {
+      acting = await one("social_posts", "agent_id", p.entityId)
+      if (!acting) {
+        const author = await one("social_posts", "user_id", p.entityId)
+        if (author) acting = await byUser(author)
+      }
+      break
+    }
     case "contact":
       // REFERRAL_RECEIVED is emitted on the CONTACT with referral_id in metadata; the
       // earning agent is the referral's agent_id (who received it), not the contact's.
@@ -126,7 +138,7 @@ export async function awardLifecycleMilestones(
     ? await isRepeatClientClose(db, p.brokerageId, p.entityId, actingId)
     : false
 
-  const plans = planLifecycleAwards(p.event, { entityId: p.entityId, metadata: p.metadata, now, repeatClient })
+  const plans = planLifecycleAwards(p.event, { entityId: p.entityId, metadata: p.metadata, now, repeatClient, entityType: p.entityType })
   for (const plan of plans) {
     const recipients = plan.party === "mentor_and_mentee" ? agents.mentorAndMentee : agents.acting
     if (recipients.length === 0) {
@@ -147,6 +159,12 @@ export async function awardLifecycleMilestones(
       const badges = await awardEventBadges(db, { agentId, brokerageId: res.brokerageId, triggerEvent: plan.reason })
       out.badgesAwarded += badges.awarded
       out.refused.push(...badges.refused)
+      // WAVE 153 (lane 153I): THRESHOLD badges on the total the database now holds. Until now only the retired public
+      // addPoints door and a contact reassignment ran the threshold check, so a closing / showing / offer that crossed a
+      // tier never earned its points badge.
+      const thresholds = await awardThresholdBadges(db, { agentId, brokerageId: res.brokerageId })
+      out.badgesAwarded += thresholds.awarded.length
+      out.refused.push(...thresholds.refused)
     }
   }
   for (const r of out.refused) console.error(`[lifecycle-gamification] ${p.event}: ${r}`)
@@ -154,6 +172,39 @@ export async function awardLifecycleMilestones(
 }
 
 // ─── BADGES — the ONE badge awarder (merged here from app/actions/gamification.ts) ─
+
+/**
+ * WAVE 153 (lane 153I): every active POINTS-THRESHOLD badge the agent's STORED total has reached (agents.gamification_points —
+ * the total award_agent_points() keeps), awarded through awardBadgeToAgent. The total is READ here, never accepted from a
+ * caller: app/actions/gamification.ts checkAndAwardBadges (a public "use server" export) used to award against whatever
+ * number it was handed. Platform defaults (brokerage_id NULL) plus the agent's own tenant's badges; event-triggered badges
+ * (trigger_event = a milestone reason) stay with awardEventBadges — the two never overlap.
+ */
+export async function awardThresholdBadges(
+  db: LedgerCapableClient,
+  input: { agentId: string; brokerageId?: string | null },
+): Promise<{ awarded: Array<{ id: string; name: string; tier: string | null; requiredPoints: number }>; refused: string[] }> {
+  const out = { awarded: [] as Array<{ id: string; name: string; tier: string | null; requiredPoints: number }>, refused: [] as string[] }
+  let q = db.from("agents").select("id, brokerage_id, gamification_points").eq("id", input.agentId)
+  if (input.brokerageId) q = q.eq("brokerage_id", input.brokerageId)
+  const { data: agent, error: agentErr } = await q.maybeSingle()
+  if (agentErr) { out.refused.push(`agents read refused — threshold badges withheld: ${agentErr.message}`); return out }
+  const a = agent as { brokerage_id: string | null; gamification_points: number | null } | null
+  if (!a?.brokerage_id) return out
+  const total = Number(a.gamification_points) || 0
+  // The catalog is small (platform defaults + one tenant's own): the threshold is applied here, on the stored total.
+  const { data: badges, error } = await db.from("gamification_badges").select("id, badge_name, badge_tier, required_points, trigger_event")
+    .eq("is_active", true).or(`brokerage_id.is.null,brokerage_id.eq.${a.brokerage_id}`)
+  if (error) { out.refused.push(`gamification_badges read refused: ${error.message}`); return out }
+  for (const b of ((badges ?? []) as Array<{ id: string; badge_name: string; badge_tier: string | null; required_points: number; trigger_event: string | null }>)
+    .filter((x) => (x.trigger_event ?? "points_threshold") === "points_threshold" && (Number(x.required_points) || 0) <= total)
+    .sort((x, y) => (Number(x.required_points) || 0) - (Number(y.required_points) || 0))) {
+    const res = await awardBadgeToAgent(db, { agentId: input.agentId, badgeId: b.id, reason: `Reached ${Number(b.required_points).toLocaleString()} points` })
+    if (!res.ok) out.refused.push(`badge ${b.badge_name}: ${res.error}`)
+    else if (!res.alreadyAwarded) out.awarded.push({ id: res.badgeRowId, name: b.badge_name, tier: b.badge_tier, requiredPoints: Number(b.required_points) || 0 })
+  }
+  return out
+}
 
 export interface AwardBadgeInput { agentId: string; badgeId: string; reason: string }
 export type AwardBadgeResult =

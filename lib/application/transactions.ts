@@ -251,6 +251,12 @@ export async function createTransaction(transactionData: {
   }
 
   if (data) {
+    // WAVE 153 (lane 153K — 153D outside-lane 5): the deal's required-document checklist version is pinned AT CREATION (never blocks).
+    if (transactionData.brokerage_id) {
+      const { pinDealChecklistAtCreation } = await import("@/lib/transactions/closing-compliance")
+      const pin = await pinDealChecklistAtCreation(supabase as any, { brokerageId: transactionData.brokerage_id as string, transactionId: data.id })
+      if (pin.error) console.warn(`[createTransaction] deal ${data.id}: checklist version not pinned at creation (the first closing check pins it) — ${pin.error}`)
+    }
     // The result is READ. A refused or refused-to-run seeding used to vanish
     // here, leaving a deal with no journey and nothing saying so.
     const seeded = await generateMilestones(data.id, transactionData.transaction_type)

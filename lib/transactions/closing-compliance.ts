@@ -755,7 +755,7 @@ async function applyLogRows(svc: Svc, tx: TransactionRow, specs: LogRowSpec[], o
  * the ONE writer recordPolicyDecision). A refused read is "the checklist could not run" — never today's rules by default.
  */
 type DealChecklist = { ok: true; rules: Array<Record<string, unknown>>; changes: ChecklistChange[]; pinnedAt: string | null; recorded: boolean } | { ok: false; error: string }
-async function dealChecklistRules(svc: Svc, tx: TransactionRow): Promise<DealChecklist> {
+async function dealChecklistRules(svc: Svc, tx: Pick<TransactionRow, "id" | "brokerage_id">, source: "first_check" | "transaction_created" = "first_check"): Promise<DealChecklist> {
   const { data, error } = await svc
     .from("policy_decisions")
     .select("id, evidence_json, created_at")
@@ -778,10 +778,29 @@ async function dealChecklistRules(svc: Svc, tx: TransactionRow): Promise<DealChe
   const rec = await recordPolicyDecision(svc, {
     brokerageId: tx.brokerage_id, transactionId: tx.id, targetType: DEAL_CHECKLIST_TARGET, targetId: tx.id,
     verdict: { decision: "green", reasons: [`checklist version set for this deal: ${live.rows.length} rule(s) in force`], recommendedAction: "apply_this_version_to_the_deal", requiredApproverRole: null },
-    evidence: { kind: "deal_checklist_version", source: "first_check", pinned_at: now, rules: live.rows },
+    evidence: { kind: "deal_checklist_version", source, pinned_at: now, rules: live.rows },
   })
   if (!rec.recorded) console.error(`[closing-compliance] the checklist version of ${tx.id} was not recorded (it is retried on the next check): ${rec.error ?? "unknown"}`)
   return { ok: true, rules: live.rows, changes: [], pinnedAt: rec.recorded ? now : null, recorded: rec.recorded }
+}
+
+/**
+ * WAVE 153 (lane 153K — lane 153D outside-lane 5): PIN THE CHECKLIST WHEN THE DEAL IS CREATED. The deal's effective required-document
+ * version used to be recorded at its first full closing check, so an admin's checklist change between creation and that check was applied
+ * to a deal that began under the earlier list. Every transaction creation door (createTransactionFromOffer, kernel
+ * createManualTransaction, application createTransaction) calls this right after the row lands: the SAME writer and row shape
+ * (dealChecklistRules → recordPolicyDecision, source "transaction_created"); an existing pin is kept (insert-only, idempotent). Never
+ * throws and never blocks the creation — a pin that could not be written is retried by the first closing check, as before.
+ */
+export async function pinDealChecklistAtCreation(svc: Svc, input: { brokerageId: string; transactionId: string }): Promise<{ pinned: boolean; error: string | null }> {
+  try {
+    if (!input.brokerageId || !input.transactionId) return { pinned: false, error: "no tenant or transaction" }
+    const r = await dealChecklistRules(svc, { id: input.transactionId, brokerage_id: input.brokerageId }, "transaction_created")
+    if (!r.ok) return { pinned: false, error: r.error }
+    return { pinned: r.recorded || r.pinnedAt !== null, error: null }
+  } catch (e) {
+    return { pinned: false, error: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 /**
@@ -1480,7 +1499,7 @@ export async function loadClosingReadiness(svc: Svc, input: { brokerageId: strin
   const t = tx as { offer_id: string | null; listing_id: string | null; buyer_contact_id: string | null; seller_contact_id: string | null; contact_id: string | null }
 
   const { CLOSING_ATTESTATION_CHECK_TYPE } = await import("@/lib/commission/closing-verification")
-  const [rows, trid, cdaRows, recon, review, pin, flagged] = await Promise.all([
+  const [rows, trid, cdaRows, recon, review, pin, flagged, terms] = await Promise.all([
     svc.from("transaction_compliance_log").select("check_type, check_label, status, is_blocking, failure_reason").eq("brokerage_id", B).eq("transaction_id", T),
     svc.from("trid_timeline").select("id, closing_disclosure_delivered_date").eq("brokerage_id", B).eq("transaction_id", T).maybeSingle(),
     svc.from("closing_disclosure_agreement").select("id, status, compliance_approved_at, broker_approved_at, sent_to_title_at").eq("brokerage_id", B).eq("transaction_id", T).order("updated_at", { ascending: false }).limit(1),
@@ -1488,8 +1507,10 @@ export async function loadClosingReadiness(svc: Svc, input: { brokerageId: strin
     svc.from("policy_decisions").select("decision, evidence_json, created_at").eq("brokerage_id", B).eq("transaction_id", T).eq("target_type", CLOSING_REVIEW_TARGET).order("created_at", { ascending: false }).limit(1),
     svc.from("policy_decisions").select("created_at").eq("brokerage_id", B).eq("transaction_id", T).eq("target_type", "required_document_checklist").order("created_at", { ascending: false }).limit(1),
     svc.from("documents").select("id, classification").eq("brokerage_id", B).eq("transaction_id", T).filter("metadata->>untrusted_text_flagged", "eq", "true"),
+    // WAVE 153 (lane 153K — lane 153B outside-lane 7): the APPLIED commission-term changes an approval is pinned to (buildClosingReadiness).
+    svc.from("commission_adjustments").select("id, applied_at").eq("brokerage_id", B).eq("transaction_id", T).eq("adjustment_type", "rate_override").eq("is_active", true).not("applied_at", "is", null),
   ])
-  for (const [name, r] of [["compliance log", rows], ["TRID timeline", trid], ["CDA", cdaRows], ["settlement check", recon], ["closing review", review], ["checklist version", pin], ["flagged documents", flagged]] as const) {
+  for (const [name, r] of [["compliance log", rows], ["TRID timeline", trid], ["CDA", cdaRows], ["settlement check", recon], ["closing review", review], ["checklist version", pin], ["flagged documents", flagged], ["commission term changes", terms]] as const) {
     const err = (r as { error?: { message: string } | null }).error
     if (err) return { ok: false, error: `the ${name} could not be read: ${err.message}` }
   }
@@ -1511,6 +1532,7 @@ export async function loadClosingReadiness(svc: Svc, input: { brokerageId: strin
     attestationStatus: logRows.find((r) => r.check_type === CLOSING_ATTESTATION_CHECK_TYPE)?.status ?? null,
     attestationCheckType: CLOSING_ATTESTATION_CHECK_TYPE,
     flaggedDocuments: ((flagged.data ?? []) as Array<{ id: string; classification: string | null }>).map((d) => ({ id: d.id, label: documentClassificationLabel(d.classification) })),
+    commissionTermsVersion: ((terms.data ?? []) as Array<{ id: string; applied_at: string | null }>).map((r) => `${r.id}@${r.applied_at}`).sort().join(",") || null,
   })
 
   const { resolveTenantPayer } = await import("@/lib/errors")
