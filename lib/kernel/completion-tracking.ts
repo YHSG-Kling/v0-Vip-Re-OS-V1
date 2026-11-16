@@ -414,8 +414,21 @@ async function defaultSchedule(c: { brokerageId: string; completionId: string; c
   // The durable timer runs on Vercel's Workflow world (the deployed app). Anywhere else (a script, a proof, a local shell)
   // nothing is started — the row's due_at stays the cron net's to reconcile (a presence check only; no value is read).
   if (!process.env.VERCEL) return { scheduled: false, reason: "no Vercel Workflow runtime in this process — the cron net reconciles this completion" }
-  const [{ start }, { completionWatchWorkflow }] = await Promise.all([import("workflow/api"), import("@/workflows/completion-watch-workflow")])
-  await start(completionWatchWorkflow, [{ brokerageId: c.brokerageId, completionId: c.completionId, firstCheckAt: c.checkAt }])
+  // The run is STARTED by the composition root (app/api/internal/completion-watch/start/route.ts — wave 153), not imported here:
+  // importing workflows/completion-watch-workflow.ts pulled the whole inbound-reply chain into every page graph that reaches the
+  // supervisor. Same-origin, CRON_SECRET-authenticated (presence check only — the value is never logged); a refusal, a timeout
+  // or a missing secret is "not scheduled" and the cron net reconciles the row by its due_at, exactly as before.
+  const secret = process.env.CRON_SECRET
+  if (!secret) return { scheduled: false, reason: "no internal credential in this process — the cron net reconciles this completion" }
+  const baseUrl = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : (process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000")
+  const res = await fetch(`${baseUrl}/api/internal/completion-watch/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
+    body: JSON.stringify({ brokerageId: c.brokerageId, completionId: c.completionId, checkAt: c.checkAt }),
+    signal: AbortSignal.timeout(5000),
+  })
+  const out = (await res.json().catch(() => null)) as { scheduled?: boolean; reason?: string } | null
+  if (!res.ok || out?.scheduled !== true) return { scheduled: false, reason: out?.reason ?? `the durable timer start answered ${res.status}` }
   return { scheduled: true }
 }
 

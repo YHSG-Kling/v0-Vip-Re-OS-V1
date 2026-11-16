@@ -336,7 +336,7 @@ const LEDGER_TO_OUTCOME_CHANNEL: Readonly<Record<string, OutcomeChannel>> = Obje
 export const UNKNOWN_MATCH_WINDOW_MIN = 15
 export const UNKNOWN_ABANDON_HOURS = 72
 
-export interface UnknownActionRow { id: string; channel: string | null; subject_type: string; subject_id: string | null; provider_ref: string | null; created_at: string }
+export interface UnknownActionRow { id: string; channel: string | null; subject_type: string; subject_id: string | null; provider_ref: string | null; created_at: string; detail?: Record<string, unknown> | null }
 export interface ClaimRow { id: string; channel: string; provider_ref: string | null; contact_id: string | null; lead_id: string | null; claimed_at: string; verdict: ReconciliationVerdict }
 export interface UnknownSettlement { status: "executed" | "failed"; outcome: string; providerRef: string | null; error: string | null }
 
@@ -360,8 +360,164 @@ export function settleUnknownAction(row: UnknownActionRow, claims: readonly Clai
       ? { status: "failed", outcome: "reconciled_contradicted", providerRef: match.provider_ref, error: "the provider reported it did not land" }
       : { status: "executed", outcome: `reconciled_${match.verdict}`, providerRef: match.provider_ref, error: null }
   }
+  // WAVE 153 (lane 153S): a persisted SEND intent is send recovery's (recoverOutcomeUnknownSends) — it is reconciled, re-sent
+  // or held as a visible exception there, and never abandoned to 'failed' here (owner B10: outcome unknown is neither failed
+  // nor delivered, and "a later cycle may act again" is exactly the silent second solicitation the ruling forbids).
+  if (isSendRecoveryHeld(row.detail)) return null
   if (Number.isFinite(startedAt) && now.getTime() - startedAt >= UNKNOWN_ABANDON_HOURS * 3_600_000) {
     return { status: "failed", outcome: "reconcile_no_evidence", providerRef: row.provider_ref, error: `no provider record within ${UNKNOWN_ABANDON_HOURS}h proves this left — settled failed; a later cycle may act again` }
   }
   return null
+}
+
+// ─── SEND RECOVERY — the PURE half (wave 153, lane 153S — owner ruling B10) ──────────────────────────────────────────────────
+// "crash mid-send is marked 'outcome unknown' and need to be re-sent automatically" — and never a blind duplicate. The LIVE
+// half is lib/outcomes/reconciliation-ledger.ts recoverOutcomeUnknownSends (mounted on the reaper net beside the unknown
+// settler; no new cron, no new table — agent_action_ledger + outcome_reconciliations are the survivors).
+//
+// THE LADDER, per row at 'unknown' that carries a persisted send intent (lib/providers/dispatch.ts intentLedgerContext):
+//   (a) reconcile — the provider's own evidence first (outcome_reconciliations by ref / window; a status query where the
+//       provider documents one);
+//   (b) the provider confirms accepted → record it, NEVER resend;
+//   (c) the provider PROVES it never accepted → retry automatically with the SAME key, after a fresh relevance check
+//       (reply / cancelled campaign / inactive bundle) and a fresh pass through every dispatch gate;
+//   (d) the provider documents idempotent creation on that key (inside its window) → retry with the same key;
+//   (e) neither provable → no second solicitation: a VISIBLE exception (Exception Center, self_heal_events escalated) and
+//       the row stays 'unknown' — never failed, never delivered.
+
+/** How long a claim may sit 'proposed' before its process is presumed dead. Above every serverless max duration in use
+ *  (route budgets are minutes, not a quarter hour), so a slow-but-alive send is never re-claimed under it. */
+export const SEND_LEASE_TTL_MINUTES = 15
+/** Recovery passes per intent before an unprovable / unreachable outcome becomes an exception. */
+export const MAX_RECOVERY_ATTEMPTS = 6
+/** Bounded backoff between recovery passes: 15 min · 2^n, capped at 6 h. */
+export function recoveryBackoffMs(attempt: number): number {
+  return Math.min(6 * 3_600_000, SEND_LEASE_TTL_MINUTES * 60_000 * 2 ** Math.max(0, attempt))
+}
+
+export interface ProviderRecoveryCapability {
+  /** (a) the provider's documented way to ask "did you take it?". */
+  reconcile: "status_query" | "webhook_only" | "none"
+  /** (c) a successful status query that finds nothing PROVES non-acceptance (only meaningful with status_query wired). */
+  provesNonAcceptance: boolean
+  /** (d) documented idempotent creation on a caller key, and its window. */
+  idempotentCreate: { header: string; windowHours: number } | null
+  /** The query is implemented here (false = documented by the provider, not wired yet → treated as no query). */
+  wired: boolean
+  doc: string
+  note: string
+}
+
+/** Per provider — every capability cites the provider's own documentation; nothing is assumed. */
+export const SEND_RECOVERY_CAPABILITIES: Readonly<Record<string, ProviderRecoveryCapability>> = Object.freeze({
+  twilio_sms: {
+    reconcile: "status_query", provesNonAcceptance: true, idempotentCreate: null, wired: true,
+    doc: "https://www.twilio.com/docs/messaging/api/message-resource#read-multiple-message-resources",
+    note: "Message list filtered by To + DateSent is the account's message log; Message create documents no idempotency key (I-Twilio-Idempotency-Token is on Twilio's OWN webhooks to us)",
+  },
+  telnyx_sms: {
+    reconcile: "none", provesNonAcceptance: false, idempotentCreate: null, wired: false,
+    doc: "https://developers.telnyx.com/api/messaging/send-message",
+    note: "retrieve-by-id only for an id we hold; no recipient search on the Messaging API and no idempotency key on send",
+  },
+  bandwidth_sms: {
+    reconcile: "status_query", provesNonAcceptance: false, idempotentCreate: null, wired: false,
+    doc: "https://dev.bandwidth.com/apis/messaging/#tag/Messages/operation/listMessages",
+    note: "List Messages (destinationTn, fromDateTime) is documented but not wired here",
+  },
+  sendgrid_email: {
+    reconcile: "webhook_only", provesNonAcceptance: false, idempotentCreate: null, wired: true,
+    doc: "https://www.twilio.com/docs/sendgrid/for-developers/tracking-events/event",
+    note: "v3 mail/send documents no idempotency key and the Email Activity API is a paid add-on; the Event Webhook proves acceptance, nothing proves non-acceptance",
+  },
+  personal_email: {
+    reconcile: "status_query", provesNonAcceptance: false, idempotentCreate: null, wired: false,
+    doc: "https://developers.google.com/gmail/api/reference/rest/v1/users.messages/list",
+    note: "Gmail users.messages.list / Graph sentItems are documented but not wired; an email intent can leave by the agent's mailbox OR SendGrid, so a dead claim does not say which carrier to ask",
+  },
+  lob_direct_mail: {
+    reconcile: "status_query", provesNonAcceptance: true, idempotentCreate: { header: "Idempotency-Key", windowHours: 24 }, wired: true,
+    doc: "https://docs.lob.com/#tag/Idempotent-Requests",
+    note: "Idempotency-Key on create (24h window); list endpoints filter by metadata (https://docs.lob.com/#tag/Letters/operation/letters_list)",
+  },
+  web_push: {
+    reconcile: "none", provesNonAcceptance: false, idempotentCreate: null, wired: false,
+    doc: "https://www.rfc-editor.org/rfc/rfc8030#section-5.4",
+    note: "RFC 8030 Topic replaces only an UNDELIVERED message; no receipt lookup on the push services used",
+  },
+  social: { reconcile: "none", provesNonAcceptance: false, idempotentCreate: null, wired: false, doc: "https://developers.facebook.com/docs/graph-api/reference/page/feed/", note: "platform publish APIs document no idempotency key" },
+  voice: { reconcile: "status_query", provesNonAcceptance: false, idempotentCreate: null, wired: false, doc: "https://www.twilio.com/docs/voice/api/call-resource#read-multiple-call-resources", note: "Call list (To, StartTime) is documented but not wired; a call is never re-placed automatically" },
+  voice_drop: { reconcile: "none", provesNonAcceptance: false, idempotentCreate: null, wired: false, doc: "lib/voicedrop/orchestrate-voicedrop-send.ts", note: "no status query or idempotency key wired for the voicedrop carrier" },
+  unknown: { reconcile: "none", provesNonAcceptance: false, idempotentCreate: null, wired: false, doc: "-", note: "a channel or carrier with no recovery capability on record" },
+})
+
+/** The capability for a ledger row: its channel + the carrier recovery resolved for it (SMS by the actor's resolver). */
+export function recoveryCapabilityKey(channel: string | null, carrier: string | null): string {
+  if (channel === "sms") return carrier && SEND_RECOVERY_CAPABILITIES[`${carrier}_sms`] ? `${carrier}_sms` : "unknown"
+  if (channel === "email") return carrier === "sendgrid" ? "sendgrid_email" : "personal_email"
+  if (channel === "direct_mail") return "lob_direct_mail"
+  if (channel === "push") return "web_push"
+  if (channel === "social") return "social"
+  if (channel === "voice" || channel === "phone") return "voice"
+  if (channel === "voice_drop" || channel === "voicedrop") return "voice_drop"
+  return "unknown"
+}
+
+export type RecoveryProbe =
+  | { kind: "accepted"; providerRef: string | null }
+  | { kind: "not_accepted" }
+  | { kind: "indeterminate"; why: string }
+  | { kind: "unavailable"; why: string }
+
+export type SendRecoveryDecision =
+  | { action: "settle_accepted"; providerRef: string | null }
+  | { action: "retry"; basis: "never_accepted" | "idempotent_create" }
+  | { action: "cancel"; why: string }
+  | { action: "backoff"; why: string }
+  | { action: "exception"; why: string }
+
+/** Is this ledger detail a send intent recovery owns (so the 72h abandon rule must leave it alone)? */
+export function isSendRecoveryHeld(detail: Record<string, unknown> | null | undefined): boolean {
+  const intent = detail?.["send_intent"] as { v?: number } | undefined
+  return !!intent && typeof intent.v === "number"
+}
+
+/**
+ * PURE. One row's recovery decision. The order IS the safety argument:
+ *   provider says accepted → record (never resend, even if the person replied since);
+ *   relevance says stop (replied / campaign cancelled / bundle off) → cancel, nothing sent;
+ *   provider proves never-accepted (a wired query that can) → retry, same key;
+ *   provider documents idempotent creation and we are inside its window → retry, same key (the provider dedupes);
+ *   provider unreachable / rate-limited → bounded backoff, then exception;
+ *   otherwise → exception (no second solicitation).
+ * A retry also needs the replay envelope; without one the intent can be reconciled but never re-sent.
+ * @proofSeam exported so scripts/send-recovery-guard.ts asserts the ladder on the pure function directly.
+ */
+export function decideSendRecovery(input: {
+  capability: ProviderRecoveryCapability
+  probe: RecoveryProbe
+  relevance: { cancel: string | null; unreadable: string | null }
+  attempts: number
+  ageHours: number
+  hasReplay: boolean
+}): SendRecoveryDecision {
+  const { capability: cap, probe } = input
+  if (probe.kind === "accepted") return { action: "settle_accepted", providerRef: probe.providerRef }
+  if (input.relevance.cancel) return { action: "cancel", why: input.relevance.cancel }
+  const exhausted = input.attempts >= MAX_RECOVERY_ATTEMPTS
+  if (input.relevance.unreadable) {
+    return exhausted ? { action: "exception", why: `relevance could not be checked (${input.relevance.unreadable}); not re-sent` } : { action: "backoff", why: `relevance unreadable: ${input.relevance.unreadable}` }
+  }
+  if (probe.kind === "unavailable") {
+    return exhausted ? { action: "exception", why: `the provider could not be asked after ${input.attempts} passes (${probe.why}); not re-sent` } : { action: "backoff", why: probe.why }
+  }
+  const proven = probe.kind === "not_accepted" && cap.wired && cap.reconcile === "status_query" && cap.provesNonAcceptance
+  if (proven && input.hasReplay) return { action: "retry", basis: "never_accepted" }
+  const idem = cap.idempotentCreate
+  if (idem && input.ageHours < idem.windowHours && input.hasReplay) return { action: "retry", basis: "idempotent_create" }
+  if (proven) return { action: "exception", why: "the provider proves it never accepted, but the intent carries no replay envelope; a person must resend it" }
+  const why = probe.kind === "indeterminate" ? probe.why
+    : idem && input.ageHours >= idem.windowHours ? `past the provider's ${idem.windowHours}h idempotency window with no proof it never accepted`
+    : `${cap.reconcile === "none" || !cap.wired ? "no wired provider query can prove" : "the provider's evidence cannot prove"} whether it took this send (${cap.note})`
+  return { action: "exception", why: `outcome unknown: ${why}; not re-sent (no silent second solicitation)` }
 }

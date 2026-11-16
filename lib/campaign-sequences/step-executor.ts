@@ -455,6 +455,39 @@ export async function executeSequenceStep(
   // it carried now ride the one ledger that is written on every path.
   const dispatchResult: StepResult = await registry.dispatch(step.channel, stepCtx)
 
+  // ── Step 8a: CRASH MID-SEND (wave 153, lane 153S — owner B10) ─────────────────────────────────────────────────────────
+  // A step is keyed `enrollment:<id>:step:<id>` on the action ledger. When an earlier run of THIS step died mid-send, the
+  // ledger declines the re-run ("outcome unknown" / "already in flight") instead of sending twice — that is neither a send
+  // nor a failure, so the step is NOT advanced and NOT recorded failed (which dropped the touch). It waits, current_step
+  // unchanged, while send recovery (lib/outcomes/reconciliation-ledger.ts recoverOutcomeUnknownSends) reconciles it: the
+  // provider took it → the next run replays success and advances once; it never did → recovery re-sends with the same key;
+  // unprovable → a visible exception, and after the bounded re-checks the step advances as skipped, saying why.
+  if (dispatchResult.status !== "sent" && dispatchResult.providerKey === "action_ledger_gate") {
+    const { isOutcomePendingRecovery } = await import("@/lib/outcomes/send-intent-scope")
+    if (isOutcomePendingRecovery({ success: false, providerKey: dispatchResult.providerKey, error: dispatchResult.error })) {
+      const stepKey = `step_${nextStepNumber}`
+      const waits = (previousOutputs.__recovery_waits as Record<string, number> | undefined) ?? {}
+      const decision = decideDeferral(waits[stepKey] ?? 0)
+      if (decision.action === "reschedule") {
+        const { data: held, error: holdErr } = await supabase.from("sequence_enrollments").update({
+          next_step_at: decision.nextStepAt,
+          step_outputs: { ...previousOutputs, __recovery_waits: { ...waits, [stepKey]: decision.attempt } },
+        }).eq("id", enrollmentId).eq("brokerage_id", brokerageId).select("id")
+        if (holdErr || !Array.isArray(held) || held.length !== 1) console.error(`[step-executor] outcome-unknown hold NOT saved for ${enrollmentId}: ${holdErr?.message ?? "matched no row"}`)
+        return { status: "skipped", reason: `outcome unknown for this step's earlier attempt — waiting for send recovery (re-check ${decision.attempt}/${MAX_DEFERS})` }
+      }
+      const { error: giveUpErr } = await supabase.from("sequence_step_executions").insert({
+        enrollment_id: enrollmentId, brokerage_id: brokerageId, sequence_id: enrollment.sequence_id, step_id: step.id,
+        contact_id: contactId, channel: step.channel, status: "skipped",
+        blocked_reason: `outcome unknown after ${MAX_DEFERS} re-checks — held as a send-recovery exception, never re-sent blindly: ${dispatchResult.error ?? ""}`.trim(),
+        sent_at: null, provider_key: dispatchResult.providerKey ?? null,
+        started_at: stepStartedAt, finished_at: new Date().toISOString(), duration_ms: Date.now() - startedAt,
+      })
+      if (giveUpErr) console.error("[executeSequenceStep] outcome-unknown ledger write refused:", giveUpErr.message)
+      return await advanceEnrollment(supabase, enrollment, step, "skipped")
+    }
+  }
+
   const now = new Date().toISOString()
   const durationMs = Date.now() - startedAt
   const executionStatus = dispatchResult.status === "sent" ? "sent" : "failed"

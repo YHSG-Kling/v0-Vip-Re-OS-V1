@@ -96,6 +96,30 @@ export async function sendViaTwilio(
   return { success: true, provider: "twilio", messageId: res.data?.sid, status: res.data?.status }
 }
 
+/**
+ * READ-ONLY (wave 153, lane 153S — crash-mid-send recovery): the account's Message log for one recipient, newest first
+ * (Twilio "Read multiple Message resources", filter `To`). Sends nothing. Asked by lib/outcomes/reconciliation-ledger.ts
+ * recoverOutcomeUnknownSends when a send's process died between the claim and Twilio's answer: did Twilio take it?
+ */
+export async function listTwilioMessagesTo(
+  creds: SMSProviderCredentials,
+  to: string,
+): Promise<{ ok: boolean; status: number | null; data: { messages?: Array<{ sid: string; body: string | null; date_created: string | null }> } | null; error: string | null }> {
+  const accountSid = creds.apiKey
+  const authToken = creds.apiSecret
+  if (!accountSid || !authToken) return { ok: false, status: null, data: null, error: "Twilio credentials incomplete" }
+  const res = await callConnector<{ messages?: Array<{ sid: string; body: string | null; date_created: string | null }> }>({
+    connector: "twilio",
+    baseUrl: "https://api.twilio.com",
+    path: `/2010-04-01/Accounts/${encodeURIComponent(accountSid)}/Messages.json`,
+    method: "GET",
+    query: { To: to, PageSize: "50" },
+    auth: { style: "basic", username: accountSid, password: authToken },
+    timeoutMs: 15_000,
+  })
+  return { ok: res.ok, status: res.status, data: res.data, error: res.error }
+}
+
 // ─── TELNYX ──────────────────────────────────────────────────────────────────
 
 export async function sendViaTelnyx(

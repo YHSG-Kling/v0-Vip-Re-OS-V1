@@ -22,7 +22,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ingestProviderTruth } from "@/lib/outcomes/reconciliation-ledger"
+import { ingestProviderTruth, acceptIntentFromProviderEvent } from "@/lib/outcomes/reconciliation-ledger"
 import { TRUTH_SOURCES } from "@/lib/outcomes/reconciliation"
 import { secretsEqual } from "@/lib/security/constant-time"
 
@@ -59,8 +59,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, ignored: "missing event_type or piece id" })
   }
 
+  // 0. WAVE 153 (lane 153S — owner B10): the piece carries its send intent's key in metadata (lib/providers/dispatch.ts). When
+  //    the sending process died after Lob accepted the piece but before the claim was written, THIS event is the evidence:
+  //    the intent's own ledger row is settled from Lob's word (monotonic — only unknown / proposed move) and the missing claim
+  //    is opened. The intent's tenant is also the tenant this event must reconcile into — any other tenant's claim is refused.
+  const intentKey: string | null = typeof body?.body?.metadata?.intent_key === "string" ? body.body.metadata.intent_key : null
+  let intentTenant: string | null = null
+  if (intentKey) {
+    const accepted = await acceptIntentFromProviderEvent({ intentKey, channel: "direct_mail", providerRef: pieceId })
+    intentTenant = accepted.brokerageId
+    if (!accepted.ok) console.error(`[lob-events] intent ${pieceId} not settled: ${accepted.reason}`)
+  }
+
   // 1. Reconcile. An unknown piece id no-ops — not ours to record.
   const recon = await ingestProviderTruth({
+    expectedBrokerageId: intentTenant,
     channel: "direct_mail",
     providerRef: pieceId,
     truth: {

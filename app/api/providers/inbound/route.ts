@@ -94,6 +94,23 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ── Step 1b2: SENDER AUTHENTICATION (wave 153, lane 153S — carried finding 146B-SO-06) ──────────────────────────────────
+  // This door had NO sender-auth verdict: any From address was believed, so a forged From could be filed as a known
+  // contact's reply, stop their sequence or opt them out. The verdict is THE one fold (lib/inbound-mail/message-meta.ts
+  // inboundMetaFrom — DMARC / aligned DKIM / aligned SPF) over the provider's own authentication evidence. An explicit
+  // FAIL is refused before any match; `unknown` (no evidence either way) proceeds and is said in the response, exactly as
+  // app/api/webhooks/inbound-mail/route.ts treats it.
+  let senderAuth: "pass" | "fail" | "unknown" | null = null
+  if (inbound.channel === "email" && inbound.fromEmail) {
+    const { inboundMetaFrom } = await import("@/lib/inbound-mail/message-meta")
+    const evidence = senderAuthEvidence(inbound.providerType, inbound.raw)
+    senderAuth = inboundMetaFrom(evidence.bag as never, inbound.fromEmail, evidence.explicit).senderAuth
+    if (senderAuth === "fail") {
+      console.warn(`[providers/inbound] sender authentication FAILED for ${inbound.fromEmail} — refused (not matched, not recorded)`)
+      return NextResponse.json({ linked: false, sender_auth: "fail", refused: "the sender's domain authentication failed (DMARC / DKIM / SPF)" })
+    }
+  }
+
   // ── Step 1c: TEXT AN ACTION — a STAFF phone texting the tenant's own number is
   // commanding the AI team, not raising a hand as a lead (owner, 2026-09-06:
   // "text some sort of action with 30+ agents on standby"). The door resolves a
@@ -626,5 +643,24 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // ── Step 9: Return success ──────────────────────────────────────────────────
-  return NextResponse.json({ linked: true, entityType, entityId })
+  return NextResponse.json({ linked: true, entityType, entityId, ...(senderAuth ? { sender_auth: senderAuth } : {}) })
+}
+
+/** The provider's own authentication evidence for an inbound email, in the shapes each one posts: SendGrid Inbound Parse
+ *  (`headers` raw block + `dkim` / `SPF` verdict words), Postmark (`Headers` [{Name, Value}]), Mailgun (`message-headers`
+ *  [[k, v]] or event-data.message.headers). Module-private (a route file exports only its handlers). */
+function senderAuthEvidence(providerType: string, raw: unknown): { bag: unknown; explicit: { dkim?: string | null; spf?: string | null } } {
+  const str = (v: unknown) => (typeof v === "string" ? v : null)
+  if (providerType === "sendgrid") {
+    const ev = (Array.isArray(raw) ? raw[0] : raw) as Record<string, unknown> | undefined
+    return { bag: str(ev?.["headers"]) ?? {}, explicit: { dkim: str(ev?.["dkim"]), spf: str(ev?.["SPF"]) ?? str(ev?.["spf"]) } }
+  }
+  const body = (raw ?? {}) as Record<string, unknown>
+  if (providerType === "postmark") return { bag: Array.isArray(body["Headers"]) ? body["Headers"] : {}, explicit: {} }
+  if (providerType === "mailgun") {
+    const ev = ((body["event-data"] as Record<string, unknown>) ?? body)
+    const msg = ev["message"] as Record<string, unknown> | undefined
+    return { bag: body["message-headers"] ?? msg?.["headers"] ?? {}, explicit: {} }
+  }
+  return { bag: {}, explicit: {} }
 }

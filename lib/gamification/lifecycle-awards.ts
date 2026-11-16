@@ -185,12 +185,13 @@ export async function awardThresholdBadges(
   input: { agentId: string; brokerageId?: string | null },
 ): Promise<{ awarded: Array<{ id: string; name: string; tier: string | null; requiredPoints: number }>; refused: string[] }> {
   const out = { awarded: [] as Array<{ id: string; name: string; tier: string | null; requiredPoints: number }>, refused: [] as string[] }
-  let q = db.from("agents").select("id, brokerage_id, gamification_points").eq("id", input.agentId)
-  if (input.brokerageId) q = q.eq("brokerage_id", input.brokerageId)
-  const { data: agent, error: agentErr } = await q.maybeSingle()
+  // The agent is read by its own id (one row) and its STORED tenant is the tenant; a caller-supplied brokerage that disagrees
+  // is refused below — never a conditional predicate that decays into "any tenant" when the id is missing (CLAUDE.md §4).
+  const { data: agent, error: agentErr } = await db.from("agents").select("id, brokerage_id, gamification_points").eq("id", input.agentId).maybeSingle()
   if (agentErr) { out.refused.push(`agents read refused — threshold badges withheld: ${agentErr.message}`); return out }
   const a = agent as { brokerage_id: string | null; gamification_points: number | null } | null
   if (!a?.brokerage_id) return out
+  if (input.brokerageId != null && a.brokerage_id !== input.brokerageId) { out.refused.push("the agent does not belong to the named account — threshold badges withheld"); return out }
   const total = Number(a.gamification_points) || 0
   // The catalog is small (platform defaults + one tenant's own): the threshold is applied here, on the stored total.
   const { data: badges, error } = await db.from("gamification_badges").select("id, badge_name, badge_tier, required_points, trigger_event")

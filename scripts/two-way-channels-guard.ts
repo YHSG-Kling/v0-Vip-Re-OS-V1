@@ -260,7 +260,10 @@ async function main() {
   check("a postcard back / self-mailer outside never falls back to the front", !FRONT_AS_BACK.test(disp) && /back === params\.templateId/.test(disp))
   check("POSITIVE CONTROL — the alias finder sees the retired fallback", FRONT_AS_BACK.test("back: params.backTemplateId ?? process.env.LOB_POSTCARD_BACK_ID ?? params.templateId,"))
   check("the tenant's return address rides `from` when given; Lob's Idempotency-Key header comes from the caller's ledger key",
-    /params\.fromAddress/.test(disp) && /"Idempotency-Key": params\.ledger\.idempotencyKey/.test(disp) && (disp.match(/\}, lobHeaders\)/g) ?? []).length === 3)
+    // WAVE 153 (lane 153S): every mail intent is keyed now, so the header is the LEDGER ROW's key (caller key, cycle key,
+    // ambient intent or a generated intent id) — lobKey = lobIntentKey(<the key ledgerContextFor handed back>) — not only a
+    // caller-supplied one. The rule held is "the header comes from the ledger key", not one spelling of it.
+    /params\.fromAddress/.test(disp) && /"Idempotency-Key": lobKey/.test(disp) && /const lobKey = mailIntentKey \? lobIntentKey\(mailIntentKey\)/.test(disp) && (disp.match(/\}, lobHeaders\)/g) ?? []).length === 3)
 
   console.log("\nBLIND SPOTS: no live provider is called (Meta usersreplace / CustomAudience fields and Google removeAll are proven against a stubbed transport — WAITING_EXTERNAL a connected ad account); memSupabase has no RLS / CHECK; the cron and the dashboard are censused on stripped source, not invoked; the preference reader is English + Spanish rules only.")
   console.log(`\nRESULT: ${pass} passed, ${fail} failed${fail === 0 ? " ✅ TWO_WAY_CHANNELS_PASS" : ""}`)

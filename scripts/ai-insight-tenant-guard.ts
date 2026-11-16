@@ -1556,7 +1556,9 @@ const W24_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> =
   { file: "lib/ai-reply-coach/reply-draft-core.ts", table: "smart_assistant_suggestions", floor: 1 },
   { file: "lib/fatigue/fatigue-calculator.ts", table: "smart_assistant_suggestions", floor: 1 },
   { file: "lib/property-alerts/alert-notifier.ts", table: "smart_assistant_suggestions", floor: 1 },
-  { file: "lib/campaign-sequences/step-executor.ts", table: "sequence_step_executions", floor: 4 },
+  // floor 4 → 5 (wave 153, lane 153S: a crashed step now writes an awaiting-recovery row instead of being dropped as failed).
+  // A floor only TIGHTENS: at 4 the "writer removed" control (42) stayed green against five live writers.
+  { file: "lib/campaign-sequences/step-executor.ts", table: "sequence_step_executions", floor: 5 },
   // DELIBERATE LIST UPDATE (wave 146, lane 146G — owner ruling 15). open-house-automation.ts held TWO
   // open_house_attendees writers: recordVisitor and a twin checkInAttendee with no importer, which defaulted
   // tcpa_consent to true. The twin is RETIRED with its eight-step proof (scripts/manager-duplicate-proof-guard.ts,

@@ -71,6 +71,8 @@ export async function POST(request: NextRequest) {
   //    send (a console test, another environment on the same account), and inventing
   //    a ledger row for it would record a touch that never came from us.
   const recon = await ingestProviderTruth({
+    // WAVE 153 (lane 153S): a per-tenant callback URL names its tenant; a sid claimed by any OTHER tenant is refused.
+    expectedBrokerageId: request.nextUrl.searchParams.get("brokerage_id"),
     channel: "sms",
     providerRef: sid,
     truth: { status, at: now, detail: errorCode ? { error_code: errorCode } : null },

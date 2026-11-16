@@ -232,11 +232,21 @@ export const REAPER_NET: ReaperEntry[] = [
     manager: "data_steward",
     lane: "signals",
     protects: "AI actions whose provider never answered, settled against the provider's own record",
+    // Wave 153 (lane 153S, owner B10): crash-mid-send recovery runs FIRST on the same tick — a dead claim becomes
+    // 'unknown', then each persisted send intent is reconciled, re-sent with its SAME key where the provider proves it never
+    // accepted (or creates idempotently), or held as a visible exception (recoverOutcomeUnknownSends). The settler then
+    // handles what is left; it never abandons a send intent recovery owns.
     run: async (b, svc) => {
-      const { settleUnknownActions } = await import("@/lib/outcomes/reconciliation-ledger")
-      const r = await settleUnknownActions(b, svc)
+      const m = await import("@/lib/outcomes/reconciliation-ledger")
+      const rec = await m.recoverOutcomeUnknownSends(b, svc)
+      const r = await m.settleUnknownActions(b, svc)
+      if (rec.errors.length > 0) console.error(`[reaper-net] unknown_action_outcomes (send recovery) ${b}:`, rec.errors.join("; "))
       if (r.errors.length > 0) console.error(`[reaper-net] unknown_action_outcomes ${b}:`, r.errors.join("; "))
-      return norm(r)
+      return {
+        scanned: r.scanned + rec.scanned + rec.promoted,
+        reaped: r.reaped + rec.reconciled + rec.retried + rec.cancelled,
+        escalated: r.escalated + rec.exceptions,
+      }
     },
   },
   {

@@ -42,27 +42,9 @@ export const emailAdapter: ChannelAdapter = {
       }
     }
 
-    // Try personal OAuth first
-    if (agentUserId) {
-      try {
-        const { sendPersonalEmail } = await import("@/lib/providers/email/personal-email-adapter")
-        const personal = await sendPersonalEmail({
-          agentUserId,
-          to: contact.email,
-          subject: rendered.subject ?? "(No Subject)",
-          htmlBody: rendered.htmlBody,
-          textBody: rendered.textBody,
-        })
-        if (personal.success) {
-          return {
-            status: "sent",
-            providerKey: personal.provider ?? "personal",
-            messageId: personal.messageId,
-          }
-        }
-      } catch { /* fall through */ }
-    }
-
+    // The agent's own mailbox goes THROUGH the one outbound door (wave 153, 153S outside 1): the direct personal-OAuth send that
+    // sat here ran before dispatchEmail — no suppression / consent / quiet-hours / content gate and no ledger row, so a crash
+    // lost the intent. dispatchEmail carries the mailbox itself (sendAsAgentUserId → messaging's tier 1).
     const result = await dispatchEmail({
       brokerageId,
       systemSource: "sequence",
@@ -71,6 +53,7 @@ export const emailAdapter: ChannelAdapter = {
       to: contact.email,
       subject: rendered.subject ?? "(No Subject)",
       html: rendered.htmlBody,
+      ...(agentUserId ? { sendAsAgentUserId: agentUserId } : {}),
       ledger: sequenceStepLedger(ctx),
     })
 

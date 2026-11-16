@@ -51,7 +51,12 @@
  * NEVER TWICE. A follow-on is persisted at most once (idempotency key); a drain CLAIMS it pending → running with a counted
  * compare-and-set (a concurrent or replayed drain matches nothing and skips); a retry happens ONLY after a DEFINITIVE
  * refusal (the orchestrator said nothing was sent), bounded by the de-confliction policy's MAX_DEFERS; a throw mid-send or
- * a claim that went stale is "outcome unknown" → failed, never re-sent automatically (a person decides).
+ * a claim that went stale is "outcome unknown".
+ * WAVE 153 (lane 153S — owner B10, "need to be re-sent automatically"): for an INTENT-KEYED channel (email / sms / mail —
+ * INTENT_KEYED_BUNDLE_CHANNELS) the follow-on is re-run, bounded, under the SAME intent key (withSendIntent) and the action
+ * ledger decides: executed → replayed, unknown → waits for send recovery (which reconciles with the provider and re-sends only
+ * when the provider proves it never accepted or creates idempotently), nothing sent → sent once. Every other channel keeps
+ * "outcome unknown → failed, never re-sent automatically (a person decides)".
  */
 import "server-only"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
@@ -265,6 +270,12 @@ async function dispatchBundleItem(svc: Svc, item: Pick<BundleItem, "channel" | "
 const PERSON_FACING_ARBITER_CHANNEL: Readonly<Record<string, string>> = Object.freeze({
   email: "email", sms: "sms", voicedrop: "voice_drop", direct_mail_postcard: "direct_mail", direct_mail_letter: "direct_mail", portal_push: "in_app",
 })
+/** WAVE 153 (lane 153S): the item channels whose ONE send goes through a lib/providers/dispatch.ts dispatcher that keys its
+ *  ledger row on the ambient intent (dispatchEmail / dispatchSms / dispatchDirectMail via their preset orchestrators). Only
+ *  these may be RE-RUN after a crash — the ledger makes the re-run at-most-once. voicedrop (its own ledger context), the portal
+ *  card insert and the staged social / podcast / ad rows carry no keyed intent: a crash there stays a visible failure. */
+const INTENT_KEYED_BUNDLE_CHANNELS: ReadonlySet<string> = new Set(["email", "sms", "direct_mail_postcard", "direct_mail_letter"])
+
 /** Broadcast / audience work — never a touch to this person: the governing plane named on the record. */
 const AUDIENCE_PLANE: Readonly<Record<string, string>> = Object.freeze({
   social_post: "social approval gate (publish-social-posts)", podcast_episode: "podcast distribution (distribute-podcast-episodes)", ad_retarget: "ads_manager launcher budget gates",
@@ -287,6 +298,10 @@ const isId = (v: unknown): v is string => typeof v === "string" && UUID_RE.test(
 
 interface FollowOnPayload {
   idempotency_key: string
+  /** WAVE 153 (lane 153S): re-checks spent waiting for send recovery on this follow-on's intent (bounded by the deferral policy). */
+  recovery_waits?: number
+  /** WAVE 153 (lane 153S): times a stale claim of this follow-on was re-queued under its same intent key. */
+  recovery_requeues?: number
   bundle_id: string
   bundle_dispatch_id: string
   bundle_item_id: string
@@ -589,6 +604,23 @@ export async function executeBundleFollowOnTask(svc: Svc, task: { id: string }, 
       const next = await persistNextFollowOn(svc, ctx, origin, now)
       return { verdict: "cancelled" as const, reason: why, next }
     }
+    const awaitSendRecovery = async (why: string) => {
+      // WAVE 153 (lane 153S): this follow-on's send intent is unresolved on the action ledger (outcome unknown / in flight).
+      // Not a send and not a failure: the SAME follow-on re-asks later, bounded, while send recovery reconciles the intent
+      // (lib/outcomes/reconciliation-ledger.ts recoverOutcomeUnknownSends). Past the bound the piece is closed failed with
+      // the reason — the intent's own ledger row stays the visible exception; it is never re-sent blindly.
+      const { decideDeferral } = await import("@/lib/campaign-sequences/deferral-policy")
+      const d = decideDeferral(p.recovery_waits ?? 0, now.getTime())
+      if (d.action === "reschedule" && d.nextStepAt) {
+        await settle("pending", { lastError: `outcome unknown — ${why}; waiting for send recovery`, scheduledFor: d.nextStepAt, payload: { ...p, recovery_waits: d.attempt } })
+        return { verdict: "retry" as const, reason: `outcome unknown (${why}) — re-checked at ${d.nextStepAt} under the same intent key, never sent twice` }
+      }
+      const final = `outcome unknown — ${why}; still unresolved after ${d.attempt - 1} re-checks — held as a send-recovery exception, not re-sent`
+      await settle("failed", { lastError: final, countAttempt: true, payload: withOutcome({ status: "failed", error: final }) })
+      await recordItemOutcome(svc, B, p.bundle_dispatch_id, p.bundle_item_id, { channel: p.item.channel, preset_id: p.item.preset_id, success: false, error: final, status: "failed" })
+      const next = await persistNextFollowOn(svc, ctx, origin, now)
+      return { verdict: "failed" as const, reason: final, next }
+    }
 
     // 3. RE-VALIDATE against the live rows (tenant-pinned).
     const { data: dispatch, error: dErr } = await svc.from("campaign_bundle_dispatches").select("id, bundle_id, contact_id, lead_id")
@@ -685,15 +717,30 @@ export async function executeBundleFollowOnTask(svc: Svc, task: { id: string }, 
       qrScanUrl: ctx.qrScanUrl, systemSource: ctx.systemSource ?? undefined,
     }
     const send = deps.dispatchItem ?? dispatchBundleItem
+    // WAVE 153 (lane 153S — owner B10): the send runs under THIS follow-on's own intent key, so every governed send inside it
+    // (lib/providers/dispatch.ts) is keyed `<payload.idempotency_key>:<action>` on the action ledger. A re-run of the same
+    // follow-on after a crash meets the SAME ledger row: executed → replayed (no second send); unknown / in flight → declined
+    // until send recovery reconciles it; never-accepted → sent once.
+    const { withSendIntent, isOutcomePendingRecoveryError } = await import("@/lib/outcomes/send-intent-scope")
+    const intentKey = p.idempotency_key || followOnKey(p.bundle_dispatch_id, p.bundle_item_id)
+    const ledgered = INTENT_KEYED_BUNDLE_CHANNELS.has(li.channel)
     let outcome: BundleChannelOutcome
     try {
-      outcome = await send(svc, { channel: li.channel, preset_id: li.preset_id }, sender, recipient)
+      outcome = await withSendIntent(intentKey, () => send(svc, { channel: li.channel, preset_id: li.preset_id }, sender, recipient))
     } catch (err) {
-      const why = `outcome unknown — the send threw (${(err as Error)?.message ?? String(err)}); never re-sent automatically`
+      if (ledgered) {
+        // The ledger row of this intent holds the truth (settled 'unknown' on a timeout, 'failed' when nothing left). Re-run
+        // the SAME follow-on later — bounded — and let the ledger decide; never closed as if it had not been sent.
+        return await awaitSendRecovery(`the send threw (${(err as Error)?.message ?? String(err)})`)
+      }
+      const why = `outcome unknown — the send threw (${(err as Error)?.message ?? String(err)}); this ${li.channel} piece has no keyed send intent, so it is never re-sent automatically (a person decides)`
       await settle("failed", { lastError: why, countAttempt: true, payload: withOutcome({ status: "failed", error: why, decision: decisionNote }) })
       await recordItemOutcome(svc, B, p.bundle_dispatch_id, p.bundle_item_id, { channel: li.channel, preset_id: li.preset_id, success: false, error: why, status: "failed" })
       const next = await persistNextFollowOn(svc, ctx, origin, now)
       return { verdict: "failed", reason: why, next }
+    }
+    if (!outcome.success && ledgered && isOutcomePendingRecoveryError(outcome.error)) {
+      return await awaitSendRecovery(outcome.error ?? "outcome unknown")
     }
 
     // 8. SETTLE on the orchestrator's truth.
@@ -738,8 +785,26 @@ export async function recoverStaleBundleFollowOns(svc: Svc, deps: Pick<FollowOnD
     const { data, error } = await svc.from("orchestrator_tasks").select("id, brokerage_id, payload")
       .eq("task_type", BUNDLE_FOLLOW_ON_TASK).eq("status", "running").lt("updated_at", cutoff).limit(50)
     if (error) { out.errors.push(`stale follow-ons unreadable: ${error.message}`); return out }
+    const { MAX_DEFERS } = await import("@/lib/campaign-sequences/deferral-policy")
     for (const row of (data ?? []) as Array<{ id: string; brokerage_id: string; payload: FollowOnPayload }>) {
-      const why = "outcome unknown — the drain stopped mid-send; this piece is never re-sent automatically (a person can resend it)"
+      // WAVE 153 (lane 153S — owner B10, "need to be re-sent automatically"): a follow-on whose send is intent-keyed is
+      // RE-QUEUED, not closed — the re-run goes back through every check above under the SAME intent key, and the action
+      // ledger makes it at-most-once (executed → replayed; unknown → waits for send recovery; nothing sent → sent once).
+      // Bounded by the deferral policy's MAX_DEFERS; a channel with no keyed intent keeps the visible failure below.
+      const requeues = row.payload?.recovery_requeues ?? 0
+      if (row.payload?.item && INTENT_KEYED_BUNDLE_CHANNELS.has(row.payload.item.channel) && requeues < MAX_DEFERS) {
+        const note = `outcome unknown — the drain stopped mid-send; re-queued under the same intent key (${requeues + 1}/${MAX_DEFERS}) — the send ledger decides, never twice`
+        const { data: requeued, error: rqErr } = await svc.from("orchestrator_tasks").update({
+          status: "pending", last_error: note, scheduled_for: now.toISOString(), updated_at: now.toISOString(),
+          payload: { ...row.payload, recovery_requeues: requeues + 1, outcome: { ...(row.payload?.outcome ?? {}), last_recovery: note } },
+        }).eq("id", row.id).eq("brokerage_id", row.brokerage_id).eq("status", "running").lt("updated_at", cutoff).select("id")
+        if (rqErr) { out.errors.push(`${row.id}: ${rqErr.message}`); continue }
+        if (Array.isArray(requeued) && requeued.length === 1) out.recovered++
+        continue
+      }
+      const why = requeues >= MAX_DEFERS
+        ? `outcome unknown — the drain stopped mid-send ${requeues + 1} times; not re-queued again (the send ledger row is the visible exception; a person can resend it)`
+        : "outcome unknown — the drain stopped mid-send; this piece has no keyed send intent, so it is never re-sent automatically (a person can resend it)"
       const { data: moved, error: mErr } = await svc.from("orchestrator_tasks").update({
         status: "failed", last_error: why, executed_at: now.toISOString(), updated_at: now.toISOString(),
         payload: { ...row.payload, outcome: { ...(row.payload?.outcome ?? {}), status: "failed", error: why, decided_at: now.toISOString() } },

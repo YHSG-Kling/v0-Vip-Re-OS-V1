@@ -282,7 +282,16 @@ async function main() {
     const wf = code("workflows/completion-watch-workflow.ts")
     check("the DURABLE TIMER is a Vercel Workflow: 'use workflow' + sleep until due + a 'use step' that runs superviseCompletion with trigger 'workflow', bounded",
       /"use workflow"/.test(wf) && /"use step"/.test(wf) && /await sleep\(when\)/.test(wf) && /trigger: "workflow"/.test(wf) && /MAX_CHECKS/.test(wf))
-    check("opening / advancing a completion STARTS that workflow (start(completionWatchWorkflow, …)) — no cron in the path", /start\(completionWatchWorkflow,/.test(lib) && /import\("workflow\/api"\)/.test(lib))
+    // wave 153: the supervisor asks the composition root to start the run (a same-origin authenticated self-call) instead of
+    // importing the workflow — the RULE is unchanged (opening / advancing a completion starts the durable timer, no cron in the path).
+    const startRoute = code("app/api/internal/completion-watch/start/route.ts")
+    check("opening / advancing a completion STARTS that workflow through the composition root (the supervisor posts to the internal start route; the route runs start(completionWatchWorkflow, …)) — no cron in the path",
+      /\/api\/internal\/completion-watch\/start/.test(lib) && /Authorization: `Bearer \$\{secret\}`/.test(lib) && /start\(completionWatchWorkflow,/.test(startRoute) && /import\("workflow\/api"\)/.test(startRoute))
+    check("the start route is CRON_SECRET-gated and re-reads the completion pinned to the named tenant before starting anything",
+      /verifyCronAuth\(request\)/.test(startRoute) && /from\("manager_completions"\)\.select\("id"\)\.eq\("id", completionId\)\.eq\("brokerage_id", brokerageId\)/.test(startRoute) && startRoute.indexOf("verifyCronAuth(request)") < startRoute.indexOf("manager_completions") && startRoute.indexOf("manager_completions") < startRoute.indexOf("start(completionWatchWorkflow"))
+    check("the supervisor no longer imports the workflow (the page-graph edge is cut; a refused start is 'not scheduled' → the cron net)",
+      !/import\(["']@\/workflows\/completion-watch-workflow["']\)/.test(lib) && /the cron net reconciles/.test(lib))
+    check("POSITIVE CONTROL: the importer finder sees a dynamic import of the workflow", /import\(["']@\/workflows\/completion-watch-workflow["']\)/.test(`await import("@/workflows/completion-watch-workflow")`))
     const pageReach = ["lib/kernel/self-healing.ts", "lib/kernel/os-health.ts"].filter((f) => /import\(["']@\/lib\/kernel\/completion-tracking["']\)|from ["']@\/lib\/kernel\/completion-tracking["']/.test(code(f)))
     check("self-healing and os-health (both reachable from dashboard pages) never import the supervisor — the executors are HANDED to the engine", pageReach.length === 0, pageReach.join(", "))
     check("lib/kernel/completion-tracking.ts has NO static import (every survivor is lazy — a leaf wherever it is reached)", !/^import\s/m.test(lib))

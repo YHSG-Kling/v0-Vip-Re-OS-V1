@@ -18,8 +18,10 @@
  *      orchestrator, chains to the next item, and a replayed tick sends nothing.
  *   C. ADVERSE — arbiter wait (bounded, re-checked), suppressed Contact (halt → cancelled, chain continues), bundle
  *      deactivated (chain stops), item removed (cancelled, chain continues), changed audience (chain stops), provider
- *      failure (retried, never twice, then failed), gate refusal (never retried), a throw mid-send (outcome unknown, never
- *      re-sent), two concurrent drains (one send), a stale claim (failed, never re-sent), a converted lead (stops), a lead
+ *      failure (retried, never twice, then failed), gate refusal (never retried), a throw mid-send (outcome unknown — wave 153
+ *      lane 153S: a keyed channel re-checks under its intent and the ledger decides, one send ever; a non-keyed channel is
+ *      failed, never re-sent), two concurrent drains (one send), a stale claim (keyed: re-queued and replayed, never a second
+ *      send; non-keyed: failed, never re-sent), a converted lead (stops), a lead
  *      on a phone channel (skipped), an unrelated tenant's dispatch (refused), an audience piece (no Contact arbiter).
  *   D. THE STABLE ITEM IDENTITY — an edit keeps kept items' ids, deletes only removed items, inserts only new ones;
  *      another tenant's bundle is refused.
@@ -32,6 +34,7 @@ import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import { stripComments } from "./strip-comments"
 import { memSupabase, type MemClient, type Row } from "./in-memory-supabase"
+import { ambientSendIntentKey } from "../lib/outcomes/send-intent-scope"
 
 // ── the seams ───────────────────────────────────────────────────────────────────────────────────────────────────
 interface SendCall { channel: string; args: Record<string, any> }
@@ -45,15 +48,31 @@ const H = {
   arbitrate: (_input: any): any => ({ choice: "send_now", decision: { kind: "send_now", waitHours: null, rationale: "now is fine" }, halt: null }),
   session: { brokerageId: "", agentScopeId: "" },
   cron: { success: null as any, failure: null as any },
+  /** The action ledger as the stubbed orchestrators see it: intent key → executed (with its result) / unknown. */
+  ledger: new Map<string, { status: "executed" | "unknown"; result?: any }>(),
 }
 ;(globalThis as any).__B153 = {
   get svc() { return H.svc },
   send: (channel: string, args: any) => {
+    // WAVE 153 (lane 153S): the stubbed orchestrators stand in for lib/providers/dispatch.ts, so they honour the AMBIENT send
+    // intent the executor now sends under (lib/outcomes/send-intent-scope.ts withSendIntent) the way the action ledger does:
+    // an executed intent replays its result (no second send), an intent whose attempt threw is 'outcome unknown' and declined
+    // with the ledger's own words. The REAL ledger's claim / re-claim semantics are proved in scripts/send-recovery-guard.ts.
+    const key = ambientSendIntentKey(`bundle.${channel}.send`)
+    const prior = key ? H.ledger.get(key) : undefined
+    if (prior?.status === "executed") return prior.result
+    if (prior?.status === "unknown") return { success: false, error: "An earlier attempt's outcome is unknown (the provider did not answer) — not retried; reconcile it first" }
     H.sends.push({ channel, args })
     const f = H.outcome[channel]
-    if (f) return f(args)
-    const id = `prov-${channel}-${H.sends.length}`
-    return { success: true, messageId: id, jobId: id, socialPostIds: [id], distributionLogIds: [id], adCampaignId: id, rendered: true }
+    let res: any
+    try {
+      res = f ? f(args) : (() => { const id = `prov-${channel}-${H.sends.length}`; return { success: true, messageId: id, jobId: id, socialPostIds: [id], distributionLogIds: [id], adCampaignId: id, rendered: true } })()
+    } catch (e) {
+      if (key) H.ledger.set(key, { status: "unknown" })
+      throw e
+    }
+    if (key && res?.success) H.ledger.set(key, { status: "executed", result: res })
+    return res
   },
   arbitrate: (input: any) => { H.arbCalls.push({ input }); return H.arbitrate(input) },
   session: () => H.session,
@@ -136,7 +155,7 @@ function seedBundle(db: MemClient, items: Array<{ channel: string; preset_id: st
 }
 const tasks = (db: MemClient, dispatchId?: string) => db.tables.orchestrator_tasks.filter((t) => t.task_type === "bundle_follow_on" && (!dispatchId || t.payload?.bundle_dispatch_id === dispatchId))
 const pendingOf = (db: MemClient, dispatchId: string) => tasks(db, dispatchId).filter((t) => t.status === "pending")
-const reset = (db: MemClient) => { H.svc = db; H.sends.length = 0; H.arbCalls.length = 0; H.outcome = {}; H.arbitrate = () => ({ choice: "send_now", decision: { kind: "send_now", waitHours: null, rationale: "now is fine" }, halt: null }) }
+const reset = (db: MemClient) => { H.svc = db; H.sends.length = 0; H.ledger.clear(); H.arbCalls.length = 0; H.outcome = {}; H.arbitrate = () => ({ choice: "send_now", decision: { kind: "send_now", waitHours: null, rationale: "now is fine" }, halt: null }) }
 const clickArgs = (bundleId: string, contactId = C1) => ({
   brokerageId: B, bundleId, contactId, agentId: AGENT, agentUserId: AGENT_USER, userId: AGENT_USER,
   recipientName: "Dana Rivera", mailingAddress: "", city: "", state: "", zip: "", recipientFirstName: "Dana", recipientLastName: "Rivera",
@@ -267,15 +286,31 @@ async function main() {
   const grv = await drainOne(gr.dispatchId)
   check("GATE REFUSAL (opted out): cancelled at once, never rescheduled", grv.verdict === "cancelled" && tasks(db, gr.dispatchId).find((t) => t.payload.bundle_item_id === gr.itemIds[1])?.status === "cancelled")
 
-  // C8 — a throw mid-send is outcome unknown → failed, never re-sent
+  // C8 — a throw mid-send is outcome unknown. WAVE 153 (lane 153S, owner B10 — "need to be re-sent automatically"): on an
+  // intent-keyed channel the SAME follow-on is re-checked (bounded) under its intent and the ledger decides — never a blind
+  // second send; on a channel with no keyed intent it stays failed, never re-sent (the pre-153S rule, kept where it must hold).
   reset(db)
   const th = await one([{ channel: "email", preset_id: P.email }, { channel: "sms", preset_id: P.sms }])
   H.outcome.sms = () => { throw new Error("socket hang up") }
   const thv = await drainOne(th.dispatchId)
   const tht = tasks(db, th.dispatchId).find((t) => t.payload.bundle_item_id === th.itemIds[1])!
-  check("A THROW MID-SEND: failed 'outcome unknown', not rescheduled", thv.verdict === "failed" && tht.status === "failed" && /outcome unknown/.test(tht.last_error ?? ""))
+  check("A THROW MID-SEND (keyed sms): 'outcome unknown', re-checked later under the same intent — not closed as failed", thv.verdict === "retry" && tht.status === "pending" && /outcome unknown/.test(tht.last_error ?? "") && tht.payload.recovery_waits === 1, `${thv.verdict} ${tht.status} ${tht.last_error}`)
+  check("…the send ran under the follow-on's own intent key (positive control: the stub saw it)", [...H.ledger.keys()].some((k) => k.startsWith(`${tht.payload.idempotency_key}:`)))
+  tht.scheduled_for = new Date(Date.now() - 1000).toISOString()
   await runDrain()
-  check("…and a later tick never re-sends it", H.sends.filter((x) => x.channel === "sms").length === 1)
+  const tht2 = tasks(db, th.dispatchId).find((t) => t.payload.bundle_item_id === th.itemIds[1])!
+  check("…and a later tick NEVER re-sends while the outcome is unknown (the ledger declines; still one sms)", H.sends.filter((x) => x.channel === "sms").length === 1 && tht2.status === "pending" && tht2.payload.recovery_waits === 2, `${H.sends.filter((x) => x.channel === "sms").length} ${tht2.status} ${tht2.payload.recovery_waits}`)
+  // recovery reconciled it as ACCEPTED (the provider took it) → the next tick replays success: completed, still ONE send.
+  H.ledger.set([...H.ledger.keys()].find((k) => k.startsWith(`${tht.payload.idempotency_key}:`))!, { status: "executed", result: { success: true, messageId: "SM-reconciled" } })
+  tht2.scheduled_for = new Date(Date.now() - 1000).toISOString()
+  await runDrain()
+  const tht3 = tasks(db, th.dispatchId).find((t) => t.payload.bundle_item_id === th.itemIds[1])!
+  check("…once send recovery settles it accepted, the re-run COMPLETES on the replay — exactly one sms ever", tht3.status === "completed" && H.sends.filter((x) => x.channel === "sms").length === 1 && tht3.payload.outcome?.message_id === "SM-reconciled", `${tht3.status} ${H.sends.length}`)
+  reset(db)
+  const thn = await one([{ channel: "email", preset_id: P.email }, { channel: "voicedrop", preset_id: P.sms }])
+  H.outcome.voicedrop = () => { throw new Error("socket hang up") }
+  const thnv = await drainOne(thn.dispatchId)
+  check("CONTROL — a throw on a channel with NO keyed intent (voicedrop): failed 'outcome unknown', never re-sent", thnv.verdict === "failed" && /outcome unknown/.test(tasks(db, thn.dispatchId).find((t) => t.payload.bundle_item_id === thn.itemIds[1])?.last_error ?? ""))
 
   // C9 — two concurrent drains claim one task → one send
   reset(db)
@@ -284,14 +319,25 @@ async function main() {
   const [ra, rb] = await Promise.all([bundleMod.executeBundleFollowOnTask(db, { id: ccTask.id }), bundleMod.executeBundleFollowOnTask(db, { id: ccTask.id })])
   check("CONCURRENT DRAINS: exactly one sends, the other is skipped by the counted claim", H.sends.filter((x) => x.channel === "sms").length === 1 && [ra.verdict, rb.verdict].sort().join(",") === "sent,skipped", `${ra.verdict},${rb.verdict}`)
 
-  // C10 — a stale claim is failed, never re-sent; the chain continues
+  // C10 — a stale claim (the drain died mid-send). WAVE 153 (lane 153S, owner B10): a keyed follow-on is RE-QUEUED under its
+  // same intent and the ledger decides; here the provider HAD taken it (the intent is executed), so the re-run replays and
+  // completes — never a second send — and the chain continues. A non-keyed channel keeps "failed, never re-sent".
   reset(db)
   const st = await one([{ channel: "email", preset_id: P.email }, { channel: "sms", preset_id: P.sms }, { channel: "email", preset_id: P.email2 }])
   const stTask = pendingOf(db, st.dispatchId)[0]
   stTask.status = "running"; stTask.updated_at = new Date(Date.now() - 30 * 60_000).toISOString()
+  H.ledger.set(`${stTask.payload.idempotency_key}:bundle.sms.send`, { status: "executed", result: { success: true, messageId: "SM-before-crash" } })
   const rec = await bundleMod.recoverStaleBundleFollowOns(db)
-  check("STALE CLAIM (drain died mid-send): failed 'outcome unknown', not re-sent, the next item persisted", rec.recovered === 1 && stTask.status === "failed" && /outcome unknown/.test(stTask.last_error ?? "") && H.sends.length === 1 && pendingOf(db, st.dispatchId)[0]?.payload.bundle_item_id === st.itemIds[2])
-  const fresh = pendingOf(db, st.dispatchId)[0]; fresh.status = "running"; fresh.updated_at = new Date().toISOString()
+  check("STALE CLAIM (keyed sms): re-queued 'outcome unknown' under the same intent, not closed as failed", rec.recovered === 1 && stTask.status === "pending" && /outcome unknown/.test(stTask.last_error ?? "") && stTask.payload.recovery_requeues === 1, `${stTask.status} ${stTask.last_error}`)
+  const stv = await bundleMod.executeBundleFollowOnTask(db, { id: stTask.id })
+  check("…the re-run REPLAYS the send the provider already took: completed, no second sms, the next item persisted", stv.verdict === "sent" && stTask.status === "completed" && H.sends.length === 1 && pendingOf(db, st.dispatchId)[0]?.payload.bundle_item_id === st.itemIds[2], `${stv.verdict} sends=${H.sends.length}`)
+  reset(db)
+  const stn = await one([{ channel: "email", preset_id: P.email }, { channel: "voicedrop", preset_id: P.sms }, { channel: "email", preset_id: P.email2 }])
+  const stnTask = pendingOf(db, stn.dispatchId)[0]
+  stnTask.status = "running"; stnTask.updated_at = new Date(Date.now() - 30 * 60_000).toISOString()
+  const recn = await bundleMod.recoverStaleBundleFollowOns(db)
+  check("STALE CLAIM (no keyed intent — voicedrop): failed 'outcome unknown', not re-sent, the next item persisted", recn.recovered === 1 && stnTask.status === "failed" && /outcome unknown/.test(stnTask.last_error ?? "") && H.sends.length === 1 && pendingOf(db, stn.dispatchId)[0]?.payload.bundle_item_id === stn.itemIds[2])
+  const fresh = pendingOf(db, stn.dispatchId)[0]; fresh.status = "running"; fresh.updated_at = new Date().toISOString()
   const rec2 = await bundleMod.recoverStaleBundleFollowOns(db)
   check("POSITIVE CONTROL: a claim still in flight (just now) is NOT touched", rec2.recovered === 0 && fresh.status === "running")
   fresh.status = "pending"

@@ -31,7 +31,9 @@
 // imported the dispatcher for real, wave 75). Same idiom as
 // lib/providers/lob/client.ts:36 and lib/providers/hubspot/client.ts:51.
 import { createRequire } from "node:module"
+import { createHash, randomUUID } from "node:crypto"
 const LobSDK = createRequire(import.meta.url)("lob")
+import { ambientSendIntentKey } from "@/lib/outcomes/send-intent-scope"
 
 import { resolveProvider as resolveProviderDoor, type ResolveProviderParams } from "@/lib/kernel/providers"
 // placeCall is deliberately NOT imported here any more: the phone dispatcher was
@@ -163,7 +165,7 @@ const SMS_SEND_COST_USD = VENDOR_PRICING['twilio_sms'].costPerUnit
 // TOMBSTONE (wave 138, lane 138A): the per-piece Lob table moved to its survivor
 // lib/vendor-governance/cost-normalizer.ts DIRECT_MAIL_PIECE_COST_USD (the ONE Lob price; imported above).
 
-function ledgerContextFor(
+function baseLedgerContextFor(
   action: string,
   channel: string,
   params: DispatchActorContext,
@@ -200,6 +202,142 @@ function ledgerContextFor(
     // human-approved send names no tenant policy — the human did (reason HUMAN_REQUESTED).
     policyKey: params.ledger?.policyKey ?? (managerKey && !params.humanApproved ? managerPolicyKey("autonomy_tier", managerKey) : null),
   }
+}
+
+// ─── THE PERSISTED SEND INTENT (wave 153, lane 153S — owner ruling B10) ─────────────────────────────────────────────────────
+// A crash between the provider call and the settle used to leave the ledger row `proposed` forever (in flight to every later
+// caller, settled by nobody) and, for a send with no cycle, UNKEYED — so nothing could ever reconcile or re-send it without
+// risking a second message. Every governed email / SMS / mail send now carries, on its agent_action_ledger row written BEFORE
+// the provider call: a STABLE idempotency key (caller's key → the ledger's own cycle derivation → the ambient intent of
+// lib/outcomes/send-intent-scope.ts → a fresh per-call intent id), the tenant, the recipient ref, the channel, the policy key
+// (ledger columns), a content digest, the provider account scope, and — where it fits — the REPLAY ENVELOPE recovery needs to
+// re-send the SAME intent with the SAME key after a fresh pass through every gate below (redispatchSendIntent).
+// Recovery itself lives on the existing unknown-settler: lib/outcomes/reconciliation-ledger.ts recoverOutcomeUnknownSends.
+
+/** The send kinds whose intent can be replayed through this door. */
+export type ReplayableSendKind = "email" | "sms" | "direct_mail"
+export const SEND_INTENT_VERSION = 1
+/** A replay envelope over this size is withheld (the row says so) and that intent can only be reconciled, never re-sent. */
+export const SEND_INTENT_REPLAY_MAX_BYTES = 32_000
+
+export interface SendIntentReplay {
+  kind: ReplayableSendKind
+  /** The dispatcher params minus `ledger` (rebuilt from `ledger` below + the row's key). */
+  params: Record<string, unknown>
+  ledger: Omit<NonNullable<DispatchActorContext["ledger"]>, "idempotencyKey">
+}
+export interface SendIntentRecord {
+  v: number
+  action: string
+  channel: string
+  content_digest: string
+  provider_scope: { brokerage_id: string; team_id: string | null; user_id: string | null; send_as_user_id: string | null }
+  cycle: string | null
+  key_source: "caller" | "cycle" | "ambient" | "generated"
+  replay: SendIntentReplay | null
+  replay_withheld?: string
+}
+
+/** The ledger's own cycle derivation (lib/kernel/action-ledger.ts actionIdempotencyKey — module-private there; this is its
+ *  byte-identical mirror, held equal by scripts/send-recovery-guard.ts against the ledger's real insert). */
+export function ledgerKeyFromCycle(k: { brokerageId: string; subjectType: string; subjectId: string; action: string; cycle: string }): string {
+  return [k.brokerageId, k.subjectType, k.subjectId, k.action, k.cycle].map((s) => String(s).trim()).join(":")
+}
+
+export function sendContentDigest(content: unknown): string {
+  return createHash("sha256").update(JSON.stringify(content ?? null)).digest("hex")
+}
+
+/** A ledgered send's ActionContext WITH its persisted intent. Never mutates the caller's params.
+ *  @proofSeam exported so scripts/send-recovery-guard.ts asserts key precedence, the envelope and the digest directly. */
+export function intentLedgerContext(
+  action: string, channel: string, params: DispatchActorContext & Record<string, unknown>, recipientRef: string | null,
+  kind: ReplayableSendKind, content: unknown,
+): ActionContext {
+  const base = baseLedgerContextFor(action, channel, params, recipientRef)
+  const callerKey = base.idempotencyKey?.trim() || null
+  const cycleKey = !callerKey && base.cycle?.trim() && base.subject.id
+    ? ledgerKeyFromCycle({ brokerageId: base.brokerageId, subjectType: base.subject.type, subjectId: base.subject.id, action, cycle: base.cycle })
+    : null
+  const ambient = !callerKey && !cycleKey ? ambientSendIntentKey(action) : null
+  const key = callerKey ?? cycleKey ?? ambient ?? `intent:${action}:${randomUUID()}`
+  const { ledger, ...rest } = params
+  const { idempotencyKey: _dropped, ...ledgerRest } = ledger ?? {}
+  void _dropped
+  const replay: SendIntentReplay = { kind, params: rest as Record<string, unknown>, ledger: ledgerRest }
+  let replayJson = ""
+  try { replayJson = JSON.stringify(replay) } catch { replayJson = "" }
+  const fits = replayJson.length > 0 && replayJson.length <= SEND_INTENT_REPLAY_MAX_BYTES
+  const intent: SendIntentRecord = {
+    v: SEND_INTENT_VERSION, action, channel,
+    content_digest: sendContentDigest(content),
+    provider_scope: {
+      brokerage_id: params.brokerageId, team_id: params.teamId ?? null, user_id: params.userId ?? null,
+      send_as_user_id: typeof params.sendAsAgentUserId === "string" ? params.sendAsAgentUserId : null,
+    },
+    cycle: base.cycle ?? null,
+    key_source: callerKey ? "caller" : cycleKey ? "cycle" : ambient ? "ambient" : "generated",
+    replay: fits ? (JSON.parse(replayJson) as SendIntentReplay) : null,
+    ...(fits ? {} : { replay_withheld: replayJson ? `envelope ${replayJson.length} bytes > ${SEND_INTENT_REPLAY_MAX_BYTES}` : "envelope not serializable" }),
+  }
+  return { ...base, idempotencyKey: key, detail: { ...(base.detail ?? {}), send_intent: intent } }
+}
+
+/** What each channel's intent digests (the content a person would receive) — and, for mail, who wants the key back. */
+type SendIntentSpec = { kind: ReplayableSendKind; content: unknown; onKey?: (key: string) => void }
+function emailIntent(p: DispatchEmailParams): SendIntentSpec {
+  return { kind: "email", content: { to: p.to, subject: p.subject, html: p.html, text: p.text ?? null, ics: p.icsAttachment?.content ?? null } }
+}
+function smsIntent(p: DispatchSmsParams): SendIntentSpec {
+  return { kind: "sms", content: { to: p.to, message: p.message } }
+}
+function mailIntent(p: DispatchDirectMailParams, onKey: (key: string) => void): SendIntentSpec {
+  return {
+    kind: "direct_mail", onKey,
+    content: { to: [p.recipientName, p.mailingAddress, p.mailingAddress2 ?? null, p.city, p.state, p.zip], piece: p.pieceType ?? "letter", template: p.templateId, back: p.backTemplateId ?? null, merge: p.mergeVars ?? {} },
+  }
+}
+
+/** THE dispatcher's ledger context. With `intent` (every email / SMS / mail send) the row carries the persisted send intent
+ *  and its stable key; `onKey` hands that key to the caller's own closure (the Lob Idempotency-Key) without shared state. */
+function ledgerContextFor(
+  action: string,
+  channel: string,
+  params: DispatchActorContext,
+  recipientRef: string | null,
+  intent?: SendIntentSpec,
+): ActionContext {
+  if (!intent) return baseLedgerContextFor(action, channel, params, recipientRef)
+  const ctx = intentLedgerContext(action, channel, params as DispatchActorContext & Record<string, unknown>, recipientRef, intent.kind, intent.content)
+  if (intent.onKey && ctx.idempotencyKey) intent.onKey(ctx.idempotencyKey)
+  return ctx
+}
+
+/** A dispatch the LEDGER declined because an earlier attempt of the same intent is unresolved (unknown) or still claimed.
+ *  Not a failure and not a send: the caller keeps its unit of work and re-asks after recovery has reconciled it.
+ *  (The one predicate lives in the leaf lib/outcomes/send-intent-scope.ts so callers that must not load this module can use it.) */
+export { isOutcomePendingRecovery } from "@/lib/outcomes/send-intent-scope"
+
+/**
+ * RECOVERY'S ONE RE-SEND DOOR. Re-dispatches a persisted intent with the SAME idempotency key — so the ledger's own guarded
+ * re-claim (failed → proposed, attempts + 1) admits at most one worker, and the provider's Idempotency-Key (Lob) is the same —
+ * through the SAME dispatcher, i.e. a FRESH pass through autonomy, suppression, consent, DNC, quiet hours, de-confliction,
+ * content safety and budget. Called only by lib/outcomes/reconciliation-ledger.ts recoverOutcomeUnknownSends.
+ */
+export async function redispatchSendIntent(replay: SendIntentReplay | null, idempotencyKey: string): Promise<DispatchResult> {
+  if (!replay || !idempotencyKey) return { success: false, providerKey: "send_recovery_gate", error: "no replay envelope / key on the intent — reconcile only" }
+  const ledger = { ...(replay.ledger ?? {}), idempotencyKey }
+  switch (replay.kind) {
+    case "email": return dispatchEmail({ ...(replay.params as unknown as DispatchEmailParams), ledger })
+    case "sms": return dispatchSms({ ...(replay.params as unknown as DispatchSmsParams), ledger })
+    case "direct_mail": return dispatchDirectMail({ ...(replay.params as unknown as DispatchDirectMailParams), ledger })
+    default: return { success: false, providerKey: "send_recovery_gate", error: `intent kind ${(replay as { kind?: string }).kind} is not replayable` }
+  }
+}
+
+/** Lob's Idempotency-Key / metadata value for an intent key (Lob caps the header at 256 chars, a metadata value at 500). */
+export function lobIntentKey(key: string): string {
+  return key.length <= 256 ? key : createHash("sha256").update(key).digest("hex")
 }
 
 function dispatchLedgerHooks(costUsd: number | null) {
@@ -506,7 +644,7 @@ export interface DispatchEmailParams extends DispatchActorContext {
 
 export async function dispatchEmail(params: DispatchEmailParams): Promise<DispatchResult> {
   // The body below runs inside the action ledger (claim → gates + send → settle). Not re-indented on purpose.
-  return withActionLedger(ledgerContextFor("comms.email.send", "email", params, params.to), async () => {
+  return withActionLedger(ledgerContextFor("comms.email.send", "email", params, params.to, emailIntent(params)), async () => {
   // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
   const autonomyHeld = await autonomyGate(params)
   if (autonomyHeld) return autonomyHeld
@@ -790,7 +928,7 @@ const CAMPAIGN_SMS_REFUSING_BASES: ReadonlySet<string> = new Set(["purpose_not_c
 
 export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchResult> {
   // The body below runs inside the action ledger (claim → gates + send → settle). Not re-indented on purpose.
-  return withActionLedger(ledgerContextFor("comms.sms.send", "sms", params, params.to), async () => {
+  return withActionLedger(ledgerContextFor("comms.sms.send", "sms", params, params.to, smsIntent(params)), async () => {
   // ── LEAD-STAGE REFUSAL (wave 91, lane 91B) — owner: "Leads usually are non consenting so no
   //    sms or calls allowed only email and direct mail." A LEAD-keyed SMS (leadId, no contactId)
   //    used to reach evaluateOutboundCompliance on the LEAD row and then the TCPA gate with no
@@ -1066,7 +1204,8 @@ export async function dispatchDirectMail(
 ): Promise<DispatchResult> {
   // The body below runs inside the action ledger (claim → gates + send → settle). Not re-indented on purpose.
   const mailCost = DIRECT_MAIL_PIECE_COST_USD[params.pieceType ?? "letter"] ?? null
-  return withActionLedger(ledgerContextFor("comms.direct_mail.send", "direct_mail", params, `${params.mailingAddress}, ${params.zip}`), async () => {
+  let mailIntentKey: string | null = null
+  return withActionLedger(ledgerContextFor("comms.direct_mail.send", "direct_mail", params, `${params.mailingAddress}, ${params.zip}`, mailIntent(params, (k) => { mailIntentKey = k })), async () => {
   // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
   const autonomyHeld = await autonomyGate(params)
   if (autonomyHeld) return autonomyHeld
@@ -1326,8 +1465,14 @@ export async function dispatchDirectMail(
   const from = senderGate.from
   const mergeVars = params.mergeVars ?? {}
   // WAVE 150 (lane 150R Outside-lane 1): the dispatcher's at-most-once rests on the action ledger; Lob's own Idempotency-Key is
-  // passed as the SDK create(params, headers) second argument when the caller's ledger carries a key.
-  const lobHeaders: Record<string, string> = params.ledger?.idempotencyKey ? { "Idempotency-Key": params.ledger.idempotencyKey } : {}
+  // passed as the SDK create(params, headers) second argument.
+  // WAVE 153 (lane 153S): EVERY mail intent is keyed now (intentLedgerContext), so the header is always the ledger row's key —
+  // a recovery re-send of the same intent inside Lob's idempotency window returns the ORIGINAL piece instead of printing a
+  // second one — and the same key rides the piece's metadata, so recovery can ask Lob "did this intent become a piece?"
+  // (list filtered by metadata) when the process died before the piece id was written.
+  const lobKey = mailIntentKey ? lobIntentKey(mailIntentKey) : null
+  const lobHeaders: Record<string, string> = lobKey ? { "Idempotency-Key": lobKey } : {}
+  const lobMetadata: Record<string, string> = lobKey ? { intent_key: lobKey.slice(0, 500) } : {}
   // R5 — a BACK is never the FRONT. The postcard back is the caller's distinct id, else the global postcard-back format
   // template; the self-mailer outside must be given and distinct. Refused before any spend.
   let back: string | null = null
@@ -1372,6 +1517,7 @@ export async function dispatchDirectMail(
         back,
         size: params.size ?? "4x6",
         merge_variables: mergeVars,
+        ...(lobKey ? { metadata: lobMetadata } : {}),
       }, lobHeaders)
     } else if (pieceType === "self_mailer") {
       data = await lob.selfMailers.create({
@@ -1382,6 +1528,7 @@ export async function dispatchDirectMail(
         size: params.size ?? "6x18_bifold",
         merge_variables: mergeVars,
         color: params.color ?? true,
+        ...(lobKey ? { metadata: lobMetadata } : {}),
       }, lobHeaders)
     } else {
       data = await lob.letters.create({
@@ -1390,6 +1537,7 @@ export async function dispatchDirectMail(
         file: params.templateId,
         merge_variables: mergeVars,
         color: params.color ?? false,
+        ...(lobKey ? { metadata: lobMetadata } : {}),
       }, lobHeaders)
     }
   } catch (err: unknown) {

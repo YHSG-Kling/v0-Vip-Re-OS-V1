@@ -120,6 +120,16 @@ async function handleInboundWhatsapp(params: {
     brokerageId = (acct as { brokerage_id: string | null } | null)?.brokerage_id ?? null
   }
 
+  // WAVE 153 (lane 153S — carried finding 146B-SO-07): an UNMAPPED business number RETURNS HERE. It used to fall through to a
+  // contact match whose tenant predicate was CONDITIONAL (no tenant boundary at all on the service client) and then to a
+  // brokerage_id-NULL contact insert that the inbound record refuses anyway — a person's number filed nowhere and everywhere.
+  // Tenant comes from the receiving account (CLAUDE.md §4); with none, nothing is matched, created or recorded.
+  if (!brokerageId) {
+    console.warn(`[whatsapp] inbound on an unmapped business number (${params.businessNumberId ?? "none"}) — not matched, not staged, not recorded`)
+    return
+  }
+  const tenantId: string = brokerageId
+
   // WhatsApp ID is the recipient's phone number — we can match against
   // contacts.phone (digits-only comparison) OR metadata.whatsapp_id
   const phoneDigits = params.senderWaId.replace(/\D/g, "")
@@ -141,13 +151,12 @@ async function handleInboundWhatsapp(params: {
   // app/api/webhooks/sendgrid-events/route.ts; unresolved falls through to the
   // staging insert with a null tenant, this handler's documented behaviour for an
   // unmappable account.
-  let metaQuery = svc
+  const { data: byMetaRows } = await svc
     .from("contacts")
     .select("id, brokerage_id")
     .contains("metadata", { whatsapp_id: params.senderWaId })
+    .eq("brokerage_id", tenantId)
     .limit(2)
-  if (brokerageId) metaQuery = metaQuery.eq("brokerage_id", brokerageId)
-  const { data: byMetaRows } = await metaQuery
   const metaCandidates = (byMetaRows ?? []) as Array<{ id: string; brokerage_id: string | null }>
   const byMeta = new Set(metaCandidates.map((c) => c.brokerage_id)).size === 1 ? metaCandidates : []
   if (byMeta.length > 0) {
@@ -161,13 +170,12 @@ async function handleInboundWhatsapp(params: {
     // Same rule, and it matters MORE here: a last-10-digit `ilike` is a fuzzy
     // match, not an identity — across tenants it can hit several people. One
     // distinct tenant or nothing.
-    let phoneQuery = svc
+    const { data: byPhoneRows } = await svc
       .from("contacts")
       .select("id, phone, brokerage_id")
       .ilike("phone", `%${last10}%`)
+      .eq("brokerage_id", tenantId)
       .limit(2)
-    if (brokerageId) phoneQuery = phoneQuery.eq("brokerage_id", brokerageId)
-    const { data: byPhoneRows } = await phoneQuery
     const phoneCandidates = (byPhoneRows ?? []) as Array<{ id: string; phone: string | null; brokerage_id: string | null }>
     const byPhone = new Set(phoneCandidates.map((c) => c.brokerage_id)).size === 1 ? phoneCandidates : []
     if (byPhone.length > 0) {
@@ -187,7 +195,7 @@ async function handleInboundWhatsapp(params: {
       // the wipe is unrecoverable because none of those writers keeps a copy.
       // SURVIVOR PATTERN: lib/kernel/conversation-memory.ts:310 — select the
       // current metadata, spread it, overwrite the ONE key. Same spelling here.
-      const { data: waCur } = await svc.from("contacts").select("metadata").eq("id", contactId).maybeSingle()
+      const { data: waCur } = await svc.from("contacts").select("metadata").eq("id", contactId).eq("brokerage_id", tenantId).maybeSingle()
       const waMetadata = {
         ...(((waCur as any)?.metadata ?? {}) as Record<string, any>),
         whatsapp_id: params.senderWaId,
@@ -199,6 +207,7 @@ async function handleInboundWhatsapp(params: {
         .from("contacts")
         .update({ metadata: waMetadata })
         .eq("id", contactId)
+        .eq("brokerage_id", tenantId)
       if (waBackfillError) {
         console.error(`[whatsapp] whatsapp_id backfill REFUSED for contact ${contactId}:`, waBackfillError.message)
       }
