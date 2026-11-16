@@ -537,6 +537,7 @@ async function main() {
     const w = respWorld(); resetIo()
     let settled: Promise<{ disposition: string }> | null = null
     await resp.respondToInboundCommunication(w as never, req({ body: "so what happens with the thing", intent: { primary: "general_question", confidence: 30, urgency: "normal" } }), respDeps({ decide: lateDecide(answer("reply", "sms")), onLateSettled: (p: never) => { settled = p } }) as never)
+    await new Promise((r) => setTimeout(r, 8)) // strictly after the decision instant (ms comparison) — deterministic, see C18
     ;(w.tables.messages as Row[]).push({ id: "m-newer", brokerage_id: B1, contact_id: CN, conversation_id: CONV, direction: "inbound", sender_type: "contact", type: "sms", created_at: iso() })
     const fresh = await resp.respondToInboundCommunication(w as never, req({ recordId: "m-newer", body: "Actually — can we see it Saturday at 10?" }), respDeps() as never)
     const s = await lateOf(() => settled as unknown as Promise<{ disposition: string }> | null)
