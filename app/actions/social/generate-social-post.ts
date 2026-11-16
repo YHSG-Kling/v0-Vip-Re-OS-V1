@@ -121,6 +121,9 @@ export async function generateSocialPostContent(params: {
   brokerageId: string
   agentId: string
   teamId?: string
+  /** WAVE 153 (153R): the persona this post is FOR, when the author names one (a contacts.contact_persona CHECK value). Absent =
+   *  a public post to the whole following — written generic-safe, never a guessed persona. */
+  audiencePersona?: string | null
 }): Promise<{
   success: boolean
   data?: GeneratedPost
@@ -171,9 +174,16 @@ export async function generateSocialPostContent(params: {
     // ── 3. Build prompts from resolved brand voice ───────────────────────────
     // WAVE 151 (lane 151I): the SENDER's versioned voice brief leads — the post is written in their words from the first draft.
     const { renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+    // WAVE 153 (lane 153R — owner B11, census row social): THE READER BEFORE THE FIRST DRAFT. The post's named audience persona
+    // becomes the them-first brief through the authored arc's ONE CRM bridge (lib/marketing/them-first-draft-brief.ts); none named
+    // (the usual public post) is GENERIC-SAFE — and the compliance gate below is told that, not the "first_time" it was always
+    // handed whoever the post was for.
+    const { themFirstDraftBrief, renderThemFirstDraftBrief, complianceGatePersona, themFirstBasisRecord } = await import("@/lib/marketing/them-first-draft-brief")
+    const readerBrief = themFirstDraftBrief({ personas: params.audiencePersona ?? null, source: params.audiencePersona ? "the post's named audience persona" : "none (a public post)" })
     const systemPrompt = [
       brandVoice.brief ? renderSenderVoiceBrief(brandVoice.brief) : "",
       `You are an expert real estate social media strategist.`,
+      renderThemFirstDraftBrief(readerBrief),
       `Write posts using the "Them First" framework: 40% empathy, 25% trust, 25% value, 10% solution.`,
       `NEVER use fair housing violations or protected-class language.`,
       `NEVER make guarantees about home values or investment returns.`,
@@ -241,7 +251,7 @@ export async function generateSocialPostContent(params: {
     const complianceResult = await evaluateOutbound({
       actorContext:  { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
       journeyType: "buyer",
-      persona: "first_time",
+      persona: complianceGatePersona(readerBrief),
       messageType: "social",
       content:       object.content,
     })
@@ -297,6 +307,7 @@ export async function generateSocialPostContent(params: {
             them_percentage: quality.themPercentage,
             agent_percentage: quality.agentPercentage,
             warnings: quality.warnings,
+            ...themFirstBasisRecord(readerBrief),
           },
         })
         .select("id")
@@ -573,7 +584,9 @@ export async function generateContextualDraft(params: {
       const compliance = await evaluateOutbound({
         actorContext: { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
         journeyType: "buyer",
-        persona: "first_time",
+        // WAVE 153 (153R): no resolved contact here (a display name only), so the persona is unknown — "other", never the
+        // "first_time" guess this gate was handed for every draft.
+        persona: "other",
         messageType,
         content:      object.draft,
       })

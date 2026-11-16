@@ -745,6 +745,40 @@ function costPer(spendCents: number, spendComplete: boolean, denominator: number
   return { value: Math.round(spendCents / denominator), na: null }
 }
 
+/** WAVE 153 (lane 153R — owner B11, census rows sms + podcasts, ROI hop): one channel's measured outcome — counts only, each
+ *  N/A with its reason; a channel carries no money of its own (its campaign's spend / earned commission are the campaign row's). */
+export interface ChannelOutcomeMeasure {
+  /** sms: campaign touchpoints sent · podcast: episodes published under an in-view campaign */
+  activity: { value: number | null; unit: string; na: string | null }
+  /** sms: distinct Contacts reached · podcast: listeners — not measured (the host's analytics are not read back) */
+  reach: { value: number | null; unit: string; na: string | null }
+}
+
+/**
+ * PURE — the SMS and podcast outcome measures from rows the ledger already read in view and in window. Zero measured is N/A
+ * with the reason ("nothing attributed" is not "$0 earned" and not "0 reached"); podcast reach is ALWAYS N/A until listen /
+ * download analytics are read back from the podcast host (its connection is OWNER-HELD per tenant).
+ */
+export function measureChannelOutcomes(input: {
+  touchpoints: ReadonlyArray<{ channel?: string | null; contact_id: string | null }>
+  publishedEpisodes: ReadonlyArray<{ id: string }>
+}): { sms: ChannelOutcomeMeasure; podcast: ChannelOutcomeMeasure } {
+  const sms = input.touchpoints.filter((t) => t.channel === "sms")
+  const smsReach = new Set(sms.map((t) => t.contact_id).filter((c): c is string => !!c)).size
+  const smsNa = "No SMS send in this view carried a campaign in this window, so SMS has no measured outcome here (unmeasured — not zero)."
+  const episodes = new Set(input.publishedEpisodes.map((e) => e.id)).size
+  return {
+    sms: {
+      activity: sms.length > 0 ? { value: sms.length, unit: "campaign SMS sent", na: null } : { value: null, unit: "campaign SMS sent", na: smsNa },
+      reach: smsReach > 0 ? { value: smsReach, unit: "Contacts reached by SMS", na: null } : { value: null, unit: "Contacts reached by SMS", na: sms.length > 0 ? "The campaign SMS in this window name no Contact, so reach is not measured." : smsNa },
+    },
+    podcast: {
+      activity: episodes > 0 ? { value: episodes, unit: "episodes published under a campaign", na: null } : { value: null, unit: "episodes published under a campaign", na: "No podcast episode was published under a campaign in this view in this window (unmeasured — not zero)." },
+      reach: { value: null, unit: "listens", na: "Listens and downloads are not read back from the podcast host (its analytics need the tenant's host connection, which is owner-held), so podcast reach is not measured." },
+    },
+  }
+}
+
 const PLACEMENT_NOT_RECORDED = "placement not recorded"
 /** Pure: per-placement QR measurement (exported for the guard through loadRoiOutcomeLedger; no I/O). */
 function buildPlacementRows(
@@ -1087,6 +1121,8 @@ export interface RoiOutcomeLedger {
     acquisitionCostAvoidedByDedup: RoiRatio
     /** the first-response time of the Contacts the campaigns reached who entered in the window (lib/ai-isa/speed-to-lead-policy.ts summarizeFirstTouchLatency). */
     leadResponse: { medianSeconds: number | null; withinSlaShare: number | null; measured: number; na: string | null }
+    /** WAVE 153 (153R): the SMS and podcast channels' measured outcomes (measureChannelOutcomes) — counts, N/A with the reason. */
+    channelOutcomes: { sms: ChannelOutcomeMeasure; podcast: ChannelOutcomeMeasure }
   }
   campaigns: RoiCampaignRow[]
   placements: RoiPlacementRow[]
@@ -1171,13 +1207,13 @@ export async function loadRoiOutcomeLedger(
 
     // ── 4. Activity, spend and reach per campaign ──
     const [tpR, qrR, dmR, adR] = await Promise.all([
-      readByIds(svc, "marketing_campaign_touchpoints", "id, brokerage_id, campaign_id, contact_id, sent_at, status", brokerageId, "campaign_id", campaignIds, (q) => q.gte("sent_at", sinceIso).lte("sent_at", untilIso)),
+      readByIds(svc, "marketing_campaign_touchpoints", "id, brokerage_id, campaign_id, contact_id, sent_at, status, channel", brokerageId, "campaign_id", campaignIds, (q) => q.gte("sent_at", sinceIso).lte("sent_at", untilIso)),
       readByIds(svc, "qr_codes", "id, brokerage_id, marketing_campaign_id, mint_context", brokerageId, "marketing_campaign_id", campaignIds),
       readByIds(svc, "direct_mail_campaigns", "id, brokerage_id, marketing_campaign_id, per_piece_cost, pieces_mailed, mailing_date", brokerageId, "marketing_campaign_id", campaignIds),
       readByIds(svc, "ad_campaigns", "id, brokerage_id, marketing_campaign_id", brokerageId, "marketing_campaign_id", campaignIds),
     ])
     for (const [label, r] of [["touchpoints", tpR], ["QR codes", qrR], ["direct mail", dmR], ["ad campaigns", adR]] as const) if (!r.ok) return refused(label)
-    const touchpoints = mine((tpR as any).rows as Array<{ id: string; brokerage_id: string; campaign_id: string; contact_id: string | null; sent_at: string; status: string | null }>).filter((t) => t.status !== "failed" && t.status !== "queued")
+    const touchpoints = mine((tpR as any).rows as Array<{ id: string; brokerage_id: string; campaign_id: string; contact_id: string | null; sent_at: string; status: string | null; channel?: string | null }>).filter((t) => t.status !== "failed" && t.status !== "queued")
     const qrCodes = mine((qrR as any).rows as Array<{ id: string; brokerage_id: string; marketing_campaign_id: string; mint_context?: { placement?: string | null } | null }>)
     const mailCampaigns = mine((dmR as any).rows as Array<{ id: string; brokerage_id: string; marketing_campaign_id: string; per_piece_cost: number | null; pieces_mailed: number | null; mailing_date: string | null }>)
     const adCampaigns = mine((adR as any).rows as Array<{ id: string; brokerage_id: string; marketing_campaign_id: string }>)
@@ -1363,6 +1399,10 @@ export async function loadRoiOutcomeLedger(
     const { summarizeFirstTouchLatency } = await import("@/lib/ai-isa/speed-to-lead-policy")
     const entered = reachedContacts.filter((c) => inWin(day(c.created_at)))
     const latency = summarizeFirstTouchLatency(entered.map((c) => ({ createdAt: c.created_at, firstTouchedAt: c.first_touched_at, channel: c.first_touch_channel })))
+    // WAVE 153 (153R): podcast episodes published under an in-view campaign in the window (podcast_episodes.marketing_campaign_id).
+    const epR = await readByIds(svc, "podcast_episodes", "id, brokerage_id, marketing_campaign_id, published_at", brokerageId, "marketing_campaign_id", campaignIds, (q) => q.gte("published_at", sinceIso).lte("published_at", untilIso))
+    if (!epR.ok) return refused("podcast episodes")
+    const channelOutcomes = measureChannelOutcomes({ touchpoints: uniq(touchpoints), publishedEpisodes: mine(epR.rows as Array<{ id: string; brokerage_id: string }>) })
     const decisionMetrics: RoiOutcomeLedger["decisionMetrics"] = {
       costPerVerifiedContact: costPer(eligibleSpend, allComplete, eligibleVerified, "verified contact"),
       costPerAppointment: costPer(eligibleSpend, allComplete, eligibleAppts, "appointment"),
@@ -1389,6 +1429,7 @@ export async function loadRoiOutcomeLedger(
       leadResponse: latency.touchedCount > 0
         ? { medianSeconds: latency.medianSeconds, withinSlaShare: latency.pctWithinSla, measured: latency.touchedCount, na: null }
         : { medianSeconds: null, withinSlaShare: null, measured: 0, na: entered.length === 0 ? "No Contact your campaigns reached entered in this window, so a response time is not measured." : "None of the Contacts your campaigns reached in this window has a recorded first response yet, so a response time is not measured." },
+      channelOutcomes,
     }
 
     // ── 8. Journeys: Contact → touch → scan / response → appointment → contract → close, with evidence ──
@@ -1535,7 +1576,7 @@ export async function loadRoiOutcomeLedger(
         disbursed: "Agent payouts recorded as paid on those deals.",
         pipeline: "Projected (open, no contract) and contracted (under contract) amounts are estimates for deals that have not closed — never part of the return.",
         costs: "Confirmed costs come from ad spend and direct-mail piece costs; tenant-reported is the amount entered on a campaign; unknown means nothing is recorded.",
-        decisionMetrics: "Cost per verified Contact counts reached people whose email or phone is verified. Net contribution is the earned commission credited to campaigns minus their recorded spend, over the campaigns whose spend is fully recorded. Response time is how long a Contact your campaigns reached waited for a first response after entering, for people who entered in this window. A figure that is not measured says why instead of showing zero.",
+        decisionMetrics: "Cost per verified Contact counts reached people whose email or phone is verified. Net contribution is the earned commission credited to campaigns minus their recorded spend, over the campaigns whose spend is fully recorded. Response time is how long a Contact your campaigns reached waited for a first response after entering, for people who entered in this window. A figure that is not measured says why instead of showing zero. SMS counts the campaign texts sent and the Contacts they reached; podcasts count episodes published under a campaign — listens are not read back from the podcast host yet.",
         placements: "Where each QR code was printed, as recorded when it was created. Visits are split into likely people, automated or repeat scans, and scans recorded before that split existed. A placement's cost is its campaigns' whole recorded spend, counted only when those campaigns printed every code on that one placement — otherwise the spend is shared and no per-placement cost is shown.",
       },
       foreignRowsDropped: foreign,
@@ -1574,6 +1615,10 @@ export function roiOutcomeCsv(l: RoiOutcomeLedger): string {
     ["decision", "acquisitionCostAvoidedByDedupUsd", money(dm.acquisitionCostAvoidedByDedup), dm.acquisitionCostAvoidedByDedup.na ?? ""],
     ["decision", "leadResponseMedianSeconds", dm.leadResponse.medianSeconds == null ? "N/A" : String(dm.leadResponse.medianSeconds), dm.leadResponse.na ?? `${dm.leadResponse.measured} measured`],
   )
+  // WAVE 153 (153R): the SMS and podcast channel measures — counts, N/A with the reason (never 0 for unmeasured).
+  for (const [ch, m] of Object.entries(dm.channelOutcomes ?? {})) for (const [k, v] of [["activity", m.activity], ["reach", m.reach]] as const) {
+    out.push(["channel", `${ch}.${k}`, v.value == null ? "N/A" : String(v.value), v.na ?? v.unit])
+  }
   out.push([], ["campaign", "type", "cost_status", "cost_usd", "contacts_reached", "appointments", "sourced_closed", "influenced_closed", "sourced_earned_usd", "realized_return", "cost_per_contact_usd", "note"])
   for (const c of l.campaigns) out.push([c.name, c.type, c.cost.status, usd(c.cost.cents), String(c.acquisition.contactsReached), String(c.engagement.appointments), String(c.results.sourcedDealsClosed), String(c.results.influencedDealsClosed), usd(c.revenue?.sourcedEarnedCents ?? null), ratio(c.ratios.realizedReturnOnMarketingSpend), c.ratios.costPerContact.value == null ? "N/A" : usd(c.ratios.costPerContact.value), c.ratios.realizedReturnOnMarketingSpend.na ?? ""])
   return out.map((r) => r.map(esc).join(",")).join("\n") + "\n"

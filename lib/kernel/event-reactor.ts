@@ -4429,6 +4429,24 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         } catch { /* best-effort */ }
       }
 
+      // 14b — WAVE 153 (lane 153R, owner B11): a client lesson was SENT (approveClientMessage emits it for a learning_module
+      // message). The consumer writes the delivery RECEIPT onto the lesson's learning_assignment, so the lesson's engagement
+      // (viewed_at / completed_at, PORTAL_EDUCATION_VIEWED above) is attributable to the delivery that caused it. A refused or
+      // unmatched stamp is logged by name — never a silent success.
+      if (params.event === KernelEvent.CLIENT_EDUCATION_DELIVERED) {
+        try {
+          const md = (params.metadata ?? {}) as { module_id?: string; agent_client_message_id?: string; channel?: string | null }
+          const contactId = params.contactId ?? params.entityId
+          if (contactId && md.module_id && md.agent_client_message_id) {
+            const { stampEducationDelivered } = await import("@/lib/agents/education-delivery-producer")
+            const r = await stampEducationDelivered(svc, { brokerageId: params.brokerageId, contactId, moduleId: md.module_id, messageId: md.agent_client_message_id, channel: md.channel ?? null })
+            if (!r.ok) console.error(`[event-reactor] client_education_delivered receipt not stamped (contact ${contactId}, module ${md.module_id}): ${r.error}`)
+          } else {
+            console.error("[event-reactor] client_education_delivered carried no contact / module / message id — no receipt stamped")
+          }
+        } catch (e) { console.error("[event-reactor] client_education_delivered consumer threw:", (e as Error)?.message) }
+      }
+
       // 15 — an agent published a response to a client review (lib/kernel/reputation.ts:536,
       // entityType "agent_review"). Sphere of Influence (owns reviews/reputation, the review_
       // received precedent) hands the published response to Campaign Orchestrator — a

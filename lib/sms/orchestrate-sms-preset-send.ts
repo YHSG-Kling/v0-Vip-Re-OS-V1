@@ -26,6 +26,8 @@ export interface OrchestrateSmsPresetSendArgs {
   teamId?:      string | null
   agentUserId?: string | null
   systemSource?: string
+  /** WAVE 153 (153R): marketing_campaigns.id this send belongs to — verified in the tenant before a touchpoint is recorded. */
+  marketingCampaignId?: string | null
 }
 
 export interface OrchestrateSmsPresetSendResult {
@@ -34,6 +36,8 @@ export interface OrchestrateSmsPresetSendResult {
   messageId?:     string
   presetName?:    string
   error?:         string
+  /** WAVE 153 (153R): whether the send reached the ROI ledger as a campaign touchpoint, or why not. */
+  attribution?:   { recorded: boolean; reason: string | null; touchpointId?: string | null }
 }
 
 interface PresetRow {
@@ -88,11 +92,35 @@ export async function orchestrateSmsPresetSend(
     },
   })
 
+  // WAVE 153 (lane 153R — owner B11, census row sms, ROI hop): an accepted send that names an IN-TENANT campaign is recorded as
+  // ONE sms touchpoint — the row the ROI ledger counts (activity, reach, the reached Contact's appointments and deals). No
+  // campaign / not verified / no Contact / not accepted → not recorded, with the reason (never guessed attribution, never $0).
+  let campaignVerified: boolean | null = null
+  if (args.marketingCampaignId && dispatch.success && args.contactId) {
+    const { data: camp, error: campErr } = await svc.from("marketing_campaigns").select("id")
+      .eq("id", args.marketingCampaignId).eq("brokerage_id", args.brokerageId).maybeSingle()
+    if (campErr) console.error(`[sms-preset] campaign ${args.marketingCampaignId} not verified (attribution refused): ${campErr.message}`)
+    campaignVerified = !campErr && !!camp
+  }
+  const { planCampaignTouchpoint } = await import("@/lib/marketing/channel-touchpoint-plan")
+  const plan = planCampaignTouchpoint({ channel: "sms", accepted: dispatch.success, contactId: args.contactId, marketingCampaignId: args.marketingCampaignId, campaignVerified })
+  let attribution: OrchestrateSmsPresetSendResult["attribution"] = { recorded: false, reason: plan.record ? null : plan.reason }
+  if (plan.record) {
+    const { recordCampaignTouchpointSafe } = await import("@/lib/marketing/touchpoint-recorder")
+    const tp = await recordCampaignTouchpointSafe({
+      brokerageId: args.brokerageId, campaignId: plan.campaignId, contactId: plan.contactId, channel: "sms",
+      externalTable: "sms_presets", externalId: preset.id, source: "manual",
+      metadata: { provider_message_id: dispatch.messageId ?? null, system_source: args.systemSource ?? "sms_preset" },
+    })
+    attribution = tp.ok ? { recorded: true, reason: null, touchpointId: tp.touchpointId ?? null } : { recorded: false, reason: "the touchpoint write was refused — logged by the recorder; the send itself stands" }
+  }
+
   return {
     success:     dispatch.success,
     providerKey: dispatch.providerKey,
     messageId:   dispatch.messageId,
     presetName:  preset.name,
     error:       dispatch.error,
+    attribution,
   }
 }

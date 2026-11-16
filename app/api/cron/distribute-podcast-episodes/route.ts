@@ -11,6 +11,9 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+// WAVE 153 (lane 153R — owner B11, census row podcasts): bounded retry of a TRANSIENT distribution failure; terminal classes
+// (no distributor, a refusal, a 4xx) are never retried. The decision is pure (lib/podcast/distribution-retry.ts).
+import { decidePodcastDistributionRetry, priorPodcastAttempts, podcastRetryDue } from "@/lib/podcast/distribution-retry"
 
 /**
  * CRON — Distribute Podcast Episodes
@@ -124,7 +127,7 @@ export async function GET(request: NextRequest) {
         // Check if already fully distributed (idempotent check)
         const { data: existingLogs } = await supabase
           .from("podcast_distribution_log")
-          .select("channel_name, distribution_status")
+          .select("channel_name, distribution_status, provider_response")
           .eq("podcast_episode_id", episode.id)
 
         const publishedChannels = existingLogs
@@ -180,6 +183,11 @@ export async function GET(request: NextRequest) {
 
           // Skip if already processed (success or permanent failure)
           if (existingLog && existingLog.distribution_status !== "queued") {
+            continue
+          }
+          // A transient failure re-queued by the retry policy waits for its next_attempt_at (bounded backoff).
+          if (existingLog && !podcastRetryDue(existingLog.provider_response, new Date())) {
+            allSucceeded = false
             continue
           }
 
@@ -244,29 +252,37 @@ export async function GET(request: NextRequest) {
             }).catch(() => {})
 
           } catch (distError: any) {
-            // Update log as failed
+            // WAVE 153 (153R): the retry policy decides — a transient failure goes back to `queued` with a bounded wait, a
+            // terminal one (or the last allowed attempt) is `failed`. Retry state rides provider_response (no migration).
+            const verdict = decidePodcastDistributionRetry({
+              message: distError?.message,
+              priorAttempts: priorPodcastAttempts(existingLog?.provider_response),
+              now: new Date(),
+            })
             await sentinelWrite(supabase, supabase
               .from("podcast_distribution_log")
               .update({
-                distribution_status: "failed",
+                distribution_status: verdict.status,
                 error_message: distError.message,
-                provider_response: { error: distError.message },
+                provider_response: verdict.state,
               })
               .eq("id", logId), { table: "podcast_distribution_log", flow: "podcast_distribution_log_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
             allSucceeded = false
             results.failed++
             results.errors.push(
-              `Episode ${episode.id} → ${channelName}: ${distError.message}`
+              `Episode ${episode.id} → ${channelName}: ${distError.message}${verdict.retry ? ` (transient — retry ${verdict.state.attempts} at ${verdict.state.next_attempt_at})` : ` (${verdict.state.terminal_reason})`}`
             )
 
-            // KERNEL: Process Distribution Failure Event
-            await processKernelEvent({
-              event: KernelEvent.PODCAST_EPISODE_FAILED,
-              brokerageId,
-              entityType: "podcast_episode",
-              entityId: episode.id,
-            }).catch(() => {})
+            // KERNEL: a FAILURE event only when the distribution is finally failed — a queued retry is not a failure yet.
+            if (!verdict.retry) {
+              await processKernelEvent({
+                event: KernelEvent.PODCAST_EPISODE_FAILED,
+                brokerageId,
+                entityType: "podcast_episode",
+                entityId: episode.id,
+              }).catch(() => {})
+            }
           }
         }
 

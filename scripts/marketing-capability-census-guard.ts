@@ -169,12 +169,13 @@ const ROWS: Row[] = [
     },
   },
   {
-    key: "email", label: "Email campaigns", owner: "campaign_orchestrator", proof: "test:campaign-center",
+    key: "email", label: "Email campaigns", owner: "campaign_orchestrator", proof: "test:marketing-loops",
+    changed: { verdict: "BUILT", what: "the campaign copy door (generateCampaignContent) reads the campaign's audience_personas BEFORE the first draft and writes to that persona's authored them-first arc (lib/marketing/them-first-draft-brief.ts); a mixed / absent / un-authored / unreadable persona is written generic-safe, and the brand-voice gate is told the resolved persona, never a guess (lane 153R)" },
     live: "OWNER-HELD: the tenant's / platform's email provider key (SendGrid / Resend)",
     hops: {
       producer: h("lib/kernel/content-creators.ts", "export async function createEmailCampaign"),
       voice: h("lib/kernel/content-creators.ts", "loadSenderVoiceBrief("),
-      persona: { gap: "a broadcast email campaign is not persona-conditioned (only newsletters resolve sections per recipient persona) — a real product gap, not built this lane" },
+      persona: h("app/actions/marketing-studio.ts", "renderThemFirstDraftBrief(readerBrief)"),
       approval: h("lib/kernel/content-creators.ts", "approval_status"),
       rights: h("lib/providers/dispatch.ts", "import { assembleEmail }"),
       provider: h("lib/marketing/email-campaign-sender.ts", "dispatchEmail"),
@@ -186,7 +187,8 @@ const ROWS: Row[] = [
     },
   },
   {
-    key: "sms", label: "SMS", owner: "ai_isa", proof: "test:inbound-sms-arbiter",
+    key: "sms", label: "SMS", owner: "ai_isa", proof: "test:marketing-loops",
+    changed: { verdict: "BUILT", what: "an accepted SMS preset send that names an in-tenant campaign records ONE sms campaign touchpoint (planCampaignTouchpoint → recordCampaignTouchpointSafe), and the ROI ledger measures SMS activity and reach per channel (measureChannelOutcomes) — no campaign / unverified / no Contact / refused is NOT attributed and reads N/A with the reason, never $0 (lane 153R); the inbound arbiter's own proof stays test:inbound-sms-arbiter" },
     live: "OWNER-HELD: the tenant's SMS provider (Twilio) number and A2P registration",
     hops: {
       producer: h("lib/sms/orchestrate-sms-preset-send.ts", "export async function orchestrateSmsPresetSend"),
@@ -198,7 +200,7 @@ const ROWS: Row[] = [
       evidence: h("lib/providers/dispatch.ts", "comms.sms.send"),
       event: h("app/api/webhooks/twilio-sms-status/route.ts", "export async function POST"),
       consumer: h("app/api/webhooks/twilio-sms-status/route.ts", "onProviderTruth"),
-      roi: { gap: "an SMS preset send carries no campaign attribution (no marketing_campaign_id / bundle id on the send) outside a bundle — a real product gap, not built this lane" },
+      roi: h("lib/sms/orchestrate-sms-preset-send.ts", "planCampaignTouchpoint({"),
       recovery: h("lib/providers/dispatch.ts", "recordSelfHeal"),
     },
   },
@@ -216,7 +218,10 @@ const ROWS: Row[] = [
       event: { held: "the voicemail-drop provider's delivery callback needs the vendor account (OWNER-HELD) — today the ledger settles on the provider's acceptance only" },
       consumer: { held: "no delivery receipt exists to consume until the provider callback is connected (OWNER-HELD vendor account)" },
       roi: h("lib/voicedrop/orchestrate-voicedrop-send.ts", "attribution"),
-      recovery: { gap: "a timed-out drop settles 'unknown' on the action ledger; its reconcile-then-resend is lane 153S's crash-recovery build (owner B10), not this lane's" },
+      // wave 153 integrator (lanes 153S + 153R both landed): the drop's ledger row is risk class COMMUNICATION, so the send-recovery
+      // pass (lib/outcomes/reconciliation-ledger.ts recoverOutcomeUnknownSends) promotes a dead claim to outcome_unknown and — the
+      // carrier documents no status query or idempotency key — raises the VISIBLE exception; a voicemail is never re-dropped blindly.
+      recovery: h("lib/outcomes/reconciliation.ts", 'voice_drop: { reconcile: "none"'),
     },
   },
   {
@@ -237,12 +242,13 @@ const ROWS: Row[] = [
     },
   },
   {
-    key: "social", label: "Social posts", owner: "campaign_orchestrator", proof: "test:social-approval",
+    key: "social", label: "Social posts", owner: "campaign_orchestrator", proof: "test:marketing-loops",
+    changed: { verdict: "BUILT", what: "the social draft door writes to the post's named audience persona's them-first arc before the first draft (generic-safe for a public post to the whole following), and the compliance gate is told that resolved persona — it was handed a hard-coded \"first_time\" for every post (lane 153R); approval behaviour stays test:social-approval" },
     live: "OWNER-HELD: each tenant's social account connection (OAuth tokens per platform)",
     hops: {
       producer: h("app/actions/social/generate-social-post.ts", "loadSenderVoiceBrief("),
       voice: h("app/actions/social/generate-social-post.ts", "loadSenderVoiceBrief("),
-      persona: { gap: "a social draft is screened for compliance and brand voice, not them-first (validateThemFirstContent is not on the social draft path) — a real product gap, not built this lane" },
+      persona: h("app/actions/social/generate-social-post.ts", "renderThemFirstDraftBrief(readerBrief)"),
       approval: h("lib/social/create-social-post-draft.ts", "brand_compliance_passed"),
       rights: h("lib/social/create-social-post-draft.ts", "runComplianceGate"),
       provider: h("lib/social/publisher.ts", "export async function publishToSocialPlatform"),
@@ -254,12 +260,13 @@ const ROWS: Row[] = [
     },
   },
   {
-    key: "books", label: "Books (lead-magnet books, print packages)", owner: "campaign_orchestrator", proof: "test:autonomous-marketing",
+    key: "books", label: "Books (lead-magnet books, print packages)", owner: "campaign_orchestrator", proof: "test:marketing-loops",
+    changed: { verdict: "BUILT", what: "the book stores its READER brief at start (the persona the agent names → its authored them-first arc; none / un-authored → generic-safe) and every manuscript system prompt renders it after the sender's voice — older projects read generic-safe, never a guessed persona (lane 153R); the producer's own proof stays test:autonomous-marketing" },
     live: "OWNER-HELD: any print-on-demand account (KDP) — the package is built, never uploaded by the platform",
     hops: {
       producer: h("lib/lead-magnets/book-publishing-produce.ts", "export async function buildKdpPackage"),
       voice: h("lib/lead-magnets/book-creator.ts", "loadSenderVoiceBrief("),
-      persona: { gap: "the book concept names its audience upstream; no them-first / persona screen is applied to the chapters — a real product gap, not built this lane" },
+      persona: h("lib/lead-magnets/book-creator.ts", "renderThemFirstDraftBrief(bookReaderBrief(p))"),
       approval: h("lib/lead-magnets/book-publishing-produce.ts", "export async function approveKdpPackage"),
       rights: h("lib/lead-magnets/book-publishing-produce.ts", "fairHousing"),
       provider: { held: "no print vendor is called — the owner uploads the package" },
@@ -271,7 +278,8 @@ const ROWS: Row[] = [
     },
   },
   {
-    key: "podcasts", label: "Podcasts", owner: "campaign_orchestrator", proof: "test:podcast-channel-consolidation",
+    key: "podcasts", label: "Podcasts", owner: "campaign_orchestrator", proof: "test:marketing-loops",
+    changed: { verdict: "BUILT", what: "a TRANSIENT distribution failure is re-queued with a bounded, growing wait and a terminal one (no distributor, a refusal, a 4xx) is never retried — PODCAST_EPISODE_FAILED only when final (decidePodcastDistributionRetry); the ROI ledger measures episodes published under a campaign and states listens N/A (host analytics owner-held) (lane 153R); channel consolidation stays test:podcast-channel-consolidation" },
     live: "OWNER-HELD: the podcast host connection (Transistor) per tenant",
     hops: {
       producer: h("lib/podcast/auto-producer.ts", "export async function runAutoPodcast"),
@@ -283,8 +291,8 @@ const ROWS: Row[] = [
       evidence: h("app/api/cron/distribute-podcast-episodes/route.ts", "processKernelEvent("),
       event: h("app/api/cron/distribute-podcast-episodes/route.ts", "processKernelEvent("),
       consumer: h("lib/kernel/event-reactor.ts", "KernelEvent.PODCAST_EPISODE_DISTRIBUTED"),
-      roi: { gap: "no listen / download analytics are read back from the podcast host (Transistor analytics not wired) — a real product gap; also needs the OWNER-HELD host connection" },
-      recovery: { gap: "a failed distribution emits PODCAST_EPISODE_FAILED and is not retried by the distribute cron — a real product gap, not built this lane" },
+      roi: h("lib/intelligence/roi-ledger.ts", "measureChannelOutcomes({ touchpoints"),
+      recovery: h("app/api/cron/distribute-podcast-episodes/route.ts", "decidePodcastDistributionRetry({"),
     },
   },
   {
@@ -322,12 +330,13 @@ const ROWS: Row[] = [
     },
   },
   {
-    key: "sequences_preferences", label: "Campaign sequences, Contact preferences, dynamic engagement", owner: "campaign_orchestrator", proof: "test:arbiter-timing",
+    key: "sequences_preferences", label: "Campaign sequences, Contact preferences, dynamic engagement", owner: "campaign_orchestrator", proof: "test:marketing-loops",
+    changed: { verdict: "BUILT", what: "the step READS the enrolled person's persona (contacts.contact_persona / leads.persona, tenant-pinned; a refused read stays null and is logged) and hands it to the arbiter — it was always persona: null; the step's copy was already persona-rendered (render-step.ts) (lane 153R); arbiter timing stays test:arbiter-timing" },
     live: "SIMULATED; each step rides its channel's provider (OWNER-HELD keys)",
     hops: {
       producer: h("lib/campaign-sequences/step-executor.ts", "export async function executeSequenceStep"),
       voice: h("app/actions/sequence-step-ai.ts", "loadSenderVoiceBrief("),
-      persona: { gap: "the sequence step hands the arbiter persona: null — the enrolled contact's persona is not read at the step — a real product gap, not built this lane" },
+      persona: h("lib/campaign-sequences/step-executor.ts", "persona: subjectPersona.persona"),
       approval: h("lib/campaign-sequences/step-executor.ts", "checkSequenceAuthority("),
       rights: h("lib/campaign-sequences/step-executor.ts", "tcpa_consent"),
       provider: h("lib/campaign-sequences/step-executor.ts", "registry.dispatch("),
@@ -427,7 +436,8 @@ const ROWS: Row[] = [
     },
   },
   {
-    key: "education_pieces", label: "Education pieces (client lessons by side and moment)", owner: "shopping_agent", proof: "test:lifetime-relationship",
+    key: "education_pieces", label: "Education pieces (client lessons by side and moment)", owner: "shopping_agent", proof: "test:marketing-loops",
+    changed: { verdict: "BUILT", what: "a SENT lesson emits CLIENT_EDUCATION_DELIVERED; the reactor stamps the delivery receipt on its learning_assignment (the row whose viewed_at / completed_at measure engagement — now attributable per delivery); a failed or never-proposed lesson is re-offered a bounded number of times on the same assignment, terminal causes never (lane 153R); the lesson matcher's proof stays test:lifetime-relationship" },
     live: "SIMULATED; delivery rides the client's consented channel (OWNER-HELD provider)",
     hops: {
       producer: h("lib/agents/education-delivery-producer.ts", "export async function produceEducationDelivery"),
@@ -437,10 +447,10 @@ const ROWS: Row[] = [
       rights: h("lib/agents/education-delivery-producer.ts", "email_opt_out"),
       provider: h("lib/agents/education-delivery-producer.ts", "from(\"agent_client_messages\")"),
       evidence: h("lib/agents/education-delivery-producer.ts", "from(\"learning_assignments\")"),
-      event: { gap: "an education delivery emits no kernel event — nothing downstream learns a lesson was sent — a real product gap, not built this lane" },
-      consumer: { gap: "no next-action consumer reads a delivered lesson (no event to consume) — a real product gap, not built this lane" },
-      roi: { gap: "lesson engagement is not attributed — a real product gap, not built this lane" },
-      recovery: { gap: "a failed lesson delivery is not retried — a real product gap, not built this lane" },
+      event: h("lib/agents/agent-client-messages.ts", "event: KernelEvent.CLIENT_EDUCATION_DELIVERED"),
+      consumer: h("lib/kernel/event-reactor.ts", "stampEducationDelivered(svc"),
+      roi: h("lib/agents/education-delivery-producer.ts", "delivered_message_id: d.messageId"),
+      recovery: h("lib/agents/education-delivery-producer.ts", "decideEducationRedelivery({"),
     },
   },
   // WAVE 153 (lane 153P — owner B9 "loop the bundles, omnipresence and refurbish, and lifetime and ghost"): the two loops that had
@@ -551,6 +561,33 @@ function main() {
     if (verdict !== "VERIFIED" && !row.changed) check(`${row.key}: a non-VERIFIED row names its reason (a gap or held hop)`, DIMS.some((d) => res[d].state === "gap" || res[d].state === "held"))
   }
   for (const k of ["campaign_bundles", "lifetime_relationship", "omnipresence_refurbish", "ghost_reengagement"]) check(`the B9 loop row ${k} is in the census`, ROWS.some((r) => r.key === k))
+
+  // WAVE 153 (lane 153R — owner B11): the 8 rows 153P left PARTIAL. RULES (asserted, never a waypoint count):
+  //   · a BUILT row may not carry a remaining gap or untraced hop (BUILT is not a label pasted over a gap);
+  //   · a row still PARTIAL has exactly ONE remaining gap and that gap names the lane that owns it.
+  //   · every token this lane taught the census is LIVE, and commenting out the line that carries it turns it stale
+  //     (a positive control per token — the resolver really depends on that live line, not on a comment or a neighbour).
+  const gapsOf = (res: Record<Dim, Resolved>) => DIMS.filter((d) => res[d].state === "gap" || res[d].state === "untraced")
+  const plantedBuilt = { res: Object.fromEntries(DIMS.map((d) => [d, d === "roi" ? resolve({ gap: "control" }) : resolve({ na: "control" })])) as Record<Dim, Resolved> }
+  check("POSITIVE CONTROL: the gap finder sees a planted gap on a row", gapsOf(plantedBuilt.res).length === 1)
+  for (const { row, res, verdict } of out) {
+    if (verdict === "BUILT") check(`${row.key}: BUILT carries no remaining gap / untraced hop`, gapsOf(res).length === 0, gapsOf(res).join(", "))
+    if (verdict === "PARTIAL") {
+      const g = gapsOf(res)
+      check(`${row.key}: PARTIAL has exactly one remaining hop and it names its owning lane`, g.length === 1 && /lane 153[A-Z]/.test((res[g[0]] as { why: string }).why), g.map((d) => `${d}: ${(res[d] as { why: string }).why}`).join(" | "))
+    }
+  }
+  check("POSITIVE CONTROL: the owner-lane finder refuses a gap that names no lane", !/lane 153[A-Z]/.test("a real product gap, not built this lane"))
+  const LANE_153R_HOPS: Array<[string, Dim]> = [["email", "persona"], ["social", "persona"], ["books", "persona"], ["sequences_preferences", "persona"], ["sms", "roi"], ["podcasts", "roi"], ["podcasts", "recovery"], ["education_pieces", "event"], ["education_pieces", "consumer"], ["education_pieces", "roi"], ["education_pieces", "recovery"]]
+  for (const [key, dim] of LANE_153R_HOPS) {
+    const hop = ROWS.find((r) => r.key === key)?.hops[dim]
+    if (!hop || !("file" in hop)) { check(`153R ${key}.${dim} is a live-code hop`, false, "not a (file, token) hop"); continue }
+    const raw = existsSync(join(ROOT, hop.file)) ? readFileSync(join(ROOT, hop.file), "utf8") : ""
+    const commented = raw.split("\n").map((l) => (l.includes(hop.token) ? `// ${l}` : l)).join("\n")
+    const ctrlKey = `__ctrl__${key}.${dim}`
+    cache.set(ctrlKey, stripComments(commented).split("\n"))
+    check(`153R ${key}.${dim}: "${hop.token}" is live, and commenting out its line turns it stale (positive control)`, resolve(hop).state === "live" && resolve({ file: ctrlKey, token: hop.token }).state === "stale")
+  }
 
   // The table.
   const tally: Record<string, number> = {}

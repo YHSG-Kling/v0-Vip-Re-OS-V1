@@ -508,6 +508,9 @@ export enum KernelEvent {
   CLIENT_PORTAL_MESSAGE_SENT         = 'client_portal_message_sent',
   JOURNEY_STAGE_UPDATED              = 'journey_stage_updated',
   PORTAL_EDUCATION_VIEWED            = 'portal_education_viewed',
+  // WAVE 153 (lane 153R — owner B11): a stage-matched client lesson (a `learning_module` client message) was actually SENT —
+  // emitted by approveClientMessage, consumed by the reactor (lib/agents/education-delivery-producer.ts stampEducationDelivered).
+  CLIENT_EDUCATION_DELIVERED         = 'client_education_delivered',
   PORTAL_LIFETIME_SECTION_VIEWED     = 'portal_lifetime_section_viewed',
   LENDER_PORTAL_USER_INVITED         = 'lender_portal_user_invited',
   TITLE_PORTAL_USER_INVITED          = 'title_portal_user_invited',

@@ -1036,11 +1036,24 @@ export async function generateCampaignContent(params: {
   const supabase = await createClient()
 
   // Get campaign context
-  const { data: campaign } = await supabase
+  const { data: campaign, error: campaignError } = await supabase
     .from("marketing_campaigns")
-    .select("campaign_name, campaign_type, listing:listings(address, city)")
+    .select("campaign_name, campaign_type, audience_personas, listing:listings(address, city)")
     .eq("id", params.campaignId)
     .maybeSingle()
+
+  // WAVE 153 (lane 153R — owner B11, census row email): THE READER'S PERSONA BEFORE THE FIRST DRAFT. The campaign's own
+  // audience_personas (the column the audience resolver reads) is the recipient persona; params.persona is used only when the
+  // campaign names none. lib/marketing/them-first-draft-brief.ts turns it into the them-first brief through the authored arc's ONE
+  // CRM bridge — a mixed, absent, un-authored or unreadable persona is written GENERIC-SAFE, never guessed.
+  const { themFirstDraftBrief, renderThemFirstDraftBrief, complianceGatePersona, themFirstBasisRecord } = await import("@/lib/marketing/them-first-draft-brief")
+  const campaignPersonas = Array.isArray((campaign as any)?.audience_personas) ? ((campaign as any).audience_personas as string[]) : []
+  const readerBrief = themFirstDraftBrief({
+    personas: campaignPersonas.length > 0 ? campaignPersonas : params.persona ?? null,
+    side: null, // a broadcast's side is not known (a listing campaign markets the home TO buyers) — the arc's own default applies
+    readError: campaignError ? campaignError.message : !campaign ? "the campaign was not readable in this tenant" : null,
+    source: campaignPersonas.length > 0 ? "marketing_campaigns.audience_personas" : params.persona ? "the requested persona" : "none",
+  })
 
   // WAVE 151 (lane 151I, integrator fold — LAW 2): THE ONE sender-voice reader compiles the signed-in agent's VERSIONED brief
   // (words, tagline, tone, formality, mission, key messages, signature, their own sentences) at agent → team → brokerage scope
@@ -1055,7 +1068,7 @@ export async function generateCampaignContent(params: {
   } catch (e) {
     console.error("[marketing-studio] sender-voice brief unavailable — the copy is written without it:", e instanceof Error ? e.message : String(e))
   }
-  const systemPrompt = [senderVoiceBlock, "You are the sender's real estate marketing writer: write AS the sender described above, in their words and tone, from the first line."]
+  const systemPrompt = [senderVoiceBlock, "You are the sender's real estate marketing writer: write AS the sender described above, in their words and tone, from the first line.", renderThemFirstDraftBrief(readerBrief)]
     .filter(Boolean)
     .join("\n\n")
 
@@ -1112,7 +1125,7 @@ export async function generateCampaignContent(params: {
     actorUserId: userId,
     actorRole: "agent" as ActorRole,
     journeyType: campaign?.campaign_type === "listing" ? "seller" : "buyer",
-    persona: params.persona ?? "other",
+    persona: complianceGatePersona(readerBrief),
     messageType: params.contentType === "email_body" ? "email" : "social",
     content: generatedContent,
   })
@@ -1122,6 +1135,8 @@ export async function generateCampaignContent(params: {
     content: generatedContent,
     brandVoiceViolations: brandVoiceResult.violations,
     brandVoiceNotes: brandVoiceResult.notes,
+    /** What conditioned the draft on its reader, or why nothing did (wave 153, 153R). */
+    readerPersona: themFirstBasisRecord(readerBrief),
   }
 }
 

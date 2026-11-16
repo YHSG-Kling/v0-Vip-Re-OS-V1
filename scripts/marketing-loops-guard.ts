@@ -180,6 +180,116 @@ async function main() {
   const bundle = code("lib/direct-mail/orchestrate-bundle-send.ts")
   check("the bundle follow-on asks arbitratePlannedTouch with the item's channel REQUIRED, and a halt skips the piece (opted out → not sent)", calls(bundle, "arbitratePlannedTouch") && bundle.includes("requiredChannels: [arbiterChannel]") && /if \(arb\.halt\) return await skipItem\(/.test(bundle))
 
+  // ── §H ─────────────────────────────────────────────────────────────────────────────────────────────
+  // WAVE 153 (lane 153R — owner B11 "audit and fix any partials in marketing capability census"): the hops the 8 PARTIAL rows lacked.
+  section("§H1 — PERSONA / THEM-FIRST before the first draft (email · social · books · sequences): never a guessed persona")
+  const tfb = await import("../lib/marketing/them-first-draft-brief")
+  const mil = tfb.themFirstDraftBrief({ personas: ["military"], side: "buyer", source: "t" })
+  check("POSITIVE: one authored persona → a persona brief on its them-first arc, with the reader's concerns", mil.basis === "persona" && mil.libraryPersonaId === "military-buyer" && mil.concerns.length > 0 && tfb.renderThemFirstDraftBrief(mil).includes("'military'"), JSON.stringify(mil))
+  check("the compliance gate is told the RESOLVED persona", tfb.complianceGatePersona(mil) === "military")
+  const unreadable = tfb.themFirstDraftBrief({ personas: ["military"], readError: "permission denied" })
+  check("ADVERSE: persona UNREADABLE → generic-safe draft (says why), never the persona it could not confirm", unreadable.basis === "generic_safe" && /could not be read/.test(unreadable.reason) && tfb.renderThemFirstDraftBrief(unreadable).includes("Assume no life event") && tfb.complianceGatePersona(unreadable) === "other")
+  check("ADVERSE: no persona on record → generic-safe", tfb.themFirstDraftBrief({ personas: null }).basis === "generic_safe" && tfb.themFirstDraftBrief({ personas: ["", "  "] }).basis === "generic_safe")
+  const mixed = tfb.themFirstDraftBrief({ personas: ["military", "luxury"] })
+  check("ADVERSE: a MIXED audience → generic-safe (one persona's arc would mis-address the rest)", mixed.basis === "generic_safe" && /2 personas/.test(mixed.reason))
+  for (const p of ["senior", "foreclosure", "other", "made_up"]) {
+    const b = tfb.themFirstDraftBrief({ personas: p })
+    check(`ADVERSE: '${p}' has no authored arc → generic-safe, never another persona's script`, b.basis === "generic_safe" && tfb.complianceGatePersona(b) === "other")
+  }
+  const pdb = memSupabase({
+    contacts: [{ id: "c1", brokerage_id: B, contact_persona: "downsize", contact_type: "seller" }, { id: "c2", brokerage_id: "other-tenant", contact_persona: "luxury", contact_type: "buyer" }],
+    leads: [{ id: "l1", brokerage_id: B, persona: "first_time" }],
+  })
+  const r1 = await tfb.readRecipientPersona(pdb as never, { brokerageId: B, subject: { type: "contact", id: "c1" } })
+  check("POSITIVE: readRecipientPersona reads contacts.contact_persona in the tenant (+ the side)", r1.persona === "downsize" && r1.side === "seller" && r1.readError === null)
+  check("POSITIVE: a lead's persona comes from leads.persona", (await tfb.readRecipientPersona(pdb as never, { brokerageId: B, subject: { type: "lead", id: "l1" } })).persona === "first_time")
+  check("ADVERSE: another tenant's contact reads as NO persona (tenant-pinned), not its persona", (await tfb.readRecipientPersona(pdb as never, { brokerageId: B, subject: { type: "contact", id: "c2" } })).persona === null)
+  const refusedRead = await tfb.readRecipientPersona(memSupabase({}, { refuse: { contacts: "permission denied for table contacts" } }) as never, { brokerageId: B, subject: { type: "contact", id: "c1" } })
+  check("ADVERSE: a REFUSED persona read is a named readError (→ generic-safe), never a silent null", refusedRead.persona === null && /permission denied/.test(refusedRead.readError ?? ""))
+  const studio = code("app/actions/marketing-studio.ts")
+  const gIdx = studio.indexOf("export async function generateCampaignContent")
+  const studioFn = studio.slice(gIdx, studio.indexOf("\nexport ", gIdx + 10))
+  check("email: the campaign copy door reads marketing_campaigns.audience_personas and builds the brief BEFORE the model call", studioFn.includes("audience_personas") && calls(studioFn, "themFirstDraftBrief") && studioFn.indexOf("renderThemFirstDraftBrief(readerBrief)") > 0 && studioFn.indexOf("renderThemFirstDraftBrief(readerBrief)") < studioFn.indexOf("generateAIResponse("))
+  check("email: the brand-voice gate is told the resolved persona (complianceGatePersona), not the raw request", studioFn.includes("persona: complianceGatePersona(readerBrief)"))
+  const social = code("app/actions/social/generate-social-post.ts")
+  check("POSITIVE CONTROL: the guessed-persona finder sees a planted `persona: \"first_time\"`", /persona:\s*"first_time"/.test(`x({ persona: "first_time" })`))
+  check("social: the draft door builds the reader brief before generateObject and hands the gate complianceGatePersona — the hard-coded \"first_time\" guess is gone", calls(social, "themFirstDraftBrief") && social.indexOf("renderThemFirstDraftBrief(readerBrief)") < social.indexOf("await generateObject(") && social.includes("persona: complianceGatePersona(readerBrief)") && !/persona:\s*"first_time"/.test(social))
+  const book = code("lib/lead-magnets/book-creator.ts")
+  check("books: the project stores the reader brief at start and every manuscript system prompt renders it (bookReaderBrief: generic-safe for older projects)", /reader_brief:\s*themFirstDraftBrief\(/.test(book) && book.includes("renderThemFirstDraftBrief(bookReaderBrief(p))") && /p\.reader_brief\s*\?\?\s*themFirstDraftBrief\(\{\s*personas:\s*null/.test(book))
+  const step = code("lib/campaign-sequences/step-executor.ts")
+  check("POSITIVE CONTROL: the null-persona finder sees a planted `persona: null` relationship", /relationship:\s*\{[^}]*persona:\s*null/.test(`relationship: { type: "contact", persona: null, hasAssignedAgent: false }`))
+  check("sequences: the step READS the enrolled person's persona before the arbiter and hands it over (no `persona: null`)", step.indexOf("readRecipientPersona(") > 0 && step.indexOf("readRecipientPersona(") < step.indexOf("arbitratePlannedTouch(supabase") && step.includes("persona: subjectPersona.persona") && !/relationship:\s*\{[^}]*persona:\s*null/.test(step))
+
+  section("§H2 — ROI: SMS sends reach the ledger as campaign touchpoints; SMS + podcast outcomes are measured or N/A with the reason (never $0)")
+  const { planCampaignTouchpoint } = await import("../lib/marketing/channel-touchpoint-plan")
+  const okPlan = planCampaignTouchpoint({ channel: "sms", accepted: true, contactId: "c1", marketingCampaignId: "mc1", campaignVerified: true })
+  check("POSITIVE: an accepted SMS to a Contact under a verified in-tenant campaign → ONE touchpoint planned", okPlan.record === true && okPlan.campaignId === "mc1")
+  for (const [why, inp] of [
+    ["no campaign named", { marketingCampaignId: null, campaignVerified: null }],
+    ["a campaign not verified in the tenant", { campaignVerified: false }],
+    ["no Contact", { contactId: null }],
+    ["a send the provider refused", { accepted: false }],
+  ] as const) {
+    const base = { channel: "sms" as const, accepted: true, contactId: "c1" as string | null, marketingCampaignId: "mc1" as string | null, campaignVerified: true as boolean | null }
+    const plan = planCampaignTouchpoint(Object.assign(base, inp))
+    check(`ADVERSE: ${why} → NOT attributed, with the reason`, plan.record === false && plan.reason.length > 20)
+  }
+  const sms = code("lib/sms/orchestrate-sms-preset-send.ts")
+  check("sms: the preset door verifies the campaign IN THE TENANT, asks the plan, and records an sms touchpoint", /from\("marketing_campaigns"\)[\s\S]{0,120}\.eq\("brokerage_id", args\.brokerageId\)/.test(sms) && calls(sms, "planCampaignTouchpoint") && calls(sms, "recordCampaignTouchpointSafe") && /channel:\s*"sms"/.test(sms))
+  const { measureChannelOutcomes } = await import("../lib/intelligence/roi-ledger")
+  const m1 = measureChannelOutcomes({ touchpoints: [{ channel: "sms", contact_id: "a" }, { channel: "sms", contact_id: "a" }, { channel: "sms", contact_id: "b" }, { channel: "email", contact_id: "c" }], publishedEpisodes: [{ id: "e1" }, { id: "e1" }, { id: "e2" }] })
+  check("POSITIVE: SMS activity counts only sms touchpoints (3) and reach distinct Contacts (2)", m1.sms.activity.value === 3 && m1.sms.reach.value === 2 && m1.sms.activity.na === null)
+  check("POSITIVE: podcast activity = distinct episodes published under a campaign (2)", m1.podcast.activity.value === 2)
+  const m0 = measureChannelOutcomes({ touchpoints: [{ channel: "email", contact_id: "c" }], publishedEpisodes: [] })
+  check("ADVERSE: an UNMEASURED channel reads N/A with its reason — never 0 / $0", m0.sms.activity.value === null && !!m0.sms.activity.na && m0.podcast.activity.value === null && !!m0.podcast.activity.na)
+  check("ADVERSE: podcast reach is ALWAYS N/A (listens are not read back from the host — owner-held), even with episodes published", m1.podcast.reach.value === null && /owner-held/.test(m1.podcast.reach.na ?? ""))
+  const roi = code("lib/intelligence/roi-ledger.ts")
+  check("roi-ledger: the authorized ledger reads touchpoint channel + podcast episodes in window and fills decisionMetrics.channelOutcomes (CSV carries them)", roi.includes("sent_at, status, channel") && /readByIds\(svc, "podcast_episodes"/.test(roi) && calls(roi, "measureChannelOutcomes") && roi.includes("dm.channelOutcomes"))
+
+  section("§H3 — PODCAST RECOVERY: bounded retry of a transient failure; a terminal failure is not retried")
+  const pr = await import("../lib/podcast/distribution-retry")
+  const t0 = new Date("2026-11-16T12:00:00Z")
+  for (const [msg, cls] of [["No podcast distributor connected (Connection Center → Transistor). Refusing to simulate a publish.", "terminal"], ["Webhook failed: 404", "terminal"], ["Distributor rejected the episode", "terminal"], ["Webhook failed: 503", "transient"], ["connect ETIMEDOUT 1.2.3.4:443", "transient"], ["something unexplained", "terminal"]] as const) {
+    check(`classify "${msg.slice(0, 40)}" → ${cls}`, pr.classifyPodcastDistributionFailure(msg) === cls)
+  }
+  const first = pr.decidePodcastDistributionRetry({ message: "Webhook failed: 503", priorAttempts: 0, now: t0 })
+  check("POSITIVE: a transient failure goes back to `queued` with attempt 1 and a bounded wait (+15 min)", first.status === "queued" && first.retry && first.state.attempts === 1 && first.state.next_attempt_at === new Date(t0.getTime() + 15 * 60_000).toISOString())
+  const terminal = pr.decidePodcastDistributionRetry({ message: "No podcast distributor connected", priorAttempts: 0, now: t0 })
+  check("ADVERSE: a TERMINAL failure is `failed` and NOT retried (no next attempt)", terminal.status === "failed" && !terminal.retry && terminal.state.next_attempt_at === null)
+  const exhausted = pr.decidePodcastDistributionRetry({ message: "Webhook failed: 503", priorAttempts: pr.MAX_PODCAST_DISTRIBUTION_ATTEMPTS - 1, now: t0 })
+  check(`ADVERSE: the ${pr.MAX_PODCAST_DISTRIBUTION_ATTEMPTS}th transient failure is final (bounded — never retried forever)`, exhausted.status === "failed" && !exhausted.retry && /gave up/.test(exhausted.state.terminal_reason ?? ""))
+  check("a queued retry waits for next_attempt_at; a due / unstamped row is attempted", !pr.podcastRetryDue(first.state, t0) && pr.podcastRetryDue(first.state, new Date(t0.getTime() + 16 * 60_000)) && pr.podcastRetryDue(null, t0) && pr.priorPodcastAttempts(first.state) === 1 && pr.priorPodcastAttempts(null) === 0)
+  const pcron = code("app/api/cron/distribute-podcast-episodes/route.ts")
+  check("the distribute cron asks the retry policy on failure, honours next_attempt_at, and emits PODCAST_EPISODE_FAILED only when final", calls(pcron, "decidePodcastDistributionRetry") && calls(pcron, "podcastRetryDue") && pcron.includes("distribution_status: verdict.status") && /if \(!verdict\.retry\) \{\s*await processKernelEvent\(\{\s*event: KernelEvent\.PODCAST_EPISODE_FAILED/.test(pcron))
+
+  section("§H4 — EDUCATION: delivered → event → receipt (attribution) → bounded redelivery")
+  const edu = await import("../lib/agents/education-delivery-producer")
+  check("a never-offered lesson → new", edu.decideEducationRedelivery({ assignment: null, message: null }).action === "new")
+  check("a lesson in flight / sent is left alone", edu.decideEducationRedelivery({ assignment: { signal_metadata: {} }, message: { status: "sent" } }).action === "in_flight")
+  const rm = edu.decideEducationRedelivery({ assignment: { signal_metadata: {} }, message: { status: "failed", send_error: "portal card write failed: timeout" } })
+  check("POSITIVE: a transiently FAILED lesson delivery is re-offered (attempt 1)", rm.action === "retry_message" && rm.attempt === 1)
+  check("POSITIVE: an assignment whose proposal never landed is re-proposed on the SAME assignment", edu.decideEducationRedelivery({ assignment: { signal_metadata: { redelivery_attempts: 1 } }, message: null }).action === "retry_proposal")
+  check("ADVERSE: a failure a retry cannot change (opted out) is terminal", edu.decideEducationRedelivery({ assignment: { signal_metadata: {} }, message: { status: "failed", send_error: "recipient opted out of email" } }).action === "terminal")
+  check("ADVERSE: the agent's rejection is terminal (never re-offered behind their back)", edu.decideEducationRedelivery({ assignment: { signal_metadata: {} }, message: { status: "rejected" } }).action === "terminal")
+  check(`ADVERSE: the budget is bounded (${edu.MAX_EDUCATION_REDELIVERY_ATTEMPTS} attempts → terminal)`, edu.decideEducationRedelivery({ assignment: { signal_metadata: { redelivery_attempts: edu.MAX_EDUCATION_REDELIVERY_ATTEMPTS } }, message: { status: "failed", send_error: "timeout" } }).action === "terminal")
+  check("ADVERSE: no assignment to count on → not retried (never unbounded)", edu.decideEducationRedelivery({ assignment: null, message: { status: "failed", send_error: "timeout" } }).action === "terminal")
+  const esvc = memSupabase({ learning_assignments: [{ id: "la1", brokerage_id: B, contact_id: "c1", module_id: "m1", signal_metadata: { age_band: null, delivery_channel: "portal" }, created_at: "2026-11-01T00:00:00Z" }, { id: "la2", brokerage_id: "other-tenant", contact_id: "c9", module_id: "m1", signal_metadata: {}, created_at: "2026-11-01T00:00:00Z" }] })
+  const st = await edu.stampEducationDelivered(esvc as never, { brokerageId: B, contactId: "c1", moduleId: "m1", messageId: "msg1", channel: "portal", now: t0 })
+  const la1 = (esvc.tables.learning_assignments ?? []).find((r) => r.id === "la1") as { signal_metadata: Record<string, unknown> }
+  check("POSITIVE: the consumer stamps the delivery RECEIPT on the assignment (the attribution engagement is read against) and keeps its existing keys", st.ok && la1.signal_metadata.delivered_message_id === "msg1" && la1.signal_metadata.delivered_at === t0.toISOString() && la1.signal_metadata.delivery_channel === "portal")
+  const foreign = await edu.stampEducationDelivered(esvc as never, { brokerageId: B, contactId: "c9", moduleId: "m1", messageId: "msg2", channel: "portal" })
+  check("ADVERSE: another tenant's assignment is NOT stamped — the miss is said, not a silent success", !foreign.ok && (esvc.tables.learning_assignments ?? []).find((r) => r.id === "la2")?.signal_metadata?.delivered_message_id === undefined)
+  const refusedStamp = await edu.stampEducationDelivered(memSupabase({}, { refuse: { learning_assignments: "denied" } }) as never, { brokerageId: B, contactId: "c1", moduleId: "m1", messageId: "m", channel: null })
+  check("ADVERSE: a refused read is a named failure", !refusedStamp.ok && /refused/.test(refusedStamp.error))
+  const acm = code("lib/agents/agent-client-messages.ts")
+  const sentIdx = acm.indexOf('update({ status: "sent", sent_at')
+  check("event: approveClientMessage emits CLIENT_EDUCATION_DELIVERED only for a learning_module message, AFTER it is marked sent", acm.indexOf("KernelEvent.CLIENT_EDUCATION_DELIVERED") > sentIdx && sentIdx > 0 && /if \(m\.entity_type === "learning_module"/.test(acm))
+  check("the event is a real KernelEvent member", /CLIENT_EDUCATION_DELIVERED\s*=\s*'client_education_delivered'/.test(code("lib/kernel/events.ts")))
+  const reactor = code("lib/kernel/event-reactor.ts")
+  check("consumer: the reactor branch on CLIENT_EDUCATION_DELIVERED calls stampEducationDelivered", /params\.event === KernelEvent\.CLIENT_EDUCATION_DELIVERED[\s\S]{0,900}stampEducationDelivered\(/.test(reactor))
+  const prod = code("lib/agents/education-delivery-producer.ts")
+  check("recovery: the producer asks decideEducationRedelivery, records the attempt BEFORE re-proposing, and re-proposes on the existing assignment", calls(prod, "decideEducationRedelivery") && prod.indexOf("redelivery_attempts: verdict.attempt") < prod.indexOf("deliverChosenModule(supabase, brokerageId, contactId, chosen, { reuseAssignment })") && prod.includes("opts.reuseAssignment ? { error: null } :"))
+
   console.log(`\n BLIND SPOTS: §A proves wiring, not deployment; §B runs the real door with the model refused (the planner verdict) — a model's choice is a seam in two cases (agent / thrown arbiter); §F's approver resolver is a seam (requirePublishApprover has its own proof); omnipresence lineage keys on source_id. No provider was called.`)
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ MARKETING_LOOPS_FAIL\n" + failures.map((f) => `   - ${f}`).join("\n")); process.exit(1) }

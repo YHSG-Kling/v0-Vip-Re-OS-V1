@@ -385,6 +385,24 @@ export async function approveClientMessage(
     return await fail(supabase, messageId, (e as Error).message)
   }
   await supabase.from("agent_client_messages").update({ status: "sent", sent_at: new Date().toISOString() }).eq("id", messageId)
+  // WAVE 153 (lane 153R — owner B11, census row education_pieces): a SENT client lesson is an event downstream can learn from
+  // (it emitted nothing). The reactor stamps the delivery receipt on the lesson's assignment (lib/education/education-delivery-
+  // outcome.ts). Best-effort: the send already happened; a lost event is logged, never thrown.
+  if (m.entity_type === "learning_module" && m.entity_id && m.recipient_contact_id) {
+    try {
+      const { emitKernelEvent } = await import("@/lib/kernel/emit")
+      const { KernelEvent } = await import("@/lib/kernel/events")
+      const ev = await emitKernelEvent({
+        event: KernelEvent.CLIENT_EDUCATION_DELIVERED, brokerageId: m.brokerage_id, entityType: "contact", entityId: m.recipient_contact_id,
+        contactId: m.recipient_contact_id, source: "system",
+        metadata: { module_id: m.entity_id, agent_client_message_id: messageId, channel: m.channel },
+        dedupeKey: `client_education_delivered:${messageId}`, client: supabase,
+      })
+      if (ev.error) console.error(`[agent-client-messages] client_education_delivered not recorded for message ${messageId}: ${ev.error}`)
+    } catch (e) {
+      console.error(`[agent-client-messages] client_education_delivered emit threw for message ${messageId}:`, (e as Error)?.message)
+    }
+  }
   return { status: "sent", result: { message_id: messageId, channel: m.channel } }
 }
 

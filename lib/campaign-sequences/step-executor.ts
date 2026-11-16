@@ -327,12 +327,18 @@ export async function executeSequenceStep(
     const subject = contactId ? { type: "contact" as const, id: contactId } : enrollment.lead_id ? { type: "lead" as const, id: enrollment.lead_id as string } : null
     if (subject) {
       const { arbitratePlannedTouch } = await import("@/lib/ai-isa/followup-arbiter")
+      // WAVE 153 (lane 153R — owner B11, census row sequences): the enrolled person's persona is READ at the step (contacts.
+      // contact_persona / leads.persona, tenant-pinned) and handed to the arbiter — it was always `persona: null`. A refused read
+      // stays null and is logged; it is never a guessed persona. (The step's copy is persona-rendered by render-step.ts.)
+      const { readRecipientPersona } = await import("@/lib/marketing/them-first-draft-brief")
+      const subjectPersona = await readRecipientPersona(supabase, { brokerageId, subject })
+      if (subjectPersona.readError) console.error(`[step-executor] persona not read for enrollment ${enrollmentId} (the arbiter decides without it): ${subjectPersona.readError}`)
       const arb = await arbitratePlannedTouch(supabase, {
         brokerageId, planner: "sequence_step", subject, now: new Date(),
         options: [{ id: "send_now", kind: "communication", channels: [], why: [`step ${nextStepNumber} of the tenant's sequence (${step.channel}) is due on its author's spacing (${step.delay_days ?? 0}d ${step.delay_hours ?? 0}h after the previous step)`] }],
         planned: "send_now",
         moment: { key: "sequence_step_due", intent: `A ${step.channel} step the tenant wrote is due for this person — decide whether now is right, or hold it a bounded time.` },
-        relationship: { type: subject.type, persona: null, hasAssignedAgent: false },
+        relationship: { type: subject.type, persona: subjectPersona.persona, hasAssignedAgent: false },
         // WAVE 151 (151E, 150Z row 38): the channel this step would ride — the arbiter halts the sequence ONCE when no lawful
         // channel is left for this person (every channel opted out / refused), instead of each later step refusing at dispatch.
         requiredChannels: [step.channel],

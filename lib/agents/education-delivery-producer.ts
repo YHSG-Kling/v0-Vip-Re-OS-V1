@@ -339,25 +339,43 @@ export async function produceEducationDelivery(
   const picks = await pickLearningModulesForActor({ supabase, actorKind: "customer", actorId: contactId, limit: 3 })
   if (picks.length === 0) return { proposed: false, reason: "no matching module" }
 
-  // Take the highest-scored module the contact hasn't already been assigned.
+  // Take the highest-scored module the contact hasn't already been assigned — or (WAVE 153, lane 153R — owner B11, census row
+  // education_pieces, RECOVERY) re-offer one whose delivery FAILED or whose proposal never landed, a bounded number of times
+  // (decideEducationRedelivery, below in this file: terminal causes and an exhausted budget are not
+  // retried; the attempts are counted on the assignment BEFORE the retry, so a retry that fails again still spends budget).
+  // A refused read skips the module — "could not see" is never "nothing there" (§3).
   let chosen: typeof picks[number] | null = null
+  let reuseAssignment = false
   for (const p of picks) {
-    const { data: existingAssign } = await supabase
+    const { data: existingAssign, error: assignReadErr } = await supabase
       .from("learning_assignments")
-      .select("id").eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("module_id", p.id)
-      .limit(1).maybeSingle()
-    if (existingAssign) continue
-    const { data: existingMsg } = await supabase
+      .select("id, signal_metadata").eq("brokerage_id", brokerageId).eq("contact_id", contactId).eq("module_id", p.id)
+      .order("created_at", { ascending: false }).limit(1).maybeSingle()
+    if (assignReadErr) { console.error(`[education-delivery] assignment read refused for module ${p.id}: ${assignReadErr.message}`); continue }
+    const { data: existingMsg, error: msgReadErr } = await supabase
       .from("agent_client_messages")
-      .select("id").eq("brokerage_id", brokerageId).eq("entity_type", "learning_module").eq("entity_id", p.id)
-      .eq("recipient_contact_id", contactId).limit(1).maybeSingle()
-    if (existingMsg) continue
-    chosen = p
-    break
+      .select("id, status, send_error").eq("brokerage_id", brokerageId).eq("entity_type", "learning_module").eq("entity_id", p.id)
+      .eq("recipient_contact_id", contactId).order("created_at", { ascending: false }).limit(1).maybeSingle()
+    if (msgReadErr) { console.error(`[education-delivery] lesson message read refused for module ${p.id}: ${msgReadErr.message}`); continue }
+    const verdict = decideEducationRedelivery({
+      assignment: existingAssign as { id: string; signal_metadata?: Record<string, unknown> | null } | null,
+      message: existingMsg as { status: string | null; send_error?: string | null } | null,
+    })
+    if (verdict.action === "new") { chosen = p; break }
+    if (verdict.action === "retry_message" || verdict.action === "retry_proposal") {
+      const a = existingAssign as { id: string; signal_metadata?: Record<string, unknown> | null }
+      const { data: bumped, error: bumpErr } = await supabase.from("learning_assignments")
+        .update({ signal_metadata: { ...(a.signal_metadata ?? {}), redelivery_attempts: verdict.attempt, last_redelivery_reason: verdict.reason } })
+        .eq("id", a.id).eq("brokerage_id", brokerageId).select("id")
+      if (bumpErr || (bumped ?? []).length === 0) { console.error(`[education-delivery] retry budget not recorded for module ${p.id} — not retried: ${bumpErr?.message ?? "matched no row"}`); continue }
+      chosen = p
+      reuseAssignment = true
+      break
+    }
   }
   if (!chosen) return { proposed: false, reason: "all top modules already delivered" }
 
-  return deliverChosenModule(supabase, brokerageId, contactId, chosen)
+  return deliverChosenModule(supabase, brokerageId, contactId, chosen, { reuseAssignment })
 }
 
 /** Extracted so both the poll path and the event path share one delivery body. */
@@ -371,6 +389,8 @@ async function deliverChosenModule(
     ageSegSource?: "birthday" | "age_range" | "seller_signal" | "default"
     protectedClassBasis?: readonly ProtectedClassBasis[]
   },
+  /** WAVE 153 (153R): a redelivery re-proposes on the EXISTING assignment (no second row). */
+  opts: { reuseAssignment?: boolean } = {},
 ): Promise<{ proposed: boolean; moduleId?: string; reason?: string; channel?: EducationChannel }> {
   const { side, dualClient, agentName } = await resolveClientContext(supabase, brokerageId, contactId)
   const manager = conciergeForSide(side)
@@ -423,7 +443,7 @@ async function deliverChosenModule(
   // nothing protected-class-derived was involved — never that nobody checked.
   // The mirror of the row the sourcing lane writes at
   // lib/external/batchdata-seller-signals.ts:1438.
-  const { error: assignError } = await supabase.from("learning_assignments").insert({
+  const { error: assignError } = opts.reuseAssignment ? { error: null } : await supabase.from("learning_assignments").insert({
     brokerage_id: brokerageId, module_id: chosen.id, contact_id: contactId,
     signal_source: chosen.signalSource,
     signal_metadata: {
@@ -555,4 +575,91 @@ export async function produceEducationForEvent(
     } catch { /* keep going */ }
   }
   return out
+}
+
+// ─── DELIVERY OUTCOMES (WAVE 153, lane 153R — owner B11, census row education_pieces) ────────────────────────────────────
+// The four hops a client lesson lacked after it was proposed:
+//   EVENT     — approveClientMessage (lib/agents/agent-client-messages.ts) emits KernelEvent.CLIENT_EDUCATION_DELIVERED when a
+//               `learning_module` message is actually SENT (not when proposed).
+//   CONSUMER  — the reactor (lib/kernel/event-reactor.ts) hands it to stampEducationDelivered below, which writes the delivery
+//               RECEIPT onto the lesson's learning_assignment (the row the portal feed and completion tracking read).
+//   ROI       — that receipt (delivered_message_id / delivered_at / delivered_channel) attributes the lesson's engagement: the
+//               assignment's own viewed_at / completed_at (and PORTAL_EDUCATION_VIEWED, already consumed) now answer "did the
+//               lesson we SENT get opened", per delivery. Measured only — an undelivered lesson has no receipt and no figure.
+//   RECOVERY  — decideEducationRedelivery: a FAILED lesson message (or an assignment whose proposal never landed) is re-offered a
+//               bounded number of times; terminal causes (opted out, no recipient, the agent rejected it) and an exhausted budget
+//               are not retried. Attempts ride learning_assignments.signal_metadata (no migration).
+// HOUSED HERE, not in a module of their own: the reactor already reaches this file (produceEducationForEvent), so the consumer adds
+// no module to any page graph (test:proxy-graph-budget — app/crm/page.tsx sits at its 1300 budget). PURE except
+// stampEducationDelivered (the caller's client; tenant-pinned; every write's error READ and its rows COUNTED — CLAUDE.md §3).
+
+export const MAX_EDUCATION_REDELIVERY_ATTEMPTS = 3
+
+export type EducationRedelivery =
+  | { action: "new" }
+  | { action: "in_flight"; reason: string }
+  | { action: "retry_message"; attempt: number; reason: string }
+  | { action: "retry_proposal"; attempt: number; reason: string }
+  | { action: "terminal"; reason: string }
+
+const TERMINAL_SEND_ERROR = /opt(ed)?[\s_-]?out|unsubscrib|dnc|do not contact|consent|needs a recipient|no recipient|agent feedback|not in proposed|suppress/i
+
+/**
+ * PURE — what to do with a lesson this contact may already have been given. `assignment` = the learning_assignments row for
+ * (contact, module) if any; `message` = the newest agent_client_messages row for it if any.
+ */
+export function decideEducationRedelivery(input: {
+  assignment: { signal_metadata?: Record<string, unknown> | null } | null
+  message: { status: string | null; send_error?: string | null } | null
+}): EducationRedelivery {
+  if (!input.assignment && !input.message) return { action: "new" }
+  const prior = Number((input.assignment?.signal_metadata as { redelivery_attempts?: unknown } | null | undefined)?.redelivery_attempts ?? 0)
+  const attempts = Number.isFinite(prior) && prior > 0 ? Math.floor(prior) : 0
+  const status = input.message?.status ?? null
+  if (status && ["proposed", "approved", "sent"].includes(status)) return { action: "in_flight", reason: `the lesson message is ${status}` }
+  if (status === "rejected") return { action: "terminal", reason: "the agent rejected this lesson — it is not re-offered" }
+  if (status && status !== "failed") return { action: "terminal", reason: `the lesson message is '${status}' — not a delivery failure` }
+  if (status === "failed" && TERMINAL_SEND_ERROR.test(String(input.message?.send_error ?? ""))) {
+    return { action: "terminal", reason: `the delivery failed for a reason a retry cannot change (${String(input.message?.send_error).slice(0, 120)})` }
+  }
+  if (attempts >= MAX_EDUCATION_REDELIVERY_ATTEMPTS) return { action: "terminal", reason: `gave up after ${attempts} redelivery attempts` }
+  // The retry budget lives on the assignment: without one there is nowhere to count, so nothing is retried (never unbounded).
+  if (!input.assignment) return { action: "terminal", reason: "no assignment to count redelivery attempts on — not retried" }
+  if (status === "failed") return { action: "retry_message", attempt: attempts + 1, reason: `the lesson delivery failed (${String(input.message?.send_error ?? "unknown").slice(0, 120)}) — offered again` }
+  return { action: "retry_proposal", attempt: attempts + 1, reason: "the lesson was assigned but its message was never proposed — proposing it again" }
+}
+
+/** PURE — the delivery receipt merged onto the assignment's signal_metadata (existing keys kept). */
+export function educationDeliveryReceipt(
+  existing: Record<string, unknown> | null | undefined,
+  d: { messageId: string; channel: string | null; deliveredAt: string },
+): Record<string, unknown> {
+  return { ...(existing ?? {}), delivered_message_id: d.messageId, delivered_at: d.deliveredAt, delivered_channel: d.channel }
+}
+
+/**
+ * THE CONSUMER of CLIENT_EDUCATION_DELIVERED: stamp the receipt on the (contact, module) assignment in this tenant. Returns what
+ * happened — a refused read / write or no matching assignment is said (never a silent success). Never throws.
+ */
+export async function stampEducationDelivered(
+  db: { from: (table: string) => any },
+  input: { brokerageId: string; contactId: string; moduleId: string; messageId: string; channel: string | null; now?: Date },
+): Promise<{ ok: true; assignmentId: string } | { ok: false; error: string }> {
+  try {
+    const { data: row, error } = await db.from("learning_assignments").select("id, signal_metadata")
+      .eq("brokerage_id", input.brokerageId).eq("contact_id", input.contactId).eq("module_id", input.moduleId)
+      .order("created_at", { ascending: false }).limit(1).maybeSingle()
+    if (error) return { ok: false, error: `learning_assignments read refused: ${error.message}` }
+    if (!row) return { ok: false, error: "no assignment for this delivered lesson in this tenant" }
+    const meta = educationDeliveryReceipt((row as { signal_metadata?: Record<string, unknown> | null }).signal_metadata, {
+      messageId: input.messageId, channel: input.channel, deliveredAt: (input.now ?? new Date()).toISOString(),
+    })
+    const { data: upd, error: updErr } = await db.from("learning_assignments").update({ signal_metadata: meta })
+      .eq("id", (row as { id: string }).id).eq("brokerage_id", input.brokerageId).select("id")
+    if (updErr) return { ok: false, error: `receipt write refused: ${updErr.message}` }
+    if (!Array.isArray(upd) || upd.length === 0) return { ok: false, error: "receipt write matched no row" }
+    return { ok: true, assignmentId: (row as { id: string }).id }
+  } catch (e) {
+    return { ok: false, error: (e as Error)?.message ?? String(e) }
+  }
 }
