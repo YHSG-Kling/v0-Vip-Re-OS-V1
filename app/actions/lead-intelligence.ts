@@ -42,9 +42,8 @@ import { STANDARD_TIMELINES, type StandardTimeline } from "@/constants/crm-stand
 // sibling module into app/crm/page.tsx's graph; the same symbols, nothing else).
 import { requirePermission } from "@/lib/security/rbac"
 import { isTenantAdminOrPlatformStaff, resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
-import { scrapePage } from "@/lib/providers/zenrows/client"
 import { revalidatePath } from "next/cache"
-import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
+import { BatchDataClient, PeopleDataClient } from "@/lib/external"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
 // OSINTClient's import went with scrapeSocialMotivatedSellerSignals — it was this
 // file's only consumer. The client itself is alive at lib/osint-client.ts and is
@@ -653,14 +652,6 @@ export async function scrapeSocialSignalsWithZenRows(
   try {
     const supabase = createServiceClient()
 
-    // ZenRows API configuration
-    const zenrowsApiKey = process.env.ZENROWS_API_KEY
-
-    if (!zenrowsApiKey) {
-      console.log("[v0] ZenRows API key not configured")
-      return { success: false, error: "ZenRows API key not configured", signals: [], count: 0, dark: true as const }
-    }
-
     // BUDGET GATE (existing vendor-governance ceiling) — refuse before spending
     // when this brokerage is already at/over its monthly vendor budget.
     const budget = await checkVendorBudget({ brokerageId, addCost: ZENROWS_CALL_COST_USD })
@@ -671,26 +662,24 @@ export async function scrapeSocialSignalsWithZenRows(
     // Construct Nextdoor URL for the location
     const nextdoorUrl = `https://nextdoor.com/city/${location.state.toLowerCase()}/${location.city.toLowerCase().replace(/\s+/g, "-")}/`
 
-    console.log("[v0] Scraping Nextdoor via ZenRows for:", location)
-
-    // Official ZenRows SDK adapter (lib/providers/zenrows/client.ts) — same
-    // request shape, same credit-per-request price.
-    const response = await scrapePage(zenrowsApiKey, nextdoorUrl, {
-      jsRender: true,
-      premiumProxy: true,
-      customHeaders: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-    })
-
-    await bookSourceSpend({
-      source: "nextdoor_intent", cost: ZENROWS_CALL_COST_USD, brokerageId, providerOverride: "zenrows",
-      systemSource: "lead_intelligence", metadata: { territoryId: territory.id, city: location.city, state: location.state },
-    })
-
-    if (!response.ok || response.data == null) {
-      throw new Error(`ZenRows API error: ${response.status} ${response.error ?? ""}`)
+    // WAVE 153 (lane 153N — owner ruling B2 "nextdoor goes through zyte or zenrows"): the fetch rides the snapshot checkpoint
+    // (fetchNextdoorPageThroughCheckpoint below → lib/providers/scrape-checkpoint.ts) under the purpose
+    // real_estate_need_chatter — robots, the named LICENSE_REQUIRED terms hold for nextdoor.com (lifted only by a reviewed
+    // recorded agreement), the vendor budget as the spend gate, backoff and the content digest. Was a direct ZenRows SDK call.
+    const nd = await fetchNextdoorPageThroughCheckpoint(nextdoorUrl, supabase, { brokerageId, marketId: territory.id }, (estimateUsd: number) =>
+      estimateUsd <= Math.max(0, Number(budget.budget ?? 0) - Number(budget.spent ?? 0))
+        ? { allowed: true, reason: "within this brokerage's monthly vendor budget" }
+        : { allowed: false, reason: `the vendor budget would be exceeded ($${budget.spent} + $${estimateUsd} of $${budget.budget})` })
+    if (nd.cost > 0) {
+      await bookSourceSpend({
+        source: "nextdoor_intent", cost: nd.cost, brokerageId, providerOverride: nd.provider ?? "zenrows",
+        systemSource: "lead_intelligence", metadata: { territoryId: territory.id, city: location.city, state: location.state },
+      })
     }
+    if (nd.held) return { success: false, error: `Nextdoor: ${nd.held}`, signals: [], count: 0, held: nd.held }
 
-    const html = response.data
+    // Only a CHANGED page carries HTML (an unchanged snapshot forwards nothing — the checkpoint working, not a failure).
+    const html = nd.html.join("\n")
 
     // Parse HTML to extract Nextdoor posts (simplified - would use cheerio or similar)
     const posts = parseNextdoorPosts(html, location)
@@ -755,9 +744,12 @@ export async function scrapeSocialSignalsWithZenRows(
         sourceFamily: "social_intent", sourceChannel: "nextdoor_chatter",
         sourceSubtype: "nextdoor_post", records: rawRecords, executionId: null,
         marketGeo: { city: territory.city, state: territory.state, zip_codes: territory.zip_codes },
-        batchCostUsd: ZENROWS_CALL_COST_USD, // lane 82B — the metered ZenRows call reaches cost_per_record
+        batchCostUsd: nd.cost || null, // the checkpointed request's booked cost reaches cost_per_record
       })
     }
+    // The producer accepted the batch → the processed watermark moves (a throw above leaves the snapshot for re-processing).
+    const committed = await nd.commit()
+    if (!committed.persisted && nd.html.length > 0) console.error(`[lead-intelligence] nextdoor checkpoint NOT committed: ${committed.error}`)
 
     console.log("[v0] Successfully scraped", signals.length, "signals from Nextdoor")
 
@@ -771,6 +763,30 @@ export async function scrapeSocialSignalsWithZenRows(
 
 /** Matches lib/external/zenrows-client.ts::scrapeWithZenRows's own recorded cost per call. */
 const ZENROWS_CALL_COST_USD = 0.01
+
+/**
+ * WAVE 153 (lane 153N — owner rulings B2 / B3): THIS file's Nextdoor page fetch — through THE snapshot checkpoint
+ * (lib/providers/scrape-checkpoint.ts fetchCheckpointedSnapshot), purpose real_estate_need_chatter, the named LICENSE_REQUIRED
+ * terms hold on nextdoor.com. Not exported (a "use server" export is a public endpoint). It calls the checkpoint directly
+ * rather than lib/lead-pipeline/nextdoor-chatter.ts because both readers here parse the page themselves, and this file sits in
+ * page graphs (scripts/proxy-graph-budget-guard.ts) — the same transport, gate and ledger either way.
+ */
+async function fetchNextdoorPageThroughCheckpoint(
+  url: string, ledgerClient: { from: (t: string) => any }, scope: { brokerageId: string; marketId: string | null },
+  spendGate: (estimateUsd: number) => { allowed: boolean; reason: string },
+): Promise<{ html: string[]; cost: number; provider: "zenrows" | "zyte" | null; held: string | null; commit: () => Promise<{ persisted: boolean; error: string | null }> }> {
+  const { fetchCheckpointedSnapshot } = await import("@/lib/providers/scrape-checkpoint")
+  const snap = await fetchCheckpointedSnapshot(
+    { url, scope: { ...scope, purpose: "real_estate_need_chatter", lane: "nextdoor_manual" }, jsRender: true, premiumProxy: true, maxPages: 1 },
+    { ledgerClient, spendGate },
+  )
+  const quiet = snap.status === "unchanged" || snap.status === "not_modified" || snap.status === "skipped_interval"
+  return {
+    html: snap.status === "fetched_changed" ? snap.html : [], cost: snap.costUsd, provider: snap.provider,
+    held: snap.status === "fetched_changed" || quiet ? null : `${snap.status} — ${snap.reason}`,
+    commit: () => (snap.status === "fetched_changed" ? snap.commit({ ok: true, forwarded: [] }) : Promise.resolve({ persisted: false, error: "nothing to commit" })),
+  }
+}
 
 /** Conservative per-lookup estimate — matches the nearby BatchData address/skip-trace
  *  costs already recorded in lib/external/batchdata-client.ts (0.02-0.03/call). The
@@ -1271,43 +1287,17 @@ async function enrichWithPropertyOwnership(
 }
 
 async function searchOnlineActivity(leadId: string, lead: any, brokerageId: string | null) {
-  const supabase = createServiceClient()
-  const zenrows = new ZenrowsClient()
-
   try {
-    const searchQueries = [
-      `"${lead.first_name} ${lead.last_name}" ${lead.city} real estate`,
-      `"${lead.first_name} ${lead.last_name}" ${lead.city} moving`,
-      `"${lead.first_name} ${lead.last_name}" ${lead.city} selling home`,
-    ]
-
-    for (const query of searchQueries) {
-      const results = await zenrows.googleSearch(query, {
-        location: `${lead.city}, ${lead.state}`,
-        num: 20,
-      })
-
-      const detectedIntent = analyzeSearchIntent(results as unknown as any[])
-
-      if (detectedIntent) {
-        const { error: searchActivityError } = await supabase.from("google_search_activity").insert({
-          lead_id: leadId,
-          brokerage_id: brokerageId,
-          search_location: `${lead.city}, ${lead.state}`,
-          search_terms: [query],
-          detected_intent: detectedIntent,
-          search_patterns: { results_count: results.length },
-          scraped_via: "zenrows",
-        })
-        if (searchActivityError) console.error("[v0] google_search_activity insert error:", searchActivityError)
-      }
-    }
-
+    // TOMBSTONE (orphan doctrine §1.3; owner ruling 2026-11-16, wave 153 B3: Zyte / ZenRows only for public real-estate-need
+    // chatter and FSBO listings). The loop that stood here ran three ZenRows Google searches on the lead's NAME and stored the
+    // result as `google_search_activity` — a search ABOUT a person recorded as that person's own search behaviour, which it never
+    // was. Public mentions of a named person are found, cited and grounded by the Exa person-mention search
+    // (lib/providers/exa — the people-hunt survivor lane 153N wired to the RawData door); nothing here writes
+    // google_search_activity any more.
     if (lead.city && lead.state) {
       await searchNextdoorActivity(leadId, lead, brokerageId)
     }
 
-    await searchRealEstateSites(leadId, lead, brokerageId)
   } catch (error) {
     console.error("[v0] Online activity search error:", error)
   }
@@ -1315,11 +1305,23 @@ async function searchOnlineActivity(leadId: string, lead: any, brokerageId: stri
 
 async function searchNextdoorActivity(leadId: string, lead: any, brokerageId: string | null) {
   const supabase = createServiceClient()
-  const zenrows = new ZenrowsClient()
 
   try {
     const nextdoorUrl = `https://nextdoor.com/search/?q=${encodeURIComponent(`${lead.city} ${lead.state} moving selling home`)}`
-    const { posts: nextdoorResults } = await zenrows.scrapeNextdoor(nextdoorUrl)
+    // WAVE 153 (lane 153N — owner ruling B2): through the snapshot checkpoint (fetchNextdoorPageThroughCheckpoint), purpose
+    // real_estate_need_chatter, the named LICENSE_REQUIRED hold on nextdoor.com, and this brokerage's vendor budget as the
+    // spend gate (no tenant → no spend: fail closed). Was ZenrowsClient.scrapeNextdoor — a direct transport call.
+    if (!brokerageId) return
+    const budget = await checkVendorBudget({ brokerageId, addCost: ZENROWS_CALL_COST_USD })
+    const nd = await fetchNextdoorPageThroughCheckpoint(nextdoorUrl, supabase, { brokerageId, marketId: null }, (estimateUsd: number) =>
+      budget.allowed && estimateUsd <= Math.max(0, Number(budget.budget ?? 0) - Number(budget.spent ?? 0))
+        ? { allowed: true, reason: "within this brokerage's monthly vendor budget" }
+        : { allowed: false, reason: "this brokerage's monthly vendor budget would be exceeded" })
+    if (nd.cost > 0) await bookSourceSpend({ source: "nextdoor_intent", cost: nd.cost, brokerageId, providerOverride: nd.provider ?? "zenrows", systemSource: "lead_intelligence", metadata: { leadId } })
+    if (nd.held) { console.warn(`[lead-intelligence] Nextdoor activity for lead ${leadId}: ${nd.held}`); return }
+    const { extractNextdoorPostsFromHtml } = await import("@/lib/external/zenrows-client")
+    const nextdoorResults: unknown[] = []
+    for (const page of nd.html) nextdoorResults.push(...(await extractNextdoorPostsFromHtml(page, { sourceUrl: nextdoorUrl })).posts)
 
     for (const activity of nextdoorResults as any[]) {
       const nameMatch = activity.content.toLowerCase().includes(`${lead.first_name} ${lead.last_name}`.toLowerCase())
@@ -1338,39 +1340,16 @@ async function searchNextdoorActivity(leadId: string, lead: any, brokerageId: st
         if (nextdoorError) console.error("[v0] nextdoor_activity insert error:", nextdoorError)
       }
     }
+    await nd.commit()
   } catch (error) {
     console.error("[v0] Nextdoor search error:", error)
   }
 }
 
-async function searchRealEstateSites(leadId: string, lead: any, brokerageId: string | null) {
-  const supabase = createServiceClient()
-  const zenrows = new ZenrowsClient()
-
-  const sites = ["zillow", "realtor.com", "redfin"]
-
-  for (const site of sites) {
-    try {
-      const siteUrl = `https://www.${site === "realtor.com" ? "realtor.com" : site + ".com"}/homes-for-sale/${encodeURIComponent(lead.city + "-" + lead.state)}`
-      const searchResults = await zenrows.scrape(siteUrl) as any
-
-      if (searchResults.properties?.length > 0) {
-        const { error: propertySearchError } = await supabase.from("lead_property_searches").insert({
-          lead_id: leadId,
-          brokerage_id: brokerageId,
-          search_source: site,
-          search_location: `${lead.city}, ${lead.state}`,
-          properties_viewed: searchResults.properties,
-          search_criteria: searchResults.filters,
-          detected_via: "zenrows_scrape",
-        })
-        if (propertySearchError) console.error(`[v0] lead_property_searches insert error (${site}):`, propertySearchError)
-      }
-    } catch (error) {
-      console.error(`[v0] ${site} scraping error:`, error)
-    }
-  }
-}
+// TOMBSTONE (orphan doctrine §1.3; owner ruling 2026-11-16, wave 153 B3): searchRealEstateSites scraped Zillow / Realtor / Redfin
+// city listing pages through ZenRows once per lead and then read `.properties` from a `{ success, html, cost }` result — a field
+// that never existed, so it spent three paid calls per lead and wrote nothing. General listing inventory is a provider's job:
+// lib/property/external-listings-search.ts (tenant listing → IDX / MLS → RentCast listing records) is the survivor.
 
 /**
  * Resolve THE CONTACT'S OWN BROKERAGE'S IDX Broker account, and report honestly
@@ -1909,27 +1888,7 @@ function calculateQualificationScore(data: {
   return Math.round(Math.min(100, score))
 }
 
-function analyzeSearchIntent(results: any[]): string | null {
-  const keywords = results
-    .map((r) => r.title + " " + r.snippet)
-    .join(" ")
-    .toLowerCase()
-
-  if (keywords.includes("buy") || keywords.includes("buying") || keywords.includes("purchase")) {
-    return "buying"
-  }
-  if (keywords.includes("sell") || keywords.includes("selling") || keywords.includes("list")) {
-    return "selling"
-  }
-  if (keywords.includes("value") || keywords.includes("appraisal") || keywords.includes("worth")) {
-    return "valuation"
-  }
-  if (keywords.includes("agent") || keywords.includes("realtor")) {
-    return "agent_search"
-  }
-
-  return "market_research"
-}
+// TOMBSTONE: analyzeSearchIntent (the keyword scorer of the retired name-search loop — see searchOnlineActivity) left with it.
 
 /** The only unified_lead_profile fields an agent may set by hand. */
 export interface LeadProfileTriage {
@@ -2207,73 +2166,14 @@ export async function analyzeGoogleSearchIntent(
     return { success: false, error: territoryResult.error, territoryRefused: true as const }
   }
 
-  // DARK PROVIDER GATE — refuse before spending, never fake a live vendor.
-  if (!process.env.ZENROWS_API_KEY) {
-    return {
-      success: false,
-      error: "ZENROWS_API_KEY is not configured — Google search-intent sampling is dark.",
-      dark: true as const,
-    }
-  }
-
-  const searchCount = 7 // buyerSearches.length + sellerSearches.length, below
-  const budget = await checkVendorBudget({ brokerageId: auth.brokerageId, addCost: ZENROWS_CALL_COST_USD * searchCount })
-  if (!budget.allowed) {
-    return { success: false, error: `Vendor budget exhausted for this brokerage ($${budget.spent}/$${budget.budget}).`, budgetRefused: true as const }
-  }
-
-  const supabase = createServiceClient()
-  const zenrows = new ZenrowsClient()
-
-  const buyerSearches = [
-    `homes for sale in ${targetLocation.city}`,
-    `${targetLocation.city} real estate`,
-    `buy house ${targetLocation.city}`,
-    `first time home buyer ${targetLocation.city}`,
-  ]
-
-  const sellerSearches = [
-    `home value ${targetLocation.city}`,
-    `sell my house ${targetLocation.city}`,
-    `real estate agents ${targetLocation.city}`,
-  ]
-
-  try {
-    for (const query of [...buyerSearches, ...sellerSearches]) {
-      const searchData = await zenrows.googleSearch(query, {
-        location: `${targetLocation.city}, ${targetLocation.state}`,
-        num: 20,
-      }) as any
-
-      await bookSourceSpend({
-        source: "google_phrase_intent", cost: ZENROWS_CALL_COST_USD, brokerageId: auth.brokerageId,
-        providerOverride: "zenrows", systemSource: "lead_intelligence",
-        metadata: { territoryId: territoryResult.territory.id, query },
-      })
-
-      const { error: insertError } = await supabase.from("google_search_intelligence").insert({
-        brokerage_id: auth.brokerageId,
-        search_query: query,
-        detected_location: targetLocation.city,
-        related_searches: searchData.relatedSearches || [],
-        trend: searchData.results?.length > 15 ? "high" : "moderate",
-        potential_leads_count: searchData.results?.length || 0,
-        scraped_at: new Date().toISOString(),
-      })
-
-      // The result was discarded: a run that paid ZenRows for seven searches
-      // and persisted none of them still reported success.
-      if (insertError) {
-        console.error("[lead-intelligence] Search intelligence insert error:", insertError)
-        return { success: false, error: insertError.message, sampled: query }
-      }
-    }
-
-    return { success: true }
-  } catch (error) {
-    console.error("[v0] Google search intent error:", error)
-    await collectError({ workflowName: "lead_intelligence_google_intent", errorMessage: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, severity: "low", brokerageId: auth.brokerageId, context: { city: targetLocation.city, state: targetLocation.state } })
-    return { success: false, error: String(error) }
+  // SCOPE GATE (owner ruling 2026-11-16, wave 153 B3): the page transports search ONLY for public real-estate-need chatter and
+  // FSBO listings. Sampling generic Google phrases for a city is neither, and it stored a result COUNT as `potential_leads_count`
+  // — a number about a results page, not about people. Refused by name before any spend; territory housing questions come from
+  // the Exa content / territory research survivor (lib/providers/exa), which cites its sources.
+  return {
+    success: false,
+    error: "Google phrase sampling is not part of the lead-hunting scope (public real-estate-need posts and for-sale-by-owner listings only). Use the territory research in Lead Hunting instead.",
+    scopeRefused: true as const,
   }
 }
 

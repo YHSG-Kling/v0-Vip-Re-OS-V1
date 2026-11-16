@@ -106,7 +106,7 @@ async function main() {
     const C1 = "00000000-0000-4000-8000-0000000000c1", AG = "00000000-0000-4000-8000-0000000000a1", U1 = "00000000-0000-4000-8000-0000000000e1"
     const B2 = "00000000-0000-4000-8000-0000000000b2"
     const seed = (extra: Record<string, unknown[]> = {}) => memSupabase({
-      contacts: [{ id: C1, brokerage_id: B1, agent_id: AG }],
+      contacts: [{ id: C1, brokerage_id: B1, agent_id: AG, contact_persona: "military" }],
       agent_licenses: [
         { agent_id: AG, brokerage_id: B1, license_state: "FL", license_status: "active" },
         { agent_id: AG, brokerage_id: B1, license_state: "VA", license_status: "expired" },
@@ -145,7 +145,11 @@ async function main() {
 
     const foreign = await planPcsMoveForPortalContact(seed(), { ...self, brokerageId: B2 }, base, { now: NOW, recordStatedDate: rec as never })
     check("ADVERSE · UNRELATED TENANT: a gate verdict for another tenant cannot read this contact (pinned to brokerage_id) → refused, nothing written", !foreign.ok && foreign.code === "read_refused" && calls.length === before)
-    const refused = await planPcsMoveForPortalContact(memSupabase({ contacts: [{ id: C1, brokerage_id: B1, agent_id: AG }] } as never, { missingTables: ["agent_licenses"] }), self, base, { now: NOW, recordStatedDate: rec as never })
+    // Wave 153 (lane 153N — owner ruling B6): the journey tool belongs to the military PERSONA (lib/kernel/types.ts).
+    const other = await planPcsMoveForPortalContact(memSupabase({ contacts: [{ id: C1, brokerage_id: B1, agent_id: AG, contact_persona: "first_time" }], agent_licenses: [] } as never), self, base, { now: NOW, recordStatedDate: rec as never })
+    check("ADVERSE · a Contact whose persona does not carry pcs_move_plan (first_time) is refused (not_this_persona), nothing written", !other.ok && other.code === "not_this_persona" && calls.length === before, JSON.stringify(other))
+    check("POSITIVE CONTROL · the same Contact with the stored persona \"military\" is planned (ok1 above)", ok1.ok)
+    const refused = await planPcsMoveForPortalContact(memSupabase({ contacts: [{ id: C1, brokerage_id: B1, agent_id: AG, contact_persona: "military" }] } as never, { missingTables: ["agent_licenses"] }), self, base, { now: NOW, recordStatedDate: rec as never })
     check("an unreadable license roster makes NO referral judgment and says so (never a guessed referral either way)", refused.ok && !refused.plan.steps.some((s) => s.key === "licence_handoff") && refused.notes.some((n) => /no referral judgment/.test(n)))
     const contactRefused = await planPcsMoveForPortalContact(memSupabase({} as never, { missingTables: ["contacts"] }), self, base, { now: NOW, recordStatedDate: rec as never })
     check("a refused contact read fails CLOSED (read_refused, \"Nothing was saved\"), never a plan built on no record", !contactRefused.ok && contactRefused.code === "read_refused" && /Nothing was saved/.test(contactRefused.message))
@@ -154,7 +158,7 @@ async function main() {
     const mv = await import("../lib/intent/movement-signals")
     const mdeps = { now: NOW, windowDays: 180, decide: (async () => { throw new Error("no model in the proof") }) as never, publish: (async () => ({ ok: true })) as never, respond: (async () => ({ action: "recorded" })) as never, routeToAgent: (async () => true) as never, notifyAdmins: async () => 1 }
     const world = memSupabase({
-      contacts: [{ id: C1, brokerage_id: B1, contact_type: "buyer", agent_id: AG, zip_code: "32503", deleted_at: null, opted_out_at: null, timeline: null, metadata: null, enrichment_profile: null }],
+      contacts: [{ id: C1, brokerage_id: B1, contact_type: "buyer", contact_persona: "military", agent_id: AG, zip_code: "32503", deleted_at: null, opted_out_at: null, timeline: null, metadata: null, enrichment_profile: null }],
       agent_licenses: [{ agent_id: AG, brokerage_id: B1, license_state: "VA", license_status: "active" }],
       movement_signals: [], agent_action_ledger: [], ai_predictions: [], listings: [], transactions: [], leads: [], raw_scraped_leads: [], buyer_financial_profiles: [], ai_tool_usage: [], vendor_spend: [],
     } as never, { uuidIds: true, stampCreatedAt: true, unique: { agent_action_ledger: [["idempotency_key"]], movement_signals: [["brokerage_id", "idempotency_key"]] } } as never)
@@ -171,7 +175,14 @@ async function main() {
 
     // The door is placed on the EXISTING portal journey for the military persona, behind the session gate (stripped source).
     const page = code("app/portal/[contactId]/journey/page.tsx"), action = code("app/actions/portal-pcs-plan.ts")
-    check("the journey page mounts the planner for the military persona (the existing \"PCS Planning\" stage), no new route or user type", /persona === "military_buyer" && <PcsMovePlanner contactId=\{contactId\} \/>/.test(page))
+    // Wave 153 (lane 153N — owner ruling B6): the RULE, not the waypoint literal — the page asks the persona's journey tools
+    // (one map, lib/kernel/types.ts PERSONA_JOURNEY_TOOLS), and the stored persona AND its layout key both resolve.
+    const { getPersonaJourneyTools } = await import("../lib/portal/persona-config")
+    const { PERSONA_JOURNEY_TOOLS } = await import("../lib/kernel/types")
+    check("the journey page mounts the planner from the persona's JOURNEY TOOLS (the kernel persona map), no new route or user type", /getPersonaJourneyTools\(persona\)\.includes\("pcs_move_plan"\) && <PcsMovePlanner contactId=\{contactId\} \/>/.test(page) && !/persona === "military_buyer"/.test(page))
+    check("the stored persona \"military\" (contacts.contact_persona) AND its layout key \"military_buyer\" carry pcs_move_plan; first_time / unknown / empty carry none",
+      getPersonaJourneyTools("military").includes("pcs_move_plan") && getPersonaJourneyTools("military_buyer").includes("pcs_move_plan") && getPersonaJourneyTools("first_time").length === 0 && getPersonaJourneyTools("nonsense").length === 0 && getPersonaJourneyTools(null).length === 0)
+    check("POSITIVE CONTROL · the OLD literal test never matched the stored persona — the defect the persona map fixes", ("military" as string) !== "military_buyer" && (PERSONA_JOURNEY_TOOLS.military ?? []).length === 1)
     check("the action gates FIRST (requireContactAccess) and passes the gate's tenant + isContactSelf, never a body tenant", action.indexOf("requireContactAccess(contactId)") > 0 && action.indexOf("requireContactAccess(contactId)") < action.indexOf("createServiceClient()") && /brokerageId: access\.brokerageId/.test(action) && /isContactSelf: access\.isContactSelf/.test(action) && !/input\.brokerageId|brokerageId: input/.test(action))
   }
 

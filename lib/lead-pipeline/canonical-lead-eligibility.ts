@@ -119,6 +119,9 @@ export interface LeadCandidate {
   /** C35 (wave 150, lane 150EFG) — the RawData subject the record is ABOUT (raw_scraped_leads.subject_kind, m961).
    *  Absent / null = a pre-m961 row or a caller that does not know (judged on identity alone — published blind spot). */
   subject_kind?: string | null
+  /** WAVE 153 (lane 153N, for 153I): the page-level intent winner the normalizers stamp (raw_scraped_leads
+   *  normalized_preview.intent.winner — buyer / seller / investor / agent / generic). Absent = not stamped (judged as before). */
+  intent_winner?: string | null
 }
 
 /**
@@ -225,6 +228,9 @@ export function personNameProblem(first: string | null | undefined, last: string
 export function evaluateCanonicalLeadEligibility(c: LeadCandidate): EligibilityResult {
   const subjectProblem = subjectKindLeadProblem(c.subject_kind)
   if (subjectProblem) return { eligible: false, failing: "subject", reason: `Not a Lead subject — ${subjectProblem}` }
+  // WAVE 153 (lane 153N, closing lane 153I Outside-lane 6): a page whose intent winner is "agent" was written BY a real-estate
+  // professional — a RECRUITING prospect (raw_recruit_prospects / recruits), never a consumer Lead.
+  if (c.intent_winner === "agent") return { eligible: false, failing: "subject", reason: "Not a Lead subject — a fellow real-estate professional is a RECRUITING prospect (raw_recruit_prospects / recruits), never a consumer Lead" }
   const nameProblem = personNameProblem(c.first_name, c.last_name)
   if (nameProblem) {
     return {

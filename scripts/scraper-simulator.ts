@@ -2108,7 +2108,8 @@ async function testWave153SnapshotCheckpoint() {
   const allowSpend = () => ({ allowed: true, reason: "test budget" })
   const deps = (extra: Record<string, unknown> = {}) => ({ store, fetcher, robots: robotsAllow, spendGate: allowSpend, configuredProviders: ["zyte"] as const, now, ...extra }) as any
   const URL1 = "https://www.example-fsbo-site.com/listings/austin?utm_source=x&b=2&a=1"
-  const input = { url: URL1, scope: { brokerageId: T, marketId: M, purpose: "test" }, jsRender: false }
+  // Wave 153 (lane 153N): every checkpointed fetch declares one of the two permitted purposes (owner ruling B3).
+  const input = { url: URL1, scope: { brokerageId: T, marketId: M, purpose: "fsbo_listing" as const, lane: "test" }, jsRender: false }
   const rec = (id: string, extra: Record<string, unknown> = {}) => ({ sourceRecordId: `bp-${id}`, source: "zillow", behaviorType: "fsbo_listing", intentType: "seller" as const, intentSignals: ["fsbo"], propertyAddress: `${id} Main St`, city: "Austin", state: "TX", zip: "78701", sourceUrl: "https://www.example-fsbo-site.com/x", rawPayload: { card: id }, ...extra }) as any
 
   check("Zyte / ZenRows document NO cursor — the checkpoint invents none (SNAPSHOT_TRANSPORT_FACTS.*.cursor === 'none')", SNAPSHOT_TRANSPORT_FACTS.zyte.cursor === "none" && SNAPSHOT_TRANSPORT_FACTS.zenrows.cursor === "none")

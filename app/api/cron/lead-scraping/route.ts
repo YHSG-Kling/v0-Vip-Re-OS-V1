@@ -2,7 +2,7 @@ import {
 NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { ZenrowsClient, batchDataTriggersFor } from "@/lib/external"
+import { batchDataTriggersFor } from "@/lib/external"
 import {
   createSmartSearchSubscription,
   deleteSmartSearchSubscription,
@@ -20,6 +20,7 @@ import { escalateScraperFailureIfNeeded, setScraperHealer } from "@/lib/lead-pip
 import { MAX_PROMOTION_ATTEMPTS, STRANDED_STATUSES, reportStuckRawLeads } from "@/lib/lead-pipeline/promotion-gate-health"
 import {
   buildPropertySearchUrl,
+  FSBO_FILTERED_PORTAL_SEARCH,
   parsePropertySearchResults,
   parseBuyerSavedSearches,
   normalizeBatchDataRecord,
@@ -184,7 +185,8 @@ export async function GET(request: Request) {
   // ── Instantiate the scraper clients used below ────────────────────────────
   // Enrichment (PeopleData/OSINT/validation) runs inside processRawRecord during
   // the promotion pass — not here — so only the scrape clients are needed.
-  const zenrows   = new ZenrowsClient()
+  // (wave 153, lane 153N: the ZenrowsClient instance is gone — its only use here was scrapeNextdoor, now
+  //  sourceNextdoorChatter through the snapshot checkpoint; every page fetch below rides that checkpoint.)
   // Wave 153 (lane 153G, row 55 backpressure): ONE run's budget of paid page fetches (ZenRows / Zyte) across every
   // territory and site — the snapshot checkpoint decrements it per request and holds the rest for the next tick.
   const pageFetchBudget = { fetchesLeft: 40 }
@@ -550,12 +552,21 @@ export async function GET(request: Request) {
                 : { allowed: false, reason: `${market.name}'s monthly budget would be exceeded ($${spent.toFixed(2)} + $${estimateUsd} of $${cap})` }
             }
             for (const site of propertyParams.target_sites || ["zillow", "realtor", "redfin"]) {
+              // Wave 153 (lane 153N — owner ruling B3): the page transport serves ONLY FSBO listings and real-estate-need
+              // chatter. buildPropertySearchUrl filters zillow / realtor / redfin to BY-OWNER listings; any other portal
+              // search (trulia, the generic default) is general MLS inventory — a fact RentCast / IDX supply — so it is
+              // refused by name before any request (lib/providers/scrape-checkpoint.ts scrapePurposeProblem).
+              if (!FSBO_FILTERED_PORTAL_SEARCH.has(site)) {
+                const { scrapePurposeProblem } = await import("@/lib/providers/scrape-checkpoint")
+                results.errors.push(`Property search ${site} for ${market.name}: ${scrapePurposeProblem("property_listing_search")}`)
+                continue
+              }
               const searchUrl = buildPropertySearchUrl(site, market, propertyParams)
               // Lane 82B — the portal hosts go through the ONE provider picker (Zyte first on
               // zillow/realtor/homes/redfin per the 2026 benchmarks, ZenRows fallback) instead of a
               // hard-wired ZenRows call, and each site's spend books under its OWN source.
               const snap = await fetchCheckpointedSnapshot(
-                { url: searchUrl, scope: { brokerageId: market.brokerage_id ?? null, marketId: market.id, purpose: "zillow_behavior" }, jsRender: true, premiumProxy: true, maxPages: 1 },
+                { url: searchUrl, scope: { brokerageId: market.brokerage_id ?? null, marketId: market.id, purpose: "fsbo_listing", lane: `${site}_fsbo_search` }, jsRender: true, premiumProxy: true, maxPages: 1 },
                 { ledgerClient: supabase, spendGate: territorySpendGate, tickBudget: pageFetchBudget },
               )
               sourceCostUsd += snap.costUsd
@@ -1055,26 +1066,36 @@ export async function GET(request: Request) {
               renderKeywordQuery("nextdoor_intent", kw.nextdoor.terms),
             )}&location=${encodeURIComponent(`${market.city}, ${market.state}`)}`
 
-            const scraped = await zenrows.scrapeNextdoor(nextdoorUrl)
-            sourceCostUsd += scraped.cost ?? 0
-            addSocialSpend("nextdoor", scraped.cost ?? 0)
-            if (scraped.success && scraped.posts) {
-              // The population comes from the MATCHED keyword (social-sourcer.ts::normalizeNextdoorPost);
-              // was `keyword_type === "buying_intent" ? "buyer" : "seller"` — a value the CHECK refuses.
-              const ndRecords: NormalizedScrapedRecord[] = []
-              for (const post of scraped.posts) {
-                const rec = normalizeNextdoorPost(post as Record<string, any>, { city: market.city, state: market.state }, kw.nextdoor, nextdoorUrl)
-                if (rec) ndRecords.push(rec)
-              }
+            // Wave 153 (lane 153N — owner ruling B2): Nextdoor goes THROUGH the Zyte / ZenRows transport — the snapshot
+            // checkpoint (robots, terms, this territory's budget, the run's page-fetch budget, the digest) under the purpose
+            // real_estate_need_chatter. Its terms verdict is the named LICENSE_REQUIRED hold until a reviewed agreement is
+            // recorded for nextdoor.com, so today this says "held_terms — LICENSE_REQUIRED …" and spends nothing.
+            // The population comes from the MATCHED keyword (social-sourcer.ts::normalizeNextdoorPost).
+            const { sourceNextdoorChatter } = await import("@/lib/lead-pipeline/nextdoor-chatter")
+            const ndMarket = { city: market.city, state: market.state }
+            const nd = await sourceNextdoorChatter(nextdoorUrl, {
+              ledgerClient: supabase, scope: { brokerageId: market.brokerage_id ?? null, marketId: market.id }, tickBudget: pageFetchBudget,
+              spendGate: (estimateUsd: number) => {
+                const cap = market.monthly_budget_usd ?? 100
+                const spent = (market.spend_this_month ?? 0) + territorySpendUsd + sourceCostUsd
+                return spent + estimateUsd <= cap ? { allowed: true, reason: `within ${market.name}'s monthly budget` } : { allowed: false, reason: `${market.name}'s monthly budget would be exceeded ($${spent.toFixed(2)} + $${estimateUsd} of $${cap})` }
+              },
+            }, { normalize: (post) => normalizeNextdoorPost(post, ndMarket, kw.nextdoor, nextdoorUrl) })
+            sourceCostUsd += nd.cost
+            addSocialSpend("nextdoor", nd.cost)
+            if (nd.held) results.errors.push(`Nextdoor for ${market.name}: ${nd.held}`)
+            if (nd.records.length > 0) {
               const { inserted: ndInserted } = await insertRawBatch({
-                records: ndRecords, marketId: market.id,
+                records: nd.records, marketId: market.id,
                 marketGeo: { city: market.city, state: market.state, zip_codes: market.zip_codes },
                 executionId: execRecord?.id ?? null,
                 source: "nextdoor", sourceFamily: "social_intent", sourceChannel: "nextdoor",
-                batchCostUsd: scraped.cost ?? null,
+                batchCostUsd: nd.cost || null,
               })
               socialLeadsCreated += ndInserted
             }
+            // The producer accepted the batch → the processed watermark moves (a throw above leaves it for re-processing).
+            await nd.commit(true)
           }
 
           const socialMarket = { city: market.city, state: market.state }
@@ -1303,7 +1324,19 @@ export async function GET(request: Request) {
             const reviewUrls: string[] = motivatedParams?.review_source_urls?.length
               ? motivatedParams.review_source_urls
               : []
-            const { records, cost, provider } = await sourceReviewAcquisitionIntent(socialMarket, reviewUrls)
+            // Wave 153 (lane 153N — owner ruling B3): each review page rides the snapshot checkpoint under the purpose
+            // real_estate_need_chatter (robots, terms — the Google / Zillow / Facebook hosts are HELD until a written
+            // agreement is recorded — this territory's budget, the run's page-fetch budget, the digest).
+            const review = await sourceReviewAcquisitionIntent(socialMarket, reviewUrls, {
+              ledgerClient: supabase, scope: { brokerageId: market.brokerage_id ?? null, marketId: market.id }, tickBudget: pageFetchBudget,
+              spendGate: (estimateUsd: number) => {
+                const cap = market.monthly_budget_usd ?? 100
+                const spent = (market.spend_this_month ?? 0) + territorySpendUsd + sourceCostUsd + reviewAcquisitionCostUsd
+                return spent + estimateUsd <= cap ? { allowed: true, reason: `within ${market.name}'s monthly budget` } : { allowed: false, reason: `${market.name}'s monthly budget would be exceeded ($${spent.toFixed(2)} + $${estimateUsd} of $${cap})` }
+              },
+            })
+            const { records, cost, provider } = review
+            for (const h of review.held ?? []) results.errors.push(`Review acquisition for ${market.name}: ${h}`)
             reviewAcquisitionCostUsd += cost
             const routed = await routeReviewAcquisitionHits({ supabase, brokerageId: market.brokerage_id }, records)
             if (routed.errors.length > 0) {
@@ -1319,6 +1352,8 @@ export async function GET(request: Request) {
               })
             }
             await insertSocial(routed.toMint, "review_acquisition_intent", "social_intent", cost, true)
+            // The producer accepted the batch → each page's processed watermark moves.
+            await review.commit?.(true)
           }
 
           // ── Zillow/Realtor/Homes.com saved-search + "contact agent" chatter ──────

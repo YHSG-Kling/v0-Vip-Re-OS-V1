@@ -22,6 +22,13 @@ export interface PropertySearchParams {
   min_baths?: number | null
 }
 
+/**
+ * The portals whose search URL below is filtered to FOR-SALE-BY-OWNER listings (zillow fsbo, realtor show-fsbo, redfin
+ * forSaleByOwner) — the only portal searches the page transport serves (wave 153, lane 153N — owner ruling B3: Zyte / ZenRows
+ * only for real-estate-need chatter and FSBO). Any other portal search is general inventory, a fact RentCast / IDX supply.
+ */
+export const FSBO_FILTERED_PORTAL_SEARCH: ReadonlySet<string> = new Set(["zillow", "realtor", "redfin"])
+
 /** Build a property-search URL for the given portal from market + filter params. */
 export function buildPropertySearchUrl(
   site: string,

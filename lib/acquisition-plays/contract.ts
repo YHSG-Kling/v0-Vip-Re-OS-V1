@@ -18,7 +18,8 @@
 // automatically identify an individual ready to transact").
 //
 // IDENTITY RULES (directive: "avoid unsupported identity joins based merely on similar names"):
-//   · personCandidateProblem — a PERSON is discovered only from a first-person request for an agent,
+//   · personCandidateProblem — a PERSON is discovered only from a first-person request for an agent or a first-person
+//     statement of their OWN real-estate need (wave 153, lane 153N — owner ruling B4),
 //     by an identity the person themselves published for that purpose (or a verified record key),
 //     on a page class whose terms permit it, inside the play's freshness window.
 //   · nameOnlyJoinProblem — a name alone never joins a page to a record or a property to an owner.
@@ -162,7 +163,9 @@ export const PLAY_ACTOR = Object.freeze({ type: "research", id: "early_opportuni
 export type IdentityBasis = "record_key" | "verified_match" | "published_contact" | "handle_only" | "name_only" | "none"
 
 export interface PersonCandidate {
-  statement: { firstPerson: boolean; requestsAgentContact: boolean; quote: string | null }
+  /** `statesHousingNeed` (wave 153, lane 153N — owner ruling B4): the author states THEIR OWN real-estate need in the first
+   *  person (buying, selling, selling by owner, relocating, a military move) — the need is the person's own words, quoted. */
+  statement: { firstPerson: boolean; requestsAgentContact: boolean; statesHousingNeed?: boolean; quote: string | null }
   identity: { basis: IdentityBasis; email?: string | null; phone?: string | null; handle?: string | null; name?: string | null }
   rights: Pick<SourceRights, "publishedContactPermitted" | "sourceClass">
   publishedAt: string | null
@@ -174,7 +177,7 @@ export const PUBLIC_REQUEST_MAX_AGE_DAYS = 90
 /** PURE — why a public statement may NOT become a person row (null = it may). Every refusal names its rule. */
 export function personCandidateProblem(c: PersonCandidate, now: Date): string | null {
   if (!c.statement.firstPerson) return "not a first-person statement — a third party's mention of someone never identifies them"
-  if (!c.statement.requestsAgentContact) return "the author asked no agent to contact them — a question is answered, not pursued"
+  if (!c.statement.requestsAgentContact && !c.statement.statesHousingNeed) return "the author stated no real-estate need of their own and asked no agent to contact them — a question is answered, not pursued"
   if (!c.statement.quote) return "no verbatim quote — a request is never inferred without the author's own words"
   const nameOnly = nameOnlyJoinProblem(c.identity.basis)
   if (nameOnly) return nameOnly

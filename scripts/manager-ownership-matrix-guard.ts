@@ -563,7 +563,22 @@ async function main() {
   const noLiveLoop = managerKeys.filter((m) => !loops.some((l) => l.manager === m && l.cls === "loop-complete"))
   check(`every registered manager (${managerKeys.length}) is accountable for at least one LIVE loop (not only registry rows)`, noLiveLoop.length === 0, noLiveLoop.join(", "))
   const rows153 = loops.filter((l) => WAVE153.test(reg.MAINTENANCE_DOMAINS[l.key].what))
-  const dead153 = rows153.filter((l) => l.cls !== "loop-complete" && l.cls !== "read-surface")
+  // WHAT THE RULE BINDS (wave 153 integrator — the rule's own words: "not complete with only a registry entry or an unconsumed write"):
+  //  · a row BORN in wave 153 must be a live loop, a read surface, or a guard-only code-discipline domain (a census / matrix whose
+  //    proof judges source — its honest class, e.g. marketing_capability_census);
+  //  · a row that PREDATES the wave (its text names an earlier wave) and only carries an appended "Wave 153" note keeps the class
+  //    it already had — the note is not a new domain. Those are PRINTED as the amended-and-still-partial triage list, never hidden,
+  //    and still fail when they are registry-only / untriggered / writes-unread / proof-unregistered (a dead domain is dead in any wave).
+  const EARLIER_WAVE = /\bwave (?:1[0-4]\d|15[0-2])\b/i
+  const predates = (key: string) => EARLIER_WAVE.test(reg.MAINTENANCE_DOMAINS[key].what)
+  const LIVE_CLASSES = new Set<CensusClass>(["loop-complete", "read-surface", "guard-only"])
+  const DEAD_CLASSES = new Set<CensusClass>(["registry-only", "untriggered", "writes-unread", "proof-unregistered"])
+  const dead153 = rows153.filter((l) => (predates(l.key) ? DEAD_CLASSES.has(l.cls) : !LIVE_CLASSES.has(l.cls)))
+  const amendedPartial = rows153.filter((l) => predates(l.key) && l.cls === "partial")
+  console.log(`    amended older rows still partial (triage, not new domains): ${amendedPartial.length}${amendedPartial.length ? " — " + amendedPartial.map((l) => l.key).join(", ") : ""}`)
+  check("POSITIVE CONTROL: the born-in-wave-153 test tells a new row from an amended one (expense_office_rollup is new; relocation_planner predates)", !predates("expense_office_rollup") && predates("relocation_planner"))
+  check("POSITIVE CONTROL: a NEW wave-153 row that is partial still fails the rule, and an amended older row that is registry-only still fails it",
+    !LIVE_CLASSES.has("partial") && DEAD_CLASSES.has("registry-only") && !DEAD_CLASSES.has("partial"))
   console.log(`    wave-153 rows: ${rows153.length} — ${rows153.map((l) => `${l.key} (${l.cls})`).join(", ")}`)
   check("the wave-153 census sees the batch-1 rows (expense_office_rollup, commission_term_change, deal_work_ownership, closing_readiness)", ["expense_office_rollup", "commission_term_change", "deal_work_ownership", "closing_readiness"].every((k) => rows153.some((l) => l.key === k)))
   check("every wave-153 row is a LIVE loop (a domain is not complete with only a registry entry or an unconsumed write)", dead153.length === 0, dead153.map((l) => `${l.key}: ${l.cls} — ${l.why}`).join(" | "))

@@ -132,7 +132,29 @@ export function previewsFromObservedSearchCounts(
 }
 
 /** `held` (wave 151, lane 151C): the pre-pull value formula held the line — never approvable, re-preview first. */
-type PlanLineStatus = "free_ready" | "proposed" | "needs_preview" | "needs_quote" | "over_budget" | "blocked_rights" | "held" | "approved"
+type PlanLineStatus = "free_ready" | "proposed" | "needs_preview" | "needs_quote" | "over_budget" | "blocked_rights" | "held" | "provider_preferred" | "approved"
+
+// ─── PROVIDER FIRST (wave 153, lane 153N — owner ruling B3, verbatim: "scraping needs to be current data but if you can get
+// the info from a data provider, then that is the safer bet") ───────────────────────────────────────────────────────────
+//
+// A SCRAPED source line whose FACT a configured data provider also supplies is not planned — the provider is. Each row names
+// the fact, the provider and the documented endpoint that carries it (never a guess): only facts the repo's own vendored
+// provider contracts show. Lines with no row (FSBO pages, need chatter, reviews) have no provider equivalent and stay planned.
+export const PROVIDER_FIRST_FACTS: Readonly<Partial<Record<SourceKey, { fact: string; providers: ReadonlyArray<{ provider: string; endpoint: string }> }>>> = Object.freeze({
+  rental_listing: {
+    fact: "active long-term rental listings in the territory",
+    providers: [{ provider: "rentcast", endpoint: "RentCast GET /listings/rental/long-term (lib/external/_generated/rentcast-openapi.ts)" }],
+  },
+})
+
+/** PURE — does a configured data provider supply this scraped line's fact? (null = no — the scrape may be planned). */
+export function providerFirstVerdict(source: SourceKey, configuredProviders: readonly string[]): { provider: string; fact: string; endpoint: string } | null {
+  if (SOURCE_VENDOR[source] === "internal") return null
+  const row = PROVIDER_FIRST_FACTS[source]
+  if (!row) return null
+  const hit = row.providers.find((p) => configuredProviders.includes(p.provider))
+  return hit ? { provider: hit.provider, fact: row.fact, endpoint: hit.endpoint } : null
+}
 
 export interface PlanLine {
   source: SourceKey
@@ -205,6 +227,8 @@ export function planSourceDiscovery(input: {
   /** Wave 151 (lane 151C): what each USABLE record then costs to enrich / reason about (the value formula's downstream cost). */
   enrichmentUsdPerRecord?: number | null
   aiUsdPerRecord?: number | null
+  /** Wave 153 (lane 153N): the data providers holding a configured key (NAMES only) — the provider-first rule reads it. */
+  configuredProviders?: readonly string[] | null
   now?: Date
 }): AcquisitionPlan {
   const blindSpots: string[] = []
@@ -270,7 +294,9 @@ export function planSourceDiscovery(input: {
       }) : null,
       status: "proposed", why: "",
     }
+    const preferred = providerFirstVerdict(source, input.configuredProviders ?? [])
     if (rights === "unknown") { line.status = "blocked_rights"; line.why = "no rights basis names this source" }
+    else if (preferred) { line.status = "provider_preferred"; line.why = `${preferred.provider} supplies ${preferred.fact} (${preferred.endpoint}) — a data provider is the safer source than a scrape (owner ruling B3)` }
     else if (!paid) { line.status = "free_ready"; line.why = "first-party — the tenant's own data, no vendor call, no spend" }
     else if (reach === null) { line.status = "needs_preview"; line.why = "no free preview count and no history — nothing to show before buying" }
     else if (quote === null) { line.status = "needs_quote"; line.why = "no quote / catalogue price for this source" }

@@ -658,7 +658,9 @@ function darkCapabilityLayer() {
     (() => {
       // EARLIEST spend-shaped marker wins, so an injected call of EITHER
       // spelling ahead of the refusal is caught (the D2 mutation control).
-      const dials = ["scrapePage(", "callConnector"].map((m) => zen.indexOf(m)).filter((i) => i > -1)
+      // Wave 153 (lane 153N): the Nextdoor fetch is now fetchNextdoorPageThroughCheckpoint(…) (the snapshot checkpoint) — a spend-shaped
+      // marker the order rule must also see.
+      const dials = ["scrapePage(", "callConnector", "fetchNextdoorPageThroughCheckpoint("].map((m) => zen.indexOf(m)).filter((i) => i > -1)
       return dials.length > 0 && zen.indexOf("resolveTargetTerritory") < Math.min(...dials)
     })())
   check("D3", "...the parser is REAL: parseNextdoorPosts delegates to the tested extractor, never a stub returning []",
@@ -714,13 +716,18 @@ function darkCapabilityLayer() {
   section("[layer 6d · dark providers are shown dark, never faked]")
 
   const gsi = fnBody(LEAD, "analyzeGoogleSearchIntent")
-  check("D16", "the Google sampler refuses when ZenRows is unconfigured",
-    /if\s*\(!process\.env\.ZENROWS_API_KEY\)\s*\{[^}]{0,400}?dark:\s*true/.test(gsi))
-  check("D17", "...and the refusal precedes the paid loop",
-    gsi.indexOf("ZENROWS_API_KEY") < gsi.indexOf("zenrows.googleSearch"))
-  check("D18", "...a failed insert no longer lets the whole paid run report success",
-    /const\s*\{\s*error:\s*insertError\s*\}\s*=\s*await\s+supabase\.from\(\s*["']google_search_intelligence["']/.test(gsi) &&
-    /if\s*\(insertError\)\s*\{[^}]{0,300}?return\s*\{\s*success:\s*false/.test(gsi))
+  // wave 153 (owner ruling B3 — the page transports search only for public real-estate-need chatter and FSBO listings): the
+  // Google phrase sampler is REFUSED BY SCOPE before any spend. The rule D16–D18 always protected — a sampler that cannot run
+  // must say so and must never report a paid run that persisted nothing as success — now holds by the sampler containing no
+  // paid call at all.
+  check("D16", "the Google sampler refuses by scope, by name (never presented as live)",
+    /scopeRefused:\s*true/.test(gsi) && /success:\s*false/.test(gsi))
+  check("D17", "...and no paid call or vendor booking remains behind the refusal",
+    !/zenrows\.|googleSearch\(|bookSourceSpend\(|new ZenrowsClient\(/.test(gsi) && gsi.indexOf("requireCallerOrCron") < gsi.indexOf("scopeRefused"))
+  check("D18", "...nor a google_search_intelligence write that could report a results count as people",
+    /scopeRefused:\s*true/.test(gsi) && !/google_search_intelligence/.test(gsi) && !/potential_leads_count:/.test(gsi))
+  check("D18c", "POSITIVE CONTROL: the finders see a paid call and the count write when they are present",
+    /zenrows\.|googleSearch\(/.test("const r = await zenrows.googleSearch(q)") && /potential_leads_count:/.test("potential_leads_count: n,"))
 
   const enrich = fnBody(LEAD, "enrichPropertyIntelligence")
   check("D19", "property enrichment refuses when BatchData is unconfigured",
@@ -995,9 +1002,9 @@ const MUTATIONS: Mutation[] = [
     find: `      .eq("visitor_id", sessionData.visitor_id)\n      .eq("brokerage_id", brokerageId)`,
     replace: `      .eq("visitor_id", sessionData.visitor_id)` },
 
-  { id: "D16", file: LEAD, note: "present an unconfigured ZenRows as live",
-    find: `  if (!process.env.ZENROWS_API_KEY) {`,
-    replace: `  if (false) {` },
+  { id: "D16", file: LEAD, note: "present the scope-refused Google sampler as live",
+    find: `    scopeRefused: true as const,`,
+    replace: `    scopeRefused: false as const,` },
 
   { id: "D19", file: LEAD, note: "present an unconfigured BatchData as live",
     find: `  if (!process.env.BATCHDATA_API_KEY) {`,
@@ -1130,6 +1137,7 @@ const OWNERSHIP: Record<string, string[]> = {
 
 /** id -> the positive assertion that carries its weight on a blank file. */
 const VACUOUS_ON_BLANK: Record<string, string> = {
+  D18c: "a positive control on the finders themselves (reads two literal strings, no repo file) — paired with D17 / D18, which read the sampler",
   "S9": "S8 (the vocabulary must EQUAL the live CHECK constraint)",
   "S19": "S20 (the read-then-update-or-insert must be present)",
   "S23": "S20 + S22 (the patch loop and the stamped insert must be present)",

@@ -26,7 +26,7 @@ import { HEALING_PROPOSAL_STATUSES, type HealingProposalStatus } from "@/lib/ker
 // queue, because activating a provider is the one provider-config change the healer may NEVER make (classifyProviderConfigChange).
 import { PROVIDER_ACTIVATION, PROVIDER_FIELD_SCORECARD, PROVIDER_RECOMMENDATION, PROVIDER_SELECTION_STATUS, activationVerdict, providerFieldMatrix, providerGapMatrix, type ScorecardProvider } from "@/lib/providers/provider-scorecard"
 import { MATCHED_COHORT_DESIGN, projectMonthlyWaterfall } from "@/lib/providers/provider-pilot"
-import { NEEDLE_PLAYBOOKS, providerCapabilityMatrix } from "@/lib/providers/provider-capability-matrix"
+import { ONLINE_HUNTING_WORKFLOWS, providerCapabilityMatrix } from "@/lib/providers/provider-capability-matrix"
 import { simulateProviderPilot } from "@/lib/providers/provider-pilot"
 // Wave 151 (lane 151F): the owner's platform acquisition caps (null = stop before spend), the internal acquisition economics and
 // each provider's TENANT-connectability (route B) sit beside the provider stack — one console for what the platform may spend,
@@ -389,9 +389,9 @@ export default async function ConnectorHealingPage() {
               </tbody>
             </table>
             <div className="space-y-1 p-3 text-xs">
-              <p className="font-medium">Needle-in-a-haystack playbooks (run by existing survivors)</p>
-              {NEEDLE_PLAYBOOKS.map((p) => (
-                <p key={p.key}><span className="font-medium">{p.combination}</span> — {p.output}. <span className="text-muted-foreground">Never: {p.neverClaims}.</span></p>
+              <p className="font-medium">Online hunting workflows (each run by an existing survivor, with its real search)</p>
+              {ONLINE_HUNTING_WORKFLOWS.map((p) => (
+                <p key={p.key}><span className="font-medium">{p.key}</span> ({p.providers.join(", ")}) — {p.query}. Evidence: {p.evidenceFields}. Window: {p.freshness}. Cost: {p.cost}. → {p.output}. <span className="text-muted-foreground">Never: {p.neverClaims}.</span></p>
               ))}
             </div>
           </CardContent>

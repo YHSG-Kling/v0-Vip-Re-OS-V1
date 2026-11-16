@@ -118,6 +118,8 @@ export async function evaluatePromotionEligibilityCore(
     last_name:  rawRecord.last_name ?? rawData.last_name ?? rawData.lastName,
     email:      rawRecord.email ?? rawData.email,
     phone:      rawRecord.phone ?? rawData.phone,
+    // Wave 153 (lane 153N, for 153I): an "agent" page winner is a recruiting prospect, never a consumer Lead.
+    intent_winner: rawRecord.normalized_preview?.intent?.winner ?? rawData.intent?.winner ?? null,
   })
   if (!eligibility.eligible) {
     return {

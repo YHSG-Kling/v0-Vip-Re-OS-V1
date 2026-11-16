@@ -745,6 +745,8 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
     email:      enriched.email ?? email,
     phone:      enriched.phone ?? phone,
     subject_kind: subjectKind,
+    // Wave 153 (lane 153N, for 153I): an "agent" page winner is a recruiting prospect, never a consumer Lead.
+    intent_winner: (rec.normalized_preview as any)?.intent?.winner ?? (rec.raw_data as any)?.intent?.winner ?? null,
   })
 
   if (!promoEligibility.eligible) {

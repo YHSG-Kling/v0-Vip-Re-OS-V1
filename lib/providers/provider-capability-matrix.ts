@@ -106,13 +106,13 @@ const FACTS: readonly CapabilityFacts[] = Object.freeze([
     provider: "exa", label: "Exa", scorecard: null, tenancyKey: "exa", kinds: ["person", "content", "market"],
     endpoint: "exa-js SDK: /search (structured JSON-schema summary, startPublishedDate), Search Monitors (pushed deltas to a signed webhook)",
     transport: A("lib/providers/exa/client.ts", "structuredSearch"),
-    producer: { door: "rawdata", anchor: A("lib/acquisition-plays/public-request.ts", "runPublicRequestPlay"), path: "PERSON: grounded candidate (URL + date + quote, a contact point the author published on a permitted page class) → existing-Contact check → THE ONE RawData producer → Raw Lead gate → Lead → AI ISA; CONTENT / MARKET: lib/lead-pipeline/exa-sourcer.ts + the moving-corridor radar → research / market intelligence, never the Lead door" },
+    producer: { door: "rawdata", anchor: A("lib/acquisition-plays/public-request.ts", "runPublicRequestPlay"), path: "PERSON: grounded candidate (URL + date + quote, the author's own first-person need or request, a contact point the author published on a public page) → existing-Contact check → pre-pull dedup → THE ONE RawData producer → Raw Lead gate → Lead → AI ISA; CONTENT / MARKET / PERMITS: lib/lead-pipeline/exa-sourcer.ts, the moving-corridor radar and the permit sourcer → research / market intelligence / property events, never the Lead door" },
     mapping: { anchor: A("lib/external/exa-client.ts", "normalizeExaRow"), provenance: "groundedEvidence: source URL, published date, retrieval time, ≤ 280-char quoted basis (lib/providers/exa/hunting.ts)" },
     preview: { kind: "not_applicable", anchor: null, note: "a search is the call (numResults bounds it); monitors replace repeated searches" },
     freshnessDedup: "freshnessProblem per play window; one result per page across searches; the RawData idempotency key on the Exa result id",
     incremental: "Search Monitors push deltas (createSearchMonitor / getSearchMonitorRun); startPublishedDate bounds a search — documented, no cursor fabricated",
     limitsCost: "$7 / 1k searches (≤ 10 results) list price, the SDK's costDollars.total booked when present; webhook signature + timestamp tolerance + replay protection (EXA_SIGNATURE_TOLERANCE_SEC)",
-    rights: "Exa returns pages it does not license for reuse — only a cited ≤ 280-char excerpt is kept; a forum author is answered only through our own inbound resources; Exa is not a contact append",
+    rights: "Exa returns pages it does not license for reuse — only a cited ≤ 280-char excerpt is kept; owner ruling B4: public → usable at the AUTHOR's own published contact point (never the channel, never a deanonymized handle); Nextdoor LICENSE_REQUIRED; Exa is not a contact append",
     proof: { script: "test:early-opportunity-plays", adverse: "no key → nothing invented; ungrounded / handle-only / third-party / forum candidate refused from the person path; content kept off the Lead door" },
     tenantRoute: "not_offered", liveEvidence: null, evaluated: true,
   },
@@ -134,13 +134,13 @@ const FACTS: readonly CapabilityFacts[] = Object.freeze([
     provider: "zyte", label: "Zyte API", scorecard: null, tenancyKey: "scrapers", kinds: ["person", "property"],
     endpoint: "POST https://api.zyte.com/v1/extract — httpResponseBody | browserHtml, httpResponseHeaders, customHttpRequestHeaders (HTTP mode only)",
     transport: A("lib/external/zyte-client.ts", "scrapeWithZyte"),
-    producer: { door: "rawdata", anchor: A("lib/providers/scrape-checkpoint.ts", "fetchCheckpointedSnapshot"), path: "robots + terms + spend gate → the snapshot checkpoint → the page parsers → only records new inside the rescan window → THE ONE RawData producer → commit" },
+    producer: { door: "rawdata", anchor: A("lib/providers/scrape-checkpoint.ts", "fetchCheckpointedSnapshot"), path: "PURPOSE (real_estate_need_chatter | fsbo_listing only — any other refused by name, owner ruling B3) → robots + terms + spend gate → the snapshot checkpoint → the page parsers → only records new inside the rescan window → THE ONE RawData producer → commit" },
     mapping: { anchor: A("lib/lead-pipeline/scraper-parsers.ts", "parseBuyerSavedSearches"), provenance: "the page parsers stamp site + a stable source_record_id; the producer envelope carries rights (transport terms + page terms)" },
     preview: { kind: "not_offered", anchor: null, note: "a single-page fetch — no count before the request" },
     freshnessDedup: "page content digest vs the PROCESSED watermark; record digests inside the bounded rescan window; the RawData idempotency key",
     incremental: `cursor: ${CK.zyte.cursor} documented — snapshot checkpoint instead; conditional requests: ${CK.zyte.conditionalRequests.how}; validators: ${CK.zyte.responseHeaders}`,
     limitsCost: `${CK.zyte.billing}; per-domain tier pricing (ZYTE_REQUEST_COST_USD estimate); retry ${CK.zyte.retryStatuses.join("/")}, hold ${CK.zyte.holdStatuses.join("/")}; bounded timeout; per-tick fetch budget`,
-    rights: "transport only — the target page's terms govern: portal / classified / forum hosts are HELD unless a written agreement is recorded; robots.txt honoured (RFC 9309)",
+    rights: "transport only, for need chatter and FSBO only — the target page's terms govern: portal / classified / forum hosts are HELD unless a written agreement is recorded; Nextdoor LICENSE_REQUIRED; robots.txt honoured (RFC 9309)",
     proof: { script: "test:scrapers", adverse: "unchanged page forwards nothing, replay is one observation, robots / terms / spend / tick budget / unreadable checkpoint hold before spend, 429 backoff, 401 hold, timeout" },
     tenantRoute: "ruled_out", liveEvidence: null, evaluated: true,
   },
@@ -333,44 +333,114 @@ export function providerCapabilityMatrix() {
   })
 }
 
-// ─── needle-in-a-haystack playbooks on EXISTING survivors (directive G4, line 271) ──────────────────────────────────
+// ─── ONLINE HUNTING WORKFLOWS — concrete, source-backed (wave 153, lane 153N — owner rulings B2–B5) ─────────────────────
+//
+// TOMBSTONE (wave 153, lane 153N): NEEDLE_PLAYBOOKS (lane 153G) is RETIRED. Owner, verbatim: "don't just make up something like
+// you have just to say you came up with a needle in a haystack or creative way … you are hallucinating by creating plays that
+// you created yourself". Its four rows were COMBINATION NAMES ("relocation demand × inventory mismatch", "permits × transport ×
+// hyperlocal education", …) with no query, no evidence fields, no freshness and no cost — strategy labels, not workflows. Each
+// is rewritten below as what it really runs (the survivor, the provider, the exact search, the evidence a hit must carry, its
+// window, its rights, its cost); the "transport changes" and "hyperlocal education campaigns" halves had no source and no
+// survivor and are DELETED, not rewritten. Survivor of the export: ONLINE_HUNTING_WORKFLOWS (this file); its readers are
+// app/dashboard/superadmin/connector-healing/page.tsx and scripts/provider-gap-matrix-guard.ts §J.
+
+const PUBLIC_REQUEST_SEARCHES = "lib/acquisition-plays/public-request.ts publicRequestSearches"
 
 /**
- * The combinations that can be sourced RELIABLY, each run by a survivor that already exists (module + symbol, verified by the
- * guard), each naming the providers it composes and what it never claims. Data, not a new engine — no person-level
- * behavioral surveillance, no private housing plan inferred.
+ * Every way the OS hunts online, as a WORKFLOW: the provider(s), the exact search or page, the evidence fields a hit must carry
+ * to count, its freshness window, its rights basis, its cost and the existing survivor that runs it. Nothing here is a strategy
+ * name; a row with no real query is not a row.
  */
-export const NEEDLE_PLAYBOOKS = Object.freeze([
+export const ONLINE_HUNTING_WORKFLOWS = Object.freeze([
   {
-    key: "relocation_demand_x_inventory_mismatch",
-    combination: "public employer / installation relocation announcement × the territory's stored inventory mismatch × opted-in buyer / property interest",
-    providers: ["exa", "rentcast", "idxbroker"],
-    survivor: A("lib/acquisition-plays/moving-corridor.ts", "runMovingCorridorPlay"),
-    output: "a market-level brief, a market report and a DRAFT relocation guide / magnet — inbound resources that let the movers raise their hand",
-    neverClaims: "never a person: an announcement identifies an employer and a date, not who will move",
-  },
-  {
-    key: "stated_need_x_property_facts_x_appointment",
-    combination: "a freshly stated housing need in the author's own words (URL, date, quote, a contact point they published) × property facts × a real appointment pathway",
-    providers: ["exa", "rentcast", "versium"],
+    key: "exa_public_stated_need",
+    replaces: "stated_need_x_property_facts_x_appointment",
+    providers: ["exa"],
     survivor: A("lib/acquisition-plays/public-request.ts", "runPublicRequestPlay"),
-    output: "a grounded Raw Lead through the promotion gate to the AI ISA — or, for an existing Contact, the arbiter's life-change door; an anonymous question becomes an inbound answer",
-    neverClaims: "never deanonymizes a handle, never infers a private plan, never messages the channel the post was made in",
+    query: `${PUBLIC_REQUEST_SEARCHES}: "I'm looking for a real estate agent in {city, ST}…", "relocating to {city, ST} and need a realtor…", "we are looking to buy a house in {city, ST}…", "we need to sell our house in {city, ST}…", "selling my house by owner in {city, ST}…"`,
+    evidenceFields: "openable URL · published date · ≤ 280-char quote of the author's own words · first-person author (the poster states the need as their own) · a contact point the author published · need_kinds",
+    freshness: "90 days (PUBLIC_REQUEST_MAX_AGE_DAYS); an undated page is never a person",
+    rights: "public page (owner ruling B4: public → usable at the author's own published contact point); Nextdoor LICENSE_REQUIRED; the channel is never messaged; a handle never deanonymized",
+    cost: "Exa search list price $7 / 1k searches (≤ 10 results), booked from costDollars when present; a person already held is HELD by the pre-pull dedup before the RawData door (no second paid enrichment)",
+    output: "a grounded Raw Lead (subject person) → the existing promotion gate → Lead → AI ISA; an existing Contact → the arbiter's life-change door; a question with no identity → an inbound answer",
+    neverClaims: "never infers a private plan, never joins on a name or a handle, never messages the channel the post was made in",
   },
   {
-    key: "permits_transport_x_hyperlocal_education",
-    combination: "neighborhood permitting / code / transport changes from public records × hyperlocal educational campaigns",
-    providers: ["public_records", "exa"],
+    key: "exa_volunteered_military_move",
+    replaces: null,
+    providers: ["exa"],
+    survivor: A("lib/acquisition-plays/public-request.ts", "runPublicRequestPlay"),
+    query: `${PUBLIC_REQUEST_SEARCHES} need:military_move: "PCSing to {city, ST} and looking for a home to buy or rent"`,
+    evidenceFields: "as exa_public_stated_need, with need_kinds ∋ military_move and the military_boundary note (volunteered move only)",
+    freshness: "90 days",
+    rights: "what the service member VOLUNTEERED on a public page; no restriction on who can be found (owner ruling B5)",
+    cost: "as exa_public_stated_need (one of the same searches)",
+    output: "a grounded Raw Lead → the promotion gate → AI ISA; after they become a Contact, the military persona's PCS journey on the portal (lib/portal/persona-config.ts journeyTools pcs_move_plan)",
+    neverClaims: "never claims orders, a report date or a duty station from the text — no PCS-orders data source exists or is invented; installation-level facts stay market intelligence",
+  },
+  {
+    key: "exa_employer_and_installation_announcements",
+    replaces: "relocation_demand_x_inventory_mismatch",
+    providers: ["exa"],
+    survivor: A("lib/acquisition-plays/moving-corridor.ts", "runMovingCorridorPlay"),
+    query: `lib/acquisition-plays/moving-corridor.ts: "company relocating its headquarters or opening a new office or plant with new jobs in {city, ST}", "employer expansion announced hiring workers {city, ST} campus base plant expansion jobs" (category news)`,
+    evidenceFields: "openable URL · published date · quoted basis · the employer / installation named on the page · announced job count and date when the page states them",
+    freshness: "120 days (CORRIDOR_MAX_AGE_DAYS)",
+    rights: "news / official pages — cited excerpt only",
+    cost: "Exa search list price, as above",
+    output: "MARKET intelligence only: a market-level brief, a market report and a DRAFT relocation guide (an inbound resource)",
+    neverClaims: "never a person — an announcement names an employer and a date, not who will move",
+  },
+  {
+    key: "exa_public_permit_property_event",
+    replaces: "permits_transport_x_hyperlocal_education",
+    providers: ["exa", "public_records"],
     survivor: A("lib/lead-pipeline/permit-sourcer.ts", "sourcePermitPrelistingIntent"),
-    output: "property-level pre-listing signals on properties already held and neighborhood education content — property facts, not people",
-    neverClaims: "a permit is a property event; the owner is reached only through an existing Contact or a verified ownership path",
+    query: `lib/lead-pipeline/permit-sourcer.ts: "recent residential remodel or addition building permit filed {loc}", "building permit issued roof replacement or pool {loc}", "coming soon home for sale pre-listing preparation {loc}", "contractor bid renovation remodel before selling {loc}"`,
+    evidenceFields: "openable URL · published date · the property address on the page · permit / notice category",
+    freshness: "the permit sourcer's window per category",
+    rights: "public records / official pages — a PROPERTY event",
+    cost: "Exa search list price, as above",
+    output: "a property-level pre-listing signal on a property (attached to a held Contact by verified ownership, else a property observation)",
+    neverClaims: "a permit is a property event, never a person's assumed intent unless the identity is independently grounded",
   },
   {
-    key: "contradiction_saver",
-    combination: "a public page that contradicts an open lead theory (listed with another brokerage, sold, withdrawn) × the tenant's open theories",
+    key: "exa_listing_contradiction_check",
+    replaces: "contradiction_saver",
     providers: ["exa"],
     survivor: A("lib/acquisition-plays/negative-evidence.ts", "assessNegativeEvidence"),
-    output: "holds or closes the theory and pauses outreach — spend and annoyance avoided",
+    query: "a public page for an open theory's address showing it listed with another brokerage, sold or withdrawn",
+    evidenceFields: "openable URL · published date · the address match · the contrary status",
+    freshness: "newer than the theory's own evidence (older facts are history)",
+    rights: "cited excerpt only",
+    cost: "Exa search list price; saves outreach and enrichment spend on a dead theory",
+    output: "holds / closes the theory and pauses outreach",
     neverClaims: "reported evidence holds and asks for verification; it never closes a Contact's file alone",
+  },
+  {
+    key: "page_transport_fsbo_listings",
+    replaces: null,
+    providers: ["zyte", "zenrows"],
+    survivor: A("lib/providers/scrape-checkpoint.ts", "fetchCheckpointedSnapshot"),
+    query: "purpose fsbo_listing — the by-owner portal searches (lib/lead-pipeline/scraper-parsers.ts FSBO_FILTERED_PORTAL_SEARCH: zillow fsbo, realtor show-fsbo, redfin forSaleByOwner) and the craigslist 'rea' HTML fallback",
+    evidenceFields: "the page URL · the listing's own address / price / published contact · a stable source_record_id · the snapshot digest",
+    freshness: "the snapshot checkpoint: 6-hour re-fetch interval, 14-day rescan window, only records new since the processed watermark",
+    rights: "transport only — the page's terms govern: portal and craigslist hosts are HELD until a written agreement is recorded",
+    cost: "per request (Zyte tier / ZenRows X-Request-Cost), behind the territory budget and the run's page-fetch budget",
+    output: "FSBO property / owner records → THE ONE RawData producer → the promotion gate",
+    neverClaims: "never general listing inventory — a fact RentCast / IDX supply (refused by name as a scrape purpose)",
+  },
+  {
+    key: "page_transport_need_chatter",
+    replaces: null,
+    providers: ["zyte", "zenrows"],
+    survivor: A("lib/providers/scrape-checkpoint.ts", "fetchCheckpointedSnapshot"),
+    query: "purpose real_estate_need_chatter — portal saved-search / contact-agent / sell-side chatter (sourceRealtySiteChatter), craigslist housing-wanted (hhh) fallback, the tenant's own review pages (sourceReviewAcquisitionIntent) and Nextdoor (sourceNextdoorChatter)",
+    evidenceFields: "the page URL · the post's own words · a stable source_record_id · the snapshot digest",
+    freshness: "the snapshot checkpoint (as above)",
+    rights: "transport only — portal / forum / review hosts HELD on terms; Nextdoor LICENSE_REQUIRED until a reviewed agreement is recorded (owner decision)",
+    cost: "per request, as above",
+    output: "need-chatter records → THE ONE RawData producer → the promotion gate (an agent-written page is a recruiting prospect, never a consumer Lead)",
+    neverClaims: "never a page fetched for any purpose but chatter or FSBO (refused by name)",
   },
 ] as const)

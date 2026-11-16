@@ -160,7 +160,8 @@ async function renderers(): Promise<Renderers> {
         r.freshnessDedup, r.incremental, r.limitsCost, r.rights, r.validation, `**${r.honestState}**`,
       ]),
     ),
-    "needle-playbooks": () => table(["Playbook", "Combination", "Providers", "Survivor that runs it", "Output", "Never claims"], cm.NEEDLE_PLAYBOOKS.map((p) => [p.key, p.combination, p.providers.join(", "), `\`${p.survivor.module}\` ${p.survivor.symbol}`, p.output, p.neverClaims])),
+    // Wave 153 (lane 153N): NEEDLE_PLAYBOOKS retired (owner: no invented plays) — ONLINE_HUNTING_WORKFLOWS, each a real search.
+    "online-hunting-workflows": () => table(["Workflow", "Replaces", "Providers", "Search / page", "Evidence fields", "Freshness", "Rights", "Cost", "Survivor that runs it", "Output", "Never claims"], cm.ONLINE_HUNTING_WORKFLOWS.map((p) => [p.key, p.replaces ?? "—", p.providers.join(", "), p.query, p.evidenceFields, p.freshness, p.rights, p.cost, `\`${p.survivor.module}\` ${p.survivor.symbol}`, p.output, p.neverClaims])),
   }
 }
 
@@ -482,8 +483,19 @@ async function main() {
     // awaiting license on both routes, LICENSE-HELD rights, a free count that is a count".
     check("Datafiniti: transport + RawData producer + proof built, both routes AWAITING LICENSE (never simulated / ready), rights LICENSE-HELD, the free count a count", df.transport !== null && df.producer.door === "rawdata" && df.proofScript === "test:datafiniti-connector" && df.states.platform === "awaiting_license" && df.states.tenant === "awaiting_license" && /LICENSE-HELD/.test(df.rights) && df.preview.kind === "free_estimate" && /never contacts/.test(df.preview.note))
     check("a preview that is a COUNT never claims contacts (Versium estimate / BatchData observed count)", ["versium", "batchdata"].every((p) => /count/i.test(rows.find((r) => r.provider === p)!.preview.note) && /(never contacts|not contacts|≠ delivered contacts)/.test(rows.find((r) => r.provider === p)!.preview.note)))
-    const badPlays = cm.NEEDLE_PLAYBOOKS.flatMap((p) => [anchorProblem(p.survivor), ...p.providers.filter((x) => !rows.some((r) => r.provider === x)).map((x) => `${p.key}: ${x} is not a matrix row`), p.neverClaims.trim() ? null : `${p.key}: no 'never claims'`]).filter(Boolean)
-    check(`every needle playbook (${cm.NEEDLE_PLAYBOOKS.length}) is run by a REAL survivor, composes matrix providers and states what it never claims`, cm.NEEDLE_PLAYBOOKS.length >= 3 && badPlays.length === 0, badPlays.join(" | "))
+    // Wave 153 (lane 153N): every workflow is CONCRETE — a real survivor, matrix providers, a search / page, evidence fields,
+    // freshness, rights and cost all stated; no strategy-name combination ("×") survives as a workflow.
+    const W = cm.ONLINE_HUNTING_WORKFLOWS as ReadonlyArray<Record<string, any>>
+    const workflowProblems = (ws: ReadonlyArray<Record<string, any>>) => ws.flatMap((p) => [
+      anchorProblem(p.survivor),
+      ...(p.providers as string[]).filter((x) => !rows.some((r) => r.provider === x)).map((x) => `${p.key}: ${x} is not a matrix row`),
+      ...["query", "evidenceFields", "freshness", "rights", "cost", "neverClaims"].filter((f) => !String(p[f] ?? "").trim()).map((f) => `${p.key}: no ${f}`),
+      /×/.test(`${p.key} ${p.query}`) ? `${p.key}: a combination name, not a workflow` : null,
+    ]).filter(Boolean)
+    const badPlays = workflowProblems(W)
+    check(`every online hunting workflow (${W.length}) is run by a REAL survivor with matrix providers, a real search, evidence fields, freshness, rights and cost`, W.length >= 5 && badPlays.length === 0, badPlays.join(" | "))
+    check("POSITIVE CONTROL: a retired-style combination row (no query, '×' name) is refused by the same rule", workflowProblems([{ key: "relocation_demand_x_inventory_mismatch", providers: ["exa"], survivor: W[0].survivor, query: "a × b × c", evidenceFields: "", freshness: "", rights: "", cost: "", neverClaims: "x" }]).length >= 4)
+    check("NEEDLE_PLAYBOOKS is retired (no export of that name remains)", !("NEEDLE_PLAYBOOKS" in cm))
   }
 
   section("I. ownership")

@@ -161,6 +161,25 @@ export type Persona =
   | "investor"
   | "other"
 
+// ─── PERSONA JOURNEY TOOLS (wave 153, lane 153N — owner ruling B6) ───────────
+// Owner, verbatim: "you built something for after a person is a contact which that should be added on inside the kernel
+// persona types since the portal view has persona related widgets". A journey tool is a POST-CONTACT capability a persona's
+// portal journey carries — never an acquisition door (a Raw Lead / Lead has no persona journey; only a Contact's portal does).
+// The portal persona layouts (lib/portal/persona-config.ts PersonaConfig.journeyTools) read THIS map — one source, no
+// parallel persona system. Keyed by the STORED persona vocabulary (contacts.contact_persona).
+//   · pcs_move_plan — the PCS / relocation planner's person mode (lib/relocation/pcs-portal-door.ts, wave 153 lane 153K row 61):
+//     the person's own volunteered move facts, consent first, the stated report date through the canonical movement writer.
+export type PersonaJourneyTool = "pcs_move_plan"
+
+export const PERSONA_JOURNEY_TOOLS: Readonly<Partial<Record<Persona, readonly PersonaJourneyTool[]>>> = Object.freeze({
+  military: ["pcs_move_plan"],
+})
+
+/** PURE — the journey tools a STORED persona carries (none for an unknown / absent persona). */
+export function personaJourneyTools(persona: string | null | undefined): readonly PersonaJourneyTool[] {
+  return (PERSONA_JOURNEY_TOOLS as Record<string, readonly PersonaJourneyTool[] | undefined>)[String(persona ?? "").trim()] ?? []
+}
+
 // ─── EDUCATION FORMAT ─────────────────────────────────────────────────────────
 
 export type EducationFormat = "video" | "guide" | "checklist" | "quiz"

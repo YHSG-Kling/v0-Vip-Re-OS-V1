@@ -173,6 +173,9 @@ export async function proposeAcquisitionPlan(input: { territoryId: string; budge
       // published match price (lib/external/peopledata-client.ts); AI cost per record is not metered per source yet (null = unknown).
       enrichmentUsdPerRecord: PEOPLEDATA_MATCH_COST_USD,
       aiUsdPerRecord: null,
+      // Wave 153 (lane 153N — owner ruling B3): the provider-first rule reads which data providers hold a key — key NAMES only,
+      // never a value. A scraped line whose fact a configured provider supplies is planned as `provider_preferred`.
+      configuredProviders: (["rentcast", "batchdata"] as const).filter((p) => !!process.env[p === "rentcast" ? "RENTCAST_API_KEY" : "BATCHDATA_API_KEY"]),
     })
     plan.blindSpots.push(...extraBlindSpots)
     const { data: inserted, error: insErr } = await svc.from("acquisition_plans").insert({

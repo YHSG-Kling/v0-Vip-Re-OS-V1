@@ -239,7 +239,7 @@ async function craigslistHtmlFallback(
   try {
     const { fetchCheckpointedSnapshot } = await import("@/lib/providers/scrape-checkpoint")
     const snap = await fetchCheckpointedSnapshot(
-      { url: craigslistSearchUrl(city, query, section), scope: { ...checkpoint.scope, purpose: `craigslist_${section}_fallback` }, jsRender: false, premiumProxy: true, maxPages: 1 },
+      { url: craigslistSearchUrl(city, query, section), scope: { ...checkpoint.scope, purpose: section === "hhh" ? "real_estate_need_chatter" : "fsbo_listing", lane: `craigslist_${section}_fallback` }, jsRender: false, premiumProxy: true, maxPages: 1 },
       { ledgerClient: checkpoint.ledgerClient, spendGate: checkpoint.spendGate, tickBudget: checkpoint.tickBudget },
     )
     if (snap.status !== "fetched_changed") {
@@ -680,7 +680,7 @@ export async function sourceRealtySiteChatter(
   const { fetchCheckpointedSnapshot } = await import("@/lib/providers/scrape-checkpoint")
   const url = buildRealtySiteChatterUrl(site, market)
   const snap = await fetchCheckpointedSnapshot(
-    { url, scope: { ...checkpoint.scope, purpose: `${site}_chatter` }, jsRender: true, premiumProxy: true, maxPages: 1 },
+    { url, scope: { ...checkpoint.scope, purpose: "real_estate_need_chatter", lane: `${site}_chatter` }, jsRender: true, premiumProxy: true, maxPages: 1 },
     { ledgerClient: checkpoint.ledgerClient, spendGate: checkpoint.spendGate, tickBudget: checkpoint.tickBudget },
   )
   if (snap.status !== "fetched_changed") {
@@ -736,6 +736,9 @@ export function normalizeNextdoorPost(post: Record<string, any>, market: SocialM
     rawPayload: { post, matched_keyword: match.term, matched_intent: match.intent },
   }
 }
+
+// (wave 153, lane 153N: the checkpointed Nextdoor fetch lives in lib/lead-pipeline/nextdoor-chatter.ts sourceNextdoorChatter —
+//  a light module, so the manual reader does not pull this file's graph; the cron passes normalizeNextdoorPost above.)
 
 // TOMBSTONE — normalizeTikTokComment, TIKTOK_VIDEOS_PER_RUN, TIKTOK_COMMENTS_PER_VIDEO and
 // sourceTikTokIntent (lane 83A's two-hop Apify TikTok comment lane) RETIRED by lane 84C.

@@ -227,7 +227,16 @@ const SOURCE_RULES: readonly SourceRule[] = [
   { sourceClass: "owner_published_listing", test: (h) => FSBO_HOSTS.test(h), publishedContactPermitted: true, officialRecord: false, termsNote: "the owner published the listing and a contact point for inquiries about the sale" },
   { sourceClass: "owner_published_listing", test: (h, u) => /(^|\.)craigslist\.org$/.test(h) && /\/reo\//.test(u), publishedContactPermitted: true, officialRecord: false, termsNote: "real estate by owner (Craigslist 'reo'); Craigslist's terms restrict automated collection — the existing craigslist_fsbo lane is the volume survivor; this is cited discovery only" },
   { sourceClass: "classified_wanted", test: (h, u) => /(^|\.)craigslist\.org$/.test(h) && /\/(hsw|rew)\//.test(u), publishedContactPermitted: true, officialRecord: false, termsNote: "a 'housing / real estate wanted' classified — the poster published a contact point asking to be contacted" },
-  { sourceClass: "public_forum", test: (h) => FORUM_HOSTS.test(h), publishedContactPermitted: false, officialRecord: false, termsNote: "a forum / social platform: its terms do not permit commercial use of members' content or contact points without the platform's permission (Reddit Data API = contract; Nextdoor has no read API; Meta platform terms) — the author is answered only through our own inbound resources" },
+  // Nextdoor FIRST (wave 153, lane 153N — owner ruling B2 / directive Part B §4.2): member-gated content under a Member
+  // Agreement that forbids unauthorized collection — a NAMED hold (LICENSE_REQUIRED) until a reviewed agreement is recorded
+  // (lib/providers/scrape-checkpoint.ts SCRAPE_TARGET_AGREEMENTS). A contact point seen there is not used.
+  { sourceClass: "public_forum", test: (h) => /(^|\.)nextdoor\.com$/.test(h), publishedContactPermitted: false, officialRecord: false, termsNote: "LICENSE_REQUIRED — Nextdoor's Member Agreement forbids unauthorized collection and it has no read API; a cited excerpt only until a reviewed agreement is recorded (owner decision)" },
+  // Owner ruling B4 (2026-11-16, verbatim: "exa needs to find possible people that are looking for real estate needs, or
+  // behavior intent … since it is public, we can use it"): on a PUBLIC forum / social page, a contact point the AUTHOR posted
+  // in their own first-person real-estate need may be used to answer THEM (Raw Lead → the promotion gate → AI ISA). Was
+  // `false` (wave 151: answered only through our own inbound resources). The channel itself is still never messaged
+  // (channelMessagingPermitted is the constant false) and a handle alone still identifies nobody.
+  { sourceClass: "public_forum", test: (h) => FORUM_HOSTS.test(h), publishedContactPermitted: true, officialRecord: false, termsNote: "a public forum / social page — owner ruling B4: public, so the AUTHOR's own published contact point may answer the need they posted; never a reply in the channel, never a deanonymized handle; the platform's terms on commercial reuse are the owner's accepted risk (Reddit Data API = contract; Meta platform terms)" },
   { sourceClass: "news", test: (h, u) => NEWS_HOSTS.test(h) || /\/(news|story|stories|article|articles)\//.test(u), publishedContactPermitted: false, officialRecord: false, termsNote: "a news page — cited excerpt only; a person named in a story has not asked to be contacted" },
 ]
 

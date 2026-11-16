@@ -4,6 +4,7 @@
 // This file contains ALL persona-specific configurations for the client portal
 // including journey stages, widgets, resources, messaging, and UI styling
 
+import { PERSONA_JOURNEY_TOOLS, type PersonaJourneyTool } from "@/lib/kernel/types"
 import { Home, Shield, Sparkles, TrendingUp, Plane, Heart, Users, Building, ArrowUpRight, ArrowDownRight, Clock, FileText, Video, Calculator, DollarSign, MapPin, School, Briefcase, Key, Scale, Gavel, Camera, Package, Truck, Phone, Star, Award, Target, PiggyBank, CreditCard, Percent, BarChart3, LineChart, Type as type, LucideIcon } from "lucide-react"
 
 // ============================================================================
@@ -83,6 +84,9 @@ export interface PersonaConfig {
   aiContext: string // Context for AI assistant
   quickActions: { label: string; href: string; icon: LucideIcon }[]
   tabs?: PersonaTabConfig // Persona-specific tab labels and icons
+  /** Wave 153 (lane 153N — owner ruling B6): the POST-CONTACT journey tools this layout carries, read from THE kernel persona
+   *  map (lib/kernel/types.ts PERSONA_JOURNEY_TOOLS) — never restated here. The journey page renders each tool's island. */
+  journeyTools?: readonly PersonaJourneyTool[]
 }
 
 // ============================================================================
@@ -355,6 +359,7 @@ export const PERSONA_CONFIGS: Record<string, PersonaConfig> = {
     isBuyer: true,
     isSeller: false,
     features: ["VA Loan Calculator", "BAH Comparison", "Base Proximity Search", "PCS Timeline"],
+    journeyTools: PERSONA_JOURNEY_TOOLS.military,
     widgets: [
       {
         id: "va_entitlement",
@@ -2269,6 +2274,18 @@ function resolvePortalPersonaKey(persona: string | null | undefined, side: "buye
 
 export function getPersonaConfig(persona: string, side: "buyer" | "seller" = "buyer"): PersonaConfig {
   return PERSONA_CONFIGS[resolvePortalPersonaKey(persona, side)] || PERSONA_CONFIGS.first_time_buyer
+}
+
+/**
+ * Wave 153 (lane 153N — owner ruling B6): the post-Contact journey tools a contact's persona carries — the STORED persona
+ * ("military") and its layout key ("military_buyer") both resolve. Fixes the journey page's literal `persona ===
+ * "military_buyer"` test, which a stored "military" Contact (contacts.contact_persona's CHECK vocabulary) never matched, so
+ * the PCS planner never rendered for the persona it was built for.
+ */
+export function getPersonaJourneyTools(persona: string | null | undefined): readonly PersonaJourneyTool[] {
+  const raw = String(persona ?? "").trim()
+  if (!raw || (!PERSONA_CONFIGS[raw] && !STORED_PERSONA_LAYOUT[raw])) return []
+  return getPersonaConfig(raw).journeyTools ?? []
 }
 
 /**

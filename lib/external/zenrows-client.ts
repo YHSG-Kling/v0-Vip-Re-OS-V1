@@ -19,96 +19,12 @@ export class ZenrowsClient {
     return result.body
   }
 
-  /**
-   * Scrapes Nextdoor search results for a given URL.
-   *
-   * Nextdoor has NO structured actor — not in lib/external/apify-actors.ts, not at ZenRows. All
-   * either provider can hand back is raw HTML. So this is the lane
-   * `lib/external/llm-html-extractor.ts :: extractFromHtml` exists for: a schema-bound HTML→JSON
-   * pass that produces the post fields the callers of this method have always read.
-   *
-   * WHAT CHANGED AND WHY. The previous body was one block-level regex that produced `{ content }`
-   * and nothing else, while its two live consumers read six other fields:
-   *   · app/api/cron/lead-scraping/route.ts → post.author_name, post.post_id
-   *   · app/actions/lead-intelligence.ts    → type, neighborhood, matched_keywords, url,
-   *                                           relevance_score (written into `nextdoor_activity`)
-   * Every one of those was `undefined` on every run, so nextdoor_activity's activity_type /
-   * neighborhood / detected_keywords / activity_url / relevance_score columns were written NULL,
-   * and its `relevance_score > 70` gate — `undefined > 70` — could never be true. The contract
-   * existed; the implementation did not.
-   *
-   * HONESTY. The model extracts only text that is on the page. `type`, `matched_keywords` and
-   * `relevance_score` are computed deterministically in lib/external/nextdoor-extract.ts from the
-   * extracted text — a generative model is never asked to author a score that then gets stored as
-   * an observation. When extraction is unavailable (no AI_GATEWAY_API_KEY, gateway refusal,
-   * unparseable output) the old regex path still runs, but each record is stamped
-   * `extraction: "regex_fallback"` with `relevance_score: null` — degraded, and visibly so, never
-   * a fabricated score.
-   *
-   * The return shape is a SUPERSET of the old one, so both existing callers work unchanged.
-   */
-  async scrapeNextdoor(
-    url: string,
-    options: { keywords?: string[]; limit?: number } = {},
-  ): Promise<{
-    success: boolean
-    posts: NextdoorPost[]
-    cost: number
-    /** Which path produced `posts` — null when nothing was produced at all. */
-    extraction: "llm_schema" | "regex_fallback" | null
-    /** Present when the schema extraction was refused; the regex result (if any) still ships. */
-    extractionError: string | null
-    error: string | null
-  }> {
-    let result: ZenRowsResponse
-    try {
-      result = await scrapeWithZenRows(url, { jsRender: true, premiumProxy: true })
-    } catch (err) {
-      // A scrape that could not run is a FAILURE, not an empty neighborhood.
-      return {
-        success: false, posts: [], cost: 0, extraction: null, extractionError: null,
-        error: err instanceof Error ? err.message : String(err),
-      }
-    }
-    if (!result.body) {
-      return {
-        success: false, posts: [], cost: result.cost, extraction: null, extractionError: null,
-        error: "ZenRows returned an empty body",
-      }
-    }
-
-    const { extractFromHtml } = await import("./llm-html-extractor")
-    const {
-      NEXTDOOR_POST_SCHEMA, NEXTDOOR_EXTRACT_INSTRUCTIONS, normalizeExtractedPosts, regexFallbackPosts,
-    } = await import("./nextdoor-extract")
-
-    const extracted = await extractFromHtml({
-      html:         result.body,
-      schema:       NEXTDOOR_POST_SCHEMA,
-      instructions: NEXTDOOR_EXTRACT_INSTRUCTIONS,
-    })
-
-    if (extracted.error) {
-      const posts = regexFallbackPosts(result.body, { keywords: options.keywords, sourceUrl: url, limit: options.limit })
-      return {
-        success: posts.length > 0,
-        posts,
-        cost: result.cost,
-        extraction: posts.length > 0 ? "regex_fallback" : null,
-        extractionError: extracted.error,
-        error: posts.length > 0 ? null : `html extraction refused (${extracted.error}) and the fallback recovered no posts`,
-      }
-    }
-
-    const posts = normalizeExtractedPosts(extracted.records, {
-      keywords:  options.keywords,
-      sourceUrl: url,
-      limit:     options.limit ?? 30,
-    })
-    // Zero posts from a SUCCESSFUL extraction is a real answer (a search with no results), not a
-    // failure — so success stays true and the caller sees an honestly empty neighborhood.
-    return { success: true, posts, cost: result.cost, extraction: "llm_schema", extractionError: null, error: null }
-  }
+  // TOMBSTONE (wave 153, lane 153N — owner ruling B2 "nextdoor goes through zyte or zenrows"; orphan doctrine §1.1):
+  // ZenrowsClient.scrapeNextdoor called the ZenRows transport DIRECTLY — no robots, no terms, no spend gate, no checkpoint —
+  // and it was Nextdoor's only fetch. Its extraction half moved to extractNextdoorPostsFromHtml (below, this file); its fetch
+  // half is lib/lead-pipeline/nextdoor-chatter.ts sourceNextdoorChatter, which rides lib/providers/scrape-checkpoint.ts
+  // fetchCheckpointedSnapshot under the purpose real_estate_need_chatter and the named LICENSE_REQUIRED hold. Both callers
+  // (app/api/cron/lead-scraping/route.ts, app/actions/lead-intelligence.ts) now call sourceNextdoorChatter.
 
   /**
    * Scrapes Facebook group posts by delegating to the Apify Facebook scraper,
@@ -123,6 +39,41 @@ export class ZenrowsClient {
       return { success: false, posts: [], cost: 0 }
     }
   }
+}
+
+/**
+ * Nextdoor posts from ONE fetched page's HTML (the extraction half of the retired ZenrowsClient.scrapeNextdoor — the fetch now
+ * rides the snapshot checkpoint: lib/lead-pipeline/nextdoor-chatter.ts sourceNextdoorChatter).
+ *
+ * Nextdoor has NO structured actor — not in lib/external/apify-actors.ts, not at ZenRows. All either transport can hand back
+ * is raw HTML. So this is the lane `lib/external/llm-html-extractor.ts :: extractFromHtml` exists for: a schema-bound
+ * HTML→JSON pass that produces the post fields the consumers read (cron: author_name, post_id; lead-intelligence:
+ * type, neighborhood, matched_keywords, url, relevance_score written into `nextdoor_activity`).
+ *
+ * HONESTY. The model extracts only text that is on the page. `type`, `matched_keywords` and `relevance_score` are computed
+ * deterministically in lib/external/nextdoor-extract.ts from the extracted text — a generative model is never asked to
+ * author a score that then gets stored as an observation. When extraction is unavailable (no gateway key, gateway refusal,
+ * unparseable output) the regex path still runs, each record stamped `extraction: "regex_fallback"` with
+ * `relevance_score: null` — degraded, and visibly so, never a fabricated score.
+ */
+export async function extractNextdoorPostsFromHtml(
+  html: string,
+  options: { keywords?: string[]; sourceUrl?: string; limit?: number } = {},
+): Promise<{ posts: NextdoorPost[]; extraction: "llm_schema" | "regex_fallback" | null; extractionError: string | null; error: string | null }> {
+  if (!html) return { posts: [], extraction: null, extractionError: null, error: "the page had an empty body" }
+  const { extractFromHtml } = await import("./llm-html-extractor")
+  const { NEXTDOOR_POST_SCHEMA, NEXTDOOR_EXTRACT_INSTRUCTIONS, normalizeExtractedPosts, regexFallbackPosts } = await import("./nextdoor-extract")
+  const extracted = await extractFromHtml({ html, schema: NEXTDOOR_POST_SCHEMA, instructions: NEXTDOOR_EXTRACT_INSTRUCTIONS })
+  if (extracted.error) {
+    const posts = regexFallbackPosts(html, { keywords: options.keywords, sourceUrl: options.sourceUrl, limit: options.limit })
+    return {
+      posts, extraction: posts.length > 0 ? "regex_fallback" : null, extractionError: extracted.error,
+      error: posts.length > 0 ? null : `html extraction refused (${extracted.error}) and the fallback recovered no posts`,
+    }
+  }
+  // Zero posts from a SUCCESSFUL extraction is a real answer (a search with no results), not a failure.
+  const posts = normalizeExtractedPosts(extracted.records, { keywords: options.keywords, sourceUrl: options.sourceUrl, limit: options.limit ?? 30 })
+  return { posts, extraction: "llm_schema", extractionError: null, error: null }
 }
 
 /** The flat per-call estimate booked when ZenRows does not state the request's cost (X-Request-Cost absent). */

@@ -110,6 +110,11 @@ export const SNAPSHOT_TRANSPORT_FACTS: Readonly<Record<ScrapeProvider, SnapshotT
  *  lib/marketing/estimate-sources.ts tosNote; lib/intent/movement-source-registry.ts CONTESTED licences). */
 const PORTAL_TERMS_HOSTS = /(^|\.)(zillow|trulia|realtor|redfin|homes)\.com$/i
 const CLASSIFIED_TERMS_HOSTS = /(^|\.)craigslist\.org$/i
+/** Nextdoor (wave 153, lane 153N — owner ruling B2 / directive Part B §4.2): its Member Agreement forbids unauthorized scraping
+ *  and Nextdoor publishes no read API. The owner routed Nextdoor THROUGH the Zyte / ZenRows transport (this checkpoint); the
+ *  rights stay a NAMED HOLD — LICENSE_REQUIRED — that exactly one reviewed, recorded agreement (SCRAPE_TARGET_AGREEMENTS
+ *  ["nextdoor.com"]) lifts. Never a flag, never a manager's or a healer's decision. */
+const NEXTDOOR_TERMS_HOST = /(^|\.)nextdoor\.com$/i
 
 /**
  * A WRITTEN agreement that lets a terms-restricted host be fetched. EMPTY: none is recorded. Adding a host is a REVIEWED
@@ -117,7 +122,7 @@ const CLASSIFIED_TERMS_HOSTS = /(^|\.)craigslist\.org$/i
  */
 const SCRAPE_TARGET_AGREEMENTS: Readonly<Record<string, { reference: string; recordedAt: string; scope: string }>> = Object.freeze({})
 
-interface TermsVerdict { allowed: boolean; basis: "no_known_restriction" | "portal_terms" | "classified_terms" | "forum_platform_terms" | "written_agreement"; note: string }
+interface TermsVerdict { allowed: boolean; basis: "no_known_restriction" | "portal_terms" | "classified_terms" | "license_required" | "forum_platform_terms" | "written_agreement"; note: string }
 
 /** PURE — may this host be fetched under its terms? (Robots is decided separately; both must allow.) */
 function scrapeTargetTermsVerdict(host: string, url: string, agreements = SCRAPE_TARGET_AGREEMENTS): TermsVerdict {
@@ -126,6 +131,7 @@ function scrapeTargetTermsVerdict(host: string, url: string, agreements = SCRAPE
   if (agreement) return { allowed: true, basis: "written_agreement", note: `written agreement ${agreement.reference} (${agreement.scope}, recorded ${agreement.recordedAt})` }
   if (PORTAL_TERMS_HOSTS.test(bare)) return { allowed: false, basis: "portal_terms", note: `${bare}'s terms restrict automated collection without written permission — held until an agreement is recorded (Zyte / ZenRows are transports, not a license to the site's data)` }
   if (CLASSIFIED_TERMS_HOSTS.test(bare)) return { allowed: false, basis: "classified_terms", note: `${bare}'s terms of use prohibit automated collection — held until an agreement is recorded` }
+  if (NEXTDOOR_TERMS_HOST.test(bare)) return { allowed: false, basis: "license_required", note: "LICENSE_REQUIRED — Nextdoor's Member Agreement forbids unauthorized scraping and it publishes no read API; the route runs through this transport and stays held until a reviewed written agreement is recorded for nextdoor.com (an owner decision)" }
   const rights = sourceRightsForUrl(url)
   if (rights.sourceClass === "public_forum") return { allowed: false, basis: "forum_platform_terms", note: rights.termsNote }
   return { allowed: true, basis: "no_known_restriction", note: "no recorded terms restriction for this host (robots.txt still decides)" }
@@ -221,7 +227,24 @@ interface CheckpointStore {
   save(rowId: string | null, state: CheckpointState, scope: CheckpointScope): Promise<{ ok: boolean; id: string | null; error: string | null }>
 }
 
-interface CheckpointScope { brokerageId: string | null; marketId: string | null; purpose: string }
+// ─── the ONLY purposes the page transport serves (wave 153, lane 153N — owner ruling B3, verbatim: "zenrows and zyte should
+// only search for possible online chatter around needing real estate services or for sale by owner properties") ──────────
+//
+// Every checkpointed fetch DECLARES its purpose; anything else is refused by name before the checkpoint is read, so a refused
+// purpose costs no request and writes no row. A listing's status, a property's record, an owner's contact point, a sold price
+// — facts a configured data provider supplies — are never a scrape purpose: the planner prefers the provider
+// (lib/lead-pipeline/source-discovery-planner.ts providerFirstVerdict).
+export const SCRAPE_PURPOSES = ["real_estate_need_chatter", "fsbo_listing"] as const
+export type ScrapePurpose = (typeof SCRAPE_PURPOSES)[number]
+
+/** PURE — why a declared purpose may NOT ride the page transport (null = it may). */
+export function scrapePurposeProblem(purpose: unknown): string | null {
+  if ((SCRAPE_PURPOSES as readonly unknown[]).includes(purpose)) return null
+  return `scrape purpose "${String(purpose)}" refused — Zyte / ZenRows serve only ${SCRAPE_PURPOSES.join(" and ")} (owner ruling B3); a fact a data provider holds is bought from the provider, not scraped`
+}
+
+/** `lane` names the caller's source lane (zillow_fsbo_search, realty_chatter, nextdoor_chatter …) for the ledger row. */
+interface CheckpointScope { brokerageId: string | null; marketId: string | null; purpose: ScrapePurpose; lane?: string | null }
 
 function parseState(meta: Record<string, any> | null | undefined, key: string): CheckpointState | null {
   const c = meta?.checkpoint
@@ -253,7 +276,7 @@ function jobLedgerCheckpointStore(client: { from: (t: string) => any }): Checkpo
       const row = {
         job_type: CHECKPOINT_JOB_TYPE, source: `checkpoint:${state.host}`, status: state.retryAfter ? "failed" : "running",
         brokerage_id: scope.brokerageId, market_id: scope.marketId, leads_found: state.seen.length, leads_created: 0,
-        error_message: state.lastError, metadata: { checkpoint_key: state.key, purpose: scope.purpose, checkpoint: state },
+        error_message: state.lastError, metadata: { checkpoint_key: state.key, purpose: scope.purpose, lane: scope.lane ?? null, checkpoint: state },
       }
       if (!rowId) {
         const { data, error } = await client.from("lead_scraping_jobs").insert({ ...row, started_at: new Date().toISOString() }).select("id")
@@ -340,7 +363,7 @@ function conditionalHeaders(state: CheckpointState, jsRender: boolean, configure
 type SnapshotStatus =
   | "fetched_changed" | "unchanged" | "not_modified"
   | "skipped_interval" | "held_backoff" | "held_tick_budget" | "held_spend" | "held_robots" | "held_terms"
-  | "refused_checkpoint_unreadable" | "refused_target" | "failed" | "no_provider"
+  | "refused_checkpoint_unreadable" | "refused_target" | "refused_purpose" | "failed" | "no_provider"
 
 interface CheckpointedSnapshot {
   status: SnapshotStatus
@@ -491,6 +514,9 @@ export async function fetchCheckpointedSnapshot(input: SnapshotCheckpointInput, 
     }
   }
 
+  // THE SCOPE RULE FIRST (owner ruling B3): a purpose outside chatter / FSBO is refused by name — no checkpoint read, no request.
+  const purposeProblem = scrapePurposeProblem(input.scope?.purpose)
+  if (purposeProblem) return result("refused_purpose", purposeProblem)
   if (!target) return result("refused_target", `not a fetchable http(s) URL: ${input.url}`)
   const key = `snap:${input.scope.brokerageId ?? "platform"}:${input.scope.marketId ?? "-"}:${stableContentDigest(target.url)}`
   if (!store) return result("refused_checkpoint_unreadable", "no checkpoint store — a page fetch without a checkpoint could re-buy the same page every tick")

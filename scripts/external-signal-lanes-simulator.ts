@@ -113,8 +113,16 @@ check("…but withholds the score (null, never 0) and says it is degraded",
 const zen = src("lib/external/zenrows-client.ts")
 check("scrapeNextdoor calls extractFromHtml", zen.includes("llm-html-extractor") && zen.includes("extractFromHtml"))
 check("…and keeps the regex path as the named fallback", zen.includes("regexFallbackPosts"))
-check("…and a failed scrape reports an error instead of an empty neighborhood",
-  /success: false[\s\S]{0,200}error:/.test(zen))
+// Wave 153 (lane 153N): the Nextdoor FETCH moved to lib/lead-pipeline/nextdoor-chatter.ts sourceNextdoorChatter (the snapshot
+// checkpoint); a failed / held fetch is NAMED there (`held: "<status> — <reason>"`), only the checkpoint's own quiet states
+// (unchanged / not_modified / skipped_interval) are silent — the same rule, asserted where the fetch now lives.
+{
+  const nd = src("lib/lead-pipeline/nextdoor-chatter.ts")
+  const body = nd.slice(nd.indexOf("export async function sourceNextdoorChatter"), nd.indexOf("export async function sourceNextdoorChatter") + 2600)
+  check("…and a failed scrape reports an error instead of an empty neighborhood",
+    /held: quiet \? null : `\$\{snap\.status\} — \$\{snap\.reason\}`/.test(body) && /const quiet = snap\.status === "unchanged" \|\| snap\.status === "not_modified" \|\| snap\.status === "skipped_interval"/.test(body)
+    && /extraction refused[\s\S]{0,80}fallback recovered no posts/.test(zen))
+}
 check("the extractor itself still routes through the AI Gateway, never a provider SDK",
   src("lib/external/llm-html-extractor.ts").includes("gatewayChat"))
 

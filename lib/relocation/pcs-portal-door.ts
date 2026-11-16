@@ -27,6 +27,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { planRelocation } from "./pcs-planner"
+import { personaJourneyTools } from "@/lib/kernel/types"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -59,7 +60,7 @@ type PersonPlan = Extract<ReturnType<typeof planRelocation>, { ok: true; mode: "
 
 type PortalPcsPlanResult =
   | { ok: true; plan: PersonPlan; statedDate: StatedDateOutcome; notes: string[] }
-  | { ok: false; code: "not_the_person" | "no_consent" | "invalid" | "read_refused"; message: string }
+  | { ok: false; code: "not_the_person" | "no_consent" | "invalid" | "read_refused" | "not_this_persona"; message: string }
 
 const finiteNonNeg = (v: unknown): number | null => {
   if (v === null || v === undefined || v === "") return null
@@ -105,9 +106,14 @@ export async function planPcsMoveForPortalContact(
 
   // The assigned agent's licensed states — pinned to the contact's tenant (the gate's verdict), never a request field.
   const notes: string[] = []
-  const { data: contact, error: contactErr } = await svc.from("contacts").select("id, agent_id").eq("id", access.contactId).eq("brokerage_id", access.brokerageId).maybeSingle()
+  const { data: contact, error: contactErr } = await svc.from("contacts").select("id, agent_id, contact_persona").eq("id", access.contactId).eq("brokerage_id", access.brokerageId).maybeSingle()
   if (contactErr) return { ok: false, code: "read_refused", message: "Your plan could not be built just now because your record could not be read. Nothing was saved. Try again in a moment." }
   if (!contact) return { ok: false, code: "read_refused", message: "We could not find your client record. Nothing was saved. Reply to your agent's last message and they will get this to the right place." }
+  // Wave 153 (lane 153N — owner ruling B6): the PCS journey is a tool of the military persona (lib/kernel/types.ts
+  // PERSONA_JOURNEY_TOOLS) — only a Contact whose persona carries it may run it (a prospect has no Contact row at all).
+  if (!personaJourneyTools((contact as { contact_persona?: string | null }).contact_persona).includes("pcs_move_plan")) {
+    return { ok: false, code: "not_this_persona", message: "This move planner is part of the military journey. If you are moving on military orders, ask your agent to update your profile, then plan your move here." }
+  }
   let agentLicensedStates: string[] | undefined
   const agentId = (contact as { agent_id?: string | null }).agent_id ?? null
   if (agentId) {

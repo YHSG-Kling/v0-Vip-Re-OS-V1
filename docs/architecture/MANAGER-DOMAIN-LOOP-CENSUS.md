@@ -10,7 +10,7 @@ sweep) → OUTCOME evidence (ledger / arbitration record / provider truth). The 
 Planes: A authority / tenant session · E Contact engagement (the follow-up arbiter) · D outbound dispatch · G manager coordination
 (delegation, missions, the signal bus) · P human approval · R resources (entitlement, vendor budget, spend, provider route) · C closing / money gates.
 
-Classes: `loop-complete` 661 · `read-surface` 404 · `partial` 218 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 98 · `registry-only` 0 · `proof-unregistered` 0 — of 1382 rows, over 5376 source files.
+Classes: `loop-complete` 663 · `read-surface` 404 · `partial` 217 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 98 · `registry-only` 0 · `proof-unregistered` 0 — of 1383 rows, over 5377 source files.
 
 ## Deal Coordinator (`deal_coordinator`) — 107 domains
 
@@ -180,7 +180,7 @@ Classes: `loop-complete` 661 · `read-surface` 404 · `partial` 218 · `writes-u
 | `education_delivery_loop` | partial (no closure) | cron `api/cron/education-delivery` (+1) | — | `education-delivery-producer.ts` +4 | learning_assignments, motivated_seller_signals | 32 reader(s) | — | — | — | `test:education-delivery` |
 | `investor_offmarket_match` | partial (no closure) | cron `api/cron/investor-offmarket-refresh` (+1) | R | `investor-offmarket-match.ts` +1 | investor_deal_matches, investor_offmarket_candidates | 2 reader(s) | — | — | — | `test:investor-offmarket` |
 | `offer_lifecycle_batch_derivation` | partial (no closure) | action `actions/buyer-offer/handle-multi-offer.ts` | — | `handle-multi-offer.ts` +1 | activities | 95 reader(s) | — | — | — | `test:offer-batch-derivation` |
-| `relocation_planner` | partial (no closure) | action `actions/portal-pcs-plan.ts` | — | `portal-pcs-plan.ts` +4 | movement_signals | 4 reader(s) | — | — | — | `test:relocation-planner` |
+| `relocation_planner` | partial (no closure) | action `actions/portal-pcs-plan.ts` | — | `portal-pcs-plan.ts` +6 | movement_signals | 4 reader(s) | — | — | — | `test:relocation-planner` |
 | `rent_lane` | partial (no closure) | action `actions/smart-insights.ts` | — | `smart-insights.ts` +3 | contact_property_insights, contacts, saved_properties +1 | 624 reader(s) | — | — | — | `test:rent-lane` |
 | `rentcast_copilot_tools` | partial (no closure) | action `actions/ai-isa/handle-inbound-email.ts` (+1) | R | `rentcast-ai-tools.ts` +2 | — | — | — | — | — | `test:rentcast-copilot-tools` |
 | `strategy_learning_loop` | partial (no closure) | action `actions/buyer-offers.ts` (+1) | — | `close-strategy-loop.ts` | negotiation_strategies, strategy_outcomes, strategy_recommendations | 11 reader(s) | — | — | — | `test:strategy-learning` |
@@ -358,6 +358,7 @@ Classes: `loop-complete` 661 · `read-surface` 404 · `partial` 218 · `writes-u
 | `market_report_producer` | loop-complete | cron `api/cron/marketing-campaign-scheduler` (+1) | DGP | `lead-magnets.ts` +7 | form_submissions, lead_capture_forms, lead_magnet_promises +6 | 168 reader(s) | ✓ | ✓ | — | `test:market-report-producer` |
 | `marketing_autonomy_ratchet` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | DGP | `video-generation.ts` +75 | ad_lead_form_legal_content, agent_client_messages, chat_messages +21 | 993 reader(s) | ✓ | ✓ | — | `test:doc-kernel` |
 | `marketing_loop` | loop-complete | cron `api/cron/ads-manager-sweep` (+1) | G | `ad-outcome-loop.ts` +10 | ai_video_projects, listing_media, marketing_assets +3 | 230 reader(s) | ✓ | — | — | `test:asset-production` |
+| `marketing_loops` | loop-complete | cron `api/cron/lifetime-customer-touchpoints` | ADEPR | `route.ts` +9 | activities, drip_campaigns, email_queue +6 | 370 reader(s) | ✓ | ✓ | ✓ | `test:marketing-loops` |
 | `marketing_readiness_and_email` | loop-complete | action `actions/ai-newsletter.ts` | ADR | `ai-newsletter.ts` +1 | email_campaigns, email_sends, email_templates +3 | 44 reader(s) | ✓ | — | — | `test:marketing-campaign-wiring` |
 | `mobile_approval_push` | loop-complete | cron `api/cron/approval-push` (+1) | P | `mobile-approval-queue.ts` | notifications | 77 reader(s) | ✓ | — | — | `test:mobile-approval` |
 | `open_house_followup` | loop-complete | cron `api/cron/credential-refresh` (+1) | — | `import-pull.ts` +2 | notifications, social_media_accounts | 106 reader(s) | ✓ | — | — | `test:crm-pull` |
@@ -423,7 +424,6 @@ Classes: `loop-complete` 661 · `read-surface` 404 · `partial` 218 · `writes-u
 | `content_lane_ledger` | partial (no closure) | action `actions/ai-content-generation.tsx` (+1) | R | `content-features.ts` +2 | ai_tool_usage | 17 reader(s) | — | — | — | `test:content-lane-ledger` |
 | `geo_citation_share` | partial (no closure) | cron `api/cron/geo-citation-monitor` (+1) | — | `citation-share.ts` +1 | ai_search_citation_observations, ai_search_landing_citation_observations | 7 reader(s) | — | — | — | `test:citation-share` |
 | `marketing_bench` | partial (no closure) | cron `api/cron/farm-play` (+2) | — | `marketing-bench.ts` | blog_posts, direct_mail_campaigns, email_campaigns +2 | 100 reader(s) | — | — | — | `test:marketing-bench` |
-| `marketing_loops` | partial (no closure) | cron `api/cron/lifetime-customer-touchpoints` (+1) | EP | `reengagement-policy.ts` +5 | lifetime_customer_touchpoints, social_posts | 60 reader(s) | — | — | — | `test:marketing-loops` |
 | `marketing_package` | partial (no closure) | action `actions/marketing-package-automation.ts` | A | `marketing-package-automation.ts` +1 | ai_listing_optimizations, listing_marketing_packages, listing_marketing_services +1 | 4 reader(s) | — | — | — | `test:marketing-package` |
 | `portal_value_card` | partial (no closure) | action `actions/home-value.ts` (+1) | — | `portal-value.ts` | transparency_updates | 16 reader(s) | — | — | — | `test:portal-value` |
 | `readiness_statistics_tenant_scope` | partial (no closure) | action `actions/campaign-readiness.ts` (+2) | — | `readiness-logger.ts` | activities | 95 reader(s) | — | — | — | `test:readiness-tenant-scope` |
@@ -673,7 +673,7 @@ Classes: `loop-complete` 661 · `read-surface` 404 · `partial` 218 · `writes-u
 | `lead_magnet_flow` | guard-only | — | — | — | — | — | — | — | — | `test:lead-magnet-flow` |
 | `office_chat_and_kb_recall` | guard-only | — | — | — | — | — | — | — | — | `test:knowledge-lead-wiring` |
 
-## Data Steward (`data_steward`) — 465 domains
+## Data Steward (`data_steward`) — 466 domains
 
 | Domain | Class | Trigger | Planes | Survivor | Writes (state) | Readback | Next | Recovery | Outcome | Proof |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -724,7 +724,7 @@ Classes: `loop-complete` 661 · `read-surface` 404 · `partial` 218 · `writes-u
 | `demo_login_hard_gate` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | DGP | `video-generation.ts` +75 | ad_lead_form_legal_content, agent_client_messages, chat_messages +21 | 993 reader(s) | ✓ | ✓ | — | `test:doc-kernel` |
 | `domain_api_contracts` | loop-complete | action `actions/tenant-webhooks.ts` | GR | `tenant-webhooks.ts` +5 | agent_credentials, tenant_webhook_subscriptions | 5 reader(s) | ✓ | — | ✓ | `test:domain-api` |
 | `e2e_flows` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEGPR | `book-seller-appointment.ts` +35 | activities, ad_manager_actions, agent_client_messages +28 | 1081 reader(s) | ✓ | ✓ | ✓ | `test:e2e-flows` |
-| `early_opportunity_plays` | loop-complete | cron `api/cron/lead-scraping` (+1) | EG | `contact-second-window.ts` +11 | cron_execution_logs, lead_deduplication_log, lead_enrichment_queue +5 | 233 reader(s) | ✓ | ✓ | — | `test:early-opportunity-plays` |
+| `early_opportunity_plays` | loop-complete | cron `api/cron/lead-scraping` (+1) | EGR | `contact-second-window.ts` +11 | cron_execution_logs, lead_deduplication_log, lead_enrichment_queue +5 | 233 reader(s) | ✓ | ✓ | — | `test:early-opportunity-plays` |
 | `egress_send_guard` | loop-complete | cron `api/cron/publish-newsletters` (+1) | ADR | `dispatch.ts` +1 | leads | 166 reader(s) | — | ✓ | ✓ | `test:egress-send-guard` |
 | `enrichment_fact_watcher` | loop-complete | cron `api/cron/enrichment-processor` (+1) | — | `lifetime-change-action.ts` +4 | contacts, lifetime_customer_touchpoints, signal_reactivations | 589 reader(s) | — | — | ✓ | `test:lifetime-signals` |
 | `esign_anchor_eval` | loop-complete | webhook `api/webhooks/dotloop` | — | `route.ts` +4 | client_documents, signature_requests, transactions | 355 reader(s) | — | ✓ | — | `test:esign-anchors` |
@@ -767,6 +767,7 @@ Classes: `loop-complete` 661 · `read-surface` 404 · `partial` 218 · `writes-u
 | `new_construction_intent_lane` | loop-complete | cron `api/cron/lead-scraping` | GR | `route.ts` +57 | agent_credentials, agentic_invocation_log, api_response_logs +10 | 125 reader(s) | ✓ | ✓ | — | `test:scrapers` |
 | `one_door_consent` | loop-complete | webhook `api/webhooks/inbound-suppression` (+1) | G | `ConsentBoxes.tsx` +6 | activities, compliance_events, contact_consent_events +6 | 749 reader(s) | ✓ | — | — | `test:one-door-consent` |
 | `one_pull` | loop-complete | cron `api/cron/lead-scraping` | GR | `route.ts` +2 | batchdata_smart_search_subscriptions, lead_scraping_markets, raw_scraped_leads +1 | 47 reader(s) | ✓ | ✓ | — | `test:one-pull` |
+| `online_hunting_scope` | loop-complete | cron `api/cron/lead-scraping` (+1) | EGR | `public-request.ts` +12 | cron_execution_logs, lead_deduplication_log, lead_enrichment_queue +4 | 96 reader(s) | ✓ | ✓ | — | `test:online-hunting` |
 | `os_arbitration_canaries` | loop-complete | cron `api/cron/queue-drain` (+1) | ACEGPR | `capability-ownership.ts` +14 | activities, agent_action_ledger, campaign_bundle_dispatches +8 | 510 reader(s) | ✓ | ✓ | ✓ | `test:os-arbitration-canaries` |
 | `outcome_ledger` | loop-complete | cron `api/cron/retry-errors` (+1) | — | `auto-retry.ts` | automation_errors, error_resolution_log | 12 reader(s) | — | ✓ | — | `test:outcome-ledger` |
 | `parent_child_graph` | loop-complete | cron `api/cron/source-conversion-learning` (+1) | P | `exceptions-first.ts` +4 | activities, audit_log, client_friendly_updates +13 | 1194 reader(s) | ✓ | ✓ | ✓ | `test:parent-child-graph` |

@@ -11,6 +11,7 @@ import {
 } from "@/lib/portal/resolve-education-context"
 import { generationalCohortFromAge, cohortFraming, ageFromBirthday } from "@/lib/kernel/education"
 import { getPersonaJourneyStages, calculateJourneyProgress } from "@/lib/portal"
+import { getPersonaJourneyTools } from "@/lib/portal/persona-config"
 import { getTaskCompletions, getStageProgress } from "@/app/actions/journey-tasks"
 import { getClientJourneyPreferences } from "@/app/actions/multi-persona"
 import JourneyClient from "./journey-client"
@@ -224,8 +225,11 @@ export default async function PortalJourneyPage({
       )}
       <JourneyPreferencesEditor contactId={contactId} initialMustHaves={clientMustHaves} />
       {/* The PCS planner's person mode (wave 153, lane 153K — convergence row 61): the military persona's own move plan, beside
-          its "PCS Planning" stage. The island's action refuses anyone but the person and anything without their consent. */}
-      {persona === "military_buyer" && <PcsMovePlanner contactId={contactId} />}
+          its "PCS Planning" stage. Wave 153 (lane 153N — owner ruling B6): the persona's JOURNEY TOOLS decide it (lib/kernel/types.ts
+          PERSONA_JOURNEY_TOOLS via the persona layout) — the stored "military" persona now renders it (the old literal
+          "military_buyer" test never matched a stored persona). The island's action refuses anyone but the person, anything
+          without their consent, and any Contact whose persona does not carry the tool. */}
+      {getPersonaJourneyTools(persona).includes("pcs_move_plan") && <PcsMovePlanner contactId={contactId} />}
       <JourneyChecklist
         contactId={contactId}
         transactionId={transaction?.id ?? null}

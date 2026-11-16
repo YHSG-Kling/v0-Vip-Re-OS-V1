@@ -41,13 +41,12 @@
 // same table/shape as the existing `facebook_group_urls` column). No configured URLs ⇒ no scrape,
 // same territory-honesty contract every sourcer since wave 65 states.
 //
-// SCRAPE + EXTRACT: `scrapeSiteWithBestProvider` (lib/external/zenrows-client.ts, ZenRows primary
-// / Zyte fallback by configured key, wave 65) + `extractFromHtml`
-// (lib/external/llm-html-extractor.ts) against `lib/external/review-extract.ts`'s schema — the
-// SAME schema-bound-extraction shape `zenrows-client.ts::scrapeNextdoor` established for a page
-// type with no structured actor. Fails CLOSED with neither key configured (scrapeSiteWithBestProvider's own contract).
+// SCRAPE + EXTRACT: the snapshot checkpoint (lib/providers/scrape-checkpoint.ts fetchCheckpointedSnapshot — the ONE picker,
+// ZenRows / Zyte by configured key, behind robots / terms / spend / backoff / the digest; wave 153, lane 153N) +
+// `extractFromHtml` (lib/external/llm-html-extractor.ts) against `lib/external/review-extract.ts`'s schema — the SAME
+// schema-bound-extraction shape `zenrows-client.ts::extractNextdoorPostsFromHtml` uses for a page type with no structured
+// actor. Fails CLOSED with no key configured or no checkpoint supplied.
 
-import { scrapeSiteWithBestProvider } from '@/lib/external/zenrows-client'
 import {
   REVIEW_PAGE_SCHEMA, REVIEW_EXTRACT_INSTRUCTIONS,
   normalizeExtractedReviews, regexFallbackReviews,
@@ -143,45 +142,81 @@ export interface ReviewAcquisitionSourceResult {
   cost: number
   provider: 'zenrows' | 'zyte' | null
   urlsScanned: number
+  /** Per-URL holds / refusals named by the snapshot checkpoint (robots, terms, budget, backoff) — never a silent zero. */
+  held?: string[]
+  /** After the caller's producer accepted the batch: moves each fetched page's processed watermark. */
+  commit?: (ok: boolean) => Promise<void>
+}
+
+/** The snapshot-checkpoint deps a review page fetch needs (the cron passes its own). */
+export interface ReviewPageCheckpoint {
+  ledgerClient: { from: (t: string) => any }
+  scope: { brokerageId: string | null; marketId: string | null }
+  spendGate: (estimateUsd: number) => { allowed: boolean; reason: string }
+  tickBudget?: { fetchesLeft: number }
 }
 
 /**
- * LIVE (network): scrapes each configured review-source URL (ZenRows→Zyte, fail-closed with
- * neither key) and extracts qualifying real-estate-question reviewers into raw-record candidates.
- * Territory-honest: no configured URLs ⇒ no scrape (`[]` immediately, before any provider call).
+ * LIVE (network): fetches each configured review-source URL and extracts qualifying real-estate-question reviewers into
+ * raw-record candidates. Territory-honest: no configured URLs ⇒ no scrape (`[]` immediately, before any provider call).
+ *
+ * WAVE 153 (lane 153N — owner ruling B3): every page rides the REPLAY-SAFE SNAPSHOT CHECKPOINT
+ * (lib/providers/scrape-checkpoint.ts fetchCheckpointedSnapshot) under the purpose `real_estate_need_chatter` — a reviewer's
+ * real-estate QUESTION is need chatter; a plain review is not fetched for any other purpose. Robots, the hosts' terms (the
+ * Google / Zillow / Facebook pages are terms-restricted and HELD until a written agreement is recorded), the caller's spend
+ * gate, backoff and the content digest decide before any paid request. Without the caller's checkpoint NOTHING is fetched
+ * (was scrapeSiteWithBestProvider — a direct transport call with no checkpoint).
  */
 export async function sourceReviewAcquisitionIntent(
   market: ReviewAcquisitionMarket,
   reviewUrls: string[],
+  checkpoint?: ReviewPageCheckpoint,
+  deps: { snapshotDeps?: Parameters<typeof import('@/lib/providers/scrape-checkpoint').fetchCheckpointedSnapshot>[1] } = {},
 ): Promise<ReviewAcquisitionSourceResult> {
   const urls = (reviewUrls ?? []).filter(Boolean).slice(0, MAX_URLS_PER_RUN)
   if (urls.length === 0) return { records: [], cost: 0, provider: null, urlsScanned: 0 }
+  if (!checkpoint) return { records: [], cost: 0, provider: null, urlsScanned: 0, held: ['no snapshot checkpoint supplied — no review page fetched'] }
 
+  const { fetchCheckpointedSnapshot } = await import('@/lib/providers/scrape-checkpoint')
   const all: NormalizedScrapedRecord[] = []
+  const held: string[] = []
+  const commits: Array<(ok: boolean) => Promise<unknown>> = []
   let cost = 0
   let provider: 'zenrows' | 'zyte' | null = null
 
   for (const url of urls) {
-    const res = await scrapeSiteWithBestProvider(url, { jsRender: true, premiumProxy: true }).catch(
-      () => ({ ok: false, html: '', provider: null as 'zenrows' | 'zyte' | null, cost: 0, error: 'scrape threw' }),
+    const snap = await fetchCheckpointedSnapshot(
+      { url, scope: { ...checkpoint.scope, purpose: 'real_estate_need_chatter', lane: 'review_acquisition' }, jsRender: true, premiumProxy: true, maxPages: 1 },
+      { ledgerClient: checkpoint.ledgerClient, spendGate: checkpoint.spendGate, tickBudget: checkpoint.tickBudget, ...(deps.snapshotDeps ?? {}) },
     )
-    cost += res.cost ?? 0
-    if (res.provider) provider = res.provider
-    if (!res.ok || !res.html) continue
+    cost += snap.costUsd
+    if (snap.provider) provider = snap.provider
+    if (snap.status !== 'fetched_changed') {
+      if (!['unchanged', 'not_modified', 'skipped_interval'].includes(snap.status)) held.push(`${url}: ${snap.status} — ${snap.reason}`)
+      continue
+    }
 
     const platform = platformFromUrl(url)
-    const extracted = await extractFromHtml_({ html: res.html, schema: REVIEW_PAGE_SCHEMA, instructions: REVIEW_EXTRACT_INSTRUCTIONS })
-    const entries = extracted.error
-      ? regexFallbackReviews(res.html, { sourceUrl: url, limit: 30 })
-      : normalizeExtractedReviews(extracted.records, { sourceUrl: url, limit: 30 })
-
-    for (const entry of entries) {
-      const rec = normalizeReviewAcquisitionEntry(entry, market, platform)
-      if (rec && isViableRecord(rec)) all.push(rec)
+    const parsed: NormalizedScrapedRecord[] = []
+    for (const html of snap.html) {
+      const extracted = await extractFromHtml_({ html, schema: REVIEW_PAGE_SCHEMA, instructions: REVIEW_EXTRACT_INSTRUCTIONS })
+      const entries = extracted.error
+        ? regexFallbackReviews(html, { sourceUrl: url, limit: 30 })
+        : normalizeExtractedReviews(extracted.records, { sourceUrl: url, limit: 30 })
+      for (const entry of entries) {
+        const rec = normalizeReviewAcquisitionEntry(entry, market, platform)
+        if (rec && isViableRecord(rec)) parsed.push(rec)
+      }
     }
+    const fresh = snap.selectNew(parsed).records
+    all.push(...fresh)
+    commits.push((ok: boolean) => snap.commit({ ok, forwarded: ok ? fresh : [] }))
   }
 
-  return { records: all, cost, provider, urlsScanned: urls.length }
+  return {
+    records: all, cost, provider, urlsScanned: urls.length, held,
+    commit: async (ok: boolean) => { for (const c of commits) await c(ok) },
+  }
 }
 
 // Lazy-imported so a pure-layer test (no AI Gateway credentials) never pays the module's own
