@@ -178,7 +178,7 @@ async function main() {
   check("tick 1: the route answers 200 and counts one completed bundle task", t1.status === 200 && t1.body?.queues?.orchestrator_tasks?.completed === 1, JSON.stringify(t1.body?.queues?.orchestrator_tasks))
   check("tick 1: the SMS piece went out once, after the arbiter was asked for THIS person on the sms channel",
     H.sends.length === 2 && H.sends[1].channel === "sms" && H.sends[1].args.toPhone === "+18505550101" && H.arbCalls.length === 1 &&
-      H.arbCalls[0].input.subject?.id === C1 && JSON.stringify(H.arbCalls[0].input.requiredChannels) === JSON.stringify(["sms"]) && H.arbCalls[0].input.planner === "sequence_step")
+      H.arbCalls[0].input.subject?.id === C1 && JSON.stringify(H.arbCalls[0].input.requiredChannels) === JSON.stringify(["sms"]) && H.arbCalls[0].input.planner === "bundle_follow_on")
   const smsTask = tasks(db, d1).find((t) => t.payload.bundle_item_id === b1.itemIds[1])
   check("tick 1: the sms task is completed with its provider id and the arbiter's decision on the evidence", smsTask?.status === "completed" && smsTask.payload.outcome?.decision?.kind === "send_now" && !!smsTask.executed_at && smsTask.attempts === 1)
   check("tick 1: the next item (postcard) is persisted pending with the sms item as its origin", pendingOf(db, d1).length === 1 && pendingOf(db, d1)[0].payload.origin_item_id === b1.itemIds[1])
@@ -381,7 +381,7 @@ async function main() {
   const clickBody = ob.slice(ob.indexOf("export async function orchestrateBundleSend"), ob.indexOf("export async function executeBundleFollowOnTask"))
   check("the click no longer loops every item through a sender (the single synchronous pass is gone)", !/for\s*\(\s*const\s+item\s+of\s+items\s*\)/.test(clickBody) && /dispatchBundleItem\)?\(svc,\s*first,/.test(clickBody))
   check("POSITIVE CONTROL: the loop finder sees the old shape", /for\s*\(\s*const\s+item\s+of\s+items\s*\)/.test("for (const item of items) {"))
-  check("a person-facing follow-on asks arbitratePlannedTouch with the item's channel as requiredChannels", /requiredChannels:\s*\[arbiterChannel\]/.test(ob) && /planner:\s*"sequence_step"/.test(ob))
+  check("a person-facing follow-on asks arbitratePlannedTouch with the item's channel as requiredChannels", /requiredChannels:\s*\[arbiterChannel\]/.test(ob) && /planner:\s*"bundle_follow_on"/.test(ob))
   check("the follow-on timing never reads the stored send_after_minutes (owner ruling: order only, the arbiter times it)", !/send_after_minutes/.test(ob))
   const cb = code("app/actions/campaign-bundles.ts")
   check("upsertCampaignBundle no longer deletes every item by bundle_id alone on an edit", !/from\("campaign_bundle_items"\)\.delete\(\)\.eq\("bundle_id",\s*bundleId\)\s*\n/.test(cb) && /syncBundleItems\(svc,\s*brokerageId,\s*bundleId,\s*input\.items\)/.test(cb))

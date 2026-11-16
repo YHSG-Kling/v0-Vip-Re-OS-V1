@@ -297,7 +297,7 @@ interface FollowOnPayload {
   sender: { user_id: string | null; agent_id: string | null; agent_user_id: string | null; team_id: string | null }
   qr_scan_url: string | null
   system_source: string | null
-  timing: { policy: "arbiter"; planner: "sequence_step"; person_facing: boolean; arbiter_waits: number }
+  timing: { policy: "arbiter"; planner: "bundle_follow_on"; person_facing: boolean; arbiter_waits: number }
   governance: { contact_engagement: string | null; outbound: string; audience: string | null }
   expected_evidence: string[]
   deferrals: number
@@ -330,7 +330,7 @@ function payloadFor(ctx: ChainContext, item: BundleItem, originItemId: string | 
     sender: ctx.sender,
     qr_scan_url: ctx.qrScanUrl,
     system_source: ctx.systemSource,
-    timing: { policy: "arbiter", planner: "sequence_step", person_facing: arbiterChannel !== null, arbiter_waits: 0 },
+    timing: { policy: "arbiter", planner: "bundle_follow_on", person_facing: arbiterChannel !== null, arbiter_waits: 0 },
     governance: {
       contact_engagement: arbiterChannel ? `arbitratePlannedTouch(${arbiterChannel})` : null,
       outbound: "lib/providers/dispatch.ts (consent · DNC · quiet hours · de-confliction · spend)",
@@ -650,7 +650,7 @@ export async function executeBundleFollowOnTask(svc: Svc, task: { id: string }, 
       let arb: ArbiterAnswer
       try {
         arb = await arbitrate(svc, {
-          brokerageId: B, planner: "sequence_step", subject, now,
+          brokerageId: B, planner: "bundle_follow_on", subject, now,
           options: [{ id: "send_now", kind: "communication", channels: [], why: [`item ${p.item.order_index + 1} of the tenant's bundle "${bundleName}" (${p.item.channel}) follows the previous item, which has finished — the author set the ORDER, the timing is yours`] }],
           planned: "send_now",
           moment: { key: "bundle_follow_on_due", intent: `The next piece of a campaign bundle (${p.item.channel}) is ready for this person — decide whether now is right, or hold it a bounded time.` },
