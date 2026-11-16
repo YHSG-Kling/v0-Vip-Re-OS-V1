@@ -33,8 +33,11 @@ export type AcquisitionIntent = "sell" | "buy" | "relocate" | "realtor_seeking" 
  *                        app/actions/lead-intelligence.ts::scrapeExternalBehavior (own territory gate).
  *   inbound_mailbox    — the tenant's own inbound mail (lib/lead-pipeline/unknown-sender-
  *                        identification.ts) — lead/contact direct by the wave-74 ruling, $0.
+ *   provider_lookup    — an on-demand provider pull (wave 153, lane 153M: lib/lead-pipeline/datafiniti-people-producer.ts
+ *                        runDatafinitiPeoplePull) — rights gate + paid-pull gate (paidPullApproval) + the caller's territory
+ *                        handed to the producer as marketGeo; never on the cron.
  */
-export type AcquisitionEntry = "lead_scraping_cron" | "batchdata_push" | "intent_campaign" | "inbound_mailbox"
+export type AcquisitionEntry = "lead_scraping_cron" | "batchdata_push" | "intent_campaign" | "inbound_mailbox" | "provider_lookup"
 
 export interface AcquisitionCoverage {
   intents: readonly AcquisitionIntent[]
@@ -86,6 +89,9 @@ export const SOURCE_ACQUISITION: Record<SourceKey, AcquisitionCoverage> = {
   batchdata_cash_buyer:        { intents: ["investor", "buy"],                        entry: "lead_scraping_cron", routeChannel: '"batchdata_cash_buyer"' },
   // Lane 89B — owner-posted listings on forsalebyowner.com (Apify), the cheaper FSBO population.
   fsbo_site_listing:           { intents: ["sell"],                                   entry: "lead_scraping_cron", routeChannel: '"fsbo_site_listing"' },
+  // Wave 153 (lane 153M): Datafiniti People Data — identity / contact records, NO intent claimed (never one of the five
+  // populations); reached on demand through the paid-pull gate, territory-gated by the caller's territory.
+  datafiniti_people:           { intents: [],                                         entry: "provider_lookup",    routeChannel: null },
   // tiktok_intent retired (lane 84C; owner 2026-09-26 "don't need tiktok." — tombstone in source-intent-map.ts).
 }
 

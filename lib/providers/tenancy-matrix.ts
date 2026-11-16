@@ -90,6 +90,16 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
     envVars: ["BATCHDATA_API_KEY"],
   },
   {
+    // Wave 153 (lane 153M, owner ruling B1): BOTH routes are built and NEITHER is live — the platform account (env
+    // DATAFINITI_API_TOKEN, by name) and a tenant's own token (platform_credentials.platform 'datafiniti', m949 written, not
+    // applied) are separate credentials that never substitute for each other (lib/external/datafiniti-client.ts resolveToken).
+    // Both wait on the owner's licensing decision (PROVIDER_ACTIVATION.datafiniti dormant_pending_rights).
+    provider: "datafiniti",
+    models: ["platform_metered", "tenant_optional_key"],
+    why: "People identity verification and gap-fill contact points for persons a tenant already holds, plus owner ↔ property history keyed to Datafiniti's own property dataset. Credits are per record returned, so the platform account would meter per tenant; a tenant holding its own Datafiniti account may connect it and pay Datafiniti directly. Dormant pending rights: no SaaS / storage / AI / outreach license has been read. Same NON-FCRA legal line as every enrichment source.",
+    envVars: ["DATAFINITI_API_TOKEN"],
+  },
+  {
     // Wave 138 (138A): ONE spelling — was "peoplesdata" here and "peopledata" everywhere else (§6).
     provider: "peopledata",
     models: ["platform_metered"],

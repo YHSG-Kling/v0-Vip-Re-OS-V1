@@ -202,18 +202,21 @@ const FACTS: readonly CapabilityFacts[] = Object.freeze([
     tenantRoute: "no_transport", liveEvidence: null, evaluated: true,
   })),
   {
-    provider: "datafiniti", label: "Datafiniti", scorecard: null, tenancyKey: null, kinds: ["property", "person"],
-    endpoint: "POST https://api.datafiniti.co/v4/properties/search (Bearer token, Datafiniti query syntax); /v4/properties/paginate (≤ 500 a page, ≤ 10,000 records); people data via autotrace (read 2026-11-14, docs.datafiniti.co)",
-    transport: null,
-    producer: { door: "none", anchor: null, path: "none — no adapter in this repo" },
-    mapping: { anchor: null, provenance: "none" },
-    preview: { kind: "documented_no_transport", anchor: null, note: "num_records: 0 returns num_found at zero credits (paid accounts only) — documented, not built" },
-    freshnessDedup: "n/a — nothing is ingested",
-    incremental: "page / limit pagination over a query (≤ 10,000 records) — documented; no change feed documented",
-    limitsCost: "credits per record returned (num_records caps the charge; 0 found = 0 credits); a 400 when a request would exceed the plan's credit allotment",
-    rights: "NOT READ — SaaS redistribution, storage and AI-processing terms were not read; no product chosen",
-    proof: { script: null, adverse: "n/a — no transport to drive" },
-    tenantRoute: "no_transport", liveEvidence: null, evaluated: false,
+    // Wave 153 (lane 153M, owner ruling B1): People Data BUILT — the transport, the RawData producer and the offline proof exist;
+    // both routes stay dormant pending rights (PROVIDER_ACTIVATION.datafiniti) and no live call is on record. Property Data is
+    // NOT built (owner asked for People Data; a property record is RentCast's survivor).
+    provider: "datafiniti", label: "Datafiniti", scorecard: "datafiniti", tenancyKey: "datafiniti", kinds: ["person"],
+    endpoint: "People Data REST v4 (docs.datafiniti.co, read 2026-11-16): POST https://api.datafiniti.co/v4/people/search (Bearer token; query in Datafiniti / Lucene syntax, num_records ≤ 10 non-download, format json|csv, download, view) → num_found / total_cost / records / download_id; GET /v4/account (free credit read); MCP df_download_status (queued | running | completed | cancelled, links 7 days). Property Data endpoints exist but are not built here",
+    transport: A("lib/external/datafiniti-client.ts", "searchDatafinitiPeople"),
+    producer: { door: "rawdata", anchor: A("lib/lead-pipeline/datafiniti-people-producer.ts", "runDatafinitiPeoplePull"), path: "rights gate (activation / tenant connection) → known keys → pre-pull dedup of held candidates → free count → paid-pull gate (paidPullApproval with the door context) → typed search / download → documented-schema mapper → grounded only → dedup again at ingress → THE ONE RawData producer (ingestRawSourceBatch, source datafiniti_people) → Raw Lead gate → Lead → AI ISA; never a Contact, never outreach" },
+    mapping: { anchor: A("lib/lead-pipeline/datafiniti-people-producer.ts", "mapDatafinitiPerson"), provenance: "per-field provenance (vendor field, dateUpdated / lastDateSeen, retrieved_at); work location labelled as work (schema), never as a property address; sourceURLs kept as proof; tcpa-flagged phones suppressed; deceased records refused" },
+    preview: { kind: "free_estimate", anchor: A("lib/external/datafiniti-client.ts", "countDatafinitiPeople"), note: "num_records: 0 returns num_found at 0 credits (paid accounts only — a trial may refuse it: preview UNAVAILABLE, never assumed); a count, never contacts" },
+    freshnessDedup: "dateUpdated ages the record (owner_profile_pull class: fresh 90 d / stale 365 d); planPrePullDedup before the paid pull (held candidates) and again on the returned records; the RawData idempotency key on the Datafiniti record id / key",
+    incremental: "dateUpdated range filter (updatedSince) — the vendor page names 'change detection using update timestamps'; bulk download with a download_id checkpoint; the REST paginate request shape was not documented to us — not built",
+    limitsCost: "one credit per record returned (num_records caps the charge; 0 found = 0 credits); count 0 credits; 400 'exceed credit allotment' = quota (no retry); 429 retried with backoff; a paid 5xx is OUTCOME UNKNOWN — reconciled against the free account read, never blindly re-sent; booked once per request / download_id",
+    rights: null,
+    proof: { script: "test:datafiniti-connector", adverse: "count books nothing; credits booked once; quota / 429 / 500 / invalid token; two-tenant key isolation with no platform fallback; rights missing → not activated; replay = no new RawData and no second charge; person/property collision; stale source date held; no outreach" },
+    tenantRoute: "built", liveEvidence: null, evaluated: true,
   },
   {
     provider: "idxbroker", label: "IDX / MLS (IDX Broker)", scorecard: null, tenancyKey: "idxbroker", kinds: ["property"],
@@ -268,6 +271,9 @@ function routeState(f: CapabilityFacts, route: "platform" | "tenant"): HonestSta
   if (f.liveEvidence) return "ready"
   if (!f.transport) return f.scorecard && PROVIDER_ACTIVATION[f.scorecard].state === "dormant_pending_rights" ? "awaiting_license" : "unavailable"
   if (!f.proof.script) return "unavailable"
+  // Wave 153 (lane 153M): a BUILT transport does not license the data — a provider the platform keeps dormant pending rights
+  // waits on the license on BOTH routes (tenant-provider-connections.ts derives pending_owner_licensing for the tenant key too).
+  if (f.scorecard && PROVIDER_ACTIVATION[f.scorecard].state === "dormant_pending_rights") return "awaiting_license"
   if (route === "platform" && f.scorecard && PROVIDER_ACTIVATION[f.scorecard].state === "dormant_survivor") return "awaiting_key"
   return "simulated"
 }

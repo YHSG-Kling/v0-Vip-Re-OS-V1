@@ -57,7 +57,16 @@ async function main() {
   check(`every no-transport provider (${noTransport.join(", ")}) is dormant_pending_rights in PROVIDER_ACTIVATION and absent from the route table`,
     noTransport.length > 0 && noTransport.every((k) => PROVIDER_ACTIVATION[k as keyof typeof PROVIDER_ACTIVATION]?.state === "dormant_pending_rights" && !routed.has(k) && tp.TENANT_ACQUISITION_PROVIDERS[k].transports.length === 0 && tp.TENANT_ACQUISITION_PROVIDERS[k].fields.length === 0))
   const built = keys.filter((k) => tp.TENANT_ACQUISITION_PROVIDERS[k].adapter.state === "transport_built")
-  check("exactly one provider is transport_built today (batchdata) — every other row proves honesty, not ingestion", built.join() === "batchdata")
+  // The RULE, not the waypoint (wave 153, lane 153M built a second transport — Datafiniti — that waits on its license): every
+  // transport_built row is EITHER a survivor the platform runs (active / dormant_survivor) OR pending rights and then derives
+  // pending_owner_licensing with mayIngest false. BatchData stays the survivor case.
+  const builtOk = (k: string) => {
+    const st = PROVIDER_ACTIVATION[k as keyof typeof PROVIDER_ACTIVATION]?.state
+    if (st === "active" || st === "dormant_survivor") return true
+    const v = tp.deriveTenantProviderConnectionState(k, { exists: true, isActive: true, testStatus: "pass", hasApiKey: true, config: null })
+    return st === "dormant_pending_rights" && v.state === "pending_owner_licensing" && v.mayIngest === false
+  }
+  check(`every transport_built provider (${built.join(", ")}) is a run survivor OR pending rights that derives pending_owner_licensing (never ingests)`, built.includes("batchdata") && built.every(builtOk), built.filter((k) => !builtOk(k)).join(", "))
   const claimExists = (k: string) => { const p = tp.TENANT_ACQUISITION_PROVIDERS[k]; return !!p.adapter.tenantKeyParam && existsSync(join(ROOT, p.adapter.module)) && new RegExp(`\\b${p.adapter.tenantKeyParam}\\??:\\s*string\\s*\\|\\s*null`).test(stripped(p.adapter.module)) }
   check("the transport_built claim names a tenant-key parameter that EXISTS in the adapter's stripped source", built.every(claimExists))
   check("positive control: a planted claim naming a missing parameter is caught", !new RegExp(`\\btenantTokenZ\\??:\\s*string\\s*\\|\\s*null`).test(stripped("lib/external/batchdata-client.ts")))
@@ -79,12 +88,13 @@ async function main() {
   check("sandbox: a test account is never a production source", st({ ...base, config: { ...base.config, sandbox: true } }).state === "sandbox" && !st({ ...base, config: { ...base.config, sandbox: true } }).mayIngest)
   check("degraded: quota / unreachable / drift keep the queue and still ingest when the provider answers; a pending verification is degraded, not healthy", ["quota", "unreachable", "shape_drift"].every((s) => st({ ...base, config: { ...base.config, last_health: { ...ok, status: s as never } } }).state === "degraded") && st({ ...base, testStatus: "pending", config: { ...base.config, last_health: null } }).state === "degraded")
   check("unconfigured: an incomplete agreement on a stored row is not a connection", st({ ...base, config: { ...base.config, agreement: { ...agreement, cost_payer: "platform" as never } } }).state === "unconfigured")
-  check("pending_owner_licensing is reachable by RULE (a transport-built provider the platform keeps dormant pending rights) and is reserved today — no catalogue row has both", (() => {
+  check("pending_owner_licensing is reachable by RULE (a transport-built provider the platform keeps dormant pending rights) and every catalogue row that has both DERIVES it", (() => {
     // Derive: were a transport built for a dormant_pending_rights provider, the state would be pending_owner_licensing. The rule is
     // asserted against the SAME derivation the code uses (the branch order in deriveTenantProviderConnectionState).
     const src = stripped("lib/providers/tenant-provider-connections.ts")
     const i1 = src.indexOf('state: "unsupported"'), i2 = src.indexOf('state: "pending_owner_licensing"'), i3 = src.indexOf('state: "unconfigured"')
-    return i1 > 0 && i2 > i1 && i3 > i2 && !keys.some((k) => tp.TENANT_ACQUISITION_PROVIDERS[k].adapter.state === "transport_built" && PROVIDER_ACTIVATION[k as keyof typeof PROVIDER_ACTIVATION]?.state === "dormant_pending_rights")
+    const both = keys.filter((k) => tp.TENANT_ACQUISITION_PROVIDERS[k].adapter.state === "transport_built" && PROVIDER_ACTIVATION[k as keyof typeof PROVIDER_ACTIVATION]?.state === "dormant_pending_rights")
+    return i1 > 0 && i2 > i1 && i3 > i2 && both.every((k) => tp.deriveTenantProviderConnectionState(k, null).state === "pending_owner_licensing")
   })())
 
   console.log("\nC — the agreement")

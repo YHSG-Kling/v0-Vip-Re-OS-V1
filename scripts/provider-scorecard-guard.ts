@@ -49,7 +49,7 @@ async function main() {
 
   console.log("\nA — activation / licensing state (R9)")
   const A = sc.PROVIDER_ACTIVATION
-  const want: Record<string, string> = { rentcast: "active", versium: "active", batchdata: "dormant_survivor", peopledata: "dormant_survivor", tracerfy: "dormant_pending_rights", datazapp: "dormant_pending_rights", propertyradar: "dormant_pending_rights", data_axle: "dormant_pending_rights" }
+  const want: Record<string, string> = { rentcast: "active", versium: "active", batchdata: "dormant_survivor", peopledata: "dormant_survivor", tracerfy: "dormant_pending_rights", datazapp: "dormant_pending_rights", propertyradar: "dormant_pending_rights", data_axle: "dormant_pending_rights", datafiniti: "dormant_pending_rights" }
   check("every provider's state is R9's", Object.entries(want).every(([p, s]) => (A as any)[p]?.state === s) && Object.keys(A).length === Object.keys(want).length)
   const names = Object.values(A).flatMap((a) => a.credential.envVars)
   check("every credential is a NAME (UPPER_SNAKE), none looks like a value", names.length >= 7 && names.every((n) => /^[A-Z][A-Z0-9_]+$/.test(n) && n.length < 40))
@@ -107,7 +107,7 @@ async function main() {
   const missingCells = matrix.flatMap((m) => m.cells.filter((cell) => !lines.some((l) => l.startsWith(`| \`${m.field}\` | ${cell.provider} | ${cell.state} |`))).map((cell) => `${m.field}/${cell.provider}`))
   check(`§11.2 lists every matrix cell (${matrix.reduce((s, m) => s + m.cells.length, 0)} cells)`, s11.length > 100 && missingCells.length === 0, missingCells.join(", "))
   check("positive control: a dropped cell would be caught", !lines.filter((l) => !l.includes("| `owner_phone` | tracerfy |")).some((l) => l.startsWith("| `owner_phone` | tracerfy | dormant_pending_rights |")))
-  const label: Record<string, string> = { rentcast: "RentCast", versium: "Versium", batchdata: "BatchData", peopledata: "PeopleData", tracerfy: "Tracerfy", datazapp: "DataZapp", propertyradar: "PropertyRadar", data_axle: "Data Axle" }
+  const label: Record<string, string> = { rentcast: "RentCast", versium: "Versium", batchdata: "BatchData", peopledata: "PeopleData", tracerfy: "Tracerfy", datazapp: "DataZapp", propertyradar: "PropertyRadar", data_axle: "Data Axle", datafiniti: "Datafiniti" }
   check("§11.1 lists every provider with its state and credential NAME", Object.entries(A).every(([p, a]) => lines.some((l) => l.startsWith(`| ${label[p]} | ${a.state}`) && a.credential.envVars.every((n) => l.includes(`\`${n}\``)))))
   check("§11 says nothing was bought and the paid pilot is not approved", /Nothing in this section was bought/.test(s11) && /\*\*not approved\*\*/.test(s11))
 

@@ -666,6 +666,7 @@ route row, the adapter facts and the transport together. Self-healing can never 
 | DataZapp | dormant_pending_rights | no license stated in the Terms | `DATAZAPP_API_KEY` | not requested (the $125 test is a purchase) |
 | PropertyRadar | dormant_pending_rights | partner / embedded rights not read | `PROPERTYRADAR_API_TOKEN` | a `Purchase=0` preview (consumes no record quota) |
 | Data Axle | dormant_pending_rights | product, fields and license not read | none — no product chosen | not applicable |
+| Datafiniti | dormant_pending_rights — transport built (wave 153, lane 153M), no account | terms of service / data license not read (LICENSE-HELD: SaaS resale, storage, AI, outreach) | `DATAFINITI_API_TOKEN` | the free `GET /v4/account` read and a `num_records: 0` count (0 credits; paid accounts only), after the owner's licensing decision |
 
 ### 11.2 Field-level overlap and gap matrix (provider × field, with rights and cost)
 
@@ -684,16 +685,19 @@ no ACTIVE provider documents the field: only an activation (after the pilot) can
 | `owner_phone` | tracerfy | dormant_pending_rights | $0.02 per match | standard_terms_read | yes | overlap |
 | `owner_phone` | datazapp | dormant_pending_rights | $0.03 per match | none_stated | yes | overlap |
 | `owner_phone` | propertyradar | dormant_pending_rights | UNKNOWN per match | not_read | yes | overlap |
+| `owner_phone` | datafiniti | dormant_pending_rights | $0.19 per record | not_read | yes | overlap |
 | `owner_email` | versium | active | $0.05 per match | signed_terms_unverified | yes | overlap |
 | `owner_email` | batchdata | dormant_survivor | $0.07 per match | not_read | yes | overlap |
 | `owner_email` | peopledata | dormant_survivor | $0.25 per match | standard_terms_read | yes | overlap |
 | `owner_email` | tracerfy | dormant_pending_rights | $0.02 per match | standard_terms_read | yes | overlap |
 | `owner_email` | datazapp | dormant_pending_rights | $0.03 per match | none_stated | yes | overlap |
+| `owner_email` | datafiniti | dormant_pending_rights | $0.19 per record | not_read | yes | overlap |
 | `demographics` | versium | active | $0.15 per match | signed_terms_unverified | yes | overlap |
 | `demographics` | data_axle | dormant_pending_rights | UNKNOWN per record | not_read | no | overlap |
 | `online_audience_ids` | versium | active | $0.05 per match | signed_terms_unverified | yes | single |
 | `preview_count` | versium | active | $0 free | signed_terms_unverified | yes | overlap |
 | `preview_count` | propertyradar | dormant_pending_rights | $0 free | not_read | yes | overlap |
+| `preview_count` | datafiniti | dormant_pending_rights | $0 free | not_read | yes | overlap |
 | `dnc_status` | batchdata | dormant_survivor | $0.05 per request | not_read | yes | overlap · GAP (no active documented provider) |
 | `dnc_status` | tracerfy | dormant_pending_rights | $0.02 per phone | standard_terms_read | yes | overlap · GAP (no active documented provider) |
 | `distress_signal` | batchdata | dormant_survivor | $0.05 per record | not_read | yes | overlap · GAP (no active documented provider) |
@@ -701,11 +705,12 @@ no ACTIVE provider documents the field: only an activation (after the pilot) can
 | `seller_signal` | batchdata | dormant_survivor | UNKNOWN per record | not_read | yes | overlap · GAP (no active documented provider) |
 | `seller_signal` | tracerfy | dormant_pending_rights | $0.1 per record | standard_terms_read | no | overlap · GAP (no active documented provider) |
 | `seller_signal` | datazapp | dormant_pending_rights | UNKNOWN per attribute | none_stated | yes | overlap · GAP (no active documented provider) |
-| `employment` | peopledata | dormant_survivor | $0.25 per match | standard_terms_read | yes | single · GAP (no active documented provider) |
+| `employment` | peopledata | dormant_survivor | $0.25 per match | standard_terms_read | yes | overlap · GAP (no active documented provider) |
+| `employment` | datafiniti | dormant_pending_rights | $0.19 per record | not_read | yes | overlap · GAP (no active documented provider) |
 
 **What the matrix shows.** Under R9 three fields have no active provider: `dnc_status` (the BatchData MCP scrub is a dormant
 survivor; our own TCPA gate stays the authority either way), `distress_signal` / `seller_signal` (every seller score is a dormant
-vendor's), and `employment` (PeopleData only). The DNC gap is the one a launch decision must look at first.
+vendor's), and `employment` (PeopleData, and Datafiniti since wave 153 — both dormant). The DNC gap is the one a launch decision must look at first.
 
 ### 11.3 Seller-score fields — each in its own vendor-defined unit
 

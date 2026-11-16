@@ -74,7 +74,11 @@ console.log("\n[L1 · coverage — every SourceKey declares its populations + do
 const registryKeys = Object.keys(SOURCE_ACQUISITION).sort()
 check(`SOURCE_ACQUISITION covers exactly ALL_SOURCE_KEYS (${KEYS.length} keys, derived)`,
   registryKeys.length === KEYS.length && KEYS.every((k) => k in SOURCE_ACQUISITION), `${registryKeys.length} vs ${KEYS.length}`)
-check("every SourceKey names ≥1 population", KEYS.every((k) => SOURCE_ACQUISITION[k].intents.length > 0))
+// Wave 153 (lane 153M): an identity-only PROVIDER LOOKUP (Datafiniti People Data) claims NO population — it sells who a person
+// is, not what they intend, and inventing an intent for it is what owner ruling B5 forbids. Every OTHER door names ≥1.
+const identityOnly = (k: SourceKey) => SOURCE_ACQUISITION[k].entry === "provider_lookup" && SOURCE_ACQUISITION[k].routeChannel === null
+check("every SourceKey names ≥1 population — except an identity-only provider lookup, which names NONE (no invented intent)", KEYS.every((k) => identityOnly(k) ? SOURCE_ACQUISITION[k].intents.length === 0 : SOURCE_ACQUISITION[k].intents.length > 0), KEYS.filter((k) => identityOnly(k) ? SOURCE_ACQUISITION[k].intents.length > 0 : SOURCE_ACQUISITION[k].intents.length === 0).join(", "))
+check("POSITIVE CONTROL: the exemption is narrow — every cron / push / campaign / mailbox source still has a population", KEYS.filter((k) => !identityOnly(k)).length >= KEYS.length - 1 && KEYS.filter(identityOnly).every((k) => SOURCE_VENDOR[k] !== "apify" && SOURCE_VENDOR[k] !== "zenrows"))
 const byIntent = new Map<AcquisitionIntent, SourceKey[]>(INTENTS.map((i) => [i, KEYS.filter((k) => SOURCE_ACQUISITION[k].intents.includes(i))]))
 for (const i of INTENTS) check(`population "${i}" has ≥2 wired sources (${byIntent.get(i)!.length}: ${byIntent.get(i)!.join(", ")})`, byIntent.get(i)!.length >= 2)
 check("POSITIVE CONTROL: an intent nobody declares reads as uncovered", KEYS.filter((k) => (SOURCE_ACQUISITION[k].intents as readonly string[]).includes("time_travel")).length === 0)
@@ -95,7 +99,7 @@ check("the markets panel reads acquisitionIntentLabel", /acquisitionIntentLabel\
 console.log("\n  COVERAGE MATRIX (source · populations · vendor · door · territory · dedup · enrichment · cost/record · scheduled · recency)")
 for (const k of KEYS) {
   const a = SOURCE_ACQUISITION[k]
-  const territory = a.entry === "lead_scraping_cron" ? "cron-loop" : a.entry === "batchdata_push" ? "push-match" : a.entry === "intent_campaign" ? "own-territory" : "own-mailbox"
+  const territory = a.entry === "lead_scraping_cron" ? "cron-loop" : a.entry === "batchdata_push" ? "push-match" : a.entry === "intent_campaign" ? "own-territory" : a.entry === "provider_lookup" ? "caller-terr" : "own-mailbox"
   const dedup = a.routeChannel === null && SOURCE_VENDOR[k] === "internal" && a.entry === "lead_scraping_cron" ? "signal-only" : "raw+lead+contact"
   const enrich = SOURCE_PAID_PERSON_DATA[k] ? "vendor_delivered" : SOURCE_VENDOR[k] === "internal" ? "pdl(if raw)" : "peopledata"
   const cost = SOURCE_VENDOR[k] === "internal" ? "$0" : "stamped"

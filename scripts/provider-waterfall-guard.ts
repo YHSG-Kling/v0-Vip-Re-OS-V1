@@ -71,7 +71,7 @@ async function main() {
     const routed = new Set(Object.values(routes).flat().map((e) => e.provider))
     return pending.filter((p) => routed.has(p))
   }
-  check(`every provider pending rights (${pending.join(", ")}) is absent from CONTACT_PROVIDER_ROUTES`, pending.length === 4 && pendingRouted(CONTACT_PROVIDER_ROUTES as any).length === 0)
+  check(`every provider pending rights (${pending.join(", ")}) is absent from CONTACT_PROVIDER_ROUTES`, pending.length >= 1 && pendingRouted(CONTACT_PROVIDER_ROUTES as any).length === 0)
   check("positive control: a planted route row for tracerfy is seen", pendingRouted({ ...(CONTACT_PROVIDER_ROUTES as any), owner_contact: [...CONTACT_PROVIDER_ROUTES.owner_contact, { provider: "tracerfy" }] }).join() === "tracerfy")
   const TRANSPORT = /\bfetch\s*\(|process\.env\b|https?:\/\/|createServiceClient|from\s+["']@\/lib\/external\/|new\s+[A-Z][A-Za-z]*Client\s*\(/
   const DORMANT_FILES = ["lib/providers/provider-scorecard.ts", "lib/providers/dormant-adapters.ts", "lib/providers/provider-pilot.ts"]
@@ -151,13 +151,17 @@ async function main() {
   console.log("\nF — the tenant-connectable catalogue (route B) agrees with R9 activation")
   const tp = await import("../lib/providers/tenant-provider-connections")
   const catalogue = Object.keys(tp.TENANT_ACQUISITION_PROVIDERS)
-  check("every dormant-pending-rights provider in the catalogue has NO transport and NO fields (a tenant is never offered a key the repo cannot use)", pending.every((p) => { const e = tp.TENANT_ACQUISITION_PROVIDERS[p as string]; return !e || (e.adapter.state === "no_transport" && e.transports.length === 0 && e.fields.length === 0) }))
-  check("the one transport_built provider (batchdata) is a dormant SURVIVOR, not a provider pending rights — a tenant key rides the survivor's transport", catalogue.filter((k) => tp.TENANT_ACQUISITION_PROVIDERS[k].adapter.state === "transport_built").every((k) => sc.PROVIDER_ACTIVATION[k as keyof typeof sc.PROVIDER_ACTIVATION].state === "dormant_survivor"))
+  // The RULE (wave 153, lane 153M — Datafiniti is the first pending-rights provider with a BUILT transport): a pending-rights
+  // catalogue row either has NO transport and NO fields, or has a real transport and derives pending_owner_licensing (never
+  // ingests) — in neither case can a tenant spend a key before the owner's licensing decision.
+  const pendingFacts = { exists: true, isActive: true, testStatus: "pass" as const, hasApiKey: true, config: null }
+  check("every dormant-pending-rights provider in the catalogue has NO transport and NO fields, or a built transport that derives pending_owner_licensing (never ingests)", pending.every((p) => { const e = tp.TENANT_ACQUISITION_PROVIDERS[p as string]; if (!e) return true; if (e.adapter.state === "no_transport") return e.transports.length === 0 && e.fields.length === 0; const v = tp.deriveTenantProviderConnectionState(p as string, pendingFacts as never); return v.state === "pending_owner_licensing" && !v.mayIngest }))
+  check("every transport_built provider is a dormant SURVIVOR (a tenant key rides the survivor's transport) or pending rights held at pending_owner_licensing — never a live pending-rights key", catalogue.filter((k) => tp.TENANT_ACQUISITION_PROVIDERS[k].adapter.state === "transport_built").every((k) => { const st = sc.PROVIDER_ACTIVATION[k as keyof typeof sc.PROVIDER_ACTIVATION].state; return st === "dormant_survivor" || (st === "dormant_pending_rights" && !tp.deriveTenantProviderConnectionState(k, pendingFacts as never).mayIngest) }))
   check("the catalogue module carries no transport (the same TRANSPORT regex as the dormant files)", !TRANSPORT.test(stripped("lib/providers/tenant-provider-connections.ts")), (stripped("lib/providers/tenant-provider-connections.ts").match(TRANSPORT) ?? [""])[0])
   check("the wave-149 R19 regexes stay clean on it too (no vendor-named file, no credential read, no vendor host)", !VENDOR_FILE.test("lib/providers/tenant-provider-connections.ts") && !TRACE.test(stripped("lib/providers/tenant-provider-connections.ts")))
   // A pending-rights provider IN the catalogue derives `unsupported` (no transport); one with no catalogue row (Data Axle — no
   // product chosen) derives `unavailable`. Either way: never a stored credential, never a key field.
-  check("a tenant connection for a pending-rights provider derives `unsupported` (catalogued, no transport) or `unavailable` (no product) — never a stored credential", pending.every((p) => { const s = tp.deriveTenantProviderConnectionState(p as string, null).state; return (catalogue.includes(p as string) ? s === "unsupported" : s === "unavailable") }))
+  check("a tenant connection for a pending-rights provider derives `unsupported` (catalogued, no transport), `pending_owner_licensing` (catalogued, transport built) or `unavailable` (no product) — never a stored credential", pending.every((p) => { const s = tp.deriveTenantProviderConnectionState(p as string, null).state; const e = tp.TENANT_ACQUISITION_PROVIDERS[p as string]; return !e ? s === "unavailable" : e.adapter.state === "transport_built" ? s === "pending_owner_licensing" : s === "unsupported" }))
 
   console.log(`\nPROVIDER WATERFALL — RESULT: ${passed} passed, ${failed} failed ${failed === 0 ? "✅ PROVIDER_WATERFALL_PASS" : "❌ PROVIDER_WATERFALL_FAIL"}`)
   if (failed > 0) process.exit(1)

@@ -155,6 +155,15 @@ export const PROVIDER_COMMERCIAL_FACTS: Readonly<Record<ScorecardProvider, Provi
     retention: "unknown",
     consumerDisplayRights: "unknown",
   },
+  // Wave 153 (lane 153M). Every commercial unknown below is LICENSE-HELD: nothing is presumed from the marketing page.
+  datafiniti: {
+    payer: "platform (DATAFINITI_API_TOKEN by name, booked per record through meterVendorSpend) OR the tenant's own token (coverage tenant_paid) — never mixed; neither route is live (dormant pending rights)",
+    permittedUse: "LICENSE-HELD — SaaS resale to tenants, storage on tenant records, AI processing, outreach use of contact points and cross-tenant reuse are NOT stated in anything read; the people-data page lists use cases (skip tracing, lead enrichment, sales and marketing), which is not a license",
+    apiStability: "REST v4 documented (docs.datafiniti.co/reference/people-data, read 2026-11-16): POST /v4/people/search (query, num_records ≤ 10 non-download, format, download, view) → num_found / total_cost / records / download_id; GET /v4/account (free credit read); MCP server (Streamable HTTP) with df_count / df_search / df_start_download / df_download_status / df_get_record / df_get_schema",
+    attribution: "LICENSE-HELD — no attribution requirement was found in the pages read; sourceURLs on each record name the source page (the datafiniti.co root = a data partner)",
+    retention: "LICENSE-HELD — vendor retention terms not read; download result links expire after 7 days (mcp-server); repo keeps raw rows under the RawData TTL (person 365 d)",
+    consumerDisplayRights: "none — person records are staff-audience only; a Datafiniti record never reaches a consumer surface and never becomes a Contact without the Raw Lead gate → Lead → AI ISA",
+  },
 })
 
 // ─── the commercial recommendation (a RECOMMENDATION — the owner selects) ──────────────────────────────────────────
@@ -215,6 +224,13 @@ export const PROVIDER_RECOMMENDATION: Readonly<Record<ScorecardProvider, Provide
     uniqueValue: [],
     conditions: ["a measured market-level gap no other source covers (employer events are public-record / Exa research today)", "a product, its fields, reseller / embedded license and quota read"],
     why: "no product chosen, no field documented, nothing it would add that is not covered or protected",
+  },
+  datafiniti: {
+    tier: "WAITING_LICENSE", decision: "waiting_owner",
+    role: "people identity verification and gap-fill contact points for a person the tenant already holds; owner ↔ property linking only through Datafiniti's own property keys (propertiesOwnedHistory / mostRecentPropertyPurchaseKey); optionally broker records (licenses, listing / sold counts)",
+    uniqueValue: ["a free num_records: 0 count before any paid pull (paid accounts only)", "per-phone reachability score (phoneNumberHighScore*Score) and a TCPA-litigator flag (tcpa) on the record", "owner ↔ property history keyed to Datafiniti's property dataset (propertiesOwnedHistory with datePurchased / dateSold)", "broker records: licenses, currentListingCount, salesCountLastYear"],
+    conditions: ["written data-license terms covering multi-tenant SaaS storage, AI processing and outreach use (LICENSE-HELD)", "a matched-cohort comparison against Versium / BatchData / PeopleData on records the platform already holds (no paid sample without the owner's approval)", "the plan chosen by measured volume — the published 50k/month plan is indicative, not a platform quote"],
+    why: "the adapter is built and proven offline; nothing it sells is proven incremental over the contracted Versium rung, and its geography fields are the person's WORK location (schema) — so it stays dormant until rights and a measured gap exist",
   },
 })
 
@@ -308,6 +324,12 @@ export const PROVIDER_FIELD_SCORECARD: readonly ScorecardRow[] = Object.freeze([
   { provider: "propertyradar", capability: "acquisition_preview", field: "preview_count", vendorField: "totalResultCount (Purchase=0)", documented: true, unitUsd: 0, unit: "free", source: "propertyradar-api playbook references/endpoints.md (Purchase=0 consumes no record quota)", grain: "audience", matchingKey: "property criteria (the playbook's confirmed names)", recency: "at query", consumer: "lib/investor/rei-playbook.ts builds the preview-only play (purchase 0); no transport sends it" },
   { provider: "propertyradar", capability: "seller_signal_score", field: "distress_signal", vendorField: "DistressScore", documented: true, unitUsd: null, unit: "per_record", source: "propertyradar-api playbook references/endpoints.md (0–100 rollup; may be preview-gated)", grain: "property", matchingKey: "RadarID / property criteria", recency: "per record, as returned", consumer: NO_TRANSPORT },
   { provider: "propertyradar", capability: "owner_contact", field: "owner_phone", vendorField: "POST /v1/persons/{PersonKey}/Phone?Purchase=1", documented: true, unitUsd: null, unit: "per_match", source: "propertyradar-api playbook references/endpoints.md (spends credits; price unpublished)", grain: "person", matchingKey: "PersonKey", recency: UNPUBLISHED, consumer: NO_TRANSPORT },
+  // Datafiniti — built (lib/external/datafiniti-client.ts), dormant pending rights (wave 153, lane 153M). One credit = one record
+  // returned; the per-record figure is the PUBLISHED plan price ÷ volume ($0.19 at 100/mo … $0.07 at 50k/mo — read 2026-11-16).
+  { provider: "datafiniti", capability: "owner_contact", field: "owner_phone", vendorField: "phoneNumbers / phoneNumberHighScoreMobile (+ tcpa)", documented: true, unitUsd: 0.19, unit: "per_record", source: "docs.datafiniti.co/docs/people-data-schema; datafiniti.co/data/people-data (published plans; DATAFINITI_PEOPLE_CEILING_UNIT_USD = $19 / 100)", grain: "person", matchingKey: "first + last name with email, work city / ZIP, or a Datafiniti property key", recency: "dateUpdated per record + phoneNumbers[].lastDateSeen; 'rolling daily and weekly' refresh (vendor page)", consumer: "lib/lead-pipeline/datafiniti-people-producer.ts runDatafinitiPeoplePull (RawData door; dormant pending rights)" },
+  { provider: "datafiniti", capability: "owner_contact", field: "owner_email", vendorField: "personalEmails / emails", documented: true, unitUsd: 0.19, unit: "per_record", source: "docs.datafiniti.co/docs/people-data-schema", grain: "person", matchingKey: "first + last name with email, work city / ZIP, or a property key", recency: "dateUpdated per record", consumer: "lib/lead-pipeline/datafiniti-people-producer.ts runDatafinitiPeoplePull" },
+  { provider: "datafiniti", capability: "person_profile", field: "employment", vendorField: "businessName / jobTitle / experiences", documented: true, unitUsd: 0.19, unit: "per_record", source: "docs.datafiniti.co/docs/people-data-schema", grain: "person", matchingKey: "name + email or work location", recency: "dateUpdated per record", consumer: "none — no flow reads employment from Datafiniti (PeopleData remains the person_profile rung)" },
+  { provider: "datafiniti", capability: "acquisition_preview", field: "preview_count", vendorField: "num_found (num_records: 0)", documented: true, unitUsd: 0, unit: "free", source: "docs.datafiniti.co/docs/people-count (0 credits; paid accounts only)", grain: "audience", matchingKey: "the same typed query a paid pull would send", recency: "at query", consumer: "lib/lead-pipeline/datafiniti-people-producer.ts runDatafinitiPeoplePull (count before spend) — a COUNT, never contacts" },
   // Data Axle — only for a proven market-level gap; nothing documented at field level yet.
   { provider: "data_axle", capability: "person_profile", field: "demographics", vendorField: null, documented: false, unitUsd: null, unit: "per_record", source: "data-axle.com (advertised from $25 / 1k standard consumer — fields unconfirmed)", grain: "household", matchingKey: "unknown — no field-level documentation read", recency: "unknown", consumer: "none — no product chosen" },
 ])

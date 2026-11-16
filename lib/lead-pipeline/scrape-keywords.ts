@@ -137,6 +137,7 @@ export const SCRAPE_KEYWORD_POLICY: Record<SourceKey, KeywordPolicy> = {
   rental_listing:              { reads: false, why: "Craigslist 'apa' section, fixed by-owner query" },
   exa_buyer_intent:            { reads: false, why: "Exa neural queries built from the territory for every population (exa-sourcer.ts::buildExaIntentQueries, lane 89B)" },
   fsbo_site_listing:           { reads: false, why: "forsalebyowner.com's own by-city listing feed (Apify fsbo_site task) — a marketplace, not a text search (lane 89B)" },
+  datafiniti_people:           { reads: false, why: "Datafiniti People Data — a TYPED field query (buildDatafinitiPeopleQuery), never keyword text (wave 153, lane 153M)" },
   tavily_intent:               { reads: false, why: "Tavily queries built from the territory (tavily-sourcer.ts)" },
   permit_prelisting_intent:    { reads: false, why: "Exa permit/probate/coming-soon queries built from the territory (permit-sourcer.ts)" },
   osint_signal:                { reads: false, why: "public court/record filings by territory" },

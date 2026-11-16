@@ -96,6 +96,7 @@ export type SourceKey =
   // the BatchData `fsbo` trigger — a different site is a different lane (wave-65 ruling), and the
   // three-table dedup collapses the same owner across them. SELLER by construction.
   | 'fsbo_site_listing'
+  | 'datafiniti_people'          // Datafiniti People Data records (wave 153, lane 153M) — identity / contact points, NOT an intent signal
   // TOMBSTONE — 'tiktok_intent' (lane 83A) RETIRED by lane 84C. Owner, 2026-09-26, verbatim:
   // "don't need tiktok." Nothing merged anywhere: the lane had no survivor to merge onto (no other
   // source reads TikTok comments) and the owner ruled the capability away. Live before retiring
@@ -767,6 +768,24 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     canPromoteBeforeEnrichment: true,
   },
 
+  // ── Datafiniti People Data (wave 153, lane 153M; owner ruling B1) ─────────────────────────
+  // A purchased PERSON record (identity, contact points, owner ↔ property history) — it carries NO
+  // intent, so the intent stays 'unknown' and nothing here invents a seller probability. The record
+  // waits for the promotion gate like every enrichment-first source; the producer
+  // (lib/lead-pipeline/datafiniti-people-producer.ts) writes only grounded persons.
+  datafiniti_people: {
+    intentType:                'unknown',
+    leadType:                  'unknown',
+    motivationType:            'datafiniti_person_record',
+    behaviorType:              'datafiniti_person_record',
+    scoreRange:                [20, 50],
+    baseScore:                 30,
+    boostSignals:              ['property_owner_on_record'],
+    dampSignals:               ['work_location_only'],
+    identityPolicy:            'enrichment_first',
+    canPromoteBeforeEnrichment: false,
+  },
+
   // TOMBSTONE — tiktok_intent's scoring entry retired with the SourceKey (lane 84C; owner
   // 2026-09-26: "don't need tiktok."). See the SourceKey union above for the live read.
 
@@ -985,6 +1004,7 @@ export const SOURCE_PAID_PERSON_DATA: Record<SourceKey, boolean> = {
   rental_to_buyer_graduation:  false,
   review_acquisition_intent:   false,
   fsbo_site_listing:           false,  // the owner's phone is on the public card — scraped, not sold
+  datafiniti_people:           true,   // the vendor SOLD the person's contact points with the record (one credit per record)
 }
 
 /** Lane 89B — the ledger-side reader of SOURCE_PAID_PERSON_DATA (any spelling: key, alias, channel). */
@@ -1005,7 +1025,8 @@ export function deliversPaidPersonData(source: string): boolean {
  */
 // 'internal' (wave 70) — first-party data already collected by this repo's own pixel/dwell
 // beacons; no vendor call, $0 marginal cost, never appears in vendor_usage_tracking.
-export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily' | 'zyte' | 'internal'
+// 'datafiniti' (wave 153, lane 153M) — a licensed people-data vendor (credits per record), dormant pending rights.
+export type ScrapeVendor = 'zenrows' | 'apify' | 'batchdata' | 'osint' | 'exa' | 'tavily' | 'zyte' | 'internal' | 'datafiniti'
 
 /**
  * The per-source vendor CONTRACT, READ AT RUNTIME since lane 82B (scraping unfrozen, wave 82):
@@ -1062,6 +1083,7 @@ export const SOURCE_VENDOR: Record<SourceKey, ScrapeVendor> = {
   review_acquisition_intent: 'zenrows',
   batchdata_cash_buyer:      'batchdata', // lane 82B — Property Search on the 'cash-buyer' quickList (+ 'fix-and-flip', lane 89B)
   fsbo_site_listing:         'apify',     // lane 89B — forsalebyowner.com listings via the Apify fsbo_site task
+  datafiniti_people:         'datafiniti', // wave 153, lane 153M — lib/external/datafiniti-client.ts (dormant pending rights)
   // tiktok_intent → 'apify' retired (lane 84C; owner 2026-09-26 "don't need tiktok.")
 }
 
@@ -1126,6 +1148,9 @@ export const SOURCE_RECENCY: Record<SourceKey, SourceRecency> = {
   email_engagement_intent:     { windowDays: null, requestSide: "first-party — the sourcer reads its own recent engagement window" },
   inbound_email_unknown:       { windowDays: null, requestSide: "first-party — a live inbound message (always current)" },
   rental_to_buyer_graduation:  { windowDays: null, requestSide: "first-party — the contact this repo already owns" },
+  // A standing people population, not an event feed: the request is bounded by dateUpdated (updatedSince) and the producer
+  // holds a record whose dateUpdated is past the owner_profile_pull stale window (lib/lead-pipeline/freshness.ts).
+  datafiniti_people:           { windowDays: null, requestSide: "n/a — a standing people population; dateUpdated range (updatedSince) bounds the request" },
 }
 
 /** The client-side recency window for any spelling the scrapers write (canonical, alias, channel);
@@ -1177,6 +1202,8 @@ const VENDOR_RIGHTS: Record<ScrapeVendor, { rights: RawDataSourceRights; licence
   zenrows:   { rights: "public_web",           licence: "zenrows_api_terms+page_terms" },
   zyte:      { rights: "public_web",           licence: "zyte_api_terms+page_terms" },
   osint:     { rights: "public_web",           licence: "page_terms" },
+  // The licence id names what is TRUE today: the terms were not read (LICENSE-HELD) — the producer is gated on activation.
+  datafiniti: { rights: "licensed_vendor",     licence: "datafiniti_terms_not_read" },
 }
 
 /** PURE — the rights + license an observation from `source` carries (derived from SOURCE_VENDOR). */
@@ -1241,6 +1268,7 @@ const GATE_TOKEN: Record<SourceKey, string> = {
   review_acquisition_intent: 'review_acquisition_intent',
   batchdata_cash_buyer:      'batchdata_cash_buyer',
   fsbo_site_listing:         'fsbo_site_listing',   // lane 89B — its OWN gate token (opt-in per market)
+  datafiniti_people:         'datafiniti_people',   // wave 153, lane 153M — on-demand provider pull, never in DEFAULT_MARKET_SOURCES
   // tiktok_intent → gate 'tiktok' retired (lane 84C; owner 2026-09-26 "don't need tiktok.")
 }
 

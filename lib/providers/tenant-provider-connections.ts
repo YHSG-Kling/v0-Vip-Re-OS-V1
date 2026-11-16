@@ -170,6 +170,28 @@ export const TENANT_ACQUISITION_PROVIDERS: Readonly<Record<string, TenantAcquisi
     webhook: null,
     why: "Dormant pending rights (R9) — the Terms grant no license in writing; no transport is built.",
   },
+  // Wave 153 (lane 153M, owner ruling B1): the transport takes a TENANT token by parameter (DatafinitiCredential { owner:
+  // "tenant", token }) and never falls through to the platform token. The platform keeps Datafiniti dormant pending rights,
+  // so the state derives pending_owner_licensing and no form stores a key until the owner's licensing decision; the
+  // credential door (platform_credentials.platform 'datafiniti') is m949 — WRITTEN, NOT APPLIED.
+  datafiniti: {
+    provider: "datafiniti",
+    label: "Datafiniti People Data (your own account)",
+    transports: ["api_key"],
+    adapter: { state: "transport_built", module: "lib/external/datafiniti-client.ts", tenantKeyParam: "token" },
+    fields: [
+      { key: "apiKey", label: "Datafiniti API token (Web Portal → API token; it regenerates when your Datafiniti password changes)", secret: true, required: true },
+      { key: "accountLabel", label: "Account label (shown to your staff — never the token)", required: false, placeholder: "Acme Realty Datafiniti" },
+    ],
+    capabilities: ["owner_contact", "person_profile", "acquisition_preview"],
+    sourceKeys: ["datafiniti_people"],
+    healthCheck: { kind: "free_account_read", what: "GET /v4/account under the tenant's token (getDatafinitiAccountHealth({ owner: \"tenant\", token })) — documented 'for no charge'; no record is bought" },
+    rights: { licenseId: "datafiniti_terms_not_read", retentionMaxDays: null, redistribution: "prohibited" },
+    docs: "docs.datafiniti.co (reference/people-data, people-data-schema, people-count, how-credits-work-api, mcp-server — read 2026-11-16)",
+    pricing: { payer: "tenant", note: "Datafiniti charges the tenant's own plan one credit per record returned (a count is 0 credits; a 0-record search is free); this OS books the tenant-paid units and never a platform purchase" },
+    webhook: null,
+    why: "A real transport exists (lib/external/datafiniti-client.ts), so a tenant key COULD be used — but the platform keeps Datafiniti dormant pending rights; the connection derives pending_owner_licensing until the owner's licensing decision, and on-demand pulls go through the paid-pull gate (no push door is documented).",
+  },
 })
 
 /** PURE — the catalogue entry, or null for a provider this OS does not know as an acquisition source. */

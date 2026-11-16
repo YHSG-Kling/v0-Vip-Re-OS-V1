@@ -47,6 +47,8 @@ type AcquisitionPlay = (typeof ACQUISITION_PLAYS)[number]
 const SOURCE_PLAYS: Record<SourceKey, readonly AcquisitionPlay[]> = {
   batchdata_motivated: ["owner_equity", "downsizing"], batchdata_smart_search: ["owner_equity", "downsizing"],
   osint_signal: ["owner_equity"], expired_listing: ["supply_demand_gap"], fsbo_site_listing: ["supply_demand_gap"],
+  // Wave 153 (lane 153M): an identity / contact record carries no acquisition play — none is invented for it (owner B5).
+  datafiniti_people: [],
   craigslist_fsbo: ["supply_demand_gap"], zenrows_zillow: ["supply_demand_gap"], zenrows_realtor: ["supply_demand_gap"],
   zenrows_homes: ["supply_demand_gap"], permit_prelisting_intent: ["supply_demand_gap", "downsizing"],
   rental_listing: ["supply_demand_gap"], facebook_marketplace: ["supply_demand_gap"], external_behavior: ["supply_demand_gap"],

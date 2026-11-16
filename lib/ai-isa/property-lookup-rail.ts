@@ -1720,7 +1720,7 @@ async function highValueEnrichmentEnvelope(a: { brokerageId: string; leadId: str
 // ─── activation / licensing state (BY NAME — never a value) ─────────────────────────────────────────────────────────
 
 /** The C39 data providers. Map / event providers (mapbox, zoom, …) are outside the acquisition stack and stay router-only. */
-export type ScorecardProvider = "rentcast" | "versium" | "batchdata" | "peopledata" | "tracerfy" | "datazapp" | "propertyradar" | "data_axle"
+export type ScorecardProvider = "rentcast" | "versium" | "batchdata" | "peopledata" | "tracerfy" | "datazapp" | "propertyradar" | "data_axle" | "datafiniti"
 
 export type ActivationState = "active" | "dormant_survivor" | "dormant_pending_rights"
 
@@ -1788,5 +1788,15 @@ export const PROVIDER_ACTIVATION: Readonly<Record<ScorecardProvider, ProviderAct
     rights: { status: "not_read", summary: "product, fields, reseller / embedded license and quota unverified; only for a PROVEN market-level employer-event or licensed-acquisition gap (R9)", source: "data-axle.com/data-solutions/apis (directive source list)" },
     credential: { envVars: [], whereObtained: "no product chosen — no credential name exists yet", howVerified: "not applicable until a product is chosen" },
     activationEvidence: { contract: null, incrementalCoverage: null, unitEconomics: null },
+  },
+  // Wave 153 (lane 153M, owner ruling B1 "Datainfinit needs to be built"): the transport IS built (lib/external/datafiniti-client.ts)
+  // and proven offline (test:datafiniti-connector), but the platform keeps it DORMANT PENDING RIGHTS — the SaaS resale / storage
+  // on tenant records / AI-processing / outreach terms were not read, and no account exists. A tenant's own key waits on the
+  // same decision (tenant-provider-connections.ts derives pending_owner_licensing). Activation is a reviewed change.
+  datafiniti: {
+    state: "dormant_pending_rights",
+    rights: { status: "not_read", summary: "no Datafiniti terms of service / data license were read for a multi-tenant SaaS (resale, storage on tenant records, AI processing, outreach use, attribution, retention); the people-data page is marketing (\"Skip Tracing … Lead Enrichment … Sales and Marketing\" use cases), not a license", source: "datafiniti.co/data/people-data; docs.datafiniti.co (read 2026-11-16)" },
+    credential: { envVars: ["DATAFINITI_API_TOKEN"], whereObtained: "Datafiniti Web Portal → API token (bearer; regenerates when the account password changes — docs.datafiniti.co/mcp-server)", howVerified: "the free GET /v4/account read (credit health) and a num_records: 0 count (0 credits; paid accounts only) — requested ONLY after the owner's licensing decision" },
+    activationEvidence: { contract: null, incrementalCoverage: null, unitEconomics: "published plans 100/$19 · 1K/$99 · 5K/$499 · 10k/$749 · 50k/$3,499 per month (datafiniti.co/data/people-data, read 2026-11-16) — a public indicative plan, not a negotiated platform quote" },
   },
 })

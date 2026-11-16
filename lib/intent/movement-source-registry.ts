@@ -305,6 +305,7 @@ export const ACQUISITION_NOT_MOVEMENT: Readonly<Partial<Record<SourceKey, string
   permit_prelisting_intent: "Exa permit / probate NEWS search — carried by pr_permit_activity / pr_probate_open_data when attached",
   rental_to_buyer_graduation: "a renter contact's tenure — buyer graduation (contact_rental_graduation_reengage)",
   batchdata_cash_buyer: "investor buyers — buyer side",
+  datafiniti_people: "purchased identity / contact records (wave 153, lane 153M) — no movement fact; a work-location or ownership-history field is never read as a move",
 })
 
 // ── NOT PERMITTED — sources a neighbour might imagine and this platform will never use (privacy: no intimate inference) ────────

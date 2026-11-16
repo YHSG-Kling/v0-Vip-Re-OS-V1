@@ -407,6 +407,7 @@ add("research", "secret", [
   ["APIFY_API_KEY", "Third spelling, read ONLY by the admin provider-test route (app/api/admin/system/providers/test/route.ts:49) — that test reports 'not set' while APIFY_API_TOKEN is set. Set the survivor.", "ALIAS", { alias: "APIFY_API_TOKEN" }],
   ["ZENROWS_API_KEY", "ZenRows scraping key."],
   ["ZYTE_API_KEY", "Zyte API key."],
+  ["DATAFINITI_API_TOKEN", "Datafiniti People Data bearer token (platform account, wave 153 lane 153M). DORMANT PENDING RIGHTS — leave unset until the owner's licensing decision; a tenant's own token lives in platform_credentials, never here.", "OPTIONAL", { via: "lib/external/datafiniti-client.ts DATAFINITI_PLATFORM_TOKEN_ENV (computed key)" }],
   ["SOCRATA_APP_TOKEN", "Socrata open-data app token; optional, calls run anonymously without it.", "OPTIONAL"],
   ["GEOAPIFY_API_KEY", "Geoapify places key (free tier); unset = lane skipped.", "OPTIONAL"],
   ["PEXELS_API_KEY", "Pexels stock-media key (free).", "OPTIONAL"],

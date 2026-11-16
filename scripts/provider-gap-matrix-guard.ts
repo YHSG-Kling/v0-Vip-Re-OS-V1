@@ -39,7 +39,8 @@
  *      every proof is registered and run by the chain; every honest state is RE-DERIVED here per route (no transport can never
  *      read simulated — controlled; nothing reads ready without live evidence); the tenant-owned column follows the rulings
  *      (built only where a transport takes a tenant key; RentCast and the scrapers stay platform-gated); Exa is both doors;
- *      Datafiniti is unavailable with rights NOT READ; a count never claims contacts; every needle playbook is a real survivor.
+ *      Datafiniti is BUILT and awaits its license on both routes (wave 153, lane 153M); a count never claims contacts; every needle
+ *      playbook is a real survivor.
  *
  * BLIND SPOTS (published): no vendor is called (every price is a published page figure or UNKNOWN; every hit rate ASSUMED); the
  * research execution proves the labelling, not RentCast's data; the engine's in-house-first order is read from stripped source,
@@ -451,6 +452,8 @@ async function main() {
       const act = (sc.PROVIDER_ACTIVATION as Record<string, { state: string } | undefined>)[r.provider]
       if (!transport) return act?.state === "dormant_pending_rights" ? "awaiting_license" : "unavailable"
       if (!r.proofScript) return "unavailable"
+      // Wave 153 (lane 153M): a built transport does not license the data — pending rights waits on the license on BOTH routes.
+      if (act?.state === "dormant_pending_rights") return "awaiting_license"
       if (route === "platform" && act?.state === "dormant_survivor") return "awaiting_key"
       return "simulated"
     }
@@ -475,7 +478,9 @@ async function main() {
     const exa = rows.find((r) => r.provider === "exa")!
     check("Exa is BOTH: persons through THE ONE RawData door (grounded) and content / market to research — never the Lead door for content", exa.kinds.includes("person") && exa.kinds.includes("content") && exa.producer.door === "rawdata" && /grounded/.test(exa.producer.path) && /never the Lead door/.test(exa.producer.path))
     const df = rows.find((r) => r.provider === "datafiniti")!
-    check("Datafiniti: no adapter → unavailable, rights NOT READ, its documented free count recorded as documented-not-built", df.states.platform === "unavailable" && df.transport === null && /NOT READ/.test(df.rights) && df.preview.kind === "documented_no_transport")
+    // Wave 153 (lane 153M, owner B1): Datafiniti People Data is BUILT — the rule is now "transport + proof, rights pending →
+    // awaiting license on both routes, LICENSE-HELD rights, a free count that is a count".
+    check("Datafiniti: transport + RawData producer + proof built, both routes AWAITING LICENSE (never simulated / ready), rights LICENSE-HELD, the free count a count", df.transport !== null && df.producer.door === "rawdata" && df.proofScript === "test:datafiniti-connector" && df.states.platform === "awaiting_license" && df.states.tenant === "awaiting_license" && /LICENSE-HELD/.test(df.rights) && df.preview.kind === "free_estimate" && /never contacts/.test(df.preview.note))
     check("a preview that is a COUNT never claims contacts (Versium estimate / BatchData observed count)", ["versium", "batchdata"].every((p) => /count/i.test(rows.find((r) => r.provider === p)!.preview.note) && /(never contacts|not contacts|≠ delivered contacts)/.test(rows.find((r) => r.provider === p)!.preview.note)))
     const badPlays = cm.NEEDLE_PLAYBOOKS.flatMap((p) => [anchorProblem(p.survivor), ...p.providers.filter((x) => !rows.some((r) => r.provider === x)).map((x) => `${p.key}: ${x} is not a matrix row`), p.neverClaims.trim() ? null : `${p.key}: no 'never claims'`]).filter(Boolean)
     check(`every needle playbook (${cm.NEEDLE_PLAYBOOKS.length}) is run by a REAL survivor, composes matrix providers and states what it never claims`, cm.NEEDLE_PLAYBOOKS.length >= 3 && badPlays.length === 0, badPlays.join(" | "))

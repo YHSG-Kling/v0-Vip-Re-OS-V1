@@ -117,6 +117,8 @@ const SOURCE_SIGNAL_CLASS: Readonly<Record<SourceKey, SignalClass>> = Object.fre
   permit_prelisting_intent: "permit_civic_event",
   osint_signal: "public_record_filing",
   batchdata_motivated: "owner_profile_pull", batchdata_smart_search: "owner_profile_pull",
+  // Wave 153 (lane 153M): a Datafiniti person record ages from its dateUpdated ("updated or seen by our system") — a vendor verification.
+  datafiniti_people: "owner_profile_pull",
   batchdata_cash_buyer: "investor_population", batchdata_buybox: "investor_population",
   site_visitor_intent: "first_party_behavior", email_engagement_intent: "first_party_behavior",
   inbound_email_unknown: "first_party_behavior", rental_to_buyer_graduation: "first_party_behavior",

@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 486 tables, 963 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-14
+ * generated: 2026-11-16
  * source: public.live_check_constraints_json()
- * body-sha256: 92a475abdcf2320974304df13699a01a7705213e54424f75a172c8509e17b75f
+ * body-sha256: 675ff3ad13fa48313bf9374711373d4bcde2143fc1ee7ac6b79a80f67ef62002
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1348,7 +1348,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   platform_credentials: {
     owner_type: ["agent", "brokerage", "contact", "platform", "team", "vendor"],
-    platform: ["authentisign", "bandwidth", "batchdata", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_ads", "google_calendar", "google_flow", "groundtruth", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "openai_ads", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stackadapt", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "vibe", "zillow", "zoom"],
+    platform: ["authentisign", "bandwidth", "batchdata", "brokermint", "buffer", "datafiniti", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_ads", "google_calendar", "google_flow", "groundtruth", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "openai_ads", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stackadapt", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "vibe", "zillow", "zoom"],
     scope: ["agent", "brokerage", "platform", "team"],
     test_status: ["fail", "pass", "pending"],
   },

@@ -35,7 +35,7 @@ import { readFileSync } from "fs"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
   ALL_SOURCE_KEYS, SOURCE_MAP, SOURCE_VENDOR, SOURCE_PAID_PERSON_DATA, deliversPaidPersonData, expandEnabledSources,
-  resolveSourceKey, DEFAULT_MARKET_SOURCES, calculateSourceScore, type SourceKey,
+  resolveSourceKey, DEFAULT_MARKET_SOURCES, calculateSourceScore, sourceRightsFor, type SourceKey,
 } from "../lib/lead-pipeline/source-intent-map"
 import { SOURCE_ACQUISITION, recordAcquisitionIntents, type AcquisitionIntent } from "../lib/lead-pipeline/acquisition-coverage"
 import { SCRAPE_KEYWORD_POLICY } from "../lib/lead-pipeline/scrape-keywords"
@@ -93,7 +93,10 @@ console.log("\n[C1 · PAID PERSON DATA — one vocabulary, PeopleData skipped on
   check(`SOURCE_PAID_PERSON_DATA answers for exactly ALL_SOURCE_KEYS (${KEYS.length}, derived)`,
     declared.length === KEYS.length && KEYS.every((k) => k in SOURCE_PAID_PERSON_DATA), `${declared.length} vs ${KEYS.length}`)
   const paidKeys = KEYS.filter((k) => SOURCE_PAID_PERSON_DATA[k])
-  check(`every paid=true source is a BatchData-vendored source (${paidKeys.join(", ")})`, paidKeys.length > 0 && paidKeys.every((k) => SOURCE_VENDOR[k] === "batchdata"))
+  // The RULE (wave 153, lane 153M — Datafiniti is the second vendor that SELLS person data): paid=true only where a LICENSED
+  // data vendor sold the contact points (rights licensed_vendor) — never a scraper / search lane (public_web) or first-party data.
+  check(`every paid=true source is sold by a licensed data vendor (${paidKeys.map((k) => `${k}→${SOURCE_VENDOR[k]}`).join(", ")})`, paidKeys.length > 0 && paidKeys.every((k) => sourceRightsFor(k).rights === "licensed_vendor"))
+  check("POSITIVE CONTROL: a scraper lane (apify) and a first-party lane are NOT licensed_vendor — the rule can refuse", sourceRightsFor("fsbo_site_listing").rights !== "licensed_vendor" && sourceRightsFor("site_visitor_intent").rights !== "licensed_vendor")
   const postIntent = KEYS.filter((k) => ["apify", "zenrows", "zyte", "exa", "tavily"].includes(SOURCE_VENDOR[k]))
   check(`every behavioral/post-intent lane is paid=false → goes through PeopleData (${postIntent.length} lanes)`, postIntent.every((k) => !SOURCE_PAID_PERSON_DATA[k]), postIntent.filter((k) => SOURCE_PAID_PERSON_DATA[k]).join(", "))
   check("deliversPaidPersonData resolves every spelling: batchdata / batchdata_incremental / cash_buyer → true; craigslist / exa / facebook → false",

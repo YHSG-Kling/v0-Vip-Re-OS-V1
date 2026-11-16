@@ -77,6 +77,23 @@ export const ZYTE_REQUEST_COST_USD = { browserHtml: 0.004, httpResponseBody: 0.0
 export const TAVILY_CREDITS_PER_SEARCH = { basic: 1, advanced: 2 } as const
 export const TAVILY_CREDIT_USD = 0.008
 
+/** Datafiniti People Data — the PUBLISHED monthly plans (datafiniti.co/data/people-data, read 2026-11-16): "100 people records
+ *  per month" $19, "1K" $99, "5K" $499, "10k" $749, "50k" $3,499; "10% off when you pay annually"; "Custom pricing available
+ *  for any record volume"; a free 2-week trial of 100 records. No per-record or overage price is published. One credit =
+ *  one record returned (docs.datafiniti.co/docs/how-credits-work-api). A PUBLIC INDICATIVE plan, not a negotiated
+ *  multi-tenant platform quote — VARIABLE. The effective per-record figure is the plan price ÷ its record volume.
+ *  Read by lib/external/datafiniti-client.ts (datafinitiUnitUsdForPlan) and the 'datafiniti' price row below. */
+export const DATAFINITI_PEOPLE_PUBLISHED_PLANS = Object.freeze([
+  { records: 100, monthlyUsd: 19 },
+  { records: 1_000, monthlyUsd: 99 },
+  { records: 5_000, monthlyUsd: 499 },
+  { records: 10_000, monthlyUsd: 749 },
+  { records: 50_000, monthlyUsd: 3_499 },
+] as const)
+/** The HIGHEST published per-record figure ($19 ÷ 100) — the conservative unit a spend gate judges a ceiling with when the
+ *  account's own plan cannot be matched to a published tier. */
+export const DATAFINITI_PEOPLE_CEILING_UNIT_USD = 0.19
+
 /** Google Maps Platform Essentials SKUs, entry band (10,001–100,000 / month) per request —
  *  developers.google.com/maps/billing-and-pricing/pricing. VARIABLE: the first 10,000 / month per SKU
  *  are free and volume bands step the price down, so a booked mint is an UPPER-BOUND estimate. */
@@ -219,6 +236,17 @@ export const VENDOR_PRICING: Record<string, VendorPricing> = {
   // published, so a plan upgrade only ever makes the booked figure an over-estimate); the invoice reconciles.
   // docs/commercial/PROVIDER-COST-REPORT.md §3.3 / §9 D2. NOT booked here: lib/external/apify-client.ts books a flat
   // `cost: 0.50` per actor run through meterVendorSpend (its own constant, unchanged — out of this lane).
+  // Wave 153 (lane 153M) — Datafiniti People Data (lib/external/datafiniti-client.ts). One credit per record returned; a
+  // count (num_records: 0) costs 0 credits. The booking multiplies the response's own total_cost by the account plan's
+  // per-record figure when the plan matches a published tier, else by this ceiling (a conservative estimate, never $0).
+  'datafiniti': {
+    vendorName: 'Datafiniti People Data',
+    unitType: 'records',
+    costPerUnit: DATAFINITI_PEOPLE_CEILING_UNIT_USD,
+    priceState: 'variable',
+    priceSource: 'https://www.datafiniti.co/data/people-data (read 2026-11-16) — 100/mo $19, 1K $99, 5K $499, 10k $749, 50k $3,499 (≈ $0.19 → $0.07 per record); custom volumes unpublished; no overage price published',
+    notes: 'People records (identity, contact points, property ownership history) — dormant pending rights (owner ruling R9)',
+  },
   'apify': {
     vendorName: 'Apify',
     unitType: 'credits',
