@@ -145,7 +145,10 @@ function main() {
   // that file's own comments cannot satisfy the match.
   const kernelTypes = code("lib/kernel/types.ts")
   const unionBlock = kernelTypes.slice(kernelTypes.indexOf("export type Persona ="))
-  const unionMembers = (unionBlock.slice(0, unionBlock.indexOf("export type EducationFormat"))
+  // The union ENDS at the next top-level declaration, whatever it is — not at a declaration this guard happened to know was
+  // next (wave 153: the persona journey-tool types landed between the two and their literals were read as personas).
+  const nextDecl = unionBlock.slice(1).search(/\n(?:export |const |function |interface |type )/)
+  const unionMembers = (unionBlock.slice(0, nextDecl < 0 ? unionBlock.length : nextDecl + 1)
     .match(/"([a-z_]+)"/g) ?? []).map((s) => s.replace(/"/g, ""))
   check("the `Persona` TS union at lib/kernel/types.ts has exactly the same members",
     JSON.stringify(unionMembers.slice().sort()) === JSON.stringify([...LIVE_CHECK_PERSONAS].sort()),
@@ -153,6 +156,8 @@ function main() {
   // THE RULE, NOT THE NUMBER (§2 — this read `=== 13`, a waypoint that broke the
   // day the owner added the fourteenth member): the scanner must find exactly as
   // many members as the runtime roster declares, and more than zero.
+  check("POSITIVE CONTROL — the union scan stops at the union (a literal in the declaration right after it is not a persona)",
+    !unionMembers.includes("pcs_move_plan") && unionMembers.includes("other") && unionMembers.includes("first_time"), `union=${unionMembers.join(",")}`)
   check("POSITIVE CONTROL — the union scanner actually found members (a broken scan would report agreement by finding nothing)",
     unionMembers.length > 0 && unionMembers.length === CAMPAIGN_PERSONAS.length)
 
