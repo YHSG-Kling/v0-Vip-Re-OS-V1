@@ -46,6 +46,8 @@ export async function GET(request: Request) {
     blocked: 0,
     // WAVE 143 (143E): the post-close moments the arbiter reviewed this run (lib/sphere/followup-moments.ts).
     moments: {} as Record<string, number>,
+    // WAVE 153 (153P): what the arbiter chose for each due calendar touch (send · agent · wait · halt).
+    arbiter: { send: 0, agent: 0, wait: 0, halt: 0 },
     errors: [] as string[],
   }
 
@@ -100,6 +102,19 @@ export async function GET(request: Request) {
     touchedThisRun.add(contactId)
     return true
   }
+  // WAVE 153 (lane 153P — owner B9 "starts an arbiter on" lifetime): each due calendar touch is handed to the follow-up
+  // arbiter (planner `lifetime_touch`, lib/sphere/lifetime-touch-arbitration.ts) before anything is sent — send now, the
+  // agent reaches out personally, a persisted bounded wait, or a halt when no lawful channel is left. Only `send` sends.
+  const { arbitrateLifetimeTouch } = await import("@/lib/sphere/lifetime-touch-arbitration")
+  async function arbiterSays(a: { brokerageId: string | null; contactId: string; agentId: string | null; kind: "anniversary" | "birthday"; channel: "email" | "sms"; yearsAgo?: number; transactionId?: string | null }): Promise<boolean> {
+    if (!a.brokerageId) { results.blocked++; results.errors.push(`${a.kind} held for ${a.contactId}: no brokerage on the row — the arbiter cannot decide for an untenanted contact`); return false }
+    const d = await arbitrateLifetimeTouch(supabase as never, { brokerageId: a.brokerageId, contactId: a.contactId, agentId: a.agentId, kind: a.kind, channel: a.channel, yearsAgo: a.yearsAgo ?? null, transactionId: a.transactionId ?? null, now: today })
+    results.arbiter[d.verdict]++
+    if (d.verdict === "send") return true
+    if (d.verdict === "halt") { results.blocked++; results.errors.push(`${a.kind} halted for ${a.contactId}: ${d.reason}`) }
+    else if (d.verdict === "wait") results.deferred++
+    return false
+  }
   /** Count a sender's result honestly: a gate refusal is `blocked`, not a touch. */
   function countSend(kind: "anniversaries" | "birthdays" | "referralRequests", res: { success: boolean; error?: string }, contactId: string) {
     if (res.success) results[kind]++
@@ -148,6 +163,7 @@ export async function GET(request: Request) {
           results.deferred++
           continue
         }
+        if (!(await arbiterSays({ brokerageId: (txn as any).brokerage_id ?? null, contactId: txn.contact_id, agentId: txn.agent_id ?? null, kind: "anniversary", channel: "email", yearsAgo, transactionId: txn.id }))) continue
         try {
           const sent = await sendAnniversaryMessage(txn.contact_id, yearsAgo, { agentId: txn.agent_id, client: supabase })
           if (!countSend("anniversaries", sent, txn.contact_id)) continue
@@ -202,6 +218,7 @@ export async function GET(request: Request) {
             results.deferred++
             continue
           }
+          if (!(await arbiterSays({ brokerageId: (contact as any).brokerage_id ?? null, contactId: contact.id, agentId: contact.agent_id ?? null, kind: "birthday", channel: "sms" }))) continue
           try {
             countSend("birthdays", await sendBirthdayMessage(contact.id, { agentId: contact.agent_id, client: supabase }), contact.id)
           } catch (error: any) {

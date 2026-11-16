@@ -1659,6 +1659,9 @@ export const ARBITER_PLANNER_ENTRY_POINTS = Object.freeze({
   // word — touch_interval_days only bounds when the plan may author the step (a floor); release now, or a bounded wait.
   lead_touch_release: { planner: "lib/ai-isa/lead-action-plan.ts", door: "lib/ai-isa/lead-action-plan.ts", via: "arbitratePlannedTouch", what: "releaseDueLeadTouches: release the due, re-checked lead touch now or hold it a bounded time — releasing is the fallback" },
   review_ask: { planner: "lib/reputation/review-ask.ts", door: "lib/reputation/review-ask.ts", via: "arbitratePlannedTouch", what: "askForReviewAtClose: ask the client now on the one permitted channel, have the agent ask personally (a ready draft + a bell), or a bounded wait — asking now is the fallback" },
+  // WAVE 153 (lane 153P — owner B9 "starts an arbiter on … lifetime"): the daily lifetime cron's calendar touches (home anniversary,
+  // birthday) — sent straight off the date match until now — pass this door; a wait is persisted as a due touchpoint, never dropped.
+  lifetime_touch: { planner: "app/api/cron/lifetime-customer-touchpoints/route.ts", door: "lib/sphere/lifetime-touch-arbitration.ts", via: "arbitratePlannedTouch", what: "arbitrateLifetimeTouch: send the anniversary / birthday note now on its channel, the agent reaches out personally (a task), or a bounded wait persisted as a scheduled touchpoint the moments pass conducts — sending now is the fallback; no lawful channel halts" },
 } as const)
 export type PlannerEntryPoint = keyof typeof ARBITER_PLANNER_ENTRY_POINTS
 

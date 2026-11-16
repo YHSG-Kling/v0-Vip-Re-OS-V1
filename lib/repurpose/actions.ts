@@ -21,7 +21,7 @@ import { createVideoProject } from "@/app/actions/video/create-video-project"
 import { generateBlogPost } from "@/app/actions/blog"
 import { createPodcastEpisode, generatePodcastAudio } from "@/app/actions/podcast-generation"
 import { transcribeFromUrl } from "@/lib/repurpose/transcribe"
-import { DISTRIBUTABLE_PLATFORMS, extractHashtags } from "@/lib/repurpose/shared"
+import { DISTRIBUTABLE_PLATFORMS, extractHashtags, assessRefurbishSource } from "@/lib/repurpose/shared"
 import type {
   SourceType,
   OutputFormat,
@@ -199,6 +199,8 @@ export async function createRepurposePipeline(
     teamId?: string
     /** External source video URL (used by the video_url source type). */
     sourceUrl?: string
+    /** WAVE 153 (153P): the basis the person states for refurbishing an EXTERNAL source (own_content | licensed). */
+    rightsBasis?: string
   },
 ): Promise<SavePipelineResult> {
   try {
@@ -227,6 +229,7 @@ export async function createRepurposePipeline(
           sourceId: params.sourceId,
           autoApprove: params.autoApprove === true,
           ...(params.sourceUrl ? { sourceUrl: params.sourceUrl } : {}),
+          ...(params.rightsBasis ? { rightsBasis: params.rightsBasis } : {}),
         },
         is_active: true,
         created_by: userId,
@@ -323,6 +326,12 @@ export async function executePipeline(params: {
       return { success: false, error: "That source content was not found in your brokerage." }
     }
 
+    // WAVE 153 (153P): REFURBISHED CONTENT KEEPS LINEAGE AND LICENCE — an external URL with no stated basis is refused.
+    const refurbish = assessRefurbishSource({ sourceType: runSourceType, ownedSourceId: source && isValidUUID(rawSourceId) ? rawSourceId : null, sourceUrl: storedUrl, rightsBasis: pipeline.output_config?.rightsBasis ?? null })
+    if (!refurbish.allowed) {
+      return { success: false, error: refurbish.message, blockedReason: refurbish.reason }
+    }
+
     const sourceUrl: string | null = source?.mediaUrl ?? storedUrl
     const sourceText: string | null = source?.body ?? null
     // repurposed_content_log.source_id is NOT NULL. Use the original content row
@@ -349,12 +358,53 @@ export async function executePipeline(params: {
 
     const outputs: RepurposedOutput[] = []
 
+    // WAVE 153 (lane 153P — owner B9): OMNIPRESENCE IS COORDINATED, NEVER SIMULTANEOUS REPEATS. Every platform used to be
+    // scheduled for `now`, and a re-run re-posted the same source everywhere. The ONE planner
+    // (lib/repurpose/omnipresence-plan.ts) reads this source's LINEAGE (repurposed_content_log) and the tenant's own fatigue
+    // floor (followup_policy.guardrails.minHoursBetweenTouches): a platform that already carried it is skipped, and each
+    // further platform waits the floor after the previous one. An unreadable lineage REFUSES the run (unknown ≠ never posted).
+    const { planOmnipresenceSchedule, omnipresenceSourceKey } = await import("@/lib/repurpose/omnipresence-plan")
+    const sourceKey = omnipresenceSourceKey(runSourceType, sourceId)
+    const { data: carriedRows, error: carriedErr } = await supabase
+      .from("repurposed_content_log")
+      .select("platform_target, source_type, source_id, created_at")
+      .eq("brokerage_id", brokerageId)
+      .eq("source_id", sourceId)
+      .eq("output_ref_table", "social_posts")
+      .in("status", ["scheduled", "published"])
+    if (carriedErr) {
+      return { success: false, error: `This source's repurpose history could not be read (${carriedErr.message}) — not run, so nothing is posted twice.` }
+    }
+    const { loadFollowupPolicy } = await import("@/lib/ai-isa/followup-policy")
+    const gapHours = (await loadFollowupPolicy(supabase as never, brokerageId)).policy.guardrails.minHoursBetweenTouches
+    const distributablePlatforms = ((pipeline.output_config?.formats ?? []) as OutputFormat[])
+      .map((f) => OUTPUT_FORMAT_CONFIG[f]?.platform)
+      .filter((p): p is string => !!p && DISTRIBUTABLE_PLATFORMS.has(p) && accountByPlatform.has(p))
+    const slots = new Map(planOmnipresenceSchedule({
+      platforms: distributablePlatforms,
+      sourceKey,
+      carried: ((carriedRows ?? []) as Array<{ platform_target: string; source_type: string; source_id: string; created_at: string | null }>)
+        .map((r) => ({ platform: r.platform_target, sourceKey: omnipresenceSourceKey(r.source_type, r.source_id), at: r.created_at })),
+      now: new Date(),
+      gapHours,
+    }).map((s) => [s.platform, s]))
+    const scheduledThisRun = new Set<string>()
+
     // Generate platform-tailored copy for each output format, then distribute
     // the source video to every connected social channel (omnipresence).
     for (const format of (pipeline.output_config?.formats ?? [])) {
       try {
         const config = OUTPUT_FORMAT_CONFIG[format as OutputFormat]
         if (!config) continue
+
+        // 153P: one post per platform per source; a platform that already carried this source is not posted again.
+        const slot = slots.get(config.platform)
+        if (DISTRIBUTABLE_PLATFORMS.has(config.platform) && accountByPlatform.has(config.platform)) {
+          if (slot?.skip === "already_carried" || scheduledThisRun.has(config.platform)) {
+            outputs.push({ outputType: format, outputRefTable: "social_posts", outputRefId: "", platform: config.platform, contentPreview: `Already carried on ${config.platform} — not posted twice`, status: "skipped" })
+            continue
+          }
+        }
 
         const aiResponse = await generateAIResponse({
           prompt: buildRepurposePrompt({ format: format as OutputFormat, sourceUrl, sourceLabel, sourceText, branding }),
@@ -385,9 +435,10 @@ export async function executePipeline(params: {
             content: generatedContent,
             mediaUrls: sourceUrl ? [sourceUrl] : undefined,
             hashtags: extractHashtags(generatedContent),
-            scheduledFor: new Date().toISOString(),
+            scheduledFor: slot?.at ?? new Date().toISOString(),
             socialAccountId: accountId,
           })
+          scheduledThisRun.add(config.platform)
 
           if (!scheduled.success || !scheduled.data?.id) {
             outputs.push({ outputType: format, outputRefTable: "social_posts", outputRefId: "", platform: config.platform, contentPreview: scheduled.error ?? "Failed to schedule", status: "failed" })
@@ -571,11 +622,15 @@ export async function repurposeVideoUrl(params: {
   sourceUrl: string
   outputFormats: OutputFormat[]
   pipelineName?: string
+  /** WAVE 153 (153P): own_content | licensed — an external source is not refurbished without one. */
+  rightsBasis?: string
 }): Promise<ExecutePipelineResult> {
   const url = params.sourceUrl?.trim()
   if (!url || !/^https?:\/\/\S+$/i.test(url)) {
     return { success: false, error: "Enter a valid http(s) video URL" }
   }
+  const rights = assessRefurbishSource({ sourceType: "video_url", ownedSourceId: null, sourceUrl: url, rightsBasis: params.rightsBasis })
+  if (!rights.allowed) return { success: false, error: rights.message, blockedReason: rights.reason }
   if (!params.outputFormats?.length) {
     return { success: false, error: "Select at least one channel" }
   }
@@ -590,6 +645,7 @@ export async function repurposeVideoUrl(params: {
     sourceType: "video_url",
     sourceId: "",
     sourceUrl: url,
+    rightsBasis: rights.license,
     outputFormats: params.outputFormats,
     brokerageId: ctx.brokerageId,
   })
@@ -647,11 +703,15 @@ export async function repurposeUrlToBrandedVideo(input: {
   transcript?: string
   channels: OutputFormat[]
   title?: string
+  /** WAVE 153 (153P): own_content | licensed. */
+  rightsBasis?: string
 }): Promise<RepurposeToVideoResult> {
   const url = input.sourceUrl?.trim()
   if (!url || !/^https?:\/\/\S+$/i.test(url)) {
     return { success: false, error: "Enter a valid http(s) video URL" }
   }
+  const rights = assessRefurbishSource({ sourceType: "video_url", ownedSourceId: null, sourceUrl: url, rightsBasis: input.rightsBasis })
+  if (!rights.allowed) return { success: false, error: rights.message }
   if (!input.channels?.length) {
     return { success: false, error: "Select at least one channel" }
   }
@@ -755,7 +815,7 @@ export async function repurposeUrlToBrandedVideo(input: {
     .update({
       video_metadata: {
         ...((created.project as { video_metadata?: Record<string, unknown> }).video_metadata ?? {}),
-        repurpose: { channels: input.channels, source_url: url, distribute_as_draft: true },
+        repurpose: { channels: input.channels, source_url: url, distribute_as_draft: true, rights_basis: rights.license },
       },
     })
     .eq("id", projectId)
@@ -821,9 +881,13 @@ export async function repurposeUrlToBlogPost(input: {
   sourceUrl: string
   transcript?: string
   title?: string
+  /** WAVE 153 (153P): own_content | licensed. */
+  rightsBasis?: string
 }): Promise<RepurposeBlogResult> {
   const url = input.sourceUrl?.trim()
   if (!url || !/^https?:\/\/\S+$/i.test(url)) return { success: false, error: "Enter a valid http(s) video URL" }
+  const rights = assessRefurbishSource({ sourceType: "video_url", ownedSourceId: null, sourceUrl: url, rightsBasis: input.rightsBasis })
+  if (!rights.allowed) return { success: false, error: rights.message }
 
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
@@ -855,6 +919,10 @@ export async function repurposeUrlToBlogPost(input: {
     sourceContent: tr.transcript,
     generateCoverImage: true,
   })
+  // WAVE 153 (153P): the refurbished post carries its LINEAGE (the original's URL) and the stated LICENCE.
+  if (res.success && res.postId) {
+    await logRepurpose(await createClient(), { brokerageId: ctx.brokerageId, sourceType: "video_url", sourceId: res.postId, outputType: "blog_excerpt", outputRefTable: "blog_posts", outputRefId: res.postId, platformTarget: "blog", status: "generated", approvalStatus: "pending_review", notes: `lineage ${rights.lineage} · licence ${rights.license}`, createdBy: ctx.userId })
+  }
   return { success: res.success, postId: res.postId, error: res.error }
 }
 
@@ -869,9 +937,13 @@ export async function repurposeUrlToPodcast(input: {
   sourceUrl: string
   transcript?: string
   title?: string
+  /** WAVE 153 (153P): own_content | licensed. */
+  rightsBasis?: string
 }): Promise<RepurposePodcastResult> {
   const url = input.sourceUrl?.trim()
   if (!url || !/^https?:\/\/\S+$/i.test(url)) return { success: false, error: "Enter a valid http(s) video URL" }
+  const rights = assessRefurbishSource({ sourceType: "video_url", ownedSourceId: null, sourceUrl: url, rightsBasis: input.rightsBasis })
+  if (!rights.allowed) return { success: false, error: rights.message }
 
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
@@ -904,6 +976,8 @@ export async function repurposeUrlToPodcast(input: {
 
   // Render the audio (TTS → storage). The episode exists even if audio fails
   // (e.g. the agent hasn't set up a voice clone yet).
+  // WAVE 153 (153P): the refurbished episode carries its LINEAGE (the original's URL) and the stated LICENCE.
+  await logRepurpose(supabase, { brokerageId: ctx.brokerageId, sourceType: "video_url", sourceId: created.episode.id, outputType: "podcast_episode", outputRefTable: "podcast_episodes", outputRefId: created.episode.id, platformTarget: "podcast", status: "generated", approvalStatus: "pending_review", notes: `lineage ${rights.lineage} · licence ${rights.license}`, createdBy: ctx.userId })
   const audio = await generatePodcastAudio(created.episode.id).catch(() => null)
   return {
     success: true,

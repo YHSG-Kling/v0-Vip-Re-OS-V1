@@ -584,7 +584,12 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
     const { dispatchEmail } = await import("@/lib/providers/dispatch")
     const { resolveSectionsForRecipient, assembleNewsletterHtml } = await import("@/lib/kernel/newsletter/assemble")
 
-    const fromAddress = `newsletter@${(process.env.NEWSLETTER_FROM_DOMAIN ?? "platform.com")}`
+    // WAVE 153 (lane 153P — 153K carried finding): no "platform.com" stand-in sender — unset is refused by name.
+    const newsletterFromDomain = process.env.NEWSLETTER_FROM_DOMAIN?.trim()
+    if (!newsletterFromDomain) {
+      return { success: false, error: "sender_unset: NEWSLETTER_FROM_DOMAIN is not configured — the newsletter was not sent" }
+    }
+    const fromAddress = `newsletter@${newsletterFromDomain}`
     let sent = 0, suppressed = 0, errors = 0
 
     for (const subscriber of subscribers) {
@@ -1191,6 +1196,14 @@ export async function queueNewsletterForContact(params: {
     // the template_id this row keeps, or the step's own override, which the
     // dispatch ledger records as vendor_usage_tracking.metadata.subject
     // (lib/providers/dispatch.ts:515).
+    // WAVE 153 (lane 153P — the same 153K finding, a third site it did not list): this send was hardcoded FROM
+    // "newsletter@platform.com" with no setting at all. The sender domain is now required and refused by name BEFORE
+    // the send row is queued (no queued row for a send that cannot go out).
+    const queueFromDomain = process.env.NEWSLETTER_FROM_DOMAIN?.trim()
+    if (!queueFromDomain) {
+      return { success: false, error: "sender_unset: NEWSLETTER_FROM_DOMAIN is not configured — the newsletter was not queued" }
+    }
+
     const { data: sendRow, error: insertErr } = await supabase
       .from("newsletter_sends")
       .insert({
@@ -1218,7 +1231,7 @@ export async function queueNewsletterForContact(params: {
       brokerageId: params.brokerageId,
       systemSource: "newsletter",
       contactId: params.contactId,
-      from: "newsletter@platform.com",
+      from: `newsletter@${queueFromDomain}`,
       to: contact.email,
       subject,
       html: html || `<p>Hi ${contact.first_name ?? "there"},</p><p>Your newsletter is ready.</p>`,

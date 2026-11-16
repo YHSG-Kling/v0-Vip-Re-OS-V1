@@ -90,6 +90,24 @@ export interface GhostStopInput {
 }
 
 /**
+ * WAVE 153 (lane 153P — owner B9 "lifetime and ghost"): AN OLD QUIET PERSON IS NOT A RECENT INBOUND. PURE.
+ * The ghost sweep selects on leads.last_activity_at, and its stop check counts ISA_REPLY_RECEIVED lifecycle events — an
+ * inbound recorded only on the conversation history (lead_conversation_history direction 'inbound') was invisible to both,
+ * so a lead who wrote to us last week could still be swept as a ghost and sent a "still looking?" re-engagement. A lead is a
+ * GHOST only when nothing came IN from them inside the tenant's ghost threshold; a recent inbound is a person waiting on us
+ * (the arbiter's answer-now path), never re-engagement. An unreadable history is NOT read as silence (fail closed: skip).
+ */
+export type GhostQuietVerdict = { ghost: true; reason: string } | { ghost: false; reason: "recent_inbound" | "history_unreadable"; detail: string }
+export function ghostQuietVerdict(a: { lastInboundAt: string | null; historyReadable: boolean; thresholdDays: number; now: Date }): GhostQuietVerdict {
+  if (!a.historyReadable) return { ghost: false, reason: "history_unreadable", detail: "the conversation history could not be read — unknown is not silent" }
+  if (a.lastInboundAt && Number.isFinite(Date.parse(a.lastInboundAt))) {
+    const days = (a.now.getTime() - Date.parse(a.lastInboundAt)) / 86_400_000
+    if (days < a.thresholdDays) return { ghost: false, reason: "recent_inbound", detail: `they wrote to us ${Math.max(0, Math.round(days * 10) / 10)} day(s) ago (inside the ${a.thresholdDays}-day ghost threshold)` }
+  }
+  return { ghost: true, reason: a.lastInboundAt ? `last inbound ${a.lastInboundAt} is older than ${a.thresholdDays} days` : "no inbound on record" }
+}
+
+/**
  * ghostReengagementStopReason — PURE. Returns the FIRST applicable reason the ISA stops its
  * OWN loop, or null when it may continue. Order: the "human now owns it / must not contact"
  * reasons (representation / inactive / reengage-disallowed / opted-out), then a positive

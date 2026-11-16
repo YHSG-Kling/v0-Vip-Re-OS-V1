@@ -569,25 +569,35 @@ export async function distributeVideoProject(
       // and records external_post_id + published_at. We do NOT fabricate a
       // published URL — the post goes out as 'scheduled'/'approved' and the cron
       // owns the live publish + URL.
-      const { error: postError } = await supabase.from("social_posts").insert({
-        brokerage_id: project.brokerage_id,
-        agent_id: project.agent_id,
-        social_account_id: account.id,
-        platform: channel,
-        post_type: "custom",
-        content: input.description,
-        media_urls: [project.video_url],
-        hashtags: input.tags ?? [],
-        listing_id: project.listing_id ?? null,
-        status: "scheduled",
-        approval_status: "approved",
-        scheduled_for: new Date().toISOString(),
-        ai_generated: true,
-        created_at: new Date().toISOString(),
+      // WAVE 153 (lane 153P — lane 153K carried finding): inserted approval_status "approved" with no approver and no
+      // public-video verdict. Now gated: classifyPublicVideo → pending insert → released only for a session user that
+      // requirePublishApprover names; otherwise the post waits on the approval surface (lib/social/video-post-approval.ts).
+      const { insertVideoSocialPostForApproval } = await import("@/lib/social/video-post-approval")
+      const { data: sessionUser } = await supabase.auth.getUser()
+      const gated = await insertVideoSocialPostForApproval(supabase, {
+        brokerageId: project.brokerage_id,
+        approverUserId: sessionUser?.user?.id ?? null,
+        project: project as Record<string, unknown>,
+        post: {
+          agent_id: project.agent_id,
+          social_account_id: account.id,
+          platform: channel,
+          post_type: "custom",
+          content: input.description,
+          media_urls: [project.video_url],
+          hashtags: input.tags ?? [],
+          listing_id: project.listing_id ?? null,
+          scheduled_for: new Date().toISOString(),
+          ai_generated: true,
+        },
       })
 
-      if (postError) {
-        distributions.push({ channel, status: "failed", error: postError.message })
+      if (!gated.ok) {
+        distributions.push({ channel, status: "failed", error: gated.reason ?? "social post not created" })
+        continue
+      }
+      if (!gated.released) {
+        distributions.push({ channel, status: "pending", error: gated.reason ?? "awaiting approval" })
         continue
       }
 

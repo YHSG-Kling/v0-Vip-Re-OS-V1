@@ -58,6 +58,16 @@ export async function distributeRepurposedVideoAsDraft(
     if (!accountByPlatform.has(a.platform)) accountByPlatform.set(a.platform, a.id)
   }
 
+  // WAVE 153 (lane 153P — owner B9 omnipresence): the drafts are STAGGERED, never one simultaneous burst — each platform's
+  // draft carries the slot the ONE planner gives it (lib/repurpose/omnipresence-plan.ts: the tenant's own fatigue floor
+  // between platforms for the same source). The drafts still wait for a person's approval (status draft / pending).
+  const { planOmnipresenceSchedule, omnipresenceSourceKey } = await import("@/lib/repurpose/omnipresence-plan")
+  const { loadFollowupPolicy } = await import("@/lib/ai-isa/followup-policy")
+  const gapHours = (await loadFollowupPolicy(supabase as never, project.brokerage_id)).policy.guardrails.minHoursBetweenTouches
+  const sourceKey = omnipresenceSourceKey("video_project", projectId)
+  const slotPlatforms = (intent.channels as OutputFormat[]).map((f) => OUTPUT_FORMAT_CONFIG[f]?.platform).filter((p): p is string => !!p && DISTRIBUTABLE_PLATFORMS.has(p) && accountByPlatform.has(p))
+  const slots = new Map(planOmnipresenceSchedule({ platforms: slotPlatforms, sourceKey, carried: [], now: new Date(), gapHours }).map((s) => [s.platform, s.at]))
+
   let created = 0
   const seenPlatforms = new Set<string>()
   for (const fmt of intent.channels as OutputFormat[]) {
@@ -111,6 +121,7 @@ export async function distributeRepurposedVideoAsDraft(
         hashtags,
         status: "draft",
         approval_status: "pending",
+        scheduled_for: slots.get(cfg.platform) ?? null,
         ai_generated: true,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -118,7 +129,17 @@ export async function distributeRepurposedVideoAsDraft(
       .select("id")
       .maybeSingle()
     if (repurposePostErr) console.error(`[repurpose] social post NOT created: ${repurposePostErr.message}`)
-    if (post) created++
+    if (post) {
+      created++
+      // 153P: LINEAGE — the draft names the video it was cut from (and, for a refurbished URL, the original + stated licence).
+      const lineage = `lineage ${sourceKey}${(intent as { source_url?: string }).source_url ? ` ← url:${(intent as { source_url?: string }).source_url} · licence ${(intent as { rights_basis?: string }).rights_basis ?? "unstated"}` : " · licence tenant_owned"}`
+      const { error: logErr } = await supabase.from("repurposed_content_log").insert({
+        brokerage_id: project.brokerage_id, source_type: "video_project", source_id: projectId, output_type: fmt,
+        output_ref_table: "social_posts", output_ref_id: (post as { id: string }).id, platform_target: cfg.platform,
+        status: "generated", approval_status: "pending_review", notes: lineage.slice(0, 1000), created_by: agentUserId,
+      })
+      if (logErr) console.error(`[repurpose] lineage row NOT written for post ${(post as { id: string }).id}: ${logErr.message}`)
+    }
   }
 
   // Mark distributed so a cron re-poll / retry can't draft duplicates.

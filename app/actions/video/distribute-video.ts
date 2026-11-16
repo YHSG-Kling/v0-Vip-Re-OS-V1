@@ -51,7 +51,7 @@ export async function distributeVideo(
   // Load project to get video_url and metadata
   const { data: project, error: loadError } = await supabase
     .from("ai_video_projects")
-    .select("id, title, video_url, thumbnail_url, status, brokerage_id, agent_id, listing_id, script_content, video_type")
+    .select("id, title, video_url, thumbnail_url, status, brokerage_id, agent_id, listing_id, script_content, video_type, audience_type, usage_intent, contact_id, learning_module_id, approval_status, compliance_status")
     .eq("id", params.videoProjectId)
     .maybeSingle()
 
@@ -106,10 +106,17 @@ export async function distributeVideo(
           ? new Date(params.scheduledFor).toISOString()
           : new Date(Date.now() + 60_000).toISOString() // 1 min from now for "post now"
 
-      const { data: post, error: postError } = await supabase
-        .from("social_posts")
-        .insert({
-          brokerage_id: params.brokerageId,
+      // WAVE 153 (lane 153P — lane 153K carried finding): this insert wrote approval_status "approved" for a public post
+      // nobody approved, for a video nobody classified as public marketing. Now: classifyPublicVideo refuses a personal /
+      // client / unapproved / non-compliant video by its reason; the post is inserted PENDING; the SESSION user releases
+      // it only when requirePublishApprover names them an approver — otherwise it waits on the approval surface.
+      const { insertVideoSocialPostForApproval } = await import("@/lib/social/video-post-approval")
+      const { data: sessionUser } = await supabase.auth.getUser()
+      const gated = await insertVideoSocialPostForApproval(supabase, {
+        brokerageId: project.brokerage_id ?? params.brokerageId,
+        approverUserId: sessionUser?.user?.id ?? null,
+        project: project as Record<string, unknown>,
+        post: {
           user_id: params.userId,
           agent_id: actingAgentId,
           platform: params.platform,
@@ -120,20 +127,15 @@ export async function distributeVideo(
           scheduled_for: scheduledFor,
           social_account_id: params.socialAccountId,
           listing_id: project.listing_id ?? null,
-          status: params.action === "post_now" ? "scheduled" : "scheduled",
-          approval_status: "approved",
           ai_generated: true,
           // Link back to the video project — stored in post_brief (kernel_event_id retired, m597)
           post_brief: `video_project:${project.id}`,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .select("id")
-        .maybeSingle()
-
-      if (postError) {
-        return { success: false, error: postError.message }
+        },
+      })
+      if (!gated.ok) {
+        return { success: false, error: gated.reason ?? "social post not created" }
       }
+      const post = { id: gated.postId ?? undefined }
 
       // Log activity. The social_posts row above already checked its error and
       // returns on failure; this is the record that distribution happened.
@@ -141,8 +143,8 @@ export async function distributeVideo(
         brokerage_id: params.brokerageId,
         agent_id: actingAgentId,
         activity_type: "video_distributed",
-        title: `Video distributed to ${params.platform}`,
-        description: `"${project.title}" scheduled for ${params.platform}`,
+        title: gated.released ? `Video distributed to ${params.platform}` : `Video post awaiting approval for ${params.platform}`,
+        description: gated.released ? `"${project.title}" scheduled for ${params.platform}` : `"${project.title}" — ${gated.reason}`,
         status: "completed",
         entity_type: "video_project",
       })

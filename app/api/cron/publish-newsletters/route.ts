@@ -384,6 +384,14 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     return await deferCampaign(svc, c, `final_compliance:${finalCompliance.violations.slice(0, 3).join("|") || "blocked"}`)
   }
 
+  // WAVE 153 (lane 153P — lane 153K carried finding): the sender domain is REQUIRED. It fell back to the literal
+  // "platform.com" — a domain nobody here owns, so every newsletter would have gone out from a stranger's address
+  // (and been refused or spam-foldered by the provider). Unset → the campaign DEFERS by name before it is claimed.
+  const newsletterFromDomain = process.env.NEWSLETTER_FROM_DOMAIN?.trim()
+  if (!newsletterFromDomain) {
+    return await deferCampaign(svc, c, "sender_unset:NEWSLETTER_FROM_DOMAIN")
+  }
+
   // Claim the campaign so concurrent ticks don't re-send it.
   const { data: claimed, error: claimErr } = await svc
     .from("newsletter_campaigns")
@@ -475,7 +483,7 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
 
   // For each subscriber: resolve persona → sections → assemble → dispatch → log.
   let sent = 0, suppressed = 0, errors = 0
-  const fromAddress = `newsletter@${(process.env.NEWSLETTER_FROM_DOMAIN ?? "platform.com")}`
+  const fromAddress = `newsletter@${newsletterFromDomain}`
 
   for (const s of subs) {
     if (!s.email) continue

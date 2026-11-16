@@ -151,7 +151,10 @@ async function conductDueFollowUpMoments(
       if (!row.contact_id) { out.errors.push(`row ${row.id}: no contact`); continue }
 
       // ── anniversary / referral rows: the date-driven cron sends them; reconcile, never double-send ──
-      if (CRON_DELIVERED_MOMENTS.includes(row.touchpoint_type)) {
+      // WAVE 153 (lane 153P): a calendar touch the ARBITER DEFERRED (lib/sphere/lifetime-touch-arbitration.ts deferLifetimeTouch,
+      // engagement_data.deferred_by "lifetime_touch") is NOT cron-delivered — the date match passed — so it is conducted here.
+      const deferredByArbiter = (row.engagement_data as { deferred_by?: string } | null)?.deferred_by === "lifetime_touch"
+      if (CRON_DELIVERED_MOMENTS.includes(row.touchpoint_type) && !deferredByArbiter) {
         const { data: sentRows, error: sentErr } = await svc.from("lifetime_customer_touchpoints").select("id, sent_date")
           .eq("brokerage_id", row.brokerage_id).eq("contact_id", row.contact_id).eq("touchpoint_type", row.touchpoint_type)
           .eq("status", "sent").gte("sent_date", row.scheduled_date ?? today).limit(1)

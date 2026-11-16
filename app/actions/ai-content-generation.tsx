@@ -1243,13 +1243,12 @@ export async function generateSocialPost(params: {
         .eq("id", result.content.id)
     }
 
-    // Log kernel event for content generation
-    await processKernelEvent({
-      event: KernelEvent.SOCIAL_POST_PUBLISHED,
-      brokerageId: agentContext.brokerageId ?? "",
-      entityType: "ai_generated_content",
-      entityId: result.content?.id || "",
-    })
+    // TOMBSTONE (wave 153, lane 153P — lane 153I finding): this emitted SOCIAL_POST_PUBLISHED on mere GENERATION of a
+    // caption draft (entityType ai_generated_content, an empty brokerageId when the context had none), so every
+    // consumer of "a post went live" — the reactor's social_post_published row, attribution, the census's event hop —
+    // counted a draft nobody published. Nothing was published here. SURVIVOR: the real publish emits it —
+    // app/api/cron/publish-social-posts/route.ts (KernelEvent.SOCIAL_POST_PUBLISHED after publishToSocialPlatform
+    // succeeds). Generation is recorded by the ai_generated_content row above and incrementFeatureUsage below.
 
     // ── LAYER 0.1: Track usage after successful generation ──────────────────
     await incrementFeatureUsage(agentContext.userId, "ai_social_content")

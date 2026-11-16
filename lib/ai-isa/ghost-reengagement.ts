@@ -4,7 +4,7 @@ import { KernelEvent } from '@/lib/kernel/events'
 import { processKernelEvent } from '@/lib/kernel'
 import { logISAOutreach } from '@/lib/ai-isa/isa-outreach-logger'
 import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
-import { ghostReengagementStopReason, ghostReengagementPhase, shouldSendGhostOutreach, cadenceProfileFor } from '@/lib/ai-isa/reengagement-policy'
+import { ghostQuietVerdict, ghostReengagementStopReason, ghostReengagementPhase, shouldSendGhostOutreach, cadenceProfileFor } from '@/lib/ai-isa/reengagement-policy'
 import { loadFollowupPolicy } from '@/lib/ai-isa/followup-policy'
 import { resolvePolicyRef } from '@/lib/kernel/tenant-policy'
 import { arbitrateCadence, countArbiterWaits, recordArbitration } from '@/lib/ai-isa/followup-arbiter'
@@ -98,6 +98,31 @@ export async function runGhostReengagement(
         console.log(`[ghost-reengagement] skipped lead ${leadId}: ${finality.reason}`)
         skipped++
         continue
+      }
+
+      // WAVE 153 (lane 153P): A RECENT INBOUND IS NOT A GHOST. The sweep selected on last_activity_at; an inbound on the
+      // conversation history inside the threshold means they are waiting on US — no re-engagement touch (pure verdict:
+      // ghostQuietVerdict, lib/ai-isa/reengagement-policy.ts). Unreadable history = skipped this run, never read as silence.
+      {
+        const { data: lastIn, error: lastInErr } = await supabase
+          .from('lead_conversation_history')
+          .select('occurred_at')
+          .eq('brokerage_id', brokerageId)
+          .eq('lead_id', leadId)
+          .eq('direction', 'inbound')
+          .order('occurred_at', { ascending: false })
+          .limit(1)
+        const quiet = ghostQuietVerdict({
+          lastInboundAt: ((lastIn ?? [])[0] as { occurred_at?: string | null } | undefined)?.occurred_at ?? null,
+          historyReadable: !lastInErr,
+          thresholdDays,
+          now: today,
+        })
+        if (!quiet.ghost) {
+          console.log(`[ghost-reengagement] skipped lead ${leadId}: not a ghost (${quiet.reason}: ${quiet.detail})`)
+          skipped++
+          continue
+        }
       }
 
       // ── STOP CHECKS — pure policy (reply count resolved first so the single

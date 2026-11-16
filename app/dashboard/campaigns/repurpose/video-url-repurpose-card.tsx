@@ -45,6 +45,8 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
   const [mode, setMode] = useState<Mode>("create")
   const [url, setUrl] = useState("")
   const [transcript, setTranscript] = useState("")
+  // WAVE 153 (153P): an external source is refurbished only on a stated basis (own content or a licence) — stored as lineage.
+  const [rightsBasis, setRightsBasis] = useState<"" | "own_content" | "licensed">("")
   const [showTranscript, setShowTranscript] = useState(false)
   const [selected, setSelected] = useState<Set<OutputFormat>>(new Set())
   const [results, setResults] = useState<RepurposedOutput[]>([])
@@ -70,6 +72,10 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
       toast.error("Select at least one channel")
       return false
     }
+    if (!rightsBasis) {
+      toast.error("Confirm you own this content or hold a licence to reuse it")
+      return false
+    }
     return true
   }
 
@@ -84,7 +90,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
 
   const runDistribute = () =>
     startTransition(async () => {
-      const res = await repurposeVideoUrl({ sourceUrl: url.trim(), outputFormats: [...selected] })
+      const res = await repurposeVideoUrl({ sourceUrl: url.trim(), outputFormats: [...selected], rightsBasis })
       if (!res.success) return void toast.error(res.error ?? "Repurpose failed")
       setResults(res.outputs ?? [])
       const scheduled = (res.outputs ?? []).filter((o) => o.status === "scheduled").length
@@ -98,6 +104,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
         sourceUrl: url.trim(),
         transcript: transcript.trim() || undefined,
         channels: [...selected],
+        rightsBasis,
       })
       if (res.redirectTo) {
         toast.message(res.error ?? "Setup required", { description: "Redirecting to setup…" })
@@ -125,7 +132,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
 
   const runBlog = () =>
     startTransition(async () => {
-      const res = await repurposeUrlToBlogPost({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined })
+      const res = await repurposeUrlToBlogPost({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined, rightsBasis })
       if (handleTranscriptGate(res)) return
       if (!res.success) return void toast.error(res.error ?? "Could not create the blog post")
       toast.success("Draft blog post with a cover image created — review it in your blog dashboard.")
@@ -134,7 +141,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
 
   const runPodcast = () =>
     startTransition(async () => {
-      const res = await repurposeUrlToPodcast({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined })
+      const res = await repurposeUrlToPodcast({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined, rightsBasis })
       if (handleTranscriptGate(res)) return
       if (!res.success) return void toast.error(res.error ?? "Could not create the podcast episode")
       toast.success(res.error ? `Episode created, audio pending: ${res.error}` : "Podcast episode generated — review it in your podcast dashboard.")
@@ -192,6 +199,20 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
             onChange={(e) => setUrl(e.target.value)}
             disabled={isPending}
           />
+        </div>
+
+        <div className="space-y-2">
+          <Label>Your right to reuse this source</Label>
+          <div className="flex flex-col gap-2 text-sm">
+            <label className="flex items-center gap-2">
+              <Checkbox checked={rightsBasis === "own_content"} onCheckedChange={(v) => setRightsBasis(v ? "own_content" : "")} disabled={isPending} />
+              It is my own content, published elsewhere
+            </label>
+            <label className="flex items-center gap-2">
+              <Checkbox checked={rightsBasis === "licensed"} onCheckedChange={(v) => setRightsBasis(v ? "licensed" : "")} disabled={isPending} />
+              I hold a licence to reuse it
+            </label>
+          </div>
         </div>
 
         {mode !== "distribute" && (showTranscript || transcript) && (
