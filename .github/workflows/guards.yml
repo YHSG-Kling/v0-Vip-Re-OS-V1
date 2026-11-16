@@ -64,7 +64,14 @@ jobs:
       #
       # This raises the ceiling; it does not shrink the graph. When the peak
       # approaches 10 GB the answer is project references, not another bump.
-      NODE_OPTIONS: --max-old-space-size=12288
+      #
+      # 2026-11-16 (wave 153): 12288 → 14336. Measured, not guessed: the program is now 13,943 files / 1.90 M lines
+      # (5.44 M types); `tsc --noEmit` ABORTED at 12288 ("Ineffective mark-compacts", 12.05 GB in use at the cap) and
+      # PASSED at a 14000 cap with `--extendedDiagnostics` reporting "Memory used: 13087618K" (13.09 GB; peak RSS
+      # 12.86 GB). 14336 is the value build.yml already runs on this same 16 GB runner. This is the LAST bump the
+      # runner can take — the next step is project references (splitting scripts/ from the app program), as the
+      # paragraph above already says.
+      NODE_OPTIONS: --max-old-space-size=14336
     steps:
       - uses: actions/checkout@v4
       # Node + `npm ci` live in ONE composite action for all four workflows —

@@ -37,7 +37,7 @@ const READ_EXECUTORS: Record<string, (args: any, ctx: { brokerageId: string }) =
     const { getCurrentAvm } = await import("@/lib/avm/provider-chain")
     // Wave 93 (lane 93B): an AI AGENT tool surface — RentCast yes, the BatchData backup NO (owner:
     // no BatchData tools on AI agent surfaces; only the server-side chain falls back).
-    return getCurrentAvm({ address: String(args.address ?? ""), zipCode: args.zipCode ?? null, brokerageId: ctx.brokerageId, usePaidProviders: false, skipProviders: ["batchdata"] })
+    return getCurrentAvm({ address: String(args.address ?? ""), zipCode: args.zipCode ?? null, brokerageId: ctx.brokerageId, skipProviders: ["batchdata"] })
   },
   comparable_sales: async (args, ctx) => {
     const { getRentcastComps } = await import("@/lib/property/rentcast")

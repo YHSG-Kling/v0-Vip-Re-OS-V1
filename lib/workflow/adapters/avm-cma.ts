@@ -188,7 +188,6 @@ export const avmCmaAdapter: ChannelAdapter = {
           state: propertyContext.state,
           zipCode: propertyContext.zip ?? null,
           brokerageId,
-          usePaidProviders: dataSource !== "perplexity",
           skipProviders,
         } as any)
 

@@ -2356,7 +2356,12 @@ const WAVE153_GATES: Wave153Gate[] = [
     rule: () => { const cl = src151("lib/external/datafiniti-client.ts"); return rule151([
       ["THE transport: a typed query builder, a free count, bearer token only", exports152("lib/external/datafiniti-client.ts", ["buildDatafinitiPeopleQuery", "countDatafinitiPeople"]) && !/password/i.test(cl)],
       ["THE producer maps the documented schema and takes the RawData door as its ingest", exports152("lib/lead-pipeline/datafiniti-people-producer.ts", ["mapDatafinitiPerson", "runDatafinitiPeoplePull"]) && /ingest:\s*\(p:\s*IngestRawSourceBatchParams\)/.test(src151("lib/lead-pipeline/datafiniti-people-producer.ts"))],
-      ["a production door opens the producer (the acquisition door wiring — lane 153T, integrator fills)", callersOf153("runDatafinitiPeoplePull").length >= 1],
+      // Lane 153T wired it (integrated): the lead-scraping cron opens the territory door, whose production default IS the producer
+      // (`deps.run ?? runDatafinitiPeoplePull` — an injected seam for the proof, so a bare `runDatafinitiPeoplePull(` call token is
+      // the wrong thing to look for). Both hops are read; either one missing fails the rule.
+      ["a production door opens the producer (the lead-scraping cron → the territory door → the producer as its production default)",
+        callersOf153("runDatafinitiTerritoryCycle").some((f) => f.replace(/\\/g, "/").includes("app/api/cron/lead-scraping/route.ts")) &&
+        /deps\.run\s*\?\?\s*runDatafinitiPeoplePull\b/.test(stripComments(readFileSync(join(ROOT, "lib/lead-pipeline/datafiniti-territory-door.ts"), "utf8")))],
       ["the rights gate refuses until the activation is active (dormant pending rights today)", /activation\.state !== "active"/.test(src151("lib/lead-pipeline/datafiniti-people-producer.ts")) && /datafiniti:\s*\{\s*state:\s*"dormant_pending_rights"/.test(src151("lib/ai-isa/property-lookup-rail.ts"))],
       ["m949 live: 'datafiniti' admitted by the platform_credentials CHECK in the generated cache", liveVocab151("platform_credentials", "platform").includes("datafiniti")]]) } },
   { gate: "Nextdoor through the Zyte / ZenRows transport, held until a written agreement (no migration)", rulings: "owner B2 — Nextdoor goes through Zyte or ZenRows; LICENSE_REQUIRED / NOT_ENABLED until an agreement is recorded", lanes: ["153N"], hookLanes: ["153N"], canaries: [], migrations: [],

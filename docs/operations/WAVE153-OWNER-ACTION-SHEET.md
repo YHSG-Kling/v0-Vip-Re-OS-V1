@@ -28,7 +28,7 @@ Read-only measurements behind this sheet (lane 153L, 2026-11-16, Supabase MCP `e
 
 1. Integrate lanes 153R and 153T. Add their contract keys to `WAVE153_CONTRACT_PROOFS` in `scripts/production-readiness-guard.ts`.
    Add the `MAINTENANCE_DOMAINS` row for `test:wave153-canaries` (exact row in `$S/lane153L-notes.md`).
-2. Regenerate the generated docs. Run the full chain once: `NODE_OPTIONS="--max-old-space-size=12288" npm run guard`. Read
+2. Regenerate the generated docs. Run the full chain once: `NODE_OPTIONS="--max-old-space-size=14336" npm run guard`. Read
    `GUARD_EXIT` from the log.
 3. Push only on `GUARD_EXIT=0`. Then watch build + guard CI on the pushed SHA (re-run `next-build` unchanged on exit 134; see CLAUDE.md §8).
 

@@ -161,7 +161,7 @@ Conventions. **Owner action** = what you do. **Verify** = how you know. A verifi
 
 ### 6.1 The full guard chain on the release commit
 - **Owner action:** On the exact commit to be released, run the whole chain with the documented heap and read the **exit code**, not the prose.
-- **Verify:** `NODE_OPTIONS="--max-old-space-size=12288" npm run guard > guard.log 2>&1; echo "GUARD_EXIT=$?" >> guard.log` then `grep GUARD_EXIT guard.log` prints `GUARD_EXIT=0` (the log contains the word "fail" hundreds of times in prose — CLAUDE.md §7).
+- **Verify:** `NODE_OPTIONS="--max-old-space-size=14336" npm run guard > guard.log 2>&1; echo "GUARD_EXIT=$?" >> guard.log` then `grep GUARD_EXIT guard.log` prints `GUARD_EXIT=0` (the log contains the word "fail" hundreds of times in prose — CLAUDE.md §7).
 
 ### 6.2 The CI build verdict
 - **Owner action:** Confirm the `next-build` job on the release commit — since wave 148 it is the ONE verdict over two paths: the full single pass (`next-build-full`, runs only when the repo variable `BUILD_RUNNER` names your larger runner, with `BUILD_HEAP_MB` raised to match) or, while `BUILD_RUNNER` is empty, lever (d) — the two-half compile matrix (`next-build-half`, `app/dashboard/**` and everything else, each compiled and generated on ubuntu-latest). A skipped or cancelled path is red, never green. Make `next-build` the required check in branch protection. Exit 134 on a path is re-run unchanged once; after three at one commit the answer is the runner (`.github/workflows/build.yml` bracket), not the number.
