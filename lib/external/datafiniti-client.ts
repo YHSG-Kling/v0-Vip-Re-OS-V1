@@ -41,7 +41,7 @@ import { DATAFINITI_PEOPLE_PUBLISHED_PLANS, DATAFINITI_PEOPLE_CEILING_UNIT_USD }
 
 export const DATAFINITI_API_BASE = "https://api.datafiniti.co/v4"
 /** The platform credential BY NAME (never a value). */
-export const DATAFINITI_PLATFORM_TOKEN_ENV = "DATAFINITI_API_TOKEN"
+const DATAFINITI_PLATFORM_TOKEN_ENV = "DATAFINITI_API_TOKEN"
 /** "For non-downloads, the maximum is 10 records." (reference/people-data) */
 export const DATAFINITI_SEARCH_MAX_RECORDS = 10
 // df_download_status: "Download result-file links are valid for 7 days." (mcp-server) — the territory door re-reads the status
