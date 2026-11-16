@@ -532,7 +532,11 @@ console.log("\n[E · registration, derived vocabularies, wiring]")
   // the source brokerage) and protected_research_attributes (m864; derived_readonly, self-declared by its firewalled research
   // store). The third new child, book_projects (m867), became a moved FAMILY instead (it follows its landing page). Owner
   // ruling 24 ("do NOT move all 286 … classify each") makes the rule below the binding one: every unmoved child has a class.
-  const FROZEN_UNMOVED_FK_CHILDREN = 288
+  // RAISED DELIBERATELY 288 → 289 (wave 153), naming it: trid_disclosure_receipts (m905) was born after the freeze with an FK
+  // onto transactions and is NOT moved by RULING — historical_immutable, the insert-only Closing Disclosure delivery / receipt
+  // evidence the source brokerage's deal ran on (lib/kernel/brokerage-transfer.ts). Measured against the last pushed tree: the
+  // unmoved set grew by exactly that one table and lost none. Evidence that moved tenants would stop being evidence.
+  const FROZEN_UNMOVED_FK_CHILDREN = 289
   const debt = unmovedChildren(famSet)
   check(`FK-closure debt does not GROW: ${debt.length} unmoved child tables (frozen ceiling ${FROZEN_UNMOVED_FK_CHILDREN}; lower the ceiling when a family is added — a count that moves is the finding)`, debt.length <= FROZEN_UNMOVED_FK_CHILDREN, `grew by ${debt.length - FROZEN_UNMOVED_FK_CHILDREN}: ${debt.slice(0, 8).join(",")}`)
   {

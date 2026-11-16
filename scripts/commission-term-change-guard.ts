@@ -128,6 +128,24 @@ async function main() {
     check("ADVERSE: the compliance officer (reads the books, never keeps them) is refused", !r3.ok && /^not_attached/.test(r3.ok ? "" : r3.error))
     const rv = await ask(db, VENDOR), rc = await ask(db, CONTACT)
     check("ADVERSE: a vendor and a Contact are refused outright — even before anything about the deal is shown", !rv.ok && !rc.ok && /^forbidden/.test(rv.ok ? "" : rv.error) && /^forbidden/.test(rc.ok ? "" : rc.error))
+    // THE SEAT RULE, over the whole STORED vocabulary rather than two specimens: a seat is refused outright exactly when
+    // it is neither on the tenant roster nor one of the two deal seats. Read from the generated cache and the live Set, so
+    // neither side of this comparison is a list typed here.
+    const { CHECK_VOCABULARIES } = await import("./check-vocabularies")
+    const { TENANT_ADMIN_USER_TYPES } = await import("../lib/auth/resolve-user-role")
+    const stored = CHECK_VOCABULARIES.users?.user_type ?? []
+    const wrong: string[] = []
+    for (const t of stored) {
+      // A fresh workspace per seat: a finance-admin seat is ALLOWED and applies directly, which is a real write, and it
+      // must not land in the workspace the "none of those refusals wrote anything" control below reads.
+      const res = await ask(seed(), actor(u(900 + stored.indexOf(t)), t))
+      const outright = !res.ok && /^forbidden/.test(res.error)
+      const dealSeat = TENANT_ADMIN_USER_TYPES.has(t) || t === "agent" || t === "tc"
+      if (outright === dealSeat) wrong.push(`${t}:${res.ok ? "ok" : res.error.split(":")[0]}`)
+    }
+    check(`every stored seat outside the tenant roster + agent + tc is refused outright, and no seat inside it is (${stored.length} stored seats)`, stored.length >= 10 && wrong.length === 0, wrong.join(", "))
+    const blank = await ask(seed(), actor(u(990), "")), unknown = await ask(seed(), actor(u(991), "a_seat_nobody_stored"))
+    check("FAIL CLOSED: a seat whose type is empty or unknown is refused outright — it never reaches the attachment test", !blank.ok && /^forbidden/.test(blank.error) && !unknown.ok && /^forbidden/.test(unknown.error))
     const view = await quiet(() => loadCommissionTermsForChange(db as any, VENDOR as any, { transactionId: T_OPEN }))
     check("ADVERSE: a vendor cannot even LOAD the commission terms (§5: no financials for vendors / Contacts)", !view.ok)
     const rb = await ask(db, actor(U_BBROKER, "broker", null, B))

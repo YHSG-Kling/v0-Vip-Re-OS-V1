@@ -28,7 +28,7 @@
 // Pure rules first (module-private — proved through the I/O functions by scripts/commission-term-change-guard.ts); the I/O half
 // takes the service client and the SESSION actor (lib/agreements/session-actor.ts) and READS every { error } (§3).
 
-import { BROKERAGE_FINANCE_ADMIN_USER_TYPES, isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES, TENANT_ADMIN_USER_TYPES, isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import type { AgreementActor } from "@/lib/agreements/agent-agreements"
 import { calendarDay } from "@/lib/agreements/agent-agreements"
 import { AGENT_CONCESSION_REASON_MIN, resolveAgentConcessionPolicy } from "./agent-concession"
@@ -40,8 +40,20 @@ type Db = { from: (t: string) => any }
 /** The live commission_adjustments_adjustment_type_check member a term change is recorded under. */
 const TERM_CHANGE = "rate_override"
 
-/** Seats that never change a tenant's commission terms (a client, a vendor, the system ISA, platform support). */
-const NEVER_EDITS = new Set(["contact", "vendor", "isa", "system", "support"])
+/**
+ * The seats that can EVER be a party to a tenant's commission terms: the tenant roster plus the two seats that work a
+ * deal without administering the workspace — the agent and the transaction coordinator. DERIVED from the roster (spread,
+ * never retyped — CLAUDE.md §4), so a ruling that moves the roster moves this with it. Every other stored seat — the
+ * client, an outside vendor (a lender and a title agent are vendor CATEGORIES), the ISA desk, `system`, platform
+ * `support` — is outside it, and so is a seat whose type could not be read: the test is POSITIVE, so it fails closed.
+ *
+ * (Was a hand-typed deny list, `NEVER_EDITS`. A deny list admits whatever it forgot to name — an unreadable or a newly
+ * storable seat fell through to the attachment test — and it was a second role array in a module that already asks the
+ * shared finance predicate, which scripts/finance-authority-simulator.ts refuses.)
+ *
+ * Membership is NOT permission: it only decides who is ever ASKED the attachment question below.
+ */
+const DEAL_SEAT_USER_TYPES: ReadonlySet<string> = new Set([...TENANT_ADMIN_USER_TYPES, "agent", "tc"])
 
 /** offers.esign_status members that mean the contract is executed (the live CHECK's executed members). */
 const OFFER_EXECUTED = new Set(["fully_signed", "fully_executed", "compliance_pending", "compliance_approved"])
@@ -97,7 +109,7 @@ function termChangeAuthority(
   attached: { agentIds: string[]; teamLeadUserIds: string[]; coordinatorUserIds: string[] },
 ): { ok: true; role: ApproverRole; appliesDirectly: boolean } | { ok: false; error: string } {
   const type = String(actor.userType ?? "").toLowerCase()
-  if (NEVER_EDITS.has(type)) return { ok: false, error: "forbidden: client, vendor and system accounts never change a commission — the agent on the deal or a finance administrator can" }
+  if (!DEAL_SEAT_USER_TYPES.has(type)) return { ok: false, error: "forbidden: client, vendor and system accounts never change a commission — the agent on the deal or a finance administrator can" }
   if (isBrokerageFinanceAdmin({ user_type: type, is_tenant_principal: actor.isTenantPrincipal })) return { ok: true, role: "finance_admin", appliesDirectly: true }
   if (actor.agentId && attached.agentIds.includes(actor.agentId)) return { ok: true, role: "deal_agent", appliesDirectly: false }
   if (attached.teamLeadUserIds.includes(actor.userId)) return { ok: true, role: "team_lead", appliesDirectly: false }

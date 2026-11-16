@@ -13,6 +13,7 @@ import type { Disposition } from "./open-loop-ledger"
 import { WAVE149J_DISPOSITIONS } from "./open-loop-ledger-dispositions-149j"
 // Wave 153 (lane 153K, owner ruling 16): launch-critical rows re-read at 34124d98; spread LAST so the later re-evaluation wins.
 import { WAVE153K_DISPOSITIONS } from "./open-loop-ledger-dispositions-153k"
+import { WAVE153L_DISPOSITIONS } from "./open-loop-ledger-dispositions-153l"
 
 const Z147 = "wave 147 convergence (lane 147Z closure table)"
 const I147 = "wave 147 integrator (WIP 14) / lane 147I"
@@ -191,4 +192,5 @@ export const MANUAL_DISPOSITIONS: Record<string, Disposition> = {
   // capability-surface audit no longer emits the row and the ledger id no longer exists; the disposition went with it.
   "147R-RP-04": { s: "carried", k: "owner-decision", o: "owner", r: `${R22} — embed consent box (148B), unknown texter kept, scraper terms kept, lifestyle data Mapbox first (148E), DealMachine platform-paid evaluation (148J).` },
   ...WAVE153K_DISPOSITIONS,
+  ...WAVE153L_DISPOSITIONS,
 }

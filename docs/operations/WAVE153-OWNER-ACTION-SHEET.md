@@ -11,8 +11,8 @@ the **read-back** to expect, the **risk** if skipped, **who** can do it, the **c
 code is certified in-repo by `test:production-readiness` (the wave-153 gate block). The integrated journeys run end to end, SIMULATED,
 in `test:wave153-canaries`. Migrations m900 m901 m902 m905 m907 m931 m933 m949 m951 are APPLIED LIVE and were read back read-only on
 2026-11-16 (columns, trigger, index, CHECK, defaults). Release: **NOT production-live.** No provider is activated and nothing was
-purchased. No live provider call, mailing, outreach, deploy or billing action has happened. Lanes 153R and 153T were still in flight
-when this sheet was written; the integrator adds their rows.
+purchased. No live provider call, mailing, outreach, deploy or billing action has happened. Lanes 153R (marketing-census gaps) and 153T (Datafiniti wiring, arbitration follow-ups,
+retired scrapes) are integrated; the decisions they and the integration raised are in Priority 14.
 
 Read-only measurements behind this sheet (lane 153L, 2026-11-16, Supabase MCP `execute_sql`, SELECT only; Vercel MCP read tools):
 - `public.storage_bucket_policy_readiness()`: `agent-documents`, `brokerage-forms`, `client-documents`, `transaction-documents`,
@@ -26,11 +26,11 @@ Read-only measurements behind this sheet (lane 153L, 2026-11-16, Supabase MCP `e
 
 ## 0 — Integrator steps before any owner step (not owner work, listed so the order is clear)
 
-1. Integrate lanes 153R and 153T. Add their contract keys to `WAVE153_CONTRACT_PROOFS` in `scripts/production-readiness-guard.ts`.
-   Add the `MAINTENANCE_DOMAINS` row for `test:wave153-canaries` (exact row in `$S/lane153L-notes.md`).
-2. Regenerate the generated docs. Run the full chain once: `NODE_OPTIONS="--max-old-space-size=14336" npm run guard`. Read
-   `GUARD_EXIT` from the log.
-3. Push only on `GUARD_EXIT=0`. Then watch build + guard CI on the pushed SHA (re-run `next-build` unchanged on exit 134; see CLAUDE.md §8).
+1. DONE — lanes 153R and 153T are integrated; their contract proofs are in `WAVE153_CONTRACT_PROOFS`
+   (`scripts/production-readiness-guard.ts`) and the `MAINTENANCE_DOMAINS` row for `test:wave153-canaries` exists.
+2. The generated docs are regenerated and the full chain runs once: `NODE_OPTIONS="--max-old-space-size=14336" npm run guard`,
+   with `GUARD_EXIT` read from the log. This sheet is pushed only on `GUARD_EXIT=0`, so a pushed copy is itself that evidence.
+3. After the push: watch build + guard CI on the pushed SHA (re-run `next-build` unchanged on exit 134; see CLAUDE.md §8).
 
 ---
 
@@ -151,14 +151,13 @@ Read-only measurements behind this sheet (lane 153L, 2026-11-16, Supabase MCP `e
 - **What:** an arbiter-decided routine follow-up now goes out without a broker click, on every tenant (column default `false`; code
   default `require_broker_approval: false`). Consent, DNC, quiet hours, the content screen, the de-confliction rule and the explicit
   `approval_required` manager posture still hold. Money, offer, lender, signature and legal questions still go to a person.
-- **How a broker turns approval back ON — today:** **there is no screen toggle.** The writer exists (`lib/ai-isa/resolve-isa-settings.ts
-  writeIsaSettings` writes the column), but no settings form sends the key. `app/dashboard/voice/isa/page.tsx` still shows a
-  hard-coded `false` with a stale "no writer" comment (PARTIAL — reported for the integrator in the lane notes). Until a toggle ships,
-  support sets it per tenant: `UPDATE public.ai_isa_settings SET require_broker_approval = true WHERE brokerage_id = '<tenant id>';`
-  (an `ai_isa_settings` row must exist first; the ISA settings page creates one).
+- **How a broker turns approval back ON:** Settings → ISA calling → the **Lead follow-up approval** card
+  ("Require my approval before the AI ISA sends a lead follow-up"). The switch writes `ai_isa_settings.require_broker_approval`
+  through `saveAIISASettings` (tenant write roles and platform staff only; the tenant comes from the session), and
+  `app/dashboard/voice/isa/page.tsx` reads the stored value. No support SQL is needed.
 - **Read-back:** `SELECT require_broker_approval FROM public.ai_isa_settings WHERE brokerage_id = '<tenant id>';` → `true`.
-- **Risk:** a broker who expects to approve every lead touch is not asked unless support sets it.
-- **Who:** owner decides whether a toggle is required before launch. **Cost:** none. **Credential:** none.
+- **Risk:** a broker who expects to approve every lead touch is not asked until they turn the switch on.
+- **Who:** owner decides whether the default should be announced to tenants before launch. **Cost:** none. **Credential:** none.
 - **Proves it:** `test:os-arbitration-canaries` (C13), canary L2.
 
 ## Priority 10 — Finance decisions still open (OWNER-SQL §O.6)
@@ -200,6 +199,32 @@ After Priorities 1–4 (and the provider items you choose): one supervised smoke
 - **Each records:** the provider reference, the cost, and the ledger row. A smoke that is not recorded did not happen.
 - **Cost:** per provider. **Credential:** each provider's key (set by you). **Proves it:** the provider's matrix row and the release
   ledger (ACTIVATION-CHECKLIST §6.7).
+
+## Priority 14 — Smaller decisions recorded during integration (each is built on its safe default)
+
+Nothing here blocks release. Each line says what the code does today; rule only where you want it changed.
+- **A person's own published contact point is usable (B4).** Your ruling reverses a wave-151 compliance rule; it is recorded on the
+  rule as your accepted risk. Counsel reads it under Priority 11.
+- **Person search and court-filing scans** stay off: they are not part of "public chatter about a real-estate need" (B3). An
+  **agent licence lookup** is the one named exception, because it reads a regulator's public register about a licensee.
+- **Bundles do not start themselves.** `campaign_bundles` has no trigger column: the first item starts when a person chooses whom
+  to send it to, and the arbiter starts each follow-on. Starting a bundle on an event (a listing status, a new Contact type) is a
+  product decision and a migration.
+- **Omnipresence spacing** uses the existing minimum-hours-between-touches guardrail (default 48 hours) between platforms for the
+  same source, so four platforms take six days. There is no separate broadcast-spacing setting.
+- **Refurbished content** runs on a licence the tenant states themselves; nothing verifies it.
+- **SMS return on investment reads N/A** until a caller sends an SMS under a marketing campaign: the attribution step is built, but
+  no sender passes a campaign yet (a bundle's SMS keeps its own bundle attribution). Podcast reach also reads N/A — listens are not
+  read back from the host. No figure is invented in either place.
+- **`LIFETIME_EDUCATION_DELIVERED`** is an older event name with no writer and no reader. The new in-transaction lesson uses
+  `CLIENT_EDUCATION_DELIVERED`. Decide whether after-close education should ride that same event (then the old name is removed)
+  or be built on the old one; it was reported, not touched.
+- **Type-check memory.** The whole-project type-check now needs a 14336 MB cap, the last step a 16 GB machine can take. The durable
+  fix is splitting the program with project references — an engineering task for a later wave, not an owner purchase.
+- **`@remotion/google-fonts`** is no longer imported (the bundled Inter font replaced it) but is still listed in `package.json`;
+  removing it is a dependency change left for your go-ahead.
+- **Who:** owner. **Cost:** none. **Credential:** none. **Proves it:** `test:online-hunting`, `test:marketing-loops`,
+  `test:campaign-bundle-follow-on`, `test:roi-outcome-ledger` (each holds the current default); canary L2.
 
 ---
 

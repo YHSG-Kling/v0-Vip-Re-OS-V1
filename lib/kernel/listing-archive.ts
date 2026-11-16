@@ -317,6 +317,11 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "seller_share_feed", column: "listing_id", disposition: "cascade" },
   { table: "seller_updates", column: "listing_id", disposition: "cascade" },
   { table: "seller_weekly_reports", column: "listing_id", disposition: "cascade" },
+  // Added wave 153 (m902, applied live 2026-11-14): a commission-term change requested on a LISTING, before any offer or
+  // transaction exists, is anchored by `commission_adjustments.listing_id` — declared ON DELETE CASCADE. It is a money
+  // record a hard delete would have destroyed with the listing; an archive keeps the request, its decision and its
+  // evidence pointer. Entered here when the generated FK cache first carried the key, which is what the drift alarm is for.
+  { table: "commission_adjustments", column: "listing_id", disposition: "cascade", why: "a pre-contract commission-term change anchored to the listing — the request, its decision and its evidence" },
 ]
 
 /**

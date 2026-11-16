@@ -32,10 +32,11 @@
  */
 import { memSupabase } from "./in-memory-supabase"
 import "./canaries/_harness"
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
 import { fnBody } from "./canaries/_registry"
+import { claimOf } from "./migration-status"
 
 const ROOT = process.cwd()
 let passed = 0
@@ -174,9 +175,20 @@ async function main() {
   const m975 = read("supabase/migrations/m975-tenant-owned-acquisition-provider-credential-door.sql")
   // [a-z0-9_] — a provider id may carry a digit (twilio_a2p); a letters-only class would read a kept value as dropped.
   const m975Values = (m975.slice(m975.indexOf("ADD CONSTRAINT platform_credentials_platform_check")).match(/'([a-z0-9_]+)'/g) ?? []).map((s) => s.slice(1, -1))
-  // The RULE: m975's CHECK vocabulary IS the live vocabulary (the generated cache, scripts/check-vocabularies.ts) — set equality,
-  // never a hand count; and the one value this lane added (batchdata) is in both.
-  check(`m975's platform vocabulary equals the live vocabulary (${livePlatforms.length} values, batchdata included)`, livePlatforms.length > 50 && livePlatforms.includes("batchdata") && m975Values.includes("batchdata") && [...new Set(m975Values)].sort().join() === [...new Set(livePlatforms)].sort().join(), JSON.stringify({ onlyInM975: m975Values.filter((v) => !livePlatforms.includes(v)), onlyLive: livePlatforms.filter((v) => !m975Values.includes(v)) }))
+  // The RULE, not the waypoint. This used to read "m975's vocabulary EQUALS the live vocabulary" — true the day m975 was the
+  // constraint in force and false forever after the next provider got its own door (m949 added `datafiniti`), so the proof
+  // went red because the work continued (CLAUDE.md §2). What m975 actually promised, and what stays true: (a) it DROPPED
+  // nothing — every value it kept is still live; (b) the value this lane added (batchdata) is in both; and (c) the constraint
+  // in force is WRITTEN DOWN — some migration that claims APPLIED defines exactly the live set (the generated cache,
+  // scripts/check-vocabularies.ts). Set comparison, never a hand count, and no migration is named as "the latest".
+  const vocabOf = (sql: string) => { const at = sql.search(/ADD CONSTRAINT platform_credentials_platform_check/i); return at === -1 ? [] : [...new Set((sql.slice(at).match(/'([a-z0-9_]+)'/g) ?? []).map((v) => v.slice(1, -1)))] }
+  const liveSet = [...new Set(livePlatforms)].sort().join()
+  const definers = readdirSync(join(ROOT, "supabase/migrations")).filter((f) => f.endsWith(".sql")).map((f) => ({ f, sql: read(`supabase/migrations/${f}`) })).filter((m) => vocabOf(m.sql).length > 0)
+  const inForce = definers.filter((m) => vocabOf(m.sql).sort().join() === liveSet && claimOf(m.sql) === "applied").map((m) => m.f)
+  const droppedByM975 = m975Values.filter((v) => !livePlatforms.includes(v))
+  check(`m975 dropped nothing: every platform value it kept is still live (${new Set(m975Values).size} kept, ${livePlatforms.length} live, batchdata in both)`, livePlatforms.length > 50 && new Set(m975Values).size > 50 && livePlatforms.includes("batchdata") && m975Values.includes("batchdata") && droppedByM975.length === 0, JSON.stringify({ onlyInM975: droppedByM975 }))
+  check(`the live platform vocabulary is written down: an APPLIED migration defines exactly that set (${definers.length} migrations define the constraint)`, inForce.length >= 1, JSON.stringify({ inForce, definers: definers.map((m) => m.f) }))
+  check("positive control: a vocabulary missing one live value is NOT read as the constraint in force, and a kept value that left the live set IS read as dropped", vocabOf(`ADD CONSTRAINT platform_credentials_platform_check CHECK (platform IN (${livePlatforms.slice(1).map((v) => `'${v}'`).join(", ")}))`).sort().join() !== liveSet && ["batchdata", "a_value_nobody_stored"].filter((v) => !livePlatforms.includes(v)).length === 1)
   check("positive control: a planted migration missing a live value is caught", !livePlatforms.every((v) => m975Values.filter((x) => x !== "idxbroker").includes(v)))
   const stamp = (p: string) => { const l1 = read(p).split("\n")[0]; return l1 === "-- WRITTEN, NOT APPLIED (wave 151, lane 151F) — the integrator applies via Supabase MCP; DROP INDEX / DROP COLUMN and storage.objects policies are owner SQL" || l1.startsWith("-- ── APPLIED LIVE ") }
   check("both migrations carry the lane stamp on line 1 (or the APPLIED LIVE stamp — the rule, not the waypoint)", stamp("supabase/migrations/m975-tenant-owned-acquisition-provider-credential-door.sql") && stamp("supabase/migrations/m976-platform-acquisition-budget-caps.sql"))
