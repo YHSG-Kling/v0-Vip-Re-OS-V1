@@ -97,8 +97,11 @@ export const DELEGATION_TRANSITIONS: Readonly<Record<DelegationStatus, readonly 
 export const DELEGATION_SUBJECT_KEYS = Object.freeze({ transaction: "transactionId", listing: "listingId", lead: "leadId", contact: "contactId" } as const)
 export type DelegationSubjectType = keyof typeof DELEGATION_SUBJECT_KEYS
 const LEGACY_SUBJECT_KEYS: Readonly<Record<DelegationSubjectType, string>> = { transaction: "transaction_id", listing: "listing_id", lead: "lead_id", contact: "contact_id" }
-/** The subjects whose row is verified to sit in the delegation's tenant before anything is written (fail closed). */
-const TENANT_ANCHORED_SUBJECTS: Readonly<Partial<Record<DelegationSubjectType, string>>> = { lead: "leads", transaction: "transactions" }
+/** The subjects whose row is verified to sit in the delegation's tenant before anything is written (fail closed). Every
+ *  DelegationSubjectType is anchored (wave 153, lane 153T — lane 153O outside-lane 3): lib/kernel/domain-api.ts forwards a
+ *  request body's inputEntities here, so an unanchored contact / listing id was a cross-tenant subject. Each table is keyed on
+ *  its PRIMARY key `id` (contacts.id, never the secondary contacts.contact_id — CLAUDE.md §3). */
+export const TENANT_ANCHORED_SUBJECTS: Readonly<Record<DelegationSubjectType, string>> = Object.freeze({ lead: "leads", transaction: "transactions", contact: "contacts", listing: "listings" })
 
 /** PURE. The delegation's subject (explicit subject_type/subject_id first, then the keyed ids most-specific first), or null. */
 export function delegationSubjectOf(e: Record<string, unknown> | null | undefined): { type: DelegationSubjectType; id: string } | null {

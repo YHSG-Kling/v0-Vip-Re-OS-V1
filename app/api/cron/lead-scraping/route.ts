@@ -90,7 +90,9 @@ const POOLED_PAID_LANES: ReadonlySet<string> = new Set(["batchdata_motivated", "
  *  runIncrementalPropertySearchForMarket) — they ask the door here on their lane's line; the wave-150 gate skipped them. */
 const PER_TERRITORY_ALIASES_OF_POOLED_LANES: ReadonlySet<string> = new Set(["batchdata_incremental"])
 /** The acquisition vendors whose platform connection facts the door reads (one lookup per cycle, by NAME — never a value). */
-const PLATFORM_ACQUISITION_VENDORS = ["batchdata", "apify", "zenrows", "zyte", "exa", "tavily"] as const
+// Wave 153 (lane 153T): + datafiniti — its facts carry PROVIDER_ACTIVATION's dormant_pending_rights, so resolveSourceDoor
+// refuses the datafiniti_people token LICENSE-HELD by name (an approved plan line included) until the owner's licensing decision.
+const PLATFORM_ACQUISITION_VENDORS = ["batchdata", "apify", "zenrows", "zyte", "exa", "tavily", "datafiniti"] as const
 // Lane 82B — every scrape's spend books PER SOURCE on the platform ledger through the ONE
 // source→vendor contract (source-intent-map.ts::SOURCE_VENDOR via source-cost-ledger.ts), which
 // itself rides meterVendorSpend. The composite "apify_social" row is gone (see the social block).
@@ -1469,13 +1471,32 @@ export async function GET(request: Request) {
         }
       }
 
+      // ── DATAFINITI PEOPLE DATA (wave 153, lane 153T — owner ruling B1; closes lane 153M's "nothing calls the producer") ──
+      // Reached ONLY when THE source door above admitted the datafiniti_people token for this territory (an opt-in token, never
+      // in DEFAULT_MARKET_SOURCES). Today the door refuses it LICENSE-HELD (PROVIDER_ACTIVATION.datafiniti is
+      // dormant_pending_rights), and the territory door re-reads the rights FIRST — nothing is read, written or called. Once
+      // licensed: an OPEN download checkpoint is resumed (free status + result files → THE RawData door; no paid call), else
+      // this month's ONE download is started through the producer's gates (count, spend door, charge once).
+      if (enabledSources.has("datafiniti_people") && market.brokerage_id) {
+        try {
+          const { runDatafinitiTerritoryCycle, productionDatafinitiDoorDeps } = await import("@/lib/lead-pipeline/datafiniti-territory-door")
+          const df = await runDatafinitiTerritoryCycle(
+            { brokerageId: market.brokerage_id, market: { id: market.id, name: market.name, city: market.city, state: market.state, zip_codes: market.zip_codes ?? [] }, now: cycleNow },
+            productionDatafinitiDoorDeps(supabase as never, { brokerageId: market.brokerage_id, marketId: market.id, plans: approvedAcquisitionPlans, platformDoor: withTerritoryBudget(platformDoors.get("datafiniti") ?? null, market) }),
+          )
+          const ingested = df.pull?.ingested
+          if (ingested) { results.total_leads_found += df.pull?.returned ?? 0; results.total_leads_created += ingested.inserted }
+          if (df.refused) results.errors.push(`Datafiniti for ${market.name}: ${df.ran} at ${df.stage} — ${df.refused}`)
+        } catch (err) {
+          results.errors.push(`Datafiniti for ${market.name}: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+
       // ── RECRUITING SOURCE — agents/teams looking to switch brokerages ───────
       // Platform-owned raw_recruit_prospects (brokerage_id NULL, market_id set);
       // promoted to brokerage-owned `recruits` in the recruit promotion pass.
       if (enabledSources.has("recruiting_intent")) {
         try {
-          const reviewUrls = (market.lead_scraping_motivated_params?.[0] as { brokerage_review_urls?: string[] } | undefined)
-            ?.brokerage_review_urls ?? []
           // 106E: the brokerage's APPROVED recruiting missions (the twin's need, held for a human,
           // approved through decideMissionAction) hand the sourcer their territory + specialization
           // as search criteria. A refused read is reported; it never widens the search blindly.
@@ -1490,7 +1511,7 @@ export async function GET(request: Request) {
             supabase,
             marketId: market.id,
             state: market.state,
-            reviewUrls,
+            // (lane 153T: reviewUrls retired with the sourcer's brokerage-review ZenRows scrape — tombstone there.)
             targeting,
           })
           results.recruits_sourced += recruitRes.inserted

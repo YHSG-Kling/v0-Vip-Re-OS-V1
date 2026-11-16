@@ -388,3 +388,41 @@ export function summarizeIsaProofNumbers(input: { outreach: OutreachLedgerRow[];
     },
   }
 }
+
+// ─── ARBITRATION RESPONSIVENESS (wave 153, lane 153T — owner ruling B12; lane 153O outside-lane 2) ─────────────────────
+//
+// The reader beside getSpeedToLeadMetrics (app/actions/ai-isa/speed-to-lead-metrics.ts) for the responder's own evidence:
+// each inbound decision (inbound.message.respond) and each late-result settlement (inbound.late_result.settle) on the action
+// ledger, folded by THE one formula (lib/ai-isa/followup-arbiter.ts arbitrationResponsivenessMetrics — never a second
+// spelling here). The client is the CALLER's (the action passes its session client; RLS agent_action_ledger_select admits
+// has_brokerage_access) and the tenant is the caller's. A refused read is { ok: false } — the panel says "could not be
+// loaded", never zeros (CLAUDE.md §3: supabase-js RESOLVES a refusal).
+
+export const ARBITRATION_RESPONSIVENESS_ACTIONS = ["inbound.message.respond", "inbound.late_result.settle"] as const
+/** Rows read per window; a window that fills it is reported `truncated` (its numbers are a floor, said so). */
+export const ARBITRATION_RESPONSIVENESS_ROW_CAP = 5000
+
+export type ArbitrationResponsivenessRead =
+  | { ok: true; metrics: import("./followup-arbiter").ArbitrationResponsiveness; rows: number; truncated: boolean; since: string }
+  | { ok: false; reason: string; since: string }
+
+export async function readArbitrationResponsiveness(
+  client: { from: (t: string) => any },
+  brokerageId: string,
+  since: string,
+  now: Date = new Date(),
+): Promise<ArbitrationResponsivenessRead> {
+  if (!brokerageId) return { ok: false, reason: "no tenant on the read", since }
+  try {
+    const { data, error } = await client.from("agent_action_ledger").select("action, outcome, status, detail, created_at")
+      .eq("brokerage_id", brokerageId).in("action", [...ARBITRATION_RESPONSIVENESS_ACTIONS]).gte("created_at", since)
+      .limit(ARBITRATION_RESPONSIVENESS_ROW_CAP)
+    if (error) return { ok: false, reason: `agent_action_ledger: ${error.message ?? String(error)}`, since }
+    if (!Array.isArray(data)) return { ok: false, reason: "agent_action_ledger: the read returned no row set", since }
+    // Dynamic: the arbiter module is heavy; the panel's page must not carry it in its static graph (test:proxy-graph-budget).
+    const { arbitrationResponsivenessMetrics } = await import("./followup-arbiter")
+    return { ok: true, metrics: arbitrationResponsivenessMetrics(data, now), rows: data.length, truncated: data.length >= ARBITRATION_RESPONSIVENESS_ROW_CAP, since }
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e), since }
+  }
+}

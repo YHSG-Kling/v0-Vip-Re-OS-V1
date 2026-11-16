@@ -531,6 +531,46 @@ async function main() {
     check("WIRED: the ISA panel says how much of its number is measured vs estimated (recent.measuredCount)", /recent\.measuredCount/.test(stripComments(readFileSync("app/dashboard/isa/components/speed-to-lead-panel.tsx", "utf8"))))
   }
 
+  // ── Layer W153T (wave 153, lane 153T — owner B12; lane 153O outside-lane 2): arbitration responsiveness beside the metrics ──
+  console.log("\n[Layer W153T · arbitration responsiveness — the responder's evidence, a refused read is never zeros]")
+  {
+    const { readArbitrationResponsiveness, ARBITRATION_RESPONSIVENESS_ACTIONS } = await import("../lib/ai-isa/speed-to-lead-policy")
+    const B = "11111111-1111-4111-8111-111111111111", B2 = "22222222-2222-4222-8222-222222222222"
+    const NOWT = new Date("2026-11-16T12:00:00Z")
+    const at = (min: number) => new Date(NOWT.getTime() - min * 60_000).toISOString()
+    const rows = [
+      { id: "r1", brokerage_id: B, action: "inbound.message.respond", outcome: "reply_sent", status: "executed", detail: { record_id: "m1", decided_in_ms: 1200 }, created_at: at(30) },
+      { id: "r2", brokerage_id: B, action: "inbound.message.respond", outcome: "human_task", status: "executed", detail: { record_id: "m2", decided_in_ms: 2600, arbitration: { late_obligation: true } }, created_at: at(600) },
+      { id: "r3", brokerage_id: B, action: "inbound.late_result.settle", outcome: "re_arbitrated:reply_sent", status: "executed", detail: { record_id: "m3", disposition: "re_arbitrate" }, created_at: at(20) },
+      { id: "r4", brokerage_id: B, action: "inbound.message.respond", outcome: "refused", status: "skipped", detail: { record_id: "m4" }, created_at: at(10) },
+      { id: "r5", brokerage_id: B, action: "listing.price.change", outcome: "x", status: "executed", detail: {}, created_at: at(5) },
+      { id: "r6", brokerage_id: B2, action: "inbound.message.respond", outcome: "reply_sent", status: "executed", detail: { record_id: "mx", decided_in_ms: 1 }, created_at: at(5) },
+      { id: "r7", brokerage_id: B, action: "inbound.message.respond", outcome: "reply_sent", status: "executed", detail: { record_id: "old", decided_in_ms: 9 }, created_at: at(60 * 24 * 30) },
+    ]
+    const db = memSupabase({ agent_action_ledger: rows })
+    const since = at(60 * 24 * 7)
+    const ok = await readArbitrationResponsiveness(db as never, B, since, NOWT)
+    check("W153T.1 the reader folds THIS tenant's decisions + settlements in the window through the ONE formula (other tenants, other actions, older rows excluded)",
+      ok.ok && ok.rows === 4 && ok.metrics.inbound === 3 && ok.metrics.reArbitrated === 1 && ok.metrics.meaningfulAnswerMsP50 === 1200 && ok.metrics.timedOut === 1 && ok.metrics.expiredPendingTouches === 1 && ok.metrics.missedConversations === 2 && !ok.truncated,
+      JSON.stringify(ok))
+    check("W153T.1 the action vocabulary is the responder's two ledger actions", JSON.stringify(ARBITRATION_RESPONSIVENESS_ACTIONS) === JSON.stringify(["inbound.message.respond", "inbound.late_result.settle"]))
+    const refusing = { from: () => { const b: any = { select: () => b, eq: () => b, in: () => b, gte: () => b, limit: async () => ({ data: null, error: { message: "permission denied for table agent_action_ledger" } }) }; return b } }
+    const bad = await readArbitrationResponsiveness(refusing, B, since, NOWT)
+    check("W153T.2 ADVERSE · a REFUSED ledger read is { ok: false } with the reason — never a metrics object of zeros", !bad.ok && /permission denied/.test(bad.reason) && !("metrics" in bad), JSON.stringify(bad))
+    const none = await readArbitrationResponsiveness(db as never, "", since, NOWT)
+    check("W153T.2 ADVERSE · no tenant → refused (never 'all tenants')", !none.ok && /no tenant/.test(none.reason))
+    const empty = await readArbitrationResponsiveness(memSupabase({ agent_action_ledger: [] }) as never, B, since, NOWT)
+    check("W153T.2 POSITIVE CONTROL · a READABLE empty window is ok with honest zeros (distinct from a refusal)", empty.ok && empty.metrics.inbound === 0 && empty.rows === 0)
+    const metricsSrc3 = stripComments(readFileSync("app/actions/ai-isa/speed-to-lead-metrics.ts", "utf8"))
+    const panelSrc3 = stripComments(readFileSync("app/dashboard/isa/components/speed-to-lead-panel.tsx", "utf8"))
+    check("W153T.3 WIRED: getSpeedToLeadMetrics reads it with its OWN session client (never the service client — the action takes a brokerageId) and returns it as `arbitration`",
+      /readArbitrationResponsiveness\(supabase, brokerageId, since\)/.test(metricsSrc3) && /\barbitration,\s*\}/.test(metricsSrc3) && !/createServiceClient/.test(metricsSrc3))
+    const REFUSED_COPY = /if \(!read \|\| !read\.ok\)[\s\S]{0,400}could not be loaded[\s\S]{0,200}unknown, not zero/
+    check("W153T.4 WIRED: the panel renders the strip, and a refused read renders 'could not be loaded … unknown, not zero' BEFORE any number",
+      /<ArbitrationResponsivenessStrip read=\{metrics\.arbitration\} \/>/.test(panelSrc3) && REFUSED_COPY.test(panelSrc3) && panelSrc3.indexOf("could not be loaded") < panelSrc3.indexOf("read.metrics"))
+    check("W153T.4 POSITIVE CONTROL · the refused-copy probe misses a strip that renders zeros on refusal", !REFUSED_COPY.test(`if (!read || !read.ok) { return <p>0 · 0 · 0</p> }`))
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
   // Layer 2: LIVE (gated)
   // ───────────────────────────────────────────────────────────────────────────

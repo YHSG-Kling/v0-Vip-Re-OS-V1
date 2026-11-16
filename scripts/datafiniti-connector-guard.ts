@@ -379,6 +379,121 @@ async function main() {
     check("no token value in source and no token logged", !tokenLeak)
   }
 
+  // ─── M (wave 153, lane 153T) ─────────────────────────────────────────────────────────────────────────────────────
+  console.log("\nM — wired into THE acquisition door (cron → resolveSourceDoor → territory door → producer → RawData), dormant until rights")
+  {
+    const pl = await import("../lib/lead-pipeline/source-discovery-planner")
+    const pp = await import("../lib/lead-pipeline/pooled-pull")
+    const td = await import("../lib/lead-pipeline/datafiniti-territory-door")
+    const MARKET = { id: "33333333-3333-4333-8333-333333333333", name: "Pensacola", city: "Pensacola", state: "FL", zip_codes: ["32501"], monthly_budget_usd: 50, spend_this_month: 0 }
+    const planRow = { id: "plan-df", brokerage_id: A, status: "approved", valid_until: new Date(NOW.getTime() + 30 * 86_400_000).toISOString(), lines: [{ source: "datafiniti_people", status: "approved", approvedAt: daysAgo(1), maxSpendUsd: 20 }] }
+
+    // M1 — the door itself, with the REAL facts the cron reads (presence by NAME, activation from the route table).
+    const realFacts = await pp.platformProviderDoorFacts("datafiniti", { env: { DATAFINITI_API_TOKEN: "configured-by-name" } })
+    check("M1 the cron's facts for datafiniti: configured BY NAME (DATAFINITI_API_TOKEN), activation dormant_pending_rights from PROVIDER_ACTIVATION — no value carried", realFacts.configured && realFacts.credentialNames.join() === "DATAFINITI_API_TOKEN" && realFacts.activation === "dormant_pending_rights" && !JSON.stringify(realFacts).includes("configured-by-name"))
+    const held = pl.resolveSourceDoor({ source: "datafiniti_people", brokerageId: A, plans: [planRow] as never, platform: pp.withTerritoryBudget(realFacts, MARKET), now: NOW })
+    check("M1 DEFAULT: even WITH an approved plan line naming datafiniti_people, the door refuses LICENSE-HELD by name (a spend approval is not a licence)", !held.allowed && held.door === "unavailable" && /LICENSE-HELD/.test(held.reason) && /datafiniti/.test(held.reason), held.reason)
+    const heldNoPlan = pl.resolveSourceDoor({ source: "datafiniti_people", brokerageId: A, plans: [], platform: pp.withTerritoryBudget(realFacts, MARKET), now: NOW })
+    check("M1 DEFAULT: without a plan line it is refused the same way (platform door pending rights)", !heldNoPlan.allowed && /LICENSE-HELD/.test(heldNoPlan.reason))
+    const licensedFacts = { ...realFacts, activation: "active" as const }
+    const planned = pl.resolveSourceDoor({ source: "datafiniti_people", brokerageId: A, plans: [planRow] as never, platform: pp.withTerritoryBudget(licensedFacts, MARKET), now: NOW })
+    const platformOpen = pl.resolveSourceDoor({ source: "datafiniti_people", brokerageId: A, plans: [], platform: pp.withTerritoryBudget(licensedFacts, MARKET), now: NOW })
+    const unconfigured = pl.resolveSourceDoor({ source: "datafiniti_people", brokerageId: A, plans: [], platform: pp.withTerritoryBudget({ ...licensedFacts, configured: false }, MARKET), now: NOW })
+    const spent = pl.resolveSourceDoor({ source: "datafiniti_people", brokerageId: A, plans: [], platform: pp.withTerritoryBudget(licensedFacts, { ...MARKET, spend_this_month: 50 }), now: NOW })
+    check("M1 POSITIVE CONTROL (rights flipped in the proof only): the plan line opens approved_plan with ITS ceiling; without one the platform door opens within the territory budget", planned.allowed && planned.door === "approved_plan" && planned.maxSpendUsd === 20 && platformOpen.allowed && platformOpen.door === "platform_provider" && platformOpen.maxSpendUsd === 50, JSON.stringify([planned.reason, platformOpen.reason]))
+    check("M1 …and the other gates still hold once licensed: unconfigured (named by NAME) and a spent budget are refused", !unconfigured.allowed && /DATAFINITI_API_TOKEN absent by name/.test(unconfigured.reason) && !spent.allowed && /budget is spent/.test(spent.reason))
+    const tenantPending = pl.resolveSourceDoor({ source: "datafiniti_people", brokerageId: A, plans: [], platform: pp.withTerritoryBudget({ ...realFacts, configured: false }, MARKET), tenant: { vendor: "datafiniti", status: "connected", healthy: true, authorized: true }, now: NOW })
+    check("M1 a tenant-owned connection does not bypass the rights hold either (the platform facts say pending rights)", !tenantPending.allowed && /LICENSE-HELD/.test(tenantPending.reason))
+
+    // M2 — the cron opens it (stripped source) and only behind the door.
+    // String literals are part of what these probes match, so comments are stripped and strings kept (CLAUDE.md §2).
+    const cron = stripComments(read("app/api/cron/lead-scraping/route.ts"))
+    const VENDORS = /const PLATFORM_ACQUISITION_VENDORS = \[[^\]]*"datafiniti"[^\]]*\]/
+    const OPENS = /if \(enabledSources\.has\("datafiniti_people"\) && market\.brokerage_id\)[\s\S]{0,400}runDatafinitiTerritoryCycle\([\s\S]{0,400}productionDatafinitiDoorDeps\([\s\S]{0,300}platformDoor: withTerritoryBudget\(platformDoors\.get\("datafiniti"\)/
+    check("M2 the cron reads datafiniti's door facts with the other acquisition vendors, and runs the territory door ONLY for an admitted datafiniti_people token (enabledSources excludes every token the door closed)", VENDORS.test(cron) && OPENS.test(cron) && /const enabledSources = expandEnabledSources\(configuredSources\.filter\(\(v\) => !closedTokens\.includes\(v\)\)\)/.test(cron))
+    check("M2 POSITIVE CONTROL: the wiring probe misses a planted ungated call", !OPENS.test(`await runDatafinitiTerritoryCycle({ brokerageId }, productionDatafinitiDoorDeps(svc, {}))`))
+    const { GATE_TOKEN_FOR } = { GATE_TOKEN_FOR: (await import("../lib/lead-pipeline/source-intent-map")).expandEnabledSources }
+    check("M2 the token the door admits is the token the cron gates on (datafiniti_people → datafiniti_people)", GATE_TOKEN_FOR(["datafiniti_people"]).has("datafiniti_people"))
+
+    // M3 — DEFAULT: the territory door refuses at rights before ANY read / write / call.
+    let tableReads = 0, runs = 0
+    const spyClient = { from: (_t: string) => { tableReads++; throw new Error("never") } }
+    const dflt = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, { client: spyClient, pull: {} as never, run: (async () => { runs++; throw new Error("never") }) as never })
+    check("M3 DEFAULT (the real PROVIDER_ACTIVATION): refused LICENSE-HELD — zero table reads, zero producer runs, zero vendor calls", dflt.ran === "refused" && dflt.stage === "rights" && /LICENSE-HELD/.test(dflt.refused ?? "") && tableReads === 0 && runs === 0, JSON.stringify(dflt))
+
+    // M4 — the full path with the rights seam flipped IN THE PROOF ONLY: start → checkpoint → resume → ingest → close → replay.
+    const db = memSupabase({ raw_scraped_leads: [], scraper_executions: [], lifecycle_events: [], lead_scraping_markets: [], vendor_usage_tracking: [], ingress_dead_letters: [], lead_scraping_jobs: [] } as never, { unique: { raw_scraped_leads: [["idempotency_key"]] } } as never) as any
+    const h = harness(db)
+    const recs = [full(), full({ id: "df-person-2", keys: ["k2"], firstName: "Sam", lastName: "Ortiz", personalEmails: ["sam.ortiz@example.org"], phoneNumberHighScoreMobile: "+1 850-555-0177", mostRecentPropertyPurchaseKey: "us/fl/pensacola/40garden", propertiesOwnedHistory: [{ propertyKey: "us/fl/pensacola/40garden", datePurchased: daysAgo(300) }] })]
+    let statusNow = "running"
+    const dl = fakeTransport((req) =>
+      req.path === "/account" ? { status: 200, data: ACCOUNT(0) }
+      : req.path === "/mcp" ? { status: 200, data: { jsonrpc: "2.0", id: 1, result: { structuredContent: { status: statusNow, results: ["https://files.example.com/dl-5151.ndjson"] } } } }
+      : req.body?.num_records === 0 ? { status: 200, data: { num_found: 2 } }
+      : { status: 200, data: { num_found: 2, total_cost: 2, records: [], download_id: 5151 } })
+    const fetched: string[] = []
+    const reader = td.readDatafinitiDownloadFile(async (url) => { fetched.push(url); return { ok: true, status: 200, text: recs.map((r) => JSON.stringify(r)).join("\n"), error: null } })
+    const tdeps = () => ({ activation: ACTIVE, client: db, pull: h.deps(dl.transport) as never, fetchDownloadFile: reader })
+    const jobs = async () => ((await db.from("lead_scraping_jobs").select("id, status, job_type, brokerage_id, market_id, metadata, leads_created")).data ?? []) as any[]
+    const paidStarts = () => dl.calls.filter((c) => c.body?.download === true).length
+    const c1 = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, tdeps())
+    const j1 = await jobs()
+    check("M4 cycle 1 STARTS this month's download: ONE paid start, booked once, the checkpoint written (running, download_id, the month's request id), no rows yet", c1.ran === "started" && c1.stage === "download_pending" && c1.downloadId === "5151" && c1.checkpoint.written === true && paidStarts() === 1 && h.booked.length === 1 && j1.length === 1 && j1[0].status === "running" && j1[0].job_type === "datafiniti_download" && j1[0].brokerage_id === A && j1[0].metadata.download_id === "5151" && j1[0].metadata.request_id === `territory:${MARKET.id}:2026-11` && (await rawCount(db)) === 0, JSON.stringify({ c1: { ...c1, pull: undefined }, j1 }).slice(0, 500))
+    const c1b = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, tdeps())
+    check("M4 cycle 2 while still running RESUMES the checkpoint — no second paid start, no booking, checkpoint stays open", c1b.ran === "resumed" && c1b.stage === "download_pending" && paidStarts() === 1 && h.booked.length === 1 && (await jobs())[0].status === "running")
+    statusNow = "completed"
+    const c2 = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, tdeps())
+    const j2 = await jobs()
+    check("M4 cycle 3 (completed): the READER fetches the result file, 2 grounded rows land through THE RawData door, no paid call, no booking, the checkpoint CLOSES", c2.ran === "resumed" && c2.stage === "done" && c2.checkpoint.closed === true && fetched.join() === "https://files.example.com/dl-5151.ndjson" && (await rawCount(db)) === 2 && paidStarts() === 1 && h.booked.length === 1 && j2[0].status === "completed" && j2[0].leads_created === 2, JSON.stringify({ c2: { ...c2, pull: undefined }, j2 }).slice(0, 500))
+    const c3 = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, tdeps())
+    check("M4 cycle 4 (same month, nothing open): the start is REPLAYED by the charge-once key — nothing re-bought, no duplicate RawData, said so", c3.ran === "nothing_to_do" && /already bought/.test(c3.refused ?? "") && paidStarts() === 1 && h.booked.length === 1 && (await rawCount(db)) === 2 && (await jobs()).length === 1, JSON.stringify({ ...c3, pull: undefined }))
+    // A crash after ingest but before the checkpoint closed → the next resume re-reads the file: replays only, never a second row.
+    const dbR = memSupabase({ raw_scraped_leads: [], scraper_executions: [], lifecycle_events: [], lead_scraping_markets: [], vendor_usage_tracking: [], ingress_dead_letters: [], lead_scraping_jobs: [{ id: "job-r", job_type: "datafiniti_download", status: "running", brokerage_id: A, market_id: MARKET.id, started_at: daysAgo(1), metadata: { download_id: "5151", request_id: "territory:r", filters: { city: "Pensacola", province: "FL", country: "US" } } }] } as never, { unique: { raw_scraped_leads: [["idempotency_key"]] } } as never) as any
+    const hR = harness(dbR)
+    const rdeps = () => ({ activation: ACTIVE, client: dbR, pull: hR.deps(dl.transport) as never, fetchDownloadFile: reader })
+    await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, rdeps())
+    ;(dbR.tables?.lead_scraping_jobs ?? dbR._tables?.lead_scraping_jobs)?.forEach((r: any) => { r.status = "running" })
+    const again = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, rdeps())
+    check("M4 REPLAY after a crash between ingest and close: the resume re-reads the file — 0 duplicate RawData (still 2), 0 bookings, 0 paid calls", again.ran === "resumed" && (await rawCount(dbR)) === 2 && hR.booked.length === 0 && (again.pull?.paidCalls ?? -1) === 0, JSON.stringify({ ...again, pull: again.pull ? { stage: again.pull.stage, ingested: again.pull.ingested } : null }).slice(0, 400))
+
+    // M5 — adverse cases on each hop.
+    const refusingJobs = { from: (t: string) => t === "lead_scraping_jobs" ? { select: () => ({ eq: () => ({ eq: () => ({ eq: () => ({ eq: () => ({ order: () => ({ limit: async () => ({ data: null, error: { message: "permission denied for table lead_scraping_jobs" } }) }) }) }) }) }) }) } : db.from(t) }
+    const callsBefore = dl.calls.length
+    const blind = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, { ...tdeps(), client: refusingJobs })
+    check("M5 an UNREADABLE checkpoint refuses the cycle — no download is started blind (zero vendor calls)", blind.ran === "refused" && blind.stage === "checkpoint" && /could not be read/.test(blind.refused ?? "") && dl.calls.length === callsBefore)
+    const dbS = memSupabase({ raw_scraped_leads: [], scraper_executions: [], lifecycle_events: [], lead_scraping_markets: [], vendor_usage_tracking: [], ingress_dead_letters: [], lead_scraping_jobs: [{ id: "job-s", job_type: "datafiniti_download", status: "running", brokerage_id: A, market_id: MARKET.id, started_at: daysAgo(1), metadata: { download_id: "5151", request_id: "territory:s", filters: { city: "Pensacola", province: "FL", country: "US" } } }] } as never, { unique: { raw_scraped_leads: [["idempotency_key"]] } } as never) as any
+    const hS = harness(dbS)
+    const spentDoor = { ...PLATFORM_DOOR, remainingBudgetUsd: 0 }
+    const resumeSpent = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, { activation: ACTIVE, client: dbS, pull: { ...hS.deps(dl.transport), platformDoor: spentDoor } as never, fetchDownloadFile: reader })
+    check("M5 a RESUME collects what was already paid for even when that purchase spent the month's budget (the spend gate guards purchases, not free reads)", resumeSpent.ran === "resumed" && resumeSpent.stage === "done" && (await rawCount(dbS)) === 2 && hS.booked.length === 0, JSON.stringify({ ...resumeSpent, pull: undefined }))
+    const dbN = memSupabase({ raw_scraped_leads: [], scraper_executions: [], lifecycle_events: [], lead_scraping_markets: [], vendor_usage_tracking: [], ingress_dead_letters: [], lead_scraping_jobs: [] } as never, { unique: { raw_scraped_leads: [["idempotency_key"]] } } as never) as any
+    const hN = harness(dbN)
+    const startSpent = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, { activation: ACTIVE, client: dbN, pull: { ...hN.deps(dl.transport), platformDoor: spentDoor } as never, fetchDownloadFile: reader })
+    check("M5 POSITIVE CONTROL: a START on that spent budget is refused at the spend gate — nothing bought, no checkpoint", startSpent.stage === "spend_gate" && hN.booked.length === 0 && ((await dbN.from("lead_scraping_jobs").select("id")).data ?? []).length === 0, JSON.stringify({ ...startSpent, pull: undefined }))
+    const dbF = memSupabase({ raw_scraped_leads: [], scraper_executions: [], lifecycle_events: [], lead_scraping_markets: [], vendor_usage_tracking: [], ingress_dead_letters: [], lead_scraping_jobs: [{ id: "job-f", job_type: "datafiniti_download", status: "running", brokerage_id: A, market_id: MARKET.id, started_at: daysAgo(1), metadata: { download_id: "5151", request_id: "territory:f", filters: { city: "Pensacola", province: "FL", country: "US" } } }] } as never, { unique: { raw_scraped_leads: [["idempotency_key"]] } } as never) as any
+    const hF = harness(dbF)
+    const badFile = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: MARKET, now: NOW }, { activation: ACTIVE, client: dbF, pull: hF.deps(dl.transport) as never, fetchDownloadFile: td.readDatafinitiDownloadFile(async () => ({ ok: true, status: 200, text: '{"id":"a"}\nnot json', error: null })) })
+    const jf = ((await dbF.from("lead_scraping_jobs").select("status, error_message")).data ?? []) as any[]
+    check("M5 an UNREADABLE result file ingests NOTHING (never half a purchase) and the checkpoint stays OPEN with the reason, for the next cycle", badFile.ran === "resumed" && badFile.stage === "download_pending" && (await rawCount(dbF)) === 0 && jf[0].status === "running" && /result file unreadable/.test(jf[0].error_message ?? ""), JSON.stringify({ badFile: { ...badFile, pull: undefined }, jf }))
+    const noGeo = await td.runDatafinitiTerritoryCycle({ brokerageId: A, market: { id: "m-x", city: null, state: null, zip_codes: [] }, now: NOW }, { activation: ACTIVE, client: memSupabase({ lead_scraping_jobs: [] } as never) as any, pull: h.deps(dl.transport) as never })
+    check("M5 a territory with no city + state and no ZIP is refused — never widened to a match-everything pull", noGeo.ran === "refused" && /no city \+ state and no ZIP/.test(noGeo.refused ?? ""))
+    const foreignJobs = memSupabase({ lead_scraping_jobs: [{ id: "job-b", job_type: "datafiniti_download", status: "running", brokerage_id: B, market_id: MARKET.id, started_at: daysAgo(1), metadata: { download_id: "9999", request_id: "territory:b" } }] } as never) as any
+    const cpA = await td.readDatafinitiCheckpoint(foreignJobs, { brokerageId: A, marketId: MARKET.id })
+    check("M5 another tenant's checkpoint is never resumed (the read is tenant-pinned)", cpA.ok && cpA.checkpoint === null)
+
+    // M6 — the completed-download reader.
+    const rec1 = JSON.stringify({ id: "a" }), rec2 = JSON.stringify({ id: "b" })
+    check("M6 the reader parses a JSON array, a { records } / { data } wrapper and NDJSON — the same records each way", [`[${rec1},${rec2}]`, `{"records":[${rec1},${rec2}]}`, `{"data":[${rec1},${rec2}]}`, `${rec1}\n${rec2}\n`].every((t) => td.parseDatafinitiDownloadFile(t)?.map((r: any) => r.id).join() === "a,b"))
+    check("M6 ADVERSE: a malformed line, a non-object record, or a non-wrapper object → UNREADABLE (null), never a partial parse", td.parseDatafinitiDownloadFile(`${rec1}\n{broken`) === null && td.parseDatafinitiDownloadFile(`[${rec1}, 7]`) === null && td.parseDatafinitiDownloadFile(`[1,2]`) === null)
+    let fetches = 0
+    const nFetches = () => fetches
+    const r6 = td.readDatafinitiDownloadFile(async () => { fetches++; return { ok: false, status: 403, text: null, error: "expired" } })
+    check("M6 ADVERSE: a non-https link is never fetched; a refused fetch is null (the checkpoint stays open)", (await r6("http://files.example.com/a.json")) === null && nFetches() === 0 && (await r6("https://files.example.com/a.json")) === null && nFetches() === 1)
+    const doorSrc = stripComments(read("lib/lead-pipeline/datafiniti-territory-door.ts"))
+    check("M6 the production reader rides THE one egress with NO credential to the file host (auth none)", /callConnector\(\{[\s\S]{0,200}connector: "datafiniti"[\s\S]{0,200}auth: \{ style: "none" \}/.test(doorSrc) && !/\bfetch\(/.test(doorSrc))
+    check("M6 the production charge-once read uses the ledger's own idempotency path and fails closed (error → null)", /\.eq\("request_metadata->>idempotency_key", key\)/.test(doorSrc) && /if \(error\) return null/.test(doorSrc))
+  }
+
   // ─── L ───────────────────────────────────────────────────────────────────────────────────────────────────────────
   console.log("\nL — economics (published figures with their sources — derived from the scorecard, never re-typed)")
   {

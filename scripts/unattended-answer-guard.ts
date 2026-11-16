@@ -255,6 +255,49 @@ async function main() {
     check("the cron NET recovers what the timer missed with the SAME answerer — stamped recovered_by = cron", r.recovered === 1 && sent.length === 1 && row?.recovered_by === "cron", JSON.stringify(r))
   }
 
+  // ── E2 (wave 153, lane 153T — lane 153O outside-lane 4, owner B12) ──────────────────────────────
+  section("E2 · a RE-ARBITRATED late reply is completion evidence (recordInboundReArbitrationEvidence)")
+  {
+    const ir = await import("../lib/communications/inbound-record")
+    const cdeps = { completions: { schedule, now: () => NOW } }
+    {
+      const db = world("Any update?")
+      const id = await openHuman(db)
+      const c = await ir.recordInboundReArbitrationEvidence(db as never, B1, "m-1", "email", { disposition: "re_arbitrate", reArbitration: { action: "reply_sent", reason: "answered after the fallback left them waiting" } }, cdeps)
+      const row = db.tables.manager_completions.find((x) => x.id === id)!
+      const ev = (row.evidence as Row[]).find((e) => String(e.ref ?? "").endsWith(":rearbitration"))
+      check("E2.1 a re-arbitrated reply CLOSES the awaiting_human obligation the fallback opened (email: no delivery truth)", c?.id === id && row.status === "closed", JSON.stringify({ status: row.status, stage: row.stage }))
+      check("E2.1 …the evidence names the re-arbitration's OWN ledger cycle and is stamped recovered_by retry", !!ev && ev.outcome === "reply_sent" && ev.recoveredBy === "retry" && /^inbound\.message\.respond:/.test(String(ev.ref)), JSON.stringify(ev))
+    }
+    {
+      const db = world("Any update?")
+      const id = await openHuman(db)
+      await ir.recordInboundReArbitrationEvidence(db as never, B1, "m-1", "sms", { disposition: "re_arbitrate", reArbitration: { action: "reply_sent", reason: "late answer", providerRef: "SM-late-1" } }, cdeps)
+      const row = db.tables.manager_completions.find((x) => x.id === id)!
+      check("E2.2 an SMS re-arbitrated reply advances to awaiting_delivery on ITS provider reference (the delivery report closes it)", row.stage === "awaiting_delivery" && row.provider_ref === "SM-late-1" && row.status !== "closed", JSON.stringify({ stage: row.stage, ref: row.provider_ref }))
+    }
+    for (const disposition of ["stale_answered", "stale_human_owns", "stale_newer_inbound"]) {
+      const db = world("Any update?")
+      const id = await openHuman(db)
+      const before = JSON.stringify(db.tables.manager_completions.find((x) => x.id === id)!.evidence ?? [])
+      const c = await ir.recordInboundReArbitrationEvidence(db as never, B1, "m-1", "email", { disposition, reArbitration: null }, cdeps)
+      const row = db.tables.manager_completions.find((x) => x.id === id)!
+      check(`E2.3 ADVERSE · disposition ${disposition} made no new decision → NOTHING recorded, the obligation stays a person's`, c === null && row.stage === "awaiting_human" && row.status !== "closed" && JSON.stringify(row.evidence ?? []) === before)
+    }
+    {
+      const db = world("Any update?")
+      const id = await openHuman(db)
+      const c = await ir.recordInboundReArbitrationEvidence(db as never, B1, "m-1", "email", { disposition: "re_arbitrate", reArbitration: { action: "replayed", reason: "already answered" } }, cdeps)
+      check("E2.4 ADVERSE · a re-arbitration that REPLAYED (an answer already sent) is not evidence of a new decision", c === null && db.tables.manager_completions.find((x) => x.id === id)!.stage === "awaiting_human")
+      const foreign = await ir.recordInboundReArbitrationEvidence(db as never, "22222222-2222-4222-8222-222222222222", "m-1", "email", { disposition: "re_arbitrate", reArbitration: { action: "reply_sent", reason: "x" } }, cdeps)
+      check("E2.5 another tenant's re-arbitration never touches this tenant's obligation", db.tables.manager_completions.find((x) => x.id === id)!.status !== "closed" && (foreign === null || foreign.id !== id))
+    }
+    const rec = code("lib/communications/inbound-record.ts")
+    const WIRED = /onLateSettled:\s*\(settled\)\s*=>\s*\{\s*settled\.then\(\(s\)\s*=>\s*recordInboundReArbitrationEvidence\(/
+    check("E2.6 wired: the default responder hands settleLateResult's outcome to recordInboundReArbitrationEvidence (onLateSettled), and both doors use that default with their deps", WIRED.test(rec) && (rec.match(/deps\.respond \?\? defaultRespond\(svc, deps\)/g) ?? []).length === 2)
+    check("E2.6 POSITIVE CONTROL: the wiring probe misses a planted onLateSettled that records nothing", !WIRED.test("onLateSettled: (settled) => { settled.then(() => undefined) }"))
+  }
+
   // ── F ────────────────────────────────────────────────────────────────────────────────────────
   section("F · wiring (stripped source)")
   const wf = code("workflows/completion-watch-workflow.ts"), cron = code("app/api/cron/manager-signals/route.ts")

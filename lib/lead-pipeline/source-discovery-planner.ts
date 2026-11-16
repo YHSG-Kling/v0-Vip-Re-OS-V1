@@ -512,6 +512,18 @@ export function resolveSourceDoor(input: {
   if (vendor === "internal") return withValue(base("first_party", true, "first-party — the tenant's own data, no vendor call, no spend", false, { maxSpendUsd: 0 }))
   const paid = vendor !== "osint"
 
+  // 0. RIGHTS BEFORE ANY APPROVAL (wave 153, lane 153T — Datafiniti wired into this door). A vendor the route table holds
+  // dormant_pending_rights (PROVIDER_ACTIVATION, R9) is LICENSE-HELD: an approved plan line is the tenant's spend approval,
+  // never the platform's licensing decision, so it must not open the door either. Before this, a plan line naming such a
+  // source returned approved_plan while the platform door beside it said "pending rights". The caller's platform facts carry
+  // the activation (pooled-pull.ts platformProviderDoorFacts); without facts for this vendor the rule cannot see it, and the
+  // producer's own rights gate (datafiniti-people-producer.ts step 1) still refuses first.
+  const facts = input.platform
+  if (paid && facts && facts.vendor === vendor && facts.activation === "dormant_pending_rights") {
+    tried.push(`rights: ${vendor} is dormant pending rights (PROVIDER_ACTIVATION, owner ruling R9)`)
+    return base("unavailable", false, `LICENSE-HELD — ${vendor} is dormant pending rights; no approved plan line, platform connection or tenant connection opens ${input.source} until the owner records the licensing decision (R9)`, true)
+  }
+
   // 1. An approved plan line (wave 150's rule, kept).
   const plan = approvedPlanLine(input.plans, { brokerageId: input.brokerageId, source: input.source }, now)
   if (plan.allowed) return withValue(base("approved_plan", true, `approved acquisition plan ${plan.planId} names ${input.source}`, paid, plan))

@@ -20,7 +20,6 @@
  *     serves the property LOOKUP (getPropertyRecordWithFallback) and the CMA comps
  *     (lib/cma/comp-provider.ts §3c) through batchDataPropertyFallback below. Never a
  *     primary, never an AI agent tool.
- *   - ZenRows + Zillow (ZENROWS_API_KEY) — Zillow Zestimate scrape
  *   - Perplexity Sonar (via lib/ai/models.ts) — live AVM context
  *   - OSINT public records — value derived from sale records + comps
  *
@@ -30,11 +29,10 @@
  *
  * STATUS (verified): the adapters are LIVE — RentCast via lib/property/rentcast
  * (connector-gateway, X-Api-Key, per-call metering), (BatchData leg retired wave 92),
- * Zillow-via-ZenRows via lib/external/
- * zenrows-client, Perplexity via the AI gateway. Each is creds-gated (no key →
+ * Perplexity via the AI gateway. Each is creds-gated (no key →
  * null → next provider). Wave 92 (lane 92B2): RentCast is the FIRST tier for every call
- * that names a tenant (key + vendor budget gated); the premium Zillow scrape still sits
- * behind usePaidProviders + the vendor budget gate. The only remaining stub is the OSINT direct-AVM path
+ * that names a tenant (key + vendor budget gated). (The premium Zillow-via-ZenRows scrape is retired,
+ * wave 153 lane 153T — tombstone in getCurrentAvm.) The only remaining stub is the OSINT direct-AVM path
  * (public records give life events, not values — deliberate).
  */
 
@@ -47,6 +45,8 @@ import type { MeterVendorInput } from "@/lib/vendor-governance/meter-vendor"
 
 // "batchdata" is produced again since wave 93 (lane 93B) — ONLY by the BACKUP leg
 // (tryBatchDataBackup), after a named RentCast miss. Wave 92 had retired it as a primary.
+// "zenrows_zillow" is no longer produced (wave 153, lane 153T — the Zillow scrape retired); it stays a READ value for
+// valuations cached before the retirement.
 export type AvmSource = "rentcast" | "batchdata" | "zenrows_zillow" | "perplexity" | "osint" | "cached" | "market_appreciation_fallback"
 
 export interface AvmResult {
@@ -83,12 +83,7 @@ interface AvmRequest {
   cacheStaleAfterDays?: number
   /** Allow caller to skip certain providers (e.g., for testing) */
   skipProviders?: AvmSource[]
-  /**
-   * When true, also try the PREMIUM paid tier (ZenRows/Zillow) after the free fallbacks. Wave 92
-   * (lane 92B2): RentCast no longer waits for this flag — it is the FIRST tier for every call that
-   * names a tenant (budget- and key-gated); this flag now governs only the premium scrape.
-   */
-  usePaidProviders?: boolean
+  // (usePaidProviders retired with the premium Zillow scrape it governed — wave 153, lane 153T; no caller passed it.)
 }
 
 const DEFAULT_CACHE_STALE_DAYS = 14
@@ -120,12 +115,10 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
   // the same eligibility gate, the same RentCast-then-backup order, the same confidence floors —
   // now asked as ONE capability through the health-aware router, so a RentCast in a `failing`
   // cool-down is routed around instead of paying a timeout per home. Healthy providers → the same
-  // calls in the same order as before. Over budget → RentCast AND the premium paid tier are skipped;
-  // the free fallbacks below still answer. A tenant-less call never reaches the paid tier.
-  let overBudget = false
+  // calls in the same order as before. Over budget → RentCast is skipped; the free fallbacks below
+  // still answer. A tenant-less call never reaches a paid provider.
   if (req.brokerageId) {
     const v = await requestPropertyValuation({ brokerageId: req.brokerageId, address: req.address, exclude: [...skip] })
-    overBudget = v.overBudget
     if (v.valuation) return v.valuation
   }
 
@@ -143,19 +136,12 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
     if (os && os.confidence >= 0.45) return os
   }
 
-  // ── 4. PREMIUM paid tier — agent-triggered only (usePaidProviders) ──────
-  // TOMBSTONE (wave 92, lane 92B, §1.3): the BatchData AVM leg (tryBatchData →
-  // enrichPropertyWithBatchData, gated as purpose "valuation") stood in this tier. A home value is
-  // a RentCast read — survivor: the RentCast-first tier above. "valuation" left
-  // BATCHDATA_ELIGIBLE_PURPOSES (lib/ai-isa/property-lookup-rail.ts), so no valuation lane can reach
-  // BatchData again. What remains here is the Zillow scrape, still premium-only and still skipped
-  // over budget (the budget governs the whole paid tier, as before).
-  if (req.usePaidProviders && !overBudget) {
-    if (!skip.has("zenrows_zillow") && process.env.ZENROWS_API_KEY) {
-      const zen = await tryZillowViaZenRows(req)
-      if (zen && zen.confidence >= 0.55) return zen
-    }
-  }
+  // ── 4. TOMBSTONE (wave 153, lane 153T — owner ruling B3: "if you can get the info from a data provider, then that is
+  // the safer bet"; CLAUDE.md §1): the PREMIUM paid tier ran tryZillowViaZenRows — a Zillow page fetched through the
+  // ZenRows transport DIRECTLY (no purpose, robots, terms or spend checkpoint) to regex a Zestimate out of the markup — behind
+  // `usePaidProviders`, a flag no caller passed. A home value is not real-estate-need chatter or FSBO, and a data provider
+  // holds it. Survivor: tier 1 above — requestPropertyValuation (this file; RentCast first, the BatchData backup after a
+  // named miss), the property_valuation capability (OS-CONSTITUTION law 3).
 
   // ── 5. Market appreciation fallback ────────────────────────────────────
   // Take the cached value (even if stale) and apply zip-level appreciation.
@@ -170,7 +156,7 @@ export async function getCurrentAvm(req: AvmRequest): Promise<AvmResult | null> 
 // ─── Provider adapters ──────────────────────────────────────────────────────
 //
 // Every adapter below makes a REAL call (RentCast connector-gateway, BatchData
-// client, ZenRows Zillow scrape, Perplexity via the AI gateway) — creds-gated,
+// client, Perplexity via the AI gateway) — creds-gated,
 // silent-fail to the next provider. The one deliberate null is OSINT (public
 // records yield life events, not values).
 
@@ -665,30 +651,7 @@ async function fillPropertyFactGaps(
   return { record: next, fill }
 }
 
-async function tryZillowViaZenRows(req: AvmRequest): Promise<AvmResult | null> {
-  try {
-    const { scrapeWithZenRows } = await import("@/lib/external/zenrows-client")
-    // Zillow URL pattern: /homes/<address>_rb/
-    const slug = req.address.replace(/[^a-zA-Z0-9]+/g, "-").toLowerCase()
-    const url = `https://www.zillow.com/homes/${slug}_rb/`
-    const response = await scrapeWithZenRows(url, { jsRender: true, premiumProxy: true })
-    if (!response || !response.body) return null
-    // Parse Zestimate from HTML body — looks for `"zestimate":NUMBER` JSON pattern
-    const m = response.body.match(/"zestimate"\s*:\s*(\d+)/i)
-    if (!m) return null
-    const value = parseInt(m[1], 10)
-    if (!value || value < 10000) return null
-    return {
-      value,
-      confidence: 0.65,
-      source: "zenrows_zillow",
-      fetchedAt: new Date().toISOString(),
-      notes: "Zillow Zestimate scraped via ZenRows",
-    }
-  } catch {
-    return null
-  }
-}
+// (tryZillowViaZenRows retired — tombstone in getCurrentAvm, tier 4.)
 
 async function tryPerplexitySonar(req: AvmRequest): Promise<AvmResult | null> {
   try {

@@ -619,7 +619,7 @@ export async function processInboundCommunication(
   let response: InboundProcessResult["response"] = null
   let settled: Parameters<typeof settleDecision>[0] = null
   try {
-    const respond = deps.respond ?? defaultRespond(svc)
+    const respond = deps.respond ?? defaultRespond(svc, deps)
     const r = await respond({
       brokerageId, contactId, conversationId: record.conversationId, recordId: record.recordId!, channel: input.channel, provider: input.provider,
       surface: input.surface ?? null, body, isPublic,
@@ -647,10 +647,17 @@ const RETRY_REDRIVE_QUIET_MS = 2 * 60_000
 
 type RespondResult = { action: string; reason: string; providerRef?: string | null; outboundMessageId?: string | null; draftId?: string | null; agentUserId?: string | null }
 
-function defaultRespond(svc: Client): (p: InboundRespondRequest) => Promise<RespondResult> {
+function defaultRespond(svc: Client, deps: InboundProcessDeps = {}): (p: InboundRespondRequest) => Promise<RespondResult> {
   return async (p) => {
     const { respondToInboundCommunication } = await import("./inbound-responder")
-    const r = await respondToInboundCommunication(svc, p)
+    // WAVE 153 (lane 153T — lane 153O outside-lane 4, owner B12): a LATE arbiter result that re-arbitrates the reply is
+    // completion evidence too — without it the awaiting_human obligation the fallback opened stays open until the supervisor
+    // sees the outbound. Never awaited here (the settlement runs after the fallback answered); never throws.
+    const r = await respondToInboundCommunication(svc, p, {
+      onLateSettled: (settled) => {
+        settled.then((s) => recordInboundReArbitrationEvidence(svc, p.brokerageId, p.recordId, p.channel, s, deps)).catch(() => undefined)
+      },
+    })
     return { action: r.action, reason: r.reason, providerRef: r.providerRef ?? null, outboundMessageId: r.outboundMessageId ?? null, draftId: r.draftId ?? null, agentUserId: r.agentUserId ?? null }
   }
 }
@@ -663,6 +670,8 @@ function defaultRespond(svc: Client): (p: InboundRespondRequest) => Promise<Resp
  */
 async function recordDecisionEvidence(
   svc: Client, brokerageId: string, recordId: string, channel: InboundChannel, r: RespondResult, deps: InboundProcessDeps, recoveredBy: "retry" | "workflow" | "cron" | null,
+  /** The decision's ledger cycle when it is not the first decision's (a B12 re-arbitration writes `<cycle>:rearbitration`). */
+  cycleOverride: string | null = null,
 ): Promise<InboundProcessResult["completion"]> {
   if (deps.completions === false || r.action === "replayed" || r.action === "refused") return null
   const ct = await import("@/lib/kernel/completion-tracking")
@@ -670,7 +679,7 @@ async function recordDecisionEvidence(
   const now = (cdeps.now ?? (() => new Date()))()
   // The decision's ledger cycle has ONE spelling — the responder's (it writes the row this evidence points at).
   const { inboundDecisionCycle } = await import("./inbound-responder")
-  const evidence = { kind: "decision" as const, at: now.toISOString(), source: "agent_action_ledger:inbound.message.respond", ref: `inbound.message.respond:${inboundDecisionCycle(recordId)}`, outcome: r.action, detail: { reason: r.reason.slice(0, 300) }, recoveredBy }
+  const evidence = { kind: "decision" as const, at: now.toISOString(), source: "agent_action_ledger:inbound.message.respond", ref: `inbound.message.respond:${cycleOverride ?? inboundDecisionCycle(recordId)}`, outcome: r.action, detail: { reason: r.reason.slice(0, 300) }, recoveredBy }
   let advanceTo: Parameters<typeof ct.recordCompletionEvidence>[1]["advanceTo"] = null
   if (r.action === "reply_sent" && channel === "sms" && r.providerRef) {
     const { OVERDUE_HOURS } = await import("@/lib/outcomes/reconciliation")
@@ -686,6 +695,34 @@ async function recordDecisionEvidence(
     if (ctxErr) console.warn(`[inbound-record] completion owner not stamped (${ctxErr.message}) — the supervisor bells the brokerage's admins instead`)
   }
   return { id: w.completion.id, status: w.completion.status, stage: w.completion.stage }
+}
+
+/**
+ * WAVE 153 (lane 153T — lane 153O outside-lane 4; owner B12: "if it is late, don't ignore it especially if no one has
+ * responded"). The responder's settleLateResult may START a fresh re-arbitration when the fallback left the person unanswered;
+ * that re-arbitrated decision is recorded as completion evidence on the SAME inbound obligation (inbound:<record>) through
+ * the ONE writer (recordDecisionEvidence), marked recoveredBy "retry", and pointing at the re-arbitration's own ledger cycle.
+ * So a re-arbitrated reply closes (or advances to awaiting_delivery) the awaiting_human completion the fallback opened.
+ * Every other disposition (stale_*, keep_fallback, …) and a re-arbitration that was itself replayed / refused records
+ * NOTHING — those made no new decision. Never throws; returns the completion it touched, or null.
+ */
+export async function recordInboundReArbitrationEvidence(
+  svc: Client, brokerageId: string, recordId: string, channel: InboundChannel,
+  settled: { disposition: string; reArbitration: RespondResult | null } | null | undefined,
+  deps: InboundProcessDeps = {},
+): Promise<InboundProcessResult["completion"]> {
+  try {
+    if (!brokerageId || !recordId || !settled || settled.disposition !== "re_arbitrate" || !settled.reArbitration) return null
+    const re = settled.reArbitration
+    const { inboundDecisionCycle } = await import("./inbound-responder")
+    return await recordDecisionEvidence(svc, brokerageId, recordId, channel, {
+      action: re.action, reason: re.reason ?? "", providerRef: re.providerRef ?? null, outboundMessageId: re.outboundMessageId ?? null,
+      draftId: re.draftId ?? null, agentUserId: re.agentUserId ?? null,
+    }, deps, "retry", `${inboundDecisionCycle(recordId)}:rearbitration`)
+  } catch (e) {
+    console.warn(`[inbound-record] re-arbitration evidence not recorded for ${recordId}: ${e instanceof Error ? e.message : String(e)}`)
+    return null
+  }
 }
 
 /**
@@ -731,7 +768,7 @@ export async function redriveInboundResponse(
     const meta = row.metadata ?? {}
     const channel = (typeof meta.channel === "string" ? meta.channel : typeof c.context.channel === "string" ? c.context.channel : "sms") as InboundChannel
     const thread = meta.thread && typeof meta.thread === "object" ? Object.fromEntries(Object.entries(meta.thread as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === "string" && !!e[1])) : null
-    const respond = deps.respond ?? defaultRespond(svc)
+    const respond = deps.respond ?? defaultRespond(svc, deps)
     const r = await respond({
       brokerageId: c.brokerage_id, contactId: row.contact_id, conversationId: row.conversation_id, recordId: row.id, channel,
       provider: typeof meta.provider === "string" ? meta.provider : String(c.context.provider ?? ""), surface: typeof meta.surface === "string" ? meta.surface : null,

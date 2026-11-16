@@ -164,12 +164,15 @@ async function main() {
   check("POSITIVE CONTROL: the ordering check fails on a Perplexity-first fixture",
     !firstOrder(`const px = await tryPerplexitySonar(req)\nconst rc = await requestPropertyValuation(x)`, capBody))
   const preRc = avmBody.slice(0, rcAt)
-  check("…and RentCast-first does NOT wait for usePaidProviders (the premium flag governs only the Zillow scrape), but is gated by the ONE eligibility verdict (property_data) and the budget",
+  // Wave 153 (lane 153T): re-asserted to the RULE. The premium tier this pinned (`if (req.usePaidProviders && !overBudget)
+  // … tryZillowViaZenRows(req)`) is RETIRED — a Zillow scrape through the ZenRows transport with no purpose gate, behind a flag
+  // no caller passed (owner ruling B3; tombstone in getCurrentAvm). The rule stands: RentCast-first waits on no premium flag
+  // and is gated by the ONE eligibility verdict and the budget — and no Zillow scrape remains to be gated.
+  check("…and RentCast-first does NOT wait for any premium flag, is gated by the ONE eligibility verdict (property_data) and the budget, and no Zillow scrape tier remains",
     !/usePaidProviders/.test(preRc) && !/usePaidProviders/.test(capBody)
     && /readKind: "property_data"/.test(fnBody(chain, "productionValuationEligibility"))
     && /if \(!eligible \|\| out\.overBudget\)[\s\S]{0,120}continue/.test(capBody)
-    && /overBudget = v\.overBudget/.test(avmBody)
-    && /if \(req\.usePaidProviders && !overBudget\)[\s\S]{0,200}tryZillowViaZenRows\(req\)/.test(avmBody))
+    && !/usePaidProviders/.test(chain) && !/tryZillowViaZenRows\(/.test(chain))
   const scan = stripped("lib/wealth-advisor/scan-opportunities.ts")
   check("the daily wealth scan (the background value refresh) hands the chain its tenant, so RentCast is reachable from the scan",
     /getCurrentAvm\(\{[\s\S]{0,400}brokerageId: brokerageId \?\? null/.test(scan) && /cacheStaleAfterDays: 14/.test(scan))

@@ -13,11 +13,10 @@ export class ZenrowsClient {
       return { success: false, html: '', cost: 0 }
     }
   }
-  async googleSearch(query: string, options: { location?: string; num?: number } = {}) {
-    const url = `https://www.google.com/search?q=${encodeURIComponent(query)}${options.num ? `&num=${options.num}` : ''}`
-    const result = await scrapeWithZenRows(url, { jsRender: true, premiumProxy: true })
-    return result.body
-  }
+  // TOMBSTONE (wave 153, lane 153T — owner ruling B3; CLAUDE.md §1): ZenrowsClient.googleSearch fetched a Google results
+  // page through the ZenRows transport DIRECTLY (no purpose, robots, terms or spend checkpoint). Its only callers were the two
+  // admin scrape dry-runs (app/actions/admin/run-scrape-test.ts, app/api/admin/scrape-test/route.ts); both now preview through
+  // the production google_phrase_intent lane's survivor, lib/lead-pipeline/social-sourcer.ts sourceGoogle (Apify).
 
   // TOMBSTONE (wave 153, lane 153N — owner ruling B2 "nextdoor goes through zyte or zenrows"; orphan doctrine §1.1):
   // ZenrowsClient.scrapeNextdoor called the ZenRows transport DIRECTLY — no robots, no terms, no spend gate, no checkpoint —

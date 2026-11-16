@@ -221,6 +221,42 @@ async function main() {
     check("POSITIVE CONTROL · the orders-source probe matches a planted claim", /orders (database|data feed|list)/i.test("a PCS orders database"))
   }
 
+  // G (wave 153, lane 153T — lane 153N outside-lane 3, owner ruling B3): the remaining direct page-transport callers.
+  section("G. the remaining direct Zyte / ZenRows callers — routed through the purpose gate, retired onto a provider survivor, or owner-held by name")
+  {
+    // A direct page-transport call: the ZenRows client's page methods or its free function, a new client instance, or the
+    // multi-provider picker — outside lib/providers/scrape-checkpoint.ts (which carries the purpose gate).
+    const DIRECT = /\bzenrows\.(scrape|googleSearch|scrapePage)\(|\bscrapeWithZenRows\(|\bnew ZenrowsClient\(|\bscrapeSiteWithBestProvider\(|\bthis\.zenrows\.scrape\(/
+    check("POSITIVE CONTROL · the direct-transport probe matches each planted call shape", ["await zenrows.scrape(u)", "await scrapeWithZenRows(u, {})", "const z = new ZenrowsClient()", "await zenrows.googleSearch(q)", "await this.zenrows.scrape(u)"].every((s) => DIRECT.test(s)) && !DIRECT.test("await fetchCheckpointedSnapshot({ purpose: \"fsbo_listing\" })"))
+    // The seven lane 153N named. RETIRED → no direct call left + a tombstone naming its data-provider survivor (raw source,
+    // since a tombstone is a comment) + the survivor really called (stripped source). OWNER-HELD → listed with the reason.
+    const RETIRED: Array<{ file: string; survivor: RegExp; tombstone: RegExp }> = [
+      { file: "lib/recruit-pipeline/recruit-sourcer.ts", survivor: /scrapeRedditPosts\(/, tombstone: /TOMBSTONE \(wave 153, lane 153T[\s\S]{0,700}Survivor: the Reddit switch-intent lane/ },
+      { file: "lib/intelligence/market-insight-generator.ts", survivor: /await getRentcastMarketStats\(/, tombstone: /TOMBSTONE \(wave 153, lane 153T[\s\S]{0,700}Survivor: TIER 1 below — getRentcastMarketStats/ },
+      { file: "lib/avm/provider-chain.ts", survivor: /await requestPropertyValuation\(/, tombstone: /TOMBSTONE \(wave 153, lane 153T[\s\S]{0,700}Survivor: tier 1 above — requestPropertyValuation/ },
+      { file: "app/actions/admin/run-scrape-test.ts", survivor: /await sourceGoogle\(samplePhrases/, tombstone: /TOMBSTONE \(wave 153, lane 153T[\s\S]{0,500}Survivor: lib\/lead-pipeline\/social-sourcer\.ts sourceGoogle/ },
+      { file: "app/api/admin/scrape-test/route.ts", survivor: /await sourceGoogle\(samplePhrases/, tombstone: /TOMBSTONE \(wave 153, lane 153T[\s\S]{0,500}Survivor: lib\/lead-pipeline\/social-sourcer\.ts sourceGoogle/ },
+    ]
+    // OWNER DECISIONS (lane 153T notes): neither purpose is chatter / FSBO, and no data provider in the route table holds the fact.
+    const OWNER_HELD: Record<string, string> = {
+      "lib/osint-client.ts": "person enrichment rungs (contact-enrichment-core.ts) + court filings by territory (osint-sourcer.ts): divorce has no BatchData quickList — owner decides retire vs licence",
+      "lib/onboarding/license-lookup.ts": "agent licence verification against the state regulator registry: no national licence API exists; retiring it sends every verification to manual review",
+    }
+    for (const r of RETIRED) {
+      const raw = readFileSync(join(ROOT, r.file), "utf8"), stripped = code(r.file)
+      check(`RETIRED · ${r.file}: no direct page-transport call remains, the tombstone names the data-provider survivor, and the survivor is called`, !DIRECT.test(stripped) && r.tombstone.test(raw) && r.survivor.test(stripped), JSON.stringify({ direct: DIRECT.exec(stripped)?.[0] ?? null, tomb: r.tombstone.test(raw), survivor: r.survivor.test(stripped) }))
+    }
+    for (const [file, why] of Object.entries(OWNER_HELD)) {
+      check(`OWNER-HELD · ${file} still calls the transport directly and is listed with its reason (never silently passed)`, DIRECT.test(code(file)) && why.length > 40)
+    }
+    check("every one of the seven named callers is either RETIRED or OWNER-HELD (lead-intelligence.ts was done by the integrator)", RETIRED.length + Object.keys(OWNER_HELD).length === 7)
+    const zen = code("lib/external/zenrows-client.ts")
+    check("ZenrowsClient.googleSearch is retired (its only callers were the two dry-runs) and nothing calls it", !/async googleSearch\(/.test(zen) && /ZenrowsClient\.googleSearch[\s\S]{0,400}sourceGoogle/.test(readFileSync(join(ROOT, "lib/external/zenrows-client.ts"), "utf8")))
+    const cronSrc = code("app/api/cron/lead-scraping/route.ts")
+    check("the recruit sourcer's retired reviewUrls are no longer passed by the cron (the key named no live column)", !/brokerage_review_urls/.test(cronSrc) && !/\breviewUrls,/.test(cronSrc.slice(cronSrc.indexOf("sourceRecruitProspects({"), cronSrc.indexOf("sourceRecruitProspects({") + 400)))
+    check("the AVM chain carries no premium flag nobody passed (usePaidProviders retired with the scrape it governed)", !/usePaidProviders/.test(code("lib/avm/provider-chain.ts")))
+  }
+
   console.log(`\nONLINE HUNTING — RESULT: ${passed} passed, ${failed} failed ${failed === 0 ? "✅ ONLINE_HUNTING_PASS" : "❌ ONLINE_HUNTING_FAIL"}`)
   process.exit(failed === 0 ? 0 : 1)
 }

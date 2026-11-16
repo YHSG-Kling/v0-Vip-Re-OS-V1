@@ -16,7 +16,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Zap, Clock, Mail, MessageSquare, Phone, Mailbox, Inbox, Reply, PhoneCall, CalendarRange, AlertTriangle } from "lucide-react"
 import type { SpeedToLeadMetrics } from "@/app/actions/ai-isa/speed-to-lead-metrics"
-import type { IsaProofNumbers, RateNumber } from "@/lib/ai-isa/speed-to-lead-policy"
+import type { IsaProofNumbers, RateNumber, ArbitrationResponsivenessRead } from "@/lib/ai-isa/speed-to-lead-policy"
 
 function humanizeSeconds(s: number | null): string {
   if (s === null) return "—"
@@ -93,6 +93,49 @@ export function IsaProofNumbersStrip({ proof, refused, compact = false }: { proo
           <span>Some ledgers refused to read, so these numbers are partial: {refused.join("; ")}</span>
         </p>
       )}
+    </div>
+  )
+}
+
+const msToHuman = (ms: number | null) => humanizeSeconds(ms === null ? null : Math.round(ms / 1000))
+
+/**
+ * Wave 153 (lane 153T, owner ruling B12): the responder's arbitration responsiveness — first acknowledgement, a meaningful
+ * answer, the hand-off delay, timed-out decisions, obligations still open / expired, late results re-arbitrated or stale, and
+ * the conversations nobody answered. A refused read says "could not be loaded" — never a row of zeros.
+ */
+export function ArbitrationResponsivenessStrip({ read }: { read: ArbitrationResponsivenessRead | null | undefined }) {
+  if (!read || !read.ok) {
+    return (
+      <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 flex items-start gap-2" data-testid="arbitration-responsiveness-refused">
+        <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+        <span>Inbound responsiveness could not be loaded{read && !read.ok ? ` — ${read.reason}` : ""}. These numbers are unknown, not zero.</span>
+      </div>
+    )
+  }
+  const m = read.metrics
+  const cells: Array<{ label: string; value: string; note?: string; warn?: boolean }> = [
+    { label: "First acknowledgement", value: msToHuman(m.firstAcknowledgementMsP50), note: "median" },
+    { label: "Meaningful answer", value: msToHuman(m.meaningfulAnswerMsP50), note: "median" },
+    { label: "Hand-off delay", value: msToHuman(m.handoffDelayMsP50), note: "median" },
+    { label: "Timed out → fallback", value: String(m.timedOut), note: `${m.pendingObligations} still open · ${m.expiredPendingTouches} expired`, warn: m.expiredPendingTouches > 0 },
+    { label: "Late results", value: String(m.reArbitrated), note: `re-arbitrated · ${m.staleLateResults} stale` },
+    { label: "Unanswered", value: String(m.missedConversations), note: "conversations nobody answered", warn: m.missedConversations > 0 },
+  ]
+  return (
+    <div data-testid="arbitration-responsiveness">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+        {cells.map((c) => (
+          <div key={c.label} className={`rounded-lg bg-white border p-2 ${c.warn ? "border-red-300" : ""}`}>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500">{c.label}</div>
+            <p className={`text-lg font-bold leading-tight ${c.warn ? "text-red-600" : ""}`}>{c.value}</p>
+            {c.note && <p className="text-[10px] text-muted-foreground">{c.note}</p>}
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] text-muted-foreground mt-1">
+        {m.inbound} inbound decision{m.inbound === 1 ? "" : "s"}{read.truncated ? ` · the window filled the ${read.rows}-row read: these are floors` : ""}
+      </p>
     </div>
   )
 }
@@ -211,6 +254,15 @@ export function SpeedToLeadPanel({ metrics }: { metrics: SpeedToLeadMetrics }) {
             <Link href="/dashboard/isa/analytics" className="text-[11px] text-indigo-600 underline ml-auto">Analytics</Link>
           </div>
           <IsaProofNumbersStrip proof={metrics.proof} refused={metrics.refused} />
+        </div>
+
+        {/* Inbound responsiveness — the responder's arbitration evidence (wave 153, lane 153T, B12) */}
+        <div className="mt-4">
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-xs font-semibold text-indigo-900">Inbound responsiveness</h3>
+            <span className="text-[11px] text-muted-foreground">last 7 days · every reply decided, timed out, or late</span>
+          </div>
+          <ArbitrationResponsivenessStrip read={metrics.arbitration} />
         </div>
       </CardContent>
     </Card>

@@ -29,6 +29,7 @@ import {
   canDelegationTransition, paidCapabilitiesFor, missionRemaining,
   requestDelegation, acceptDelegation, startDelegationWork, returnDelegationResult, rejectDelegation, dissentDelegation,
   escalateDelegation, cancelDelegation, pendingDelegationsFor, sweepDelegationDeadlines, settleDelegationForRun, getDelegation,
+  TENANT_ANCHORED_SUBJECTS, DELEGATION_SUBJECT_KEYS,
   type DelegationStatus, type DelegationDeps,
 } from "../lib/kernel/manager-delegation"
 import { reviewDelegation, REVIEW_MARK } from "../lib/kernel/manager-dissent"
@@ -55,6 +56,9 @@ function val(row: Row, col: string): any {
   return obj && typeof obj === "object" ? (obj as Row)[col.slice(i + 3)] : undefined
 }
 function memClient(tables: Record<string, Row[]> = {}) {
+  // Wave 153 (lane 153T): every delegation subject is tenant-anchored now (TENANT_ANCHORED_SUBJECTS) — the shared ask()'s
+  // contact c-1 is a real T1 contact row unless a test supplies its own contacts.
+  tables.contacts ??= [{ id: "c-1", contact_id: "c-1-secondary", brokerage_id: T1 }]
   const t = (name: string) => (tables[name] ??= [])
   return {
     tables,
@@ -272,7 +276,8 @@ async function main() {
     const list = await pendingDelegationsFor(T2, {}, c as any)
     const own = await pendingDelegationsFor(T1, { missionId: m.id }, c as any)
     check("E2 pendingDelegationsFor: the other tenant sees an empty list; the owner sees it grouped per mission; no tenant → readRefused", list.pending.length === 0 && own.pending.length === 1 && own.byMission[m.id]?.length === 1 && (await pendingDelegationsFor("", {}, c as any)).readRefused === "no tenant")
-    const crossMission = await requestDelegation(ask({ brokerageId: T2, missionId: m.id, authority: 1 }), c as any, s.deps)
+    // (lane 153T: no subject on this request — the contact anchor would refuse first; E3 isolates the MISSION check.)
+    const crossMission = await requestDelegation(ask({ brokerageId: T2, missionId: m.id, authority: 1, inputEntities: { calendar_event_id: "ce-1" } }), c as any, s.deps)
     check("E3 a request naming another tenant's mission is refused (mission_not_found)", !crossMission.ok && crossMission.reason === "mission_not_found")
     check("E4 getDelegation pinned to the tenant", (await getDelegation(T2, id, c as any)) === null && (await getDelegation(T1, id, c as any))?.id === id)
   }
@@ -390,7 +395,7 @@ async function main() {
   {
     const { DELEGATION_WORKERS, workDelegation } = await import("../lib/kernel/manager-delegation")
     check("W1 the three approved capabilities are catalogue keys with their owners AND a worker each", ([["recruit_outreach", "recruiting_manager"], ["ad_campaign_launch", "ads_manager"], ["lender_preapproval_handoff", "shopping_agent"]] as const).every(([k, m]) => k in APP_CAPABILITY_REGISTRY && CAPABILITY_MANAGER[k] === m && typeof DELEGATION_WORKERS[k] === "function"))
-    const mk = async (tables: Record<string, Row[]> = {}) => {
+    const mk = async (tables: Record<string, Row[]> = { contacts: [{ id: "c-buyer", brokerage_id: T1 }] }) => {
       const c = memClient(tables); const s = seams()
       const m = await createMission({ brokerageId: T1, objective: "First-time buyer path for c-buyer", ownerManager: "shopping_agent", participatingManagers: ["ai_isa"], initialState: "ACTIVE" }, c as any, s.mission)
       if (!m.ok) throw new Error(m.reason)
@@ -416,7 +421,7 @@ async function main() {
     const run = async (contactType: string, lenders: number, tenant = T1) => {
       const w = await mk(world(contactType, lenders, tenant) as any)
       const d = await requestDelegation(wo(w.m.id, "lender_preapproval_handoff"), w.c as any, w.s.deps)
-      if (!d.ok) throw new Error(d.reason)
+      if (!d.ok) return { w, out: { worked: false, reason: d.reason }, row: null as any, refusedAtRequest: d.reason }
       await acceptDelegation({ brokerageId: T1, delegationId: d.delegation.id, reason: "accepted by a human", actor: { type: "user", id: "u-1" } }, w.c as any, w.s.deps)
       const out = await workDelegation({ brokerageId: T1, delegationId: d.delegation.id, userId: null, actor: { type: "user", id: "u-1" } }, w.c as any, w.s.deps)
       return { w, out, row: await getDelegation(T1, d.delegation.id, w.c as any) }
@@ -430,13 +435,37 @@ async function main() {
     const two = await run("both", 2)
     check("W8 two bench lenders and none named → nothing written, ESCALATED for a human to choose, the bench named (never a guessed lender)", !two.out.worked && two.row?.status === "ESCALATED" && /human chooses/.test(two.out.reason ?? "") && /Bench Lender 0/.test(two.out.reason ?? "") && !(two.w.c.tables.buyer_financial_profiles ?? []).length)
     const foreign = await run("buyer", 1, T2)
-    check("W9 tenant isolation: another brokerage's contact reads not found (a lead must convert to a contact first) — the foreign lender never appears", !foreign.out.worked && /not found/.test(foreign.out.reason ?? "") && !JSON.stringify(good.w.c.tables.buyer_financial_profiles ?? []).includes("v-x"))
+    // Wave 153 (lane 153T): re-asserted to the RULE after contacts became tenant-anchored — another brokerage's contact is now
+    // refused at REQUEST time (subject_not_found:contact, no delegation row), earlier and stronger than the worker's own read.
+    check("W9 tenant isolation: another brokerage's contact is refused (subject_not_found:contact, no delegation written) — the foreign lender never appears", !foreign.out.worked && (foreign as any).refusedAtRequest === "subject_not_found:contact" && !(foreign.w.c.tables.manager_delegations ?? []).length && !JSON.stringify(good.w.c.tables.buyer_financial_profiles ?? []).includes("v-x"))
     const notAccepted = await mk(world("buyer", 1) as any)
     const nd = await requestDelegation(wo(notAccepted.m.id, "lender_preapproval_handoff"), notAccepted.c as any, notAccepted.s.deps)
     const early = nd.ok ? await workDelegation({ brokerageId: T1, delegationId: nd.delegation.id, userId: null }, notAccepted.c as any, notAccepted.s.deps) : null
     check("W10 (control) a REQUESTED (not yet accepted) delegation is never worked", !!early && !early.worked && /only an ACCEPTED/.test(early.reason ?? ""))
     const missionsSrc = src("app/actions/missions.ts"), engineSrc = src("lib/kernel/strategy-engine.ts"), fin = src("app/actions/buyer-financial.ts")
     check("W11 wired: the Missions card's accept door works the delegation (workDelegation) as the accepting human; the strategy engine files owner work orders; the agent's lender door and the capability share recordLenderReferral (one path)", /workDelegation\(/.test(missionsSrc) && /userId: g\.userId/.test(missionsSrc) && /ownerWorkOrder: ownStep/.test(engineSrc) && /recordLenderReferral\(/.test(fin) && !/from\("credit_partner_referrals"\)/.test(fin))
+    // ─── W12–W16 (wave 153, lane 153T — lane 153O outside-lane 3): contact + listing subjects are tenant-anchored ───────────
+    check("W12 every delegation subject type is tenant-anchored, each on its own table (contacts keyed on id)", Object.keys(TENANT_ANCHORED_SUBJECTS).sort().join(",") === Object.keys(DELEGATION_SUBJECT_KEYS).sort().join(",") && TENANT_ANCHORED_SUBJECTS.contact === "contacts" && TENANT_ANCHORED_SUBJECTS.listing === "listings" && TENANT_ANCHORED_SUBJECTS.lead === "leads" && TENANT_ANCHORED_SUBJECTS.transaction === "transactions")
+    const anchorWorld = () => memClient({ contacts: [{ id: "c-1", contact_id: "c-1-secondary", brokerage_id: T1 }, { id: "c-foreign", brokerage_id: T2 }], listings: [{ id: "lst-1", brokerage_id: T1 }, { id: "lst-foreign", brokerage_id: T2 }] })
+    {
+      const c = anchorWorld(), s = seams()
+      const own = await requestDelegation(ask({ inputEntities: { listingId: "lst-1" } }), c as any, s.deps)
+      const foreignListing = await requestDelegation(ask({ inputEntities: { listingId: "lst-foreign" } }), c as any, s.deps)
+      check("W13 a listing subject in ANOTHER tenant is refused (subject_not_found:listing) and nothing is written for it", !foreignListing.ok && foreignListing.reason === "subject_not_found:listing" && (c.tables.manager_delegations ?? []).filter((r) => r.input_entities?.listingId === "lst-foreign").length === 0, foreignListing.ok ? "ok" : foreignListing.reason)
+      check("W13 POSITIVE CONTROL: the SAME request on the tenant's own listing is accepted", own.ok, own.ok ? "" : own.reason)
+      const c2 = anchorWorld(), s2 = seams()
+      const ownContact = await requestDelegation(ask({ inputEntities: { contact_id: "c-1" } }), c2 as any, s2.deps)
+      const foreignContact = await requestDelegation(ask({ inputEntities: { contactId: "c-foreign" } }), c2 as any, s2.deps)
+      const bySecondary = await requestDelegation(ask({ inputEntities: { contactId: "c-1-secondary" } }), c2 as any, s2.deps)
+      check("W14 a contact subject in ANOTHER tenant is refused (subject_not_found:contact)", !foreignContact.ok && foreignContact.reason === "subject_not_found:contact")
+      check("W14 POSITIVE CONTROL: the tenant's own contact (by contacts.id) is accepted", ownContact.ok, ownContact.ok ? "" : ownContact.reason)
+      check("W15 the anchor reads contacts.id, never the secondary contacts.contact_id — a secondary id is not a subject", !bySecondary.ok && bySecondary.reason === "subject_not_found:contact")
+      const refusing = memClient({ contacts: [{ id: "c-1", brokerage_id: T1 }] })
+      const realFrom = refusing.from.bind(refusing)
+      ;(refusing as any).from = (tb: string) => tb === "listings" ? { select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: { message: "permission denied for table listings" } }) }) }) }) } : realFrom(tb)
+      const refused = await requestDelegation(ask({ inputEntities: { listingId: "lst-1" } }), refusing as any, seams().deps)
+      check("W16 a REFUSED anchor read refuses the delegation (fail closed — never written on an unreadable tenant check)", !refused.ok && /^read_refused:/.test(refused.reason) && !(refusing.tables.manager_delegations ?? []).length, refused.ok ? "ok" : refused.reason)
+    }
   }
 
   console.log("\n──────────────────────────────────────────────────")

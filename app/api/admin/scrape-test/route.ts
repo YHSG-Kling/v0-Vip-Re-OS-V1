@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
-import { ZenrowsClient, BatchDataClient } from "@/lib/external"
+import { BatchDataClient } from "@/lib/external"
 import { buildTerritoryPhrases } from "@/lib/lead-pipeline/source-intent-map"
 import {
   type NormalizedScrapedRecord,
@@ -93,25 +93,15 @@ export async function GET(request: NextRequest) {
       }
       estimatedCost = rawSellers.length * 0.005
     } else if (source === "google_phrase_intent") {
-      const zenrows = new ZenrowsClient()
+      // TOMBSTONE (wave 153, lane 153T — owner ruling B3; CLAUDE.md §1): this dry-run ran ZenrowsClient.googleSearch — a Google
+      // results page through the ZenRows transport DIRECTLY (no purpose / robots / terms / spend checkpoint) — while the production
+      // google_phrase_intent lane never used ZenRows. Survivor: lib/lead-pipeline/social-sourcer.ts sourceGoogle (the cron's own
+      // Apify Google-results lane), previewed here exactly as the cron would ingest it. Still a dry run: nothing is written.
+      const { sourceGoogle } = await import("@/lib/lead-pipeline/social-sourcer")
       const samplePhrases = [...phrases.sellerPhrases.slice(0, 2), ...phrases.buyerPhrases.slice(0, 1)]
-      for (const phrase of samplePhrases) {
-        const html = await zenrows.googleSearch(phrase, { num: 3 }).catch(() => null)
-        if (!html) continue
-        estimatedCost += 0.002
-        // Return phrase as a signal record for inspection
-        previewRecords.push({
-          sourceRecordId:  `google-dryrun-${Buffer.from(phrase).toString('base64').slice(0, 20)}`,
-          source:          "google_phrase_intent",
-          behaviorType:    "search_signal",
-          intentType:      phrase.includes('sell') ? 'seller' : 'buyer',
-          intentSignals:   [phrase],
-          city:            market.city,
-          state:           market.state,
-          motivationScore: 40,
-          rawPayload:      { phrase, html_length: html.length },
-        })
-      }
+      const google = await sourceGoogle(samplePhrases, { city: market.city ?? null, state: market.state ?? null })
+      estimatedCost += google.cost
+      previewRecords.push(...google.records.slice(0, 10))
     } else {
       return NextResponse.json({ error: `source '${source}' not supported for dry-run yet` }, { status: 400 })
     }

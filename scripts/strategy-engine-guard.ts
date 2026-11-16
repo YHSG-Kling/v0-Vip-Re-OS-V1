@@ -60,6 +60,11 @@ const src = (p: string) => stripComments(readFileSync(p, "utf8"))
 // ─── in-memory supabase-js shaped client (manager-delegation-guard's) ──────────────────────────
 type Row = Record<string, any>
 function memClient(tables: Record<string, Row[]> = {}) {
+  // Wave 153 (lane 153T): every delegation subject is tenant-anchored (lib/kernel/manager-delegation.ts TENANT_ANCHORED_SUBJECTS),
+  // so the subjects these fixtures activate strategies on are real T1 rows (contacts keyed on id). A T2 activation on c-1 finds
+  // no T2 contact — its delegations are refused, as live.
+  tables.contacts ??= ["c-1", "c-9", "c-ftb", "c-ttc"].map((id) => ({ id, brokerage_id: T1 }))
+  tables.listings ??= [{ id: "l-1", brokerage_id: T1 }]
   const t = (name: string) => (tables[name] ??= [])
   return {
     tables,

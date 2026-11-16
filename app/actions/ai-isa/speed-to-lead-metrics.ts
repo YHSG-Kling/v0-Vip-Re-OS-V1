@@ -20,6 +20,8 @@ import {
   preferMeasuredFirstTouch,
   summarizeFirstTouchLatency,
   summarizeIsaProofNumbers,
+  readArbitrationResponsiveness,
+  type ArbitrationResponsivenessRead,
   type FirstTouchLatencySummary,
   type IsaProofNumbers,
 } from "@/lib/ai-isa/speed-to-lead-policy"
@@ -35,6 +37,9 @@ export interface SpeedToLeadMetrics {
   proofSince: string
   /** Lane 90C — ledger reads that were REFUSED (message per read); the panel says so. */
   refused: string[]
+  /** Wave 153 (lane 153T, B12): the responder's arbitration responsiveness over the 7-day window — a refused read is
+   *  { ok: false } and the panel renders "could not be loaded", never zeros. */
+  arbitration: ArbitrationResponsivenessRead
 }
 
 const LOOKBACK_DAYS = 7
@@ -47,7 +52,7 @@ export async function getSpeedToLeadMetrics(brokerageId: string): Promise<SpeedT
   const proofSince = new Date(Date.now() - PROOF_LOOKBACK_DAYS * 86_400_000).toISOString()
   const refused: string[] = []
 
-  const [awaitLeads, awaitContacts, touchedLeads, touchedContacts, outreach, calls, measured] = await Promise.all([
+  const [awaitLeads, awaitContacts, touchedLeads, touchedContacts, outreach, calls, measured, arbitration] = await Promise.all([
     // Leads owned by the ISA that have not yet been first-touched.
     supabase
       .from("leads")
@@ -104,6 +109,8 @@ export async function getSpeedToLeadMetrics(brokerageId: string): Promise<SpeedT
       .like("source_ref", "speed_to_lead:%")
       .gte("created_at", since)
       .limit(1000),
+    // WAVE 153 (153T, B12): the responder's decisions + late-result settlements — the SAME session client (RLS-scoped).
+    readArbitrationResponsiveness(supabase, brokerageId, since),
   ])
 
   for (const [label, res] of [
@@ -149,5 +156,6 @@ export async function getSpeedToLeadMetrics(brokerageId: string): Promise<SpeedT
     proof,
     proofSince,
     refused,
+    arbitration,
   }
 }

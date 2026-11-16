@@ -1,6 +1,6 @@
 /**
  * Market Insight Generator
- * 4-tier data provider waterfall: RentCast → BatchData → OSINT/ZenRows → CMA aggregate
+ * Data provider waterfall: RentCast → CMA aggregate (the OSINT/ZenRows Zillow tier is retired — tombstone below)
  * Generates AI-powered market analysis for agents
  */
 
@@ -16,12 +16,6 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { emitKernelEvent } from '@/lib/kernel/emit'
 import { getRentcastMarketStats } from '@/lib/property/rentcast'
-
-// Minimal shape for the free OSINT (ZenRows/Zillow) market-stats fallback.
-interface ScrapedMarketStats {
-  median_sale_price?: number
-  avg_days_on_market?: number
-}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -90,52 +84,13 @@ const MarketInsightSchema = z.object({
 
 type MarketInsight = z.infer<typeof MarketInsightSchema>
 
-// ─── OSINT Scraper (inline — do not modify lib/osint-client.ts) ──────────────
+// TOMBSTONE (wave 153, lane 153T — owner ruling B3: "if you can get the info from a data provider, then that is the safer
+// bet"; CLAUDE.md §1): scrapeZillowNeighborhoodData fetched a Zillow city page through the ZenRows transport DIRECTLY (no
+// purpose, robots, terms or spend checkpoint) and string-matched a median price / DOM out of the markup. Market statistics
+// are not real-estate-need chatter or FSBO, and a data provider holds them. Survivor: TIER 1 below — getRentcastMarketStats
+// (lib/property/rentcast.ts), the chosen property-data provider's zip-level market stats; then the CMA aggregate.
 
-async function scrapeZillowNeighborhoodData(
-  city: string,
-  state: string
-): Promise<ScrapedMarketStats> {
-  if (!process.env.ZENROWS_API_KEY) return {}
-
-  try {
-    const { ZenrowsClient } = await import('@/lib/external/zenrows-client')
-    const zenrows = new ZenrowsClient()
-    const url = `https://www.zillow.com/homes/${encodeURIComponent(city)}-${state}_rb/`
-    const result = await zenrows.scrape(url, { js_render: true })
-
-    if (!result.success || !result.html) return {}
-
-    // Parse Zillow neighborhood stats from HTML using string matching
-    const html = result.html
-    let stats: ScrapedMarketStats = {}
-
-    // Look for median price patterns
-    if (html.includes('Median listing price')) {
-      const priceMatch = html.split('Median listing price')[1]?.split('$')[1]?.split('<')[0]
-      if (priceMatch) {
-        const cleaned = priceMatch.replace(/[^0-9]/g, '')
-        stats.median_sale_price = parseInt(cleaned, 10) || 0
-      }
-    }
-
-    // Look for DOM stats
-    if (html.includes('days on Zillow') || html.includes('Median days on market')) {
-      const domSection = html.split(/days on Zillow|Median days on market/)[0]
-      const domMatch = domSection?.match(/(\d+)\s*$/)?.[1]
-      if (domMatch) {
-        stats.avg_days_on_market = parseInt(domMatch, 10) || 0
-      }
-    }
-
-    return stats
-  } catch (error) {
-    console.error('[OSINT] Zillow scrape error:', error)
-    return {}
-  }
-}
-
-// ─── Data Refresh (4-tier waterfall) ─────────────────────────────────────────
+// ─── Data Refresh (provider waterfall) ─────────────────────────────────────────
 
 export async function refreshMarketData(
   brokerageId: string,
@@ -166,23 +121,7 @@ export async function refreshMarketData(
     }
   }
 
-  // TIER 2: OSINT/ZenRows (free scraping fallback)
-  if (!stats && process.env.ZENROWS_API_KEY && city && state) {
-    const osintStats = await scrapeZillowNeighborhoodData(city, state)
-    if (Object.keys(osintStats).length > 0) {
-      stats = {
-        active_listings: 0,
-        new_listings_30d: 0,
-        sold_listings_30d: 0,
-        median_sale_price: osintStats.median_sale_price || 0,
-        avg_days_on_market: osintStats.avg_days_on_market || 0,
-        list_to_sale_ratio: 0,
-        months_of_inventory: 0,
-        price_trend_pct_1yr: 0,
-      }
-      source = 'osint_scrape'
-    }
-  }
+  // (TIER 2, the OSINT/ZenRows Zillow scrape, is retired — tombstone above; TIER 1 RentCast is its survivor.)
 
   // TIER 4: CMA Aggregate (always available)
   if (!stats) {

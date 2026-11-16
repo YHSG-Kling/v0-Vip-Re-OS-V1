@@ -222,6 +222,9 @@ export interface DatafinitiPullDeps {
   recordSavings?: (input: { brokerageId: string; provider: string; door: string; plan: PrePullDedupPlan; unitUsd: number | null; priceBasis: "published" | "estimated"; coverage: "tenant_paid" | "platform_covered" }) => Promise<unknown>
   /** Fetch a completed download's result files (format not documented to us: a JSON array or NDJSON is accepted). */
   fetchDownloadFile?: (url: string) => Promise<DatafinitiPeopleRecord[] | null>
+  /** Wave 153 (lane 153T): persist the resume checkpoint the moment a PAID download id exists (before its status is read), so a
+   *  later cycle resumes it instead of buying again (lib/lead-pipeline/datafiniti-territory-door.ts). false = not written. */
+  onDownloadStarted?: (p: { downloadId: string; requestId: string; chargeKey: string }) => Promise<boolean>
 }
 
 export interface DatafinitiPullReport {
@@ -245,12 +248,14 @@ export interface DatafinitiPullReport {
   ingested: IngestBatchResult | null
   downloadId: string | null
   failure: DatafinitiFailure | null
+  /** Wave 153 (lane 153T): whether the resume checkpoint for a freshly started download was written (null = none started). */
+  checkpointed: boolean | null
 }
 
 const blank = (route: "platform" | "tenant"): DatafinitiPullReport => ({
   ok: false, refused: null, stage: "rights", route, preview: null, countUnavailable: false, prePull: null, paidCalls: 0, replayedCharge: false,
   outcomeUnknown: null, creditsCharged: null, costUsd: null, priceBasis: null, booked: false, returned: 0,
-  mapped: { written: 0, refused: 0, ungrounded: 0, stale: 0 }, ingressDuplicates: 0, ingested: null, downloadId: null, failure: null,
+  mapped: { written: 0, refused: 0, ungrounded: 0, stale: 0 }, ingressDuplicates: 0, ingested: null, downloadId: null, failure: null, checkpointed: null,
 })
 
 /**
@@ -326,8 +331,11 @@ export async function runDatafinitiPeoplePull(input: DatafinitiPullInput, deps: 
     ? { vendor: VENDOR, status: "connected" as const, healthy: input.tenantConnection.verdict.state === "healthy" || input.tenantConnection.verdict.state === "degraded", authorized: input.tenantConnection.verdict.mayIngest }
     : null
   const gate = paidPullApproval(plans, { brokerageId: input.brokerageId, source: DATAFINITI_SOURCE_KEY }, now, { platform: input.route === "platform" ? deps.platformDoor ?? null : null, tenant: tenantDoor })
-  if (!gate.allowed) return refuse("spend_gate", gate.reason)
-  if (gate.maxSpendUsd !== null && !input.resumeDownloadId) {
+  // A RESUME buys nothing (status + result files are free; the start was charged and booked) — so the SPEND gate does not
+  // apply to it (wave 153, lane 153T): a territory whose budget that very purchase spent must still collect what it paid for
+  // before the 7-day links lapse. Rights were checked at step 1 and still are.
+  if (!gate.allowed && !input.resumeDownloadId) return refuse("spend_gate", gate.reason)
+  if (gate.allowed && gate.maxSpendUsd !== null && !input.resumeDownloadId) {
     const affordable = Math.floor(gate.maxSpendUsd / unit)
     if (affordable <= 0) return refuse("spend_gate", `the approved ceiling ($${gate.maxSpendUsd}) buys no record at $${unit} each`)
     want = Math.min(want, affordable)
@@ -418,6 +426,7 @@ export async function runDatafinitiPeoplePull(input: DatafinitiPullInput, deps: 
       rep.booked = await deps.book(booking(credits, null, "download_started"))
       rep.creditsCharged = credits
       rep.costUsd = credits === null ? null : Math.round(credits * unit * 1e6) / 1e6
+      if (deps.onDownloadStarted) rep.checkpointed = await deps.onDownloadStarted({ downloadId: downloadId!, requestId: input.requestId, chargeKey }).catch(() => false)
     }
     rep.downloadId = downloadId
     const st = await datafinitiDownloadStatus(cred, downloadId!, deps.client)

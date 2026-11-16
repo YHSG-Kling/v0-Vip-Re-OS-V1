@@ -76,13 +76,28 @@ runs:
       env:
         BUILD_PATHS: ${{ inputs.debug-build-paths }}
       run: |
+        # Wave 153 (lane 153T — convergence row 5; re-made from lane 153K's diff): print the PEAK RSS of this phase on a GREEN
+        # run too (V8 prints GC lines only on the way to an abort). GNU time's "Maximum resident set size" is the LARGEST SINGLE
+        # descendant's RSS (getrusage RUSAGE_CHILDREN — the compile worker), not a sum across processes. `set +e` around the
+        # build only so the reading prints on a failure as well; the build's exit code is preserved by `exit $rc`.
+        TIMEF="$RUNNER_TEMP/next-compile-time.txt"
+        TIMER=""; if [ -x /usr/bin/time ]; then TIMER="/usr/bin/time -v -o $TIMEF"; fi
+        set +e
         if [ -n "$BUILD_PATHS" ]; then
           echo "compile scope (--debug-build-paths): $BUILD_PATHS"
-          npx next build --webpack --experimental-build-mode compile --debug-build-paths "$BUILD_PATHS"
+          $TIMER npx next build --webpack --experimental-build-mode compile --debug-build-paths "$BUILD_PATHS"; rc=$?
         else
           echo "compile scope: the whole tree"
-          npx next build --webpack --experimental-build-mode compile
+          $TIMER npx next build --webpack --experimental-build-mode compile; rc=$?
         fi
+        RSS_KB=""
+        if [ -f "$TIMEF" ]; then RSS_KB=$(grep -m1 "Maximum resident set size" "$TIMEF" | awk '{print $NF}'); fi
+        if [ -n "$RSS_KB" ]; then
+          echo "PEAK RSS (compile phase, largest process): $((RSS_KB / 1024)) MB · exit ${rc}" | tee -a "$GITHUB_STEP_SUMMARY"
+        else
+          echo "PEAK RSS (compile phase): NOT MEASURED — /usr/bin/time absent or wrote no reading · exit ${rc}" | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
+        exit $rc
     # MEASURED 2026-10-06 (run 37420587555, commit 7e6e412a3): the FIRST two-phase run cleared the
     # heap wall — compile finished, 411 static pages generated in 3.2 min — and then died in
     # "Finalizing page optimization" with ENOENT rename .next/server/proxy.js → middleware.js.
@@ -108,10 +123,22 @@ runs:
         NODE_OPTIONS: "--max-old-space-size=${{ inputs.generate-heap-mb }}"
         BUILD_PATHS: ${{ inputs.debug-build-paths }}
       run: |
+        # Same reading as the compile phase (lane 153T, row 5).
+        TIMEF="$RUNNER_TEMP/next-generate-time.txt"
+        TIMER=""; if [ -x /usr/bin/time ]; then TIMER="/usr/bin/time -v -o $TIMEF"; fi
+        set +e
         if [ -n "$BUILD_PATHS" ]; then
           echo "generate scope (--debug-build-paths, the SAME globs as compile): $BUILD_PATHS"
-          npx next build --webpack --experimental-build-mode generate --debug-build-paths "$BUILD_PATHS"
+          $TIMER npx next build --webpack --experimental-build-mode generate --debug-build-paths "$BUILD_PATHS"; rc=$?
         else
           echo "generate scope: the whole tree"
-          npx next build --webpack --experimental-build-mode generate
+          $TIMER npx next build --webpack --experimental-build-mode generate; rc=$?
         fi
+        RSS_KB=""
+        if [ -f "$TIMEF" ]; then RSS_KB=$(grep -m1 "Maximum resident set size" "$TIMEF" | awk '{print $NF}'); fi
+        if [ -n "$RSS_KB" ]; then
+          echo "PEAK RSS (generate phase, largest process): $((RSS_KB / 1024)) MB · exit ${rc}" | tee -a "$GITHUB_STEP_SUMMARY"
+        else
+          echo "PEAK RSS (generate phase): NOT MEASURED — /usr/bin/time absent or wrote no reading · exit ${rc}" | tee -a "$GITHUB_STEP_SUMMARY"
+        fi
+        exit $rc
