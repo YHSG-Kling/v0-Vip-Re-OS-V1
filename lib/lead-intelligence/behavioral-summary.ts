@@ -294,24 +294,10 @@ export interface BehavioralIntentSummary {
     keywords: string[]
     relevanceScore: number | null
   }>
-  googleSearchActivityCount: number
-  googleSearchActivity: Array<{
-    searchLocation: string | null
-    searchTerms: string[]
-    detectedIntent: string | null
-  }>
-  googleSearchIntelligenceCount: number
-  /** Market-demand sampling for the contact's own market — brokerage-wide
-   *  (google_search_intelligence has no per-contact column; see the docblock
-   *  on analyzeGoogleSearchIntent in app/actions/lead-intelligence.ts). */
-  marketSearchDemand: Array<{
-    query: string | null
-    location: string | null
-    trend: string | null
-    relatedSearches: string[]
-    potentialLeadsCount: number | null
-    scrapedAt: string | null
-  }>
+  // TOMBSTONE (orphan doctrine §1.3; owner ruling 2026-11-16, wave 153 B3): googleSearchActivity* / marketSearchDemand left this
+  // summary with their writers (app/actions/lead-intelligence.ts — the lead name-search loop and the Google phrase sampler, both
+  // outside the scraping scope and both recording a results page as a person's behaviour). Public statements by a named person
+  // are the Exa person-mention survivor's (lib/providers/exa → the RawData door); nothing reads those two tables any more.
   osintSignalCount: number
   osintSources: string[]
   /** FULL `data_content` payload per OSINT row (wave 66 — see the FAIR HOUSING
@@ -346,8 +332,6 @@ const EMPTY_SUMMARY = (contactId: string): BehavioralIntentSummary => ({
   externalBehaviorCount: 0, externalBehavior: [],
   idxInteractionsCount: 0, idxInteractions: [],
   nextdoorActivityCount: 0, nextdoorActivity: [],
-  googleSearchActivityCount: 0, googleSearchActivity: [],
-  googleSearchIntelligenceCount: 0, marketSearchDemand: [],
   osintSignalCount: 0, osintSources: [], osintProfiles: [],
   loggedSignalCount: 0, topSignalStrength: null,
   outreachAttemptCount: 0,
@@ -380,16 +364,6 @@ export async function buildBehavioralIntentSummary(
   const nextdoorQuery = supabase.from("nextdoor_activity")
     .select("activity_type, activity_url, content_snippet, neighborhood, detected_keywords, relevance_score")
     .eq("lead_id", contactId)
-  const googleActivityQuery = supabase.from("google_search_activity")
-    .select("search_location, search_terms, detected_intent, scraped_via, search_patterns")
-    .eq("lead_id", contactId)
-  const googleIntelQuery = brokerageId
-    ? supabase.from("google_search_intelligence")
-      .select("search_query, detected_location, related_searches, trend, potential_leads_count, scraped_at", { count: "exact" })
-      .eq("brokerage_id", brokerageId)
-      .order("scraped_at", { ascending: false })
-      .limit(10)
-    : null
   // data_content is selected AND surfaced in full (wave 66 — see the FAIR
   // HOUSING tombstone above): the JSON body rides into `osintProfiles`
   // verbatim, whatever fields the source captured.
@@ -421,27 +395,23 @@ export async function buildBehavioralIntentSummary(
   const [
     { data: signals, error: signalsError },
     { data: nextdoor, error: nextdoorError },
-    { data: googleActivity, error: googleActivityError },
     { data: osint, error: osintError },
     { data: signalsLog, error: signalsLogError },
     { data: outreach, error: outreachError },
     { data: valuations, error: valuationError },
     { data: callbacks, error: callbackError },
     { data: contactRow, error: contactError },
-  ] = await Promise.all([signalsQuery, nextdoorQuery, googleActivityQuery, osintQuery, signalsLogQuery, outreachQuery,
+  ] = await Promise.all([signalsQuery, nextdoorQuery, osintQuery, signalsLogQuery, outreachQuery,
     valuationQuery.limit(20), callbackQuery.limit(20), contactQuery.maybeSingle()])
   if (valuationError) console.error("[behavioral-summary] valuation_requests read refused:", valuationError.message)
   if (callbackError) console.error("[behavioral-summary] tasks(ai_callback) read refused:", callbackError.message)
   if (contactError) console.error("[behavioral-summary] contacts(timeline) read refused:", contactError.message)
-  const googleIntelResult = googleIntelQuery ? await googleIntelQuery : null
 
   if (signalsError) console.error("[behavioral-summary] behavioral_signals read refused:", signalsError.message)
   if (nextdoorError) console.error("[behavioral-summary] nextdoor_activity read refused:", nextdoorError.message)
-  if (googleActivityError) console.error("[behavioral-summary] google_search_activity read refused:", googleActivityError.message)
   if (osintError) console.error("[behavioral-summary] lead_osint_data read refused:", osintError.message)
   if (signalsLogError) console.error("[behavioral-summary] intelligence_signals_log read refused:", signalsLogError.message)
   if (outreachError) console.error("[behavioral-summary] intelligent_outreach_log read refused:", outreachError.message)
-  if (googleIntelResult?.error) console.error("[behavioral-summary] google_search_intelligence read refused:", googleIntelResult.error.message)
 
   const signalIds = ((signals ?? []) as Array<{ id: string }>).map((s) => s.id)
   let externalBehaviorRows: Array<Record<string, unknown>> = []
@@ -466,7 +436,6 @@ export async function buildBehavioralIntentSummary(
   }
 
   const nextdoorRows = (nextdoor ?? []) as Array<{ activity_type: string | null; neighborhood: string | null; detected_keywords: string[] | null; relevance_score: number | null }>
-  const googleActivityRows = (googleActivity ?? []) as Array<{ search_location: string | null; search_terms: string[] | null; detected_intent: string | null }>
   const osintRows = (osint ?? []) as Array<{ data_type: string | null; data_source: string | null; confidence_score: number | null; data_content: unknown }>
   const outreachRows = (outreach ?? []) as Array<{ outreach_type: string | null; channel: string | null; content: string | null }>
   const signalsLogRows = (signalsLog ?? []) as Array<{ signal_type: string | null; signal_strength: number | null; detected_at: string | null }>
@@ -501,9 +470,6 @@ export async function buildBehavioralIntentSummary(
   for (const r of nextdoorRows) {
     observations.push({ type: "forum_activity", source: "nextdoor_activity", observedAt: null, strength: r.relevance_score })
   }
-  for (let i = 0; i < googleActivityRows.length; i++) {
-    observations.push({ type: "search_intent", source: "google_search_activity", observedAt: null })
-  }
   for (const r of (valuations ?? []) as Array<{ submitted_at: string | null; appointment_scheduled: boolean | null }>) {
     observations.push({ type: "valuation_request", source: "valuation_requests", observedAt: r.submitted_at })
     if (r.appointment_scheduled === true) {
@@ -530,9 +496,6 @@ export async function buildBehavioralIntentSummary(
   const narrativeParts: string[] = []
   if (externalBehaviorRows.length > 0) narrativeParts.push(`${externalBehaviorRows.length} external property-view signal(s)`)
   if (nextdoorRows.length > 0) narrativeParts.push(`${nextdoorRows.length} neighborhood-forum signal(s) (top relevance ${topRelevance})`)
-  if (googleActivityRows.length > 0) narrativeParts.push(`${googleActivityRows.length} search-intent hit(s)`)
-  const marketDemandRows = ((googleIntelResult?.data ?? []) as Array<{ search_query: string | null; detected_location: string | null; related_searches: string[] | null; trend: string | null; potential_leads_count: number | null; scraped_at: string | null }>)
-  if (marketDemandRows.length > 0) narrativeParts.push(`market search-demand trending ${marketDemandRows[0].trend ?? "unknown"} for "${marketDemandRows[0].search_query ?? "the area"}"`)
   if (osintRows.length > 0) {
     narrativeParts.push(`${osintRows.length} OSINT enrichment source(s): ${osintSources.join(", ") || "unspecified"}`)
     // Wave 66: fold the captured content's own field names into the narrative
@@ -579,15 +542,6 @@ export async function buildBehavioralIntentSummary(
     nextdoorActivity: nextdoorRows.map((r) => ({
       activityType: r.activity_type, neighborhood: r.neighborhood,
       keywords: r.detected_keywords ?? [], relevanceScore: r.relevance_score,
-    })),
-    googleSearchActivityCount: googleActivityRows.length,
-    googleSearchActivity: googleActivityRows.map((r) => ({
-      searchLocation: r.search_location, searchTerms: r.search_terms ?? [], detectedIntent: r.detected_intent,
-    })),
-    googleSearchIntelligenceCount: googleIntelResult?.count ?? 0,
-    marketSearchDemand: marketDemandRows.map((r) => ({
-      query: r.search_query, location: r.detected_location, trend: r.trend,
-      relatedSearches: r.related_searches ?? [], potentialLeadsCount: r.potential_leads_count, scrapedAt: r.scraped_at,
     })),
     osintSignalCount: osintRows.length,
     osintSources,

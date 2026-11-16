@@ -229,15 +229,11 @@ export default async function VoiceISAPage() {
   // configure VAPI — which this OS no longer calls at all. The profile query
   // went with it: that test was its only consumer.
   const callingReadiness = await resolveIsaCallingReadiness(supabase, brokerageId)
-  const isaActive      = brokerageId ? (await getAIISASettings(brokerageId)).enabled : false
-  // require_broker_approval still has no WRITER. The `ai_isa_settings` table is no
-  // longer phantom — m552 gave it the per-user owner grain and
-  // lib/ai-isa/resolve-isa-settings.ts::writeIsaSettings writes it — but that
-  // writer sets is_active + settings, and `require_broker_approval` is not a key of
-  // AIISASettings, so the COLUMN remains writer-less and reading it would be
-  // reading a value nobody can set. Still the honest `false`; the open half is a
-  // writer, not a reader.
-  const requiresBrokerApproval = false
+  const isaSettingsNow = brokerageId ? await getAIISASettings(brokerageId) : null
+  const isaActive      = isaSettingsNow ? isaSettingsNow.enabled : false
+  // m951 / owner ruling B7 (wave 153): the default is OFF — an arbiter-decided lead follow-up needs no click. A broker turns
+  // approval ON in Settings → ISA Calling (saveAIISASettings → writeIsaSettings writes the column); this reads the stored choice.
+  const requiresBrokerApproval = isaSettingsNow ? isaSettingsNow.require_broker_approval === true : false
 
   return (
     <div className="flex flex-col gap-4 sm:gap-6 p-4 sm:p-6">

@@ -44,21 +44,14 @@ export const DATAFINITI_API_BASE = "https://api.datafiniti.co/v4"
 export const DATAFINITI_PLATFORM_TOKEN_ENV = "DATAFINITI_API_TOKEN"
 /** "For non-downloads, the maximum is 10 records." (reference/people-data) */
 export const DATAFINITI_SEARCH_MAX_RECORDS = 10
-/** df_download_status: "Download result-file links are valid for 7 days." (mcp-server) */
-export const DATAFINITI_DOWNLOAD_LINK_TTL_DAYS = 7
-export const DATAFINITI_CONTRACT = Object.freeze({
-  readAt: "2026-11-16",
-  sources: [
-    "https://docs.datafiniti.co/reference/people-data",
-    "https://docs.datafiniti.co/docs/people-data-schema",
-    "https://docs.datafiniti.co/docs/api-people-data",
-    "https://docs.datafiniti.co/docs/people-count",
-    "https://docs.datafiniti.co/docs/how-credits-work-api",
-    "https://docs.datafiniti.co/mcp-server",
-    "https://www.datafiniti.co/data/people-data",
-  ],
-  unreadable: ["https://docs.datafiniti.co/reference/downloads", "https://docs.datafiniti.co/reference/auth", "https://docs.datafiniti.co/reference/account"],
-} as const)
+// df_download_status: "Download result-file links are valid for 7 days." (mcp-server) — the territory door re-reads the status
+// (and so the links) on every resume, so no stored link is ever older than the run that reads it.
+//
+// THE CONTRACT THIS CLIENT WAS WRITTEN FROM (read 2026-11-16; documentation, not runtime state):
+//   read:       docs.datafiniti.co/reference/people-data · /docs/people-data-schema · /docs/api-people-data · /docs/people-count ·
+//               /docs/how-credits-work-api · /mcp-server · www.datafiniti.co/data/people-data
+//   UNREADABLE: docs.datafiniti.co/reference/downloads · /reference/auth · /reference/account — so the username / password token
+//               exchange and REST pagination are NOT built; download status uses the documented MCP tool instead.
 
 // ─── the documented People record (schema page — "actual people records may not have every field present") ─────────
 
@@ -511,7 +504,6 @@ export async function getDatafinitiAccountHealth(cred: DatafinitiCredential, opt
   }
 }
 
-/** True when the platform token is configured (by name — the value is never read beyond presence). */
-export function datafinitiPlatformConfigured(env: Record<string, string | undefined> = process.env): boolean {
-  return !!(env[DATAFINITI_PLATFORM_TOKEN_ENV] ?? "").trim()
-}
+// TOMBSTONE (orphan doctrine §1.3): datafinitiPlatformConfigured (a by-name presence check) had no caller — the acquisition door
+// establishes "is the platform's own connection configured" for EVERY vendor in one place, by env NAME, in
+// lib/lead-pipeline/pooled-pull.ts platformProviderDoorFacts (the registry's envVars), so a second per-vendor copy is not kept.

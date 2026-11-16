@@ -2209,6 +2209,295 @@ check("G52 the matrix carries a wave-152 release-gate section with a row per wav
   [...WAVE152_GATES.filter((g) => !gateRows152.includes(g.gate.toLowerCase())).map((g) => `missing: ${g.gate}`), ...gateRows152.filter((r) => !WAVE152_GATES.some((g) => g.gate.toLowerCase() === r)).map((r) => `unknown row: ${r}`)].join(", "))
 
 // ═════════════════════════════════════════════════════════════════════════════
+// WAVE 153 (lane 153L) — G⁹ · THE WAVE-153 GATES. One gate per OWNER RULING THAT CHANGED CODE: the twenty rulings of 2026-11-14
+// ($S/WAVE153_OWNER_NOTES.md — 18 is this certification, 19 the report, 20 a model choice, so 1–17 changed code) and B1–B14 of
+// 2026-11-16 ($S/WAVE153_OWNER_NOTES_B.md — B14 landed as the bundled font). Certified by the SAME three readings as the wave-151 /
+// wave-152 blocks (certify151, unchanged): (1) the lane contract keys + the chained survivors; (2) the migration(s) the ruling landed
+// as carry the APPLIED stamp (claimOf); (3) THE RULE, read from STRIPPED source, the migrations' stripped SQL and the GENERATED caches
+// (schema snapshot, CHECK vocabularies) — never a waypoint (no pinned count, no line number, no stamp text). A ruling that needed no
+// migration certifies on (1) + (3). Lanes 153R (marketing-census partial gaps) and 153T (Datafiniti wiring + small closures) were in
+// flight when this block was written: they are NOT in WAVE153_LANE_IDS — the integrator adds their contract keys here when they land
+// (G54 then requires each key to be named by a gate). CERTIFIED is an engineering reading: every provider stays SIMULATED / LICENSE-HELD,
+// and the owner obligations below (O1 storage + listing-media, O2 seeds, O3 hosting) are never discharged by it.
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("\n[G⁹ · wave 153 gates — the owner's 2026-11-14 rulings 1–17 and 2026-11-16 rulings B1–B14 that changed code → applied migration + the rule in the tree + the lane contracts]")
+const WAVE153_LANE_IDS = ["153A", "153B", "153C", "153D", "153E", "153F", "153G", "153H", "153I", "153J", "153K", "153M", "153N", "153O", "153P", "153Q", "153S", "153L"] as const
+/** NEW proof keys per wave-153 lane ([] = the lane EXTENDED existing guards and registered no new key; null would mean unpublished). Read from each lane patch's package.json hunk. */
+const WAVE153_CONTRACT_PROOFS: Readonly<Record<(typeof WAVE153_LANE_IDS)[number], readonly string[] | null>> = Object.freeze({
+  "153A": ["test:expense-office-rollup"], "153B": ["test:commission-term-change"], "153C": ["test:deal-work-ownership"], "153D": ["test:closing-readiness"],
+  "153E": [], "153F": [], "153G": [], "153H": ["test:os-arbitration-canaries"], "153I": ["test:campaign-bundle-follow-on", "test:marketing-capability-census"],
+  "153J": ["test:remotion-deploy-trace", "test:render-queue-recovery"], "153K": [], "153M": ["test:datafiniti-connector"], "153N": ["test:online-hunting"],
+  "153O": [], "153P": ["test:marketing-loops"], "153Q": ["test:deal-automation"], "153S": ["test:send-recovery"], "153L": ["test:wave153-canaries"],
+})
+const contract153 = (lane: (typeof WAVE153_LANE_IDS)[number]) => WAVE153_CONTRACT_PROOFS[lane] ?? []
+// The ABSENCE finders the wave-153 rules use — named once, so G56's positive controls exercise the very regex each rule reads.
+const INVENTED_TAX_RATE_153 = /DEFAULT_EFFECTIVE_INCOME_RATE|\?\?\s*0\.12\b|\?\?\s*25\b/
+const EXPLICIT_AUTONOMOUS_RULE_153 = /posture\s*!==\s*["']autonomous["']/
+const NEEDLE_PLAYBOOKS_153 = /\bNEEDLE_PLAYBOOKS\b/
+const DIRECT_NEXTDOOR_SCRAPE_153 = /\.scrapeNextdoor\(/
+const IMPOSSIBLE_LISTING_DEAL_153 = /deal_type\s*===\s*["']listing["']/
+const TITLE_AGENT_SEAT_153 = /(?:user_type|userType)\s*===\s*["']title_agent["']/
+const FONT_CDN_IMPORT_153 = /from\s+["']@remotion\/google-fonts[^"']*["']|import\(\s*["']@remotion\/google-fonts/
+const TYPED_CD_DATE_153 = /closing_disclosure_delivered_date/
+const AGREEMENTS_LITERAL_153 = /const SCRAPE_TARGET_AGREEMENTS[^=]*=\s*Object\.freeze\(\{([\s\S]*?)\}\)/
+const tableLive153 = (t: string): boolean => liveCols151(t).length > 0 && (LIVE_TABLES as readonly string[]).includes(t)
+const callersOf153 = (name: string, roots: string[] = ["app", "lib"]): string[] => {
+  const out: string[] = []
+  for (const r of roots) for (const f of walkTs(join(ROOT, r))) { const s = stripComments(readFileSync(f, "utf8")); if (new RegExp(`\\b${name}\\(`).test(s) && !new RegExp(`export (?:async )?function ${name}\\b`).test(s)) out.push(f) }
+  return out
+}
+interface Wave153Gate extends GateSpec { gate: string; rulings: string; lanes: Array<(typeof WAVE153_LANE_IDS)[number]>; /** the migration numbers the ruling landed as — each must read `applied` through claimOf ([] = none) */ migrations: number[]; /** THE RULE, read from the tree on every run */ rule: () => Rule151 }
+const WAVE153_GATES: Wave153Gate[] = [
+  { gate: "QR for every authorized seat (no migration)", rulings: "owner 1 — solo-agent tenants and agent / seat holders create and manage their own QR codes, not brokerage / team only", lanes: ["153E"], hookLanes: ["153E"], canaries: [], migrations: [],
+    proofs: ["test:qr-registry", "test:marketing-qr"],
+    rule: () => { const g = src151("lib/marketing/qr-governance.ts"), auth = fnSlice151(g, "export async function resolveQrAuthority"); return rule151([
+      ["ONE authority for every QR door (resolveQrAuthority) built from the seat, the plan and the C34 hierarchy", auth.length > 0 && /resolveViewerHierarchy\(/.test(auth)],
+      ["a solo-plan subscriber owns the whole account whatever its user_type", /tier === "solo_agent"/.test(auth)],
+      ["a suspended / removed seat and a deactivated agent seat are refused", /status === "suspended"/.test(auth) && /is_active !== false/.test(auth)],
+      ["filing scope is decided by the authority, not by user_type (OFFICE_FILERS retired)", /async function decideFilingScope/.test(g) && !/\bOFFICE_FILERS\b/.test(g)]]) } },
+  { gate: "estimated quarterly taxes on the user's own rates (m901)", rulings: "owner 2 — estimated quarterly taxes work; when the platform cannot determine the rates, the USER enters them", lanes: ["153A"], hookLanes: ["153A"], canaries: [], migrations: [901],
+    proofs: ["test:tax-planning", "test:quarterly-tax-concierge"],
+    rule: () => { const tp = src151("lib/finance/tax-planning.ts"); return rule151([
+      ["THE plan builder quotes no reserve without the person's rates (needs_input)", /export function buildTaxPlan/.test(tp) && /"needs_input"/.test(tp)],
+      ["no invented rate in the engine, the actions or the concierge", ![tp, src151("app/actions/tax-planning.ts"), src151("lib/finance/quarterly-tax-concierge.ts")].some((s) => INVENTED_TAX_RATE_153.test(s))],
+      ["m901 drops the database default rate", /DROP DEFAULT/i.test(sql151(901))]]) } },
+  { gate: "multi-location office expenses roll up to the main tenant (m900)", rulings: "owner 3 — each location takes care of its own expenses; all roll up to the main tenant", lanes: ["153A", "153K"], hookLanes: ["153A"], canaries: [], migrations: [900],
+    proofs: ["test:expense-office-rollup", "test:receipt-intelligence", ...contract153("153A")].filter((v, i, a) => a.indexOf(v) === i),
+    rule: () => { const w = fnSlice151(src151("app/actions/financials.ts"), "export async function logScopedExpense"); return rule151([
+      ["m900 live: business_expenses.location_id + the allocations table in the generated caches", liveCols151("business_expenses").includes("location_id") && tableLive153("business_expense_allocations")],
+      ["THE ONE writer asks the books authority before its insert", before151(w, "authorizeBooksWrite(", ".insert(")],
+      ["the rollup and the office write rules live in one module", exports152("lib/finance/expense-rollup.ts", ["loadExpenseRollup", "authorizeBooksWrite", "resolveBooksAuthority"]) && /"cross_location_write"/.test(src151("lib/finance/expense-rollup.ts")) && /"forbidden_central_books"/.test(src151("lib/finance/expense-rollup.ts"))]]) } },
+  { gate: "commission terms change pre-close only, by an attached seat or an admin (m902)", rulings: "owner 4 — anyone attached to the offer / listing / transaction who holds a seat, or an admin, can change commission terms — never after close", lanes: ["153B", "153K"], hookLanes: ["153B"], canaries: [], migrations: [902],
+    proofs: [...contract153("153B"), "test:closing-readiness"],
+    rule: () => { const c = src151("lib/commission/commission-term-change.ts"), req = fnSlice151(c, "export async function requestCommissionTermChange"); return rule151([
+      ["the freeze covers closed / funded / fell through / finalized / paid / posted", /function transactionFreeze/.test(c) && /inPipelineColumn\(t\.status, "closed"\)/.test(c) && /commission_finalized_at/.test(c) && /payoutDecided/.test(c)],
+      ["authority is attachment (deal agent / team lead / TC) or the finance roster — seat membership alone never", /function termChangeAuthority/.test(c) && /not_attached/.test(c)],
+      ["the request judges the freeze before any write", before151(req, "facts.frozen", "ledger(")],
+      ["the ungated rate write in updateTransaction is closed", !/commission_percentage:\s*\w*\.?commissionPercentage/.test(src151("app/actions/transactions.ts"))],
+      ["a rate_override never nets as a gross adjustment (stage 03 skips it)", /rate_override/.test(src151("lib/commission/waterfall/03-apply-gross-adjustments.ts"))]]) } },
+  { gate: "commission amounts shown to the agent and the team lead (no migration)", rulings: "owner 5 — commission amounts are SHOWN to the agent (their own) and the team lead (their teams'); supersedes wave 152's ROI reader rule", lanes: ["153B"], hookLanes: ["153B"], canaries: [], migrations: [],
+    proofs: ["test:roi-outcome-ledger", "test:commission-term-change"],
+    rule: () => { const r = src151("lib/intelligence/roi-ledger.ts"); return rule151([
+      ["the ROI reader's money is a tier: full · team · own", /function moneyOf/.test(r) && /async function resolveRoiViewer/.test(r) && ["\"full\"", "\"team\"", "\"own\""].every((t) => r.includes(t))],
+      ["CLAUDE.md §5 states the owner change (agent + team lead see commission amounts)", /Commission amounts ARE shown to the agent/.test(rawText151("CLAUDE.md"))]]) } },
+  { gate: "TRID determined from the lender + the off-platform coaching moment (m905)", rulings: "owner 6 — the lender sends the final CD and marks when TRID starts; off platform, the agent finds out from the lender and marks it — a coaching moment", lanes: ["153C", "153D"], hookLanes: ["153C"], canaries: [], migrations: [905],
+    proofs: ["test:trid-clock", ...contract153("153C")],
+    rule: () => { const clock = src151("lib/compliance/trid-disclosure-clock.ts"); return rule151([
+      ["m905 live: the receipt ledger table in the generated caches", tableLive153("trid_disclosure_receipts")],
+      ["ONE receipt writer; the lender's door is gated on the vendor-category lender", exports152("lib/compliance/trid-disclosure-clock-evidence.ts", ["recordTridReceiptEvidence"]) && /requireLenderVendorActor\(/.test(src151("app/actions/trid-disclosure-receipt.ts"))],
+      ["receipt + three PRECISE business days (holidays excluded); an agent's report waits for the lender; the coaching text exists", /function isPreciseBusinessDay/.test(clock) && /"pending_lender_confirmation"/.test(clock) && /TRID_LENDER_COACHING/.test(clock)],
+      ["the typed CD-delivered date is no longer a milestone and its door refuses it (the ledger is the survivor)", constList151("app/actions/compliance-monitoring.ts", "TRID_MILESTONES").length > 0 && !constList151("app/actions/compliance-monitoring.ts", "TRID_MILESTONES").some((m) => TYPED_CD_DATE_153.test(m)) && /=== "closing_disclosure_delivered_date"\)\s*\{\s*throw/.test(fnSlice151(src151("app/actions/compliance-monitoring.ts"), "export async function updateTRIDMilestone"))]]) } },
+  { gate: "lender-required insurance around the appraisal deadline (m907)", rulings: "owner 7 — an insurance policy required by the lender is added around the appraisal deadline", lanes: ["153C"], hookLanes: ["153C"], canaries: [], migrations: [907],
+    proofs: ["test:hazard-insurance-step", "test:lender-in-transaction"],
+    rule: () => { const h = src151("lib/transactions/hazard-insurance.ts"); return rule151([
+      ["m907 live: transaction_lenders.insurance_requirement in the generated caches", liveCols151("transaction_lenders").includes("insurance_requirement")],
+      ["THE checkpoint reader defaults to the appraisal deadline and HOLDS a required, unaccepted binder", /export function readLenderInsuranceCheckpoint/.test(h) && /anchor: "appraisal_deadline"/.test(h) && /missingEvidence: "hold"/.test(h)],
+      ["cash and seller-side deals are never held", /"not_applicable_cash"/.test(h) && /"not_our_side"/.test(h)]]) } },
+  { gate: "agent leads, TC assists, compliance reviews and takes charge at closing (no migration)", rulings: "owner 8 — agent takes charge; TC sees and assists; compliance reviews / notes; at closing compliance approves, checks settlement statement + CDA, gets the broker-signed CDA", lanes: ["153C", "153D"], hookLanes: ["153D"], canaries: [], migrations: [],
+    proofs: [...contract153("153D"), ...contract153("153C"), "test:closing-compliance"],
+    rule: () => { const cc = src151("lib/transactions/closing-compliance.ts"); return rule151([
+      ["ONE readiness list (required docs, execution, terms, commission, settlement, TRID, insurance, CDA, attestation)", exports152("lib/transactions/closing-compliance-core.ts", ["buildClosingReadiness", "decideClosingReview", "closingReviewStanding"])],
+      ["the reviewer's decision is persisted and ledgered; reviewers = the admin roster minus team_lead", /export async function recordClosingReviewDecision/.test(cc) && /compliance\.closing_review\.decide/.test(cc) && /function mayReviewClosing/.test(cc)],
+      ["the gated close re-computes the list and closes only on a matching approval", /closingReviewGate\(/.test(src151("lib/transactions/stage-progression.ts"))]]) } },
+  { gate: "required documents checked before a CDA release and in a no-CDA close (no migration)", rulings: "owner 9 — the brokerage's required-document list is checked before releasing a CDA, and the same check applies without a CDA", lanes: ["153D", "153K"], hookLanes: ["153D"], canaries: [], migrations: [],
+    proofs: ["test:closing-readiness", "test:cda-closing-flow"],
+    rule: () => { const portal = src151("app/actions/cda-portal.ts"); return rule151([
+      ["the CDA portal re-runs the final file check before approve, broker sign and send-to-title", (portal.match(/freshClosingFileGate\(/g) ?? []).length >= 3],
+      ["each deal keeps its checklist version from creation (all creation doors pin it)", exports152("lib/transactions/closing-compliance.ts", ["pinDealChecklistAtCreation"]) && callersOf153("pinDealChecklistAtCreation").length >= 1],
+      ["a replaced document neither satisfies nor blocks (ONE version vocabulary)", exports152("lib/compliance/required-documents.ts", ["isSupersededDocument", "followSupersession"])]]) } },
+  { gate: "lender / title / any vendor corrects its OWN documents (no migration)", rulings: "owner 10 — lender / title / any vendor can correct their own documents", lanes: ["153D", "153Q"], hookLanes: ["153D"], canaries: [], migrations: [],
+    proofs: ["test:closing-readiness", ...contract153("153Q")],
+    rule: () => { const door = src151("app/actions/vendor-document-corrections.ts"); return rule151([
+      ["the pure verdict refuses another issuer, a party instrument, a brokerage agreement and a superseded version", exports152("lib/documents/document-versions.ts", ["decideIssuerCorrection"]) && ["another_issuer", "party_document", "brokerage_agreement", "already_superseded"].every((c) => src151("lib/documents/document-versions.ts").includes(`"${c}"`))],
+      ["the governed writer files a new version (never an overwrite)", exports152("lib/documents/vendor-document-correction.ts", ["fileIssuerCorrection"])],
+      ["the issuer door takes identity from the session and presents every refusal through the tenant presenter", /resolveExternalPartnerIdentity\(/.test(door) && /presentTenant(Message|Error)\(/.test(door)]]) } },
+  { gate: "the Shopping Agent searches the tenant's own listings (no migration)", rulings: "owner 11 — tenant / user listings created on the platform are searchable by the Shopping Agent", lanes: ["153E"], hookLanes: ["153E"], canaries: [], migrations: [],
+    proofs: ["test:buyer-constraints", "test:saved-home-alerts"],
+    rule: () => { const se = src151("lib/buyer-search/search-engine.ts"); return rule151([
+      ["the core search reads the tenant's own listings table", /export async function searchPropertiesCore/.test(se) && /\.from\(['"]listings['"]\)/.test(se)],
+      ["Coming Soon only under the compliance-attested MLS rule", /comingSoonStreetAddressDecision|evaluateComingSoonReadiness|loadComingSoonPolicy/.test(se)]]) } },
+  { gate: "scrapers and provider connections give outside choices; Exa for content AND people (no migration)", rulings: "owner 12 — all scrapers and provider connections checked and implemented (RentCast, ZenRows / Zyte / Versium …); Exa searches content and people (raw leads)", lanes: ["153G", "153N", "153M"], hookLanes: ["153G"], canaries: [], migrations: [],
+    proofs: ["test:provider-gap-matrix", "test:scrapers", "test:acquisition-door"],
+    rule: () => rule151([
+      ["the provider capability matrix is generated from the registries", exports152("lib/providers/provider-capability-matrix.ts", ["providerCapabilityMatrix"])],
+      ["page transports ride ONE checkpointed fetch (replay-safe, spend-gated, robots + terms)", exports152("lib/providers/scrape-checkpoint.ts", ["fetchCheckpointedSnapshot", "scrapePurposeProblem"])],
+      ["Exa's people door feeds THE ONE RawData producer", /ingestRawSourceBatch\(/.test(src151("lib/acquisition-plays/public-request.ts"))]]) },
+  { gate: "the arbiter decides without delaying a person; speed to lead; proposed addendums reach the agent (no migration)", rulings: "owner 13 — follow-up timing differs per person; no machine-feeling delay; earlier lead touches = speed to lead; proposed addendums brought to the agent's attention", lanes: ["153F", "153O"], hookLanes: ["153F"], canaries: [], migrations: [],
+    proofs: ["test:arbiter-timing", "test:inbound-communication", "test:speed-to-lead", "test:transaction-addenda"],
+    rule: () => { const a = src151("lib/ai-isa/followup-arbiter.ts"); return rule151([
+      ["a deterministic fast path answers a confident routine reading with no planning call", /export function interactiveTurnVerdict/.test(a) && /interactiveTurnVerdict\(/.test(src151("lib/communications/inbound-responder.ts"))],
+      ["the decision is raced against a 2.5 s interactive / speed-to-lead ceiling", /interactive:\s*2_?500/.test(a) && /speed_to_lead:\s*2_?500/.test(a) && /async function decideWithinBudget/.test(a)],
+      ["per-Contact timing reaches the planner door", /function contactTimingProfile/.test(a) && /loadTimingSignals/.test(a)],
+      ["a proposed addendum raises ONE agent / TC task immediately", /raiseAddendumAttention/.test(src151("lib/esign/addendum-signature-request.ts"))]]) } },
+  { gate: "every manager assignment mapped for the full OS + the advanced-AI audit (no migration)", rulings: "owner 14 — the manager registry mapped for the full OS; a complete audit of the advanced AI incl. campaign bundles before production", lanes: ["153H", "153I"], hookLanes: ["153H"], canaries: [], migrations: [],
+    proofs: ["test:manager-ownership-matrix", "test:manager-ownership", ...contract153("153H")],
+    rule: () => rule151([
+      ["the policy-owner map and the per-domain loop census are generated from code", /POLICY_OWNERS/.test(src151("scripts/manager-ownership-matrix-guard.ts")) && existsSync(join(ROOT, "docs/architecture/MANAGER-DOMAIN-LOOP-CENSUS.md"))],
+      ["every wave-153 table has a steward (business_expense_allocations → finance_manager)", /business_expense_allocations:\s*"finance_manager"/.test(src151("lib/kernel/manager-registry.ts"))]]) },
+  { gate: "Remotion errors resolved: render routes deployable, killed renders found (m933)", rulings: "owner 15 — Remotion errors resolved", lanes: ["153J", "153Q"], hookLanes: ["153J"], canaries: [], migrations: [933],
+    proofs: [...contract153("153J"), "test:video-timing-audit"],
+    rule: () => { const cfg = src151("next.config.ts"); return rule151([
+      ["m933 live: remotion_composition_renders.claimed_at in the generated caches", liveCols151("remotion_composition_renders").includes("claimed_at")],
+      ["the render routes trace the first-party sources, the composition packages and the bundled font", /outputFileTracingIncludes[\s\S]{0,200}\/api\/internal\/remotion/.test(cfg) && /@remotion\/media/.test(cfg) && /public\/fonts\/inter/.test(cfg)],
+      ["the package-shadow collision is guarded with the real resolver", /resolveModuleName/.test(src151("scripts/video-timing-audit.ts"))]]) } },
+  { gate: "open loops closed; built-but-not-finished finished (no migration)", rulings: "owner 16 — close open loops and areas that would benefit from a loop; fix notes from all waves that still apply", lanes: ["153K"], hookLanes: ["153K"], canaries: [], migrations: [],
+    proofs: ["test:open-loop-ledger", "test:relocation-planner"],
+    rule: () => rule151([
+      ["the wave-153 dispositions close earlier-wave carried rows with derived anchors", existsSync(join(ROOT, "scripts/open-loop-ledger-dispositions-153k.ts"))],
+      ["the PCS person-mode door sits on the existing portal journey (the person only)", exports152("lib/relocation/pcs-portal-door.ts", ["planPcsMoveForPortalContact"])],
+      ["the contract-reader metric never reads 0/0 as 100 %", /hitRate:\s*null/.test(src151("lib/transactions/contract-terms.ts"))]]) },
+  { gate: "gamification, recruitment and the marketing capability audit (no migration)", rulings: "owner 17 — gamification and recruitment checked; marketing capabilities audit", lanes: ["153I", "153P"], hookLanes: ["153I"], canaries: [], migrations: [],
+    proofs: ["test:gamification", ...contract153("153I")],
+    rule: () => rule151([
+      ["the marketing census is generated and refuses a merely-untraced hop", /untraced/.test(src151("scripts/marketing-capability-census-guard.ts")) && existsSync(join(ROOT, "docs/architecture/MARKETING-CAPABILITY-CENSUS.md"))],
+      ["the gamification guard exists and is chained", existsSync(join(ROOT, "scripts/gamification-guard.ts"))]]) },
+  { gate: "Datafiniti People Data connector built, not activated (m949)", rulings: "owner B1 — Datafiniti built: real adapter, registries, RawData door, proofs — no purchase, no live claim", lanes: ["153M"], hookLanes: ["153M"], canaries: [], migrations: [949],
+    proofs: [...contract153("153M"), "test:provider-gap-matrix"],
+    rule: () => { const cl = src151("lib/external/datafiniti-client.ts"); return rule151([
+      ["THE transport: a typed query builder, a free count, bearer token only", exports152("lib/external/datafiniti-client.ts", ["buildDatafinitiPeopleQuery", "countDatafinitiPeople"]) && !/password/i.test(cl)],
+      ["THE producer maps the documented schema and takes the RawData door as its ingest", exports152("lib/lead-pipeline/datafiniti-people-producer.ts", ["mapDatafinitiPerson", "runDatafinitiPeoplePull"]) && /ingest:\s*\(p:\s*IngestRawSourceBatchParams\)/.test(src151("lib/lead-pipeline/datafiniti-people-producer.ts"))],
+      ["a production door opens the producer (the acquisition door wiring — lane 153T, integrator fills)", callersOf153("runDatafinitiPeoplePull").length >= 1],
+      ["the rights gate refuses until the activation is active (dormant pending rights today)", /activation\.state !== "active"/.test(src151("lib/lead-pipeline/datafiniti-people-producer.ts")) && /datafiniti:\s*\{\s*state:\s*"dormant_pending_rights"/.test(src151("lib/ai-isa/property-lookup-rail.ts"))],
+      ["m949 live: 'datafiniti' admitted by the platform_credentials CHECK in the generated cache", liveVocab151("platform_credentials", "platform").includes("datafiniti")]]) } },
+  { gate: "Nextdoor through the Zyte / ZenRows transport, held until a written agreement (no migration)", rulings: "owner B2 — Nextdoor goes through Zyte or ZenRows; LICENSE_REQUIRED / NOT_ENABLED until an agreement is recorded", lanes: ["153N"], hookLanes: ["153N"], canaries: [], migrations: [],
+    proofs: [...contract153("153N"), "test:scrapers"],
+    rule: () => rule151([
+      ["the Nextdoor lane rides the checkpointed transport; the direct transport call is retired", /fetchCheckpointedSnapshot\(/.test(src151("lib/lead-pipeline/nextdoor-chatter.ts")) && !DIRECT_NEXTDOOR_SCRAPE_153.test(src151("lib/lead-pipeline/nextdoor-chatter.ts") + src151("app/actions/lead-intelligence.ts"))],
+      ["Nextdoor's terms are a named LICENSE_REQUIRED hold and its contact point is never used", /nextdoor\\\.com[\s\S]{0,120}publishedContactPermitted:\s*false[\s\S]{0,80}LICENSE_REQUIRED/.test(src151("lib/providers/exa/hunting.ts"))],
+      ["no agreement is recorded in the tree (the hold stands)", (() => { const m = AGREEMENTS_LITERAL_153.exec(src151("lib/providers/scrape-checkpoint.ts")); return !!m && !/nextdoor\.com/.test(m[1]) })()]]) },
+  { gate: "Zyte / ZenRows only for current real-estate chatter and FSBO; a data provider first (no migration)", rulings: "owner B3 — Zyte / ZenRows only search online chatter about needing real-estate services or FSBO; a data provider is the safer bet when it has the fact", lanes: ["153N"], hookLanes: ["153N"], canaries: [], migrations: [],
+    proofs: [...contract153("153N"), "test:scrapers"],
+    rule: () => { const sc = src151("lib/providers/scrape-checkpoint.ts"), fetchFn = fnSlice151(sc, "export async function fetchCheckpointedSnapshot"); return rule151([
+      ["exactly two purposes", sameSet151(constList151("lib/providers/scrape-checkpoint.ts", "SCRAPE_PURPOSES"), ["real_estate_need_chatter", "fsbo_listing"])],
+      ["the purpose is judged FIRST, before any checkpoint read or request", before151(fetchFn, "scrapePurposeProblem(", ".load(") || before151(fetchFn, "scrapePurposeProblem(", "fetcher")],
+      ["provider-first verdict exists for the facts a configured provider holds", exports152("lib/lead-pipeline/source-discovery-planner.ts", ["providerFirstVerdict"])]]) } },
+  { gate: "Exa finds people with real-estate needs + permits as property events (no migration)", rulings: "owner B4 — Exa finds possible people looking for real-estate needs or behavior intent (public → usable) and permits etc.; a found person becomes a Raw Lead", lanes: ["153N"], hookLanes: ["153N"], canaries: [], migrations: [],
+    proofs: [...contract153("153N"), "test:acquisition-door"],
+    rule: () => rule151([
+      ["the stated-need vocabulary covers buying, selling, FSBO, relocating and a military move", ["buying", "selling", "fsbo_selling", "relocating", "military_move"].every((k) => constList151("lib/acquisition-plays/public-request.ts", "STATED_NEED_KINDS").includes(k))],
+      ["a first-person need is admitted by the statement gate; a public forum permits the AUTHOR's published contact", /statesHousingNeed/.test(src151("lib/acquisition-plays/contract.ts")) && /publishedContactPermitted:\s*true/.test(src151("lib/providers/exa/hunting.ts"))],
+      ["an official-record page never permits a contact point (a permit is a property event)", /sourceClass:\s*"official_record"[\s\S]{0,400}publishedContactPermitted:\s*false/.test(src151("lib/providers/exa/hunting.ts"))]]) },
+  { gate: "no invented plays or PCS-orders source (no migration)", rulings: "owner B5 — no made-up 'plays' / needles; no PCS-orders database; military movers found from public volunteered moves", lanes: ["153N"], hookLanes: ["153N"], canaries: [], migrations: [],
+    proofs: [...contract153("153N")],
+    rule: () => { const m = src151("lib/providers/provider-capability-matrix.ts"); return rule151([
+      ["the invented playbook list is retired; the survivor names real searches, evidence fields and survivors", !NEEDLE_PLAYBOOKS_153.test(m) && /export const ONLINE_HUNTING_WORKFLOWS/.test(m)],
+      ["a volunteered military move is a real Exa search on the person's own words", /military_move/.test(src151("lib/acquisition-plays/public-request.ts"))]]) } },
+  { gate: "the post-Contact PCS build lives in the kernel persona types (no migration)", rulings: "owner B6 — what was built for after a person is a Contact belongs inside the kernel persona types (portal persona widgets)", lanes: ["153N", "153K"], hookLanes: ["153N"], canaries: [], migrations: [],
+    proofs: [...contract153("153N"), "test:relocation-planner"],
+    rule: () => rule151([
+      ["the kernel owns the persona → journey-tool map", /PERSONA_JOURNEY_TOOLS/.test(src151("lib/kernel/types.ts")) && /pcs_move_plan/.test(src151("lib/kernel/types.ts"))],
+      ["the portal persona config reads the kernel map (never restates it)", /personaJourneyTools|PERSONA_JOURNEY_TOOLS/.test(src151("lib/portal/persona-config.ts"))]]) },
+  { gate: "routine follow-up the arbiter decided needs no human approval (m951)", rulings: "owner B7 — when the arbiter decides a routine follow-up: no waiting for a human to approve; brand voice", lanes: ["153O"], hookLanes: ["153O"], canaries: [], migrations: [951],
+    proofs: ["test:os-arbitration-canaries", "test:inbound-communication", "test:unattended-answer"],
+    rule: () => rule151([
+      ["the code default needs no broker click on an arbiter-decided lead follow-up", /require_broker_approval:\s*false/.test(src151("lib/ai-isa/settings-types.ts"))],
+      ["the reply path carries no 'explicitly autonomous' click rule (the gate's own verdict decides)", !EXPLICIT_AUTONOMOUS_RULE_153.test(src151("lib/communications/inbound-responder.ts"))],
+      ["replies are composed in the sender's brand voice", /loadBrandVoicePrompt\(/.test(fnSlice151(src151("lib/social/inbound-social.ts"), "export async function composeInboundReply") || src151("lib/social/inbound-social.ts"))],
+      ["m951 flips the column default", /require_broker_approval[\s\S]{0,80}DEFAULT\s+false/i.test(sql151(951))]]) },
+  { gate: "Lead and Transaction are delegation subjects (no migration)", rulings: "owner B8 — manager delegation subjects include LEAD and TRANSACTION (only listing / contact / subject existed)", lanes: ["153O"], hookLanes: ["153O"], canaries: [], migrations: [],
+    proofs: ["test:manager-delegation", "test:strategy-engine", "test:os-arbitration-canaries"],
+    rule: () => { const md = src151("lib/kernel/manager-delegation.ts"); return rule151([
+      ["ONE subject table with lead and transaction", /export const DELEGATION_SUBJECT_KEYS/.test(md) && /\blead:/.test(md) && /\btransaction:/.test(md)],
+      ["the strategy engine maps every subject through it", /DELEGATION_SUBJECT_KEYS|delegationSubjectOf/.test(src151("lib/kernel/strategy-engine.ts"))]]) } },
+  { gate: "bundles, omnipresence, refurbish, lifetime and ghost are closed loops with a starter (m931)", rulings: "owner B9 — loop the bundles, omnipresence and refurbish, lifetime and ghost; a plane / trigger that STARTS the arbiter on them", lanes: ["153P", "153I"], hookLanes: ["153P"], canaries: [], migrations: [931],
+    proofs: [...contract153("153P"), "test:campaign-bundle-follow-on", "test:lifetime-relationship"],
+    rule: () => { const entry = src151("lib/ai-isa/followup-arbiter.ts").split("export const ARBITER_PLANNER_ENTRY_POINTS")[1]?.slice(0, 20000) ?? ""; return rule151([
+      ["the planner entry points include the lifetime touch and the bundle follow-on", /\blifetime_touch:/.test(entry) && /\bbundle_follow_on:/.test(entry)],
+      ["the lifetime cron hands each due touch to the arbiter; the queue drain executes bundle follow-ons", /arbitrateLifetimeTouch\(/.test(src151("app/api/cron/lifetime-customer-touchpoints/route.ts")) && /executeBundleFollowOnTask\(/.test(src151("app/api/cron/queue-drain/route.ts"))],
+      ["omnipresence is staggered, refurbish needs ownership or a stated licence, ghost reads the latest inbound", exports152("lib/repurpose/omnipresence-plan.ts", ["planOmnipresenceSchedule"]) && exports152("lib/repurpose/shared.ts", ["assessRefurbishSource"]) && exports152("lib/ai-isa/reengagement-policy.ts", ["ghostQuietVerdict"])],
+      ["m931 guards a follow-on against a double persist", /bundle_follow_on/.test(sql151(931)) && /UNIQUE/i.test(sql151(931))]]) } },
+  { gate: "a crash mid-send is reconciled and re-sent automatically, never duplicated (no migration)", rulings: "owner B10 — a crash mid-send is marked outcome unknown and re-sent automatically (reconcile first; never a blind duplicate)", lanes: ["153S"], hookLanes: ["153S"], canaries: [], migrations: [],
+    proofs: [...contract153("153S"), "test:egress-send-guard"],
+    rule: () => rule151([
+      ["the recovery ladder decides from provider evidence first", exports152("lib/outcomes/reconciliation.ts", ["decideSendRecovery"]) && /SEND_RECOVERY_CAPABILITIES/.test(src151("lib/outcomes/reconciliation.ts"))],
+      ["the existing reaper net runs the recovery", /recoverOutcomeUnknownSends/.test(src151("lib/intelligence/reaper-net.ts") + src151("lib/outcomes/reconciliation-ledger.ts")) && exports152("lib/outcomes/reconciliation-ledger.ts", ["recoverOutcomeUnknownSends"])],
+      ["every governed send persists a keyed intent before the provider call", /intentLedgerContext|send_intent/.test(src151("lib/providers/dispatch.ts"))]]) },
+  { gate: "every partial in the marketing capability census audited (no migration)", rulings: "owner B11 — audit and fix any partials in the marketing capability census (lane 153R's remaining gaps: integrator fills)", lanes: ["153P", "153I"], hookLanes: ["153P"], canaries: [], migrations: [],
+    proofs: [...contract153("153I")],
+    rule: () => { const g = src151("scripts/marketing-capability-census-guard.ts"); return rule151([
+      ["no hop is merely untraced (a planted-untraced positive control exists)", /untraced/.test(g) && /positive control|POSITIVE CONTROL/i.test(rawText151("scripts/marketing-capability-census-guard.ts"))],
+      ["every non-VERIFIED row names its reason (gap / held)", /gap/.test(g) && /held/.test(g)]]) } },
+  { gate: "the 2.5 s arbiter cap: fallback runs, a late result is not ignored (no migration)", rulings: "owner B12 — capped at 2.5 s → planned fallback; a late result is not ignored, especially when nobody has responded", lanes: ["153O", "153F"], hookLanes: ["153O"], canaries: [], migrations: [],
+    proofs: ["test:os-arbitration-canaries", "test:arbiter-timing"],
+    rule: () => { const a = src151("lib/ai-isa/followup-arbiter.ts"); return rule151([
+      ["a timed-out decision persists a pending late obligation", /late_obligation/.test(a)],
+      ["a late answer is handed over as evidence and judged against a fresh read", /onLate/.test(fnSlice151(a, "async function decideWithinBudget")) && exports152("lib/ai-isa/followup-arbiter.ts", ["lateResultDisposition"])],
+      ["the responder settles a late result and re-arbitrates at most once", /inbound\.late_result\.settle/.test(src151("lib/communications/inbound-responder.ts")) && /reArbitration/.test(src151("lib/communications/inbound-responder.ts"))]]) } },
+  { gate: "lenders and title are vendor categories; moving concierge and deal automation verified (no migration)", rulings: "owner B13 — lenders and title classified under vendors; moving concierge and all transaction / deal automation working", lanes: ["153Q"], hookLanes: ["153Q"], canaries: [], migrations: [],
+    proofs: [...contract153("153Q"), "test:buyer-move", "test:vendor-categories", "test:lender-in-transaction"],
+    rule: () => rule151([
+      ["the seller-side concierge skip names a value the live deal_type CHECK admits", /deal_type\s*===\s*["']seller["']/.test(src151("lib/transactions/buyer-move.ts")) && !IMPOSSIBLE_LISTING_DEAL_153.test(src151("lib/transactions/buyer-move.ts")) && liveVocab151("transactions", "deal_type").includes("seller")],
+      ["the concierge door takes the tenant from the session", /requireCallerTenant\(/.test(src151("app/actions/buyer-move.ts"))],
+      ["lender status comes from the ONE resolver; no title_agent seat compare remains", /lenderVendorForUser\(/.test(src151("app/api/internal/ai-note/route.ts")) && !TITLE_AGENT_SEAT_153.test(src151("app/api/dashboard/badge-counts/route.ts"))],
+      ["a vendor seat cannot view financials", /role === 'vendor'/.test(src151("lib/transactions/role-guard.ts"))]]) },
+  { gate: "Remotion package advice: the font is bundled, no CDN loader (no migration)", rulings: "owner B14 — the full Remotion package set vs what is needed (expert advice); the one composition that failed renders offline", lanes: ["153Q", "153J"], hookLanes: ["153Q"], canaries: [], migrations: [],
+    proofs: ["test:video-pipeline-truth", "test:remotion-deploy-trace"],
+    rule: () => rule151([
+      ["the font ships in the repo with its licence", existsSync(join(ROOT, "public/fonts/inter/inter-latin-wght-normal.woff2")) && existsSync(join(ROOT, "public/fonts/inter/OFL.txt"))],
+      ["no first-party module imports the font CDN loader", !["remotion", "lib", "app"].some((d) => walkTs(join(ROOT, d)).some((f) => FONT_CDN_IMPORT_153.test(stripComments(readFileSync(f, "utf8")))))],
+      ["a font load failure CANCELS the render (never a masking fallback)", /cancelRender/.test(src151("remotion/ProductPromoReel.tsx"))]]) },
+  { gate: "chains/registry (wave 153)", rulings: "brief 153L — every wave-153 proof key registered, chained and owned; this block", lanes: ["153L"], hookLanes: ["153L"], canaries: [], migrations: [],
+    proofs: ["test:proof-ownership", "test:manager-ownership", "test:manager-cross-cooperation", "test:production-readiness"],
+    rule: () => rule151([["every wave-153 contract key has an accountable manager", WAVE153_LANE_IDS.flatMap((l) => contract153(l)).every((k) => !!proofOwner.get(k))]]) },
+  { gate: "canaries (wave 153)", rulings: "directive Part B §7.1 — kernel arbitration, live responsiveness, send crash, Datafiniti, Exa + scraping, marketing loops, existing business, production — on the real survivors, composed across lanes, per tenant shape; wave-150 canaries and wave-152 scenarios reused by import", lanes: ["153L"], hookLanes: ["153L"], canaries: [], migrations: [],
+    proofs: [...contract153("153L")],
+    rule: () => { const c = src151("scripts/wave153-canaries.ts"); const n = (c.match(/\bcanary\(\{/g) ?? []).length; const groups = [...c.matchAll(/group: "(\w+)"/g)].map((m) => m[1]); return rule151([
+      ["the runner reuses the wave-150 canaries and the wave-152 scenarios by import", /from "\.\/wave150-canaries"/.test(c) && /from "\.\/wave152-canaries"/.test(c)],
+      ["every §7.1 group is present", ["kernel", "responsiveness", "send_crash", "datafiniti", "exa_scraping", "marketing", "existing_business", "production"].every((g) => groups.includes(g))],
+      ["every canary composes ≥2 lanes and carries an adverse case, a positive control and a blind spot (counted, never pinned)", n > 0 && (c.match(/adverse:/g) ?? []).length >= n && (c.match(/positiveControl:/g) ?? []).length >= n && (c.match(/blindSpot:/g) ?? []).length >= n && [...c.matchAll(/lanes: \[([^\]]*)\]/g)].every((m) => (m[1].match(/"/g) ?? []).length >= 4)]]) } },
+  { gate: "convergence (wave 153)", rulings: "brief 153L — the 96 rows re-derived on the integrated tree; the earlier-wave launch-critical rows closed with their survivor or kept open with their owner", lanes: ["153L", "153K"], hookLanes: ["153L"], canaries: [], migrations: [],
+    proofs: ["test:open-loop-ledger", "test:release-blockers", "test:operations-docs"],
+    rule: () => rule151([
+      ["OWNER-SQL records the wave-153 section (rulings, open decisions, read-backs)", /^## O\. Wave 153/m.test(rawText151("docs/operations/OWNER-SQL.md"))],
+      ["the open-loop ledger carries the wave-153 dispositions", existsSync(join(ROOT, "scripts/open-loop-ledger-dispositions-153k.ts"))]]) },
+  { gate: "release truth (wave 153)", rulings: "brief 153L — O1 / O1-LM / O2 / O3 stay release-blocking from their stamps and status lines; the owner action sheet carries every owner-only step in sequence with read-backs, cost, credential and the proving canary", lanes: ["153L"], hookLanes: ["153L"], canaries: [], migrations: [],
+    proofs: ["test:release-blockers", "test:operations-docs", "test:open-loop-ledger"],
+    rule: () => { const sheet = rawText151("docs/operations/WAVE153-OWNER-ACTION-SHEET.md"); return rule151([
+      ["the owner action sheet names O1, O1-LM, O2 and O3 with read-backs", ["O1", "O1-LM", "O2", "O3"].every((o) => new RegExp(`\\b${o}\\b`).test(sheet)) && /read-?back/i.test(sheet)],
+      ["the sheet carries the wave-153 owner decisions (Nextdoor, Datafiniti, Remotion hosting, lead approval default, entity taxes, campaign expense attribution, commission statements, OWNER-SQL §O, legal packets, live smoke)", ["Nextdoor", "Datafiniti", "Remotion", "require_broker_approval", "entity", "campaign", "commission statement", "§O", "counsel", "smoke"].every((w) => sheet.toLowerCase().includes(w.toLowerCase()))],
+      ["every sheet row names cost, credential and the proving canary", /cost/i.test(sheet) && /credential/i.test(sheet) && /canary/i.test(sheet)]]) } },
+]
+const verdicts153 = WAVE153_GATES.map((g) => certify151(g, gateEnv, WAVE153_CONTRACT_PROOFS, stamp151, (x) => x.rule()))
+const certified153 = verdicts153.filter((v) => v.state === "CERTIFIED"), external153 = verdicts153.filter((v) => v.state === "EXTERNAL"), notCertified153 = verdicts153.filter((v) => v.state === "NOT CERTIFIED")
+for (const v of verdicts153) console.log(`    ${v.state.padEnd(13)} ${v.gate.padEnd(100)} owner ${v.owner.padEnd(22)} lanes ${(WAVE153_GATES.find((g) => g.gate === v.gate)!.lanes ?? []).join("+").padEnd(16)} proofs ${v.proofs.length} ${v.stamps.length ? `migrations ${v.stamps.join(", ")}` : "no migration"}\n                  rule: ${v.rule.why}${v.reasons.length ? `\n                  · ${v.reasons.join("\n                  · ")}` : ""}`)
+const contractKeys153 = WAVE153_LANE_IDS.flatMap((l) => contract153(l))
+const unpublished153 = WAVE153_LANE_IDS.filter((l) => WAVE153_CONTRACT_PROOFS[l] === null)
+const earlierContractKeys153 = [...earlierContractKeys152, ...contractKeys152]
+const migrations153 = [...new Set(WAVE153_GATES.flatMap((g) => g.migrations))].sort((a, b) => a - b)
+console.log(`    census: ${WAVE153_GATES.length} wave-153 gates; ${contractKeys153.length} lane contract keys (${contractKeys153.filter((k) => proofState(k) === "ok").length} landed+chained, ${contractKeys153.filter((k) => proofState(k) === "unchained").length} unchained, ${contractKeys153.filter((k) => proofState(k) === "no-file").length} script-missing, ${contractKeys153.filter((k) => proofState(k) === "absent").length} absent); ${unpublished153.length} lane(s) unpublished; migrations named ${migrations153.map((n) => `m${n} (${stamp151(n)})`).join(", ")}; ${certified153.length} CERTIFIED · ${external153.length} EXTERNAL · ${notCertified153.length} NOT CERTIFIED`)
+console.log("    BLIND SPOT: a gate reads the rule from stripped source and the generated caches — it proves the code says what the ruling says, not that a live provider (every one SIMULATED or LICENSE-HELD), a live storage policy or a deployment behaves; lanes 153R / 153T were in flight and are not counted here.")
+check("G53 every wave-153 gate names ≥1 proof, waits only on wave-153 lanes, names only migrations that exist in the tree, and every published wave-153 contract key is named by ≥1 wave-153 gate",
+  WAVE153_GATES.every((g) => g.proofs.length > 0 && g.lanes.length > 0 && g.lanes.every((l) => (WAVE153_LANE_IDS as readonly string[]).includes(l)) && g.migrations.every((n) => !!migrationNamed(n)))
+  && contractKeys153.every((k) => WAVE153_GATES.some((g) => g.proofs.includes(k))),
+  [...contractKeys153.filter((k) => !WAVE153_GATES.some((g) => g.proofs.includes(k))), ...WAVE153_GATES.flatMap((g) => g.migrations.filter((n) => !migrationNamed(n)).map((n) => `m${n} not in the tree`))].join(", "))
+check("G54 no wave-153 contract key is claimed twice, none re-claims a key an earlier wave published (a re-asserted guard is a SURVIVOR), and every survivor a wave-153 gate names is registered + chained TODAY",
+  new Set(contractKeys153).size === contractKeys153.length && reclaimedKeys(contractKeys153, earlierContractKeys153).length === 0
+  && WAVE153_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys153.includes(k)).every((k) => proofState(k) === "ok"),
+  [...reclaimedKeys(contractKeys153, earlierContractKeys153).map((k) => `${k} re-claimed`), ...WAVE153_GATES.flatMap((g) => g.proofs).filter((k) => !contractKeys153.includes(k) && proofState(k) !== "ok").map((k) => `${k} ${proofState(k)}`)].join(", "))
+check("G55 every published wave-153 contract key is registered in package.json AND in a guard chain, and has an accountable manager (a MAINTENANCE_DOMAINS proof owner)",
+  unwiredContractKeys(contractKeys153, proofState).length === 0 && unownedContractKeys(contractKeys153, (k) => proofOwner.get(k) ?? null).length === 0,
+  [...unwiredContractKeys(contractKeys153, proofState).map((k) => `${k} ${proofState(k)}`), ...unownedContractKeys(contractKeys153, (k) => proofOwner.get(k) ?? null).map((k) => `${k} has no owner`)].join(", "))
+check("G56 POSITIVE CONTROL — the wave-153 absence finders still see what they were written for (an invented tax rate, the explicit-autonomous click rule, the retired playbook list, a direct Nextdoor scrape, a recorded Nextdoor agreement, the impossible 'listing' deal type, a title_agent seat compare, the font CDN import, the typed CD date); an UNSTAMPED wave-153 migration and a failing wave-153 rule each read NOT CERTIFIED through the same certify151",
+  (() => {
+    const env153: GateEnv = { ...gateEnv, scripts: { "test:spec": "tsx scripts/spec.ts" }, chain: "npm run test:spec", fileExists: () => true, roster: [], pending: new Map(), ownerOf: () => "data_steward" }
+    const base: Wave153Gate = { gate: "x", rulings: "", lanes: ["153A"], proofs: ["test:spec"], canaries: [], migrations: [901], rule: () => rule151([["holds", true]]) }
+    const unstamped = certify151(base, env153, { "153A": ["test:spec"] }, () => "not_applied", (g) => g.rule())
+    const badRule = certify151(base, env153, { "153A": ["test:spec"] }, () => "applied", () => rule151([["the rule", false]]))
+    const ok = certify151(base, env153, { "153A": ["test:spec"] }, () => "applied", (g) => g.rule())
+    return INVENTED_TAX_RATE_153.test("const DEFAULT_EFFECTIVE_INCOME_RATE = 0.12") && INVENTED_TAX_RATE_153.test("rate ?? 0.12") && !INVENTED_TAX_RATE_153.test("const SE_NET_FACTOR = 0.9235")
+      && EXPLICIT_AUTONOMOUS_RULE_153.test(`if (posture !== "autonomous") return`) && NEEDLE_PLAYBOOKS_153.test("export const NEEDLE_PLAYBOOKS = []") && DIRECT_NEXTDOOR_SCRAPE_153.test("await zr.scrapeNextdoor(url)")
+      && IMPOSSIBLE_LISTING_DEAL_153.test(`if (t.deal_type === "listing") return`) && TITLE_AGENT_SEAT_153.test(`userType === "title_agent"`) && FONT_CDN_IMPORT_153.test(`import { loadFont } from "@remotion/google-fonts/Inter"`)
+      && TYPED_CD_DATE_153.test("closing_disclosure_delivered_date") && /nextdoor\.com/.test(AGREEMENTS_LITERAL_153.exec(`const SCRAPE_TARGET_AGREEMENTS: Readonly<Record<string, X>> = Object.freeze({ "nextdoor.com": { reference: "agreement-1", recordedAt: "2026-12-01", scope: "chatter" } })`)?.[1] ?? "") && !FONT_CDN_IMPORT_153.test(stripComments(`// was: import { loadFont } from "@remotion/google-fonts/Inter"\nconst x = 1`))
+      && unstamped.state === "NOT CERTIFIED" && unstamped.reasons.some((r) => /m901 stamped not_applied/.test(r)) && badRule.state === "NOT CERTIFIED" && ok.state === "CERTIFIED"
+  })())
+const gateDoc153 = matrix.split(/^## /m).find((s) => /^Wave 153 release gate/i.test(s)) ?? ""
+const gateRows153 = parseGateRows(gateDoc153)
+console.log(`    reading: READINESS-MATRIX.md "Wave 153 release gate" section ${gateDoc153 ? `present — ${gateRows153.length} gate row(s)` : "absent"}`)
+check("G57 the matrix carries a wave-153 release-gate section with a row per wave-153 gate and no row for a gate this block does not know",
+  gateDoc153.length > 0 && WAVE153_GATES.every((g) => gateRows153.includes(g.gate.toLowerCase())) && gateRows153.every((r) => WAVE153_GATES.some((g) => g.gate.toLowerCase() === r)),
+  [...WAVE153_GATES.filter((g) => !gateRows153.includes(g.gate.toLowerCase())).map((g) => `missing: ${g.gate}`), ...gateRows153.filter((r) => !WAVE153_GATES.some((g) => g.gate.toLowerCase() === r)).map((r) => `unknown row: ${r}`)].join(", "))
+
+// ═════════════════════════════════════════════════════════════════════════════
 // WAVE 147 (lane 147H) — O · THE OWNER OBLIGATIONS STAY RELEASE-BLOCKING IN THE OUTPUT. Two obligations no code can
 // discharge (wave 146 report §18–19): (O1) the storage.objects policies — m855 (OWNER-SQL §F) and m875 (§G) — read
 // from the migration stamps through the ONE classifier (the go-live board reads the LIVE state); (O2) the four unlinked
@@ -2288,14 +2577,15 @@ console.log(`WAVE 149 GATE: ${certified149.length}/${WAVE149_GATES.length} certi
 console.log(`WAVE 150 GATE: ${certified150.length}/${WAVE150_GATES.length} certified, ${external150.length} external-verdict, ${notCertified150.length} not certified${notCertified150.length ? ` — ${notCertified150.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 151 GATE: ${certified151.length}/${WAVE151_GATES.length} certified, ${external151.length} external-verdict, ${notCertified151.length} not certified${notCertified151.length ? ` — ${notCertified151.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 152 GATE: ${certified152.length}/${WAVE152_GATES.length} certified, ${external152.length} external-verdict, ${notCertified152.length} not certified${notCertified152.length ? ` — ${notCertified152.map((v) => v.gate).join(", ")}` : ""}`)
+console.log(`WAVE 153 GATE: ${certified153.length}/${WAVE153_GATES.length} certified, ${external153.length} external-verdict, ${notCertified153.length} not certified${notCertified153.length ? ` — ${notCertified153.map((v) => v.gate).join(", ")}` : ""}`)
 // Wave 149 (lane 149K finding, fixed by 149I2): the RELEASE verdict had summed waves 141/142/145/146/147 only and silently
-// ignored the wave-148 gates; it now sums every wave's gates, 148, 149, 150, 151 and 152 included.
-const openGates = notCertified.length + notCertified142.length + notCertified145.length + notCertified146.length + notCertified147.length + notCertified148.length + notCertified149.length + notCertified150.length + notCertified151.length + notCertified152.length
-const externalAll = [...external, ...external145, ...external146, ...external147, ...external148, ...external149, ...external150, ...external151, ...external152]
+// ignored the wave-148 gates; it now sums every wave's gates, 148, 149, 150, 151, 152 and 153 included.
+const openGates = notCertified.length + notCertified142.length + notCertified145.length + notCertified146.length + notCertified147.length + notCertified148.length + notCertified149.length + notCertified150.length + notCertified151.length + notCertified152.length + notCertified153.length
+const externalAll = [...external, ...external145, ...external146, ...external147, ...external148, ...external149, ...external150, ...external151, ...external152, ...external153]
 console.log(`OWNER OBLIGATIONS: ${ownerBlocking.length}/${OWNER_OBLIGATIONS.length} RELEASE-BLOCKING${ownerBlocking.length ? ` — ${ownerBlocking.map((o) => o.id).join(", ")}` : ""}`)
 // The owner obligations (lane 147H) join the verdict: a release with an undischarged obligation is NOT READY even when
 // every gate certifies in-repo.
-console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 && ownerBlocking.length === 0 ? "READY — every owner gate (wave 141 + 142 + 145 + 146 + 147 + 148 + 149 + 150 + 151 + 152) certified in-repo and every owner obligation discharged" : "NOT READY — " + [openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length}, wave 146 ${notCertified146.length}, wave 147 ${notCertified147.length}, wave 148 ${notCertified148.length}, wave 149 ${notCertified149.length}, wave 150 ${notCertified150.length}, wave 151 ${notCertified151.length}, wave 152 ${notCertified152.length})` : "", externalAll.length ? `${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "", ownerBlocking.length ? `${ownerBlocking.length} owner obligation(s) RELEASE-BLOCKING (${ownerBlocking.map((o) => o.id).join(", ")})` : ""].filter(Boolean).join("; ")}`)
+console.log(`RELEASE: ${openGates === 0 && externalAll.length === 0 && ownerBlocking.length === 0 ? "READY — every owner gate (wave 141 + 142 + 145 + 146 + 147 + 148 + 149 + 150 + 151 + 152 + 153) certified in-repo and every owner obligation discharged" : "NOT READY — " + [openGates ? `${openGates} gate(s) not certified (wave 141 ${notCertified.length}, wave 142 ${notCertified142.length}, wave 145 ${notCertified145.length}, wave 146 ${notCertified146.length}, wave 147 ${notCertified147.length}, wave 148 ${notCertified148.length}, wave 149 ${notCertified149.length}, wave 150 ${notCertified150.length}, wave 151 ${notCertified151.length}, wave 152 ${notCertified152.length}, wave 153 ${notCertified153.length})` : "", externalAll.length ? `${externalAll.length} gate(s) await an external verdict (${externalAll.map((v) => v.gate).join(", ")})` : "", ownerBlocking.length ? `${ownerBlocking.length} owner obligation(s) RELEASE-BLOCKING (${ownerBlocking.map((o) => o.id).join(", ")})` : ""].filter(Boolean).join("; ")}`)
 
 console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
 if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }

@@ -24,7 +24,8 @@
  * assertion carries a positive control; no count or line number is pinned (the rule is asserted, the number derived).
  */
 import { readFileSync, existsSync } from "node:fs"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import { createHash } from "node:crypto"
 import { stripComments, blankStrings } from "./strip-comments"
 import { memSupabase, type MemClient } from "./in-memory-supabase"
@@ -48,6 +49,9 @@ interface Reuse { from: "wave150" | "wave151" | "proof"; ref: number | string; c
 interface Scenario { n: string; title: string; directiveLine: number; survivors: readonly string[]; reuses: readonly Reuse[]; adverse: string; positiveControl: string; blindSpot: string; run: () => Promise<Verdict> }
 const SCENARIOS: Scenario[] = []
 const scenario = (s: Scenario) => SCENARIOS.push(s)
+// wave 153 (lane 153L): the wave-153 runner REUSES these scenarios by import (scripts/wave153-canaries.ts) — the roster is exported
+// and main() runs only when this file is the entry script (the wave-150 / wave-151 precedent).
+export const WAVE152_SCENARIOS: ReadonlyArray<Pick<Scenario, "n" | "title" | "run">> = SCENARIOS
 
 // ═════════════════════════════════════════════════════════════════════════════
 // SHARED WORLDS — copied in shape from the lane proofs that own them (named per world), never re-implemented logic
@@ -1256,4 +1260,5 @@ async function main() {
   process.exit(failed + reusedFailed > 0 ? 1 : 0)
 }
 
-main().catch((e) => { console.error(e); console.log("WAVE152_CANARIES_FAIL"); process.exit(1) })
+const isEntry = (() => { try { return pathToFileURL(resolve(process.argv[1] ?? "")).href === import.meta.url } catch { return false } })()
+if (isEntry) main().catch((e) => { console.error(e); console.log("WAVE152_CANARIES_FAIL"); process.exit(1) })

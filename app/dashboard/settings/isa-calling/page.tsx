@@ -97,6 +97,7 @@ async function IsaCallingContent() {
       currentUserRole={profile.user_type ?? null}
       capabilityCatalog={ISA_CAPABILITY_CATALOG}
       enabledCapabilities={enabledCapabilities}
+      requireBrokerApproval={isaSettings.require_broker_approval === true}
     />
   )
 }

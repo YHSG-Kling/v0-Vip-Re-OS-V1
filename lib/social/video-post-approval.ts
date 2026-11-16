@@ -32,9 +32,6 @@ export interface VideoPostDeps {
   now?: () => Date
 }
 
-/** The ai_video_projects columns classifyPublicVideo reads — select these, never a subset. */
-export const PUBLIC_VIDEO_COLUMNS = "video_type, audience_type, usage_intent, contact_id, learning_module_id, approval_status, status, compliance_status, video_url"
-
 export async function insertVideoSocialPostForApproval(
   svc: Db,
   input: { brokerageId: string; approverUserId: string | null; project: Record<string, unknown>; post: Record<string, unknown> },

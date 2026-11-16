@@ -57,7 +57,7 @@ export function publicRequestSearches(market: PlayMarket): ExaHuntSearch[] {
 
 /** The real-estate needs a first-person statement can carry (one vocabulary; rides the record as need_kinds). */
 export const STATED_NEED_KINDS = ["buying", "selling", "fsbo_selling", "relocating", "military_move"] as const
-export type StatedNeedKind = (typeof STATED_NEED_KINDS)[number]
+type StatedNeedKind = (typeof STATED_NEED_KINDS)[number]
 
 interface PublicStatement { firstPerson: boolean; thirdParty: boolean; requestsAgentContact: boolean; statesHousingNeed: boolean; needKinds: StatedNeedKind[]; isQuestion: boolean; relocating: boolean; quote: string | null }
 

@@ -10,7 +10,7 @@ sweep) → OUTCOME evidence (ledger / arbitration record / provider truth). The 
 Planes: A authority / tenant session · E Contact engagement (the follow-up arbiter) · D outbound dispatch · G manager coordination
 (delegation, missions, the signal bus) · P human approval · R resources (entitlement, vendor budget, spend, provider route) · C closing / money gates.
 
-Classes: `loop-complete` 663 · `read-surface` 404 · `partial` 217 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 98 · `registry-only` 0 · `proof-unregistered` 0 — of 1383 rows, over 5381 source files.
+Classes: `loop-complete` 664 · `read-surface` 404 · `partial` 217 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 98 · `registry-only` 0 · `proof-unregistered` 0 — of 1384 rows, over 5381 source files.
 
 ## Deal Coordinator (`deal_coordinator`) — 107 domains
 
@@ -673,7 +673,7 @@ Classes: `loop-complete` 663 · `read-surface` 404 · `partial` 217 · `writes-u
 | `lead_magnet_flow` | guard-only | — | — | — | — | — | — | — | — | `test:lead-magnet-flow` |
 | `office_chat_and_kb_recall` | guard-only | — | — | — | — | — | — | — | — | `test:knowledge-lead-wiring` |
 
-## Data Steward (`data_steward`) — 466 domains
+## Data Steward (`data_steward`) — 467 domains
 
 | Domain | Class | Trigger | Planes | Survivor | Writes (state) | Readback | Next | Recovery | Outcome | Proof |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -855,6 +855,7 @@ Classes: `loop-complete` 663 · `read-surface` 404 · `partial` 217 · `writes-u
 | `wave150_canaries` | loop-complete | cron `lib/kernel/cron-dispatch.ts` | ACEGPR | `ad-payload.ts` +52 | activities, agent_action_ledger, brokerages +33 | 1639 reader(s) | ✓ | ✓ | ✓ | `test:wave150-canaries` |
 | `wave151_canaries` | loop-complete | cron `api/cron/lead-scraping` (+1) | ACEGR | `navigation-config.ts` +33 | activities, agent_action_ledger, buyer_financial_profiles +15 | 870 reader(s) | ✓ | — | ✓ | `test:wave151-canaries` |
 | `wave152_canaries` | loop-complete | cron `api/cron/deal-health-scan` (+1) | ACGR | `lead-visibility.ts` +31 | closing_cost_accuracy_observations, contract_term_versions, direct_mail_recipients +14 | 332 reader(s) | ✓ | ✓ | ✓ | `test:wave152-canaries` |
+| `wave153_canaries` | loop-complete | cron `api/cron/lead-scraping` (+1) | ACEGR | `contract.ts` +25 | activities, business_expense_allocations, commission_adjustments +5 | 208 reader(s) | ✓ | ✓ | ✓ | `test:wave153-canaries` |
 | `webhook_event_subscriptions` | loop-complete | cron `api/cron/webhook-deliveries` (+1) | G | `tenant-webhooks-core.ts` +1 | tenant_webhook_deliveries, tenant_webhook_subscriptions | 5 reader(s) | ✓ | ✓ | ✓ | `test:webhook-subscriptions` |
 | `zapier_outbound_only` | loop-complete | cron `lib/kernel/cron-dispatch.ts` | G | `route.ts` +4 | sequence_enrollments, tenant_webhook_deliveries, tenant_webhook_subscriptions +1 | 26 reader(s) | ✓ | ✓ | ✓ | `test:zapier-outbound-only` |
 | `ab_variant` | read-surface | cron `api/cron/campaign-sequence-steps` (+2) | — | `ab-variant.ts` | — | — | — | — | — | `test:ab-variant` |

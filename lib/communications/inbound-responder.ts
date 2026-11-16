@@ -267,7 +267,7 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
         fallbackOptionId: late.fallback.optionId, lateOptionId: late.decision?.optionId ?? null, ownership: own.ok ? own.ownership : null, now: lateNow,
       })
       let re: InboundResponse | null = null
-      await ledger<{ disposition: LateResultDisposition }>(
+      const settled = await ledger<{ disposition: LateResultDisposition }>(
         {
           brokerageId: req.brokerageId, action: "inbound.late_result.settle", actor: { type: "manager", managerKey: "ai_isa" }, subject: subjectRef,
           reasonCode: "CONVERSATION_RESPONSE", reasonDetail: v.reason.slice(0, 500), cycle: `late:${req.recordId}`, channel: req.channel, riskClass: "COMMUNICATION",
@@ -278,10 +278,13 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
           if (v.disposition === "re_arbitrate") re = await respondToInboundCommunication(svc, req, { ...deps, reArbitration: true, onLateSettled: undefined })
           return { disposition: v.disposition }
         },
-        { settle: () => ({ status: v.disposition === "re_arbitrate" ? "executed" : "skipped", outcome: re ? `re_arbitrated:${(re as InboundResponse).action}` : v.disposition }), replay: () => ({ disposition: v.disposition }) },
+        { settle: () => ({ status: v.disposition === "re_arbitrate" ? "executed" : "skipped", outcome: re ? `re_arbitrated:${(re as InboundResponse).action}` : v.disposition }), 
+          // A REFUSED claim is not a replay: the ledger could not record this settlement, so nothing ran and nothing is claimed —
+          // the disposition says so (stale_refused) and the completion net redrives the conversation.
+          replay: (claim) => ({ disposition: claim.kind === "refused" ? "stale_refused" : v.disposition }) },
         { client: svc as never },
       )
-      return { disposition: v.disposition, reArbitration: re }
+      return { disposition: settled.disposition, reArbitration: re }
     }
 
     const autonomyPolicyKey = "autonomy_tier:ai_isa"
@@ -419,7 +422,12 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
       },
       {
         settle: (r) => ({ status: r.action === "refused" ? "failed" : r.action === "reply_sent" || r.action === "audience_reengagement" ? "executed" : "skipped", outcome: r.action, error: r.action === "refused" ? r.reason : null, ...(r.providerRef ? { providerRef: r.providerRef } : {}) }),
-        replay: () => out,
+        // A REFUSED claim is not "already answered": the ledger could not record this response, so nothing was sent. Saying
+        // "replayed" there read as answered and let an unanswered person fall silent — it is a refusal, and the completion
+        // net (and the late-result settlement, which treats only a real reply as answered) redrives the conversation.
+        replay: (claim) => (claim.kind === "refused"
+          ? (out = { action: "refused", reason: "the response could not be recorded on the action ledger, so nothing was sent — the conversation is redriven", decision })
+          : out),
       },
       { client: svc as never },
     )

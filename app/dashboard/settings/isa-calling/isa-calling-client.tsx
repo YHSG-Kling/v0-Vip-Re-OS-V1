@@ -16,6 +16,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -50,6 +51,8 @@ interface Props {
   currentUserRole: string | null
   capabilityCatalog: IsaCapabilityDescriptor[]
   enabledCapabilities: IsaCapability[]
+  /** The stored choice (owner ruling B7: the DEFAULT is off — the arbiter's routine follow-up sends without a click). */
+  requireBrokerApproval: boolean
 }
 
 // Only the two sources this OS produces. The list used to offer VAPI Native,
@@ -78,6 +81,24 @@ export function IsaCallingClient(props: Props) {
   const [enabledCapabilities, setEnabledCapabilities] = useState<Set<IsaCapability>>(
     new Set(initialEnabledCapabilities)
   )
+  const [requireApproval, setRequireApproval] = useState(props.requireBrokerApproval)
+  const [approvalNote, setApprovalNote] = useState<string | null>(null)
+
+  // The broker's own switch (wave 153, owner ruling B7). The server's verdict is shown — no optimistic success: a refused save
+  // puts the switch back and says so.
+  function handleToggleApproval(next: boolean) {
+    setApprovalNote(null)
+    setRequireApproval(next)
+    startTransition(async () => {
+      const r = await saveAIISASettings(brokerageId, { require_broker_approval: next })
+      if (!r.success) {
+        setRequireApproval(!next)
+        setApprovalNote("That change could not be saved, so nothing changed. Try again in a moment.")
+      } else {
+        setApprovalNote(next ? "Saved. Lead follow-ups now wait for your approval." : "Saved. Lead follow-ups send when the AI decides the time is right.")
+      }
+    })
+  }
 
   function handleToggleCapability(capability: IsaCapability) {
     const next = new Set(enabledCapabilities)
@@ -186,6 +207,24 @@ export function IsaCallingClient(props: Props) {
           one instead, use Add a Number under phone settings.
         </p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Lead follow-up approval</CardTitle>
+          <CardDescription>
+            By default the AI ISA sends a routine lead follow-up when it decides the time is right, in your voice, and only on the
+            channels a lead may receive. Consent, do-not-contact and quiet-hours rules always apply. Turn this on if you want every
+            lead follow-up to wait for your approval first.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex items-center justify-between gap-4">
+            <Label htmlFor="require-broker-approval">Require my approval before the AI ISA sends a lead follow-up</Label>
+            <Switch id="require-broker-approval" checked={requireApproval} onCheckedChange={handleToggleApproval} disabled={isPending} />
+          </div>
+          {approvalNote && <p className="text-sm text-muted-foreground" role="status">{approvalNote}</p>}
+        </CardContent>
+      </Card>
 
       <Tabs defaultValue="numbers" className="space-y-4">
         <TabsList>

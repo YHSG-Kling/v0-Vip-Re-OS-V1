@@ -1703,7 +1703,9 @@ async function updateIntelligenceProfile(
 ) {
   const supabase = createServiceClient()
 
-  const { data: propertySearches } = await supabase.from("lead_property_searches").select("*").eq("lead_id", leadId)
+  // TOMBSTONE (orphan doctrine §1.3; wave 153): the lead_property_searches read that stood here had no writer left — its only
+  // writer (searchRealEstateSites) scraped portal pages outside the owner's scraping scope and never produced a row. A person's
+  // own property-search behaviour is the Contact's consented portal / IDX activity (lib/lead-intelligence/behavioral-summary.ts).
 
   // IDX property interactions are NOT read here any more (wave 18). Property
   // search is a CONTACTS capability by owner ruling; lead_idx_property_interactions,
@@ -1768,29 +1770,11 @@ async function updateIntelligenceProfile(
     buyerSellerType = sellerSignals && sellerSignals.length > 2 ? "seller" : "both"
   }
 
+  // Property types, locations and a price range used to be folded from lead_property_searches rows; with that source retired
+  // (see the tombstone above) they are honestly empty / unknown here — never inferred.
   const propertyTypes: string[] = []
   const locations: string[] = []
-  let minPrice = Number.POSITIVE_INFINITY
-  let maxPrice = 0
-
-  propertySearches?.forEach((search: any) => {
-    if (search.search_criteria?.propertyType) {
-      propertyTypes.push(search.search_criteria.propertyType)
-    }
-    if (search.search_criteria?.minPrice) {
-      minPrice = Math.min(minPrice, search.search_criteria.minPrice)
-    }
-    if (search.search_criteria?.maxPrice) {
-      maxPrice = Math.max(maxPrice, search.search_criteria.maxPrice)
-    }
-    if (search.search_location) {
-      locations.push(search.search_location)
-    }
-  })
-
-
-  const priceRange =
-    minPrice !== Number.POSITIVE_INFINITY ? `$${minPrice.toLocaleString()} - $${maxPrice.toLocaleString()}` : null
+  const priceRange: string | null = null
 
   // `lead_intelligence.timeline`. TYPED against the one vocabulary
   // (constants/crm-standards.ts:STANDARD_TIMELINES) — this writer already spoke
@@ -1811,9 +1795,8 @@ async function updateIntelligenceProfile(
   const motivationScore = calculateMotivationScore({
     engagementScore: engagementScores?.overall_score || 0,
     sellerSignals: sellerSignals?.length || 0,
-    // propertyViews removed with its source — see the note above. A literal 0
-    // would be indistinguishable from a person who genuinely viewed nothing.
-    searches: propertySearches?.length || 0,
+    // propertyViews and searches were removed with their sources — see the notes above. A literal 0 would be
+    // indistinguishable from a person who genuinely viewed or searched nothing.
   })
 
   const qualificationScore = calculateQualificationScore({
@@ -1867,12 +1850,10 @@ async function updateIntelligenceProfile(
 function calculateMotivationScore(data: {
   engagementScore: number
   sellerSignals: number
-  searches: number
 }): number {
   let score = 0
   score += data.engagementScore * 0.4
   score += Math.min(30, data.sellerSignals * 10)
-  score += Math.min(10, data.searches * 3)
   return Math.round(Math.min(100, score))
 }
 
@@ -2476,7 +2457,7 @@ async function getAllSignalsForProfile(profileId: string, brokerageId: string, c
     property: property || [],
     behaviorSummary,
     total_count: (behavioral?.length || 0) + (property?.length || 0) + behaviorSummary.externalBehaviorCount
-      + behaviorSummary.nextdoorActivityCount + behaviorSummary.googleSearchActivityCount + behaviorSummary.osintSignalCount,
+      + behaviorSummary.nextdoorActivityCount + behaviorSummary.osintSignalCount,
   }
 }
 

@@ -96,7 +96,7 @@ OS-wide arbitration is these EXISTING deciders, each at its own action boundary 
 | 5 · manager delegation | May a delegation move from one status to another? | `lib/kernel/manager-delegation.ts:119` `canDelegationTransition` (module-private: the gate is the door) | ⟨1⟩ in-file | `test:manager-delegation` |
 | 5 · manager delegation | Would this ask close a wait-for cycle between managers (deadlock)? | `lib/kernel/manager-delegation.ts:289` `delegationWaitCycle` (module-private: the gate is the door) | ⟨1⟩ in-file | `test:os-arbitration-canaries` |
 | 5 · manager delegation | What authority rung does a manager hold in this tenant? | `lib/managers/autonomy-gate.ts:298` `resolveAgentAuthorityLevel` | ⟨16⟩ file(s) | `test:autonomy-gate` |
-| 5 · manager delegation | Which manager is accountable for a domain? | `lib/kernel/manager-registry.ts:3425` `resolveMaintenanceManager` | ⟨1⟩ file(s) | `test:manager-ownership` |
+| 5 · manager delegation | Which manager is accountable for a domain? | `lib/kernel/manager-registry.ts:3426` `resolveMaintenanceManager` | ⟨1⟩ file(s) | `test:manager-ownership` |
 | 6 · human approval | Who approves this tenant's asset (owner / team lead / brokerage only by policy)? | `lib/kernel/approval-authority.ts:117` `approverFor` | ⟨9⟩ file(s) | `test:ads-tv-connections` |
 | 6 · human approval | Is a pending approval overdue (SLA → escalation)? | `lib/kernel/approval-sla.ts:17` `evaluateApprovalSla` | ⟨4⟩ file(s) | `test:social-approval` |
 | resource · entitlement | Is this subscription entitled to (and able to afford) a paid lane? | `lib/billing/billing-access.ts:313` `mayUseAndAfford` | ⟨33⟩ file(s) | `test:billing-access` |
@@ -141,7 +141,7 @@ Decision flow between the planes: a trigger (event / human goal / signal / cron)
 | Asset Manager | ⟨102⟩ | ⟨30⟩ | ⟨38⟩ | ⟨30⟩ | ⟨0⟩ | ⟨0⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨32⟩ | ⟨1⟩ | ⟨1⟩ |
 | Ads Manager | ⟨15⟩ | ⟨6⟩ | ⟨5⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨7⟩ | ⟨11⟩ | ⟨2⟩ | ⟨2⟩ |
 | AI ISA | ⟨99⟩ | ⟨60⟩ | ⟨15⟩ | ⟨18⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨0⟩ | ⟨0⟩ | ⟨21⟩ | ⟨43⟩ | ⟨0⟩ | ⟨4⟩ |
-| Data Steward | ⟨466⟩ | ⟨180⟩ | ⟨156⟩ | ⟨65⟩ | ⟨0⟩ | ⟨1⟩ | ⟨64⟩ | ⟨0⟩ | ⟨0⟩ | ⟨36⟩ | ⟨262⟩ | ⟨0⟩ | ⟨2⟩ |
+| Data Steward | ⟨467⟩ | ⟨181⟩ | ⟨156⟩ | ⟨65⟩ | ⟨0⟩ | ⟨1⟩ | ⟨64⟩ | ⟨0⟩ | ⟨0⟩ | ⟨36⟩ | ⟨262⟩ | ⟨0⟩ | ⟨2⟩ |
 | Recruiting Manager | ⟨64⟩ | ⟨30⟩ | ⟨21⟩ | ⟨12⟩ | ⟨0⟩ | ⟨0⟩ | ⟨1⟩ | ⟨0⟩ | ⟨0⟩ | ⟨9⟩ | ⟨58⟩ | ⟨0⟩ | ⟨2⟩ |
 | Compliance Officer | ⟨90⟩ | ⟨59⟩ | ⟨12⟩ | ⟨16⟩ | ⟨0⟩ | ⟨0⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨18⟩ | ⟨0⟩ | ⟨1⟩ |
 | Finance Manager | ⟨96⟩ | ⟨52⟩ | ⟨19⟩ | ⟨22⟩ | ⟨0⟩ | ⟨0⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨41⟩ | ⟨0⟩ | ⟨4⟩ |

@@ -12,7 +12,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks"
 
-export interface SendIntentScope {
+interface SendIntentScope {
   /** The caller's stable unit of once (e.g. `bundle_follow_on:<dispatch>:<item>`). The dispatcher appends the action. */
   key: string
 }

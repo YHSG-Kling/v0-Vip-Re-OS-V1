@@ -106,11 +106,11 @@ None — every level the ruling names reaches every domain it should, on a real 
 
 ## Classification — every unfinished / not-configured / not-available sentence (ruling 9, lane 147H)
 
-Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that say 'not available yet'. Every exposed function works, gives an honest configuration message, or leaves the advertised launch surface."* Population: every line of STRIPPED source in `app/**` carrying the honest-state phrase family (and every "not available yet" line in `lib/**`) — 186 sentences (42 on screens, 144 server refusals a screen relays). Each sits in exactly one class, **derived from code** for 131 (an env var the runtime reads, a fail-closed tenant guard, a connection / provider probe, a migration stamp) and from the published allow-list (`CLASSIFIED_SURFACES`) for 55. A missing credential is configuration, never an engineering failure.
+Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that say 'not available yet'. Every exposed function works, gives an honest configuration message, or leaves the advertised launch surface."* Population: every line of STRIPPED source in `app/**` carrying the honest-state phrase family (and every "not available yet" line in `lib/**`) — 185 sentences (42 on screens, 143 server refusals a screen relays). Each sits in exactly one class, **derived from code** for 130 (an env var the runtime reads, a fail-closed tenant guard, a connection / provider probe, a migration stamp) and from the published allow-list (`CLASSIFIED_SURFACES`) for 55. A missing credential is configuration, never an engineering failure.
 
 | class | sentences |
 |---|---|
-| implemented-missing-owner-config | 184 |
+| implemented-missing-owner-config | 183 |
 | present-but-unwired | 0 |
 | incomplete-code | 0 |
 | missing-reader/writer/evidence | 0 |
@@ -145,9 +145,10 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 |---|---|---|---|---|---|---|---|
 | `app/actions/admin/invitations.ts` | 33 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
 | `app/actions/admin/manager-evals.ts` | 103, 331, 368, 426, 519, 661, 677, 719, 777, 803, 837, 900 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
-| `app/actions/admin/run-scrape-test.ts` | 209 | server | not configured | implemented-missing-owner-config | code | platform env CRON_SECRET, VERCEL_URL | kept: names the variable |
+| `app/actions/admin/run-scrape-test.ts` | 199 | server | not configured | implemented-missing-owner-config | code | platform env CRON_SECRET, VERCEL_URL | kept: names the variable |
 | `app/actions/ai-isa.ts` | 755 | server | not configured | implemented-missing-owner-config | allow-list | the postcard front + back are DISTINCT Lob template ids by platform env NAME (LOB_POSTCARD_FRONT_TEMPLATE_ID / LOB_POSTCARD_BACK_TEMPLATE_ID) resolved by lib/direct-mail/piece-type.ts routeMailFormat — the env check sits in that module, outside this line's window (wave 150, lane 150Z: the test postcard rides the ONE format router, 150R Outside-lane 6) | kept: honest refusal relaying the router's reason before any spend |
 | `app/actions/ai-listing-intake.ts` | 619, 730 | server | not configured | implemented-missing-owner-config | allow-list | Dotloop is a brokerage connection (Settings › Integrations) | kept: names where to connect it |
+| `app/actions/ai-newsletter.ts` | 590, 1204 | server | not configured | implemented-missing-owner-config | code | platform env NEWSLETTER_FROM_DOMAIN | kept: honest configuration copy (derived) |
 | `app/actions/ai-offer-creation.ts` | 379 | server | not configured | implemented-missing-owner-config | allow-list | Dotloop is a brokerage connection (Settings › Integrations) | kept: names where to connect it |
 | `app/actions/avatar-voice-catalog.ts` | 46 | server | not configured | implemented-missing-owner-config | code | platform env DID_API_KEY, ELEVENLABS_API_KEY | kept: honest configuration copy (derived) |
 | `app/actions/billing.ts` | 27, 57, 596 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
@@ -168,8 +169,7 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 | `app/actions/idx-search.ts` | 35, 38 | server | not configured | implemented-missing-owner-config | code | platform env IDXBROKER_API_KEY, IDXBROKER_API_URL | kept: honest configuration copy (derived) |
 | `app/actions/income-engine.ts` | 39 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
 | `app/actions/investor-buybox-preview.ts` | 83 | server | not configured | implemented-missing-owner-config | code | tenant / provider connection probe (unconfigured) | kept: honest refusal (the card relays it) |
-| `app/actions/lead-intelligence.ts` | 660, 661, 2214 | server | not configured | implemented-missing-owner-config | code | platform env ZENROWS_API_KEY | kept: names the variable where the line can |
-| `app/actions/lead-intelligence.ts` | 885, 3140 | server | not configured | implemented-missing-owner-config | code | platform env BATCHDATA_API_KEY | kept: names the variable where the line can |
+| `app/actions/lead-intelligence.ts` | 901, 3021 | server | not configured | implemented-missing-owner-config | code | platform env BATCHDATA_API_KEY | kept: names the variable where the line can |
 | `app/actions/lead-quick-actions.ts` | 133 | server | not configured | implemented-missing-owner-config | code | platform env LOB_API_KEY | kept: honest configuration copy (derived) |
 | `app/actions/learning-modules-approvals.ts` | 32 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
 | `app/actions/learning-modules.ts` | 75 | server | not configured | implemented-missing-owner-config | code | fail-closed tenant guard — the signed-in seat has no users.brokerage_id (the tenant admin attaches the seat) | kept: honest configuration copy (derived) |
@@ -273,8 +273,8 @@ Owner ruling 9 (2026-10-31): *"Build the missing capabilities and the ones that 
 | `lib/contacts/accessibility-preferences.ts` | 283 | server | not available yet | implemented-missing-owner-config | code | fallback for a database missing APPLIED migration m868 (dormant live; the deployment applies it) | kept: honest configuration copy (derived) |
 | `lib/errors/index.ts` | 711, 712 | server | not available yet / isn't available yet | implemented-missing-owner-config | allow-list | THE tenant presenter's awaiting-activation state (presentTenantConnection 'Not available yet' / '<service> isn't available yet') — composed for a platform-provided lane whose platform key / activation is not configured (provider-posture platform_dark); nothing for the tenant to set up | kept: one honest status sentence, composed once for every connection surface (wave 152, lane 152A) |
 | `lib/integrations/providers/provider-resolver.ts` | 32 | server | not yet available | unsupported/deferred | allow-list | a legal-forms / e-sign provider listed in the catalog with implemented:false — the refusal names the providers that work | kept: honest refusal; the catalog marks it unimplemented (no adapter is claimed) |
-| `lib/kernel/manager-registry.ts` | 1901 | server | not available yet | implemented-missing-owner-config | code | platform env DID_API_KEY, ELEVENLABS_API_KEY, ZOOM_SDK_KEY, ZOOM_SDK_SECRET | kept: honest configuration copy (derived) |
-| `lib/kernel/video.ts` | 647 | server | not yet available | unsupported/deferred | allow-list | video repurposing (shorts / clips / thumbnails) has no processing backend; the old code fabricated artifact URLs | kept: honest refusal relayed by the video studio dialog; a processor (worker) is an owner decision — Still open |
+| `lib/kernel/manager-registry.ts` | 1910 | server | not available yet | implemented-missing-owner-config | code | platform env DID_API_KEY, ELEVENLABS_API_KEY, ZOOM_SDK_KEY, ZOOM_SDK_SECRET | kept: honest configuration copy (derived) |
+| `lib/kernel/video.ts` | 657 | server | not yet available | unsupported/deferred | allow-list | video repurposing (shorts / clips / thumbnails) has no processing backend; the old code fabricated artifact URLs | kept: honest refusal relayed by the video studio dialog; a processor (worker) is an owner decision — Still open |
 | `lib/market-reports/producer.ts` | 233 | server | not available yet | implemented-missing-owner-config | allow-list | a market datum the licensed data sources (RentCast — RENTCAST_API_KEY, the tenant's MLS / IDX feed connection) did not return for this territory; the report labels it instead of estimating it (owner ruling 6) | kept: the honest section heading the producer's validator requires |
 | `lib/market-reports/prompts.ts` | 64 | server | not available yet | implemented-missing-owner-config | allow-list | the writing prompt's rule that a fact the data sources did not return is said to be not available, never estimated (owner ruling 6; the producer validator refuses an invented figure) | kept: an instruction to the model, not user copy |
 
@@ -288,7 +288,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | `app/actions/compliance/manage-required-docs.ts:310` | m847 | applied |
 | `app/actions/content-studio.ts:111` | m872 | applied |
 | `app/actions/fair-housing-older-persons.ts:60` | m846 | applied |
-| `app/actions/lead-intelligence.ts:1013` | m629 | applied |
+| `app/actions/lead-intelligence.ts:1029` | m629 | applied |
 | `app/actions/seller-listing/execution-engine.ts:1086` | m856 | applied |
 | `app/actions/transactions/tax-proration.ts:78` | m873 | applied |
 | `app/actions/vendor-portfolio.ts:35` | m906 | applied |

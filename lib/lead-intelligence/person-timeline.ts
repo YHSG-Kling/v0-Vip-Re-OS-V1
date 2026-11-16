@@ -384,16 +384,6 @@ export async function buildPersonTimeline(params: Params): Promise<PersonTimelin
         detail: { keywords: r.keywords, relevanceScore: r.relevanceScore },
       })
     }
-    for (const r of summary.googleSearchActivity) {
-      events.push({
-        id: `google-search:${contactId}:${Math.random()}`,
-        type: "behavioral_signal",
-        occurredAt: null,
-        summary: `Google search intent: ${r.detectedIntent ?? "unspecified"}${r.searchLocation ? ` near ${r.searchLocation}` : ""}`,
-        sensitivity: "lead_desk_only",
-        detail: { searchTerms: r.searchTerms },
-      })
-    }
     if (summary.osintSignalCount > 0) {
       events.push({
         id: `osint:${contactId}`,
