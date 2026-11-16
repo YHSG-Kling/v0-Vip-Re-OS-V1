@@ -280,7 +280,9 @@ export async function POST(request: NextRequest) {
       tool_input: params,
       // The decision and the typed instruction ride the audit row (wave 152, 152I) — replayable: what was asked, what the gate
       // decided, which hold it created or released, what ran.
-      tool_output: { ...(result && typeof result === "object" ? result : { value: result }), governance: { ...governance, instruction } },
+      // WAVE 153 (153O, typed instruction + taint): the PROPOSED instruction (what the model asked) beside the APPROVED one (what the
+      // gates let run) and the trust class of every input — the readback that was missing from the decision contract.
+      tool_output: { ...(result && typeof result === "object" ? result : { value: result }), governance: { ...governance, instruction }, instruction_trust: { proposed: { tool: toolName, parameter_keys: Object.keys(params).slice(0, 40) }, approved: { tool: toolName, decision: governance.decision, parameter_keys: Object.keys(dispatchParams).slice(0, 40) }, inputs_trust: TOOL_INPUT_TRUST } },
       success,
       error_message: errorMessage,
       latency_ms: latencyMs,
@@ -2951,6 +2953,14 @@ function jsonToolError(message: string) {
  *  `confirm: true` is a probabilistic output — it is honoured only against a hold THIS session persisted for exactly these
  *  parameters (test:manager-ownership-matrix holds this set equal to the handlers that read `params.confirm`, stripped source). */
 const HELD_FOR_SPOKEN_CONFIRM: ReadonlySet<string> = new Set(["lender_confirm_financials", "confirm_buyer_financials"])
+
+/** WAVE 153 (153O, typed instruction + taint): where each input of a tool call comes from. Only the VERIFIED classes decide tenant,
+ *  role and authority; the model's tool name and parameters are DATA that the registry, the declared identity gates and the spoken
+ *  confirm must admit — free text inside a parameter can never name a recipient, raise authority, pick a tool or cross a tenant. */
+const TOOL_INPUT_TRUST = Object.freeze({
+  tool_name: "model_output", parameters: "model_output", tenant: "verified_session_row", actor_role: "verified_users_row",
+  authority: "tool_registry", recipient: "typed_parameter_behind_declared_identity_gates",
+})
 /** How long a read-back waits for the speaker's "confirm" before it expires and must be read back again. */
 const SPOKEN_CONFIRM_HOLD_TTL_MS = 10 * 60 * 1000
 
@@ -3055,7 +3065,7 @@ async function denyToolCall(
     session_id: session.id,
     tool_name: toolName,
     tool_input: params,
-    tool_output: { governance: { decision: "deny", stage, reason: message, instruction } },
+    tool_output: { governance: { decision: "deny", stage, reason: message, instruction }, instruction_trust: { proposed: { tool: toolName, parameter_keys: Object.keys(params ?? {}).slice(0, 40) }, approved: null, inputs_trust: TOOL_INPUT_TRUST } },
     success: false,
     error_message: message,
     latency_ms: Date.now() - start,

@@ -48,10 +48,13 @@ export interface AIISASettings {
 
 export const DEFAULT_AISA_SETTINGS: AIISASettings = {
   enabled: true,
-  // FAIL CLOSED (§4). Matches the live column default (`NOT NULL DEFAULT TRUE`,
-  // migration 061): "nobody configured this" renders as "a human releases it",
-  // never as "the AI may send".
-  require_broker_approval: true,
+  // OWNER RULING (2026-11-16, wave 153 B7): "when the arbiter decides on follow up, no waiting for human to approve."
+  // A brokerage that never configured this gets the arbiter's decision SENT (m951 moves the column default with it);
+  // a broker who wants a click turns approval ON and that explicit choice is honoured. This is NOT a fail-open: an
+  // UNREADABLE policy still never sends (lead-action-plan.ts leadAutoSendVerdict status "unreadable" → staged), the
+  // master switch still holds, and every lawful gate stays at the chokepoints (consent, TCPA, DNC, quiet hours,
+  // suppression, the lead's allowed channels below — email and verified mail only).
+  require_broker_approval: false,
   lead_allowed_channels: ['email', 'direct_mail'],
   contact_allowed_channels: ['email', 'sms', 'phone', 'direct_mail'],
   stale_threshold_days: 14,

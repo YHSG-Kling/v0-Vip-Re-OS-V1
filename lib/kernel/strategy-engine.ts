@@ -38,7 +38,7 @@ import {
   activeMissionsFor, attachEvidence, createMission, transitionMission,
   MISSION_LIFECYCLE_REASON, type MissionDeps, type MissionRow,
 } from "@/lib/kernel/missions"
-import { requestDelegation, DELEGATION_WORKERS, type DelegationDeps } from "@/lib/kernel/manager-delegation"
+import { requestDelegation, DELEGATION_WORKERS, DELEGATION_SUBJECT_KEYS, type DelegationDeps, type DelegationSubjectType } from "@/lib/kernel/manager-delegation"
 import {
   adaptStrategy, participatingManagers, platformStrategy, rankStrategies, strategyCapabilities, strategyDigest,
   strategyGaps, strategyOwnershipOf, strategyRef, STRATEGY_EVIDENCE_KIND, PLATFORM_STRATEGY_LIBRARY,
@@ -242,7 +242,9 @@ export async function activateStrategy(input: ActivateStrategyInput, client?: Cl
         objective: `${def.title} — step ${i + 1}: ${step.purpose}`, authority: rung, deadline: mission.deadline, ownerWorkOrder: ownStep,
         // The step deadline IS the strategy horizon — a campaign opportunity (without a source the governance record drops it as unsourced).
         deadlineSource: "campaign_opportunity",
-        inputEntities: { subject_type: input.subject.type, subject_id: input.subject.id, strategy: ref, step: i + 1, playbooks: step.playbooks, ...(input.subject.type === "contact" ? { contactId: input.subject.id } : {}), ...(input.subject.type === "listing" ? { listingId: input.subject.id } : {}) },
+        // WAVE 153 (153O, owner B8): every first-class delegation subject — contact, LEAD, listing, TRANSACTION — rides its keyed id
+        // from the ONE table (DELEGATION_SUBJECT_KEYS), never a hand-picked pair; territory / brokerage stay subject_id-only.
+        inputEntities: { subject_type: input.subject.type, subject_id: input.subject.id, strategy: ref, step: i + 1, playbooks: step.playbooks, ...(input.subject.type in DELEGATION_SUBJECT_KEYS ? { [DELEGATION_SUBJECT_KEYS[input.subject.type as DelegationSubjectType]]: input.subject.id } : {}) },
         actor: { type: "manager", id: def.ownerManager },
       }, svc, { ...(deps.delegation ?? {}), mission: deps.delegation?.mission ?? deps.mission })
       delegations.push(r.ok ? { manager: step.manager, capability, ok: true, id: r.delegation.id } : { manager: step.manager, capability, ok: false, reason: r.reason })

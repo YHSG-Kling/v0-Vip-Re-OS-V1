@@ -22,9 +22,11 @@ import {
   arbitrateFollowUp,
   arbitrationLedgerDetail,
   interactiveTurnVerdict,
+  lateResultDisposition,
   loadConversationOwnership,
   routeToAgent,
   type InteractiveTurnVerdict,
+  type LateResultDisposition,
   type ArbiterChannel,
   type ArbiterDecide,
   type ArbiterDecision,
@@ -92,6 +94,14 @@ export interface InboundResponderDeps {
   replyCoach?: (p: { brokerageId: string; agentUserId: string; conversationId: string; contactId: string; inboundMessageId: string; inboundBody: string; channel: "email" | "sms" | "in_app" }) => Promise<{ success: boolean; error?: string; draftId?: string }>
   /** Wave 147 — the unattended SMS reply executor (default: ./inbound-reply-executors.ts sendInboundSmsReply → lib/providers/dispatch.ts dispatchSms). */
   sendSms?: (p: { brokerageId: string; contactId: string; conversationId: string; agentId: string | null; recordId: string; text: string }) => Promise<{ sent: boolean; providerRef?: string | null; messageId?: string | null; error?: string }>
+  /** WAVE 153 (153O, owner B7) — the unattended EMAIL / PORTAL reply executors that already exist (./inbound-reply-executors.ts
+   *  sendInboundEmailReply → dispatchEmail; postInboundPortalReply). Seams for the proofs. */
+  sendEmail?: (p: { brokerageId: string; contactId: string; conversationId: string; agentId: string | null; recordId: string; text: string; subject?: string | null }) => Promise<{ sent: boolean; providerRef?: string | null; messageId?: string | null; error?: string }>
+  postPortal?: (p: { brokerageId: string; contactId: string; agentId: string | null; recordId: string; text: string }) => Promise<{ sent: boolean; providerRef?: string | null; messageId?: string | null; error?: string }>
+  /** WAVE 153 (153O, owner B12): this run IS the fresh re-arbitration a late result triggered (its own ledger cycle; no second late hook). */
+  reArbitration?: boolean
+  /** WAVE 153 (153O): handed the late-result settlement promise (the proofs await it; production lets it run). */
+  onLateSettled?: (p: Promise<{ disposition: LateResultDisposition; reArbitration: InboundResponse | null }>) => void
   /** Contract C2 — 1:1 ad follow-up (default: lib/ads/audience-reengagement.ts requestAudienceReengagement). */
   reengage?: (p: { brokerageId: string; partyIds: string[]; basis: string; creativeHint?: string }) => Promise<unknown>
   safety?: (text: string) => string[]
@@ -121,6 +131,10 @@ export interface InboundResponderDeps {
 export async function respondToInboundCommunication(svc: { from: (t: string) => any }, req: InboundRespondRequest, deps: InboundResponderDeps = {}): Promise<InboundResponse> {
   const now = deps.now ?? new Date()
   const startedAt = Date.now()
+  // WAVE 153 (153O, B12): what this run finally did — a late model result is judged only once the fallback's outcome is known.
+  let finish: (r: InboundResponse) => void = () => {}
+  let dispatchFailed = false
+  const finished = new Promise<InboundResponse>((resolve) => { finish = resolve })
   try {
     if (!req.brokerageId || !req.recordId) return { action: "refused", reason: "no tenant / no inbound record", decision: null }
     const body = (req.body ?? "").trim()
@@ -226,10 +240,49 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
       // Real ambiguity: the arbiter's judgment under the expert inbound brief, inside the INTERACTIVE latency budget; its fallback is the
       // verdict's safe default (a person when nothing could be read — high-risk ambiguity is held, never silently allowed).
       const planned = turn?.path === "deliberate" && turn.planned === "notify_human" ? humanOpt : replyOpt
-      decision = await arbitrateFollowUp({ brokerageId: req.brokerageId, facts, menu, planned, policy, system: ARBITER_INBOUND_SYSTEM, latencyBudgetMs: ARBITER_LATENCY_BUDGET_MS.interactive }, { decide: deps.decide })
+      // WAVE 153 (153O, owner B12): the 2.5 s budget limits the planning CALL, never the person — on overrun the fallback below runs
+      // and the decision row persists the obligation (late_obligation). A LATE answer is never executed: settleLateResult judges it
+      // against the newest transcript and, only when nobody has answered them and nobody owns the thread, starts a FRESH evaluation.
+      const onLateResult = deps.reArbitration ? null : (late: { decision: ArbiterDecision | null; fallback: ArbiterDecision; ms: number }) => {
+        const p = settleLateResult(late)
+        p.catch(() => undefined)
+        deps.onLateSettled?.(p)
+      }
+      decision = await arbitrateFollowUp({ brokerageId: req.brokerageId, facts, menu, planned, policy, system: ARBITER_INBOUND_SYSTEM, latencyBudgetMs: ARBITER_LATENCY_BUDGET_MS.interactive, onLateResult }, { decide: deps.decide })
     }
     const decidedInMs = Date.now() - startedAt
+    const decidedAt = new Date(now.getTime() + decidedInMs).toISOString()
     const chosen = locked ? (locked.action === "human_task" ? "notify_human" : "none") : decision!.optionId
+    const subjectRef = req.contactId ? { type: "contact", id: req.contactId } : { type: "conversation", id: req.conversationId ?? req.recordId }
+
+    // B12 — the late result's settlement: evidence on the ledger (inbound.late_result.settle, once per inbound), and at most ONE fresh
+    // re-arbitration (its own cycle; every send inside is at-most-once per inbound — `inbound-reply:<record>` — so a fallback that
+    // already answered can never be doubled).
+    async function settleLateResult(late: { decision: ArbiterDecision | null; fallback: ArbiterDecision; ms: number }): Promise<{ disposition: LateResultDisposition; reArbitration: InboundResponse | null }> {
+      const done = await finished
+      const lateNow = new Date(now.getTime() + (Date.now() - startedAt))
+      const own = await loadConversationOwnership(svc, { brokerageId: req.brokerageId, contactId: req.contactId, conversationId: req.conversationId, now: lateNow, excludeMessageId: req.recordId })
+      const v = lateResultDisposition({
+        decidedAt, fallbackAnswered: done.action === "reply_sent" || done.action === "audience_reengagement" || done.action === "replayed", fallbackDispatchFailed: dispatchFailed,
+        fallbackOptionId: late.fallback.optionId, lateOptionId: late.decision?.optionId ?? null, ownership: own.ok ? own.ownership : null, now: lateNow,
+      })
+      let re: InboundResponse | null = null
+      await ledger<{ disposition: LateResultDisposition }>(
+        {
+          brokerageId: req.brokerageId, action: "inbound.late_result.settle", actor: { type: "manager", managerKey: "ai_isa" }, subject: subjectRef,
+          reasonCode: "CONVERSATION_RESPONSE", reasonDetail: v.reason.slice(0, 500), cycle: `late:${req.recordId}`, channel: req.channel, riskClass: "COMMUNICATION",
+          systemSource: "inbound_responder", policyKey: "followup_policy",
+          detail: { record_id: req.recordId, disposition: v.disposition, reason: v.reason, fallback_option: late.fallback.optionId, fallback_outcome: done.action, late_option: late.decision?.optionId ?? null, late_ms: late.ms, decided_at: decidedAt },
+        },
+        async () => {
+          if (v.disposition === "re_arbitrate") re = await respondToInboundCommunication(svc, req, { ...deps, reArbitration: true, onLateSettled: undefined })
+          return { disposition: v.disposition }
+        },
+        { settle: () => ({ status: v.disposition === "re_arbitrate" ? "executed" : "skipped", outcome: re ? `re_arbitrated:${(re as InboundResponse).action}` : v.disposition }), replay: () => ({ disposition: v.disposition }) },
+        { client: svc as never },
+      )
+      return { disposition: v.disposition, reArbitration: re }
+    }
 
     const autonomyPolicyKey = "autonomy_tier:ai_isa"
     let out: InboundResponse = { action: "replayed", reason: "this inbound was already answered — never twice", decision }
@@ -237,9 +290,10 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
       {
         // domain.entity.action (lib/kernel/action-ledger.ts ACTION_NAME_PATTERN — a two-part name is NOT ledgered at all).
         brokerageId: req.brokerageId, action: "inbound.message.respond", actor: { type: "manager", managerKey: "ai_isa" },
-        subject: req.contactId ? { type: "contact", id: req.contactId } : { type: "conversation", id: req.conversationId ?? req.recordId },
+        subject: subjectRef,
         reasonCode: "CONVERSATION_RESPONSE", reasonDetail: (locked?.reason ?? decision?.rationale ?? "").slice(0, 500),
-        cycle: inboundDecisionCycle(req.recordId), channel: req.channel, riskClass: "COMMUNICATION", systemSource: "inbound_responder",
+        // B12: a fresh re-arbitration is its own decision (one per inbound), never a replay of the first.
+        cycle: deps.reArbitration ? `${inboundDecisionCycle(req.recordId)}:rearbitration` : inboundDecisionCycle(req.recordId), channel: req.channel, riskClass: "COMMUNICATION", systemSource: "inbound_responder",
         policyKey: chosen === "reply" ? autonomyPolicyKey : "followup_policy",
         detail: {
           record_id: req.recordId, conversation_id: req.conversationId, surface: req.surface, public: req.isPublic, provider: req.provider,
@@ -286,11 +340,19 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
         //    the autonomy gate again, suppression, TCPA consent, de-confliction, quiet hours, content backstop, budget, the
         //    ledger at-most-once per inbound, the delivery claim the status callback reconciles). Anything any of them refuses
         //    falls through to the reply-coach draft below — a PERSON with the draft, and the reason recorded. ──
+        //    WAVE 153 (153O, owner B7 — "when the arbiter decides on follow up, no waiting for human to approve. follow the brand
+        //    voice"): the same unattended path now covers EMAIL and the PORTAL (the executors already existed — sendInboundEmailReply
+        //    → dispatchEmail's CAN-SPAM / suppression / autonomy / de-confliction gates; postInboundPortalReply, at-most-once per
+        //    inbound), and the grant is the autonomy gate's OWN verdict (halts, the ladder at COMMUNICATION, an explicit
+        //    approval_required posture) — no extra "explicit autonomous" click. What a DOMAIN policy gives a person stays a person's:
+        //    approval, signature, money and legal (the C24 locks, read — never retyped), complaints / distress (the locks above). ──
         let smsWhyNot: string | null = null
-        if (replyCh === "sms" && req.contactId && req.conversationId && !req.isPublic) {
+        if ((replyCh === "sms" || replyCh === "email" || replyCh === "in_app") && req.contactId && req.conversationId && !req.isPublic) {
+          const regulated = await regulatedTopicOf(body)
           if (firstTimeTexter) smsWhyNot = "a first message from a texter we just met — a person answers (nothing about the tenant is sent to a stranger unattended)"
+          else if (regulated) smsWhyNot = `a question about ${regulated} — a domain policy gives it to a person (never answered unattended)`
           else {
-            const drafted = await (deps.compose ?? (async (p) => (await import("@/lib/social/inbound-social")).composeInboundReply(svc, p)))({ brokerageId: req.brokerageId, agentId: threadAgentId, contactId: req.contactId, conversationId: req.conversationId, surface: "sms", isPublic: false, inboundBody: body })
+            const drafted = await (deps.compose ?? (async (p) => (await import("@/lib/social/inbound-social")).composeInboundReply(svc, p)))({ brokerageId: req.brokerageId, agentId: threadAgentId, contactId: req.contactId, conversationId: req.conversationId, surface: replyCh === "in_app" ? "portal" : replyCh, isPublic: false, inboundBody: body })
             let screen: (t: string) => string[]
             if (deps.safety) screen = deps.safety
             else {
@@ -300,11 +362,17 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
             const safety = drafted ? screen(drafted.text) : []
             const autonomy = drafted && safety.length === 0 ? await (deps.autonomy ?? ((b) => inboundReplyAutonomy(svc, b)))(req.brokerageId) : { allowed: false, reason: drafted ? `the draft did not pass the content-safety screen (${safety.join("; ").slice(0, 200)})` : "no reply could be composed" }
             if (drafted && safety.length === 0 && autonomy.allowed) {
-              const sendSms = deps.sendSms ?? (async (p) => (await import("./inbound-reply-executors")).sendInboundSmsReply(svc, p))
-              const s = await sendSms({ brokerageId: req.brokerageId, contactId: req.contactId, conversationId: req.conversationId, agentId: threadAgentId, recordId: req.recordId, text: drafted.text })
-              if (s.sent) return (out = { action: "reply_sent", reason: decision?.rationale ?? "answered in the thread within the tenant's autonomy grant", decision, proposedText: drafted.text, safety, autonomy, providerRef: s.providerRef ?? null, outboundMessageId: s.messageId ?? null })
-              smsWhyNot = `the text did not go (${s.error ?? "refused"}) — a person answers with the draft`
-            } else smsWhyNot = autonomy.reason ?? "the tenant has not granted autonomous replies — a person approves"
+              const executors = async () => import("./inbound-reply-executors")
+              const args = { brokerageId: req.brokerageId, contactId: req.contactId, conversationId: req.conversationId, agentId: threadAgentId, recordId: req.recordId, text: drafted.text }
+              const s = replyCh === "sms"
+                ? await (deps.sendSms ?? (async (p) => (await executors()).sendInboundSmsReply(svc, p)))(args)
+                : replyCh === "email"
+                  ? await (deps.sendEmail ?? (async (p) => (await executors()).sendInboundEmailReply(svc, p)))({ ...args, subject: typeof req.threadRef?.subject === "string" ? req.threadRef.subject : null })
+                  : await (deps.postPortal ?? (async (p) => (await executors()).postInboundPortalReply(svc, p)))({ brokerageId: args.brokerageId, contactId: args.contactId, agentId: args.agentId, recordId: args.recordId, text: args.text })
+              if (s.sent) return (out = { action: "reply_sent", reason: decision?.rationale ?? "answered in the thread within the tenant's delegated authority", decision, proposedText: drafted.text, safety, autonomy, providerRef: s.providerRef ?? null, outboundMessageId: s.messageId ?? null })
+              dispatchFailed = true
+              smsWhyNot = `the ${replyCh === "in_app" ? "portal reply" : replyCh === "sms" ? "text" : "email"} did not go (${s.error ?? "refused"}) — a person answers with the draft`
+            } else smsWhyNot = autonomy.reason ?? "the tenant's delegated authority does not cover an unattended reply — a person answers"
           }
         }
         // ── reply: email / text / portal ride the EXISTING reply-coach rail (a draft a person sends) ──
@@ -355,8 +423,10 @@ export async function respondToInboundCommunication(svc: { from: (t: string) => 
       },
       { client: svc as never },
     )
+    finish(out)
     return out
   } catch (e) {
+    finish({ action: "refused", reason: "threw", decision: null })
     return { action: "refused", reason: `threw: ${e instanceof Error ? e.message : String(e)}`, decision: null }
   }
 }
@@ -372,12 +442,28 @@ async function inboundReplyAutonomy(svc: { from: (t: string) => any }, brokerage
     const g = await import("@/lib/managers/autonomy-gate")
     const posture = await g.resolveManagerAutonomy(brokerageId, "ai_isa", svc as never)
     const authority = await g.resolveAgentAuthorityLevel(brokerageId, "ai_isa", svc as never)
-    const d = g.autonomyDecision({ managerKey: "ai_isa", effective: posture, authorityLevel: authority })
-    if (!d.allow) return { allowed: false, reason: d.reason }
-    if (posture !== "autonomous") return { allowed: false, reason: "the tenant has not granted the AI ISA autonomous replies — a person approves (managed_agents ai_isa autonomy_tier)" }
-    return { allowed: true, reason: null }
+    // The portal reply has no dispatch chokepoint behind it, so the staff halt is read HERE too (the SMS / email chokepoints re-run it).
+    const tenantHalt = await g.loadTenantAutonomyHalt(brokerageId, svc as never)
+    // WAVE 153 (153O, owner B7): the gate's OWN verdict — the platform / tenant halts, the authority ladder at COMMUNICATION and an
+    // EXPLICIT approval_required posture (the broker's own choice) hold. The former extra rule "posture must be explicitly
+    // autonomous" made every routine reply wait for a human click on every tenant that never touched the setting; it is the same
+    // rule C24's unattended answer already uses (lib/communications/unattended-answer.ts defaultAuthority) — one rule, not two.
+    const d = g.autonomyDecision({ managerKey: "ai_isa", effective: posture, authorityLevel: authority, tenantHalt })
+    return d.allow ? { allowed: true, reason: null } : { allowed: false, reason: d.reason }
   } catch (e) {
     return { allowed: false, reason: `autonomy could not be read (${e instanceof Error ? e.message : String(e)}) — a person approves` }
+  }
+}
+
+/** WAVE 153 (153O, B7): the domain-policy topics a person must answer (approval / signature / money / legal), read from C24's locks
+ *  (lib/communications/unattended-answer.ts NEVER_UNATTENDED_LOCKS) — one vocabulary, never a second copy. Unreadable → "unknown"
+ *  (fail closed: a person answers). */
+async function regulatedTopicOf(body: string): Promise<string | null> {
+  try {
+    const { NEVER_UNATTENDED_TOPICS, NEVER_UNATTENDED_LOCKS } = await import("./unattended-answer")
+    return NEVER_UNATTENDED_TOPICS.find((t) => NEVER_UNATTENDED_LOCKS[t].test(body)) ?? null
+  } catch (e) {
+    return `an unreadable topic (${e instanceof Error ? e.message : String(e)})`
   }
 }
 

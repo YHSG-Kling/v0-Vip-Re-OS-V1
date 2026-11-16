@@ -153,15 +153,21 @@ check("GATE-AUTHORISED-DIRECT-MAIL (positive control): the same brokerage may al
     control.mode === "auto_send", `${control.mode}/${control.code}`)
 }
 
-// THE DEFAULT. `ai_isa_settings.require_broker_approval` is NOT NULL DEFAULT TRUE
-// live (migration 061), and DEFAULT_AISA_SETTINGS must agree — a brokerage with no
-// row anywhere in the cascade must get a human in the loop, not a send.
-check("GATE-APPROVAL-DEFAULT-IS-CLOSED: DEFAULT_AISA_SETTINGS requires broker approval",
-  DEFAULT_AISA_SETTINGS.require_broker_approval === true)
+// THE DEFAULT (owner ruling 2026-11-16, wave 153 B7: "when the arbiter decides on follow up, no waiting for human to approve").
+// A brokerage that configured nothing gets the arbiter's decision SENT; the code default and the column default (m951) agree.
+// What must NEVER send is an UNREADABLE policy (§4 fail closed) and an explicit broker choice of approval — both held below.
+check("GATE-DEFAULT-FOLLOWS-THE-RULING: DEFAULT_AISA_SETTINGS does not require a broker click",
+  DEFAULT_AISA_SETTINGS.require_broker_approval === false)
 {
   const v = leadAutoSendVerdict({ resolution: { status: "default", settings: DEFAULT_AISA_SETTINGS }, channel: "email" })
-  check("GATE-NO-ROW-ANYWHERE-STAGES: 'nobody configured this' stages, never sends",
-    v.mode === "stage_for_approval" && v.code === "broker_approval_required", `${v.mode}/${v.code}`)
+  check("GATE-NO-ROW-ANYWHERE-SENDS-ON-AN-ALLOWED-CHANNEL: 'nobody configured this' lets the arbiter's email go (no human click)",
+    v.mode === "auto_send", `${v.mode}/${v.code}`)
+  const sms = leadAutoSendVerdict({ resolution: { status: "default", settings: DEFAULT_AISA_SETTINGS }, channel: "sms" as never })
+  check("NEGATIVE: the default still refuses a channel a lead may not receive (sms is not a default lead channel)", sms.mode !== "auto_send", `${sms.mode}/${sms.code}`)
+  const explicit = leadAutoSendVerdict({ resolution: { status: "resolved", settings: { ...DEFAULT_AISA_SETTINGS, require_broker_approval: true }, ownerType: "brokerage" } as never, channel: "email" })
+  check("NEGATIVE: a broker's EXPLICIT approval choice still stages every touch", explicit.mode === "stage_for_approval" && explicit.code === "broker_approval_required", `${explicit.mode}/${explicit.code}`)
+  const unreadable = leadAutoSendVerdict({ resolution: { status: "unreadable", detail: "permission denied" } as never, channel: "email" })
+  check("NEGATIVE (fail closed): an UNREADABLE policy never sends, whatever the default", unreadable.mode !== "auto_send" && unreadable.code === "settings_unreadable", `${unreadable.mode}/${unreadable.code}`)
 }
 
 // ORDERING. The reason a broker sees must be the most specific TRUE one — a

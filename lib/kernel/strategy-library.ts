@@ -38,7 +38,7 @@ import type { ExperienceKind } from "@/lib/ai-isa/lead-action-plan"
 // ─── the object ───────────────────────────────────────────────────────────────────────────────
 export const STRATEGY_TIERS = ["platform", "tenant"] as const
 export type StrategyTier = (typeof STRATEGY_TIERS)[number]
-export const STRATEGY_SUBJECT_TYPES = ["contact", "lead", "listing", "territory", "brokerage"] as const
+export const STRATEGY_SUBJECT_TYPES = ["contact", "lead", "listing", "transaction", "territory", "brokerage"] as const
 export type StrategySubjectType = (typeof STRATEGY_SUBJECT_TYPES)[number]
 
 /** The facts eligibility is judged on — assembled by the caller from rows it already read (person /

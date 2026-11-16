@@ -86,6 +86,32 @@ export const DELEGATION_TRANSITIONS: Readonly<Record<DelegationStatus, readonly 
   REJECTED:  [],
   CANCELLED: [],
 }
+/**
+ * WAVE 153 (lane 153O, owner B8 — "only listing, contact and subject listed under manager delegation. missed transaction, lead"):
+ * the FIRST-CLASS subjects a delegation may be about and the `input_entities` key each rides (no DB CHECK constrains the jsonb, and
+ * missions.subject_type has none either — measured on scripts/check-vocabularies.ts, so no migration). Read most-specific first; the
+ * snake_case spellings older callers wrote (listing-appt-prep, media-intelligence) are READ as the same subject (§6 — one subject,
+ * whatever the spelling), and requestDelegation stamps the canonical `subject_type` / `subject_id` so containment and the subject
+ * reader match on one key.
+ */
+export const DELEGATION_SUBJECT_KEYS = Object.freeze({ transaction: "transactionId", listing: "listingId", lead: "leadId", contact: "contactId" } as const)
+export type DelegationSubjectType = keyof typeof DELEGATION_SUBJECT_KEYS
+const LEGACY_SUBJECT_KEYS: Readonly<Record<DelegationSubjectType, string>> = { transaction: "transaction_id", listing: "listing_id", lead: "lead_id", contact: "contact_id" }
+/** The subjects whose row is verified to sit in the delegation's tenant before anything is written (fail closed). */
+const TENANT_ANCHORED_SUBJECTS: Readonly<Partial<Record<DelegationSubjectType, string>>> = { lead: "leads", transaction: "transactions" }
+
+/** PURE. The delegation's subject (explicit subject_type/subject_id first, then the keyed ids most-specific first), or null. */
+export function delegationSubjectOf(e: Record<string, unknown> | null | undefined): { type: DelegationSubjectType; id: string } | null {
+  if (!e) return null
+  const t = e.subject_type, id = e.subject_id
+  if (typeof t === "string" && t in DELEGATION_SUBJECT_KEYS && typeof id === "string" && id) return { type: t as DelegationSubjectType, id }
+  for (const k of Object.keys(DELEGATION_SUBJECT_KEYS) as DelegationSubjectType[]) {
+    const v = e[DELEGATION_SUBJECT_KEYS[k]] ?? e[LEGACY_SUBJECT_KEYS[k]]
+    if (typeof v === "string" && v) return { type: k, id: v }
+  }
+  return null
+}
+
 export function isDelegationStatus(v: unknown): v is DelegationStatus { return typeof v === "string" && (DELEGATION_STATUSES as readonly string[]).includes(v) }
 export function canDelegationTransition(from: DelegationStatus, to: DelegationStatus): boolean { return DELEGATION_TRANSITIONS[from]?.includes(to) ?? false }
 
@@ -139,7 +165,7 @@ export interface DelegationDeps {
   mission?: MissionDeps
 }
 interface LedgerCtx {
-  brokerageId: string; action: string; actor: DelegationActor; delegation: Pick<DelegationRow, "id" | "mission_id" | "requested_capability" | "requesting_manager" | "assigned_manager">; from: DelegationStatus | null; to: DelegationStatus; reason: string; causationId: string | null; correlationId: string | null; costUsd?: number | null
+  brokerageId: string; action: string; actor: DelegationActor; delegation: Pick<DelegationRow, "id" | "mission_id" | "requested_capability" | "requesting_manager" | "assigned_manager"> & { input_entities?: Record<string, unknown> | null }; from: DelegationStatus | null; to: DelegationStatus; reason: string; causationId: string | null; correlationId: string | null; costUsd?: number | null
   /** WAVE 153 (153H, directive H3): the decision facts this transition persists on detail.governance (lib/kernel/action-ledger.ts governanceRecord). */
   governance?: { objective?: string | null; deadline?: string | null; deadlineSource?: DeadlineSource | null; conflicts?: string[]; evidenceRefs?: string[]; resourceConstraints?: string[]; policyConstraints?: string[] }
 }
@@ -159,6 +185,8 @@ const defaultDeps: Required<Omit<DelegationDeps, "mission">> & { mission: Missio
   },
   ledger: async (ctx, client) => {
     const { withActionLedger, governanceRecord } = await import("@/lib/kernel/action-ledger")
+    // B8 (153O): the subject the ask is about (a Lead, a Transaction, a Contact, a Listing) rides every transition's evidence.
+    const about = delegationSubjectOf(ctx.delegation.input_entities ?? null)
     // H3: the transition IS a governance decision (REQUESTED = DELEGATE, ESCALATED = ESCALATE, REJECTED = DENY, …) — the
     // facts ride detail.governance on the row the flight recorder already reads; the status pair is the version decided on.
     const governance = governanceRecord({
@@ -168,7 +196,7 @@ const defaultDeps: Required<Omit<DelegationDeps, "mission">> & { mission: Missio
       objective: ctx.governance?.objective ?? null, candidates: [ctx.delegation.assigned_manager],
       deadline: ctx.governance?.deadline ?? null, deadlineSource: ctx.governance?.deadlineSource ?? null,
       policyConstraints: ctx.governance?.policyConstraints, resourceConstraints: ctx.governance?.resourceConstraints,
-      conflicts: ctx.governance?.conflicts, rationale: ctx.reason, evidenceRefs: ctx.governance?.evidenceRefs,
+      conflicts: ctx.governance?.conflicts, rationale: ctx.reason, evidenceRefs: [...(ctx.governance?.evidenceRefs ?? []), ...(about ? [`${about.type}:${about.id}`] : [])],
     })
     await withActionLedger(
       {
@@ -178,7 +206,7 @@ const defaultDeps: Required<Omit<DelegationDeps, "mission">> & { mission: Missio
         reasonCode: MISSION_LIFECYCLE_REASON, reasonDetail: `delegation ${ctx.delegation.requested_capability} ${ctx.delegation.requesting_manager}→${ctx.delegation.assigned_manager}: ${ctx.reason}`,
         causationId: ctx.causationId, correlationId: ctx.correlationId,
         riskClass: "LOW_RISK_WRITE", systemSource: "manager-delegation",
-        detail: { delegation_id: ctx.delegation.id, mission_id: ctx.delegation.mission_id, capability: ctx.delegation.requested_capability, requesting_manager: ctx.delegation.requesting_manager, assigned_manager: ctx.delegation.assigned_manager, from_status: ctx.from, to_status: ctx.to, governance },
+        detail: { delegation_id: ctx.delegation.id, mission_id: ctx.delegation.mission_id, capability: ctx.delegation.requested_capability, requesting_manager: ctx.delegation.requesting_manager, assigned_manager: ctx.delegation.assigned_manager, from_status: ctx.from, to_status: ctx.to, governance, ...(about ? { subject_type: about.type, subject_id: about.id } : {}) },
       },
       async () => ({ status: "executed" as const, outcome: `${ctx.from ?? "∅"}→${ctx.to}` }),
       { settle: (r) => ({ status: r.status, outcome: r.outcome, costUsd: ctx.costUsd ?? null }), replay: () => ({ status: "executed" as const, outcome: "replay" }) },
@@ -291,7 +319,7 @@ export interface PendingDelegations { pending: DelegationRow[]; attention: Deleg
 
 /** Every non-terminal delegation of the tenant (optionally one mission's / one assignee's), the attention
  *  set (DISSENTED / ESCALATED) pulled out, grouped per mission. A refused read is PUBLISHED. */
-export async function pendingDelegationsFor(brokerageId: string, opts: { missionId?: string | null; assignedManager?: ManagerKey | null; limit?: number } = {}, client?: Client): Promise<PendingDelegations> {
+export async function pendingDelegationsFor(brokerageId: string, opts: { missionId?: string | null; assignedManager?: ManagerKey | null; limit?: number; subject?: { type: DelegationSubjectType; id: string } | null } = {}, client?: Client): Promise<PendingDelegations> {
   const out: PendingDelegations = { pending: [], attention: [], byMission: {}, readRefused: null }
   if (!brokerageId) { out.readRefused = "no tenant"; return out }
   const svc = await svcOf(client)
@@ -299,6 +327,8 @@ export async function pendingDelegationsFor(brokerageId: string, opts: { mission
     .in("status", DELEGATION_STATUSES.filter((s) => !DELEGATION_TERMINAL_STATUSES.has(s)))
   if (opts.missionId) q = q.eq("mission_id", opts.missionId)
   if (opts.assignedManager) q = q.eq("assigned_manager", opts.assignedManager)
+  // WAVE 153 (153O, B8): one subject's open asks — a Lead's or a Transaction's (or a Contact's / Listing's) — on the stamped key.
+  if (opts.subject) q = q.eq("input_entities->>subject_type", opts.subject.type).eq("input_entities->>subject_id", opts.subject.id)
   const { data, error } = await q.order("deadline", { ascending: true, nullsFirst: false }).limit(opts.limit ?? 200)
   if (error) { out.readRefused = error.message; return out }
   for (const d of (data ?? []) as DelegationRow[]) {
@@ -380,6 +410,19 @@ export async function requestDelegation(input: RequestDelegationInput, client?: 
   const owner = CAPABILITY_MANAGER[input.capability]
   if (owner !== input.assignedManager) return { ok: false, reason: `capability_not_owned:${input.capability}:${owner}` }
 
+  // WAVE 153 (153O, B8): the subject, first-class — the canonical subject_type / subject_id are stamped beside the caller's own keys,
+  // and a LEAD or TRANSACTION must be a row of THIS tenant before anything is written (a foreign or invented id refuses, naming
+  // nothing of the other tenant; a refused read refuses — fail closed). Text in the objective / entities is DATA: nothing here reads
+  // it to pick the assignee, the capability, the authority or the tenant (those come from the typed fields and the registry).
+  const subject = delegationSubjectOf(input.inputEntities)
+  const entities: Record<string, unknown> = { ...(input.inputEntities ?? {}), ...(subject ? { subject_type: subject.type, subject_id: subject.id, [DELEGATION_SUBJECT_KEYS[subject.type]]: subject.id } : {}) }
+  const anchorTable = subject ? TENANT_ANCHORED_SUBJECTS[subject.type] : undefined
+  if (subject && anchorTable) {
+    const { data: anchored, error: anchorErr } = await svc.from(anchorTable).select("id").eq("brokerage_id", input.brokerageId).eq("id", subject.id).maybeSingle()
+    if (anchorErr) return { ok: false, reason: `read_refused:${anchorErr.message}` }
+    if (!anchored) return { ok: false, reason: `subject_not_found:${subject.type}` }
+  }
+
   // IDEMPOTENT per (capability, workflow run): the chain trigger re-fires on a deduped booking.
   const runId = typeof input.inputEntities?.workflow_run_id === "string" ? input.inputEntities.workflow_run_id : null
   if (runId) {
@@ -412,10 +455,12 @@ export async function requestDelegation(input: RequestDelegationInput, client?: 
   // H5 CONTAINMENT — read from the tenant's own rows; a refused read refuses (fail closed, never "nobody checked").
   if (!workOrder) {
     const openStatuses = DELEGATION_STATUSES.filter((s) => !DELEGATION_TERMINAL_STATUSES.has(s))
-    const subjectKey = (["contactId", "listingId", "subject_id"] as const).find((k) => typeof input.inputEntities?.[k] === "string")
-    if (mission || subjectKey) {
+    // B8: containment is per SUBJECT on the one stamped key (contact / lead / listing / transaction, or a strategy's territory /
+    // brokerage subject_id) — a Lead's or a Transaction's asks are bounded exactly like a Contact's.
+    const subjectId = subject?.id ?? (typeof entities.subject_id === "string" && entities.subject_id ? entities.subject_id : null)
+    if (mission || subjectId) {
       let q = svc.from("manager_delegations").select("id, requesting_manager, assigned_manager, requested_capability, status").eq("brokerage_id", input.brokerageId)
-      q = mission ? q.eq("mission_id", mission.id) : q.is("mission_id", null).eq(`input_entities->>${subjectKey}`, String(input.inputEntities![subjectKey!]))
+      q = mission ? q.eq("mission_id", mission.id) : q.is("mission_id", null).eq("input_entities->>subject_id", String(subjectId))
       const { data: peers, error: peerErr } = await q.limit(500)
       if (peerErr) return { ok: false, reason: `read_refused:${peerErr.message}` }
       const rows = (peers ?? []) as Array<Pick<DelegationRow, "id" | "requesting_manager" | "assigned_manager" | "requested_capability" | "status">>
@@ -450,7 +495,7 @@ export async function requestDelegation(input: RequestDelegationInput, client?: 
   const { data, error } = await svc.from("manager_delegations").insert({
     mission_id: mission?.id ?? null, brokerage_id: input.brokerageId,
     requesting_manager: input.requestingManager, assigned_manager: input.assignedManager, requested_capability: input.capability,
-    objective: input.objective.trim(), input_entities: input.inputEntities ?? {}, required_output: input.requiredOutput ?? {},
+    objective: input.objective.trim(), input_entities: entities, required_output: input.requiredOutput ?? {},
     authority, budget, deadline: input.deadline ?? null, status: "REQUESTED",
   }).select(DELEGATION_COLS).single()
   if (error || !data) return { ok: false, reason: `insert_refused:${error?.message ?? "no row"}` }

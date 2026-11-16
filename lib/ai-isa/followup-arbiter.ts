@@ -658,6 +658,10 @@ export interface ArbiterDecision {
   /** WAVE 153 (lane 153F): which path decided — `fast` (deterministic, no planning call: a live conversational turn or a person's
    *  stated channel), `deliberate` (the model over the closed menu, inside its latency budget), or absent (every older caller). */
   path?: "fast" | "deliberate"
+  /** WAVE 153 (lane 153O, owner B12): the model did not answer inside its budget — the planner's fallback ran AND an obligation is
+   *  owed: the decision row carries `late_obligation` (arbitrationLedgerDetail) until a late result settles it (lateResultDisposition)
+   *  or the existing completion net redrives the conversation. Absent when the model answered in time or was never asked. */
+  timedOut?: { budgetMs: number; waitedMs: number } | null
 }
 
 /** What a life-event decision hands downstream (and to the ledger): the mode, and the rules of the words. */
@@ -1102,6 +1106,87 @@ export function interactiveTurnVerdict(i: {
   return { path: "deliberate", planned: "reply", reason: `read as ${primary.replace(/_/g, " ") || "an unnamed category"} — not a category the fast path answers; the arbiter's judgment`, live }
 }
 
+// ── WAVE 153 (lane 153O, owner B12) — A LATE RESULT IS EVIDENCE, NEVER AN ACTION ───────────────────────────────────────────────
+// Owner (2026-11-16): "if arbiter time limit model is capped at 2.5s and if it runs over, planned fallback should run but if it is
+// late, don't ignore it especially if no one has responded." The fallback already ran on the conversation version the model was
+// asked about; the late answer is judged against the NEWEST transcript and only ever triggers a FRESH evaluation (never its own
+// execution): answered since, a newer message from them, or a person in the thread → stale (recorded); unreadable → stale (the
+// completion net still redrives — fail closed); the late model agreeing with the fallback → nothing to change; otherwise → a fresh
+// re-arbitration (new reads: transcript, consent, ownership; at-most-once per inbound by the send cycle).
+
+/** The settle row's dispositions (one spelling — the metrics reader counts them). */
+export const LATE_RESULT_DISPOSITIONS = ["stale_answered", "stale_newer_inbound", "stale_human_owns", "stale_unreadable", "stale_same_as_fallback", "stale_refused", "re_arbitrate"] as const
+export type LateResultDisposition = (typeof LATE_RESULT_DISPOSITIONS)[number]
+
+/** PURE. What a late model result may cause. `decidedAt` = when the fallback decision was made (the conversation version it read). */
+export function lateResultDisposition(i: {
+  decidedAt: string
+  /** The fallback already answered the person (a reply left the building). */
+  fallbackAnswered: boolean
+  /** The fallback tried to answer and the send was refused / failed — nothing left; the person is still unanswered. */
+  fallbackDispatchFailed?: boolean
+  fallbackOptionId: string
+  /** The late answer validated against the same closed menu (null = it would have been refused). */
+  lateOptionId: string | null
+  /** A FRESH read of the thread (null = refused). */
+  ownership: ConversationOwnership | null
+  now: Date
+}): { disposition: LateResultDisposition; reason: string } {
+  const after = (iso: string | null) => !!iso && Date.parse(iso) > Date.parse(i.decidedAt)
+  if (!i.ownership) return { disposition: "stale_unreadable", reason: "the thread could not be re-read — nothing is acted on; the completion net redrives the conversation" }
+  const o = i.ownership
+  if (o.humanOwnedUntil && Date.parse(o.humanOwnedUntil) > i.now.getTime()) return { disposition: "stale_human_owns", reason: `a person owns the conversation until ${o.humanOwnedUntil}` }
+  if (o.humanEngagedAt && after(o.humanEngagedAt)) return { disposition: "stale_human_owns", reason: "a person on the team answered after the fallback — the AI does not compete" }
+  if (i.fallbackAnswered || after(o.lastOutboundAt)) return { disposition: "stale_answered", reason: "the person was already answered (the fallback or a newer reply) — the late result would be a duplicate" }
+  if (after(o.lastInboundAt)) return { disposition: "stale_newer_inbound", reason: "they wrote again after the fallback — that newer message gets its own fresh evaluation" }
+  if (!i.lateOptionId) return { disposition: "stale_refused", reason: "the late answer would have been refused by the closed menu's validator" }
+  if (i.lateOptionId === i.fallbackOptionId && !i.fallbackDispatchFailed) return { disposition: "stale_same_as_fallback", reason: "the late answer agrees with the fallback that already ran" }
+  return { disposition: "re_arbitrate", reason: i.fallbackDispatchFailed ? `the fallback's send did not go and nobody has answered them — a fresh evaluation on the newest transcript (consent, ownership and the at-most-once send key re-checked)` : `nobody has answered them and the late judgment (${i.lateOptionId}) differs from the fallback (${i.fallbackOptionId}) — a fresh evaluation on the newest transcript` }
+}
+
+/** The arbitration responsiveness reading (owner B12 metrics). Every number names its denominator; null = nothing to measure. */
+export interface ArbitrationResponsiveness {
+  inbound: number
+  firstAcknowledgementMsP50: number | null
+  meaningfulAnswerMsP50: number | null
+  handoffDelayMsP50: number | null
+  timedOut: number
+  pendingObligations: number
+  expiredPendingTouches: number
+  staleLateResults: number
+  reArbitrated: number
+  missedConversations: number
+}
+/** How long a timed-out obligation may stay unsettled before it reads as EXPIRED (the completion net's human window). */
+export const LATE_OBLIGATION_TTL_MINUTES = 240
+
+/** PURE. Reads the responder's decision rows (inbound.message.respond) and their settle rows (inbound.late_result.settle).
+ *  @proofSeam driven by scripts/os-arbitration-canaries.ts; the speed-to-lead panel's reader is the requested consumer (lane notes). */
+export function arbitrationResponsivenessMetrics(rows: ReadonlyArray<{ action: string; outcome: string | null; status: string | null; detail: Record<string, any> | null; created_at: string }>, now: Date): ArbitrationResponsiveness {
+  const p50 = (xs: number[]) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.floor((s.length - 1) / 2)] }
+  const decisions = rows.filter((r) => r.action === "inbound.message.respond")
+  const settles = rows.filter((r) => r.action === "inbound.late_result.settle")
+  const settledRecords = new Set(settles.map((r) => String(r.detail?.record_id ?? "")))
+  const ms = (r: (typeof rows)[number]) => (typeof r.detail?.decided_in_ms === "number" ? r.detail.decided_in_ms as number : null)
+  const of = (pred: (o: string) => boolean) => decisions.filter((r) => pred(String(r.outcome ?? ""))).map(ms).filter((x): x is number => x !== null)
+  const timed = decisions.filter((r) => r.detail?.arbitration?.late_obligation)
+  const pending = timed.filter((r) => !settledRecords.has(String(r.detail?.record_id ?? "")))
+  const expired = pending.filter((r) => now.getTime() - Date.parse(r.created_at) > LATE_OBLIGATION_TTL_MINUTES * 60_000)
+  return {
+    inbound: decisions.length,
+    firstAcknowledgementMsP50: p50(of((o) => o !== "" && o !== "refused" && o !== "replayed")),
+    meaningfulAnswerMsP50: p50(of((o) => o === "reply_sent")),
+    handoffDelayMsP50: p50(of((o) => o === "human_task" || o === "reply_proposed")),
+    timedOut: timed.length,
+    pendingObligations: pending.length,
+    expiredPendingTouches: expired.length,
+    staleLateResults: settles.filter((r) => String(r.detail?.disposition ?? "").startsWith("stale_")).length,
+    reArbitrated: settles.filter((r) => r.detail?.disposition === "re_arbitrate").length,
+    // A conversation nobody answered: refused outright, or an obligation that expired without the person being answered.
+    missedConversations: decisions.filter((r) => r.outcome === "refused").length + expired.filter((r) => r.outcome !== "reply_sent").length,
+  }
+}
+
 function buildArbiterPrompt(a: { facts: ArbiterFacts; menu: ArbiterOption[]; policy: FollowupPolicy }): string {
   return JSON.stringify({
     tenant_guidance: a.policy.guidance || "(none set — use judgment)",
@@ -1184,15 +1269,18 @@ async function defaultDecide(a: { brokerageId: string; system: string; prompt: s
 export const ARBITER_LATENCY_BUDGET_MS = Object.freeze({ interactive: 2_500, speed_to_lead: 2_500, planned: 8_000 })
 const LATENCY_EXCEEDED = Symbol("arbiter_latency_exceeded")
 
-/** Race the model against the budget. The late promise is caught (never an unhandled rejection) and its answer ignored. */
-async function decideWithinBudget(run: () => Promise<ArbiterRaw>, budgetMs: number): Promise<{ raw: ArbiterRaw; ms: number } | { timedOut: true; ms: number }> {
+/** Race the model against the budget. The late promise is caught (never an unhandled rejection). WAVE 153 (153O, owner B12 — "if it
+ *  is late, don't ignore it"): a late answer is handed to `onLate` (when the caller gave one) as EVIDENCE for lateResultDisposition;
+ *  this function never executes it. */
+async function decideWithinBudget(run: () => Promise<ArbiterRaw>, budgetMs: number, onLate?: ((late: { raw: ArbiterRaw; ms: number }) => void) | null): Promise<{ raw: ArbiterRaw; ms: number } | { timedOut: true; ms: number }> {
   const started = Date.now()
   let timer: ReturnType<typeof setTimeout> | null = null
+  let expired = false
   const pending = run()
-  pending.catch(() => undefined)
+  pending.then((raw) => { if (expired && onLate) { try { onLate({ raw, ms: Date.now() - started }) } catch { /* the late hook never throws into the caller */ } } }, () => undefined)
   try {
     const out = await Promise.race([pending, new Promise<typeof LATENCY_EXCEEDED>((resolve) => { timer = setTimeout(() => resolve(LATENCY_EXCEEDED), Math.max(1, budgetMs)) })])
-    if (out === LATENCY_EXCEEDED) return { timedOut: true, ms: Date.now() - started }
+    if (out === LATENCY_EXCEEDED) { expired = true; return { timedOut: true, ms: Date.now() - started } }
     return { raw: out, ms: Date.now() - started }
   } finally {
     if (timer) clearTimeout(timer)
@@ -1222,6 +1310,10 @@ export async function arbitrateFollowUp(
     /** WAVE 153 (153F): the bounded hold the planner's own `wait` verdict carries (per-Contact timing — e.g. until the window the person
      *  asked for opens); used only when the fallback IS the wait. Null = an unbounded-by-planner wait (the caller's default). */
     plannedWaitHours?: number | null
+    /** WAVE 153 (153O, owner B12): called when the model answers AFTER its budget expired, with the late reply VALIDATED against the
+     *  same closed menu (null = it would have been refused anyway) and the fallback that already ran. Evidence for
+     *  lateResultDisposition — a caller never executes it against the conversation version it was asked about. */
+    onLateResult?: ((late: { decision: ArbiterDecision | null; fallback: ArbiterDecision; ms: number }) => void) | null
   },
   deps: { decide?: ArbiterDecide } = {},
 ): Promise<ArbiterDecision> {
@@ -1243,9 +1335,19 @@ export async function arbitrateFollowUp(
     let raw: ArbiterRaw
     let ms = 0
     try {
-      const r = await decideWithinBudget(() => (deps.decide ?? defaultDecide)({ brokerageId: a.brokerageId, system: a.system?.trim() ? a.system : ARBITER_SYSTEM, prompt: buildArbiterPrompt({ facts, menu, policy: a.policy }) }), budgetMs)
+      let ranFallback: ArbiterDecision | null = null
+      const onLate = a.onLateResult ? (late: { raw: ArbiterRaw; ms: number }) => {
+        if (!ranFallback) return
+        const v = validateArbiterReply(late.raw, menu, facts, a.policy)
+        const lateDecision = v.ok ? withStance({ ...v.decision, source: "ai", fallbackReason: null, menu: menu.map((o) => o.id), latencyMs: late.ms, path: "deliberate" }) : null
+        a.onLateResult!({ decision: lateDecision, fallback: ranFallback, ms: late.ms })
+      } : null
+      const r = await decideWithinBudget(() => (deps.decide ?? defaultDecide)({ brokerageId: a.brokerageId, system: a.system?.trim() ? a.system : ARBITER_SYSTEM, prompt: buildArbiterPrompt({ facts, menu, policy: a.policy }) }), budgetMs, onLate)
       ms = r.ms
-      if ("timedOut" in r) return { ...fallback(`the model did not answer within its ${budgetMs} ms latency budget — nobody is kept waiting on the judgment`), latencyMs: r.ms, path: "deliberate" }
+      if ("timedOut" in r) {
+        ranFallback = { ...fallback(`the model did not answer within its ${budgetMs} ms latency budget — nobody is kept waiting on the judgment; the planned fallback ran and the obligation stays open until a late answer or the redrive settles it`), latencyMs: r.ms, path: "deliberate", timedOut: { budgetMs, waitedMs: r.ms } }
+        return ranFallback
+      }
       raw = r.raw
     } catch (e) {
       return fallback(`the model was unavailable (${e instanceof Error ? e.message : String(e)})`)
@@ -1395,6 +1497,10 @@ export function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | 
     source: d.source, option: d.optionId, channel: d.channel, format: d.format ?? null, stance: d.stance ?? null, wait_hours: d.waitHours, rationale: d.rationale, evidence: d.evidence, confidence: d.confidence, fallback_reason: d.fallbackReason, menu: d.menu, policy_ref: policyRef,
     // WAVE 153 (153F, LAW 5): which path decided and how long the judgment took — measured, so "the arbiter did not delay the person" is evidence.
     ...(d.path ? { path: d.path } : {}), ...(typeof d.latencyMs === "number" ? { latency_ms: d.latencyMs } : {}),
+    // WAVE 153 (153O, owner B12): the budget expired → the fallback ran AND the obligation is persisted here (status pending) until a
+    // late result settles it (inbound.late_result.settle) or the completion net redrives the conversation. Read back by
+    // arbitrationResponsivenessMetrics (expired pending touches, stale late results).
+    ...(d.timedOut ? { late_obligation: { status: "pending", budget_ms: d.timedOut.budgetMs, waited_ms: d.timedOut.waitedMs, fallback: d.optionId } } : {}),
     // WAVE 151 (151E, LAW 5): which helpful actions were eligible, what they were weighed against, and that no default cadence applied.
     ...(extra.helpfulActions ? { helpful_actions: { eligible: (Object.entries(extra.helpfulActions.options) as Array<[HelpfulAction, { eligible: boolean; why: string }]>).filter(([, v]) => v.eligible).map(([k]) => k), weighed: extra.helpfulActions.weighed, preferences_stated: extra.helpfulActions.preferencesStated, cadence: extra.helpfulActions.cadence, never_mention: extra.helpfulActions.neverMention.slice(0, 12) } } : {}),
     // Wave 144: every channel CONSIDERED, with the check that decided it (LAW 5 — which policy permitted, and which refused).
