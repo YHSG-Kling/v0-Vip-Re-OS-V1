@@ -223,3 +223,10 @@ failures at the same commit. The heap bracket is empirical and documented in
 `.github/workflows/build.yml` — read it there rather than re-deriving it, and add
 new measurements to it. Note that a compile abort happens with *committed* heap
 at ~90% of the configured cap, so the cap is not the usable budget.
+
+The same knife edge has a SECOND symptom, and it is not exit 134 (measured 2026-11-17, run 43986529213): both
+`next-build-half` jobs print their last line about five minutes in, stay silent, and are cancelled by the 40-minute job
+timeout — the verdict job then reads `halves=cancelled`. The compile worker's peak RSS is 14.1–14.7 GB on a 15 GiB
+runner, so a half finishes only on swap, and a run where the swap thrashes never finishes. Re-run the failed jobs
+**unchanged** (the re-run of that commit was green in 13 and 19 minutes). A third matrix entry was measured and does
+not lower the peak in proportion; the lever is the runner (`BUILD_RUNNER`, the owner's), not the cap.

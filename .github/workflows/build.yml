@@ -637,6 +637,41 @@ jobs:
       #   NOT MEASURED: no Vercel build of any tree since 2026-09-21 exists. The first one is ACTIVATION-CHECKLIST §6.7
       #   row R4: append its "Compiled successfully" duration, and any Mark-Compact line, here. If it aborts at 16384 on a
       #   machine that fits, the answer is this bracket's (a larger machine), not a second number.
+      #
+      # ── 2026-11-17, wave 153: THE HALVES' PEAK RSS, READ ON A GREEN RUN FOR THE FIRST TIME — AND A STALL THAT IS
+      # NOT EXIT 134. Run 43986529213 (commit 3624b5fc), ubuntu-latest = image ubuntu-26.04 20261111.196.1, 15 GiB RAM,
+      # swap 10 GiB after this workflow's swapfile; compile cap 14336 MB, generate cap 10240 MB; next 16.2.7.
+      #   ATTEMPT 1 (00:18Z): BOTH halves printed their last line 4 m 40 s into the phases step (webpack pack-cache
+      #     warnings, 00:24:21Z), stayed silent, and were CANCELLED by the 40-minute job timeout (01:03:20Z). No
+      #     Mark-Compact line, no "Ineffective mark-compacts", no exit 134 — the verdict job read halves=cancelled.
+      #   ATTEMPT 2 (01:06Z, "re-run failed jobs", nothing changed): green. Read from the job logs, with the reading
+      #     the 2026-11-03 entry proposed (GNU time's "Maximum resident set size" — the LARGEST single process):
+      #       part dashboard: server compiler 719.5 s · client compiler 49.8 s · "Compiled successfully in 12.8min"
+      #                       · compile-phase peak RSS 14119 MB · 106 static pages in 100 s · generate-phase peak RSS 740 MB
+      #       part rest:      server compiler 473.7 s · client compiler 25.1 s · "Compiled successfully in 8.3min"
+      #                       · compile-phase peak RSS 14675 MB · 304 static pages in 94 s · generate-phase peak RSS 687 MB
+      #     (phases step: dashboard 1139 s, rest 790 s. The graph at this commit, by the guard's walker: whole tree 5241
+      #     first-party modules / 71.5 MB · dashboard 3548 / 55.4 MB · rest 3547 / 52.8 MB.)
+      #   WHAT THE READING SAYS: the compile worker's resident peak is 98–102% of the 14336 cap and 92–96% of the
+      #     runner's RAM. A half does not "sit well under the give-up line" — the 2026-11-01 prediction (61–69% of cap)
+      #     is REFUTED, not refined. Each half finishes because the swapfile absorbs the last gigabytes, and a run in
+      #     which the swap turns into thrash is the silent stall of attempt 1. Same commit, same runner label, one
+      #     stalled and one green: it is a knife edge, exactly like the exit-134 entries above, with a different symptom.
+      #   LOCAL REPRODUCTION (16 GB container, memory cgroup 13674 MB, NO swap, node 22.22.0, the CI command and env):
+      #     part rest was killed by the cgroup in the SERVER compiler at ~13.25 GB worker RSS — after 295 s on the
+      #     wave-152 tree (22b84783, the last green push) and after 327 s on this tree. Both trees exceed it, so wave 153
+      #     did not introduce the need; it grew a graph that was already past the machine (wave 152's green run took
+      #     ~1200 s per half against 818–850 s on 2026-11-01 — the same swap, earlier).
+      #   A THIRD MATRIX ENTRY WAS MEASURED, NOT ASSUMED: `app/**,!app/dashboard/**,!app/api/cron/**` (2994 modules,
+      #     84% of part rest, 47.6 MB) was killed at ~12.2 GB after 240 s on the same box — it plateaued ~0.7 GB below
+      #     the full half and then spiked the same way. Dropping 210 cron routes from a part does not lower its peak
+      #     in proportion: the ~1.8k shared modules dominate (the 2026-11-03 entry's reading of the compile TIMES says
+      #     the same). So "add a third matrix entry" (2026-11-01) is NOT expected to clear this. ONE reading, on a box
+      #     that cannot finish any of these parts — the true peak of a smaller part is still unmeasured.
+      #   THE LEVER IS THE RUNNER (repo variable BUILD_RUNNER, the 2026-10-03 "Both" ruling — the owner's), or a
+      #     smaller shared core. Not the cap: 14336 is already the whole machine. Until then the gate is real but not
+      #     reliable: a half that has printed nothing for 25 minutes is this stall — RE-RUN THE FAILED JOBS UNCHANGED
+      #     (CLAUDE.md §8), and append each new peak-RSS pair here; the phases action prints it on every run now.
       NODE_OPTIONS: "--max-old-space-size=${{ vars.BUILD_HEAP_MB || '14336' }}"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.

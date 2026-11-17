@@ -82,6 +82,12 @@ Read-only measurements behind this sheet (lane 153L, 2026-11-16, Supabase MCP `e
   `engines` (observed: `24.x` on Vercel). Attach the custom domain (M2). Deploy a **preview** first. Promote to production only when
   you choose to (this wave authorizes no public release).
 - **Read-back:** the deployment reads READY; `GET /api/health` answers 200 on the preview URL. Record M1 and M2 in ACTIVATION-CHECKLIST §6.7.
+- **Measured on the pushed commit (2026-11-17, CI run 43986529213):** each half of the CI build peaks at 14.1–14.7 GB of memory
+  on GitHub's free 15 GB runner. The first attempt stalled and was cancelled at 40 minutes; the unchanged re-run passed. The
+  CI build gate is real but not reliable on that runner, and a whole-app build (what Vercel runs) needs more than a half does.
+  Two machine choices follow, both yours and both paid: a larger GitHub runner for CI (repo variable `BUILD_RUNNER`, your
+  2026-10-03 "Both" ruling), and a Vercel build machine with enough memory for the single pass (§6.7 M1). The full reading
+  is in `.github/workflows/build.yml` (2026-11-17 entry).
 - **Risk if skipped:** nothing is reachable; the render-route bundling fix (next.config tracing) is unproven until a real build.
 - **Who:** owner. **Cost:** Vercel plan / build-machine pricing (yours to choose). **Credential:** Vercel login.
 - **Proves it:** `test:release-blockers` (O3 = `deriveO3`: heap + Node + machine + domain).
