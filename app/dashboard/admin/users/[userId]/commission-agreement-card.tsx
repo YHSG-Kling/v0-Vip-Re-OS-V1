@@ -1,5 +1,6 @@
 "use client"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -165,7 +166,7 @@ export function CommissionAgreementCard({ targetUserId }: { targetUserId: string
                 )}
                 {status.documentUrl && (
                   <a
-                    href={status.documentUrl}
+                    href={documentOpenHref(status.documentUrl) ?? undefined}
                     target="_blank"
                     rel="noreferrer"
                     className="text-xs text-blue-600 inline-flex items-center gap-1 hover:underline ml-auto"

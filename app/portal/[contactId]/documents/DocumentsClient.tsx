@@ -1,5 +1,6 @@
 "use client"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -348,7 +349,7 @@ export function DocumentsClient({
                   </p>
                 </div>
                 {sig.document_url ? (
-                  <a href={sig.document_url} target="_blank" rel="noreferrer">
+                  <a href={documentOpenHref(sig.document_url) ?? undefined} target="_blank" rel="noreferrer">
                     <Button size="sm" className="text-xs bg-amber-700 hover:bg-amber-800 text-white">
                       <Send className="h-3.5 w-3.5 mr-1.5" />
                       Sign Now
@@ -376,7 +377,7 @@ export function DocumentsClient({
                     </p>
                   </div>
                   {d.storage_url ? (
-                    <a href={d.storage_url} target="_blank" rel="noreferrer">
+                    <a href={documentOpenHref(d.storage_url) ?? undefined} target="_blank" rel="noreferrer">
                       <Button size="sm" className="text-xs bg-amber-700 hover:bg-amber-800 text-white">
                         <Send className="h-3.5 w-3.5 mr-1.5" />
                         Open to Sign
@@ -492,7 +493,7 @@ export function DocumentsClient({
                           </Button>
                           {doc.document_url && (
                             <Button variant="outline" size="sm" asChild>
-                              <a href={doc.document_url} target="_blank" rel="noopener noreferrer" download>
+                              <a href={documentOpenHref(doc.document_url) ?? undefined} target="_blank" rel="noopener noreferrer" download>
                                 <Download className="h-4 w-4 mr-2" />
                                 Download
                               </a>
@@ -584,7 +585,7 @@ export function DocumentsClient({
                             </Button>
                             {doc.storage_url && (
                               <Button variant="outline" size="sm" asChild>
-                                <a href={doc.storage_url} target="_blank" rel="noopener noreferrer" download>
+                                <a href={documentOpenHref(doc.storage_url) ?? undefined} target="_blank" rel="noopener noreferrer" download>
                                   <Download className="h-4 w-4 mr-2" />
                                   Download
                                 </a>

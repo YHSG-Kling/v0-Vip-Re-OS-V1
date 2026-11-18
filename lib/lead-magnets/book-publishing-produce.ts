@@ -388,15 +388,15 @@ export async function approveKdpPackage(args: { brokerageId: string; bookId?: st
   return err ? { ok: false, error: err } : { ok: true, record }
 }
 
-/** Fresh signed URLs for the package files (the bucket is private; a stored URL would expire). Tenant-pinned. */
+/** Fresh signed URLs for the package files (the bucket is private; minted per request for 15 minutes — a deliberate download, wave 154 lane 154M). Tenant-pinned. */
 export async function kdpPackageDownloads(args: { brokerageId: string; bookId?: string; magnetId?: string }, deps: { client?: Svc } = {}): Promise<{ ok: true; epubUrl: string; coverUrl: string } | { ok: false; error: string }> {
   const svc = (deps.client ?? (await import("@/lib/supabase/service")).createServiceClient()) as Svc
   const loaded = await loadProject(svc, args.brokerageId, locatorOf(args) ?? { bookId: "" })
   if (!loaded.ok) return { ok: false, error: loaded.error }
   const pkg = kdpPackageOf(loaded.row.publishing)
   if (!pkg) return { ok: false, error: "No KDP package has been built for this book yet." }
-  const epub = await issueBucketObjectUrl(svc as never, { bucket: pkg.files.epub.bucket, objectPath: pkg.files.epub.path })
-  const cover = await issueBucketObjectUrl(svc as never, { bucket: pkg.files.cover.bucket, objectPath: pkg.files.cover.path })
+  const epub = await issueBucketObjectUrl(svc as never, { bucket: pkg.files.epub.bucket, objectPath: pkg.files.epub.path, ttlSeconds: 15 * 60 })
+  const cover = await issueBucketObjectUrl(svc as never, { bucket: pkg.files.cover.bucket, objectPath: pkg.files.cover.path, ttlSeconds: 15 * 60 })
   if (!epub.ok) return { ok: false, error: epub.reason }
   if (!cover.ok) return { ok: false, error: cover.reason }
   return { ok: true, epubUrl: epub.url, coverUrl: cover.url }

@@ -603,7 +603,7 @@ export async function uploadVendorJobDocument(data: {
     throw new Error(`The file could not be stored — ${stored.error}`)
   }
 
-  const storageUrl = stored.signedUrl
+  const storageUrl = stored.ref
 
   // Create document record — use correct transaction_documents schema
   const { data: document, error: docError } = await supabase

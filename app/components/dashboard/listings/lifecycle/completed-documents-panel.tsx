@@ -18,6 +18,7 @@
 // gate decides, not a second opinion.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState, useEffect, useCallback, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -205,7 +206,7 @@ export function CompletedDocumentsPanel({ listingId, listingStatus }: CompletedD
                   </div>
                   {d.storageUrl && (
                     <Button asChild variant="ghost" size="sm" className="shrink-0">
-                      <a href={d.storageUrl} target="_blank" rel="noopener noreferrer">
+                      <a href={documentOpenHref(d.storageUrl) ?? undefined} target="_blank" rel="noopener noreferrer">
                         Open <ExternalLink className="h-3.5 w-3.5 ml-1" />
                       </a>
                     </Button>

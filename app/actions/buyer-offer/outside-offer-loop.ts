@@ -33,14 +33,20 @@ import {
   mergeLoopState, normalizeEmail, parseSignedStorageUrl, patchMessage, verifyRecipientAgainstMls,
   type OutboundDoc, type OutsideChain, type OutsideRecipientVerification,
 } from "@/lib/offers/outside-offer-loop"
+import { SHARE_GRANT_PURPOSES } from "@/lib/storage/signed-doc-url"
 import { governingContractTerms, recordContractTermsVersion } from "@/lib/offers/governing-terms"
 import { canonicalTerms, signaturesPresent } from "@/lib/offers/governing-terms-rule"
 
 type Svc = ReturnType<typeof createServiceClient>
 type Caller = { userId: string; brokerageId: string; userType: string | null }
 
-/** How long a document link in the email stays valid. Short on purpose (the stored URLs live ten years). */
-const OUTBOUND_LINK_DAYS = 7
+/**
+ * How long a document link in the email stays valid — the outside_offer_packet share-grant lifetime (7 days, the period the
+ * outbound email always promised; lib/storage/signed-doc-url.ts SHARE_GRANT_PURPOSES). Wave 154 (lane 154M): the email no longer
+ * carries a storage link at all — it carries the ONE door with a share grant naming the documents row; each click mints a
+ * 5-minute link, and the row is re-read every time.
+ */
+const OUTBOUND_LINK_DAYS = SHARE_GRANT_PURPOSES.outside_offer_packet.ttlSeconds / 86_400
 
 /** The caller must be this offer's agent or a tenant admin; the offer must be on an OUTSIDE property. */
 async function authorize(svc: Svc, caller: Caller, offerId: string): Promise<{ ok: true; chain: OutsideChain } | { ok: false; error: string }> {
@@ -119,12 +125,15 @@ export async function sendOutsideOffer(params: {
   }
 
   // ── secure expiring links (the governed egress carries no attachments) ──────────────────────────
-  const { signedDocUrl } = await import("@/lib/storage/signed-doc-url")
+  const { mintDocumentShareGrant, documentShareUrl, toDocumentRef } = await import("@/lib/storage/signed-doc-url")
+  const { encryptSecret, decryptSecret, isEncrypted } = await import("@/lib/security/secret-crypto")
+  const { siteUrl } = await import("@/lib/platform/site-url")
   const links: Array<{ name: string; url: string }> = []
   for (const d of docs) {
     const loc = parseSignedStorageUrl(d.storageUrl)!
-    const url = await signedDocUrl(svc as any, loc.bucket, loc.path, OUTBOUND_LINK_DAYS * 86_400)
-    if (!url) return { success: false, error: `A secure link for ${d.name} could not be created — nothing was sent.` }
+    const grant = mintDocumentShareGrant({ seal: encryptSecret, open: decryptSecret, isSealed: isEncrypted }, { ref: toDocumentRef(loc.bucket, loc.path), purpose: "outside_offer_packet", brokerageId: caller.brokerageId, rowId: d.id })
+    const url = grant.ok ? documentShareUrl(toDocumentRef(loc.bucket, loc.path), grant.grant, siteUrl()) : null
+    if (!url) return { success: false, error: `A secure link for ${d.name} could not be created — nothing was sent.${grant.ok ? "" : ` (${grant.reason})`}` }
     links.push({ name: d.name, url })
   }
   const { data: agentUser } = await svc.from("users").select("first_name, last_name").eq("id", caller.userId).maybeSingle()

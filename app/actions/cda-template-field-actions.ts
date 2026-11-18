@@ -145,7 +145,12 @@ export async function autoBindCdaTemplateAction(input: { templateId: string }): 
   // Fetch the uploaded PDF bytes (Vercel Blob public URL) and read its AcroForm fields.
   let fieldNames: string[]
   try {
-    const res = await fetch(template.pdf_url)
+    // Wave 154 (lane 154M): pdf_url stores a docref:// reference — resolved at use for one immediate byte fetch (2 minutes).
+    const { resolveDocumentLink, DOC_FETCH_TTL_SECONDS } = await import("@/lib/storage/signed-doc-url")
+    const { createServiceClient: pdfSvc } = await import("@/lib/supabase/service")
+    const pdfLink = await resolveDocumentLink(pdfSvc() as never, template.pdf_url, DOC_FETCH_TTL_SECONDS)
+    if (!pdfLink.ok) return { success: false, error: "pdf_unavailable" }
+    const res = await fetch(pdfLink.url)
     if (!res.ok) return { success: false, error: `pdf_fetch_failed_${res.status}` }
     const bytes = new Uint8Array(await res.arrayBuffer())
     fieldNames = await listPdfFields(bytes)
@@ -272,7 +277,12 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
   let filled: number
   let skipped: string[]
   try {
-    const res = await fetch(template.pdf_url)
+    // Wave 154 (lane 154M): pdf_url stores a docref:// reference — resolved at use for one immediate byte fetch (2 minutes).
+    const { resolveDocumentLink, DOC_FETCH_TTL_SECONDS } = await import("@/lib/storage/signed-doc-url")
+    const { createServiceClient: pdfSvc } = await import("@/lib/supabase/service")
+    const pdfLink = await resolveDocumentLink(pdfSvc() as never, template.pdf_url, DOC_FETCH_TTL_SECONDS)
+    if (!pdfLink.ok) return { success: false, error: "pdf_unavailable" }
+    const res = await fetch(pdfLink.url)
     if (!res.ok) return { success: false, error: `pdf_fetch_failed_${res.status}` }
     const bytes = new Uint8Array(await res.arrayBuffer())
     const result = await fillPdfForm(bytes, plan.values, { flatten: false })
@@ -306,5 +316,7 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
   if (pdfStampErr) return { success: false, error: `PDF generated but not attached to the CDA: ${pdfStampErr.message}` }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
-  return { success: true, url, filled, skipped, unmapped: plan.unmapped }
+  // Wave 154 (lane 154M): the row keeps the reference; the page gets the ONE door (deal rule on the CDA's transaction).
+  const { documentOpenHref } = await import("@/lib/storage/signed-doc-url")
+  return { success: true, url: documentOpenHref(url) ?? url, filled, skipped, unmapped: plan.unmapped }
 }

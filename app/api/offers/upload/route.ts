@@ -126,7 +126,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: stored.error }, { status: 500 })
   }
 
-  const publicUrl = stored.signedUrl
+  const publicUrl = stored.ref
 
   // ── 2. INSERT offers row with ai_extraction_status='pending' ──────────────
   const { data: offer, error: insertError } = await supabase

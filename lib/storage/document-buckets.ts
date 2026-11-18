@@ -59,7 +59,7 @@
 // The two never disagree by design: this roster is the RULE, the flag is state.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { signedDocUrl, DOC_URL_TTL_SECONDS } from "./signed-doc-url"
+import { signedDocUrl, clampDocLinkTtl, toDocumentRef } from "./signed-doc-url"
 
 /**
  * Buckets whose objects are MEANT to be world-readable — marketing surfaces and
@@ -175,28 +175,26 @@ export function bucketClassReason(bucket: string): string {
 
 export type BucketUrlResult =
   | { ok: true; url: string; kind: "signed" | "public"; ttlSeconds: number | null }
+  /** A document-class object a WRITER persists: `url` is a `docref://` reference, not a link (lib/storage/signed-doc-url.ts). */
+  | { ok: true; url: string; kind: "reference"; ttlSeconds: null }
   | { ok: false; reason: string }
 
 /**
- * THE ONE WAY a writer turns an object it just stored into a URL.
+ * THE ONE WAY a writer turns an object it just stored into the value it may keep or hand on.
  *
- *   · document-class bucket → a TIME-LIMITED signed URL via signedDocUrl.
- *     If signing fails, the caller gets { ok: false, reason } and MUST refuse.
- *     There is deliberately no public fallback: falling back to a permanent
- *     unauthenticated URL on the sad path is the whole defect this closes.
- *   · public-media bucket   → getPublicUrl, which is correct for that class.
+ *   · public-media bucket → getPublicUrl, which is correct for that class.
+ *   · document-class bucket, NO ttlSeconds → a `docref://` REFERENCE (wave 154, lane 154M). This is what a row stores: a
+ *     stable, non-secret bucket + path a person opens only through the session-gated door (lib/storage/signed-doc-url.ts
+ *     documentOpenHref → app/api/documents/open) and a server consumer resolves at use time. Until wave 154 this branch
+ *     minted a TEN-YEAR signed URL for the caller to persist — a bearer link that outlived every revocation.
+ *     TOMBSTONE (§1): that default (DOC_URL_TTL_SECONDS) is deleted; survivor: toDocumentRef (lib/storage/signed-doc-url.ts).
+ *   · document-class bucket WITH ttlSeconds → a short signed URL for a use that happens NOW, clamped to
+ *     DOC_LINK_TTL_CEILING_SECONDS. If signing fails the caller gets { ok: false, reason } and MUST refuse. There is
+ *     deliberately no public fallback: falling back to a permanent unauthenticated URL on the sad path is the whole defect
+ *     this closes.
  *
- * Honest about supabase-js (CLAUDE.md §3): a refusal RESOLVES rather than
- * throwing, so signedDocUrl's empty-string return is read as a failure here
- * instead of being handed onward as a URL.
- *
- * `ttlSeconds` defaults to DOC_URL_TTL_SECONDS because nearly every write-time
- * caller PERSISTS the URL to a column (documents.storage_url, offers
- * .offer_document_url, brokerage_form_library.pdf_url …) and a short expiry
- * would silently break the stored link. The correct end-state is sign-on-read —
- * lib/kernel/document-custody.ts#issueGovernedDocumentUrl is that path for
- * client_documents — and this long-TTL signer is the bridge, exactly as
- * signed-doc-url.ts already documents.
+ * Honest about supabase-js (CLAUDE.md §3): a refusal RESOLVES rather than throwing, so signedDocUrl's empty-string return is
+ * read as a failure here instead of being handed onward as a URL.
  */
 export async function issueBucketObjectUrl(
   client: SupabaseClient,
@@ -215,7 +213,15 @@ export async function issueBucketObjectUrl(
     }
   }
 
-  const ttlSeconds = params.ttlSeconds ?? DOC_URL_TTL_SECONDS
+  if (params.ttlSeconds === undefined) {
+    try {
+      return { ok: true, url: toDocumentRef(bucket, objectPath), kind: "reference", ttlSeconds: null }
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+    }
+  }
+
+  const ttlSeconds = clampDocLinkTtl(params.ttlSeconds)
   let signed = ""
   try {
     signed = await signedDocUrl(client, bucket, objectPath, ttlSeconds)

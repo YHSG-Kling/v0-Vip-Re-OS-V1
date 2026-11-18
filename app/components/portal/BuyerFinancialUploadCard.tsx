@@ -21,6 +21,7 @@
  * existing FinancialMeaningCard.
  */
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -279,7 +280,7 @@ export function BuyerFinancialUploadCard({ contactId }: Props) {
             {documents.map(d => (
               <a
                 key={d.id}
-                href={d.document_url}
+                href={documentOpenHref(d.document_url) ?? undefined}
                 target="_blank"
                 rel="noreferrer"
                 className="flex items-center gap-2 text-sm hover:underline"

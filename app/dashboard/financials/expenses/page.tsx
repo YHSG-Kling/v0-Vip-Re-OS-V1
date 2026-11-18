@@ -1,3 +1,4 @@
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -257,7 +258,7 @@ export default async function ExpensesPage() {
                       <td className="py-3 px-2 text-right font-semibold text-orange-700">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(e.amount || 0)}</td>
                       <td className="py-3 px-2 text-center">
                         {e.receipt_url ? (
-                          <a href={e.receipt_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline text-xs">View</a>
+                          <a href={documentOpenHref(e.receipt_url) ?? undefined} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline text-xs">View</a>
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
                         )}

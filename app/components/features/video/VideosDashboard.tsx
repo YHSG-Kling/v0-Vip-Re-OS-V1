@@ -1,5 +1,6 @@
 "use client"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -272,7 +273,7 @@ export function VideosDashboard() {
                   <div className="h-10 w-10 rounded bg-muted flex items-center justify-center overflow-hidden">
                     {video.thumbnail_url ? (
                       <img
-                        src={video.thumbnail_url || "/placeholder.svg"}
+                        src={documentOpenHref(video.thumbnail_url) || "/placeholder.svg"}
                         alt=""
                         className="w-full h-full object-cover"
                       />
@@ -299,7 +300,7 @@ export function VideosDashboard() {
                       aria-label={`Play ${video.project_name}`}
                       onClick={(e) => {
                         e.stopPropagation()
-                        window.open(video.video_url, "_blank", "noopener,noreferrer")
+                        window.open(documentOpenHref(video.video_url) ?? undefined, "_blank", "noopener,noreferrer")
                       }}
                     >
                       <Play className="h-4 w-4" />

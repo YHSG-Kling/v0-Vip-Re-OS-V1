@@ -900,6 +900,17 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     ? await embedVideoInEmail(html, videoReady.videoUrl, videoReady.thumbnailUrl)
     : html
 
+  // OUTSIDE THE SESSION (wave 154, lane 154M): a personal video addressed to THIS contact is a stored reference; the outgoing
+  // body carries the door with a personal-video share grant (lib/storage/signed-doc-url.ts grantDoorLinksInText). No secret -> no send.
+  const { grantDoorLinksInText } = await import("@/lib/storage/signed-doc-url")
+  const { encryptSecret, decryptSecret, isEncrypted } = await import("@/lib/security/secret-crypto")
+  const { siteUrl } = await import("@/lib/platform/site-url")
+  const shareOpts = { brokerageId: contact.brokerageId, recipientContactId: contact.id, sealer: { seal: encryptSecret, open: decryptSecret, isSealed: isEncrypted }, origin: siteUrl() }
+  const sharedWelcome = await grantDoorLinksInText(svc as never, finalHtml, shareOpts)
+  // The welcome is IMMEDIATE (owner ruling 6): a video link that cannot be shared drops the video from the email — never a dead
+  // link, never a held welcome — and the video still waits in the portal.
+  if (!sharedWelcome.ok) console.error(`[client-welcome] the welcome video link could not be shared for contact ${contact.id}: ${sharedWelcome.reason} — sending the welcome without it`)
+  const welcomeHtml = sharedWelcome.ok ? sharedWelcome.text : html.replace("[Video will be embedded here]", "")
   const { dispatchEmail } = await import("@/lib/providers/dispatch")
   const send = await dispatchEmail({
     brokerageId: contact.brokerageId,
@@ -917,7 +928,7 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     sendAsAgentUserId: agentUserId,
     to: c.email as string,
     subject: copy.subject,
-    html: finalHtml,
+    html: welcomeHtml,
     text: copy.body,
     channelPurpose: "conversation",
     systemSource: WELCOME_SYSTEM_SOURCE,

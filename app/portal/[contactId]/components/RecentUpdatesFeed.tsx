@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/ca
 import { Button } from "@/app/components/ui/button"
 import { Bell, ArrowRight, MessageSquare, CheckCircle2, Share2, Video } from "lucide-react"
 import { CardVideoPlayer } from "./CardVideoPlayer"
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 
 // Marketing-receipt card types whose content the SELLER can re-share from the
 // "Share My Home" surface (published posts only). The nudge deep-links to the
@@ -81,9 +82,11 @@ function cardVideo(
   const spec = CARD_VIDEO_KEYS[u.update_type ?? ""]
   if (!spec) return null
   const m = u.metadata as Record<string, unknown> | null | undefined
-  const url = m && typeof m[spec.url] === "string" ? (m[spec.url] as string).trim() : ""
+  // Wave 154 (lane 154M): a personal video is a stored docref:// reference — played through the ONE door under the contact's
+  // session (a public render passes through unchanged).
+  const url = documentOpenHref(m && typeof m[spec.url] === "string" ? (m[spec.url] as string).trim() : "") ?? ""
   if (!url) return null
-  const poster = m && typeof m[spec.poster] === "string" ? (m[spec.poster] as string) : undefined
+  const poster = (m && typeof m[spec.poster] === "string" ? documentOpenHref(m[spec.poster] as string) : null) ?? undefined
   const projectIdRaw = m && typeof m[spec.projectId] === "string" ? (m[spec.projectId] as string).trim() : ""
   return { url, poster, videoProjectId: projectIdRaw || null, caption: spec.caption }
 }

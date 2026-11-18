@@ -53,6 +53,7 @@
 // service client — never import client-side.
 
 import type { createServiceClient } from "@/lib/supabase/service"
+import { parseDocumentRef } from "@/lib/storage/signed-doc-url"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -414,6 +415,10 @@ export const DOCUMENT_BUCKET = "client-documents"
  */
 export function parseBucketObjectPath(documentUrl: string | null | undefined, bucket = DOCUMENT_BUCKET): string | null {
   if (!documentUrl || typeof documentUrl !== "string") return null
+  // Wave 154 (lane 154M): the stored value is now a `docref://` reference — read by THE ONE PARSER
+  // (lib/storage/signed-doc-url.ts parseDocumentRef); the URL layouts below remain for older values.
+  const ref = parseDocumentRef(documentUrl)
+  if (ref) return ref.bucket === bucket ? ref.path : null
   if (documentUrl.startsWith("data:")) return null
   const marker = `/${bucket}/`
   // Matches both /object/public/<bucket>/ and /object/sign|authenticated/<bucket>/ layouts.

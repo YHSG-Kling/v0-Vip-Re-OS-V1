@@ -1,3 +1,4 @@
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createClient } from "@/lib/supabase/server"
 import { clientTransactionFilter, portalDealClient, scopeToDealTenant } from "@/lib/kernel/portal"
 import { isPositiveShowingInterest } from "@/lib/behavior-learning/signal-mapping"
@@ -518,8 +519,8 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
           latestUpdate={latestUpdate ? {
             id: latestUpdate.id,
             title: latestUpdate.subject || "Weekly Update",
-            videoUrl: latestUpdate.video_url,
-            thumbnailUrl: latestUpdate.thumbnail_url,
+            videoUrl: documentOpenHref(latestUpdate.video_url),
+            thumbnailUrl: documentOpenHref(latestUpdate.thumbnail_url),
             createdAt: latestUpdate.created_at,
             summary: latestUpdate.body?.substring(0, 200),
           } : null}

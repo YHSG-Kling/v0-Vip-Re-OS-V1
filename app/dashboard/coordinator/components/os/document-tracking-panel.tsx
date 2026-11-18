@@ -1,5 +1,6 @@
 'use client'
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -115,7 +116,7 @@ export function DocumentTrackingPanel({ brokerageId }: DocumentTrackingPanelProp
                   {doc.storage_url ? (
                     <Button variant="ghost" size="sm" asChild title="Open this document">
                       <a
-                        href={doc.storage_url}
+                        href={documentOpenHref(doc.storage_url) ?? undefined}
                         target="_blank"
                         rel="noopener noreferrer"
                         aria-label={`Open ${doc.doc_label || doc.doc_type}`}

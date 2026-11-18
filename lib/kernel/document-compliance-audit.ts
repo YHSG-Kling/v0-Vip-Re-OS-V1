@@ -311,6 +311,14 @@ const defaultVisionFetcher: VisionFetcher = async (input) => {
 A signature is "present" ONLY if you can actually SEE an inked/e-signed mark on the line — a blank signature line is present:false. Use null for any field you cannot assess from the image. Do not invent signers or marks you cannot see.`
 
   try {
+    // Wave 154 (lane 154M): document_url stores a `docref://` reference, never a link. The vision model fetches the image
+    // itself, now — so the hand-off is a link resolved at use time for the custody `analysis` lifetime (10 minutes,
+    // lib/kernel/document-custody.ts). A refused signer is a refusal with its reason (the catch below), never a public link.
+    const { resolveDocumentLink } = await import("@/lib/storage/signed-doc-url")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const visionLink = await resolveDocumentLink(createServiceClient() as never, input.documentUrl, 10 * 60)
+    if (!visionLink.ok) throw new Error(`the document could not be handed to the vision check: ${visionLink.reason}`)
+    const visionUrl = visionLink.url
     const { gatewayChat } = await import("@/lib/ai/gateway-chat")
     let res = await gatewayChat({
       model: VISION_MODEL,
@@ -319,7 +327,7 @@ A signature is "present" ONLY if you can actually SEE an inked/e-signed mark on 
       messages: [{
         role: "user",
         content: [
-          { type: "image_url", image_url: { url: input.documentUrl } },
+          { type: "image_url", image_url: { url: visionUrl } },
           { type: "text", text: prompt },
         ],
       }],
@@ -332,7 +340,7 @@ A signature is "present" ONLY if you can actually SEE an inked/e-signed mark on 
         messages: [{
           role: "user",
           content: [
-            { type: "image_url", image_url: { url: input.documentUrl } },
+            { type: "image_url", image_url: { url: visionUrl } },
             { type: "text", text: prompt },
           ],
         }],

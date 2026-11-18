@@ -1,5 +1,6 @@
 "use client"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState, useTransition, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -1549,7 +1550,7 @@ export function VendorDirectoryClient({
                       {/* asChild — the anchor IS the button, so the link is on
                           the control itself rather than on a wrapper. */}
                       <Button asChild size="sm" variant="outline" className="ml-4 shrink-0 bg-transparent">
-                        <a href={doc.file_url} target="_blank" rel="noopener noreferrer">
+                        <a href={documentOpenHref(doc.file_url) ?? undefined} target="_blank" rel="noopener noreferrer">
                           View
                         </a>
                       </Button>

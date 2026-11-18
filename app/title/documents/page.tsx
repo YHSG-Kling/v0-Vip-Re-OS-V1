@@ -1,3 +1,4 @@
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent } from '@/components/ui/card'
@@ -100,7 +101,7 @@ export default async function TitleDocumentsPage() {
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   {doc.storage_url ? (
-                    <a href={doc.storage_url} target="_blank" rel="noopener noreferrer">
+                    <a href={documentOpenHref(doc.storage_url) ?? undefined} target="_blank" rel="noopener noreferrer">
                       <Button size="sm" variant="outline">View</Button>
                     </a>
                   ) : (

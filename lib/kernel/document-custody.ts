@@ -191,11 +191,15 @@ export type AccessPurpose = "view" | "download" | "share" | "compliance_export" 
 
 /** TTLs in SECONDS, by purpose. Conservative — a signed URL is a time-limited grant,
  *  not a standing public link; shorter is safer. */
+// Wave 154 (lane 154M): every purpose sits at or under the document signer's ceiling, DOC_LINK_TTL_CEILING_SECONDS (one hour,
+// lib/storage/signed-doc-url.ts). compliance_export was 24 hours and share was 1 hour; an auditor collecting records mints
+// again through the door rather than holding a day-long bearer link. The order (view < analysis < download < share <
+// compliance_export) is kept.
 const TTL_BY_PURPOSE: Record<AccessPurpose, number> = {
   view:               5 * 60,        // 5 minutes — an in-app preview
   download:           15 * 60,       // 15 minutes — a deliberate save-to-disk
-  share:              60 * 60,       // 1 hour — a link handed to a represented party
-  compliance_export:  24 * 60 * 60,  // 24 hours — a broker/auditor collecting records
+  share:              30 * 60,       // 30 minutes — a link handed to a represented party
+  compliance_export:  60 * 60,       // 1 hour (the ceiling) — a broker/auditor collecting records
   analysis:           10 * 60,       // 10 minutes — a system OCR/vision read
 }
 

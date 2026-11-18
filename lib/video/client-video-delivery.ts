@@ -182,6 +182,20 @@ export async function deliverApprovedClientVideo(
         v.video_url as string,
         v.thumbnail_url,
       )
+      // OUTSIDE THE SESSION (wave 154, lane 154M): a video addressed to ONE contact is stored as a reference in the private
+      // personal-videos bucket. The email carries the door with a personal-video share grant for THIS contact (30 days); the
+      // portal card above keeps the grant-free reference and opens under the contact's session. No secret → no email.
+      const { grantDoorLinksInText } = await import("@/lib/storage/signed-doc-url")
+      const { encryptSecret, decryptSecret, isEncrypted } = await import("@/lib/security/secret-crypto")
+      const { siteUrl } = await import("@/lib/platform/site-url")
+      const shareOpts = { brokerageId: v.brokerage_id, recipientContactId: c.id, sealer: { seal: encryptSecret, open: decryptSecret, isSealed: isEncrypted }, origin: siteUrl() }
+      const sharedHtml = await grantDoorLinksInText(svc as never, html, shareOpts)
+      const sharedText = sharedHtml.ok ? await grantDoorLinksInText(svc as never, `${fromWho} a short video for you: ${displayTitle}. Watch: ${v.video_url}`, shareOpts) : sharedHtml
+      if (!sharedHtml.ok || !sharedText.ok) {
+        const why = !sharedHtml.ok ? sharedHtml.reason : !sharedText.ok ? sharedText.reason : ""
+        console.error(`[client-video-delivery] email NOT sent for video ${v.id}: the video link could not be shared — ${why}`)
+        return { delivered: card === "written", card, email: "failed", detail: `the video link could not be shared: ${why}` }
+      }
       const { dispatchEmail } = await import("@/lib/providers/dispatch")
       const sent = await dispatchEmail({
         brokerageId: v.brokerage_id,
@@ -191,8 +205,8 @@ export async function deliverApprovedClientVideo(
         sendAsAgentUserId: agentUserId ?? undefined,
         to: c.email,
         subject: `A video for you: ${displayTitle}`.slice(0, 150),
-        html,
-        text: `${fromWho} a short video for you: ${displayTitle}. Watch: ${v.video_url}`,
+        html: sharedHtml.text,
+        text: sharedText.text,
         channelPurpose: "conversation",
         systemSource: "client_video_delivery",
         humanApproved: true,

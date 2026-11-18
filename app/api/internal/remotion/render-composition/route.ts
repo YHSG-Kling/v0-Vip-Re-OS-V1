@@ -248,11 +248,22 @@ export async function POST(req: NextRequest) {
     const entryPoint = path.join(process.cwd(), "remotion", "index.ts")
     const bundleLocation = await getBundle(entryPoint)
     const executablePath = await resolveChromium()
+    // Wave 154 (lane 154M): a render input may carry a stored docref:// reference (a personal avatar track lives in the private
+    // personal-videos bucket). Resolved HERE, for the renderer only, to a link that lives the signer's ceiling (one hour — a
+    // render fetches its inputs within minutes); the persisted props and the cache identity keep the stable reference. A refused
+    // signer fails the render with its reason — never a public link.
+    const { resolveDocumentRefsInProps } = await import("@/lib/storage/signed-doc-url")
+    const forRender = await resolveDocumentRefsInProps(svc as never, inputProps)
+    if (!forRender.ok) {
+      await recordRenderCompleted({ renderId: row.id, compositionId: row.composition_id, status: "failed", errorMessage: `a private render input could not be opened: ${forRender.reason}` })
+      return NextResponse.json({ error: "render_input_unavailable", render_id: row.id, detail: forRender.reason }, { status: 502 })
+    }
+    const renderInputProps = forRender.props
 
     if (isStill) {
       // 4a. STILL — renderStill → PNG → blob. No coordinator (stills
       //     have no audio to mix or bookends to concat).
-      const bytes = await renderStillToBuffer(bundleLocation, row.composition_id, inputProps, executablePath, row.id)
+      const bytes = await renderStillToBuffer(bundleLocation, row.composition_id, renderInputProps, executablePath, row.id)
       const { hostRenderedMedia, renderHostBucketFor, RENDER_MEDIA_BUCKET } = await import("@/lib/remotion/media-host")
       // 146C-SO-04 (wave 153, lane 153Q): the MOVING path (render-coordinator.ts) and the card below already
       // host a project addressed to ONE contact in the private bucket; this STILL path took the public
@@ -289,7 +300,7 @@ export async function POST(req: NextRequest) {
     const selected = await selectComposition({
       serveUrl: bundleLocation,
       id:       row.composition_id,
-      inputProps: inputProps ?? {},
+      inputProps: renderInputProps ?? {},
     })
     const outPath = path.join(tmpdir(), `composition-${row.id}.mp4`)
     await renderMedia({
@@ -299,7 +310,7 @@ export async function POST(req: NextRequest) {
       // an audio track always present, AAC 48 kHz — what the stitch + mixers conform to.
       ...DELIVERY_RENDER_OPTIONS,
       outputLocation: outPath,
-      inputProps:  inputProps ?? {},
+      inputProps:  renderInputProps ?? {},
       concurrency: 1,
       chromiumOptions: { headless: true, gl: "swangle" },
       ...(executablePath ? { browserExecutable: executablePath } : {}),
@@ -367,8 +378,11 @@ export async function POST(req: NextRequest) {
             + describeMissingContent(thumbComposition, thumbMissing),
           )
         } else {
+          // Wave 154 (lane 154M): the companion card's props are resolved for the renderer exactly like the main props.
+          const thumbForRender = await resolveDocumentRefsInProps(svc as never, thumbProps)
+          if (!thumbForRender.ok) throw new Error(`a private card input could not be opened: ${thumbForRender.reason}`)
           const thumbBytes = await renderStillToBuffer(
-            bundleLocation, thumbComposition, thumbProps, executablePath, `${row.id}-thumb`,
+            bundleLocation, thumbComposition, thumbForRender.props, executablePath, `${row.id}-thumb`,
           )
           const { hostRenderedMedia, renderHostBucketFor } = await import("@/lib/remotion/media-host")
           // WAVE 146 (146Z): the card of a project addressed to ONE contact is hosted PRIVATE, like its video

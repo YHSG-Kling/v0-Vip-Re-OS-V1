@@ -3,6 +3,7 @@
 // bestEffort → sentinelWrite (2026-09-09): once the local requireContactAccess merged away
 // this file holds ONLY the service-role client, and the write-sentinel ruling is that a client
 // which can reach the self-heal ledger must ledger its losses rather than console.warn them.
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -887,7 +888,7 @@ export async function getTransactionHistory(contactId: string) {
 
   return {
     ...transaction,
-    documents: documents || [],
+    documents: (documents || []).map((d: any) => ({ ...d, file_url: documentOpenHref(d.file_url) })), // wave 154 (154M): file_url aliases a stored docref:// reference
   }
 }
 

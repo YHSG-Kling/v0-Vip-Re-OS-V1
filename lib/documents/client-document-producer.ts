@@ -27,14 +27,20 @@
  * says in its own words that a permanent public URL is never correct for one.
  *
  * The fix is the bucket, not a second URL mechanism: GENERATED_DOCUMENT_BUCKET
- * is document-class, so the SAME issuer now signs instead of publishing. The
- * stored URL stays a working URL — signed at DOC_URL_TTL_SECONDS because every
- * reader persists it (the library anchor, notification bodies, the lead-magnet
- * email) — which is the bridge lib/storage/signed-doc-url.ts documents.
+ * is document-class, so the SAME issuer no longer publishes.
+ *
+ * SIGN ON READ (wave 154, lane 154M): the issuer now returns the object's
+ * `docref://` REFERENCE (it used to mint a ten-year signed URL). The row stores
+ * that reference (generated_documents.blob_url); the `pdfUrl` RETURNED to callers
+ * (notification bodies, the library, the lead-magnet email) is the absolute
+ * session-gated open door (lib/storage/signed-doc-url.ts documentOpenUrl), so a
+ * person opens it only after signing in and passing the row's access rule.
  */
 import "server-only"
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { GENERATED_DOCUMENT_BUCKET } from "@/lib/storage/document-buckets"
+import { documentOpenUrl } from "@/lib/storage/signed-doc-url"
+import { siteUrl } from "@/lib/platform/site-url"
 import {
   renderClientPdf,
   type ClientPdfBrand,
@@ -117,7 +123,8 @@ export async function produceClientDocument(
     // so the path now lives in exactly one place — inside the URL the issuer
     // returns — and there is nothing left for it to drift against.
     const objectPath = `client-docs/${params.brokerageId}/${fileName}`
-    const pdfUrl = await hostRenderedMedia(svc, objectPath, buf, "application/pdf", GENERATED_DOCUMENT_BUCKET)
+    const pdfRef = await hostRenderedMedia(svc, objectPath, buf, "application/pdf", GENERATED_DOCUMENT_BUCKET)
+    const pdfUrl = documentOpenUrl(pdfRef, siteUrl()) ?? pdfRef
 
     // generated_documents.agent_id is agents-class. This used to file the USERS id,
     // which the FK rejected — so every client PDF this produced was hosted and then
@@ -141,7 +148,7 @@ export async function produceClientDocument(
       contact_id: params.contactId ?? null,
       listing_id: params.listingId ?? null,
       document_type: params.documentType,
-      blob_url: pdfUrl,
+      blob_url: pdfRef,
       // TOMBSTONE (§1.1, w26 lane C8): `blob_id` DELETED from this insert — the second
       // of its two writers. SURVIVOR: `blob_url` on the same row, read by
       // app/actions/generated-documents.ts:65. It held the storage object PATH and no

@@ -1,5 +1,6 @@
 "use server"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -108,7 +109,7 @@ export async function getLenderTransactionDetail(transactionId: string, _lenderI
     transaction: transactionWithAgent,
     lenderAssignment,
     milestones: milestones || [],
-    documents: documents || [],
+    documents: (documents || []).map((d: any) => ({ ...d, file_url: documentOpenHref(d.file_url) })), // wave 154 (154M): file_url aliases a stored docref:// reference
     daysUntilClose,
   }
 }

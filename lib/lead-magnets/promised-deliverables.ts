@@ -338,6 +338,8 @@ export interface PromiseDeps {
   finalize?: PromiseFinalizer
   prepare?: PromisePreparer
   sendEmail?: PromiseEmailSender
+  /** Upgrades the outgoing body's private links to share-grant URLs (default: lib/storage/signed-doc-url.ts grantDoorLinksInText). */
+  shareLinks?: ShareLinkUpgrader
   pushPortal?: PromisePortalWriter
   publishSignal?: PromiseSignalPublisher
   recordActivity?: PromiseActivityRecorder
@@ -433,6 +435,15 @@ async function failAttempt(svc: Db, row: PromiseRow, status: "asset_missing" | "
  * once per promise (action-ledger cycle). The tenant is the caller's VERIFIED brokerage (the capture's form row, the sweep's
  * own row) and every read and write is pinned to it. Never throws.
  */
+/** Upgrade an OUTGOING body's private document links for an outside recipient (the lead) — see grantDoorLinksInText. */
+type ShareLinkUpgrader = (svc: Db, text: string, opts: { brokerageId: string; recipientContactId: string }) => Promise<{ ok: true; text: string } | { ok: false; reason: string }>
+const defaultShareLinks: ShareLinkUpgrader = async (svc, text, opts) => {
+  const { grantDoorLinksInText } = await import("@/lib/storage/signed-doc-url")
+  const { encryptSecret, decryptSecret, isEncrypted } = await import("@/lib/security/secret-crypto")
+  const { siteUrl } = await import("@/lib/platform/site-url")
+  return grantDoorLinksInText(svc as never, text, { ...opts, sealer: { seal: encryptSecret, open: decryptSecret, isSealed: isEncrypted }, origin: siteUrl() })
+}
+
 export async function deliverPromised(svc: Db, input: { brokerageId: string; promiseId: string }, deps: PromiseDeps = {}): Promise<DeliverPromiseResult> {
   try {
     const now = deps.now ?? new Date()
@@ -578,10 +589,18 @@ export async function deliverPromised(svc: Db, input: { brokerageId: string; pro
         return dispatchEmail({ ...p, systemSource: "lead_magnet_delivery", ledger: { reasonCode: "CONVERSATION_RESPONSE", cycle: p.ledger.cycle } })
       })
       const greeting = c.first_name ? `Hi ${escapeHtml(c.first_name)},` : "Hi,"
-      const html = `<p>${greeting}</p><p>${escapeHtml(deliverable.body).replace(/\n/g, "<br/>")}</p><p><a href="${escapeHtml(verdict.assetUrl)}">Open ${escapeHtml(verdict.title)}</a></p>${bundleHtml}`
+      const rawHtml = `<p>${greeting}</p><p>${escapeHtml(deliverable.body).replace(/\n/g, "<br/>")}</p><p><a href="${escapeHtml(verdict.assetUrl)}">Open ${escapeHtml(verdict.title)}</a></p>${bundleHtml}`
+      // OUTSIDE RECIPIENT (wave 154, lane 154M): the lead has no seat, so every private document link in the OUTGOING body rides
+      // a share grant minted now (lib/storage/signed-doc-url.ts grantDoorLinksInText — lead magnet / market report / book, and a
+      // personal reel addressed to THIS contact). The evidence and refs below keep the grant-free link. No secret → no send.
+      const shareLinks = deps.shareLinks ?? defaultShareLinks
+      const grantedHtml = await shareLinks(svc, rawHtml, { brokerageId: row.brokerage_id, recipientContactId: c.id })
+      const grantedText = grantedHtml.ok ? await shareLinks(svc, `${deliverable.body}\n\n${verdict.assetUrl}${bundleText}`, { brokerageId: row.brokerage_id, recipientContactId: c.id }) : grantedHtml
+      if (!grantedHtml.ok || !grantedText.ok) return failAttempt(svc, claimed, "failed", `the delivery links could not be shared: ${!grantedHtml.ok ? grantedHtml.reason : !grantedText.ok ? grantedText.reason : ""}`, now, deps)
+      const html = grantedHtml.text
       const sent = await send({
         brokerageId: row.brokerage_id, contactId: c.id, agentId: f.agent_id ?? undefined, userId: agentUserId ?? undefined,
-        to: c.email, subject: deliverable.subject, html, text: `${deliverable.body}\n\n${verdict.assetUrl}${bundleText}`,
+        to: c.email, subject: deliverable.subject, html, text: grantedText.text,
         // The person ASKED for this asset on the form — the reply to their own request, governed like every send.
         channelPurpose: "transactional", systemSource: "lead_magnet_delivery",
         ledger: { reasonCode: "CONVERSATION_RESPONSE", cycle: `lead_magnet_promise:${row.id}` },

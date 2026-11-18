@@ -482,7 +482,7 @@ async function createOfferFromInboundEmail(
       console.error(`[offer-intake] the inbound contract could not be stored: ${stored.error}`)
       return { handled: false, matchKey, listingSweepTruncated: ctx.sweepTruncated, errors }
     }
-    const publicUrl = stored.signedUrl
+    const publicUrl = stored.ref
 
     const { data: offer, error: offerErr } = await svc.from("offers").insert({
       listing_id: match.id, contact_id: ctx.contactId, brokerage_id: input.brokerageId,
@@ -986,7 +986,7 @@ async function fileInboundPdfs(
           errors.push(`${pdf.fileName}: ${stored.error}${stored.orphanRecorded ? " (orphan recorded for sweep)" : ""}`)
           continue
         }
-        storageUrl = stored.signedUrl
+        storageUrl = stored.ref
         storedPath = stored.path
       }
 

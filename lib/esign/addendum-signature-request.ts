@@ -70,7 +70,7 @@ interface AddendumSignatureDeps {
   storeSignedCopy?: (svc: Svc, input: { brokerageId: string; contactId: string | null; transactionId: string | null; offerId: string | null; requestId: string; bytes: Uint8Array; sha256: string; fileName: string; metadata: Record<string, unknown> }) => Promise<{ ok: true; documentId: string } | { ok: false; error: string }>
   recordExecuted?: (svc: Svc, input: RecordVersionInput) => ReturnType<typeof recordContractTermsVersion>
   readiness?: (svc: Svc, userId: string) => Promise<{ transactable: boolean; message: string | null; blockers: string[] }>
-  /** A fresh short-lived link to the addendum file (documents.storage_url is a signed link that expires). */
+  /** A fresh short-lived link to the addendum file, minted at use (documents.storage_url stores a reference — lib/storage/signed-doc-url.ts). */
   documentUrl?: (svc: Svc, storageUrl: string) => Promise<string | null>
   event?: (svc: Svc, brokerageId: string, input: { event_type: string; payload: Record<string, unknown>; source: "ui" | "webhook" | "system" | "cron"; user_id?: string | null; entity_type?: string; entity_id?: string; dedupe_key?: string }) => Promise<unknown>
   signal?: (input: { brokerageId: string; fromManager: "deal_coordinator" | "compliance_officer"; toManager: "deal_coordinator" | "compliance_officer"; signalType: string; message: string; entityType: string; entityId: string; payload?: Record<string, unknown> }, svc: Svc) => Promise<{ ok: boolean }>
@@ -118,11 +118,15 @@ const DEFAULTS: Required<Omit<AddendumSignatureDeps, "now">> = {
   recordExecuted: (svc, input) => recordContractTermsVersion(svc, input),
   readiness: async (svc, userId) => (await import("@/lib/compliance/agent-readiness-gate")).checkAgentTransactable(svc, userId),
   documentUrl: async (svc, storageUrl) => {
-    // `…/storage/v1/object/(sign|public)/<bucket>/<path>?…` → re-issued through the ONE issuer (lib/storage/document-buckets.ts).
-    const m = /\/storage\/v1\/object\/(?:sign|public)\/([^/]+)\/([^?]+)/.exec(storageUrl)
-    if (!m) return storageUrl
+    // Wave 154 (lane 154M): the stored value is a `docref://` reference (or an older signed URL) — read by THE ONE PARSER
+    // (lib/storage/signed-doc-url.ts parseDocumentRef; the regex that lived here is retired onto it, and a legacy token is
+    // never reused). Minted AT USE, after the caller's gate: the e-sign provider fetches the file asynchronously, so the
+    // lifetime is the signer's ceiling (one hour) — never a persisted link.
+    const { parseDocumentRef, DOC_LINK_TTL_CEILING_SECONDS } = await import("@/lib/storage/signed-doc-url")
+    const ref = parseDocumentRef(storageUrl)
+    if (!ref) return /^https?:\/\//i.test(storageUrl) ? storageUrl : null
     const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
-    const issued = await issueBucketObjectUrl(svc as never, { bucket: m[1], objectPath: decodeURIComponent(m[2]) })
+    const issued = await issueBucketObjectUrl(svc as never, { bucket: ref.bucket, objectPath: ref.path, ttlSeconds: DOC_LINK_TTL_CEILING_SECONDS })
     return issued.ok ? issued.url : null
   },
   event: async (svc, brokerageId, input) => (await import("@/lib/events/lifecycle-event-core")).recordLifecycleEvent(svc, brokerageId, input as never, { dedupeWindowHours: null }),

@@ -1,5 +1,6 @@
 "use client"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -547,7 +548,7 @@ export default function LinkToVideoGenerator() {
                             title="Download the rendered video"
                           >
                             <a
-                              href={video.ai_video_projects.video_url}
+                              href={documentOpenHref(video.ai_video_projects.video_url) ?? undefined}
                               target="_blank"
                               rel="noopener noreferrer"
                               download

@@ -372,12 +372,22 @@ export const sendForEsignAdapter: ChannelAdapter = {
           return { status: "error", providerKey: provider, error: txResult.error ?? `${provider} createTransaction failed` }
         }
 
-        // 2. Attach the document
+        // 2. Attach the document. Wave 154 (lane 154M): storage_url is a `docref://` reference, never a link. The e-sign
+        // provider fetches the form ITSELF and asynchronously, so the hand-off is resolved now for the signer's ceiling
+        // (DOC_LINK_TTL_CEILING_SECONDS, one hour). A refused signer is an error, never a public fallback.
+        let formUrl: string | undefined
+        if (document.storage_url) {
+          const { resolveDocumentLink, DOC_LINK_TTL_CEILING_SECONDS } = await import("@/lib/storage/signed-doc-url")
+          const { createServiceClient } = await import("@/lib/supabase/service")
+          const link = await resolveDocumentLink(createServiceClient() as never, document.storage_url, DOC_LINK_TTL_CEILING_SECONDS)
+          if (!link.ok) return { status: "error", providerKey: provider, error: `the document could not be handed to ${provider}: ${link.reason}` }
+          formUrl = link.url
+        }
         const attachResult = await esignProv.attachForms({
           externalTransactionId: txResult.externalTransactionId,
           forms: [{
             formName: `${document.document_type} — ${propertyAddress}`,
-            formUrl:  document.storage_url ?? undefined,
+            formUrl,
             formData: { content: document.content ?? "", state: document.state_code ?? null },
           }],
         })

@@ -74,7 +74,7 @@ import {
 } from "../lib/kernel/brokerage-transfer"
 import { FORM_LIBRARY_SEAT_USER_TYPES, FORM_PACKET_PREVIEW_TTL_SECONDS, PACKET_OVERSIGHT_USER_TYPES, issueTenantPacketUrl, resolvePacketActor, type PacketActor } from "../lib/forms/tenant-form-packets"
 import { checkFormPathsInScope } from "../lib/forms/form-path-scope"
-import { DOC_URL_TTL_SECONDS } from "../lib/storage/signed-doc-url"
+import { DOC_LINK_TTL_CEILING_SECONDS } from "../lib/storage/signed-doc-url" // wave 154 (154M): the ten-year constant is deleted; the ceiling is the rule
 import { PROTECTED_RESEARCH_TRANSFER_CLASS } from "../lib/enrichment/protected-research-store"
 import { TENANT_ADMIN_USER_TYPES } from "../lib/auth/resolve-user-role"
 import { DOCUMENT_CLASS_BUCKETS, isDocumentClassBucket } from "../lib/storage/document-buckets"
@@ -490,13 +490,13 @@ const DOORS: Array<{ file: string; fn: string; ops: Record<string, number>; gate
   // RE-ASSERTED (wave 145, lane 145Z): FORM_URL_TTL_SECONDS was pinned to the 10-year value the FormWizard USED to import
   // (DOC_URL_TTL_SECONDS) — a waypoint the outside-lane fix (lane 145A item 3) moves. The alias's value is now DERIVED from
   // whatever constant the wizard imports under that name, read from the code's own exports.
-  const WIZARD_TTL_SOURCES: Record<string, number> = { FORM_PACKET_PREVIEW_TTL_SECONDS, DOC_URL_TTL_SECONDS }
+  const WIZARD_TTL_SOURCES: Record<string, number> = { FORM_PACKET_PREVIEW_TTL_SECONDS, DOC_LINK_TTL_CEILING_SECONDS }
   const wizardTtlName = /import \{[^}]*\b(\w+) as FORM_URL_TTL_SECONDS\b/.exec(raw("app/components/form-wizard/FormWizard.tsx"))?.[1] ?? null
   const TTL_CONST: Record<string, number> = { FORM_PACKET_PREVIEW_TTL_SECONDS, PLATFORM_PACKET_PREVIEW_TTL_SECONDS: 900, ...(wizardTtlName && wizardTtlName in WIZARD_TTL_SOURCES ? { FORM_URL_TTL_SECONDS: WIZARD_TTL_SOURCES[wizardTtlName] } : {}) }
   const ttlOf = (expr: string): number | null => { const e = expr.trim(); if (e in TTL_CONST) return TTL_CONST[e]; if (/^[\d\s*]+$/.test(e)) return e.split("*").reduce((a, x) => a * Number(x.trim()), 1); return null }
   const signs = ops.filter((o) => o.op === "createSignedUrl").map((o) => { const after = o.src.slice(o.index); const m = /createSignedUrl\(\s*[^,]+,\s*([^)]+)\)/.exec(after); return { o, ttl: m ? ttlOf(m[1]) : null, expr: m?.[1] ?? "?" } })
   check("B3 the TTL constants the census evaluates are the code's own (positive: FORM_PACKET_PREVIEW_TTL_SECONDS = 900; the wizard's FORM_URL_TTL_SECONDS alias resolves to a known constant)", FORM_PACKET_PREVIEW_TTL_SECONDS === 900 && wizardTtlName !== null && (TTL_CONST.FORM_URL_TTL_SECONDS ?? 0) > 0, `wizard alias source: ${wizardTtlName ?? "none"}`)
-  const longLived = signs.filter((s) => s.ttl === null || s.ttl > 3600)
+  const longLived = signs.filter((s) => s.ttl === null || s.ttl > DOC_LINK_TTL_CEILING_SECONDS)
   // RATCHET (shrink-only): the FormWizard's own-folder links used DOC_URL_TTL_SECONDS (10 years). SHRUNK TO EMPTY in wave 145
   // (lane 145Z — lane 145A Outside-lane 3): the wizard now mints the 15-minute preview TTL. Nothing may be re-added.
   const KNOWN_LONG_TTL = new Set<string>([])
@@ -721,7 +721,7 @@ const DOC_DOORS: Array<{ file: string; bucket: DocBucket; ops: Partial<Record<Do
   { file: "app/actions/vendor-document-corrections.ts", bucket: "transaction-documents", ops: { service: 1 }, roots: [{ re: /`issuer-corrections\/\$\{brokerageId\}\/\$\{transactionId\}\//, arm: null }], why: "an issuer's own-document correction (wave 153, lane 153D) — server only, after the issuer gate (the assigned lender / title / vendor seat, or tenant staff recording an off-platform issuer's file); sha256 recorded with the version" },
   { file: "app/api/offers/upload/route.ts", bucket: "offer-documents", ops: { service: 2 }, roots: [], why: "the offer PDF upload — server only after the tenant check" },
   { file: "lib/inbound-mail/offer-intake.ts", bucket: "offer-documents", ops: { service: 4 }, roots: [], why: "inbound-email offer attachments — server only" },
-  { file: "app/dashboard/onboarding/license/license-intake-client.tsx", bucket: "agent-documents", ops: { session: 4 }, roots: [{ re: /`\$\{userId\}\/license\//, arm: "license" }, { re: /`\$\{userId\}\/eo-insurance\//, arm: "eo-insurance" }], why: "the agent's license and E&O certificate (browser) — own {uid}/ folder" },
+  { file: "app/dashboard/onboarding/license/license-intake-client.tsx", bucket: "agent-documents", ops: { session: 2 }, roots: [{ re: /`\$\{userId\}\/license\//, arm: "license" }, { re: /`\$\{userId\}\/eo-insurance\//, arm: "eo-insurance" }], why: "the agent's license and E&O certificate (browser) — own {uid}/ folder" },
 ]
 {
   const files = [...walk("app"), ...walk("lib")].filter((f) => !f.startsWith("lib/storage/") && /(?:client|offer|transaction|agent)-documents|DOCUMENT_BUCKET|OFFER_DOCUMENTS_BUCKET|W9_BUCKET/.test(raw(f)))

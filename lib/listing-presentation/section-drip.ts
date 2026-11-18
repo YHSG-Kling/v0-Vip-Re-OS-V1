@@ -1156,6 +1156,16 @@ async function sendSectionEmail(
   }
 
   try {
+    // OUTSIDE THE SESSION (wave 154, lane 154M): a personal video addressed to THIS contact is a stored reference; the outgoing
+    // body carries the door with a personal-video share grant (lib/storage/signed-doc-url.ts grantDoorLinksInText). No secret -> no send.
+    const { grantDoorLinksInText } = await import("@/lib/storage/signed-doc-url")
+    const { encryptSecret, decryptSecret, isEncrypted } = await import("@/lib/security/secret-crypto")
+    const { siteUrl } = await import("@/lib/platform/site-url")
+    const shareOpts = { brokerageId: s.brokerage_id, recipientContactId: s.contact_id, sealer: { seal: encryptSecret, open: decryptSecret, isSealed: isEncrypted }, origin: siteUrl() }
+    const sharedHtml = await grantDoorLinksInText(supabase as never, email.html, shareOpts)
+    if (!sharedHtml.ok) return { ok: false, to, error: `the reel link could not be shared: ${sharedHtml.reason}` }
+    const sharedText = await grantDoorLinksInText(supabase as never, email.text, shareOpts)
+    if (!sharedText.ok) return { ok: false, to, error: `the reel link could not be shared: ${sharedText.reason}` }
     const { dispatchEmail } = await import("@/lib/providers/dispatch")
     const res = await dispatchEmail({
       brokerageId:    s.brokerage_id,
@@ -1166,8 +1176,8 @@ async function sendSectionEmail(
       from:           ctx.fromEmail ?? undefined,
       to,
       subject:        email.subject,
-      html:           email.html,
-      text:           email.text,
+      html:           sharedHtml.text,
+      text:           sharedText.text,
       channelPurpose: "update",
       systemSource:   "prelisting_drip",
       metadata: {

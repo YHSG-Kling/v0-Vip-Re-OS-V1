@@ -14,6 +14,7 @@
 //     auth.uid OR contact.email matches authed user's email)
 //   - An agent / admin in the contact's brokerage (dashboard session)
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isPositiveShowingInterest, isNegativeShowingInterest } from "@/lib/behavior-learning/signal-mapping"
@@ -548,7 +549,7 @@ export async function getSellerOffers(contactId: string) {
       const offerId = d.metadata?.linked_offer_id as string | undefined
       if (!offerId || !releasedIds.includes(offerId) || !d.storage_url) continue
       const list = docsByOffer.get(offerId) ?? []
-      list.push({ id: d.id, name: String(d.metadata?.file_name ?? d.document_type ?? "Offer document"), url: d.storage_url, kind: d.classification ?? null })
+      list.push({ id: d.id, name: String(d.metadata?.file_name ?? d.document_type ?? "Offer document"), url: documentOpenHref(d.storage_url) ?? "", kind: d.classification ?? null })
       docsByOffer.set(offerId, list)
     }
   }
@@ -976,8 +977,9 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
   }
 
   return {
-    clientDocuments: clientDocs ?? [],
-    transactionDocuments: transactionDocs,
+    // Wave 154 (154M): file_url aliases a stored docref:// reference — the contact opens it through the ONE door.
+    clientDocuments: (clientDocs ?? []).map((d: any) => ({ ...d, file_url: documentOpenHref(d.file_url) })),
+    transactionDocuments: transactionDocs.map((d: any) => ({ ...d, file_url: documentOpenHref(d.file_url) })),
   }
 }
 

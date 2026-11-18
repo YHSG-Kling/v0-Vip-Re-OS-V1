@@ -1,5 +1,6 @@
 "use client"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useEffect, useState, useRef, useMemo } from "react"
 // Pure + client-safe: the weights live in a sibling of health-scorer because that
 // module imports the service client and cannot cross into a client component.
@@ -280,7 +281,7 @@ export default function AgentTransactionDetailPage() {
         doc_label: file.name,
         doc_type: "upload",
         status: "requested",
-        storage_url: stored.signedUrl,
+        storage_url: stored.ref,
         uploaded_at: new Date().toISOString(),
       })
       .select("id, doc_type, doc_label, status, storage_url, uploaded_at, uploaded_by, notes")
@@ -978,7 +979,7 @@ export default function AgentTransactionDetailPage() {
                             </Badge>
                             {doc.storage_url && (
                               <Button variant="ghost" size="sm" asChild>
-                                <a href={doc.storage_url} target="_blank" rel="noopener noreferrer">
+                                <a href={documentOpenHref(doc.storage_url) ?? undefined} target="_blank" rel="noopener noreferrer">
                                   <Download className="h-4 w-4" />
                                 </a>
                               </Button>

@@ -34,6 +34,7 @@
  * CHECK already admits all three types (measured in m481).
  */
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { uploadBufferToBucket } from "@/lib/storage/buckets"
@@ -201,7 +202,7 @@ export async function listCommissionAgreementFormsAction(
     forms: (data ?? []).map((f: Record<string, unknown>) => ({
       id: f.id as string,
       name: f.form_name as string,
-      documentUrl: (f.document_url as string | null) ?? null,
+      documentUrl: documentOpenHref(f.document_url as string | null),
       fields: Array.isArray(f.field_schema) ? (f.field_schema as CommissionFormField[]) : [],
     })),
   }
@@ -276,7 +277,7 @@ export async function getCommissionAgreementStatusAction(
       exists: true,
       esignStatus: r.esign_status ?? null,
       provider: r.provider_name ?? null,
-      documentUrl: r.document_url ?? null,
+      documentUrl: documentOpenHref(r.document_url),
       signingUrl: r.signing_url ?? null,
       sentAt: r.sent_at ?? null,
       fullySignedAt: r.fully_signed_at ?? null,
@@ -452,7 +453,8 @@ export async function sendCommissionAgreementAction(input: {
         if (tx.success && tx.externalTransactionId) {
           await dotloop.attachForms({
             externalTransactionId: tx.externalTransactionId,
-            forms: [{ formName: `${contractLabel} — ${signerName}`, formUrl: documentUrl ?? undefined }],
+            // Wave 154 (lane 154M): Dotloop fetches the form itself — resolved now for the signer's ceiling (one hour).
+            forms: [{ formName: `${contractLabel} — ${signerName}`, formUrl: await (async () => { if (!documentUrl) return undefined; const { resolveDocumentLink, DOC_LINK_TTL_CEILING_SECONDS } = await import("@/lib/storage/signed-doc-url"); const { createServiceClient: dlSvc } = await import("@/lib/supabase/service"); const l = await resolveDocumentLink(dlSvc() as never, documentUrl, DOC_LINK_TTL_CEILING_SECONDS); return l.ok ? l.url : undefined })() }],
           })
           await dotloop.sendForSignature({
             externalTransactionId: tx.externalTransactionId,

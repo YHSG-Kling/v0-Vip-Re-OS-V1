@@ -1,5 +1,6 @@
 "use client"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState, useEffect, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
@@ -125,6 +126,15 @@ function mapStatusToColumn(rawStatus: string, providerStatus?: string): string {
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
 
+/**
+ * Wave 154 (lane 154M): a video addressed to ONE contact lands in the private personal-videos bucket and its row stores a
+ * docref:// reference. Every player, poster, download and copy-link on this board reads the row through the ONE reader helper,
+ * so a personal video plays through the session-gated door (5-minute link per view) and a public render passes through.
+ */
+function viewableVideo<T extends { video_url?: string | null; thumbnail_url?: string | null }>(v: T): T {
+  return { ...v, video_url: documentOpenHref(v.video_url) ?? undefined, thumbnail_url: documentOpenHref(v.thumbnail_url) ?? undefined }
+}
+
 export default function VideoKanbanBoard() {
   const router = useRouter()
   const { user, userContext } = useAuth()
@@ -193,7 +203,7 @@ export default function VideoKanbanBoard() {
         .limit(100)
 
       if (data && !error) {
-        setVideos(data)
+        setVideos(data.map(viewableVideo))
 
         // Streaming state derives from the project rows themselves —
         // video_streaming_status was a writer-less companion table
@@ -204,8 +214,8 @@ export default function VideoKanbanBoard() {
           statusMap[v.id] = {
             video_project_id: v.id,
             stream_status: v.provider_status || v.status || "draft",
-            preview_url: v.thumbnail_url ?? undefined,
-            stream_url: v.video_url ?? undefined,
+            preview_url: documentOpenHref(v.thumbnail_url) ?? undefined,
+            stream_url: documentOpenHref(v.video_url) ?? undefined,
             error_message: v.error_message ?? undefined,
           }
         })
@@ -235,7 +245,7 @@ export default function VideoKanbanBoard() {
         { event: "UPDATE", schema: "public", table: "ai_video_projects" },
         (payload: any) => {
           setVideos((prev) =>
-            prev.map((v) => (v.id === payload.new.id ? { ...v, ...payload.new } : v))
+            prev.map((v) => (v.id === payload.new.id ? viewableVideo({ ...v, ...payload.new }) : v))
           )
         }
       )
@@ -243,7 +253,7 @@ export default function VideoKanbanBoard() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "ai_video_projects" },
         (payload: any) => {
-          setVideos((prev) => [payload.new as VideoProject, ...prev])
+          setVideos((prev) => [viewableVideo(payload.new as VideoProject), ...prev])
         }
       )
       .on(

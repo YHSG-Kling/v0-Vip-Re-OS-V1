@@ -14,6 +14,7 @@
  * SetupBlockersPanel / ProviderReadinessPanel.
  */
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useEffect, useState, useTransition } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -476,7 +477,7 @@ export function CdaSetupPanel() {
                         {t.description && <p className="text-xs text-muted-foreground truncate">{t.description}</p>}
                       </div>
                       {t.pdf_url && (
-                        <a href={t.pdf_url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground">
+                        <a href={documentOpenHref(t.pdf_url) ?? undefined} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground">
                           <ExternalLink className="h-4 w-4" />
                         </a>
                       )}

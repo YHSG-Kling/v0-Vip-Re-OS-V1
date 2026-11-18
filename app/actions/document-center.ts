@@ -16,6 +16,7 @@
 // RLS-scoped client otherwise. A self-made cookie client here was the shape that
 // silently refused every support write under act-as. The import outlived its last
 // call site by one commit.
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext } from "@/lib/platform/acting-context"
 import { issueGovernedDocumentUrl, type AccessPurpose } from "@/lib/kernel/document-custody"
@@ -170,7 +171,7 @@ export async function getDocumentCenterData(): Promise<{
       clientVisible: flagProbeError ? null : flags.get(d.id) === true,
       clientHiddenType: isClientHiddenDealDocType(d.document_type) || isClientHiddenDealDocType(d.doc_category),
       documentType: d.document_type,
-      documentUrl: d.document_url,
+      documentUrl: documentOpenHref(d.document_url) ?? "",
       uploadedAt: d.created_at,
       contactId: d.contact_id,
       contactName: d.contact_id ? contactMap.get(d.contact_id) ?? null : null,

@@ -1,5 +1,6 @@
 "use server"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { requireTitleActor, PortalAuthError } from "@/lib/kernel/portal-auth"
@@ -263,7 +264,7 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
     transaction: transactionWithAgent,
     titleEscrow,
     milestones: milestones || [],
-    documents: documents || [],
+    documents: (documents || []).map((d: any) => ({ ...d, file_url: documentOpenHref(d.file_url) })), // wave 154 (154M): file_url aliases a stored docref:// reference
     closingPrep,
     daysUntilClose,
   }

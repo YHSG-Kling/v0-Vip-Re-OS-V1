@@ -60,8 +60,9 @@ export async function uploadBufferToBucket(params: {
   /** Bucket visibility on first creation. Default: the bucket's CLASS. */
   public?: boolean
   upsert?: boolean
-  /** Signed-URL TTL seconds for a private bucket. Default: DOC_URL_TTL_SECONDS,
-   *  because callers persist the URL to a column. */
+  /** Signed-URL TTL seconds for a private bucket, for a use that happens NOW (clamped to DOC_LINK_TTL_CEILING_SECONDS).
+   *  Omitted (the default) → `url` is the object's `docref://` REFERENCE, which is what a caller persists to a column
+   *  (wave 154, lane 154M — lib/storage/signed-doc-url.ts; the ten-year DOC_URL_TTL_SECONDS default is deleted). */
   signedTtlSeconds?: number
 }): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
   const isPublic = params.public ?? !isDocumentClassBucket(params.bucket)

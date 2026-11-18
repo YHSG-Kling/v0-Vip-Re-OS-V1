@@ -1,5 +1,6 @@
 "use client"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
@@ -279,7 +280,7 @@ export default function PortalSettingsPage({ contact, contactId, languageOptions
             </CardHeader>
             <CardContent className="flex items-center gap-6">
               <Avatar className="h-24 w-24">
-                <AvatarImage src={contact.avatar_url || "/placeholder.svg"} alt={displayName} />
+                <AvatarImage src={documentOpenHref(contact.avatar_url) || "/placeholder.svg"} alt={displayName} />
                 <AvatarFallback className="bg-primary text-primary-foreground text-2xl">{initials}</AvatarFallback>
               </Avatar>
               {/* Had no onClick, no file input, nothing. uploadProfilePhoto was

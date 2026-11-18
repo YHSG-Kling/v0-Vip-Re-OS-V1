@@ -616,13 +616,21 @@ async function dispatchContactChannel(
       return { success: false, reason: `stop:compliance:${finalCompliance.blockedReason}`, channel }
     }
 
+    // OUTSIDE THE SESSION (wave 154, lane 154M): a personal video addressed to THIS contact is a stored reference; the outgoing
+    // body carries the door with a personal-video share grant (lib/storage/signed-doc-url.ts grantDoorLinksInText). No secret -> no send.
+    const { grantDoorLinksInText } = await import("@/lib/storage/signed-doc-url")
+    const { encryptSecret, decryptSecret, isEncrypted } = await import("@/lib/security/secret-crypto")
+    const { siteUrl } = await import("@/lib/platform/site-url")
+    const shareOpts = { brokerageId: brokerageId, recipientContactId: contact.id, sealer: { seal: encryptSecret, open: decryptSecret, isSealed: isEncrypted }, origin: siteUrl() }
+    const sharedBody = await grantDoorLinksInText(supabase as never, finalBody, shareOpts)
+    if (!sharedBody.ok) return { success: false, reason: `stop:share_link:${sharedBody.reason}`, channel }
     await dispatchEmail({
       brokerageId,
       agentId: contact.agent_id ?? undefined,
       from: fromName,
       to: contact.email,
       subject,
-      html: finalBody,
+      html: sharedBody.text,
       channelPurpose: 'campaign',
       systemSource: 'ai_isa_contact',
       metadata: { source: 'ai_isa_contact', channel: 'email', reason },

@@ -12,6 +12,7 @@
  * the same rail lib/kernel/portal-auth.ts:requireVendorActor gates on.
  */
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
@@ -203,7 +204,7 @@ async function fetchVendorJobDeliverables(
       category: "deliverable",
       title: (d as any).doc_label ?? "Job deliverable",
       description: (d as any).doc_type ? humanize(String((d as any).doc_type)) : "Job deliverable",
-      url: (d as any).storage_url ?? null,
+      url: documentOpenHref((d as any).storage_url),
       uploadedAt: (d as any).uploaded_at ?? (d as any).created_at ?? new Date().toISOString(),
       status: (d as any).status ?? job.status,
       jobId,
@@ -229,7 +230,7 @@ async function fetchVendorAgreements(
     category: "agreement" as const,
     title: d.document_name,
     description: d.document_type ? humanize(d.document_type) : "Document",
-    url: d.document_url,
+    url: documentOpenHref(d.document_url),
     uploadedAt: d.created_at,
     status: null,
   }))

@@ -31,8 +31,16 @@
 // the failure to record one is itself returned to the caller rather than
 // swallowed.
 
+//
+// SIGN ON READ (wave 154, lane 154M; open-loop 146A-SO-02). The second step no longer MINTS a link: it returns the
+// object's `docref://` REFERENCE (lib/storage/signed-doc-url.ts toDocumentRef) — what the caller's row stores. Until wave
+// 154 it returned a TEN-YEAR signed URL that every caller persisted, a bearer link that outlived revocation. TOMBSTONE (§1):
+// the `signedUrl` field is gone; survivor: `ref`. A person opens it through documentOpenHref → app/api/documents/open; a
+// server consumer resolves it at use time (resolveDocumentLink; the connector gateway does it for byte fetches). The name `putAndSign` is kept so the
+// door census in scripts/transfer-classification-guard.ts keeps seeing every upload through it.
+
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { signedDocUrl } from "./signed-doc-url"
+import { toDocumentRef } from "./signed-doc-url"
 
 export type PutAndSignFailure = {
   ok: false
@@ -50,7 +58,8 @@ export type PutAndSignFailure = {
 }
 
 export type PutAndSignResult =
-  | { ok: true; path: string; signedUrl: string }
+  /** `ref` is the `docref://` reference a row stores — never a link (lib/storage/signed-doc-url.ts). */
+  | { ok: true; path: string; ref: string }
   | PutAndSignFailure
 
 /**
@@ -93,21 +102,22 @@ export async function putAndSign(
     }
   }
 
-  const signed = await signedDocUrl(client, params.bucket, up.path)
-  if (signed) return { ok: true, path: up.path, signedUrl: signed }
+  let ref = ""
+  try { ref = toDocumentRef(params.bucket, up.path) } catch { ref = "" }
+  if (ref) return { ok: true, path: up.path, ref }
 
   const compensation = await removeOrRecordOrphan(client, {
     bucket:      params.bucket,
     objectPath:  up.path,
     reason:      params.reason ?? "signed_url_failed",
-    detail:      "the bytes uploaded but no signed URL could be minted, so no database row was ever created for them",
+    detail:      "the bytes uploaded but no storable reference could be formed for them, so no database row was ever created for them",
     brokerageId: params.brokerageId ?? null,
   })
 
   return {
     ok: false,
     stage: "sign",
-    error: "the file uploaded but a signed URL could not be created for it",
+    error: "the file uploaded but no storable reference could be formed for it",
     orphanPath: up.path,
     ...compensation,
   }

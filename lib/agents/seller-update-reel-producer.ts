@@ -725,7 +725,11 @@ export async function deliverSellerUpdateReels(
       const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
       if (full) agentName = full
     }
-    const msg = buildSellerUpdateMessage(gathered.stats, agentName, r.output_url)
+    // Wave 154 (lane 154M): a reel addressed to the seller is a private docref:// reference; the portal message carries the ONE
+    // door (the seller opens it under their own session — the portal channel), never the stored value.
+    const { documentOpenUrl } = await import("@/lib/storage/signed-doc-url")
+    const { siteUrl } = await import("@/lib/platform/site-url")
+    const msg = buildSellerUpdateMessage(gathered.stats, agentName, documentOpenUrl(r.output_url, siteUrl()))
     const res = await proposeClientMessage({
       brokerageId, agentKind: "listing_concierge", entityType: SELLER_UPDATE_ENTITY_TYPE, entityId: listingId,
       recipientContactId: sellerContactId, audience: "seller",

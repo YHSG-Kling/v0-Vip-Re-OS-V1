@@ -184,11 +184,18 @@ export async function sendForDotloopSignature(data: {
 
     // Upload document to Dotloop if not already there
     if (!document.dotloop_document_id) {
+      // Wave 154 (lane 154M): Dotloop fetches the file ITSELF, asynchronously — the stored `docref://` reference is resolved
+      // now for the document signer's ceiling (one hour). A refused signer stops the send; nothing falls back to public.
+      const { resolveDocumentLink, DOC_LINK_TTL_CEILING_SECONDS } = await import("@/lib/storage/signed-doc-url")
+      const { createServiceClient: dotloopSvc } = await import("@/lib/supabase/service")
+      const handoff = await resolveDocumentLink(dotloopSvc() as never, document.document_url, DOC_LINK_TTL_CEILING_SECONDS)
+      if (!handoff.ok) return { success: false, error: `The document could not be handed to Dotloop: ${handoff.reason}` }
+      const dotloopFileUrl = handoff.url
       const uploadResult = await uploadLoopDocument({
         brokerageId: ctx.brokerageId,
         loopId: data.loopId,
         documentName: document.document_name,
-        fileUrl: document.document_url,
+        fileUrl: dotloopFileUrl,
       })
 
       if (uploadResult.success && uploadResult.dotloopDocumentId) {
@@ -802,13 +809,20 @@ export async function accessSharedDocument(
       ? Math.max(0, link.max_access_count - ((link.current_access_count ?? 0) + 1))
       : null
 
+  // Wave 154 (lane 154M): document_url is a `docref://` reference. The share link's gate above (token, brokerage, access count)
+  // is the access decision for this view, so the page receives a link minted NOW for the custody `view` lifetime (5 minutes,
+  // lib/storage/signed-doc-url.ts DOC_VIEW_TTL_SECONDS) — never the stored value.
+  const { resolveDocumentLink, DOC_VIEW_TTL_SECONDS } = await import("@/lib/storage/signed-doc-url")
+  const viewLink = document.document_url ? await resolveDocumentLink(svc as never, document.document_url, DOC_VIEW_TTL_SECONDS) : null
+  if (viewLink && !viewLink.ok) console.error(`[document-share] no view link for ${document.id}: ${viewLink.reason}`)
+
   return {
     success: true,
     document: {
       id: document.id,
       documentName: document.document_name,
       documentType: document.document_type ?? null,
-      documentUrl: document.document_url ?? null,
+      documentUrl: viewLink && viewLink.ok ? viewLink.url : null,
       status: document.status ?? null,
       createdAt: document.created_at ?? null,
     },

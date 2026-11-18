@@ -208,7 +208,10 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
         r.errors += 1
         continue
       }
-      const packetUrl = issued.url
+      // Wave 154 (lane 154M): issued.url is the packet's `docref://` REFERENCE, not a bearer link. The notification carries
+      // the session-gated open door (sign-in, tenant admin roster — lib/storage/signed-doc-url.ts DOCUMENT_DOOR_PATH_KINDS).
+      const { documentOpenHref } = await import("@/lib/storage/signed-doc-url")
+      const packetUrl = documentOpenHref(issued.url) ?? issued.url
 
       const { data: admins } = await svc.from("users").select("id")
         .eq("brokerage_id", b.id).in("user_type", ["broker", "admin"]).limit(5)

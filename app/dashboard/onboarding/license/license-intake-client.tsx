@@ -7,8 +7,9 @@
 // 4-step horizontal stepper with persistent progress.
 
 import { useState, useEffect, useCallback } from "react"
-// The ONE TTL vocabulary for a persisted document URL (lib/storage/signed-doc-url.ts).
-import { DOC_URL_TTL_SECONDS } from "@/lib/storage/signed-doc-url"
+// What a row stores for a private document: the ONE reference format (lib/storage/signed-doc-url.ts toDocumentRef — wave 154,
+// lane 154M). This component mints no link at all: the license and the E&O certificate are opened through the session-gated door.
+import { toDocumentRef } from "@/lib/storage/signed-doc-url"
 import { useRouter } from "next/navigation"
 import useSWR, { mutate } from "swr"
 import { Button } from "@/components/ui/button"
@@ -300,16 +301,10 @@ function LicenseDetailsStep({
       if (error) throw error
 
       // agent-documents is DOCUMENT-CLASS: this is the agent's real-estate
-      // LICENSE. A getPublicUrl would mint a permanent, unauthenticated link to
-      // it and persist that onto the profile. Signed, and FAIL CLOSED — if no
-      // secure link can be minted the upload is reported as failed rather than
-      // downgraded to a public one.
-      const { data: signed, error: signErr } = await supabase.storage
-        .from("agent-documents")
-        .createSignedUrl(fileName, DOC_URL_TTL_SECONDS)
-      if (signErr || !signed?.signedUrl) throw signErr ?? new Error("No secure link could be created for the document")
-
-      setFormData(prev => ({ ...prev, documentUrl: signed.signedUrl }))
+      // LICENSE. Neither a public URL nor a long-lived signed URL may be
+      // persisted onto the profile — the row stores the object's REFERENCE, and
+      // every view mints a short link after a session check (app/api/documents/open).
+      setFormData(prev => ({ ...prev, documentUrl: toDocumentRef("agent-documents", fileName) }))
       toast.success("Document uploaded successfully")
     } catch (error) {
       console.error("Upload error:", error)
@@ -546,13 +541,8 @@ function EOInsuranceStep({
       if (error) throw error
 
       // Same class, same rule — an E&O insurance certificate is the agent's
-      // professional paperwork, not a marketing asset.
-      const { data: signed, error: signErr } = await supabase.storage
-        .from("agent-documents")
-        .createSignedUrl(fileName, DOC_URL_TTL_SECONDS)
-      if (signErr || !signed?.signedUrl) throw signErr ?? new Error("No secure link could be created for the certificate")
-
-      setFormData(prev => ({ ...prev, certificateUrl: signed.signedUrl }))
+      // professional paperwork, not a marketing asset: the row stores its reference.
+      setFormData(prev => ({ ...prev, certificateUrl: toDocumentRef("agent-documents", fileName) }))
       toast.success("Certificate uploaded successfully")
     } catch (error) {
       console.error("Upload error:", error)

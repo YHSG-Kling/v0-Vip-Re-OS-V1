@@ -22,7 +22,7 @@ Rows: **3190** — working **1595** · partial **1303** · missing **291** · ow
 | server_action (read-only, not rows) | 1173 |
 | capability (catalog-only, not callable — not rows) | 48 |
 | use-server modules scanned | 675 |
-| runtime files scanned | 5423 |
+| runtime files scanned | 5424 |
 
 | trigger kind | rows | working | partial | missing |
 |---|---|---|---|---|
@@ -44,8 +44,8 @@ Missing links across all rows: evidence 1158 · decision 327 · trigger 207 · w
 | contract step (A1) | existing component (live code) |
 |---|---|
 | OBSERVE (triggers) | `dispatchDueCrons` @ lib/kernel/cron-dispatch.ts:427 · `emitKernelEvent` @ lib/kernel/emit.ts:155 · `publishManagerSignal` @ lib/kernel/manager-signals.ts:71 · `runIngressReconciliation` @ lib/kernel/ingress-reconciliation.ts:288 |
-| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3451 · `authorityAllows` @ lib/voice/tool-registry.ts:870 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:62 |
-| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3436 · `requestDelegation` @ lib/kernel/manager-delegation.ts:399 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
+| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3452 · `authorityAllows` @ lib/voice/tool-registry.ts:870 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:62 |
+| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3437 · `requestDelegation` @ lib/kernel/manager-delegation.ts:399 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
 | CHECK AUTHORITY / POLICY / BUDGET | `isToolAllowedAtAuthority` @ lib/ai-isa/persona-tool-policy.ts:616 · `autonomyDecision` @ lib/managers/autonomy-gate.ts:91 · `approverFor` @ lib/kernel/approval-authority.ts:117 |
 | COORDINATE OR HOLD | `arbitratePlannedTouch` @ lib/ai-isa/followup-arbiter.ts:1857 · `evaluateApprovalSla` @ lib/kernel/approval-sla.ts:17 |
 | EXECUTE THROUGH ONE WRITER / EGRESS | `dispatchEmail` @ lib/providers/dispatch.ts:331 · `dispatchSms` @ lib/providers/dispatch.ts:332 · `callConnector` @ lib/agentic-os/connector-gateway.ts:246 |
@@ -915,7 +915,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/accounting-sync.ts#pushAccountingEntry` | partial | owner | unresolved: it writes only carriers / unstewarded tables (ac | session actor (auth.getUser @ app/actions/accounting-sync.ts:430) | app/actions/accounting-sync.ts:423 |
 | `server_action:app/actions/accounting-sync.ts#updateTaxCategory` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/accounting-sync.ts:534) | app/actions/accounting-sync.ts:525 |
 | `server_action:app/actions/admin/agent-profile.ts#updateAgentProfileAction` | partial | evidence | finance_manager | session actor (requireAdmin @ app/actions/admin/agent-profile.ts:313) | app/actions/admin/agent-profile.ts:310 |
-| `server_action:app/actions/admin/commission-agreement.ts#uploadCommissionAgreementFormAction` | partial | evidence | data_steward | session actor (requireAdmin @ app/actions/admin/commission-agreement.t | app/actions/admin/commission-agreement.ts:113 |
+| `server_action:app/actions/admin/commission-agreement.ts#uploadCommissionAgreementFormAction` | partial | evidence | data_steward | session actor (requireAdmin @ app/actions/admin/commission-agreement.t | app/actions/admin/commission-agreement.ts:114 |
 | `server_action:app/actions/admin/referral-earnings.ts#acknowledgeReferralPayoutAction` | partial | evidence | finance_manager | session actor (auth.getUser @ app/actions/admin/referral-earnings.ts:3 | app/actions/admin/referral-earnings.ts:63 |
 | `server_action:app/actions/ai-financial-management.ts#aiCategorizeExpense` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-financial-management.ts:76 |
 | `server_action:app/actions/ai-financial-management.ts#aiCreateBudget` | partial | evidence | finance_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-financial-management.ts:630 |
@@ -947,10 +947,10 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/cda-portal.ts#returnExternallySignedCdaAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-portal.ts:2449 |
 | `server_action:app/actions/cda-portal.ts#runSignatureCheckForCdaAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-portal.ts:1429 |
 | `server_action:app/actions/cda-portal.ts#uploadCdaCheckCopyAction` | missing | trigger, evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-portal.ts:2075 |
-| `server_action:app/actions/cda-template-field-actions.ts#generateFilledCdaPdfAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-template-field-actions.ts:231 |
+| `server_action:app/actions/cda-template-field-actions.ts#generateFilledCdaPdfAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-template-field-actions.ts:236 |
 | `server_action:app/actions/cda-template-field-actions.ts#saveCdaFieldInputsAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-template-field-actions.ts:82 |
-| `server_action:app/actions/cda-template-field-actions.ts#saveCdaTemplateFieldDefsAction` | partial | evidence | finance_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-template-field-actions.ts:184 |
-| `server_action:app/actions/commission-policy/agreements.ts#proposeAgreementTermsAction` | partial | evidence | finance_manager | session actor (createClient() from "@/lib/supabase/server" @ lib/agree | app/actions/commission-policy/agreements.ts:156 |
+| `server_action:app/actions/cda-template-field-actions.ts#saveCdaTemplateFieldDefsAction` | partial | evidence | finance_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-template-field-actions.ts:189 |
+| `server_action:app/actions/commission-policy/agreements.ts#proposeAgreementTermsAction` | partial | evidence | finance_manager | session actor (createClient() from "@/lib/supabase/server" @ lib/agree | app/actions/commission-policy/agreements.ts:157 |
 | `server_action:app/actions/commission-policy/closing-verification.ts#recordClosingAttestationAction` | partial | owner | unresolved: it writes only carriers / unstewarded tables (tr | session actor (createClient() from "@/lib/supabase/server" @ lib/agree | app/actions/commission-policy/closing-verification.ts:55 |
 | `server_action:app/actions/commission-policy/commission-policy.ts#withdrawAgentConcessionAction` | partial | evidence | finance_manager | session actor (createClient() from "@/lib/supabase/server" @ lib/agree | app/actions/commission-policy/commission-policy.ts:84 |
 | `server_action:app/actions/communications.ts#addContactNote` | missing | trigger | data_steward | session actor (getAgentContext @ app/actions/communications.ts:402) | app/actions/communications.ts:391 |
@@ -1024,8 +1024,8 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:voice_coaching_insight_ready` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `server_action:app/actions/academy-learning.ts#dismissLearningAssignmentAction` | partial | evidence | recruiting_manager | session actor (getAgentContext @ app/actions/academy-learning.ts:349) | app/actions/academy-learning.ts:346 |
 | `server_action:app/actions/admin/agent-360.ts#assignAcademyModuleAction` | partial | evidence | recruiting_manager | session actor (auth.getUser @ app/actions/admin/agent-360.ts:481) | app/actions/admin/agent-360.ts:497 |
-| `server_action:app/actions/admin/license-tracking.ts#createEducationModule` | partial | evidence | recruiting_manager | session actor (auth.getUser @ app/actions/admin/license-tracking.ts:35 | app/actions/admin/license-tracking.ts:467 |
-| `server_action:app/actions/admin/license-tracking.ts#deleteEducationModule` | partial | evidence | recruiting_manager | session actor (auth.getUser @ app/actions/admin/license-tracking.ts:35 | app/actions/admin/license-tracking.ts:500 |
+| `server_action:app/actions/admin/license-tracking.ts#createEducationModule` | partial | evidence | recruiting_manager | session actor (auth.getUser @ app/actions/admin/license-tracking.ts:36 | app/actions/admin/license-tracking.ts:468 |
+| `server_action:app/actions/admin/license-tracking.ts#deleteEducationModule` | partial | evidence | recruiting_manager | session actor (auth.getUser @ app/actions/admin/license-tracking.ts:36 | app/actions/admin/license-tracking.ts:501 |
 | `server_action:app/actions/admin/manager-evals.ts#completeRegionalConventionReview` | partial | owner | unresolved: it writes only carriers / unstewarded tables (au | session actor (getAgentContext @ app/actions/admin/manager-evals.ts:89 | app/actions/admin/manager-evals.ts:892 |
 | `server_action:app/actions/admin/manager-evals.ts#overrideDeliberationWinner` | partial | owner | unresolved: it writes only carriers / unstewarded tables (ma | session actor (getAgentContext @ app/actions/admin/manager-evals.ts:77 | app/actions/admin/manager-evals.ts:764 |
 | `server_action:app/actions/admin/staff-360.ts#assignAcademyModuleToStaffAction` | partial | evidence | recruiting_manager | session actor (auth.getUser @ app/actions/admin/staff-360.ts:162) | app/actions/admin/staff-360.ts:158 |

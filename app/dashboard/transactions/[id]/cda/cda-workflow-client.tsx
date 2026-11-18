@@ -345,7 +345,7 @@ export function CDAWorkflowClient({
         cdaId: cda.id,
         kind,
         fileName: file.name,
-        fileUrl: stored.signedUrl,
+        fileUrl: stored.ref,
       })
       if (!res?.success) {
         // The action refused; nothing references the file. Undo the upload.
@@ -454,7 +454,7 @@ export function CDAWorkflowClient({
       const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
       const stored = await putAndSign(supabase, { bucket: "transaction-documents", path, body: file, contentType: file.type || undefined, reason: "cda_signed_external_upload" })
       if (!stored.ok) { setExternalSignedError(`Upload failed: ${stored.error}`); return }
-      const res = await returnExternallySignedCdaAction({ cdaId: cda.id, fileName: file.name, fileUrl: stored.signedUrl })
+      const res = await returnExternallySignedCdaAction({ cdaId: cda.id, fileName: file.name, fileUrl: stored.ref })
       if (!res.success) {
         await removeOrRecordOrphan(supabase, { bucket: "transaction-documents", objectPath: stored.path, reason: "cda_signed_external_refused", detail: res.error ?? "the signed CDA return was refused" })
         setExternalSignedError(res.error ?? "Could not record the signed CDA.")
@@ -493,7 +493,7 @@ export function CDAWorkflowClient({
       const res = await uploadPreliminaryCdAction({
         transactionId:  transaction.id,
         fileName:       file.name,
-        fileUrl:        stored.signedUrl,
+        fileUrl:        stored.ref,
         uploadedByRole: prelimRole,
       })
       if (!res?.success) {

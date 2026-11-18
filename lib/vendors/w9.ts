@@ -38,6 +38,7 @@
  * (client passed in; dispatch imported dynamically).
  */
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   deriveW9Status,
@@ -63,7 +64,7 @@ function rowToRecord(row: any): VendorW9Record {
     businessType: (row?.business_type as W9BusinessType) ?? null,
     tinType: (row?.tin_type as W9TinType) ?? null,
     signatureDate: row?.signature_date ?? null,
-    documentUrl: row?.document_url ?? null,
+    documentUrl: documentOpenHref(row?.document_url),
     clientDocumentId: row?.client_document_id ?? null,
     vendorNameAtFiling: row?.vendor_name_at_filing ?? null,
     reminderLastSentAt: row?.reminder_last_sent_at ?? null,

@@ -12,6 +12,7 @@
  * than a second opinion computed a different way.
  */
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { documentClassificationLabel } from "@/lib/compliance/document-classifications"
@@ -93,7 +94,7 @@ export async function getListingDocumentsAction(listingId: string): Promise<List
     classificationLabel: documentClassificationLabel(d.classification),
     confidence: d.classification_confidence ?? null,
     summary: d.summary ?? null,
-    storageUrl: d.storage_url ?? null,
+    storageUrl: documentOpenHref(d.storage_url),
     scannedAt: d.scanned_at ?? null,
     scanError: d.scan_error ?? null,
     signatureCompleteness: d.signature_completeness ?? null,

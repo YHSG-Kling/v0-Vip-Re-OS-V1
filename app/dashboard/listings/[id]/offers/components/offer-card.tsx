@@ -1,5 +1,6 @@
 "use client"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -225,7 +226,7 @@ export function OfferCard({ offer, listPrice, canApprove, isPending, userId, onA
           <>
             <Separator className="my-3" />
             <a
-              href={offer.offer_document_url}
+              href={documentOpenHref(offer.offer_document_url) ?? undefined}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 text-sm text-primary hover:underline"

@@ -1067,7 +1067,7 @@ export async function exportReportCsv(
 // signed the export is refused rather than published.
 //
 // Does NOT write to generated_documents (non-existent table).
-// Stores the signed URL in ai_assistant_notes for audit trail.
+// Stores the object reference in ai_assistant_notes for audit trail; returns a 15-minute download link.
 export async function exportReportPdf(
   input: ExportReportPdfInput
 ): Promise<KernelReportingResult<ExportReportPdfOutput>> {
@@ -1088,7 +1088,9 @@ export async function exportReportPdf(
     if (upErr) return { success: false, error: `report upload failed: ${upErr.message}` }
 
     const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
-    const issued = await issueBucketObjectUrl(supabase as never, { bucket: "documents", objectPath })
+    // Wave 154 (lane 154M): the link RETURNED for this download lives 15 minutes (a deliberate save, the custody `download`
+    // purpose); the audit note and the event keep the object's REFERENCE, never a bearer link.
+    const issued = await issueBucketObjectUrl(supabase as never, { bucket: "documents", objectPath, ttlSeconds: 15 * 60 })
     if (!issued.ok) {
       // The bytes landed but no governed URL could be minted — undo the upload
       // rather than leave an unreferenced object behind, and refuse.
@@ -1102,20 +1104,22 @@ export async function exportReportPdf(
       return { success: false, error: issued.reason }
     }
     const reportUrl = issued.url
+    const { toDocumentRef } = await import("@/lib/storage/signed-doc-url")
+    const reportRef = toDocumentRef("documents", objectPath)
 
-    // Store the signed URL in ai_assistant_notes for audit trail
+    // Store the object REFERENCE in ai_assistant_notes for the audit trail (never the signed URL)
     await sentinelWrite(supabase, supabase.from("ai_assistant_notes").insert({
       brokerage_id: ctx.brokerageId, // NOT NULL
       created_by:   ctx.userId,      // NOT NULL (no agent_id column)
       entity_type:  "report",
       entity_id:    crypto.randomUUID(),
-      note_text:    JSON.stringify({ type: "pdf_export", url: reportUrl, title, reportType }), // was phantom note
+      note_text:    JSON.stringify({ type: "pdf_export", url: reportRef, title, reportType }), // was phantom note
       source:       "ai_assistant",
       created_at:   new Date().toISOString(),
     }).select(), { table: "ai_assistant_notes", flow: "ai_assistant_notes_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
     await emitEvent(supabase, ctx, KernelEvent.REPORT_EXPORTED_PDF, crypto.randomUUID(), {
-      reportType, blobUrl: reportUrl,
+      reportType, blobUrl: reportRef,
     })
 
     return { success: true, data: { pdfUrl: reportUrl, filename } }

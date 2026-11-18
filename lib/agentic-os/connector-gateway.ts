@@ -248,6 +248,18 @@ export async function callConnector<T = any>(original: GatewayRequest): Promise<
     const refusal = healthGateRefusal(original.connector, await loadProviderHealth(original.connector).catch(() => null))
     if (refusal) return { ok: false, status: null, data: null, headers: {}, drift: null, error: refusal } as GatewayResponse<T>
   }
+  // SIGN ON READ (wave 154, lane 154M): a row stores a private document as a `docref://` reference, never a link. A
+  // server-side consumer that hands one to the gateway (the AI offer extractor, the OCR reader, the e-sign adapters) gets
+  // it resolved HERE, at use time, to a signed URL that lives DOC_FETCH_TTL_SECONDS (2 min — the fetch happens now). A
+  // refused signer is a refusal with its reason; nothing falls back to a public link and the stored token of a legacy
+  // signed URL is never needed (lib/storage/signed-doc-url.ts resolveDocumentLink).
+  if (original.url && original.url.startsWith("docref://")) {
+    const { resolveDocumentLink, DOC_FETCH_TTL_SECONDS } = await import("@/lib/storage/signed-doc-url")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const link = await resolveDocumentLink(createServiceClient() as never, original.url, DOC_FETCH_TTL_SECONDS)
+    if (!link.ok) return { ok: false, status: null, data: null, headers: {}, drift: null, error: link.reason } as GatewayResponse<T>
+    original = { ...original, url: link.url }
+  }
   const req = await withAppliedAlternate(original)
   const attempt = async (): Promise<GatewayResponse<T>> => {
     const startedAt = Date.now()

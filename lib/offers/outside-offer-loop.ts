@@ -49,6 +49,7 @@
 import { createHash } from "node:crypto"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { normalizeMessageId } from "@/lib/inbound-mail/message-meta"
+import { parseDocumentRef } from "@/lib/storage/signed-doc-url"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -92,9 +93,15 @@ export function isEmailShape(raw: string | null | undefined): boolean {
   return EMAIL_SHAPE.test(normalizeEmail(raw))
 }
 
-/** PURE: the bucket and object path inside one of OUR signed storage URLs (…/object/sign/<bucket>/<path>?token=…), or null. */
+/**
+ * PURE: the bucket and object path a stored document value names, or null. A `docref://` reference or an old-style signed URL
+ * is read by THE ONE PARSER (lib/storage/signed-doc-url.ts parseDocumentRef — wave 154, lane 154M; its token is never kept);
+ * only the public object layout is read here.
+ */
 export function parseSignedStorageUrl(url: string | null | undefined): { bucket: string; path: string } | null {
-  const m = (url ?? "").match(/\/storage\/v1\/object\/(?:sign|authenticated|public)\/([^/?]+)\/([^?]+)/)
+  const ref = parseDocumentRef(url)
+  if (ref) return { bucket: ref.bucket, path: ref.path }
+  const m = (url ?? "").match(/\/storage\/v1\/object\/public\/([^/?]+)\/([^?]+)/)
   if (!m) return null
   try {
     return { bucket: decodeURIComponent(m[1]), path: decodeURIComponent(m[2]) }

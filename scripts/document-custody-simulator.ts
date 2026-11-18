@@ -33,6 +33,7 @@ import {
   DOCUMENT_BUCKET,
 } from "../lib/kernel/document-custody"
 import { DOC_CATEGORIES, type DocCategory } from "../lib/kernel/document-autofile"
+import { DOC_LINK_TTL_CEILING_SECONDS } from "../lib/storage/signed-doc-url"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -120,8 +121,11 @@ async function main() {
 
   check("ttl view = 5 min", signedUrlTtlFor("view") === 5 * 60)
   check("ttl download = 15 min", signedUrlTtlFor("download") === 15 * 60)
-  check("ttl share = 1 hour", signedUrlTtlFor("share") === 60 * 60)
-  check("ttl compliance_export = 24 hours", signedUrlTtlFor("compliance_export") === 24 * 60 * 60)
+  // RESTATED AS THE RULE (wave 154, lane 154M): share was pinned at 1 hour and compliance_export at 24 hours — waypoints. The
+  // rule is that no purpose exceeds the document signer's ceiling (lib/storage/signed-doc-url.ts DOC_LINK_TTL_CEILING_SECONDS)
+  // and the purposes stay escalating (asserted below).
+  check("every purpose's TTL is at or under the document signer's ceiling (share / compliance_export included)",
+    ["view","download","share","compliance_export","analysis"].every((p) => signedUrlTtlFor(p) <= DOC_LINK_TTL_CEILING_SECONDS) && signedUrlTtlFor("compliance_export") === DOC_LINK_TTL_CEILING_SECONDS)
   check("ttl analysis = 10 min", signedUrlTtlFor("analysis") === 10 * 60)
   check("view < download < share < compliance_export (escalating)",
     signedUrlTtlFor("view") < signedUrlTtlFor("download") &&

@@ -883,7 +883,11 @@ export async function composeAppraiserPacket(args: {
       /* the hosted PDF URL is still returned even if the ledger insert fails */
     }
 
-    return { ok: true, documentId, pdfUrl, checklist, compsTier: comps.tierLabel, error: null }
+    // Wave 154 (lane 154M): the row keeps the packet's docref:// reference; what the agent's task (and an appraiser, through a
+    // share grant minted at send time — purpose appraiser_packet) receives is the ONE door, never a stored link.
+    const { documentOpenUrl } = await import("@/lib/storage/signed-doc-url")
+    const { siteUrl } = await import("@/lib/platform/site-url")
+    return { ok: true, documentId, pdfUrl: documentOpenUrl(pdfUrl, siteUrl()) ?? pdfUrl, checklist, compsTier: comps.tierLabel, error: null }
   } catch (e) {
     return empty(e instanceof Error ? e.message : String(e))
   }

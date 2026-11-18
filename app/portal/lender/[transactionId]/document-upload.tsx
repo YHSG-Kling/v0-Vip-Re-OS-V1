@@ -88,7 +88,7 @@ export function LenderDocumentUpload({
             lenderId,
             documentType: selectedType,
             fileName: file.name,
-            fileUrl: stored.signedUrl,
+            fileUrl: stored.ref,
           })
         } catch (recordErr: any) {
           // Nothing references the file now — undo the upload before rethrowing

@@ -18,6 +18,7 @@
  * applied) is reported as `historyAvailable: false`, not as "no history".
  */
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
@@ -121,7 +122,7 @@ export async function listCommissionAgreementHistoryAction(): Promise<
     }))
     const signed = signedRows
       .filter((s) => s.agent_id === agentId && s.fully_signed_at)
-      .map((s) => ({ id: s.id, contractType: s.contract_type, fullyExecutedAt: s.fully_signed_at as string, documentUrl: s.document_url, teamId: s.team_id }))
+      .map((s) => ({ id: s.id, contractType: s.contract_type, fullyExecutedAt: s.fully_signed_at as string, documentUrl: documentOpenHref(s.document_url), teamId: s.team_id }))
     return { agentId, name: nameOf.get(agentId) ?? "Agent", versions, signed }
   }).sort((a, b) => a.name.localeCompare(b.name))
 

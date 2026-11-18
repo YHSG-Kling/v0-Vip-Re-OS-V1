@@ -8,6 +8,7 @@
  * Renders: summary header, net sheet, AI analysis, document panel, counter history.
  */
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState, useTransition } from "react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
@@ -472,7 +473,7 @@ export function OfferWorkspace({
           <div className="px-6 py-5">
             <OfferDocumentPanel
               offerId={offer.id}
-              documentUrl={offer.offer_document_url}
+              documentUrl={documentOpenHref(offer.offer_document_url)}
               documentName={offer.offer_document_name}
               aiExtractionStatus={offer.ai_extraction_status}
               esignStatus={offer.esign_status}

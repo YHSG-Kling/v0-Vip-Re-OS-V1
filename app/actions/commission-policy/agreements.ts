@@ -11,6 +11,7 @@
  * lib/agreements/referral-agreements.ts are the rules and writers.
  */
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { revalidatePath } from "next/cache"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { resolveSessionActor } from "@/lib/agreements/session-actor"
@@ -90,7 +91,7 @@ export async function listAgentAgreementGovernanceAction(): Promise<ActionResult
         const src = validateStartDateSource({ id: String(a.id), brokerage_id: (a.brokerage_id as string | null) ?? null }, r)
         return {
           id: r.id, contractType: r.contract_type, esignStatus: r.esign_status, fullySignedAt: r.fully_signed_at ?? null, effectiveDate: r.effective_date ?? null,
-          effectiveDateRecordedAt: r.effective_date_recorded_at ?? null, amends: r.amends_contract_signature_id ?? null, documentUrl: r.document_url ?? null,
+          effectiveDateRecordedAt: r.effective_date_recorded_at ?? null, amends: r.amends_contract_signature_id ?? null, documentUrl: documentOpenHref(r.document_url),
           startDateIfSource: src.ok ? src.startDate : null, startDateRefusal: src.ok ? null : src.error,
         }
       }),

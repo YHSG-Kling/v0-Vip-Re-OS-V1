@@ -5,6 +5,7 @@
 // This module handles certification eligibility checks, awarding certifications,
 // and completing onboarding when all required certifications are earned.
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -562,7 +563,7 @@ export async function getCertificationStatus(
       awarded: !!cert,
       issuedAt: cert?.issued_at,
       certId: cert?.id,
-      certificateUrl: cert?.certificate_url,
+      certificateUrl: documentOpenHref(cert?.certificate_url) ?? undefined,
     }
   })
 

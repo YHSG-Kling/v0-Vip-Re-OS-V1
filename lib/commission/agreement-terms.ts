@@ -46,6 +46,7 @@
 // version's terms) — `governance` — and the engine HOLDS a FINAL when the executed paper states a term that disagrees with the
 // stored one (lib/commission/engine.ts): a stated contradiction is never posted as money.
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import type { createServiceClient } from "@/lib/supabase/service"
 import { agreementInForce, type AgentAgreementRow } from "@/lib/agreements/agent-agreements"
 
@@ -195,7 +196,7 @@ function signedAgreementAsOf(
   if (!pick) return null
   const r = pick.row as AgentAgreementRow
   return {
-    id: r.id, fullyExecutedAt: String(r.fully_signed_at), documentUrl: r.document_url ?? null, fieldValues: r.field_values,
+    id: r.id, fullyExecutedAt: String(r.fully_signed_at), documentUrl: documentOpenHref(r.document_url), fieldValues: r.field_values,
     effectiveDate: pick.basis === "effective_date" ? pick.from : null, amends: r.amends_contract_signature_id ?? null, findings: pick.findings,
   }
 }

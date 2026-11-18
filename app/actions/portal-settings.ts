@@ -181,7 +181,7 @@ export async function uploadProfilePhoto(
     if (!stored.ok) {
       return { success: false, error: stored.error }
     }
-    const avatarUrl = stored.signedUrl
+    const avatarUrl = stored.ref
 
     // Update contact with new avatar URL
     const { error: updateError } = await supabase
@@ -207,7 +207,9 @@ export async function uploadProfilePhoto(
     revalidatePath(`/portal/${contactId}`)
     revalidatePath(`/portal/${contactId}/settings`)
 
-    return { success: true, url: avatarUrl }
+    // Wave 154 (lane 154M): the row stores the photo's reference; the page gets the session-gated open door.
+    const { documentOpenHref } = await import("@/lib/storage/signed-doc-url")
+    return { success: true, url: documentOpenHref(avatarUrl) ?? undefined }
   } catch (error) {
     console.error("Error uploading profile photo:", error)
     return { success: false, error: "Failed to upload photo" }

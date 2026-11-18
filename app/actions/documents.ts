@@ -396,7 +396,7 @@ export async function uploadDocument(
     // "nothing was saved" is TRUE.
     return systemFailure("storage", `Failed to store document: ${stored.error ?? stored.stage}`)
   } else {
-    publicUrl = stored.signedUrl
+    publicUrl = stored.ref
     storedObjectPath = stored.path
   }
 

@@ -1,3 +1,4 @@
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { Suspense } from "react"
@@ -148,7 +149,8 @@ export default async function VendorsPage({
       .eq("document_type", "vendor_deliverable")
       .order("created_at", { ascending: false })
       .limit(100)
-      .then(r => r.data || []),
+      // Wave 154 (lane 154M): file_url aliases a stored docref:// reference — handed to the page as the ONE door.
+      .then(r => (r.data || []).map((d: any) => ({ ...d, file_url: documentOpenHref(d.file_url) }))),
     // Premium placement charges live in the vendor_invoices ledger; the paid
     // flags themselves are on the vendor row read above.
     // See lib/vendors/premium-placement.ts.

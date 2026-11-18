@@ -1,3 +1,4 @@
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
@@ -364,7 +365,7 @@ export default async function AgentFinancialsPage() {
     category: e.category || "Uncategorized",
     amount: e.amount || 0,
     description: e.description || "",
-    receipt_url: e.receipt_url,
+    receipt_url: documentOpenHref(e.receipt_url) ?? undefined,
     date: e.expense_date,
   }))
 

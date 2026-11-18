@@ -21,6 +21,8 @@
 //   signed: https://<proj>.supabase.co/storage/v1/object/sign/<bucket>/<key>?token=…
 // A signed URL's `?token=` is stripped: it is a capability, not part of the key.
 
+import { parseDocumentRef } from "./signed-doc-url"
+
 export type ParsedStorageObject = { bucket: string; objectPath: string }
 
 /**
@@ -32,6 +34,10 @@ export type ParsedStorageObject = { bucket: string; objectPath: string }
  */
 export function parseStorageObjectUrl(url: string | null | undefined): ParsedStorageObject | null {
   if (!url || typeof url !== "string") return null
+  // Wave 154 (lane 154M): a row now stores a private object as a `docref://` reference. THE ONE PARSER for that spelling is
+  // lib/storage/signed-doc-url.ts parseDocumentRef; this function delegates to it and keeps reading the URL layouts below.
+  const ref = parseDocumentRef(url)
+  if (ref && !ref.legacy) return { bucket: ref.bucket, objectPath: ref.path }
 
   let parsed: URL
   try {

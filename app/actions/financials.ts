@@ -782,8 +782,8 @@ export async function attachExpenseReceipt(input: {
     buffer,
     contentType: mimeType,
     public: false,
-    // A receipt is referenced from the P&L export for a whole tax year.
-    signedTtlSeconds: 60 * 60 * 24 * 365,
+    // A receipt is referenced from the P&L export for a whole tax year, so the row keeps its REFERENCE (no signedTtlSeconds →
+    // docref://) and every view goes through the session-gated door (wave 154, lane 154M). It was a one-year signed link.
   })
   if (!upload.ok) return { success: false, error: upload.error }
 

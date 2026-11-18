@@ -16,6 +16,8 @@ import { WAVE153K_DISPOSITIONS } from "./open-loop-ledger-dispositions-153k"
 import { WAVE153L_DISPOSITIONS } from "./open-loop-ledger-dispositions-153l"
 // Wave 154 (lane 154K, directive K2): the 106 launch-critical carried rows re-read at 055167e9; spread LAST so it wins.
 import { WAVE154K_DISPOSITIONS } from "./open-loop-ledger-dispositions-154k"
+// Wave 154 (lane 154M): sign-on-read for private documents closes 146A-SO-02 / 146Z-NC-02; spread LAST so it wins.
+import { WAVE154M_DISPOSITIONS } from "./open-loop-ledger-dispositions-154m"
 
 const Z147 = "wave 147 convergence (lane 147Z closure table)"
 const I147 = "wave 147 integrator (WIP 14) / lane 147I"
@@ -196,4 +198,5 @@ export const MANUAL_DISPOSITIONS: Record<string, Disposition> = {
   ...WAVE153K_DISPOSITIONS,
   ...WAVE153L_DISPOSITIONS,
   ...WAVE154K_DISPOSITIONS,
+  ...WAVE154M_DISPOSITIONS,
 }

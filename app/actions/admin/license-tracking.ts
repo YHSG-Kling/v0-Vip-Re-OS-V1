@@ -1,5 +1,6 @@
 "use server"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -210,7 +211,7 @@ export async function getBrokerageAgentLicenseStatuses(
       ceHoursRequired: Number(agentRow?.ce_hours_required ?? 0),
       verificationStatus,
       verifiedAt: license?.verified_at ?? null,
-      eoCertificateUrl: license?.eo_certificate_url ?? null,
+      eoCertificateUrl: documentOpenHref(license?.eo_certificate_url),
       eoCoverageAmount: license?.eo_coverage_amount !== null && license?.eo_coverage_amount !== undefined
         ? Number(license.eo_coverage_amount) : null,
       needsManualReview: licenseNeedsManualReview(verificationStatus, !!license?.license_number),
@@ -430,7 +431,7 @@ export async function listCeCompletions(agentId: string): Promise<Array<{
     category: c.category,
     hours: Number(c.hours ?? 0),
     completedOn: c.completed_on,
-    certificateUrl: c.certificate_url,
+    certificateUrl: documentOpenHref(c.certificate_url),
     notes: c.notes ?? null,
   }))
 }

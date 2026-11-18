@@ -117,7 +117,7 @@ export async function uploadVendorW9Action(input: UploadVendorW9Input): Promise<
   if (!stored.ok) {
     return { success: false, error: `Upload failed: ${stored.error}` }
   }
-  const documentUrl = stored.signedUrl
+  const documentUrl = stored.ref
 
   // The client_documents row — same table the vendor documents surface already
   // reads (fetchVendorAgreements matches uploaded_by = vendor user).

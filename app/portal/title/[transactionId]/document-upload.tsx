@@ -132,7 +132,7 @@ export function TitleDocumentUpload({
             titleUserId,
             documentType: selectedType,
             fileName: file.name,
-            fileUrl: stored.signedUrl,
+            fileUrl: stored.ref,
           })
         } catch (recordErr: any) {
           // The gate inside uploadTitleDocument (title company assigned to this

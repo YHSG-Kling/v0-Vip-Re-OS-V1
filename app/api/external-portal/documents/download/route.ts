@@ -182,13 +182,24 @@ export async function GET(request: NextRequest) {
       )
     }
 
+    // Wave 154 (lane 154M): storage_url stores a `docref://` reference, never a link. The partner lane above is the access
+    // decision for this download, so the response carries a link minted NOW for the custody `view` lifetime (5 minutes,
+    // lib/storage/signed-doc-url.ts DOC_VIEW_TTL_SECONDS). A refused signer is a 503, never a public fallback.
+    const { resolveDocumentLink, DOC_VIEW_TTL_SECONDS } = await import("@/lib/storage/signed-doc-url")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const link = await resolveDocumentLink(createServiceClient() as never, document.storage_url, DOC_VIEW_TTL_SECONDS)
+    if (!link.ok) {
+      console.error("[external-portal] no download link could be minted:", link.reason)
+      return NextResponse.json({ success: false, error: "The document can't be opened right now. Please try again shortly." }, { status: 503 })
+    }
+
     return NextResponse.json({
       success: true,
       partnerType: grantedVia,
       document: {
         id: document.id,
         name: document.document_type,
-        fileUrl: document.storage_url,
+        fileUrl: link.url,
         downloadedAt: new Date().toISOString(),
       },
     })

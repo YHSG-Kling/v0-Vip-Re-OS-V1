@@ -7,6 +7,7 @@
 // Strictly kernel OS: no direct DB calls here. All data passed from RSC page.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { useState, useEffect } from "react"
 import { providerPortalMode, DEFAULT_ESIGN_PROVIDER, PROVIDER_PORTAL_URLS, getCatalogEntry } from "@/lib/integrations/providers/catalog"
 import {
@@ -258,7 +259,7 @@ export function FormsLibraryClient({
       status:        e.esign_status,
       sentAt:        e.sent_at,
       completedAt:   e.fully_signed_at,
-      documentUrl:   e.document_url,
+      documentUrl:   documentOpenHref(e.document_url),
       source:        "contract_signatures" as const,
     })),
     ...listingAgreements
@@ -282,7 +283,7 @@ export function FormsLibraryClient({
         // manual path — execution-engine.ts:876 writes document_url ONLY when
         // upload_mode is 'manual_upload' and provider_ref (not a URL) otherwise —
         // so the link is offered exactly where there is one to offer.
-        documentUrl: a.upload_mode === "manual_upload" ? a.document_url : null,
+        documentUrl: a.upload_mode === "manual_upload" ? documentOpenHref(a.document_url) : null,
         source:      "listing_agreements" as const,
       })),
   ].sort((a, b) => {

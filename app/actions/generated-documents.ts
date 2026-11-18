@@ -19,6 +19,7 @@
  */
 
 import { resolveActingContext } from "@/lib/platform/acting-context"
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 
 export interface GeneratedDocumentRow {
   id: string
@@ -44,14 +45,13 @@ export interface GeneratedDocumentRow {
    * so the one issuer (lib/storage/document-buckets.ts#issueBucketObjectUrl)
    * SIGNS the URL instead of publishing it.
    *
-   * NOTHING CHANGES FOR THIS READER: a signed URL is still a URL an anchor can
-   * open, and it is minted at DOC_URL_TTL_SECONDS precisely because rows persist
-   * it (lib/storage/signed-doc-url.ts documents that bridge). The correct
-   * end-state is sign-on-read, and the object key is already on the row —
-   * generated_documents.blob_id — so that refactor has what it needs; it is not
-   * done here because it would change this action's contract, not just its
-   * bucket. The governed-URL custody wrapper (issueGovernedDocumentUrl /
-   * document-custody) still serves `client_documents` rows, not this table.
+   * SIGN ON READ (wave 154, lane 154M): blob_url now stores the PDF's `docref://`
+   * reference, never a link. This mapper is the reader's choke point: it hands the
+   * anchor the session-gated open door (lib/storage/signed-doc-url.ts
+   * documentOpenHref → app/api/documents/open), which mints a five-minute link per
+   * click after checking the seat. An older public or signed value passes through
+   * the same helper (a legacy signed URL is re-routed through the door, its token
+   * dropped).
    */
   blobUrl: string | null
 }
@@ -123,7 +123,7 @@ export async function getGeneratedDocumentLibrary(): Promise<{
     contactName: d.contact_id ? contactMap.get(d.contact_id) ?? null : null,
     listingId: d.listing_id ?? null,
     listingAddress: d.listing_id ? listingMap.get(d.listing_id) ?? null : null,
-    blobUrl: d.blob_url ?? null,
+    blobUrl: documentOpenHref(d.blob_url),
   }))
 
   return { success: true, documents }

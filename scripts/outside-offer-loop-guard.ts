@@ -30,6 +30,7 @@
  */
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
+import { pathToFileURL } from "node:url"
 import { registerHooks } from "node:module"
 import { stripComments } from "./strip-comments"
 import { memSupabase } from "./in-memory-supabase"
@@ -47,6 +48,8 @@ const code = (p: string) => stripComments(read(p))
 const tokenOf = (offerId: string) => `[ref:offer:${offerId}]`
 
 // ── THE WORLD: server-only stubbed; every vendor / session / survivor the loop reaches replaced by a recorder ──────────────────
+// Wave 154 (lane 154M): the outbound grant is sealed by lib/security/secret-crypto.ts — a TEST-ONLY key, in this process only.
+process.env.SECRETS_ENCRYPTION_KEY = process.env.SECRETS_ENCRYPTION_KEY || "outside-offer-loop-guard-test-key"
 const G = globalThis as any
 G.__143A = {
   db: null as any,
@@ -62,8 +65,9 @@ const STUBS: Record<string, string> = {
   "@/lib/auth/require-caller": "export const requireCaller = async () => globalThis.__143A.caller",
   "@/lib/events/lifecycle-event-core": "export const recordLifecycleEvent = async (svc, brokerageId, input) => { globalThis.__143A.events.push({ brokerageId, input }); return { ok: true, eventId: 'e' + globalThis.__143A.events.length, deduped: false } }",
   "@/lib/providers/dispatch": "export const dispatchEmail = async (p) => { globalThis.__143A.dispatched.push(p); const n = globalThis.__143A.dispatched.length; const r = globalThis.__143A.dispatchResult; return r.messageId && n > 1 ? { ...r, messageId: r.messageId.replace('@', '-' + n + '@') } : r }",
-  "@/lib/storage/signed-doc-url": "export const signedDocUrl = async (c, bucket, path, ttl) => 'https://signed.example/' + bucket + '/' + path + '?ttl=' + ttl",
-  "@/lib/storage/put-and-sign": "export const putAndSign = async (c, p) => ({ ok: true, signedUrl: 'https://x.supabase.co/storage/v1/object/sign/' + p.bucket + '/' + p.path + '?token=t', path: p.path }); export const removeOrRecordOrphan = async () => ({ orphanRemoved: true })",
+  // Wave 154 (lane 154M): the signer is still a recorder; THE ONE PARSER (parseDocumentRef) is the real module's, re-exported.
+  "@/lib/storage/signed-doc-url": `export const signedDocUrl = async (c, bucket, path, ttl) => 'https://signed.example/' + bucket + '/' + path + '?ttl=' + ttl; export { parseDocumentRef, toDocumentRef, documentOpenHref, DOC_LINK_TTL_CEILING_SECONDS, SHARE_GRANT_PURPOSES, mintDocumentShareGrant, documentShareUrl } from ${JSON.stringify(pathToFileURL(join(ROOT, "lib/storage/signed-doc-url.ts")).href)}`,
+  "@/lib/storage/put-and-sign": "export const putAndSign = async (c, p) => ({ ok: true, ref: 'docref://' + p.bucket + '/' + p.path, path: p.path }); export const removeOrRecordOrphan = async () => ({ orphanRemoved: true })",
   "@/lib/documents/upload-document": "export const uploadDocument = async (p) => { const id = 'doc-' + (globalThis.__143A.uploads.length + 1); globalThis.__143A.uploads.push({ id, ...p }); globalThis.__143A.db.tables.documents.push({ id, brokerage_id: p.brokerageId, storage_url: p.storageUrl, metadata: { file_name: p.fileName, linked_offer_id: p.offerId ?? null, ...(p.metadata ?? {}) }, signature_completeness: null }); return { success: true, documentId: id } }",
   "@/lib/property/rentcast": "export const searchRentcastSaleListings = async () => globalThis.__143A.mls.ok ? { success: true, listings: globalThis.__143A.mls.agentEmails.map((e) => ({ listingAgent: { email: e }, listingOffice: null, mlsNumber: 'M1' })) } : { success: false, listings: [], error: globalThis.__143A.mls.reason }",
   "@/lib/kernel/offers": "export const issueCounterOffer = async (p, client) => { const parent = globalThis.__143A.db.tables.offers.find((o) => o.id === p.offerId); const id = globalThis.crypto.randomUUID(); const row = { id, brokerage_id: p.brokerageId, parent_offer_id: p.offerId, offer_type: 'counter', current_round: (parent.current_round ?? 1) + 1, status: 'submitted', listing_id: null, agent_id: parent.agent_id, contact_id: parent.contact_id, property_address: parent.property_address, offer_price: p.counterPrice ?? parent.offer_price, created_at: new Date(2026, 0, 10 + globalThis.__143A.issued.length).toISOString() }; globalThis.__143A.db.tables.offers.push(row); globalThis.__143A.issued.push({ ...p, id }); return { success: true, data: { counterId: id, round: row.current_round } } }",
@@ -333,9 +337,9 @@ async function sectionsBtoE(L: any, T: any, R: any, M: any) {
   const out = G.__143A.dispatched[0]
   const outRow = dbC.tables.outside_offer_messages.find((r: any) => r.direction === "outbound")
   const rootC = (): any => dbC.tables.offers.find((o: any) => o.id === OFFER)
-  check("SEND (offer packet): matched to the MLS-published agent → ONE governed email, human-approved, from the agent's own mailbox, the reference token in the subject, the document as an EXPIRING secure link (7 days) — never a stored ten-year URL",
+  check("SEND (offer packet): matched to the MLS-published agent → ONE governed email, human-approved, from the agent's own mailbox, the reference token in the subject, the document as the ONE door with a sealed share grant (outside_offer_packet, 7 days; each click mints a 5-minute link — wave 154, lane 154M) — never a storage link, never a stored URL",
     s1.success && s1.verifiedBy === "mls_published" && G.__143A.dispatched.length === 1 && out.to === LA_EMAIL && out.humanApproved === true && out.sendAsAgentUserId === U_AGENT && out.channelPurpose === "transactional"
-    && out.subject.includes(tokenOf(OFFER)) && /ttl=604800/.test(out.text) && !/token=t/.test(out.text) && out.ledger.reasonCode === "HUMAN_REQUESTED", JSON.stringify(s1))
+    && out.subject.includes(tokenOf(OFFER)) && /\/api\/documents\/open\?ref=docref%3A%2F%2F[^&\s]+&g=enc%3Av1%3A/.test(out.text) && !/[?&]ttl=/.test(out.text) && !/token=t/.test(out.text) && /valid 7 days/.test(out.text) && out.ledger.reasonCode === "HUMAN_REQUESTED", JSON.stringify(s1))
   check("…and it is LEDGERED (kind, how the recipient was verified, who approved, the Message-ID the thread match will look up) and the reply WATCH is armed on the root (merged, with the verified counterparty)",
     outRow?.kind === "offer_packet" && outRow.recipient_verification === "mls_published" && outRow.approved_by === U_AGENT && outRow.status === "sent" && outRow.message_key === "mid:out-1@mail.example" && outRow.document_ids.join() === "90000001-0000-4000-8000-000000000001"
     && rootC().metadata.outside_loop.counterparty.verified_by === "mls_published" && rootC().metadata.outside_listing_agent_email === LA_EMAIL && !!rootC().metadata.outbound_watch_armed_at)
@@ -403,7 +407,7 @@ async function sectionsBtoE(L: any, T: any, R: any, M: any) {
     && /issued by the seller/.test(sSellerSide.error ?? "") && /newest round/.test(sOld.error ?? "") && G.__143A.dispatched.length === dispatchedBefore)
   const sCb = await A.sendOutsideOffer({ offerId: cb.counterOfferId, documentIds: ["90000003-0000-4000-8000-000000000003"], recipientEmail: LA_EMAIL, confirmRecipient: true })
   const cbMail = G.__143A.dispatched[G.__143A.dispatched.length - 1]
-  check("…and the buyer-signed counter-back document alone goes out: one email whose subject names the round, whose body says it contains only the counter, with one link", sCb.success && /Counter-offer \(round 3\)/.test(cbMail.subject) && /only the counter-offer/i.test(cbMail.text) && (cbMail.text.match(/https:\/\/signed\.example/g) ?? []).length === 1)
+  check("…and the buyer-signed counter-back document alone goes out: one email whose subject names the round, whose body says it contains only the counter, with one link", sCb.success && /Counter-offer \(round 3\)/.test(cbMail.subject) && /only the counter-offer/i.test(cbMail.text) && (cbMail.text.match(/\/api\/documents\/open\?ref=docref%3A%2F%2F[^&\s]+&g=enc%3Av1%3A/g) ?? []).length === 1)
 
   // confirm: a person turns a reading into a recorded response
   const msgs: any[] = dbC.tables.outside_offer_messages
@@ -643,8 +647,8 @@ async function sectionsBtoE(L: any, T: any, R: any, M: any) {
     /pickOutsideTarget\(/.test(intake) && /verifyOutsideSender\(/.test(intake) && intake.indexOf("claimInboundMessage(") < intake.indexOf("fileInboundPdfs(svc, {\n        brokerageId: input.brokerageId, listingId: root") && !/recordSellerResponse|recordSellerSignedCounter|createTransaction|acceptOffer\(/.test(intake) && /recordSellerResponse/.test(act))
   check("THE AI IS A READER: the reply reader touches no table (POSITIVE CONTROL: the ledger module has `.from(`), writes nothing, goes through the platform's one AI entry point, treats the email as untrusted data, and its terms are filtered to the one vocabulary",
     !/\.from\(/.test(reader) && /\.from\(/.test(loop) && /generateAIResponse/.test(reader) && /UNTRUSTED DATA/.test(reader) && /GOVERNING_TERM_KEYS/.test(reader) && !/createServiceClient|supabase/.test(reader))
-  check("THE DOORS: every export of the 'use server' file is async (it is a public endpoint); the tenant is the SESSION's (requireCaller) and every statement is pinned to it; the egress is the ONE governed dispatchEmail, human-approved; documents travel as short-lived signed links; nothing here spells a signed state",
-    !/export (?!async function|interface|type)/.test(act) && /requireCaller\(\)/.test(act) && (act.match(/requireCaller\(\)/g) ?? []).length === 5 && /\.eq\("brokerage_id", caller\.brokerageId\)/.test(act) && /dispatchEmail\(/.test(act) && /humanApproved:\s*true/.test(act) && /signedDocUrl\(/.test(act)
+  check("THE DOORS: every export of the 'use server' file is async (it is a public endpoint); the tenant is the SESSION's (requireCaller) and every statement is pinned to it; the egress is the ONE governed dispatchEmail, human-approved; documents travel as the ONE door with a sealed share grant (wave 154, lane 154M — each click mints a 5-minute link); nothing here spells a signed state",
+    !/export (?!async function|interface|type)/.test(act) && /requireCaller\(\)/.test(act) && (act.match(/requireCaller\(\)/g) ?? []).length === 5 && /\.eq\("brokerage_id", caller\.brokerageId\)/.test(act) && /dispatchEmail\(/.test(act) && /humanApproved:\s*true/.test(act) && /mintDocumentShareGrant\(/.test(act) && /documentShareUrl\(/.test(act) && !/signedDocUrl\(/.test(act)
     && !/body\.brokerageId|params\.brokerageId/.test(act) && !/fully_executed|esign_status\s*:|signed_at\s*:/.test(act))
   check("THE PROMOTION FREEZES THE TERMS: the kernel creator, submit-to-compliance and convert-to-transaction each call freezeExecutedTermsAfterPromotion once the transaction exists; the reader and the writer are the only door to the record (POSITIVE CONTROL: the finder sees the table in governing-terms)",
     [code("lib/kernel/transactions.ts"), code("app/actions/buyer-offer/submit-to-compliance.ts"), code("app/actions/buyer-offer/convert-to-transaction.ts")].every((s) => /freezeExecutedTermsAfterPromotion\(/.test(s)) && /contract_term_versions/.test(terms)

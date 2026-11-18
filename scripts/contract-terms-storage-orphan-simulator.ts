@@ -166,15 +166,18 @@ function makeStorageStub(opts: StubOpts) {
   const ok = await putAndSign(happy.client as never, {
     bucket: "offer-documents", path: "b/l/contract.pdf", body: Buffer.from("x"),
   })
-  check("the ordinary path returns a usable URL and removes nothing",
-    ok.ok === true && happy.calls.removed.length === 0 && happy.calls.worklist.length === 0)
+  check("the ordinary path returns a storable reference (no link minted) and removes nothing",
+    ok.ok === true && ok.ref.startsWith("docref://offer-documents/") && happy.calls.signed === 0 && happy.calls.removed.length === 0 && happy.calls.worklist.length === 0)
 
+  // RESTATED (wave 154, lane 154M): putAndSign no longer MINTS a link — its second step forms the object's docref:// reference
+  // (lib/storage/signed-doc-url.ts toDocumentRef). The failing second step is therefore an object path that cannot form a
+  // reference (a `..` segment), not a signer outage; every compensation assertion below is unchanged.
   const signFails = makeStorageStub({ signFails: true })
   const bad = await putAndSign(signFails.client as never, {
-    bucket: "offer-documents", path: "b/l/contract.pdf", body: Buffer.from("x"),
+    bucket: "offer-documents", path: "b/l/../contract.pdf", body: Buffer.from("x"),
   })
   check("a failed URL UNDOES the upload — the bucket is left as it was found",
-    bad.ok === false && signFails.calls.removed.includes("b/l/contract.pdf"),
+    bad.ok === false && signFails.calls.removed.includes("b/l/../contract.pdf"),
     "this is the whole defect: eleven call sites returned here with the bytes still in the bucket")
   check("…and nothing is written to the worklist, because nothing was orphaned",
     signFails.calls.worklist.length === 0,
@@ -184,18 +187,18 @@ function makeStorageStub(opts: StubOpts) {
 
   const undoFails = makeStorageStub({ signFails: true, removeFails: true })
   const stuck = await putAndSign(undoFails.client as never, {
-    bucket: "offer-documents", path: "b/l/stuck.pdf", body: Buffer.from("x"), brokerageId: "brok-1",
+    bucket: "offer-documents", path: "b/l/../stuck.pdf", body: Buffer.from("x"), brokerageId: "brok-1",
   })
   check("when the UNDO is also refused, the object is recorded as a genuine orphan",
     stuck.ok === false && stuck.orphanRecorded === true && undoFails.calls.worklist.length === 1)
   check("…and the row names the bucket, the path and a tenant to attribute it to",
     undoFails.calls.worklist[0]?.bucket === "offer-documents"
-    && undoFails.calls.worklist[0]?.object_path === "b/l/stuck.pdf"
+    && undoFails.calls.worklist[0]?.object_path === "b/l/../stuck.pdf"
     && undoFails.calls.worklist[0]?.brokerage_id === "brok-1")
 
   const blind = makeStorageStub({ signFails: true, removeFails: true, insertFails: true })
   const invisible = await putAndSign(blind.client as never, {
-    bucket: "offer-documents", path: "b/l/invisible.pdf", body: Buffer.from("x"),
+    bucket: "offer-documents", path: "b/l/../invisible.pdf", body: Buffer.from("x"),
   })
   check("and when even the worklist write is refused, that is REPORTED, not swallowed",
     invisible.ok === false && invisible.orphanRecorded === false && invisible.orphanUnrecordedReason === "worklist write denied",

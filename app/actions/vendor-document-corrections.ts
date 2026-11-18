@@ -43,7 +43,7 @@ async function storeCorrectionFile(brokerageId: string, transactionId: string, f
   const { putAndSign } = await import("@/lib/storage/put-and-sign")
   const stored = await putAndSign(createServiceClient() as never, { bucket: "transaction-documents", path, body: bytes, contentType, brokerageId, reason: "issuer_document_correction" })
   if (!stored.ok) return { ok: false, error: "The file couldn't be stored, so nothing was filed. Try again shortly." }
-  return { ok: true, storageUrl: stored.signedUrl, path: stored.path, sha256: createHash("sha256").update(bytes).digest("hex"), name }
+  return { ok: true, storageUrl: stored.ref, path: stored.path, sha256: createHash("sha256").update(bytes).digest("hex"), name }
 }
 
 /** A refusal the person reads, through THE PRESENTER (153D-8, wave 153 lane 153Q). A raw database / ledger detail is LOGGED with a
