@@ -163,6 +163,9 @@ function seed() {
   }
   // award_agent_points (m484) stand-in: increments nothing we read; writes the ledger row the once-check reads.
   ;(m as any).rpc = async (fn: string, args: Record<string, unknown>) => {
+    // Wave 154 (154E): a PRE-m968 database — award_agent_points_once absent (PGRST202), so awardAgentPointsOnce takes its
+    // read-then-write fallback and this guard keeps proving the once-per-node-per-year rule it was written for.
+    if (fn === "award_agent_points_once") return { data: null, error: { message: "Could not find the function public.award_agent_points_once", code: "PGRST202" } as any }
     if (fn !== "award_agent_points") return { data: null, error: { message: `unknown rpc ${fn}` } }
     const agent = m.tables.agents.find((a) => a.id === args.p_agent_id)
     if (!agent) return { data: null, error: { message: "no agent" } }

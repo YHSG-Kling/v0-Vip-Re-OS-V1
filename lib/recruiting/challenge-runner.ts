@@ -88,11 +88,13 @@ export async function runChallengeScoring(svc: Svc, params: { brokerageId: strin
         // moved the leaderboard and left agents.gamification_points behind — so a
         // challenge winner's prize counted on the board and never toward their tier
         // or their badges.
-        const { awardAgentPoints } = await import("@/lib/gamification/award-points")
+        // WAVE 154 (154E): ONCE per (winner, challenge). The plain award re-paid every winner whenever the "ended" stamp
+        // below failed ("may finalize again") or two cron workers finalized the same challenge together.
+        const { awardAgentPointsOnce } = await import("@/lib/gamification/award-points")
         for (const w of winners) {
-          const awarded = await awardAgentPoints(svc, {
+          const awarded = await awardAgentPointsOnce(svc, {
             agentId: w.agentId, points: c.prize_points, reason: "CHALLENGE_PRIZE",
-            referenceType: "challenge", referenceId: c.id,
+            referenceType: "challenge", referenceId: c.id, once: { referenceId: c.id },
           })
           if (!awarded.ok) console.error(`[challenge-runner] prize not awarded for challenge ${c.id}: ${awarded.error}`)
         }

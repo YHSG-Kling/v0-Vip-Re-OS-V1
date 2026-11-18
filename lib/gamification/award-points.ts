@@ -36,6 +36,8 @@
 // The enum only (pure string constants) — this module stays importable without a
 // server runtime; the kernel emitter is lazy-imported where a badge is written.
 import { KernelEvent } from "@/lib/kernel/events"
+// Pure data (type-only import back into this module — no runtime cycle).
+import { AWARD_CENSUS } from "./award-census"
 
 /**
  * Canonical point values. Lives here, not in a "use server" module, so it can be a
@@ -79,6 +81,10 @@ export const POINT_VALUES = {
   /** Wave 106 (106D): a competency score ROSE on evidence (the adaptive development loop's update
    *  step). The improvement earns it — a completed module earns nothing here by design. */
   COMPETENCY_IMPROVED: 50,
+  /** WAVE 154 (154E): a CLIENT-authored review / testimonial (REVIEW_RECEIVED). 25 is not new: it is what the retired
+   *  `review_received` action key paid (it mapped onto VENDOR_REVIEW_WRITTEN, 25). That key fired when an AI review-REQUEST
+   *  draft was generated, not when a client reviewed — the value moves onto the real moment. Owner may re-price. */
+  CLIENT_REVIEW_RECEIVED: 25,
 } as const
 
 export type PointReason = keyof typeof POINT_VALUES
@@ -90,13 +96,23 @@ export type PointReason = keyof typeof POINT_VALUES
  */
 const EARNING_ACTION_LABELS: ReadonlyArray<{ reason: PointReason; label: string }> = [
   { reason: "LISTING_CLOSED", label: "Close a deal" },
-  { reason: "REFERRAL_CREATED", label: "Send a referral" },
+  { reason: "FIRST_CLOSE", label: "Your first closing (one time)" },
+  { reason: "REPEAT_CLIENT_CLOSED", label: "Close again with a past client" },
+  // WAVE 154 (154E): "Send a referral" is no longer offered — entering a referral is self-attested (any number of
+  // records). The referral now earns when it CLOSES, evidenced by the closed transaction.
+  { reason: "REFERRAL_CONVERTED", label: "A referral closes" },
   { reason: "SHOWING_COMPLETED", label: "Complete a showing" },
   { reason: "OFFER_SUBMITTED", label: "Submit an offer" },
+  { reason: "SOCIAL_POST_PUBLISHED", label: "Publish an approved social post" },
+  { reason: "CLIENT_REVIEW_RECEIVED", label: "A client leaves you a review" },
+  { reason: "CERTIFICATION_EARNED", label: "Earn a certification" },
+  { reason: "CE_COMPLETED", label: "Complete accredited CE" },
+  { reason: "COMPETENCY_IMPROVED", label: "Improve a measured skill" },
+  { reason: "MENTOR_SESSION_HELD", label: "Hold a mentor session (weekly)" },
+  { reason: "LIFETIME_TOUCHPOINT_KEPT", label: "Keep a past-client touch" },
   { reason: "OPEN_HOUSE_HOSTED", label: "Host an open house" },
   { reason: "TRAINING_COMPLETED", label: "Complete a training" },
   { reason: "VENDOR_REVIEW_WRITTEN", label: "Review a vendor" },
-  { reason: "SOCIAL_POST_PUBLISHED", label: "Post social content" },
   { reason: "FOLLOWUP_SENT", label: "Send a follow-up" },
 ]
 
@@ -178,7 +194,10 @@ export async function awardAgentPoints(
 // already stands. Badges are idempotent at the database (agent_badges_unique on
 // agent_id + badge_id, m484 §"does not add a UNIQUE … already exists").
 //
-// BLIND SPOT, stated: the once-check is read-then-write, not a constraint. Two
+// WAVE 154 (154E): the once-check now runs INSIDE the database under an advisory lock
+// (public.award_agent_points_once, m968) — concurrent twins serialize. The text below is the
+// pre-m968 fallback's blind spot, kept because the fallback still runs until m968 is applied:
+// the once-check is read-then-write, not a constraint. Two
 // reactor runs for the same event inside the same few milliseconds can both pass
 // the read. A partial UNIQUE on (agent_id, reason, reference_id) was considered
 // and REJECTED: CONTACT_ASSIGNED legitimately repeats on the same contact when it
@@ -198,7 +217,13 @@ export interface OnceKey {
 
 export type AwardOnceResult = AwardPointsResult | { ok: true; alreadyAwarded: true }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+/** PostgREST's "no such function" (the RPC is not on this database yet). @proofSeam */
+export function isMissingFunction(err: { message: string; code?: string } | null | undefined): boolean {
+  if (!err) return false
+  return (err as { code?: string }).code === "PGRST202" || /could not find the function|function .* does not exist/i.test(err.message)
+}
+
+const UUID_RE =/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 /** agent_points_log.reference_id is a uuid column (m484's RPC takes `p_reference_id uuid`).
  *  @proofSeam the proof asserts the shapes the ledger admits */
 export function isUuid(v: unknown): v is string {
@@ -220,6 +245,31 @@ export async function awardAgentPointsOnce(
   if (ref !== null && !isUuid(ref)) {
     return { ok: false, error: `awardAgentPointsOnce: reference ${String(ref)} is not a uuid — agent_points_log.reference_id is uuid` }
   }
+
+  // WAVE 154 (154E) — THE RACE CLOSED AT THE DATABASE. public.award_agent_points_once() (m968) takes a transaction-scoped
+  // advisory lock on (agent, reason, reference), re-reads the ledger under it and only then calls award_agent_points():
+  // two concurrent workers / a repeated webhook serialize on the lock and the second sees the first's row. Until m968 is
+  // applied the function is absent (PGRST202) and the read-then-write below remains the fallback — said aloud, not silent.
+  const points = Math.trunc(Number(input.points))
+  if (!Number.isFinite(points) || points === 0) {
+    return { ok: false, error: `awardAgentPointsOnce: ${String(input.points)} is not a whole number of points` }
+  }
+  const { data: onceData, error: onceErr } = await db.rpc("award_agent_points_once", {
+    p_agent_id: input.agentId,
+    p_points: points,
+    p_reason: input.reason,
+    p_reference_type: input.referenceType ?? null,
+    p_reference_id: ref,
+    p_since: input.once.since ? input.once.since.toISOString() : null,
+  })
+  if (!onceErr) {
+    const row = onceData as { already_awarded?: boolean; brokerage_id?: string; points_added?: number; new_total?: number; log_id?: string } | null
+    if (row?.already_awarded) return { ok: true, alreadyAwarded: true }
+    if (!row?.brokerage_id || row.new_total == null) return { ok: false, error: "award_agent_points_once returned no row — the award did not land" }
+    return { ok: true, brokerageId: row.brokerage_id, pointsAdded: Number(row.points_added ?? points), newTotal: Number(row.new_total), logId: String(row.log_id ?? "") }
+  }
+  if (!isMissingFunction(onceErr)) return { ok: false, error: `award_agent_points_once refused, award withheld (fail closed): ${onceErr.message}` }
+  console.warn("[awardAgentPointsOnce] award_agent_points_once is not on this database yet (m968 unapplied) — read-then-write fallback, concurrent twins may both land")
 
   let q = db.from("agent_points_log").select("id").eq("agent_id", input.agentId).eq("reason", input.reason).limit(1)
   if (ref !== null) q = q.eq("reference_id", ref)
@@ -245,17 +295,20 @@ export type MilestoneScope =
   | "first_ever"             // once per agent, for life
   | "per_year"               // once per agent per calendar year (work anniversary)
   | "per_reference_per_year" // once per entity per calendar year (a kept anniversary touch per client)
+  | "per_reference_per_week" // once per entity per ISO week, Monday 00:00 UTC (a mentor pairing's session)
 
 export interface LifecycleAwardRule {
   event: KernelEvent
   reason: PointReason
   scope: MilestoneScope
-  /** Who earns it. `acting` = the agent the event resolves to; `mentor_and_mentee` = both parties on a session. */
-  party: "acting" | "mentor_and_mentee"
+  /** Who earns it. `acting` = the agent the event resolves to; `mentor_and_mentee` = both parties on a session;
+   *  `referral_agent` = the agent on each WON referral the closed transaction evidences (wave 154). */
+  party: "acting" | "mentor_and_mentee" | "referral_agent"
   /** Extra predicate on the resolved context (e.g. the contact was closed with before). */
-  when?: "repeat_client" | "seller_side"
-  /** Where the idempotency reference comes from; default = the event's entityId. */
-  referenceFrom?: "entity" | "metadata.stepId" | "metadata.referral_id"
+  when?: "repeat_client" | "seller_side" | "positive_review" | "referral_closed_deal"
+  /** Where the idempotency reference comes from; default = the event's entityId. `evidence.transaction` = the closed
+   *  transaction the server found evidencing a referral (never a client-supplied id). */
+  referenceFrom?: "entity" | "metadata.stepId" | "metadata.referral_id" | "metadata.contact_id" | "metadata.relationship_id" | "evidence.transaction"
   referenceType: string
   /** WAVE 153 (lane 153I): the emitter's entity the rule is keyed on. Another emitter of the SAME event with a different
    *  entity never earns (app/actions/ai-content-generation.tsx emits SOCIAL_POST_PUBLISHED for a generated DRAFT,
@@ -281,7 +334,10 @@ export const LIFECYCLE_AWARD_RULES: readonly LifecycleAwardRule[] = [
   { event: KernelEvent.TRANSACTION_CLOSED, reason: "LISTING_CLOSED", scope: "per_reference", party: "acting", referenceType: "transaction" },
   { event: KernelEvent.TRANSACTION_CLOSED, reason: "FIRST_CLOSE", scope: "first_ever", party: "acting", referenceType: "transaction" },
   { event: KernelEvent.CE_COMPLETED, reason: "CE_COMPLETED", scope: "per_reference", party: "acting", referenceType: "agent_ce_completion" },
-  { event: KernelEvent.MENTOR_SESSION_HELD, reason: "MENTOR_SESSION_HELD", scope: "per_reference", party: "mentor_and_mentee", referenceType: "mentor_session" },
+  // WAVE 154 (154E): keyed on the PAIRING per ISO week, not per session row. logMentorSession inserted a new row per call,
+  // so "once per session" was once per click — 75 to each party, unbounded. The pairing is the system-matched
+  // agent_mentor_relationships row the emitter now requires (metadata.relationship_id, server-derived).
+  { event: KernelEvent.MENTOR_SESSION_HELD, reason: "MENTOR_SESSION_HELD", scope: "per_reference_per_week", party: "mentor_and_mentee", referenceFrom: "metadata.relationship_id", referenceType: "mentor_relationship" },
   { event: KernelEvent.AGENT_WORK_ANNIVERSARY, reason: "WORK_ANNIVERSARY", scope: "per_year", party: "acting", referenceType: "agent" },
   // Wave 106 (106D): the development loop's competency update — once per competency node per year
   // (the entity is the deterministic competency uuid; metadata.agent_id names the earner), so a
@@ -296,8 +352,17 @@ export const LIFECYCLE_AWARD_RULES: readonly LifecycleAwardRule[] = [
   // from lib/application/listing-lifecycle.ts handleSellerToLifetimeTransition, and the award moves here from
   // the call site. `when: "seller_side"` keeps the buyer-side LIFETIME_CUSTOMER (lifecycle-logger) out of it.
   { event: KernelEvent.LIFETIME_CUSTOMER, reason: "SELLER_LIFETIME_TRANSITION", scope: "per_reference", party: "acting", when: "seller_side", referenceType: "contact" },
-  { event: KernelEvent.REFERRAL_RECEIVED, reason: "REFERRAL_CREATED", scope: "per_reference", party: "acting", referenceFrom: "metadata.referral_id", referenceType: "referral" },
-  { event: KernelEvent.REFERRAL_CONVERTED, reason: "REFERRAL_CONVERTED", scope: "per_reference", party: "acting", referenceType: "referral" },
+  // TOMBSTONE (wave 154, lane 154E — CLAUDE.md §1): `{ event: REFERRAL_RECEIVED, reason: "REFERRAL_CREATED", per referral }`
+  // stood here. REFERRAL_RECEIVED is emitted by createReferral (app/actions/referrals/referral-actions.ts), a public
+  // "use server" door where the seat TYPES its own referral record — each new record paid 75, unbounded: the fabricated
+  // achievement the retired addPoints was closed for. SURVIVOR: the two REFERRAL_CONVERTED rows below, which pay only
+  // when a closed/funded transaction evidences the referral, once per transaction.
+  { event: KernelEvent.REFERRAL_CONVERTED, reason: "REFERRAL_CONVERTED", scope: "per_reference", party: "acting", when: "referral_closed_deal", referenceFrom: "evidence.transaction", referenceType: "transaction" },
+  // The deal closing AFTER the referral was marked won — the same award, the same once-key (the transaction id).
+  { event: KernelEvent.TRANSACTION_CLOSED, reason: "REFERRAL_CONVERTED", scope: "per_reference", party: "referral_agent", referenceType: "transaction" },
+  // WAVE 154 (154E): a review the CLIENT wrote (both emitters require isContactSelf). Keyed on the client per year, so a
+  // client resubmitting a testimonial cannot farm it; a low rating earns nothing.
+  { event: KernelEvent.REVIEW_RECEIVED, reason: "CLIENT_REVIEW_RECEIVED", scope: "per_reference_per_year", party: "acting", when: "positive_review", entityType: "agent_review", referenceFrom: "metadata.contact_id", referenceType: "contact" },
   { event: KernelEvent.TRANSACTION_CLOSED, reason: "REPEAT_CLIENT_CLOSED", scope: "per_reference", party: "acting", when: "repeat_client", referenceType: "transaction" },
   // ── WAVE 153 (lane 153I — owner ruling 17: "check that the gamification system works properly") ──
   // The last two client-fired awards (app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door any signed-in
@@ -318,7 +383,11 @@ export const LIFECYCLE_AWARD_RULES: readonly LifecycleAwardRule[] = [
  * open house is self-attested), so /dashboard/motivation no longer promises points for them.
  */
 export const POINT_EARNING_ACTIONS: ReadonlyArray<{ reason: PointReason; label: string }> =
-  EARNING_ACTION_LABELS.filter((a) => LIFECYCLE_AWARD_RULES.some((r) => r.reason === a.reason))
+  // WAVE 154 (154E): a live rule is necessary but not sufficient — the census (lib/gamification/award-census.ts) must also
+  // call the triggering moment a VERIFIED outcome. A booking (FIRST_APPOINTMENT) or a seat's own assertion is never offered.
+  EARNING_ACTION_LABELS.filter((a) =>
+    LIFECYCLE_AWARD_RULES.some((r) => r.reason === a.reason) &&
+    AWARD_CENSUS.some((c) => c.reason === a.reason && c.path === "reactor" && c.trust === "verified_outcome"))
 
 export interface MilestonePlan {
   reason: PointReason
@@ -336,6 +405,9 @@ export interface MilestoneContext {
   repeatClient?: boolean
   /** The event's entity type — a rule keyed on one (LifecycleAwardRule.entityType) skips every other emitter. */
   entityType?: string | null
+  /** REFERRAL_CONVERTED only (wave 154): the closed/funded transaction the SERVER found evidencing the referral. Absent =
+   *  no evidence = no award. Never taken from the event payload. */
+  referralEvidenceTransactionId?: string | null
 }
 
 function referenceFor(rule: LifecycleAwardRule, ctx: MilestoneContext): string | null {
@@ -343,19 +415,40 @@ function referenceFor(rule: LifecycleAwardRule, ctx: MilestoneContext): string |
   const raw =
     rule.referenceFrom === "metadata.stepId" ? meta.stepId :
     rule.referenceFrom === "metadata.referral_id" ? meta.referral_id :
+    rule.referenceFrom === "metadata.contact_id" ? meta.contact_id :
+    rule.referenceFrom === "metadata.relationship_id" ? meta.relationship_id :
+    rule.referenceFrom === "evidence.transaction" ? ctx.referralEvidenceTransactionId :
     ctx.entityId
   return isUuid(raw) ? raw : null
+}
+
+/** Monday 00:00 UTC of the ISO week holding `now`. @proofSeam */
+export function isoWeekStartUtc(now: Date): Date {
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7))
+  return d
+}
+
+/** A review earns only when it is positive: a testimonial (no rating) or 4–5 stars. */
+function isPositiveReview(meta: Record<string, unknown> | null | undefined): boolean {
+  const r = (meta ?? {}).rating
+  if (r === null || r === undefined) return true
+  const n = Number(r)
+  return Number.isFinite(n) && n >= 4
 }
 
 /** @proofSeam PURE — the proof asserts the rule table resolves to the right once-keys without a database. */
 export function planLifecycleAwards(event: string, ctx: MilestoneContext): MilestonePlan[] {
   const yearStart = new Date(Date.UTC(ctx.now.getUTCFullYear(), 0, 1))
+  const weekStart = isoWeekStartUtc(ctx.now)
   const plans: MilestonePlan[] = []
   for (const rule of LIFECYCLE_AWARD_RULES) {
     if (rule.event !== event) continue
     if (rule.entityType && ctx.entityType !== rule.entityType) continue
     if (rule.when === "repeat_client" && !ctx.repeatClient) continue
     if (rule.when === "seller_side" && (ctx.metadata as { side?: unknown } | null | undefined)?.side !== "seller") continue
+    if (rule.when === "positive_review" && !isPositiveReview(ctx.metadata)) continue
+    if (rule.when === "referral_closed_deal" && !isUuid(ctx.referralEvidenceTransactionId)) continue
     const ref = referenceFor(rule, ctx)
     let once: OnceKey
     switch (rule.scope) {
@@ -363,6 +456,7 @@ export function planLifecycleAwards(event: string, ctx: MilestoneContext): Miles
       case "per_year":               once = { since: yearStart }; break
       case "per_reference":          if (!ref) continue; once = { referenceId: ref }; break
       case "per_reference_per_year": if (!ref) continue; once = { referenceId: ref, since: yearStart }; break
+      case "per_reference_per_week": if (!ref) continue; once = { referenceId: ref, since: weekStart }; break
     }
     plans.push({ reason: rule.reason, points: POINT_VALUES[rule.reason], referenceType: rule.referenceType, once, party: rule.party })
   }

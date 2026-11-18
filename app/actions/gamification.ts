@@ -178,15 +178,108 @@ export async function getAgentPointsAndTier(agentId: string) {
  * Threshold badges for an agent, against the total the DATABASE holds. WAVE 153 (lane 153I): `currentPoints` is RETAINED
  * AND IGNORED (house pattern — the caller keeps type-checking). This is a public endpoint, and it awarded against whatever
  * number it was handed, so any seat could hand its own agents.id and 999999 and take every rung. The award now delegates to
- * lib/gamification/lifecycle-awards.ts awardThresholdBadges, which reads agents.gamification_points itself (the cookie client:
- * RLS confines the agent to the caller's tenant) — calling it can only award what the agent already earned.
+ * lib/gamification/lifecycle-awards.ts awardThresholdBadges, which reads agents.gamification_points itself (wave 154: the service
+ * client, with the SESSION tenant handed down and enforced) — calling it can only award what the agent already earned.
  */
 export async function checkAndAwardBadges(agentId: string, _currentPoints?: number) {
-  const supabase = await createClient()
+  // WAVE 154 (154E): m968 takes agent_badges writes away from session seats (the ALL policy let any seat insert or delete
+  // any badge for anyone in its tenant), so the award runs on the SERVICE client — gated first: the tenant is the
+  // SESSION's and awardThresholdBadges refuses an agent whose stored brokerage disagrees. It can still only award rungs
+  // the stored total already reached.
+  const { requireCaller } = await import("@/lib/auth/require-caller")
+  const caller = await requireCaller()
+  if (!caller.ok) return []
+  const { createServiceClient } = await import("@/lib/supabase/service")
   const { awardThresholdBadges } = await import("@/lib/gamification/lifecycle-awards")
-  const res = await awardThresholdBadges(supabase, { agentId })
+  const res = await awardThresholdBadges(createServiceClient(), { agentId, brokerageId: caller.brokerageId })
   if (res.refused.length > 0) console.error(`[checkAndAwardBadges] ${agentId}: ${res.refused.join(" | ")}`)
   return res.awarded
+}
+
+// ─── ADMIN POINTS CORRECTION (wave 154, lane 154E) ────────────────────────────
+/**
+ * THE ONE CORRECTION DOOR — a tenant admin's audited adjustment on the SAME ledger, never a direct overwrite of
+ * agents.gamification_points (m968 refuses that from any session). Public endpoint, so:
+ *   · tenant from the SESSION; the target agent is read in that tenant only;
+ *   · tenant admins (resolveTenantAdmin — user_type or a pinned grant) MINUS team_lead and compliance_officer by name
+ *     (a lead adjusting their own team's standings, a compliance seat keeping a score: neither) — or platform staff;
+ *   · never your own record; a reason of at least 10 characters; a whole, non-zero number that cannot take the total
+ *     below zero;
+ *   · `correctionId` (uuid, minted once per form) is the once-key: a double submit applies once;
+ *   · evidence: the agent_points_log row (reason ADMIN_ADJUSTMENT, reference = correctionId) written by
+ *     award_agent_points_once, plus an agent_action_ledger row (withActionLedger — who, why, what happened);
+ *   · reconciliation: the stored total is re-read against SUM(agent_points_log.points) and reported.
+ * Game points never touch commission or recruiting compensation; this door writes neither.
+ */
+export async function correctAgentPoints(input: {
+  agentId: string
+  points: number
+  reason: string
+  correctionId: string
+}): Promise<{ ok: boolean; error?: string; alreadyApplied?: boolean; newTotal?: number; ledgerSum?: number; reconciled?: boolean }> {
+  const { requireCaller } = await import("@/lib/auth/require-caller")
+  const caller = await requireCaller()
+  if (!caller.ok) return { ok: false, error: caller.error }
+
+  const { isUuid } = await import("@/lib/gamification/award-points")
+  const points = Math.trunc(Number(input.points))
+  const reason = String(input.reason ?? "").trim()
+  if (!isUuid(input.agentId)) return { ok: false, error: "Choose an agent to correct." }
+  if (!isUuid(input.correctionId)) return { ok: false, error: "A correction id is required." }
+  if (!Number.isFinite(points) || points === 0 || points !== Number(input.points)) return { ok: false, error: "A correction is a whole, non-zero number of points." }
+  if (reason.length < 10) return { ok: false, error: "Say why (at least 10 characters) — the reason is kept on the audit record." }
+
+  const { resolveTenantAdmin, isPlatformStaffIdentity } = await import("@/lib/auth/resolve-user-role")
+  const userType = String(caller.userType ?? "").toLowerCase()
+  const platformStaff = isPlatformStaffIdentity(caller.userType, caller.platformRole)
+  if (!platformStaff) {
+    if (userType === "team_lead" || userType === "compliance_officer") return { ok: false, error: "Points corrections are made by a brokerage admin." }
+    const admin = await resolveTenantAdmin(caller.supabase as any, caller.userId, { user_type: caller.userType, brokerage_id: caller.brokerageId })
+    if (!admin.ok) return { ok: false, error: admin.error }
+    if (!admin.isTenantAdmin) return { ok: false, error: "Points corrections are made by a brokerage admin." }
+  }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data: target, error: targetErr } = await svc.from("agents").select("id, user_id, gamification_points")
+    .eq("id", input.agentId).eq("brokerage_id", caller.brokerageId).maybeSingle()
+  if (targetErr) return { ok: false, error: `Could not read that agent: ${targetErr.message}` }
+  if (!target) return { ok: false, error: "That agent is not in your brokerage." }
+  if ((target as { user_id?: string | null }).user_id === caller.userId) return { ok: false, error: "You cannot correct your own points." }
+  const before = Number((target as { gamification_points?: number | null }).gamification_points) || 0
+  if (before + points < 0) return { ok: false, error: `That would take the total below zero (it is ${before}).` }
+
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { awardAgentPointsOnce } = await import("@/lib/gamification/award-points")
+  type Out = { ok: boolean; error?: string; alreadyApplied?: boolean; newTotal?: number }
+  const res: Out = await withActionLedger<Out>(
+    {
+      brokerageId: caller.brokerageId, action: "gamification.points.correct", actor: { type: "user", userId: caller.userId },
+      subject: { type: "agent", id: input.agentId }, reasonCode: "HUMAN_REQUESTED", reasonDetail: reason,
+      idempotencyKey: `gamification.points.correct:${input.correctionId}`, riskClass: "LOW_RISK_WRITE",
+      systemSource: "motivation_admin_correction", detail: { points, total_before: before, correction_id: input.correctionId },
+    },
+    async () => {
+      const awarded = await awardAgentPointsOnce(svc, {
+        agentId: input.agentId, points, reason: "ADMIN_ADJUSTMENT", referenceType: "points_correction",
+        referenceId: input.correctionId, once: { referenceId: input.correctionId },
+      })
+      if (!awarded.ok) return { ok: false, error: awarded.error }
+      if ("alreadyAwarded" in awarded) return { ok: true, alreadyApplied: true }
+      return { ok: true, newTotal: awarded.newTotal }
+    },
+    {
+      settle: (r) => r.ok ? { status: "executed", outcome: r.alreadyApplied ? "already_applied" : "points_corrected" } : { status: "failed", outcome: "refused", error: r.error ?? null },
+      replay: () => ({ ok: true, alreadyApplied: true }),
+    },
+  )
+  if (!res.ok) return res
+
+  const { data: after } = await svc.from("agents").select("gamification_points").eq("id", input.agentId).maybeSingle()
+  const { data: rows, error: sumErr } = await svc.from("agent_points_log").select("points").eq("agent_id", input.agentId)
+  const newTotal = Number((after as { gamification_points?: number | null } | null)?.gamification_points) || 0
+  const ledgerSum = sumErr ? undefined : ((rows ?? []) as Array<{ points: number }>).reduce((s, r) => s + (Number(r.points) || 0), 0)
+  return { ...res, newTotal, ledgerSum, reconciled: ledgerSum === undefined ? undefined : ledgerSum === newTotal }
 }
 
 // ─── ADD POINTS — RETIRED (wave 153, lane 153I) ───────────────────────────────
@@ -295,8 +388,19 @@ export async function getLeaderboard(options: {
     .eq("period_label", periodLabel)
     .order("rank_position", { ascending: true })
 
+  // WAVE 154 (154E): a team lead anchors on teams.team_lead_id (a users.id — CLAUDE.md §4), not on agents.team_id. A lead
+  // who is not also stamped as a member of their own team was told "you are not on a team". The led team comes from the
+  // ONE resolver (lib/kernel/resolve-user-team.ts resolveLedTeamId), keyed on the SESSION user — never a requested team.
+  let teamId: string | null = viewerAgent?.team_id ?? null
+  if (scope === "team" && !teamId) {
+    const { resolveLedTeamId } = await import("@/lib/kernel/resolve-user-team")
+    const led = await resolveLedTeamId(supabase as any, user.id)
+    if (!led.ok) return { ok: false, ...blank, brokerageId: profile.brokerage_id, currentAgentId, error: led.error }
+    teamId = led.teamId
+  }
+
   if (scope === "team") {
-    if (!viewerAgent?.team_id) {
+    if (!teamId) {
       return {
         ok: false,
         ...blank,
@@ -305,7 +409,7 @@ export async function getLeaderboard(options: {
         error: "You are not on a team yet, so there is no team board to show.",
       }
     }
-    query = query.eq("team_id", viewerAgent.team_id)
+    query = query.eq("team_id", teamId)
   }
 
   if (options.limit) query = query.limit(options.limit)

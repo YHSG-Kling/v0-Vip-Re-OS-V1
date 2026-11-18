@@ -414,7 +414,7 @@ function LogSessionCard({ mentorId, agentId }: { mentorId: string; agentId: stri
     setSaving(true)
     try {
       const res = await logMentorSession({ mentorAgentId: mentorId, menteeAgentId: agentId, sessionType: type, menteeRating: rating })
-      if (res.ok) { setDone(true); toast.success("Session logged — points awarded to you and your mentor.") }
+      if (res.ok) { setDone(true); toast.success("Session logged. Your pairing's first session each week earns points for you and your mentor.") }
       else toast.error(res.error ?? "Could not log the session.")
     } finally { setSaving(false) }
   }

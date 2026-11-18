@@ -81,6 +81,8 @@ async function resolveMilestoneAgents(
       }
       break
     }
+    // WAVE 154 (154E): a client-authored review — the agent the review is OF (agent_reviews.agent_id, an agents.id).
+    case "agent_review":        acting = await one("agent_reviews", "agent_id", p.entityId); break
     case "contact":
       // REFERRAL_RECEIVED is emitted on the CONTACT with referral_id in metadata; the
       // earning agent is the referral's agent_id (who received it), not the contact's.
@@ -111,6 +113,49 @@ async function isRepeatClientClose(db: LedgerCapableClient, brokerageId: string,
   return (prior ?? []).length > 0
 }
 
+// ─── REFERRAL EVIDENCE (wave 154, lane 154E) ──────────────────────────────────
+// A referral record is typed by the seat (createReferral); its "won" status is set by the same seat. Neither is evidence.
+// The evidence is a CLOSED / FUNDED transaction in the same tenant that the referral points at (referrals.transaction_id)
+// or that the referred contact is a party to. The award's once-key is that transaction, so one closed deal pays one
+// referral award per agent however many referral records name it.
+
+const CLOSED_TX_STATUSES = ["closed", "funded"]
+
+/** REFERRAL_CONVERTED: the closed transaction evidencing this WON referral, or null (no evidence → no award). */
+async function referralEvidenceTransaction(db: LedgerCapableClient, brokerageId: string, referralId: string): Promise<string | null> {
+  const { REFERRAL_TERMINAL_WON } = await import("@/lib/referrals/referral-status")
+  const { data: ref, error } = await db.from("referrals").select("id, status, transaction_id, referred_contact_id")
+    .eq("id", referralId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) { console.error(`[lifecycle-gamification] referral read refused for ${referralId}: ${error.message}`); return null }
+  const r = ref as { status?: string | null; transaction_id?: string | null; referred_contact_id?: string | null } | null
+  if (!r || r.status !== REFERRAL_TERMINAL_WON) return null
+  const ors: string[] = []
+  if (isUuid(r.transaction_id)) ors.push(`id.eq.${r.transaction_id}`)
+  if (isUuid(r.referred_contact_id)) ors.push(`buyer_contact_id.eq.${r.referred_contact_id}`, `seller_contact_id.eq.${r.referred_contact_id}`)
+  if (ors.length === 0) return null
+  const { data: txs, error: txErr } = await db.from("transactions").select("id")
+    .eq("brokerage_id", brokerageId).in("status", CLOSED_TX_STATUSES).or(ors.join(","))
+    .order("close_date", { ascending: true }).limit(1)
+  if (txErr) { console.error(`[lifecycle-gamification] referral evidence read refused for ${referralId}: ${txErr.message}`); return null }
+  const id = ((txs ?? []) as Array<{ id?: string }>)[0]?.id
+  return isUuid(id) ? id : null
+}
+
+/** TRANSACTION_CLOSED: the agents on WON referrals this closed transaction evidences. */
+async function wonReferralAgentsForClose(db: LedgerCapableClient, brokerageId: string, transactionId: string): Promise<string[]> {
+  const { REFERRAL_TERMINAL_WON } = await import("@/lib/referrals/referral-status")
+  const { data: tx, error } = await db.from("transactions").select("id, status, buyer_contact_id, seller_contact_id")
+    .eq("id", transactionId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error || !tx) return []
+  const t = tx as { status?: string | null; buyer_contact_id?: string | null; seller_contact_id?: string | null }
+  if (!CLOSED_TX_STATUSES.includes(String(t.status ?? ""))) return []
+  const ors = [`transaction_id.eq.${transactionId}`, ...[t.buyer_contact_id, t.seller_contact_id].filter(isUuid).map((c) => `referred_contact_id.eq.${c}`)]
+  const { data: refs, error: refErr } = await db.from("referrals").select("agent_id")
+    .eq("brokerage_id", brokerageId).eq("status", REFERRAL_TERMINAL_WON).or(ors.join(","))
+  if (refErr) { console.error(`[lifecycle-gamification] won-referral read refused for ${transactionId}: ${refErr.message}`); return [] }
+  return [...new Set(((refs ?? []) as Array<{ agent_id?: string | null }>).map((x) => x.agent_id).filter(isUuid))]
+}
+
 export interface LifecycleAwardOutcome {
   awarded: Array<{ agentId: string; reason: PointReason; points: number; newTotal: number }>
   alreadyAwarded: number
@@ -138,9 +183,23 @@ export async function awardLifecycleMilestones(
     ? await isRepeatClientClose(db, p.brokerageId, p.entityId, actingId)
     : false
 
-  const plans = planLifecycleAwards(p.event, { entityId: p.entityId, metadata: p.metadata, now, repeatClient, entityType: p.entityType })
+  const referralEvidenceTransactionId = p.event === KernelEvent.REFERRAL_CONVERTED && p.entityType === "referral" && isUuid(p.entityId)
+    ? await referralEvidenceTransaction(db, p.brokerageId, p.entityId)
+    : null
+  if (p.event === KernelEvent.REFERRAL_CONVERTED && !referralEvidenceTransactionId) {
+    out.refused.push(`REFERRAL_CONVERTED: no closed transaction evidences referral ${p.entityId} — it earns when that deal closes`)
+  }
+  const referralAgents = p.event === KernelEvent.TRANSACTION_CLOSED && isUuid(p.entityId)
+    ? await wonReferralAgentsForClose(db, p.brokerageId, p.entityId)
+    : []
+
+  const plans = planLifecycleAwards(p.event, { entityId: p.entityId, metadata: p.metadata, now, repeatClient, entityType: p.entityType, referralEvidenceTransactionId })
   for (const plan of plans) {
-    const recipients = plan.party === "mentor_and_mentee" ? agents.mentorAndMentee : agents.acting
+    const recipients = plan.party === "mentor_and_mentee" ? agents.mentorAndMentee
+      : plan.party === "referral_agent" ? referralAgents
+      : agents.acting
+    // A close with no won referral behind it is the ordinary case — nothing to award, nothing refused.
+    if (plan.party === "referral_agent" && recipients.length === 0) continue
     if (recipients.length === 0) {
       out.refused.push(`${plan.reason}: no agents.id resolvable from ${p.entityType} ${p.entityId}`)
       continue

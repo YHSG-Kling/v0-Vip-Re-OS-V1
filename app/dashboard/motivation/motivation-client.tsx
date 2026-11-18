@@ -434,7 +434,8 @@ export function MotivationClient({
                         <Zap className="h-4 w-4 text-primary" />
                         <span className="text-sm">{humaniseReason(entry.reason)}</span>
                       </div>
-                      <Badge variant="outline">+{entry.points} pts</Badge>
+                      {/* wave 154 (154E): an admin correction can be negative — never render "+-50". */}
+                      <Badge variant="outline">{entry.points >= 0 ? "+" : ""}{entry.points} pts</Badge>
                     </div>
                   ))}
                 </div>

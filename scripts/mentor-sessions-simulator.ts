@@ -54,7 +54,9 @@ function sourceLayer() {
   )
   check(
     "the reactor rule credits BOTH parties for MENTOR_SESSION_HELD",
-    /event:\s*KernelEvent\.MENTOR_SESSION_HELD,\s*reason:\s*"MENTOR_SESSION_HELD",\s*scope:\s*"per_reference",\s*party:\s*"mentor_and_mentee"/.test(src("lib/gamification/award-points.ts")),
+    // RE-ASSERTED (wave 154, lane 154E): the scope moved to once per PAIRING per ISO week (a per-session key paid per click);
+    // the claim this check exists for — BOTH parties — is unchanged.
+    /event:\s*KernelEvent\.MENTOR_SESSION_HELD,\s*reason:\s*"MENTOR_SESSION_HELD",\s*scope:\s*"per_reference_per_week",\s*party:\s*"mentor_and_mentee"/.test(src("lib/gamification/award-points.ts")),
   )
   check(
     "and it writes the ledger through that path only — no direct agent_points_log insert survives here",

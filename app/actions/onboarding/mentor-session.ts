@@ -27,16 +27,36 @@ export async function logMentorSession(input: {
   actionItem?: string
   notes?: string
 }): Promise<{ ok: boolean; id?: string; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { ok: false, error: "Not authenticated" }
+  // WAVE 154 (lane 154E) — GATE FIRST, THEN THE SERVICE CLIENT (CLAUDE.md §4). This public "use server" export used to
+  // take ANY mentor and mentee agents.id from the request, derive the tenant from the mentor's row, and insert through the
+  // service client: any signed-in seat could log sessions for any pair in any brokerage, and every call paid 75 points to
+  // both. Now: the tenant is the SESSION's; the pair must be an ACTIVE system-matched agent_mentor_relationships row in it;
+  // the caller must be one of the two parties or a tenant admin. relationship_id is that row's id (server-derived) and is
+  // the reactor's once-key (one award per pairing per ISO week — lib/gamification/award-points.ts).
+  const caller = await requireCaller()
+  if (!caller.ok) return { ok: false, error: caller.error }
   const svc = createServiceClient()
+  const brokerageId = caller.brokerageId
 
-  const { data: mentor } = await svc.from("agents").select("brokerage_id").eq("id", input.mentorAgentId).maybeSingle()
-  const brokerageId = (mentor as any)?.brokerage_id ?? null
+  const { data: pairing, error: pairingErr } = await svc.from("agent_mentor_relationships").select("id")
+    .eq("brokerage_id", brokerageId).eq("mentor_agent_id", input.mentorAgentId).eq("mentee_agent_id", input.menteeAgentId)
+    .eq("status", "active").order("start_date", { ascending: false }).limit(1).maybeSingle()
+  if (pairingErr) return { ok: false, error: `Could not verify the mentor pairing: ${pairingErr.message}` }
+  if (!pairing?.id) return { ok: false, error: "There is no active mentor pairing between these two agents in your brokerage." }
+
+  const { data: callerAgent, error: callerAgentErr } = await svc.from("agents").select("id")
+    .eq("user_id", caller.userId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (callerAgentErr) return { ok: false, error: `Could not resolve your agent record: ${callerAgentErr.message}` }
+  const isParty = !!callerAgent?.id && (callerAgent.id === input.mentorAgentId || callerAgent.id === input.menteeAgentId)
+  if (!isParty) {
+    const admin = await resolveTenantAdmin(caller.supabase, caller.userId, { user_type: caller.userType, brokerage_id: brokerageId })
+    if (!admin.ok) return { ok: false, error: admin.error }
+    if (!admin.isTenantAdmin) return { ok: false, error: "Only the mentor, the mentee or a brokerage admin can log this session." }
+  }
+  const user = { id: caller.userId }
 
   const { data: row, error } = await svc.from("mentor_sessions").insert({
-    brokerage_id: brokerageId, relationship_id: input.relationshipId ?? null,
+    brokerage_id: brokerageId, relationship_id: pairing.id,
     mentor_agent_id: input.mentorAgentId, mentee_agent_id: input.menteeAgentId,
     session_type: input.sessionType ?? "check_in", duration_minutes: input.durationMinutes ?? null,
     topics: input.topics ?? null, mentee_rating: input.menteeRating ?? null,
@@ -60,7 +80,7 @@ export async function logMentorSession(input: {
         entityType:  "mentor_session",
         entityId:    (row as any).id,
         actorUserId: user.id,
-        metadata:    { mentor_agent_id: input.mentorAgentId, mentee_agent_id: input.menteeAgentId, session_type: input.sessionType ?? "check_in" },
+        metadata:    { mentor_agent_id: input.mentorAgentId, mentee_agent_id: input.menteeAgentId, relationship_id: pairing.id, session_type: input.sessionType ?? "check_in" },
       })
     } catch (err) {
       // The session row stands; a fan-out failure is logged, never swallowed (§3).

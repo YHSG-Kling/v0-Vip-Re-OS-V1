@@ -103,7 +103,9 @@ export async function onReviewLanded(input: ReviewLandedInput): Promise<ReviewLa
       entityType:  "agent_review",
       entityId:    input.reviewId,
       contactId:   input.contactId ?? undefined,
-      metadata:    { platform: input.platform, rating: input.rating ?? null },
+      // contact_id (wave 154, lane 154E): the client — the reactor's CLIENT_REVIEW_RECEIVED once-key (once per client per
+      // year), so a client resubmitting a testimonial cannot farm the agent's points.
+      metadata:    { platform: input.platform, rating: input.rating ?? null, contact_id: input.contactId ?? null },
     })
   } catch (err) {
     console.error("[reputation] REVIEW_RECEIVED emit failed:", (err as { message?: string })?.message ?? err)

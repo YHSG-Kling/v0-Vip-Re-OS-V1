@@ -21,9 +21,12 @@ import { stripComments } from "./strip-comments"
 import { KernelEvent } from "../lib/kernel/events"
 import {
   POINT_VALUES, LIFECYCLE_AWARD_RULES, planLifecycleAwards, awardAgentPointsOnce, isUuid, type LedgerCapableClient,
+  POINT_EARNING_ACTIONS, isoWeekStartUtc,
 } from "../lib/gamification/award-points"
+import { AWARD_CENSUS } from "../lib/gamification/award-census"
+import { REFERRAL_TERMINAL_WON } from "../lib/referrals/referral-status"
 import { awardLifecycleMilestones, awardBadgeToAgent } from "../lib/gamification/lifecycle-awards"
-import { tierDistributionLine } from "../lib/gamification/tiers"
+import { tierDistributionLine, tierForPoints } from "../lib/gamification/tiers"
 import { isUnderStrain, strainedFromRows } from "../lib/gamification/strain"
 import { anniversaryYearsOn, ANNIVERSARY_WINDOW_DAYS, anniversaryStartDate } from "../lib/gamification/work-anniversaries"
 
@@ -46,8 +49,10 @@ function pureLayer() {
   check("agent lifecycle covered: onboarding step + completion, certification, first contact, first appointment, close, CE, mentor, anniversary",
     [KernelEvent.USER_ONBOARDING_STEP_COMPLETED, KernelEvent.USER_ONBOARDING_COMPLETED, KernelEvent.CERTIFICATION_AWARDED, KernelEvent.CONTACT_CREATED,
      KernelEvent.ISA_APPOINTMENT_SCHEDULED, KernelEvent.TRANSACTION_CLOSED, KernelEvent.CE_COMPLETED, KernelEvent.MENTOR_SESSION_HELD, KernelEvent.AGENT_WORK_ANNIVERSARY].every(covered))
-  check("customer lifecycle covered: kept anniversary touch, referral received + converted, repeat client",
-    [KernelEvent.LIFETIME_CUSTOMER_TOUCHPOINT_SENT, KernelEvent.REFERRAL_RECEIVED, KernelEvent.REFERRAL_CONVERTED].every(covered) &&
+  // RE-ASSERTED (wave 154, lane 154E): REFERRAL_RECEIVED left the covered list ON PURPOSE — createReferral is a seat typing
+  // its own record (the fabricated-achievement shape). The referral earns on its evidenced OUTCOME; a client review is added.
+  check("customer lifecycle covered: kept anniversary touch, referral converted (evidenced), client review, repeat client — and a bare referral entry is NOT",
+    [KernelEvent.LIFETIME_CUSTOMER_TOUCHPOINT_SENT, KernelEvent.REFERRAL_CONVERTED, KernelEvent.REVIEW_RECEIVED].every(covered) && !covered(KernelEvent.REFERRAL_RECEIVED) &&
       LIFECYCLE_AWARD_RULES.some((r) => r.reason === "REPEAT_CLIENT_CLOSED" && r.when === "repeat_client"))
 
   const now = new Date("2026-10-05T12:00:00Z")
@@ -73,9 +78,19 @@ function pureLayer() {
     sellerLifetime.length === 1 && sellerLifetime[0].reason === "SELLER_LIFETIME_TRANSITION" && sellerLifetime[0].once.referenceId === CONTACT)
   check("POSITIVE CONTROL: the buyer-side LIFETIME_CUSTOMER (no seller side) plans nothing — the seller award never leaks onto a buyer",
     planLifecycleAwards(KernelEvent.LIFETIME_CUSTOMER, { entityId: CONTACT, now, metadata: { side: "buyer" } }).length === 0 && planLifecycleAwards(KernelEvent.LIFETIME_CUSTOMER, { entityId: CONTACT, now }).length === 0)
-  check("REFERRAL_RECEIVED keys on metadata.referral_id, not the contact it is emitted on",
-    planLifecycleAwards(KernelEvent.REFERRAL_RECEIVED, { entityId: CONTACT, now, metadata: { referral_id: U(60) } })[0]?.once.referenceId === U(60))
-  check("MENTOR_SESSION_HELD credits mentor AND mentee", planLifecycleAwards(KernelEvent.MENTOR_SESSION_HELD, { entityId: SESSION, now })[0]?.party === "mentor_and_mentee")
+  // RE-ASSERTED (wave 154, lane 154E): the referral award moved from the self-typed record onto the evidenced close.
+  check("REFERRAL_RECEIVED (a seat-typed referral record) plans NOTHING", planLifecycleAwards(KernelEvent.REFERRAL_RECEIVED, { entityId: CONTACT, now, metadata: { referral_id: U(60) } }).length === 0)
+  check("REFERRAL_CONVERTED without server-found evidence plans nothing; with it, keys on the EVIDENCE transaction (not the referral)",
+    planLifecycleAwards(KernelEvent.REFERRAL_CONVERTED, { entityId: U(60), now }).length === 0 &&
+      planLifecycleAwards(KernelEvent.REFERRAL_CONVERTED, { entityId: U(60), now, referralEvidenceTransactionId: TX })[0]?.once.referenceId === TX)
+  const mentorPlan = planLifecycleAwards(KernelEvent.MENTOR_SESSION_HELD, { entityId: SESSION, now, metadata: { relationship_id: U(70) } })[0]
+  check("MENTOR_SESSION_HELD credits mentor AND mentee once per PAIRING per ISO week (Monday 00:00 UTC) — not per session row",
+    mentorPlan?.party === "mentor_and_mentee" && mentorPlan.once.referenceId === U(70) && mentorPlan.once.since?.toISOString() === "2026-10-05T00:00:00.000Z" &&
+      planLifecycleAwards(KernelEvent.MENTOR_SESSION_HELD, { entityId: SESSION, now }).length === 0)
+  check("isoWeekStartUtc: a Sunday belongs to the week that began the previous Monday", isoWeekStartUtc(new Date("2026-10-11T23:00:00Z")).toISOString() === "2026-10-05T00:00:00.000Z")
+  const review = (rating: number | null) => planLifecycleAwards(KernelEvent.REVIEW_RECEIVED, { entityId: U(80), entityType: "agent_review", now, metadata: { rating, contact_id: CONTACT } })
+  check("REVIEW_RECEIVED: a 5-star or a testimonial (no rating) plans CLIENT_REVIEW_RECEIVED once per client per year; a 2-star plans nothing",
+    review(5)[0]?.reason === "CLIENT_REVIEW_RECEIVED" && review(5)[0]?.once.referenceId === CONTACT && review(null).length === 1 && review(2).length === 0)
   check("an event with no rule plans nothing", planLifecycleAwards(KernelEvent.PRICE_DETERMINED, { entityId: TX, now }).length === 0)
 
   console.log("\n[tiers · pure]")
@@ -112,6 +127,9 @@ function memoryClient(seed: Record<string, Row[]>) {
   const t = (n: string) => (tables[n] ??= [])
   let rpcCalls = 0
   let refuseRead: string | null = null
+  // WAVE 154 (154E): m968's award_agent_points_once — "present" (the lock + re-read inside one synchronous step, as the
+  // advisory lock makes it) or "missing" (PGRST202: the pre-m968 database, where the app's read-then-write fallback runs).
+  let onceRpc: "present" | "missing" = "present"
   const matches = (row: Row, f: { kind: string; col?: string; val?: any; terms?: Array<[string, string, string]> }) => {
     switch (f.kind) {
       case "eq": return row[f.col!] === f.val
@@ -164,19 +182,34 @@ function memoryClient(seed: Record<string, Row[]>) {
     }
     return api
   }
-  const client: LedgerCapableClient & { tables: Record<string, Row[]>; rpcCalls: () => number; refuse: (t: string | null) => void } = {
+  // award_agent_points — THE writer (rpcCalls counts its invocations, direct or delegated from the once-RPC).
+  const writer = (args: Record<string, unknown>) => {
+    rpcCalls++
+    const agent = t("agents").find((a) => a.id === args.p_agent_id)
+    if (!agent) return { data: null, error: { message: "no agents row" } }
+    agent.gamification_points = (agent.gamification_points ?? 0) + Number(args.p_points)
+    const log = { id: U(700 + t("agent_points_log").length), agent_id: agent.id, brokerage_id: agent.brokerage_id, points: args.p_points, reason: args.p_reason, reference_type: args.p_reference_type, reference_id: args.p_reference_id, created_at: new Date().toISOString() }
+    t("agent_points_log").push(log)
+    return { data: { brokerage_id: agent.brokerage_id, points_added: args.p_points, new_total: agent.gamification_points, log_id: log.id } as any, error: null }
+  }
+  const client: LedgerCapableClient & { tables: Record<string, Row[]>; rpcCalls: () => number; refuse: (t: string | null) => void; setOnceRpc: (m: "present" | "missing") => void } = {
     from: (table: string) => query(table),
     rpc: async (fn: string, args: Record<string, unknown>) => {
-      rpcCalls++
-      if (fn !== "award_agent_points") return { data: null, error: { message: `unknown rpc ${fn}` } }
-      const agent = t("agents").find((a) => a.id === args.p_agent_id)
-      if (!agent) return { data: null, error: { message: "no agents row" } }
-      agent.gamification_points = (agent.gamification_points ?? 0) + Number(args.p_points)
-      const log = { id: U(700 + t("agent_points_log").length), agent_id: agent.id, brokerage_id: agent.brokerage_id, points: args.p_points, reason: args.p_reason, reference_type: args.p_reference_type, reference_id: args.p_reference_id, created_at: new Date().toISOString() }
-      t("agent_points_log").push(log)
-      return { data: { brokerage_id: agent.brokerage_id, points_added: args.p_points, new_total: agent.gamification_points, log_id: log.id }, error: null }
+      if (fn === "award_agent_points") return writer(args)
+      if (fn === "award_agent_points_once") {
+        if (onceRpc === "missing") return { data: null, error: { message: "Could not find the function public.award_agent_points_once", code: "PGRST202" } as any }
+        if (refuseRead === "agent_points_log") return { data: null, error: { message: "refused agent_points_log" } }
+        // No await between the read and the write — the advisory lock's guarantee, modelled.
+        const since = args.p_since ? String(args.p_since) : null
+        const standing = t("agent_points_log").some((r) => r.agent_id === args.p_agent_id && r.reason === args.p_reason &&
+          (args.p_reference_id == null || r.reference_id === args.p_reference_id) && (since == null || String(r.created_at) >= since))
+        if (standing) return { data: { already_awarded: true, agent_id: args.p_agent_id }, error: null }
+        const w = writer(args)
+        return w.error ? w : { data: { ...w.data, already_awarded: false }, error: null }
+      }
+      return { data: null, error: { message: `unknown rpc ${fn}` } }
     },
-    tables, rpcCalls: () => rpcCalls, refuse: (x) => { refuseRead = x },
+    tables, rpcCalls: () => rpcCalls, refuse: (x) => { refuseRead = x }, setOnceRpc: (m) => { onceRpc = m },
   }
   return client
 }
@@ -219,9 +252,13 @@ async function memoryLayer() {
   check("the FIRST_CLOSE milestone badge landed once, with its evidence reason", m.tables.agent_badges.length === 1 && closeRes.badgesAwarded === 1 && /FIRST_CLOSE/.test(m.tables.agent_badges[0].awarded_reason))
   const closeAgain = await awardLifecycleMilestones(m, { event: KernelEvent.TRANSACTION_CLOSED, brokerageId: BRK, entityType: "transaction", entityId: TX, metadata: {} })
   check("replaying the close awards nothing and mints no second badge", closeAgain.awarded.length === 0 && m.tables.agent_badges.length === 1)
-  const mentor = await awardLifecycleMilestones(m, { event: KernelEvent.MENTOR_SESSION_HELD, brokerageId: BRK, entityType: "mentor_session", entityId: SESSION, metadata: { mentor_agent_id: AGENT, mentee_agent_id: AGENT2 } })
-  check("MENTOR_SESSION_HELD credits both parties, 75 each, once per session",
-    mentor.awarded.length === 2 && mentor.awarded.every((a) => a.points === POINT_VALUES.MENTOR_SESSION_HELD) && new Set(mentor.awarded.map((a) => a.agentId)).size === 2)
+  const mentor = await awardLifecycleMilestones(m, { event: KernelEvent.MENTOR_SESSION_HELD, brokerageId: BRK, entityType: "mentor_session", entityId: SESSION, metadata: { mentor_agent_id: AGENT, mentee_agent_id: AGENT2, relationship_id: U(70) } })
+  const mentorSecond = await awardLifecycleMilestones(m, { event: KernelEvent.MENTOR_SESSION_HELD, brokerageId: BRK, entityType: "mentor_session", entityId: U(41), metadata: { mentor_agent_id: AGENT, mentee_agent_id: AGENT2, relationship_id: U(70) } })
+  // RE-ASSERTED (wave 154): "once per session" was once per CLICK (every log inserted a new session row). The rule now: a
+  // second session on the same pairing in the same week lands nothing.
+  check("MENTOR_SESSION_HELD credits both parties, 75 each; a second session row on the same pairing this week lands nothing",
+    mentor.awarded.length === 2 && mentor.awarded.every((a) => a.points === POINT_VALUES.MENTOR_SESSION_HELD) && new Set(mentor.awarded.map((a) => a.agentId)).size === 2 &&
+      mentorSecond.awarded.length === 0 && mentorSecond.alreadyAwarded === 2)
   const noAgent = await awardLifecycleMilestones(m, { event: KernelEvent.CONTACT_CREATED, brokerageId: BRK, entityType: "contact", entityId: U(21), metadata: {} })
   check("an event whose agent cannot be resolved awards nothing and SAYS so", noAgent.awarded.length === 0 && noAgent.refused.length === 1)
   check("agents.id is the key — a users.id-only event resolves through agents.user_id", (await awardLifecycleMilestones(m, { event: KernelEvent.USER_ONBOARDING_COMPLETED, brokerageId: BRK, entityType: "user", entityId: U(6), metadata: {} })).awarded[0]?.agentId === AGENT2)
@@ -247,7 +284,9 @@ function wiringLayer() {
   // WAVE 153 (lane 153I): the private wrapper the old check pinned (`awardBadgeToAgent(supabase, data)`) was retired with the
   // threshold loop it served; the RULE is unchanged — one insert site, and the action module DELEGATES (now to the stored-total
   // threshold awarder) rather than writing agent_badges itself.
-  check(`agent_badges is inserted from lifecycle-awards.ts only (${badgeInserts.length} site) — app/actions/gamification.ts delegates`, badgeInserts.length === 1 && badgeInserts[0] === "lib/gamification/lifecycle-awards.ts" && /awardThresholdBadges\(supabase,/.test(src("app/actions/gamification.ts")) && !/from\(\s*"agent_badges"\s*\)\s*\.insert/.test(src("app/actions/gamification.ts")))
+  // RE-ASSERTED (wave 154, lane 154E): m968 takes agent_badges writes from session seats, so the delegation runs on the service
+  // client — the rule is unchanged (one insert site, the action delegates) plus: the tenant handed down is the SESSION's.
+  check(`agent_badges is inserted from lifecycle-awards.ts only (${badgeInserts.length} site) — app/actions/gamification.ts delegates with the SESSION tenant`, badgeInserts.length === 1 && badgeInserts[0] === "lib/gamification/lifecycle-awards.ts" && /awardThresholdBadges\(createServiceClient\(\), \{ agentId, brokerageId: caller\.brokerageId \}\)/.test(src("app/actions/gamification.ts")) && !/from\(\s*"agent_badges"\s*\)\s*\.insert/.test(src("app/actions/gamification.ts")))
   check("positive control: the finder sees an insert when one exists", /from\(\s*"agent_badges"\s*\)\s*\.insert\(/.test(lifecycleSrc))
   check("award-points.ts (imported by a Client Component) carries NO edge into the server-only emit graph; lifecycle-awards.ts carries it", !/lib\/kernel\/emit/.test(awardSrc) && /import\("@\/lib\/kernel\/emit"\)/.test(lifecycleSrc))
 
@@ -289,8 +328,10 @@ function wiringLayer() {
   check("handleSellerToLifetimeTransition emits LIFETIME_CUSTOMER (side 'seller', metadata.agent_id) and awards nothing itself", /KernelEvent\.LIFETIME_CUSTOMER,/.test(sellerFn) && /side: "seller", agent_id: agentRecordId/.test(sellerFn) && !/awardAgentPoints/.test(sellerFn))
   const onboardingSrc = src("lib/kernel/agent-onboarding.ts")
   check("agent-onboarding emits ONBOARDING_COMPLETED on the false→true completion edge (entity agent_onboarding) and awards nothing itself", /if \(isComplete && !wasAlreadyComplete\) \{[\s\S]*?KernelEvent\.ONBOARDING_COMPLETED/.test(onboardingSrc) && /entityType: "agent_onboarding"/.test(onboardingSrc) && !/awardAgentPoints/.test(onboardingSrc))
-  const remaining = ["app/actions/contact-reassignment.ts", "lib/recruiting/challenge-runner.ts"].filter((f) => /awardAgentPoints\(/.test(src(f)))
-  check("exactly two call-site awards remain, both UNRESOLVED by design (CONTACT_ASSIGNED: the canonical CONTACT_AGENT_ASSIGNED is the welcome trigger and A→B→A repeats; CHALLENGE_PRIZE: no event, data-driven points)", remaining.length === 2 && !/awardAgentPoints\(/.test(src("lib/application/listing-lifecycle.ts")) && !/awardAgentPoints\(/.test(src("lib/kernel/agent-onboarding.ts")))
+  // RE-ASSERTED (wave 154, lane 154E): the challenge prize now goes through awardAgentPointsOnce (it re-paid on a failed
+  // "ended" stamp). The rule is unchanged — exactly these two domain call sites award, through the ONE module.
+  const remaining = ["app/actions/contact-reassignment.ts", "lib/recruiting/challenge-runner.ts"].filter((f) => /awardAgentPoints(?:Once)?\(/.test(src(f)))
+  check("exactly two domain call-site awards remain (CONTACT_ASSIGNED: A→B→A repeats; CHALLENGE_PRIZE: data-driven points, now ONCE per challenge per winner)", remaining.length === 2 && /awardAgentPointsOnce\(svc, \{[\s\S]*?once: \{ referenceId: c\.id \}/.test(src("lib/recruiting/challenge-runner.ts")) && !/awardAgentPoints\(/.test(src("lib/application/listing-lifecycle.ts")) && !/awardAgentPoints\(/.test(src("lib/kernel/agent-onboarding.ts")))
   // RE-ASSERTED (wave 146, lane 146I): the old pin was the literal select("id, created_at, anniversary_date") — a waypoint the
   // agreement-sourced start date (agents.start_date, m858, wave 145 contract C6) had to move. The RULE: the start date of
   // record wins, then the seat stamp, then created_at, and the roster read selects every column the rule reads (derived).
@@ -394,13 +435,19 @@ async function verifiedOutcomesLayer() {
   const SERVER_VERIFIED: Record<string, string> = {
     "app/actions/contact-reassignment.ts": "CONTACT_ASSIGNED after the reassignment itself is authorized and written (no canonical event exists — wave 103 blind spot)",
     "app/actions/challenges.ts": "challenge prizes awarded by the scorer on a challenge that ENDED",
+    // WAVE 154 (154E): the ONE correction door — tenant admin minus team_lead / compliance_officer, never self, a reason,
+    // a once-key, withActionLedger audit (proved in awardPathLayer). Not a self-award: the caller's own record is refused.
+    "app/actions/gamification.ts": "correctAgentPoints — an audited admin correction on the same ledger, never to the caller's own record",
   }
   const unexpected = exportedAwarders.filter((f) => !SERVER_VERIFIED[f])
   check(`no "use server" module awards points on a caller's say-so (${exportedAwarders.length} award site(s) inside public modules, each server-verified: ${exportedAwarders.join(", ") || "none"})`, unexpected.length === 0)
   check("POSITIVE CONTROL: the census sees an award call inside a public export, and not inside a comment", AWARD_CALL.test(stripComments("export async function x() { await awardAgentPoints(db, {}) }")) && !AWARD_CALL.test(stripComments("// awardAgentPoints(db, {})\nexport async function y() {}")))
   check("POSITIVE CONTROL: the retired-door import finder sees a real import", /from\s+["']@\/app\/lib\/gamification\/award-on-action["']/.test('import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"'))
   const gam = src("app/actions/gamification.ts")
-  check("app/actions/gamification.ts exports no addPoints and calls no award wrapper", !/export\s+async\s+function\s+addPoints\b/.test(gam) && !AWARD_CALL.test(gam))
+  // RE-ASSERTED (wave 154, lane 154E): the module may now hold ONE award call — inside the gated correctAgentPoints. Every
+  // other export (the reads, checkAndAwardBadges) still calls no award wrapper.
+  const gamOutsideCorrection = gam.replace(/export async function correctAgentPoints[\s\S]*?\n\}(?=\n|$)/, "")
+  check("app/actions/gamification.ts exports no addPoints and calls no award wrapper outside the gated correctAgentPoints", !/export\s+async\s+function\s+addPoints\b/.test(gam) && !AWARD_CALL.test(gamOutsideCorrection) && gamOutsideCorrection !== gam)
   check("checkAndAwardBadges ignores a caller-supplied total (the argument is never read; awardThresholdBadges reads agents.gamification_points)",
     /export async function checkAndAwardBadges\(agentId: string, _currentPoints\?: number\)/.test(gam) && (gam.match(/_currentPoints/g) ?? []).length === 1 && /select\("id, brokerage_id, gamification_points"\)/.test(src("lib/gamification/lifecycle-awards.ts")))
 
@@ -411,10 +458,206 @@ async function verifiedOutcomesLayer() {
   check("POSITIVE CONTROL: the label catalogue still names an unawarded action (training), so the filter is doing work", /reason: "TRAINING_COMPLETED"/.test(src("lib/gamification/award-points.ts")) && !ruleReasons.has("TRAINING_COMPLETED") && !POINT_EARNING_ACTIONS.some((a) => a.reason === "TRAINING_COMPLETED"))
 }
 
+// ─── WAVE 154 (lane 154E) — THE AWARD PATH, END TO END (all SIMULATED) ────────
+// The owner: "why is the gamification award function retired? that function needs to work." This layer prints the award
+// table DERIVED from the code (census × live rules × advertised list × emitters found in stripped source) and proves
+// directive E5 against the in-memory client.
+
+const STATE = { WORKING: "WORKING", NOT_SHOWN: "EARNABLE BUT NOT SHOWN", NOT_WIRED: "EMITTER NOT WIRED", NO_EMITTER: "NO EMITTER", LIE: "ADVERTISED BUT UNEARNABLE" } as const
+
+function onceKeyOf(reason: string): string {
+  const rules = LIFECYCLE_AWARD_RULES.filter((r) => r.reason === reason)
+  if (rules.length === 0) return "—"
+  return [...new Set(rules.map((r) => `${r.scope}${r.referenceFrom && r.referenceFrom !== "entity" ? `(${r.referenceFrom})` : r.scope.startsWith("per_reference") ? "(entity)" : ""}`))].join(" | ")
+}
+
+function awardTableLayer() {
+  console.log("\n[THE AWARD TABLE — derived from LIFECYCLE_AWARD_RULES × AWARD_CENSUS × POINT_EARNING_ACTIONS × stripped source]")
+  const advertised = new Set(POINT_EARNING_ACTIONS.map((a) => a.reason as string))
+  const ruled = new Set(LIFECYCLE_AWARD_RULES.map((r) => r.reason as string))
+  const reasons = [...Object.keys(POINT_VALUES), "CHALLENGE_PRIZE", "ADMIN_ADJUSTMENT"]
+  check("every POINT_VALUES reason (and the two data-driven call-site reasons) has exactly one census row",
+    reasons.every((r) => AWARD_CENSUS.filter((c) => c.reason === r).length === 1) && AWARD_CENSUS.length === reasons.length)
+  const rows: string[][] = []
+  const states: Record<string, string> = {}
+  for (const reason of reasons) {
+    const c = AWARD_CENSUS.find((x) => x.reason === reason)!
+    const found = c.emitters.map((e) => { try { return src(e.file).includes(e.token) } catch { return false } })
+    const emittersOk = c.emitters.length > 0 && found.every(Boolean)
+    const earnable = (c.path === "reactor" && ruled.has(reason)) || c.path === "call_site"
+    let state: string
+    if (advertised.has(reason) && !(earnable && emittersOk)) state = STATE.LIE
+    else if (earnable && emittersOk) state = advertised.has(reason) ? STATE.WORKING : STATE.NOT_SHOWN
+    else if (!earnable && c.emitters.length > 0) state = STATE.NOT_WIRED
+    else state = STATE.NO_EMITTER
+    states[reason] = state
+    if (earnable && !emittersOk) check(`${reason}: an award path exists but its emitter is gone (${c.emitters.map((e, i) => `${e.file}${found[i] ? "" : " MISSING"}`).join(", ")})`, false)
+    if (c.path === "reactor" && !ruled.has(reason) && c.trust !== "self_attested" && c.trust !== "none") check(`${reason}: census says reactor-awarded but no LIFECYCLE_AWARD_RULES row grants it`, false)
+    rows.push([reason, String((POINT_VALUES as Record<string, number>)[reason] ?? "data"), state, c.trust, onceKeyOf(reason), c.agent, c.emitters.map((e) => e.file).join(" + ") || "—", c.ownerDecision ? "OWNER" : ""])
+  }
+  const widths = [26, 5, 24, 16, 46]
+  for (const r of rows) console.log(`  ${r.slice(0, 5).map((x, i) => x.padEnd(widths[i])).join(" ")} ${r[7]}\n      agent: ${r[5]}\n      emitter: ${r[6]}`)
+  console.log("  every row: tenant = the agents row's brokerage (derived inside award_agent_points, never accepted) · write = award_agent_points_once →")
+  console.log("  award_agent_points (agents.gamification_points += p, one agent_points_log row, one transaction) · milestone badge = catalog row whose")
+  console.log("  trigger_event names the reason + threshold badges on the stored total · boards = runLeaderboardSnapshotAll (weekly cron) · UI =")
+  console.log("  /dashboard/motivation (getAgentPointsAndTier, getAgentPointsHistory, getAgentBadges, getLeaderboard) · retry = once-key (replay lands")
+  console.log("  nothing) · revocation = an ADMIN_ADJUSTMENT on the same ledger (correctAgentPoints); no row is ever edited or deleted by a seat")
+  const count = (s: string) => Object.values(states).filter((x) => x === s).length
+  console.log(`  totals: ${STATE.WORKING} ${count(STATE.WORKING)} · ${STATE.NOT_SHOWN} ${count(STATE.NOT_SHOWN)} · ${STATE.NOT_WIRED} ${count(STATE.NOT_WIRED)} · ${STATE.NO_EMITTER} ${count(STATE.NO_EMITTER)} · ${STATE.LIE} ${count(STATE.LIE)} (of ${reasons.length})`)
+  check("no reason is ADVERTISED BUT UNEARNABLE", count(STATE.LIE) === 0)
+  check("every advertised reason is a reactor award on a VERIFIED outcome (never a booking, never a seat's own assertion)",
+    POINT_EARNING_ACTIONS.every((a) => AWARD_CENSUS.some((c) => c.reason === a.reason && c.path === "reactor" && c.trust === "verified_outcome")))
+  check("every EMITTER NOT WIRED reason is self-attested and carries an owner decision (an event exists, deliberately unrewarded)",
+    Object.entries(states).filter(([, s]) => s === STATE.NOT_WIRED).every(([r]) => { const c = AWARD_CENSUS.find((x) => x.reason === r)!; return c.trust === "self_attested" && !!c.ownerDecision }))
+  check("the verified showing and the education milestones are advertised with their POINT_VALUES (SHOWING_COMPLETED, CERTIFICATION_EARNED, CE_COMPLETED)",
+    ["SHOWING_COMPLETED", "CERTIFICATION_EARNED", "CE_COMPLETED"].every((r) => advertised.has(r)))
+  check("unimplemented / untrusted reasons are NOT advertised: TRAINING_COMPLETED, OPEN_HOUSE_HOSTED, VENDOR_REVIEW_WRITTEN, FOLLOWUP_SENT, REFERRAL_CREATED, FIRST_APPOINTMENT",
+    ["TRAINING_COMPLETED", "OPEN_HOUSE_HOSTED", "VENDOR_REVIEW_WRITTEN", "FOLLOWUP_SENT", "REFERRAL_CREATED", "FIRST_APPOINTMENT"].every((r) => !advertised.has(r)))
+  // POSITIVE CONTROL: those reasons ARE in the label list — the derived filter is what keeps them off the page.
+  const awardSrc = src("lib/gamification/award-points.ts")
+  check("POSITIVE CONTROL: TRAINING_COMPLETED / OPEN_HOUSE_HOSTED still carry labels — the census filter, not a missing label, hides them",
+    /reason: "TRAINING_COMPLETED", label:/.test(awardSrc) && /reason: "OPEN_HOUSE_HOSTED", label:/.test(awardSrc))
+  check("POSITIVE CONTROL: the emitter finder reports a token that is not there", !src("lib/gamification/award-points.ts").includes("KernelEvent.NOT_A_REAL_EVENT_154E"))
+  check("the Motivation page renders exactly POINT_EARNING_ACTIONS with POINT_VALUES (one list, one number)",
+    /POINT_EARNING_ACTIONS\.map\(\(a\) =>/.test(src("app/dashboard/motivation/motivation-client.tsx")) && /POINT_VALUES\[a\.reason\]/.test(src("app/dashboard/motivation/motivation-client.tsx")))
+}
+
+/** Every "use server" module whose stripped source reaches an award writer. */
+function serverAwardDoors(files: Array<{ path: string; text: string }>): string[] {
+  return files.filter((f) => /^\s*["']use server["']/.test(f.text) && /awardAgentPoints(?:Once)?\(|rpc\(\s*["']award_agent_points/.test(stripComments(f.text))).map((f) => f.path)
+}
+
+async function awardPathLayer() {
+  console.log("\n[E5 · a trusted close, replay / webhook / concurrent workers, the self-award refusal — SIMULATED]")
+  const BADGE_T = U(51)
+  const seed = () => ({
+    agents: [{ id: AGENT, brokerage_id: BRK, user_id: U(5), gamification_points: 0 }, { id: AGENT2, brokerage_id: BRK, user_id: U(6), gamification_points: 0 },
+      { id: U(3), brokerage_id: U(8), user_id: U(7), gamification_points: 0 }],
+    transactions: [{ id: TX, brokerage_id: BRK, agent_id: AGENT, buyer_contact_id: CONTACT, seller_contact_id: null, status: "closed" }],
+    gamification_badges: [
+      { id: BADGE, brokerage_id: null, badge_name: "First Close", badge_tier: "silver", trigger_event: "FIRST_CLOSE", is_active: true, required_points: 0 },
+      { id: BADGE_T, brokerage_id: null, badge_name: "Bronze", badge_tier: "bronze", trigger_event: "points_threshold", is_active: true, required_points: 300 },
+    ],
+  })
+  const ledgerAgrees = (c: ReturnType<typeof memoryClient>) => c.tables.agents.every((a) =>
+    (a.gamification_points ?? 0) === (c.tables.agent_points_log ?? []).filter((l) => l.agent_id === a.id).reduce((s, l) => s + Number(l.points), 0))
+
+  // 1. A REAL trusted close.
+  const m = memoryClient(seed())
+  const close = { event: KernelEvent.TRANSACTION_CLOSED, brokerageId: BRK, entityType: "transaction", entityId: TX, metadata: { close_date: "2026-11-18" } }
+  const r = await awardLifecycleMilestones(m, close)
+  const agentRow = m.tables.agents.find((a) => a.id === AGENT)!
+  check(`a trusted TRANSACTION_CLOSED awards LISTING_CLOSED ${POINT_VALUES.LISTING_CLOSED} + FIRST_CLOSE ${POINT_VALUES.FIRST_CLOSE}; total ${agentRow.gamification_points} = ledger sum; FIRST_CLOSE badge + the 300-point threshold badge once each`,
+    JSON.stringify(r.awarded.map((a) => a.reason).sort()) === JSON.stringify(["FIRST_CLOSE", "LISTING_CLOSED"]) &&
+      agentRow.gamification_points === POINT_VALUES.LISTING_CLOSED + POINT_VALUES.FIRST_CLOSE && ledgerAgrees(m) &&
+      m.tables.agent_badges.filter((b) => b.badge_id === BADGE).length === 1 && m.tables.agent_badges.filter((b) => b.badge_id === BADGE_T).length === 1)
+  check("agent_badges joins gamification_badges (every awarded badge_id is a catalog id, stamped with the agent's tenant)",
+    m.tables.agent_badges.every((b) => m.tables.gamification_badges.some((g) => g.id === b.badge_id) && b.brokerage_id === BRK))
+
+  // 2. Replay, a repeated webhook, concurrent workers.
+  const replay = await awardLifecycleMilestones(m, close)
+  check("a replayed close lands nothing (2 alreadyAwarded), mints no badge, total unchanged", replay.awarded.length === 0 && replay.alreadyAwarded === 2 && agentRow.gamification_points === 350 && m.tables.agent_badges.length === 2)
+  const ce = { event: KernelEvent.CE_COMPLETED, brokerageId: BRK, entityType: "agent_ce_completion", entityId: U(90), metadata: { agent_id: AGENT2 } }
+  const w1 = await awardLifecycleMilestones(m, ce); const w2 = await awardLifecycleMilestones(m, ce)
+  check("a repeated CE provider webhook for the same completion awards once", w1.awarded.length === 1 && w2.awarded.length === 0 && m.tables.agent_points_log.filter((l) => l.reason === "CE_COMPLETED").length === 1)
+  const fresh = memoryClient(seed())
+  const triple = await Promise.all([1, 2, 3].map(() => awardLifecycleMilestones(fresh, close)))
+  check(`three concurrent workers on one close award once (award_agent_points_once present): ${fresh.tables.agent_points_log.length} ledger rows`,
+    fresh.tables.agent_points_log.length === 2 && triple.reduce((s, x) => s + x.awarded.length, 0) === 2 && ledgerAgrees(fresh))
+  // NEGATIVE CONTROL — the base: without m968 the read-then-write fallback lets concurrent twins both land.
+  const base = memoryClient(seed()); base.setOnceRpc("missing")
+  await Promise.all([1, 2].map(() => awardAgentPointsOnce(base, { agentId: AGENT, points: 100, reason: "LISTING_CLOSED", once: { referenceId: TX } })))
+  check(`NEGATIVE CONTROL (base behavior): with award_agent_points_once missing, two concurrent awards BOTH land (${base.tables.agent_points_log.length} rows) — the race m968 closes`, base.tables.agent_points_log.length === 2)
+  const seq = memoryClient(seed()); seq.setOnceRpc("missing")
+  await awardAgentPointsOnce(seq, { agentId: AGENT, points: 100, reason: "LISTING_CLOSED", once: { referenceId: TX } })
+  const seq2 = await awardAgentPointsOnce(seq, { agentId: AGENT, points: 100, reason: "LISTING_CLOSED", once: { referenceId: TX } })
+  check("the pre-m968 fallback still declines a SEQUENTIAL replay (said aloud, not silent)", seq.tables.agent_points_log.length === 1 && seq2.ok && "alreadyAwarded" in seq2)
+
+  // 3. Self-submitted FIRST_CLOSE with no evidence.
+  const forged = await awardLifecycleMilestones(memoryClient(seed()), { event: KernelEvent.TRANSACTION_CLOSED, brokerageId: BRK, entityType: "transaction", entityId: U(99), metadata: {} })
+  check("a FIRST_CLOSE claimed on a transaction that does not exist in the tenant awards nothing and says why", forged.awarded.length === 0 && forged.refused.some((x) => /FIRST_CLOSE: no agents\.id/.test(x)))
+  const crossTenant = await awardLifecycleMilestones(memoryClient(seed()), { event: KernelEvent.TRANSACTION_CLOSED, brokerageId: U(8), entityType: "transaction", entityId: TX, metadata: {} })
+  check("the same close named under ANOTHER tenant awards nothing (resolution is tenant-scoped)", crossTenant.awarded.length === 0)
+  const files = listSources().filter((f) => f.startsWith("app/") || f.startsWith("lib/")).map((p) => ({ path: p, text: raw(p) }))
+  const doors = serverAwardDoors(files).sort()
+  check(`"use server" modules that reach an award writer are exactly the two gated ones (${doors.join(", ")}) — the admin correction and the admin reassignment`,
+    JSON.stringify(doors) === JSON.stringify(["app/actions/contact-reassignment.ts", "app/actions/gamification.ts"]))
+  check("POSITIVE CONTROL: the door finder flags a client-callable award (the retired addPoints shape)",
+    serverAwardDoors([{ path: "specimen.ts", text: `"use server"\nexport async function addPoints(agentId: string) { return awardAgentPoints(db, { agentId, points: 250, reason: "FIRST_CLOSE" }) }` }]).length === 1 &&
+      serverAwardDoors([{ path: "specimen.ts", text: `"use server"\n// awardAgentPoints(db, {...}) — a tombstone\nexport async function x() {}` }]).length === 0)
+  const g = src("app/actions/gamification.ts")
+  check("the retired door stays retired: no `export async function addPoints` and no app/lib/gamification/award-on-action.ts",
+    !/export\s+async\s+function\s+addPoints\b/.test(g) && !listSources().includes("app/lib/gamification/award-on-action.ts"))
+  const mig = raw("supabase/migrations/m968-gamification-awards-come-from-the-server-only.sql").split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")
+  check("m968 closes the DATABASE door the owner's question was really about: award_agent_points EXECUTE revoked from authenticated; the once-award refuses any session; no session ledger INSERT; badges read-only to seats; the total trigger-held",
+    /revoke execute on function public\.award_agent_points\(uuid, integer, text, text, uuid\) from anon, authenticated/.test(mig) &&
+      /if auth\.uid\(\) is not null then\s+raise exception 'award_agent_points_once/.test(mig) &&
+      /drop policy if exists agent_points_log_insert/.test(mig) && /drop policy if exists agent_badges_tenant on/.test(mig) && /for select to authenticated using/.test(mig) &&
+      /before insert or update of gamification_points on public\.agents/.test(mig))
+  check("POSITIVE CONTROL: the m484 grant m968 revokes is still in the history (the finder reads the real statement)",
+    /grant execute on function public\.award_agent_points\(uuid, integer, text, text, uuid\) to authenticated/.test(raw("supabase/migrations/m484-a-board-read-in-one-vocabulary-and-written-in-another-can-never-show-a-row.sql")))
+
+  console.log("\n[E3 · recovered paths — referral outcome, client review, mentor pairing — SIMULATED]")
+  const REF = U(60), REF2 = U(61), REVIEW = U(80)
+  const rc = memoryClient({ ...seed(), referrals: [{ id: REF, brokerage_id: BRK, agent_id: AGENT2, status: REFERRAL_TERMINAL_WON, transaction_id: null, referred_contact_id: U(22) }],
+    agent_reviews: [{ id: REVIEW, brokerage_id: BRK, agent_id: AGENT }] })
+  const noEvidence = await awardLifecycleMilestones(rc, { event: KernelEvent.REFERRAL_CONVERTED, brokerageId: BRK, entityType: "referral", entityId: REF, metadata: {} })
+  check("a referral marked won with NO closed transaction behind it awards nothing and says so", noEvidence.awarded.length === 0 && noEvidence.refused.some((x) => /no closed transaction evidences/.test(x)))
+  rc.tables.transactions.push({ id: TX_OLD, brokerage_id: BRK, agent_id: AGENT, buyer_contact_id: U(22), seller_contact_id: null, status: "closed" })
+  const lateClose = await awardLifecycleMilestones(rc, { event: KernelEvent.TRANSACTION_CLOSED, brokerageId: BRK, entityType: "transaction", entityId: TX_OLD, metadata: {} })
+  check("the referred contact's deal closing pays the WON referral's agent REFERRAL_CONVERTED once, keyed on that transaction",
+    lateClose.awarded.some((a) => a.agentId === AGENT2 && a.reason === "REFERRAL_CONVERTED") && rc.tables.agent_points_log.some((l) => l.reason === "REFERRAL_CONVERTED" && l.reference_id === TX_OLD))
+  rc.tables.referrals.push({ id: REF2, brokerage_id: BRK, agent_id: AGENT2, status: REFERRAL_TERMINAL_WON, transaction_id: TX_OLD, referred_contact_id: null })
+  const again = await awardLifecycleMilestones(rc, { event: KernelEvent.REFERRAL_CONVERTED, brokerageId: BRK, entityType: "referral", entityId: REF2, metadata: {} })
+  check("a SECOND referral record naming the same closed deal earns nothing more (one award per transaction per agent)",
+    again.awarded.length === 0 && rc.tables.agent_points_log.filter((l) => l.reason === "REFERRAL_CONVERTED").length === 1)
+  const rv = (contact: string, rating: number | null, id = REVIEW) => awardLifecycleMilestones(rc, { event: KernelEvent.REVIEW_RECEIVED, brokerageId: BRK, entityType: "agent_review", entityId: id, metadata: { rating, contact_id: contact } })
+  const rv1 = await rv(CONTACT, 5); const rv2 = await rv(CONTACT, null); const rvLow = await rv(U(23), 2)
+  check(`a client's 5-star review pays agent_reviews.agent_id ${POINT_VALUES.CLIENT_REVIEW_RECEIVED} once; the same client's next testimonial this year lands nothing; a 2-star earns nothing`,
+    rv1.awarded.length === 1 && rv1.awarded[0].agentId === AGENT && rv2.awarded.length === 0 && rvLow.awarded.length === 0)
+  check("every agent's stored total equals SUM(agent_points_log.points) after every scenario above", ledgerAgrees(rc) && ledgerAgrees(m) && ledgerAgrees(fresh))
+
+  console.log("\n[E3/E4 · the admin correction, the mentor gate, the board scope, the read keys — stripped source + SIMULATED ledger]")
+  const corr = U(95)
+  const adj1 = await awardAgentPointsOnce(m, { agentId: AGENT, points: -50, reason: "ADMIN_ADJUSTMENT", referenceType: "points_correction", once: { referenceId: corr } })
+  const adj2 = await awardAgentPointsOnce(m, { agentId: AGENT, points: -50, reason: "ADMIN_ADJUSTMENT", referenceType: "points_correction", once: { referenceId: corr } })
+  check("an admin correction (−50) lands once on the SAME ledger; a double submit with the same correctionId lands nothing; total = ledger sum",
+    adj1.ok && !("alreadyAwarded" in adj1) && adj2.ok && "alreadyAwarded" in adj2 && agentRow.gamification_points === 300 && ledgerAgrees(m))
+  const corrFn = (g.match(/export async function correctAgentPoints[\s\S]*?\n\}(?=\n|$)/) ?? [""])[0]
+  check("correctAgentPoints: session tenant (requireCaller), admin gate (resolveTenantAdmin / platform staff) minus team_lead + compliance_officer, never self, a reason, the once-key, withActionLedger audit, reconciliation",
+    /requireCaller\(\)/.test(corrFn) && /resolveTenantAdmin\(/.test(corrFn) && /isPlatformStaffIdentity\(/.test(corrFn) && /"team_lead" \|\| userType === "compliance_officer"/.test(corrFn) &&
+      /cannot correct your own points/.test(corrFn) && /reason\.length < 10/.test(corrFn) && /\.eq\("brokerage_id", caller\.brokerageId\)/.test(corrFn) &&
+      /withActionLedger<Out>\(/.test(corrFn) && /once: \{ referenceId: input\.correctionId \}/.test(corrFn) && /reconciled:/.test(corrFn) && !/\.update\(\s*\{\s*gamification_points/.test(corrFn))
+  const ms = src("app/actions/onboarding/mentor-session.ts")
+  const logFn = (ms.match(/export async function logMentorSession[\s\S]*?\n\}(?=\n|$)/) ?? [""])[0]
+  check("logMentorSession: session tenant, an ACTIVE agent_mentor_relationships pairing in it, the caller a party or tenant admin, relationship_id server-derived into the event",
+    /requireCaller\(\)/.test(logFn) && /from\("agent_mentor_relationships"\)[\s\S]*?\.eq\("brokerage_id", brokerageId\)[\s\S]*?\.eq\("status", "active"\)/.test(logFn) &&
+      /resolveTenantAdmin\(/.test(logFn) && /relationship_id: pairing\.id,/.test(logFn) && /relationship_id: pairing\.id, session_type/.test(logFn) && !/brokerage_id \?\? null/.test(logFn))
+  const lb = (g.match(/export async function getLeaderboard[\s\S]*?\n\}(?=\n|$)/) ?? [""])[0]
+  check("getLeaderboard: tenant from the SESSION users row; team = the viewer's own team or the team they LEAD (resolveLedTeamId on the session user); no caller-named team or tenant",
+    /\.from\("users"\)[\s\S]*?\.eq\("id", user\.id\)/.test(lb) && /\.eq\("brokerage_id", profile\.brokerage_id\)/.test(lb) && /resolveLedTeamId\(supabase as any, user\.id\)/.test(lb) &&
+      /query = query\.eq\("team_id", teamId\)/.test(lb) && !/options\.(teamId|brokerageId|team)\b/.test(lb))
+  check("POSITIVE CONTROL: the scope finder would see a caller-named team", /options\.(teamId|brokerageId|team)\b/.test("query.eq('team_id', options.teamId)"))
+  // Tier and board read the SAME column; the UI reads only keys the readers return.
+  check("tier (getAgentPointsAndTier) and board (lifetimePoints) both read agents.gamification_points; the Motivation page reads points + currentTierId",
+    /select\("id, gamification_points/.test(g) && /lifetimePoints: Number\(a\?\.gamification_points\)/.test(g) && /pointsResult\.points, tierId: pointsResult\.currentTierId/.test(src("app/dashboard/motivation/motivation-client.tsx")))
+  check("tier for the simulated balance is one answer everywhere (tierForPoints(300) on both reads)", tierForPoints(agentRow.gamification_points) === tierForPoints(300))
+  const rowKeys = new Set(((raw("lib/gamification/leaderboard-vocabulary.ts").match(/export interface LeaderboardRow \{([\s\S]*?)\n\}/) ?? ["", ""])[1].match(/^\s*(\w+)\s*:/gm) ?? []).map((k) => k.replace(/[\s:]/g, "")))
+  const boardBlock = (src("app/dashboard/motivation/motivation-client.tsx").match(/<TableRow key=\{entry\.agentId\}[\s\S]*?<\/TableRow>/) ?? [""])[0]
+  const uiKeys = [...new Set((boardBlock.match(/entry\.(\w+)/g) ?? []).map((k) => k.slice(6)))]
+  check(`every board key the Motivation page reads (${uiKeys.join(", ")}) is a LeaderboardRow key the reader returns`, uiKeys.length >= 4 && uiKeys.every((k) => rowKeys.has(k)))
+  check("POSITIVE CONTROL: the key finder rejects a key the reader does not return", !rowKeys.has("points") && rowKeys.has("score"))
+  check("game mechanics never write compensation: no award module writes commissions / splits / recruiting payouts",
+    ["lib/gamification/award-points.ts", "lib/gamification/lifecycle-awards.ts", "lib/gamification/award-census.ts"].every((f) => !/from\("(commission[a-z_]*|agent_splits|recruiting_payouts|revenue_share[a-z_]*)"\)/.test(src(f))))
+  check("fatigue-aware protection stands: getAgentPointsAndTier still reads strain and returns underStrain", /isAgentUnderStrain\(supabase, agentId\)/.test(g) && /underStrain,/.test(g))
+}
+
 async function main() {
   pureLayer()
   await memoryLayer()
   wiringLayer()
+  awardTableLayer()
+  await awardPathLayer()
   await verifiedOutcomesLayer()
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ GAMIFICATION_FAIL\n" + fails.map((f) => `   - ${f}`).join("\n")); process.exit(1) }

@@ -54,7 +54,9 @@ function sourceLayer() {
   // agents.gamification_points behind, so a winner's prize counted on the board and never
   // toward their tier or their badges. It rides the ONE atomic award path now, which does
   // the increment and the ledger row in a single transaction (m484: award_agent_points).
-  check("finalize awards prize points through the ONE atomic award path (CHALLENGE_PRIZE)", /awardAgentPoints\([\s\S]*?CHALLENGE_PRIZE/.test(src("lib/recruiting/challenge-runner.ts")))
+  // RE-ASSERTED (wave 154, lane 154E): the prize now goes through awardAgentPointsOnce (once per challenge per winner) —
+  // still the ONE atomic award path (award-points.ts → award_agent_points).
+  check("finalize awards prize points through the ONE atomic award path (CHALLENGE_PRIZE), once per challenge per winner", /awardAgentPointsOnce\([\s\S]*?CHALLENGE_PRIZE[\s\S]*?once: \{ referenceId: c\.id \}/.test(src("lib/recruiting/challenge-runner.ts")))
   check("finalize proposes a GATED wrap announcement (nothing auto-posts)", /proposeClientMessage/.test(src("lib/recruiting/challenge-runner.ts")))
   const page = src("app/dashboard/challenges/page.tsx")
   check("the challenges page reads getChallenges + mounts the client", /getChallenges/.test(page) && /<ChallengesClient/.test(page))
