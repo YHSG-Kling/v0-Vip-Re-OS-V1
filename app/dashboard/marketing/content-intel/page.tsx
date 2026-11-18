@@ -11,6 +11,7 @@
 import { listContentSources, type ContentSourceRow } from "@/app/actions/content-intel/sources"
 import { ContentSourceForm } from "./content-source-form"
 import { ToggleButton, DeleteSourceButton } from "./toggle-button"
+import { EventsAndCirclesPanel } from "./events-and-circles-panel"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -45,6 +46,9 @@ export default async function ContentIntelPage() {
           — every intelligence topic with its source, evidence and approval state.
         </p>
       </div>
+
+      {/* Wave 154 (154G3): local events (G8) and circle methods (G9) — app/actions/events-and-circles.ts. */}
+      <EventsAndCirclesPanel />
 
       <section>
         <h2 className="text-lg font-semibold mb-3">Add a source</h2>

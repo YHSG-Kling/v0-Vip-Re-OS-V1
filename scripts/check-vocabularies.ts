@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 486 tables, 963 columns.
+ * MEASURED AT GENERATION: 487 tables, 966 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-16
+ * generated: 2026-11-18
  * source: public.live_check_constraints_json()
- * body-sha256: 675ff3ad13fa48313bf9374711373d4bcde2143fc1ee7ac6b79a80f67ef62002
+ * body-sha256: 18d827bbad215ac93683e5b808731b135abc396655a0395a336974411142a9fe
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -476,6 +476,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   chat_sessions: {
     session_type: ["internal", "internal_assistant", "portal_widget", "voice", "website_widget"],
+  },
+  circle_tactic_shares: {
+    circle_kind: ["brokerage", "mentorship", "team"],
+    evidence_quality: ["attributable_comparable", "idea_unknown_conversions", "insufficient_sample", "no_comparable_cohort", "no_measured_lift", "outdated"],
+    status: ["revoked", "shared"],
   },
   client_agreement_fees: {
     fee_kind: ["admin_fee", "transaction_fee"],
