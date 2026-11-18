@@ -8,7 +8,8 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { RepurposeDashboardClient } from "./repurpose-dashboard-client"
 import { VideoUrlRepurposeCard } from "./video-url-repurpose-card"
 import { NewsletterTeasersCard, type NewsletterTeaser } from "./newsletter-teasers-card"
-import { getPipelines, getRepurposeHistory } from "@/lib/repurpose/actions"
+import { getPipelines, getRepurposeHistory, getRefurbishResults } from "@/lib/repurpose/actions"
+import { RefurbishResultsCard } from "./refurbish-results-card"
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
@@ -61,9 +62,11 @@ export default async function RepurposePage({
       .maybeSingle()
 
     // Fetch pipelines and history in parallel
-    const [pipelinesResult, historyResult] = await Promise.all([
+    const [pipelinesResult, historyResult, refurbishResults] = await Promise.all([
       getPipelines(brokerageId ?? ""),
       getRepurposeHistory(brokerageId ?? ""),
+      // WAVE 154 (154D): refurbished posts with publication truth + measured outcome.
+      getRefurbishResults(),
     ])
 
     // Fetch available source content + connected social channels
@@ -134,6 +137,7 @@ export default async function RepurposePage({
         <div className="p-6 pb-0 space-y-6">
           <VideoUrlRepurposeCard connectedPlatforms={connectedPlatforms} />
           <NewsletterTeasersCard teasers={(newsletterTeasers.data as NewsletterTeaser[] | null) ?? []} />
+          <RefurbishResultsCard results={refurbishResults.results} error={refurbishResults.success ? null : refurbishResults.error ?? null} />
         </div>
         <RepurposeDashboardClient
           userId={userId}

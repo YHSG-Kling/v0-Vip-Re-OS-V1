@@ -132,7 +132,9 @@ async function main() {
   section("§E — REFURBISH: lineage + licence")
   const { assessRefurbishSource } = await import("../lib/repurpose/shared")
   const noLic = assessRefurbishSource({ sourceType: "video_url", ownedSourceId: null, sourceUrl: "https://example.test/someone-elses.mp4", rightsBasis: null })
-  check("ADVERSE: an external asset WITHOUT a stated licence is refused (no_license)", !noLic.allowed && (noLic as { reason: string }).reason === "no_license")
+  // WAVE 154 (154D, owner R4): this assertion encoded wave 153's refusal of every outside URL as a RULE. An idea is not an asset:
+  // with no basis the source is now IDEA-ONLY — allowed, carrying neither its media nor its text (test:refurbish-original §A/§B).
+  check("ADVERSE: an external asset WITHOUT a stated license may NOT be reused — it is idea_only (no media, no text carried)", noLic.allowed && (noLic as { mode: string }).mode === "idea_only" && !(noLic as { mayReuseSourceMedia: boolean }).mayReuseSourceMedia && !(noLic as { mayReuseSourceText: boolean }).mayReuseSourceText)
   const noLin = assessRefurbishSource({ sourceType: "video_url", ownedSourceId: null, sourceUrl: null, rightsBasis: "licensed" })
   check("ADVERSE: an asset with no source at all is refused (no_lineage)", !noLin.allowed && (noLin as { reason: string }).reason === "no_lineage")
   check("ADVERSE: an invented basis is refused (only own_content / licensed)", !assessRefurbishSource({ sourceType: "video_url", ownedSourceId: null, sourceUrl: "https://x.test/a", rightsBasis: "fair_use" }).allowed)
@@ -145,7 +147,8 @@ async function main() {
     const body = i < 0 ? "" : actSrc.slice(i, actSrc.indexOf("\nexport ", i + 10) > 0 ? actSrc.indexOf("\nexport ", i + 10) : undefined)
     check(`${fn} asks the refurbish gate before it generates anything`, calls(body, "assessRefurbishSource"))
   }
-  check("the blog / podcast refurbishes record their lineage + licence (repurposed_content_log notes)", (actSrc.match(/notes: `lineage \$\{rights\.lineage\} · licence \$\{rights\.license\}`/g) ?? []).length === 2)
+  // WAVE 154 (154D): spelling only — R10 "LICENSE, never LICENCE"; the same two writes, the same count.
+  check("the blog / podcast refurbishes record their lineage + license (repurposed_content_log notes)", (actSrc.match(/notes: `lineage \$\{rights\.lineage\} · license \$\{rights\.license\}`/g) ?? []).length === 2)
   check("the distributor records lineage per drafted post", code("lib/repurpose/distribute.ts").includes('from("repurposed_content_log")'))
 
   // ── §F ─────────────────────────────────────────────────────────────────────────────────────────────

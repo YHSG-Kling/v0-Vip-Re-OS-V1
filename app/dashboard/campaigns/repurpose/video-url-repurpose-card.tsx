@@ -45,7 +45,9 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
   const [mode, setMode] = useState<Mode>("create")
   const [url, setUrl] = useState("")
   const [transcript, setTranscript] = useState("")
-  // WAVE 153 (153P): an external source is refurbished only on a stated basis (own content or a licence) — stored as lineage.
+  // WAVE 153 (153P) → WAVE 154 (154D, owner R4): a stated basis (own content or a license) is needed only to REUSE the source
+  // itself (re-posting the video). With no basis the source supplies the IDEA only: an original piece is written in your voice
+  // and none of the source's words or footage is carried.
   const [rightsBasis, setRightsBasis] = useState<"" | "own_content" | "licensed">("")
   const [showTranscript, setShowTranscript] = useState(false)
   const [selected, setSelected] = useState<Set<OutputFormat>>(new Set())
@@ -72,8 +74,8 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
       toast.error("Select at least one channel")
       return false
     }
-    if (!rightsBasis) {
-      toast.error("Confirm you own this content or hold a licence to reuse it")
+    if (mode === "distribute" && !rightsBasis) {
+      toast.error("Re-posting this video needs your own-content or license basis — or choose blog, podcast or branded video to use its idea only")
       return false
     }
     return true
@@ -90,7 +92,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
 
   const runDistribute = () =>
     startTransition(async () => {
-      const res = await repurposeVideoUrl({ sourceUrl: url.trim(), outputFormats: [...selected], rightsBasis })
+      const res = await repurposeVideoUrl({ sourceUrl: url.trim(), outputFormats: [...selected], rightsBasis: rightsBasis || undefined })
       if (!res.success) return void toast.error(res.error ?? "Repurpose failed")
       setResults(res.outputs ?? [])
       const scheduled = (res.outputs ?? []).filter((o) => o.status === "scheduled").length
@@ -104,7 +106,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
         sourceUrl: url.trim(),
         transcript: transcript.trim() || undefined,
         channels: [...selected],
-        rightsBasis,
+        rightsBasis: rightsBasis || undefined,
       })
       if (res.redirectTo) {
         toast.message(res.error ?? "Setup required", { description: "Redirecting to setup…" })
@@ -132,7 +134,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
 
   const runBlog = () =>
     startTransition(async () => {
-      const res = await repurposeUrlToBlogPost({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined, rightsBasis })
+      const res = await repurposeUrlToBlogPost({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined, rightsBasis: rightsBasis || undefined })
       if (handleTranscriptGate(res)) return
       if (!res.success) return void toast.error(res.error ?? "Could not create the blog post")
       toast.success("Draft blog post with a cover image created — review it in your blog dashboard.")
@@ -141,7 +143,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
 
   const runPodcast = () =>
     startTransition(async () => {
-      const res = await repurposeUrlToPodcast({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined, rightsBasis })
+      const res = await repurposeUrlToPodcast({ sourceUrl: url.trim(), transcript: transcript.trim() || undefined, rightsBasis: rightsBasis || undefined })
       if (handleTranscriptGate(res)) return
       if (!res.success) return void toast.error(res.error ?? "Could not create the podcast episode")
       toast.success(res.error ? `Episode created, audio pending: ${res.error}` : "Podcast episode generated — review it in your podcast dashboard.")
@@ -202,7 +204,7 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
         </div>
 
         <div className="space-y-2">
-          <Label>Your right to reuse this source</Label>
+          <Label>Your right to reuse this source (optional for idea-only)</Label>
           <div className="flex flex-col gap-2 text-sm">
             <label className="flex items-center gap-2">
               <Checkbox checked={rightsBasis === "own_content"} onCheckedChange={(v) => setRightsBasis(v ? "own_content" : "")} disabled={isPending} />
@@ -210,8 +212,13 @@ export function VideoUrlRepurposeCard({ connectedPlatforms }: { connectedPlatfor
             </label>
             <label className="flex items-center gap-2">
               <Checkbox checked={rightsBasis === "licensed"} onCheckedChange={(v) => setRightsBasis(v ? "licensed" : "")} disabled={isPending} />
-              I hold a licence to reuse it
+              I hold a license to reuse it
             </label>
+            <p className="text-xs text-muted-foreground">
+              Neither? Leave both unchecked to use only the idea: an original piece is written in your voice, checked for
+              closeness to the source, and none of its words, footage or branding is reused. Re-posting the video itself
+              needs one of the boxes above.
+            </p>
           </div>
         </div>
 

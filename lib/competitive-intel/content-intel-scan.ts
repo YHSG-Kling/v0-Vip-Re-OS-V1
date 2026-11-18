@@ -7,8 +7,9 @@
 //     (facebook.com/instagram.com) AND the Facebook Ad Library, and persists
 //     rows the marketing-intelligence briefs read. Exa's citation-weighted
 //     ranking is the interaction proxy (same argument the competitor-ads cron
-//     shipped with): the top-cited, indexed posts ARE the talked-about ones —
-//     is_high_performing marks the top of each scan. Hard like/comment counts
+//     shipped with). WAVE 154 (154D): a PROXY — indexed / cited is not measured
+//     engagement, so is_high_performing marks "frequently surfaced" (top of each
+//     scan's rank), never a proven winner or "viral". Hard like/comment counts
 //     aren't available without platform auth → those stay honest-NULL.
 //   · competitor_profiles — the reader inner-joins competitor_content →
 //     competitor_profiles, but NOTHING wrote profiles (rows would be silently
@@ -186,7 +187,11 @@ async function scanOneCompetitor(
         // reader's hardcoded fallback.
         emotional_tone: classifyEmotionalTone(`${r.title} ${r.summary}`),
         cta_present: /call|contact|dm|schedule|book|visit/i.test(caption),
-        raw_engagement_data: { source: "exa", exa_score: r.engagement_score, rank: i, categories: r.categories },
+        // WAVE 154 (154D, D3): the row SAYS what its number is. engagement_rate above holds Exa's citation rank, and
+        // is_high_performing means "top three of that rank" — frequently surfaced, not a verified high performer. The reader
+        // (app/actions/marketing-intelligence.ts → labelCompetitorEvidence, lib/repurpose/refurbish-idea.ts) labels it
+        // "proxy"; only hard counts compared like-for-like may ever be called a high performer.
+        raw_engagement_data: { source: "exa", evidence: "proxy", proxy_metric: "exa_citation_rank_score_0_100", hard_counts: "unknown", exa_score: r.engagement_score, rank: i, categories: r.categories },
       })
       if (!error) written++
     }

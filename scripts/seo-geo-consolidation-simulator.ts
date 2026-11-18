@@ -50,7 +50,9 @@ console.log("\n── the MarketTrendsPanel keeps the trending-keyword + competi
 {
   const panel = src("app/dashboard/marketing/seo/components/market-trends-panel.tsx")
   check("renders Trending Keywords", panel.includes("Trending Keywords"))
-  check("renders Competitor High-Performers", panel.includes("Competitor High-Performers"))
+  // WAVE 154 (154D, D3): was pinned to the heading TEXT "Competitor High-Performers" — a label that called a search-index
+  // proxy a performance fact. The rule this check protects is that the competitor-post view still renders; assert that.
+  check("renders the competitor-post view (Competitor Ideas)", panel.includes("Competitor Ideas") && /competitors\.map\(/.test(panel))
   check("typed on the real action return shapes",
     panel.includes("TrendingKeyword") && panel.includes("CompetitorPost"))
 }

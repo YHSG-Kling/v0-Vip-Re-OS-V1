@@ -750,7 +750,9 @@ export async function runBrandListeningPass(brokerageId: string, deps: BrandList
             expires_at: new Date(now.getTime() + TOPIC_TTL_DAYS * DAY_MS).toISOString(),
             status: "fresh",
             geo_relevance: { cities: facts.brokerage.city ? [facts.brokerage.city] : [], states: facts.brokerage.state ? [facts.brokerage.state] : [] },
-            raw_data: { listening_topic_key: t.topic, mention_ids: t.ids.slice(0, 20), negative: t.negative, promoted_at: now.toISOString() },
+            // WAVE 154 (154D, D3): engagement_score above is DERIVED (public reach ÷ mentions, capped at 100) — say so on the
+            // row, so a reader never presents it as measured engagement; the mention count is the measured part.
+            raw_data: { listening_topic_key: t.topic, mention_ids: t.ids.slice(0, 20), negative: t.negative, promoted_at: now.toISOString(), evidence: { kind: "proxy", metric: "reach_per_mention_capped_100", measured: { metric: "public_mentions_7d", value: t.mentions } } },
           })
           if (error) out.errors.push(`content_topic_bank insert refused (${t.topic}): ${error.message ?? "unknown"}`)
           else out.topicsFed++

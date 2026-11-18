@@ -449,7 +449,9 @@ canary({
       ["the lifetime cron hands each due touch to the arbiter; the queue drain executes bundle follow-ons through the planner", /arbitrateLifetimeTouch/.test(lifetimeCron) && /executeBundleFollowOnTask/.test(drain) && /arbitratePlannedTouch/.test(followOn)],
     ], [
       ["ADVERSE · a replay skips the platform that already carried the source", replay[0].skip === "already_carried" && replay[1].skip === null],
-      ["ADVERSE · an external URL without a stated licence is refused (no_license)", !unlicensed.allowed && (unlicensed as any).reason === "no_license"],
+      // WAVE 154 (154D, owner R4): was "refused (no_license)" — the old refusal encoded as a rule. Without a basis the URL is IDEA-ONLY:
+      // allowed, and its media / text may not be reused (test:refurbish-original).
+      ["ADVERSE · an external URL without a stated license may not be REUSED — idea_only, no media or text carried", (unlicensed as any).allowed === true && (unlicensed as any).mode === "idea_only" && (unlicensed as any).mayReuseSourceMedia === false],
       ["ADVERSE · a recent inbound is not a ghost; unreadable history is not silence", !recent.ghost && recent.reason === "recent_inbound" && !blind.ghost && blind.reason === "history_unreadable"],
     ])
     return verdictOf(h, { slots, replay, owned, unlicensed, ghost, recent, blind }, "five loops: starter + next step")

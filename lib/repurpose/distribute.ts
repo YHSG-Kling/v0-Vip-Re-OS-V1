@@ -131,8 +131,8 @@ export async function distributeRepurposedVideoAsDraft(
     if (repurposePostErr) console.error(`[repurpose] social post NOT created: ${repurposePostErr.message}`)
     if (post) {
       created++
-      // 153P: LINEAGE — the draft names the video it was cut from (and, for a refurbished URL, the original + stated licence).
-      const lineage = `lineage ${sourceKey}${(intent as { source_url?: string }).source_url ? ` ← url:${(intent as { source_url?: string }).source_url} · licence ${(intent as { rights_basis?: string }).rights_basis ?? "unstated"}` : " · licence tenant_owned"}`
+      // 153P: LINEAGE — the draft names the video it was cut from (and, for a refurbished URL, the original + stated license).
+      const lineage = `lineage ${sourceKey}${(intent as { source_url?: string }).source_url ? ` ← url:${(intent as { source_url?: string }).source_url} · license ${(intent as { rights_basis?: string }).rights_basis ?? "unstated"}` : " · license tenant_owned"}`
       const { error: logErr } = await supabase.from("repurposed_content_log").insert({
         brokerage_id: project.brokerage_id, source_type: "video_project", source_id: projectId, output_type: fmt,
         output_ref_table: "social_posts", output_ref_id: (post as { id: string }).id, platform_target: cfg.platform,

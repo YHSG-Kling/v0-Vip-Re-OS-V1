@@ -20,6 +20,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { displaySearchVolume, type VolumeBasisKind } from "@/lib/content-intel/search-demand-volume"
+import { labelCompetitorEvidence, compareLikeWithLike, type EvidenceLabel, type CohortPost } from "@/lib/repurpose/refurbish-idea"
 
 export interface TrendingKeyword {
   keyword: string
@@ -69,6 +70,10 @@ export interface CompetitorPost {
   detectedKeywords: string[]
   hookType: string | null
   ctaPresent: boolean | null
+  /** WAVE 154 (154D, directive D3): what the numbers above ARE — measured (hard platform counts), proxy (Exa citation
+   *  rank, which is NOT engagement) or unknown — and the one truthful line a screen shows. A screen renders
+   *  evidence.label, never a bare engagementRate: for every Exa row that column holds a 0-100 rank score. */
+  evidence: EvidenceLabel
 }
 
 /** Sum the hard interaction counts; null when none is known (see interactionsTotal). */
@@ -175,8 +180,11 @@ export async function getSearchDemandIntelligence(): Promise<
 }
 
 /**
- * Get high-performing competitor posts in the agent's market. Surfaces in
- * Omnipresence as "what's working for competitors" inspiration.
+ * Competitor posts surfaced in the agent's market — the competitor-watch signal behind Refurbish (lib/repurpose/actions.ts
+ * refurbishCompetitorIdea). WAVE 154 (154D, D3): `is_high_performing` on an Exa row means "top of the search-index citation
+ * ranking", and the ordering column is that rank — so these are FREQUENTLY SURFACED posts, not proven winners. Each row
+ * carries `evidence` (measured · proxy · unknown); only measured counts compared like-for-like may be called a high
+ * performer (compareLikeWithLike), and nothing here is ever called viral.
  */
 export async function getCompetitorHighPerformers(params: {
   brokerageId?: string // ignored — derived from session
@@ -197,7 +205,7 @@ export async function getCompetitorHighPerformers(params: {
     .select(
       "id, platform, content_type, caption, content_url, media_url, posted_at, " +
         "likes_count, comments_count, shares_count, views_count, engagement_rate, raw_engagement_data, " +
-        "detected_topics, detected_keywords, hook_type, cta_present, " +
+        "detected_topics, detected_keywords, hook_type, cta_present, is_high_performing, observed_at, " +
         "competitor_id, competitor_profiles!inner(competitor_name, competitor_type)"
     )
     .eq("brokerage_id", ctx.brokerageId)
@@ -213,7 +221,7 @@ export async function getCompetitorHighPerformers(params: {
   const { data, error } = await query
   if (error || !data) return []
 
-  return (data as unknown as Array<{
+  const posts = (data as unknown as Array<{
     id: string
     platform: string
     content_type: string
@@ -231,6 +239,8 @@ export async function getCompetitorHighPerformers(params: {
     detected_keywords: string[] | null
     hook_type: string | null
     cta_present: boolean | null
+    is_high_performing: boolean | null
+    observed_at: string | null
     competitor_profiles:
       | { competitor_name: string; competitor_type: string | null }
       | { competitor_name: string; competitor_type: string | null }[]
@@ -258,7 +268,22 @@ export async function getCompetitorHighPerformers(params: {
       detectedKeywords: row.detected_keywords ?? [],
       hookType: row.hook_type,
       ctaPresent: row.cta_present,
+      evidence: labelCompetitorEvidence({
+        likesCount: row.likes_count, commentsCount: row.comments_count, sharesCount: row.shares_count, viewsCount: row.views_count,
+        engagementRate: row.engagement_rate, engagementSource: row.raw_engagement_data?.source ?? null, isHighPerforming: row.is_high_performing,
+      }),
+      observedAt: row.observed_at,
     }
+  })
+  // Like with like (D3): a MEASURED post is upgraded to "verified high performer" only against comparable measured posts
+  // (same platform, format and window; geography is unknown on these rows, so it is held equal). Proxy rows never rank.
+  const pool: CohortPost[] = posts.map((p) => ({ id: p.id, platform: p.platform, contentType: p.contentType, geo: null, observedAt: p.observedAt, likesCount: p.likesCount, commentsCount: p.commentsCount, sharesCount: p.sharesCount, viewsCount: p.viewsCount, engagementRate: p.engagementRate, engagementSource: p.engagementSource }))
+  return posts.map(({ observedAt: _observedAt, ...p }, i) => {
+    if (p.evidence.kind !== "measured") return p
+    const cmp = compareLikeWithLike(pool[i], pool, daysBack)
+    return cmp.tier === "verified_high_performer"
+      ? { ...p, evidence: { ...p.evidence, tier: cmp.tier, label: `Verified high performer — ${p.evidence.label.replace(/ — not yet compared with like-for-like posts$/, "")}; top quartile by ${cmp.reason}` } }
+      : { ...p, evidence: { ...p.evidence, label: `${p.evidence.label.replace(/ — not yet compared with like-for-like posts$/, "")} — ${cmp.reason}` } }
   })
 }
 
@@ -310,8 +335,9 @@ export async function getCompetitorPostInspiration(
   // never heard the answer. A post that won WITHOUT a CTA is a value play
   // worth keeping that way; one that won WITH a CTA earned its ask.
   const ctaDirective =
-    row.cta_present === true  ? "The original closed with a call to action and still performed — keep a clear, low-pressure CTA. " :
-    row.cta_present === false ? "The original had NO call to action — it won on value alone; lead with value and keep any CTA soft. " :
+    // 154D (D3): the scan's signal is a search-index rank, not a measured result — the brief must not say the post "performed" or "won".
+    row.cta_present === true  ? "The original closed with a call to action — if you use one, keep it clear and low-pressure. " :
+    row.cta_present === false ? "The original had NO call to action and leaned on value — lead with value and keep any CTA soft. " :
                                 ""
 
   const inspirationPrompt =
