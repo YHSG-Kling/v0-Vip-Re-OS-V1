@@ -426,7 +426,7 @@ const ROWS: Row[] = [
       voice: h("lib/agents/generate-client-message.ts", "resolveBrandContext("),
       persona: h("lib/sphere/lifetime-touch-arbitration.ts", "persona: \"past_client\""),
       approval: { na: "a routine lawful lifetime touch needs no human approval (owner B7) — the arbiter decides send / agent / wait / halt" },
-      rights: h("lib/sphere/lifetime-touch-arbitration.ts", "requiredChannels: [a.channel]"),
+      rights: h("lib/sphere/lifetime-touch-arbitration.ts", "requiredChannels: [a.channel, ...externalChannels.filter((c) => c !== a.channel)]"),
       provider: h("app/actions/lifetime-customer-touchpoints.ts", "dispatchEmail"),
       evidence: h("lib/sphere/lifetime-touchpoint-ledger.ts", "emitKernelEvent("),
       event: h("lib/sphere/lifetime-touchpoint-ledger.ts", "emitKernelEvent("),
