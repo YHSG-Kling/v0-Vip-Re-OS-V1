@@ -25,6 +25,7 @@ import { resolveStaffLearningContext } from "./resolve-staff-learning-context"
 import { resolveEducationContext } from "@/lib/portal/resolve-education-context"
 import type { AgeSegment } from "@/lib/kernel/education"
 import type { ProtectedClassBasis } from "@/lib/lead-governance/protected-class-signals"
+import { resolveUserTeam, rowInTeamScope } from "@/lib/kernel/resolve-user-team"
 
 export type LearningActorKind = "agent" | "staff" | "customer"
 
@@ -279,10 +280,36 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
 
   if (!brokerageId) return []
 
+  // ── TEAM SCOPE (wave 154) ──────────────────────────────────────────────
+  // learning_modules.team_id marks a TEAM-authored lesson. This picker used to offer every published module in the tenant, so
+  // one team's own playbook was recommended to other teams' agents and to their clients. A team is a mini brokerage: a
+  // team-authored lesson is offered only inside that team; a tenant-wide lesson (no team) to everyone. The team comes from
+  // the ONE resolver (lib/kernel/resolve-user-team.ts) — for a client, their assigned agent's team. Unresolved = tenant-wide
+  // lessons only (fail closed, never "every team's").
+  let actorTeamId: string | null = null
+  try {
+    if (actorKind === "customer") {
+      const { data: contactAgent, error: contactAgentErr } = await supabase.from("contacts").select("agent_id").eq("id", actorId).eq("brokerage_id", brokerageId).maybeSingle()
+      if (contactAgentErr) console.error(`[learning-router] contact agent read refused for ${actorId}: ${contactAgentErr.message}`)
+      const agentId = (contactAgent as { agent_id?: string | null } | null)?.agent_id ?? null
+      if (agentId) {
+        const { data: agentRow, error: agentErr } = await supabase.from("agents").select("user_id").eq("id", agentId).eq("brokerage_id", brokerageId).maybeSingle()
+        if (agentErr) console.error(`[learning-router] agent read refused for ${agentId}: ${agentErr.message}`)
+        const agentUserId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+        if (agentUserId) actorTeamId = (await resolveUserTeam(supabase, agentUserId, agentId)).teamId
+      }
+    } else {
+      actorTeamId = (await resolveUserTeam(supabase, actorId)).teamId
+    }
+  } catch (e) {
+    console.error(`[learning-router] team could not be resolved for ${actorKind} ${actorId} — tenant-wide lessons only: ${e instanceof Error ? e.message : String(e)}`)
+    actorTeamId = null
+  }
+
   // ── Query learning_modules for candidates ──────────────────────────────
   let q = supabase
     .from("learning_modules")
-    .select("id, title, summary, cover_image_url, estimated_minutes, channels, audience_roles, audience_personas, audience_generations, audience_age_segs, stage_tags, gap_tags, display_priority")
+    .select("id, team_id, title, summary, cover_image_url, estimated_minutes, channels, audience_roles, audience_personas, audience_generations, audience_age_segs, stage_tags, gap_tags, display_priority")
     .eq("brokerage_id", brokerageId)
     .eq("status", "published")
     .order("display_priority", { ascending: false })
@@ -297,6 +324,7 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
 
   type Row = {
     id: string
+    team_id?: string | null
     title: string
     summary: string | null
     cover_image_url: string | null
@@ -317,6 +345,7 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
   }
   const scored: LearningModulePick[] = []
   for (const r of rows as Row[]) {
+    if (!rowInTeamScope(r.team_id, actorTeamId)) continue // another team's own lesson — never offered outside that team
     const hit = scoreLearningModule(r, scoreContext)
     if (!hit) continue
 

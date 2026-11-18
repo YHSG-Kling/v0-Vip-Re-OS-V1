@@ -273,6 +273,17 @@ export async function resolveUserTeam(
 }
 
 /**
+ * A row that may carry a team (a team-authored lesson, a team-only play) is in a person's scope when it is TENANT-WIDE
+ * (no team) or belongs to the person's OWN team. An unresolved team (null) sees tenant-wide rows only — fail closed: "nobody
+ * could tell which team this is" must never widen to "every team's rows" (CLAUDE.md §4: a team is a mini brokerage).
+ * Pure, so the rule is the same wherever a team-scoped row is offered to someone.
+ */
+export function rowInTeamScope(rowTeamId: string | null | undefined, actorTeamId: string | null | undefined): boolean {
+  if (!rowTeamId) return true
+  return !!actorTeamId && rowTeamId === actorTeamId
+}
+
+/**
  * The other direction: given a team, which `agents.id`s are on it RIGHT NOW.
  *
  * Not a plain union of the four sources — that would be WIDER than

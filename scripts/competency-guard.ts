@@ -24,6 +24,7 @@ import {
   COMPETENCY_LABEL, SKILL_LABEL, SKILL_AREA_COMPETENCY, type CompetencyEvidence,
 } from "../lib/education/skill-freshness"
 import { summarizeCompetencyBoard } from "../lib/intelligence/skill-freshness-board"
+import { rowInTeamScope } from "../lib/kernel/resolve-user-team"
 import { resolveClientSides } from "../lib/agents/education-delivery-producer"
 import { clientModulePassesCompliance } from "../lib/education/client-education-authoring"
 
@@ -152,6 +153,13 @@ function wiringLayer() {
   check("CURRICULUM: the learning context loads the competency profile and folds its gapTags into gapTags", /loadAgentCompetency\(/.test(ctx) && /for \(const t of profile\.gapTags\) gapTags\.push\(t\)/.test(ctx) && /competencyGaps/.test(ctx))
   const composer = code("lib/learning-router/composer.ts")
   check("the assignment row records WHICH competency gap the pick was for (signal_metadata.competencyGaps)", /competencyGaps: ctx\.competencyGaps/.test(composer))
+  // TEAM SCOPE (wave 154): a team-authored lesson (learning_modules.team_id) is offered inside that team only.
+  check("TEAM SCOPE rule (executed): a tenant-wide lesson reaches everyone; a team lesson reaches its own team only; an unresolved team sees tenant-wide lessons only",
+    rowInTeamScope(null, null) && rowInTeamScope(null, "team-a") && rowInTeamScope("team-a", "team-a") && !rowInTeamScope("team-a", "team-b") && !rowInTeamScope("team-a", null))
+  check("TEAM SCOPE wiring: the picker selects team_id, resolves the actor's team through the ONE resolver and drops out-of-team rows before scoring",
+    /\.select\("id, team_id, /.test(composer) && /resolveUserTeam\(supabase, /.test(composer) && /if \(!rowInTeamScope\(r\.team_id, actorTeamId\)\) continue/.test(composer))
+  check("TEAM SCOPE POSITIVE CONTROL: the base select (no team_id) and a loop with no scope line are both recognised as the defect",
+    !/\.select\("id, team_id, /.test('.select("id, title, summary")') && !/if \(!rowInTeamScope\(r\.team_id, actorTeamId\)\) continue/.test("for (const r of rows) { const hit = scoreLearningModule(r, ctx) }"))
   check("the router still has ONE scorer and matches gap_tags against the context's gapTags", /export function scoreLearningModule\(/.test(composer) && /r\.gap_tags\.filter\(\(t\) => ctx\.gapTags\.includes\(t\)\)/.test(composer))
   const author = code("lib/education/curriculum-author.ts")
   check("the curriculum author stamps 'objection:<key>' — the same tag the model emits for a weak scenario (loop closed on one vocabulary)", /topicKey: `objection:\$\{key\}`/.test(author) && /gap_tags: \[gap\.topicKey\]/.test(author) && /gapTags\.add\(`objection:\$\{sc\.key\}`\)/.test(model))
