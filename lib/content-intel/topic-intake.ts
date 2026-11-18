@@ -75,7 +75,26 @@ export type TopicExclusionReason =
   | "competitor_brand_self_promotion" | "competitor_agent_joining" | "recruitment_pitch" | "no_consumer_value" | "unverified_performance"
 
 /** Intake refusals beyond the R9 gate — machine-readable, returned in `excluded`, never stored. */
-export type TopicIntakeRefusal = "personal_data_in_topic" | "rights_unknown" | "stale_source" | "already_expired" | "empty_title" | "invalid_observed_at"
+type TopicIntakeRefusal = "personal_data_in_topic" | "rights_unknown" | "stale_source" | "already_expired" | "empty_title" | "invalid_observed_at"
+
+/** What a person is told when an idea was NOT stored — one sentence per reason in the two closed vocabularies above. */
+const NOT_STORED_TEXT: Readonly<Record<TopicExclusionReason | TopicIntakeRefusal, string>> = Object.freeze({
+  competitor_brand_self_promotion: "It reads as another company promoting itself, not a question a buyer or seller would ask.",
+  competitor_agent_joining: "It is an announcement about an agent joining a company, not a topic for consumers.",
+  recruitment_pitch: "It is a recruiting pitch, not a topic for consumers.",
+  no_consumer_value: "It does not contain a question or need a buyer, seller or homeowner would recognize.",
+  unverified_performance: "It rests on a performance claim that could not be verified.",
+  personal_data_in_topic: "It contains personal details (a name, phone number, email or address). Topics are stored without them.",
+  rights_unknown: "The source's usage rights are not recorded, so nothing from it is stored.",
+  stale_source: "The source is too old to count as a current topic.",
+  already_expired: "The topic's freshness window has already ended.",
+  empty_title: "There was no topic text to save.",
+  invalid_observed_at: "The observation date could not be read.",
+})
+/** The tenant-facing sentence for a not-stored reason; an unlisted reason gets a plain fallback, never a raw code. */
+export function explainTopicNotStored(reason: string): string {
+  return Object.prototype.hasOwnProperty.call(NOT_STORED_TEXT, reason) ? NOT_STORED_TEXT[reason as TopicExclusionReason | TopicIntakeRefusal] : "It could not be saved as a topic."
+}
 
 export interface TopicIntakeResult {
   ok: boolean
@@ -195,7 +214,7 @@ export function personalDataProblem(text: string | null | undefined): string | n
 const STRIP_KEYS = /^(?:author\w*|user\w*|profile\w*|member\w*|commenter\w*|comments?|top_?comments|email\w*|phone\w*|contact\w*|name|full_?name|handle|avatar\w*|text|post_?text|source_?text|caption|body|quote\w*|selftext|summary|ad_?copy|ad_?headline|snippet|html)$/i
 /** raw_data keys this intake owns — a caller's brief may not overwrite them. */
 const RESERVED_KEYS = new Set(["intake", "dedup_key", "evidence", "popularity_evidence_type", "provenance", "independent_observations", "creative_brief", "source_removals"])
-export const CREATIVE_BRIEF_FIELDS = [
+const CREATIVE_BRIEF_FIELDS = [
   "consumer_question", "topic_concept", "hook_pattern", "format_pattern", "emotional_need", "market_relevance", "proof_needed",
   "localization_opportunity", "suggested_original_formats", "source_observed_at", "popularity_evidence_type", "source_rights", "expires_at", "exclusion_reason",
 ] as const

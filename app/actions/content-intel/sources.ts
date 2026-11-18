@@ -161,7 +161,7 @@ export async function deleteContentSource(id: string): Promise<{ ok: boolean; er
  * 154C Outside-lane request 5; directive C5.1). Tenant from the SESSION (CLAUDE.md §4), never the body; the user's RLS
  * client, like every action in this file. The note passes the intake's exclusion gate and personal-data screen.
  */
-export async function saveTopicObservationAction(input: { note: string; link?: string | null }): Promise<{ ok: boolean; inserted: number; merged: number; excluded: Array<{ reason: string }>; error?: string }> {
+export async function saveTopicObservationAction(input: { note: string; link?: string | null }): Promise<{ ok: boolean; inserted: number; merged: number; excluded: Array<{ reason: string; message: string }>; error?: string }> {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, inserted: 0, merged: 0, excluded: [], error: "Unauthorized" }
@@ -171,6 +171,7 @@ export async function saveTopicObservationAction(input: { note: string; link?: s
     const supabase = await createClient()
     const brokerageId = ctx.brokerageId
     const { saveManualTopicObservation } = await import("@/lib/content-intel/public-chatter-topics")
+    const { explainTopicNotStored } = await import("@/lib/content-intel/topic-intake")
     const { withActionLedger } = await import("@/lib/kernel/action-ledger")
     // LAW 5 — who saved what into the pool, and what the intake did with it.
     const r = await withActionLedger(
@@ -189,7 +190,7 @@ export async function saveTopicObservationAction(input: { note: string; link?: s
     )
     if (r.inserted + r.merged > 0) revalidatePath("/dashboard/marketing/content-intel")
     if (!r.ok) console.error(`[content-intel/sources] topic observation not saved for ${brokerageId}: ${r.refused ?? r.errors.join("; ")}`)
-    return { ok: r.ok, inserted: r.inserted, merged: r.merged, excluded: r.excluded.map((x) => ({ reason: x.reason })), ...(r.ok ? {} : { error: "The topic could not be saved. Please try again." }) }
+    return { ok: r.ok, inserted: r.inserted, merged: r.merged, excluded: r.excluded.map((x) => ({ reason: x.reason, message: explainTopicNotStored(x.reason) })), ...(r.ok ? {} : { error: "The topic could not be saved. Please try again." }) }
   } catch (e) {
     return { ok: false, inserted: 0, merged: 0, excluded: [], error: (e as Error).message }
   }

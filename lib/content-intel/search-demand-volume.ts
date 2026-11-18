@@ -26,7 +26,7 @@ export interface VolumeBasis {
 export const LICENSED_VOLUME_SOURCES: readonly string[] = []
 
 /** Sources whose number is a RELATIVE index (0–100), with what it is relative to. */
-export const RELATIVE_INDEX_SOURCES: Readonly<Record<string, string>> = Object.freeze({
+const RELATIVE_INDEX_SOURCES: Readonly<Record<string, string>> = Object.freeze({
   exa_content_scan: "Exa content-interest index (0–100, relative — how fast this topic is being published, not searches)",
   newsapi_ai_social: "NewsAPI.ai social-share index (0–100, relative to the most-shared article in the set, not searches)",
   google_trends: "Google Trends interest (0–100, relative to the peak for this term, region and window — not a search count)",

@@ -139,7 +139,7 @@ export function SaveTopicObservationForm() {
     startTransition(async () => {
       const r = await saveTopicObservationAction({ note, link: link.trim() || null })
       if (r.ok && r.inserted + r.merged > 0) { setStatus({ kind: "ok", text: r.merged ? "Added to an existing topic ✓" : "Saved ✓" }); setNote(""); setLink("") }
-      else if (r.ok) setStatus({ kind: "err", message: r.excluded.length ? `Not saved: ${r.excluded.map((x) => x.reason.replace(/_/g, " ")).join(", ")}` : "Not saved." })
+      else if (r.ok) setStatus({ kind: "err", message: r.excluded.length ? `Not saved. ${r.excluded.map((x) => x.message).join(" ")}` : "Not saved." })
       else setStatus({ kind: "err", message: r.error ?? "Not saved." })
     })
   }

@@ -13,6 +13,13 @@ type Loaded = Extract<Awaited<ReturnType<typeof listEventsAndCirclesAction>>, { 
 const COMPONENTS = ["consumer_question_first_hook", "short_video_faq", "timely_hyperlocal_fact", "personal_close", "market_stat_explainer", "neighborhood_walkthrough", "checklist_format"]
 const SOURCE_CLASSES = ["city_county_calendar", "parks_calendar", "library_calendar", "chamber_of_commerce", "tourism_or_venue_organizer", "licensed_event_feed"]
 const label = (s: unknown) => String(s ?? "").replace(/_/g, " ")
+/** The producer's own basis for a share, as recorded when they opted in — their own campaign counts, never shown to a member. */
+const circleBasisText = (b: unknown): string => {
+  if (!b || typeof b !== "object") return ""
+  const e = b as { windowDays?: number | null; tacticCampaigns?: number | null; cohortCampaigns?: number | null }
+  if (typeof e.tacticCampaigns !== "number" || typeof e.cohortCampaigns !== "number") return ""
+  return ` (your ${e.tacticCampaigns} campaign${e.tacticCampaigns === 1 ? "" : "s"} with this method against ${e.cohortCampaigns} comparable${typeof e.windowDays === "number" ? `, last ${e.windowDays} days` : ""})`
+}
 const input = "border rounded px-2 py-1 text-sm"
 const btn = "text-xs px-2 py-1 border rounded hover:bg-gray-100 disabled:opacity-50"
 
@@ -86,7 +93,7 @@ export function EventsAndCirclesPanel() {
           {COMPONENTS.map((c) => <label key={c} className="text-xs"><input type="checkbox" checked={share.components.includes(c)} onChange={(e) => setShare({ ...share, components: e.target.checked ? [...share.components, c] : share.components.filter((x) => x !== c) })} /> {label(c)}</label>)}
           <button className={btn} disabled={pending} onClick={() => { const [kind, id] = share.circle.split(":"); run(() => shareCircleTacticAction({ circleKind: kind as "team" | "mentorship" | "brokerage", circleId: id || null, method: share.method, explanation: share.explanation, components: share.components, sourceKind: share.sourceKind, tacticCampaignIds: share.campaigns.split(",").map((x) => x.trim()).filter(Boolean), claimedTitle: share.claimedTitle || null }), "Shared — each member's fit is decided individually") }}>Share</button>
         </div>
-        <ul className="text-sm">{data?.mine.map((m) => <li key={String(m.shareId)}>{String(m.method)} · {label(m.circleKind)} · {label(m.evidenceQuality)} · {String(m.status)} {m.status === "shared" && <button className={btn} disabled={pending} onClick={() => run(() => revokeCircleTacticAction(String(m.shareId)), "Sharing stopped")}>Stop sharing</button>}</li>)}</ul>
+        <ul className="text-sm">{data?.mine.map((m) => <li key={String(m.shareId)}>{String(m.method)} · {label(m.circleKind)} · {label(m.evidenceQuality)}{circleBasisText(m.evidenceBasis)} · {String(m.status)}{m.revokedAt ? ` on ${String(m.revokedAt).slice(0, 10)}` : ""} {m.status === "shared" && <button className={btn} disabled={pending} onClick={() => run(() => revokeCircleTacticAction(String(m.shareId)), "Sharing stopped")}>Stop sharing</button>}</li>)}</ul>
         <h3 className="font-medium">Methods shared with you</h3>
         <ul className="text-sm space-y-1">{data?.tactics.map((t) => (
           <li key={String(t.shareId)}>

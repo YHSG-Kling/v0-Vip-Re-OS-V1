@@ -254,8 +254,11 @@ export async function shareCircleTactic(db: Db, session: CircleSession, input: S
 interface ShareRow {
   id: string; brokerage_id: string; producer_user_id: string; circle_kind: string; team_id: string | null; mentorship_id: string | null
   status: string; evidence_quality: string; source_label: string; brief: Record<string, any>; offers: Record<string, any> | null; expires_at: string
+  /** The basis recorded at share time (rule, window, counts, direction) — the PRODUCER's own figures; shown only to the producer. */
+  evidence?: Record<string, any> | null
+  revoked_at?: string | null
 }
-const SHARE_COLS = "id, brokerage_id, producer_user_id, circle_kind, team_id, mentorship_id, status, evidence_quality, source_label, brief, offers, expires_at"
+const SHARE_COLS = "id, brokerage_id, producer_user_id, circle_kind, team_id, mentorship_id, status, evidence_quality, source_label, brief, offers, expires_at, evidence, revoked_at"
 
 async function territoryOf(db: Db, brokerageId: string, userId: string): Promise<string | null> {
   const { data: ag } = await db.from("agents").select("id").eq("brokerage_id", brokerageId).eq("user_id", userId).limit(1)
@@ -328,13 +331,16 @@ async function liveCirclesOf(db: Db, brokerageId: string, userId: string, now: D
  * left the circle takes their share with them); revoked or expired shares, and those the arbiter ignored for this member, are
  * never returned. No producer identity and no figure are in the view. `mine` lists the viewer's own shares with their state.
  */
-export async function listCircleTacticsForViewer(db: Db, session: CircleSession, opts: { now?: Date } = {}): Promise<{ visible: CircleTacticView[]; mine: Array<{ shareId: string; circleKind: string; method: string; status: string; evidenceQuality: string; expiresAt: string; offered: number }>; error: string | null }> {
+export async function listCircleTacticsForViewer(db: Db, session: CircleSession, opts: { now?: Date } = {}): Promise<{ visible: CircleTacticView[]; mine: Array<{ shareId: string; circleKind: string; method: string; status: string; evidenceQuality: string; expiresAt: string; offered: number; evidenceBasis: { rule: string | null; windowDays: number | null; tacticCampaigns: number | null; cohortCampaigns: number | null; direction: string | null } | null; revokedAt: string | null }>; error: string | null }> {
   const now = opts.now ?? new Date()
   if (!session.userId || !session.brokerageId) return { visible: [], mine: [], error: "not signed in" }
   const { data, error } = await db.from("circle_tactic_shares").select(SHARE_COLS).eq("brokerage_id", session.brokerageId).order("opted_in_at", { ascending: false }).limit(200)
   if (error) return { visible: [], mine: [], error: `circle_tactic_shares read refused: ${error.message ?? "unknown"}` }
   const rows = (data ?? []) as ShareRow[]
-  const mine = rows.filter((r) => r.producer_user_id === session.userId).map((r) => ({ shareId: r.id, circleKind: r.circle_kind, method: String(r.brief?.method ?? ""), status: r.status === "shared" && Date.parse(r.expires_at) <= now.getTime() ? "expired" : r.status, evidenceQuality: r.evidence_quality, expiresAt: r.expires_at, offered: Object.values(r.offers ?? {}).filter((o: any) => o?.decision === "offer" || o?.decision === "recommend_adaptation").length }))
+  const mine = rows.filter((r) => r.producer_user_id === session.userId).map((r) => ({ shareId: r.id, circleKind: r.circle_kind, method: String(r.brief?.method ?? ""), status: r.status === "shared" && Date.parse(r.expires_at) <= now.getTime() ? "expired" : r.status, evidenceQuality: r.evidence_quality, expiresAt: r.expires_at, offered: Object.values(r.offers ?? {}).filter((o: any) => o?.decision === "offer" || o?.decision === "recommend_adaptation").length,
+    // The producer reads back the basis of THEIR OWN share (their own campaigns — never shown to a member) and when they revoked it.
+    evidenceBasis: r.evidence && typeof r.evidence === "object" ? { rule: typeof r.evidence.rule === "string" ? r.evidence.rule : null, windowDays: typeof r.evidence.window_days === "number" ? r.evidence.window_days : null, tacticCampaigns: typeof r.evidence.tactic_campaigns === "number" ? r.evidence.tactic_campaigns : null, cohortCampaigns: typeof r.evidence.cohort_campaigns === "number" ? r.evidence.cohort_campaigns : null, direction: typeof r.evidence.direction === "string" ? r.evidence.direction : null } : null,
+    revokedAt: r.revoked_at ?? null }))
   const live = rows.filter((r) => r.producer_user_id !== session.userId && r.status === "shared" && Date.parse(r.expires_at) > now.getTime())
   if (live.length === 0) return { visible: [], mine, error: null }
   const viewer = await liveCirclesOf(db, session.brokerageId, session.userId, now)
