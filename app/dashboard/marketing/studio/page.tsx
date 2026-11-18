@@ -13,7 +13,7 @@ export const metadata = {
 const VALID_TABS = [
   "ad-os", "overview", "campaigns", "assets", "calendar",
   "newsletters", "registry", "qr", "mail", "blog",
-  "podcast", "omnichannel", "ops", "lab",
+  "podcast", "omnichannel", "ops", "lab", "command",
 ] as const
 
 function normalizeTab(raw: string | string[] | undefined): string {

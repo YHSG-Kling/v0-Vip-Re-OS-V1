@@ -133,6 +133,7 @@ import { PredictionWidget, type PredictionData } from "@/app/components/predicti
 import dynamic from "next/dynamic"
 const ContentLab = dynamic(() => import("@/app/content-studio/content-studio-client"), { ssr: false })
 const CONTENT_LAB_SECTIONS = ["link-to-video", "ideas", "keywords", "repurpose", "video"] as const
+const ContentCommandCenter = dynamic(() => import("./components/content-command-center"), { ssr: false })
 import {
   CampaignLauncherPanel,
   CompetitorWatchPanel,
@@ -2035,7 +2036,20 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
               <Sparkles className="h-4 w-4" />
               <span className="text-xs">Content Lab</span>
             </TabsTrigger>
+            <TabsTrigger
+              value="command"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Search className="h-4 w-4" />
+              <span className="text-xs">Command Center</span>
+            </TabsTrigger>
           </TabsList>
+
+          {/* Content and Channel Command Center (wave 154, lane 154G2 — G7): one scoped index of every canonical content
+              record, with each action calling its existing writer. Loaded on demand so the studio entry stays light. */}
+          <TabsContent value="command" className="space-y-6">
+            {activeTab === "command" && <ContentCommandCenter />}
+          </TabsContent>
 
           {/* Content Lab — the legacy content-studio body, mounted (lane 85E). */}
           <TabsContent value="lab" className="space-y-6">

@@ -21,6 +21,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import type { CatalogFilters, CatalogRow } from "@/lib/marketing/content-catalog"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -337,6 +338,43 @@ export async function getCampaignSources(campaignId: string): Promise<{
 
   return { success: true, sources }
 }
+
+// ─── THE CONTENT AND CHANNEL COMMAND CENTER (wave 154, lane 154G2 — directive G7, owner ruling R8) ─────────────
+// The registry above lists 7 linkable tables; the Command Center reads every canonical producer through ONE index
+// (lib/marketing/content-catalog.ts readContentCatalog) and acts only through the EXISTING writers it names
+// (CATALOG_ACTION_WRITERS). The read export is a public endpoint (§4): the tenant, the seat and the scope come from the
+// SESSION only; the service client is used after that gate, and every catalog query is brokerage-filtered.
+
+async function sessionCatalogViewer() {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) return null
+  const [{ createServiceClient }, { resolveCatalogViewer }] = await Promise.all([import("@/lib/supabase/service"), import("@/lib/marketing/content-catalog")])
+  const db = createServiceClient()
+  const viewer = await resolveCatalogViewer(db, { userId: ctx.userId, brokerageId: ctx.brokerageId, userType: ctx.userType || "agent" })
+  return { db, viewer }
+}
+
+/** The unified, scoped read. Filters are view choices only — they can narrow what the session may see, never widen it. */
+export async function getContentCommandCenter(filters?: Omit<CatalogFilters, "perSourceLimit">): Promise<{
+  success: boolean; rows: CatalogRow[]; scopeLabel: string | null; notice: string | null; perSourceLimit: number | null; error?: string
+}> {
+  const session = await sessionCatalogViewer()
+  if (!session) return { success: false, rows: [], scopeLabel: null, notice: null, perSourceLimit: null, error: "Sign in to see your content." }
+  const { readContentCatalog } = await import("@/lib/marketing/content-catalog")
+  const read = await readContentCatalog(session.db, session.viewer, { ...(filters ?? {}) })
+  let notice: string | null = session.viewer.refusal
+  if (read.unreadable.length) {
+    const { presentTenantError } = await import("@/lib/errors")
+    notice = presentTenantError({
+      what: `Part of your content list couldn't be loaded (${read.unreadable.map((u) => u.table.replace(/_/g, " ")).join(", ")}), so those items are missing below — not empty`,
+      raw: read.unreadable.map((u) => `${u.table}: ${u.error}`).join("; "), context: "content-command-center",
+    }).sentence
+  }
+  return { success: true, rows: read.rows, scopeLabel: read.scopeLabel, notice, perSourceLimit: read.perSourceLimit }
+}
+
+// The ACTION door is NOT here: app/api/marketing/content-command/route.ts (POST) — the writers' graphs would otherwise land
+// on the studio page, the heaviest app entry. It re-reads the row with readContentCatalog under the session exactly as above.
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
