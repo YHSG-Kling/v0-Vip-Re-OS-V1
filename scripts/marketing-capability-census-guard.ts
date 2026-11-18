@@ -457,7 +457,7 @@ const ROWS: Row[] = [
   // no census row. Their starters, arbiter / approval planes and closing hops are traced in $S/lane153P-notes.md.
   {
     key: "omnipresence_refurbish", label: "Omnipresence and refurbished (repurposed) content — coordinated cross-channel, lineage + licence", owner: "campaign_orchestrator", proof: "test:marketing-loops",
-    changed: { verdict: "BUILT", what: "each platform gets ONE staggered slot (the tenant's own fatigue floor between platforms; a platform that already carried the source is skipped — no simultaneous repeats, no replay double-post); an external source is refurbished only on a stated own-content / licence basis and every output records its lineage" },
+    changed: { verdict: "BUILT", what: "each platform gets ONE staggered slot (the tenant's own fatigue floor between platforms; a platform that already carried the source is skipped — no simultaneous repeats, no replay double-post); an outside source is refurbished IDEA-ONLY (original draft in the sender's voice, originality-gated, no source media) unless a stated own-content / license basis permits reuse; every output records its lineage" },
     live: "SIMULATED in proofs; posts publish on each tenant's OWNER-HELD social connection after approval",
     hops: {
       producer: h("lib/repurpose/actions.ts", "export async function executePipeline"),
