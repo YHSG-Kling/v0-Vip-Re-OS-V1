@@ -579,3 +579,29 @@ export function competitorAdTheme(headline: string | null | undefined, copy: str
     themeKeys: themes.map((t) => t.key),
   }
 }
+
+/**
+ * PURE (wave 154, lane 154C — owner R1 "reword before storing"). The RULE-DERIVED, category-level topic for a piece of
+ * untrusted source text (a public community post, a Facebook group question, an ad): the theme label(s) the text touches and
+ * an original question shape — never a word of the source beyond the theme vocabulary's own labels. This is the production
+ * rewording whenever no rewording model is wired (lib/content-intel/public-chatter-topics.ts); null when the text touches no
+ * real-estate theme or hits a steering exclusion (the ONE list, EXCLUDED_TOPIC_RULES) — such an item is held, never stored.
+ */
+export function ruleDerivedTopic(text: string, geoLabel: string | null | undefined): { title: string; angle: string; consumerQuestion: string; categories: string[]; themeKeys: string[]; feeds: TopicFeed[] } | { held: string } {
+  const steering = excludedTopicReason(text)
+  if (steering) return { held: `steering_exclusion:${steering}` }
+  const themes = themesOf(text)
+  if (themes.length === 0) return { held: "no_real_estate_theme" }
+  const top = themes.slice(0, 2)
+  const where = geoLabel && geoLabel.trim() ? geoLabel.trim().slice(0, 60) : null
+  const short = top.map((t) => t.label.split(" — ")[0])
+  const subject = short.join(" and ")
+  return {
+    title: `${subject}: what ${where ? `${where} ` : "local "}neighbors are asking right now`.slice(0, 160),
+    angle: "Neighbors are raising this right now. Answer it with a sourced, local guide written in your own words: verified facts, no quotes, names or examples from the original discussion.",
+    consumerQuestion: `What should ${where ? `${where} ` : ""}homeowners and buyers know about ${subject.toLowerCase()}?`,
+    categories: [...new Set(top.flatMap((t) => t.categories))],
+    themeKeys: themes.map((t) => t.key),
+    feeds: [...new Set(top.flatMap((t) => t.feeds))],
+  }
+}

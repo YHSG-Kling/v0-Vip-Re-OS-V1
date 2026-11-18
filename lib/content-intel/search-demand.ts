@@ -63,7 +63,7 @@ export type TopicIntake = (db: Db, a: { brokerageId: string; ideas: TopicIdea[];
  *   export const productionTopicIntake: TopicIntake | null = async (db, a) => (await import("@/lib/content-intel/topic-intake")).intakeTopicIdeas(db as never, a)
  * While null, every scan still reads and reports its ideas, says `intake_unwired`, and stores nothing.
  */
-export const productionTopicIntake: TopicIntake | null = null
+export const productionTopicIntake: TopicIntake | null = async (db, a) => (await import("@/lib/content-intel/topic-intake")).intakeTopicIdeas(db as never, a)
 
 /** One vocabulary — the sourceKind every idea from this module carries. */
 export const SEARCH_DEMAND_SOURCE_KINDS = {

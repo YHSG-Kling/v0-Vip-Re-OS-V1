@@ -33,6 +33,11 @@ export const SYSTEM_TOPIC_WRITERS = {
   // wave 145 (lane 145G, owner ruling 22): competitor post themes, viral patterns, customer questions, education and
   // AI-search gaps, property-value trends and market changes — lib/content-intel/topic-intelligence.ts
   topic_intelligence: "Topic intelligence — competitor themes, questions, gaps & market trends (system)",
+  // wave 154 (lane 154C, owner rulings R1 / R3): reworded public chatter (Nextdoor public posts, public Facebook group
+  // questions), a subscriber's hand-saved permitted link or own observation — lib/content-intel/public-chatter-topics.ts
+  public_chatter: "Public chatter — reworded community questions & saved links (system)",
+  // wave 154: every other producer that calls the ONE intake (lib/content-intel/topic-intake.ts) without a source row
+  topic_intake: "Topic intake — other intelligence producers (system)",
 } as const
 export type SystemTopicWriter = keyof typeof SYSTEM_TOPIC_WRITERS
 

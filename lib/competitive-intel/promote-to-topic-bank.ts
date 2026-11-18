@@ -32,6 +32,9 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { competitorAdTheme } from "@/lib/content-intel/topic-themes"
+import { intakeTopicIdeas, classifyTopicExclusion, type TopicIdea } from "@/lib/content-intel/topic-intake"
+// WAVE 154 (lane 154C): the direct content_topic_bank insert that lived below is TOMBSTONED — the survivor is THE ONE intake,
+// lib/content-intel/topic-intake.ts intakeTopicIdeas (tenant-pinned, exclusion-gated, provenance-merged, counted writes).
 
 export interface PromoteResult {
   brokerage_id: string
@@ -132,6 +135,7 @@ export async function promoteCompetitorAdsToTopicBank(args: {
 
   const promoted: string[] = []
   const skipped:  Array<{ competitor_ad_id: string; reason: string }> = []
+  const ideas:    Array<{ adId: string; idea: TopicIdea }> = []
 
   for (const ad of ads) {
     if (promoted.length >= topN) break
@@ -155,50 +159,55 @@ export async function promoteCompetitorAdsToTopicBank(args: {
     const title = theme.title
     const valueAngle = theme.valueAngle
 
+    // THE EXCLUSION GATE (wave 154, R9) on the rival's creative BEFORE promotion: a new-hire / joining announcement, a
+    // recruiting pitch, brand self-promotion, a listing brag or an unverified performance claim never enters the pool —
+    // whatever its engagement. (The intake runs the gate again on the theme it stores.)
+    const gate = classifyTopicExclusion({ title: ad.ad_headline ?? "", text: ad.ad_copy ?? null, sourceKind: "competitor_ad" })
+    if (gate.excluded) {
+      skipped.push({ competitor_ad_id: ad.id, reason: `excluded:${gate.reason}` })
+      continue
+    }
+
     const categories = Array.from(
       new Set([...(ad.categories ?? []), "competitor_intel"]),
     )
 
-    const expiresAt = new Date(Date.now() + EXPIRES_DAYS * 86_400_000).toISOString()
+    const nowIso = new Date().toISOString()
+    // THE ONE INTAKE (wave 154, lane 154C): the theme, never the creative. The ad's own campaign is ONE observation (a re-run
+    // is merged, never a second topic); competitor_ads.engagement_score is the SEARCH provider's relevance × recency proxy
+    // (lib/competitive-intel/exa-competitor-ads.ts) — kept as proxy evidence in its own unit, never written into the topic's
+    // engagement column; conversion / CPA / CTR / impressions / spend stay unknown, and a long-running ad proves nothing.
+    ideas.push({ adId: ad.id, idea: {
+      sourceKind: "competitor_ad", sourceId: topicSource.id, title, angle: valueAngle, categories,
+      geo: (ad.geo_relevance as TopicIdea["geo"]) ?? null, sourceUrl: null, publishedAt: null, observedAt: nowIso,
+      expiresAt: new Date(Date.now() + EXPIRES_DAYS * 86_400_000).toISOString(),
+      evidence: { kind: typeof ad.engagement_score === "number" ? "proxy" : "unknown", metric: typeof ad.engagement_score === "number" ? "search_relevance_recency" : null, value: ad.engagement_score ?? null, unit: typeof ad.engagement_score === "number" ? "search_relevance_0_100" : null, note: "a search-ranking proxy, not engagement; ad longevity is not evidence of performance" },
+      rights: "public_read_reworded",
+      dedupKey: `competitor_theme:${theme.themeKeys.slice(0, 2).join("+")}`,
+      brief: {
+        observation_key: `competitor_ad:${(ad.raw_payload?.collation_id as string | undefined) ?? ad.id}`, transport: "competitor_ads",
+        promoted_from_competitor_ad_id: ad.id, promoted_at: nowIso, theme_keys: theme.themeKeys, theme_only: true,
+        competitor_page: (ad.raw_payload?.page_name as string | undefined) ?? null,
+        topic_concept: title, proof_needed: "independent, sourced facts — a competitor ad proves nothing",
+        ad_metrics: { conversion: "unknown", cpa: "unknown", ctr: "unknown", impressions: "unknown", spend: "unknown", longevity_is_not_performance: true },
+      },
+    } })
+    promoted.push(ad.id)
+  }
 
-    const { data: newTopic, error } = await svc
-      .from("content_topic_bank")
-      .insert({
-        source_id:         topicSource.id,
-        brokerage_id:      args.brokerageId,
-        topic_title:       title,
-        value_angle:       valueAngle,
-        source_url:        null,
-        categories,
-        engagement_score:  ad.engagement_score ?? 0,
-        topic_posted_at:   new Date().toISOString(),
-        scraped_at:        new Date().toISOString(),
-        expires_at:        expiresAt,
-        status:            "fresh",
-        geo_relevance:     ad.geo_relevance ?? null,
-        raw_data:          {
-          promoted_from_competitor_ad_id: ad.id,
-          promoted_at:                    new Date().toISOString(),
-          theme_keys:                     theme.themeKeys,
-          theme_only:                     true,
-          competitor_page:                (ad.raw_payload?.page_name as string | undefined) ?? null,
-        },
-      })
-      .select("id")
-      .single()
-
-    if (error || !newTopic) {
-      skipped.push({ competitor_ad_id: ad.id, reason: `insert_failed: ${error?.message ?? "unknown"}` })
-      continue
-    }
-    promoted.push(newTopic.id as string)
+  if (ideas.length) {
+    const r = await intakeTopicIdeas(svc, { brokerageId: args.brokerageId, ideas: ideas.map((i) => i.idea) })
+    for (const e of r.excluded) skipped.push({ competitor_ad_id: ideas.find((i) => i.idea.title.slice(0, 120) === e.title)?.adId ?? "unknown", reason: `intake_excluded:${e.reason}` })
+    if (!r.ok) for (const i of ideas) skipped.push({ competitor_ad_id: i.adId, reason: `intake_refused: ${r.refused ?? r.errors.slice(0, 2).join("; ")}` })
+    const ids = [...new Set(r.rows.map((x) => x.id))]
+    return { brokerage_id: args.brokerageId, considered: ads.length, promoted: r.ok ? r.inserted + r.merged : r.rows.length, topic_ids: ids, skipped }
   }
 
   return {
     brokerage_id: args.brokerageId,
     considered:   ads.length,
-    promoted:     promoted.length,
-    topic_ids:    promoted,
+    promoted:     0,
+    topic_ids:    [],
     skipped,
   }
 }

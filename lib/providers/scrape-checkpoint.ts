@@ -122,13 +122,73 @@ const NEXTDOOR_TERMS_HOST = /(^|\.)nextdoor\.com$/i
  */
 const SCRAPE_TARGET_AGREEMENTS: Readonly<Record<string, { reference: string; recordedAt: string; scope: string }>> = Object.freeze({})
 
-interface TermsVerdict { allowed: boolean; basis: "no_known_restriction" | "portal_terms" | "classified_terms" | "license_required" | "forum_platform_terms" | "written_agreement"; note: string }
+// ─── ONE purpose-limited mode for community-post sources: PUBLIC-READ / TOPIC-ONLY / REWORD-BEFORE-STORE ────────────────
+// Wave 154, lane 154C — OWNER RULING 2026-11-17 (R1 / R2), recorded here as the OWNER'S ACCEPTED RISK and listed for counsel:
+//   "you can still read the posts from restricted sites and with great popular topics and before storing, reword it so the
+//    topic stored doesn't go against the licensing restrictions when there isn't a license present."
+// It REPLACES "no transport call without a license" for the TOPIC path only. Exactly what it permits:
+//   · a PUBLICLY VISIBLE post page on a listed community host, fetched through this checkpointed Zyte / ZenRows transport
+//     (robots, interval, tick budget, spend gate and backoff all still apply) — for TOPIC research only;
+//   · no sign-in, no cookies, credentials or authorization headers on the request, no private neighborhood or group, no
+//     circumvention of an access control: a URL outside the host's public-post shape is refused before any request, and a
+//     fetched page that turns out to be a sign-in wall is HELD and its body discarded (held_access_control);
+//   · the caller (lib/content-intel/public-chatter-topics.ts) fences the fetched text as untrusted, derives a REWORDED topic
+//     in memory and discards the text; only the reworded topic + minimal provenance reach the ONE intake.
+// What it does NOT permit: the person path. Under `real_estate_need_chatter` / `fsbo_listing` nextdoor.com stays
+// LICENSE_REQUIRED exactly as wave 153 left it (a person-level Raw Lead from a Nextdoor post is LICENSE-HELD behind the
+// SCRAPE_TARGET_AGREEMENTS switch above). The listing portals, craigslist and search-result pages are NOT listed here and stay
+// held under every purpose.
+export const COMMUNITY_TOPIC_RESEARCH_PURPOSE = "community_topic_research" as const
+export type CommunityTopicResearchPurpose = typeof COMMUNITY_TOPIC_RESEARCH_PURPOSE
+
+export interface CommunityPostTopicRule {
+  host: string
+  /** The public-post URL shape — anything else (feeds, groups, neighborhoods, profiles, sign-in) is refused before a request. */
+  publicPostPath: RegExp
+  acceptedRisk: { by: "owner"; ruling: string; recordedAt: string; scope: string; counsel: "listed for counsel review" }
+}
+export const COMMUNITY_POST_TOPIC_RULES: Readonly<Record<string, CommunityPostTopicRule>> = Object.freeze({
+  "nextdoor.com": {
+    host: "nextdoor.com",
+    // A shared public post: nextdoor.com/p/<id>. (The path shape is this repo's reading of Nextdoor's public share links —
+    // UNVERIFIED against a live page in this lane; a page that is not public is held by the sign-in-wall check below.)
+    publicPostPath: /^\/p\/[A-Za-z0-9_-]{4,64}\/?$/,
+    acceptedRisk: { by: "owner", ruling: "R1 / R2 (2026-11-17): public posts read for topic research, reworded before storing; no license on record", recordedAt: "2026-11-17", scope: "topic research only — reworded topic + minimal provenance stored; never the post's wording, author, contact details, profile links or member lists; never a person-level lead", counsel: "listed for counsel review" },
+  },
+})
+
+/** PURE — may this URL ride the community TOPIC mode? null = yes; otherwise the refusal (no request is made). */
+export function communityTopicTargetProblem(url: string): string | null {
+  let u: URL
+  try { u = new URL(url) } catch { return `not a fetchable http(s) URL: ${url}` }
+  if (u.protocol !== "https:") return "community topic research fetches https public pages only"
+  if (u.username || u.password) return "refused: credentials in the URL — the topic mode never signs in"
+  const host = u.hostname.toLowerCase().replace(/^www\./, "")
+  const rule = COMMUNITY_POST_TOPIC_RULES[host]
+  if (!rule) return `${host} has no community topic rule — the topic mode covers only the listed community hosts (portals and search pages stay held)`
+  if ([...u.searchParams.keys()].some((k) => /token|session|auth|sid|key|code|cookie/i.test(k))) return "refused: the URL carries a session / auth parameter — no access control is circumvented"
+  if (!rule.publicPostPath.test(u.pathname)) return `refused: ${u.pathname} is not a public post page on ${host} (private neighborhoods, groups, feeds, profiles and sign-in pages are never fetched)`
+  return null
+}
+
+/** PURE — a fetched page that is really a sign-in / membership wall (the post is not public): its body is never used. */
+export function signInWallProblem(html: string): string | null {
+  const h = String(html ?? "")
+  if (/<input[^>]+type=["']?password/i.test(h)) return "the page asks for a password — a sign-in wall, not a public post"
+  if (/\b(?:log ?in|sign ?in|join) (?:to|on) (?:nextdoor|see|continue|view)\b|\bverify your address to (?:see|join)\b|\bthis (?:post|content) is (?:only )?(?:visible|available) to (?:members|neighbors)\b/i.test(h)) return "the page is a sign-in / membership wall — the post is not publicly visible"
+  return null
+}
+
+interface TermsVerdict { allowed: boolean; basis: "no_known_restriction" | "portal_terms" | "classified_terms" | "license_required" | "forum_platform_terms" | "written_agreement" | "owner_accepted_risk_topic_only"; note: string }
 
 /** PURE — may this host be fetched under its terms? (Robots is decided separately; both must allow.) */
-function scrapeTargetTermsVerdict(host: string, url: string, agreements = SCRAPE_TARGET_AGREEMENTS): TermsVerdict {
+function scrapeTargetTermsVerdict(host: string, url: string, agreements = SCRAPE_TARGET_AGREEMENTS, purpose: ScrapePurpose | CommunityTopicResearchPurpose | null = null): TermsVerdict {
   const bare = host.replace(/^www\./, "")
   const agreement = agreements[bare]
   if (agreement) return { allowed: true, basis: "written_agreement", note: `written agreement ${agreement.reference} (${agreement.scope}, recorded ${agreement.recordedAt})` }
+  // The TOPIC mode (owner's accepted risk, above) — only for a listed community host, only under the topic purpose.
+  const topicRule = purpose === COMMUNITY_TOPIC_RESEARCH_PURPOSE ? COMMUNITY_POST_TOPIC_RULES[bare] : undefined
+  if (topicRule) return { allowed: true, basis: "owner_accepted_risk_topic_only", note: `PUBLIC-READ / TOPIC-ONLY — owner's accepted risk (${topicRule.acceptedRisk.ruling}; ${topicRule.acceptedRisk.counsel}); scope: ${topicRule.acceptedRisk.scope}` }
   if (PORTAL_TERMS_HOSTS.test(bare)) return { allowed: false, basis: "portal_terms", note: `${bare}'s terms restrict automated collection without written permission — held until an agreement is recorded (Zyte / ZenRows are transports, not a license to the site's data)` }
   if (CLASSIFIED_TERMS_HOSTS.test(bare)) return { allowed: false, basis: "classified_terms", note: `${bare}'s terms of use prohibit automated collection — held until an agreement is recorded` }
   if (NEXTDOOR_TERMS_HOST.test(bare)) return { allowed: false, basis: "license_required", note: "LICENSE_REQUIRED — Nextdoor's Member Agreement forbids unauthorized scraping and it publishes no read API; the route runs through this transport and stays held until a reviewed written agreement is recorded for nextdoor.com (an owner decision)" }
@@ -244,7 +304,7 @@ export function scrapePurposeProblem(purpose: unknown): string | null {
 }
 
 /** `lane` names the caller's source lane (zillow_fsbo_search, realty_chatter, nextdoor_chatter …) for the ledger row. */
-interface CheckpointScope { brokerageId: string | null; marketId: string | null; purpose: ScrapePurpose; lane?: string | null }
+interface CheckpointScope { brokerageId: string | null; marketId: string | null; purpose: ScrapePurpose | CommunityTopicResearchPurpose; lane?: string | null }
 
 function parseState(meta: Record<string, any> | null | undefined, key: string): CheckpointState | null {
   const c = meta?.checkpoint
@@ -363,7 +423,7 @@ function conditionalHeaders(state: CheckpointState, jsRender: boolean, configure
 type SnapshotStatus =
   | "fetched_changed" | "unchanged" | "not_modified"
   | "skipped_interval" | "held_backoff" | "held_tick_budget" | "held_spend" | "held_robots" | "held_terms"
-  | "refused_checkpoint_unreadable" | "refused_target" | "refused_purpose" | "failed" | "no_provider"
+  | "refused_checkpoint_unreadable" | "refused_target" | "refused_purpose" | "failed" | "no_provider" | "held_access_control"
 
 interface CheckpointedSnapshot {
   status: SnapshotStatus
@@ -515,7 +575,9 @@ export async function fetchCheckpointedSnapshot(input: SnapshotCheckpointInput, 
   }
 
   // THE SCOPE RULE FIRST (owner ruling B3): a purpose outside chatter / FSBO is refused by name — no checkpoint read, no request.
-  const purposeProblem = scrapePurposeProblem(input.scope?.purpose)
+  // The ONE exception is the community TOPIC mode (wave 154, owner R1), whose target must be a listed host's public post page.
+  const topicMode = input.scope?.purpose === COMMUNITY_TOPIC_RESEARCH_PURPOSE
+  const purposeProblem = topicMode ? communityTopicTargetProblem(input.url) : scrapePurposeProblem(input.scope?.purpose)
   if (purposeProblem) return result("refused_purpose", purposeProblem)
   if (!target) return result("refused_target", `not a fetchable http(s) URL: ${input.url}`)
   const key = `snap:${input.scope.brokerageId ?? "platform"}:${input.scope.marketId ?? "-"}:${stableContentDigest(target.url)}`
@@ -534,7 +596,7 @@ export async function fetchCheckpointedSnapshot(input: SnapshotCheckpointInput, 
 
   // Contract terms (pure — a held host costs no request at all), then robots.txt (cached ≤ 24 h). Both must allow before any
   // paid request.
-  const terms = scrapeTargetTermsVerdict(target.host, target.url, deps.agreements)
+  const terms = scrapeTargetTermsVerdict(target.host, target.url, deps.agreements, input.scope.purpose)
   if (!terms.allowed) { await persist(); return result("held_terms", terms.note) }
   if (!st.robots || nowMs - Date.parse(st.robots.checkedAt) > ROBOTS_CACHE_MS) {
     const r = await (deps.robots ?? defaultRobotsReader)(target.origin).catch(() => ({ status: null, text: null }))
@@ -560,7 +622,9 @@ export async function fetchCheckpointedSnapshot(input: SnapshotCheckpointInput, 
     }
     if (deps.tickBudget) deps.tickBudget.fetchesLeft -= 1
     const isFirst = pages === 0
+    // Validators only — never a cookie, credential or authorization header on any purpose (the topic mode never signs in).
     const requestHeaders = isFirst ? conditionalHeaders(st, !!input.jsRender, configured) : null
+    if (requestHeaders) for (const k of Object.keys(requestHeaders)) if (/^(cookie|authorization|proxy-authorization|x-.*token)$/i.test(k)) delete requestHeaders[k]
     if (requestHeaders) notes.push(`conditional request sent (${Object.keys(requestHeaders).join(", ")}) — the source published a validator and the transport documents request headers in this mode`)
     const timeoutMs = input.timeoutMs ?? DEFAULTS.timeoutMs
     const res = await withTimeout<SnapshotFetchResult>(
@@ -615,6 +679,11 @@ export async function fetchCheckpointedSnapshot(input: SnapshotCheckpointInput, 
       st.observedAt = now().toISOString()
       st.unchangedFetches += 1
       break
+    }
+    if (topicMode) {
+      // A page that turns out to be a sign-in / membership wall is not a public post: held, body discarded, never processed.
+      const wall = signInWallProblem(res.html)
+      if (wall) { st.observedAt = now().toISOString(); html = []; await persist(); return result("held_access_control", wall) }
     }
     const digest = snapshotDigest(res.html)
     if (isFirst) {
