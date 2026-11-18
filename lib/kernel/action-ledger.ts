@@ -800,7 +800,11 @@ function actionPhase(a: { action: string; status: string; outcome?: string | nul
   if (/\.decision\./.test(a.action) || a.status === "skipped") return "decided"
   if (a.status !== "executed") return "attempted"
   if (a.outcome === "reconciled_confirmed") return "completed"
-  if (a.outcome === "accepted" || /^reconciled_/.test(a.outcome ?? "") || ((a.provider || a.provider_ref) && a.outcome !== "tool_completed")) return "provider_accepted"
+  // WAVE 154 (lane 154A2, canary 10): settleDispatchResult records ANY success as outcome 'accepted' — including a provider that
+  // answered success WITHOUT a message id. With no provider reference there is no acknowledgement to point at, so the row reads as
+  // ATTEMPTED (handed over, receipt not evidenced) until the reconciliation net records one (reconciled_*), never as accepted / done.
+  if (a.outcome === "accepted" && !a.provider_ref) return "attempted"
+  if (a.outcome === "accepted" ||/^reconciled_/.test(a.outcome ?? "") || ((a.provider || a.provider_ref) && a.outcome !== "tool_completed")) return "provider_accepted"
   return "completed"
 }
 

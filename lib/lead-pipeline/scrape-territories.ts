@@ -38,6 +38,7 @@
 import {
   activeSubscriberBrokerageIds,
 } from "./subscription-gate"
+import { TENANT_LIFECYCLE_REFUSED } from "@/lib/billing/billing-access"
 
 // Minimal shape a territory row must carry to be scrapable. The DB rows from
 // lead_scraping_markets are a superset (params relations, budget, priority…).
@@ -144,6 +145,18 @@ export async function resolveActiveScrapeTerritories(
   }
 
   const activeIds = activeSubscriberBrokerageIds((subs ?? []) as Array<{ brokerage_id: string | null; status: string | null; trial_end?: string | null }>)
+  if (activeIds.size === 0) {
+    return { territories: [], activeBrokerageIds: [], noOp: true, reason: "no_active_subscribers" }
+  }
+  // WAVE 154 (lane 154A2, canary 1): a SUSPENDED / cancelled / archived tenant (brokerages.status, written by the platform's
+  // suspendBrokerageAction, which leaves the subscription row untouched) is not served, whatever its subscription says — the
+  // same set lib/billing/billing-access.ts loadBillingAccess refuses. A refused read cannot tell a live tenant from a
+  // suspended one: fail closed, said by name. Nothing is deleted — lawful history stays.
+  const { data: tenants, error: tenantErr } = await supabase.from("brokerages").select("id, status").in("id", [...activeIds])
+  if (tenantErr) {
+    return { territories: [], activeBrokerageIds: [], noOp: true, reason: "subscription_query_failed", error: `tenant status read refused: ${tenantErr.message}` }
+  }
+  for (const t of (tenants ?? []) as Array<{ id: string; status: string | null }>) if (t.status && TENANT_LIFECYCLE_REFUSED.has(t.status)) activeIds.delete(t.id)
   if (activeIds.size === 0) {
     return { territories: [], activeBrokerageIds: [], noOp: true, reason: "no_active_subscribers" }
   }

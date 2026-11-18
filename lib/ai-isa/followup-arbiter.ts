@@ -1952,6 +1952,28 @@ export async function arbitratePlannedTouch(
   } catch (e) {
     decision = { optionId: planned.id, kind: planned.kind, channel: planned.channels[0] ?? null, format: null, waitHours: null, rationale: `The planner's verdict stands: the arbiter threw (${e instanceof Error ? e.message : String(e)}).`, evidence: [], confidence: 1, source: "deterministic", fallbackReason: "arbiter threw", menu: menu.menu.map((o) => o.id) }
   }
+  // WAVE 154 (lane 154A2 — directive A7.3 example 9, "a contact's reply arrives after an 8-second planning delay: actual recent
+  // conversation outranks stale plan; no duplicate follow-up"). The timing above was read BEFORE the planning call, which may take
+  // up to ARBITER_LATENCY_BUDGET_MS.planned (8 s). A planned touch that may wait and would go out is re-checked on ONE fresh read
+  // of the same signals: a person on the team wrote meanwhile, or the thread moved at all (they replied, or anyone wrote), so the
+  // plan was formed on a stale transcript. It then waits (bounded, ledgered with the reason); the newest message is answered by
+  // its own door (lib/communications/inbound-responder.ts), never by this stale plan. A planner that offers no wait (the
+  // unattended answer, offerWait:false) is unchanged — it IS the answer to someone and carries its own late-result rules.
+  if (decision.kind !== "wait" && a.offerWait !== false) {
+    // The SAME instant as the first read, so both readings share one look-back window and only a message that actually
+    // arrived in between can differ (a planner's injected clock is respected — a wall-clock "now" would shift the window).
+    const fresh = await loadTimingSignals(svc, { brokerageId: a.brokerageId, subject: a.subject, now: a.now })
+    const was = timing.signals, now2 = fresh.signals
+    const humanMoved = !!now2.ownership?.humanEngagedAt && now2.ownership.humanEngagedAt !== (was.ownership?.humanEngagedAt ?? null)
+    const threadMoved = (now2.lastInboundAt ?? null) !== (was.lastInboundAt ?? null) || (now2.lastOutboundAt ?? null) !== (was.lastOutboundAt ?? null)
+    if (humanMoved || threadMoved) {
+      decision = {
+        optionId: "wait", kind: "wait", channel: null, format: null, stance: "wait", waitHours: 1,
+        rationale: `Held: the conversation moved while this touch was being planned (${humanMoved ? `a person on the team wrote at ${now2.ownership?.humanEngagedAt}` : `newest inbound ${now2.lastInboundAt ?? "none"}, newest outbound ${now2.lastOutboundAt ?? "none"}`}) — the newest conversation outranks the stale plan; nothing is sent on top of it.`.slice(0, 600),
+        evidence: ["history"], confidence: 1, source: "deterministic", fallbackReason: "stale_plan_superseded", menu: menu.menu.map((o) => o.id),
+      }
+    }
+  }
   let recorded = false
   let ledgerError: string | undefined
   if (deps.record !== false) {

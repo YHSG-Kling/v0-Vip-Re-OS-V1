@@ -43,6 +43,9 @@ export interface BillingSubRow {
   past_due_since?: string | null
 }
 
+/** brokerages.status values that stop every paid capability whatever the subscription row says (wave 154, lane 154A2). */
+export const TENANT_LIFECYCLE_REFUSED: ReadonlySet<string> = new Set(["suspended", "cancelled", "archived"])
+
 /** A refusal that is not a classification — the gate could not decide, so it refuses (§4). */
 function refusedAccess(reason: string): BillingAccess {
   return { state: "none", blocked: true, trialDaysLeft: null, graceDaysLeft: null, reason }
@@ -190,10 +193,19 @@ export async function loadBillingAccess(svc: any, brokerageId: string, now: Date
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    svc.from("brokerages").select("trial_ends_at, plan_tier").eq("id", brokerageId).maybeSingle(),
+    svc.from("brokerages").select("trial_ends_at, plan_tier, status").eq("id", brokerageId).maybeSingle(),
   ])
 
   if (!subRes || subRes.error) return refusedAccess(`subscription_read_refused: ${subRes?.error?.message ?? "no response"}`)
+  // WAVE 154 (lane 154A2, canary 1/12): the TENANT LIFECYCLE is the platform's own decision and outranks a still-current
+  // subscription row. app/actions/superadmin/brokerage-management.ts suspendBrokerageAction writes brokerages.status
+  // 'suspended' (its header: "suspended → all logins blocked, data retained") and touches no subscription — so before this,
+  // a suspended tenant with an 'active' row kept app access, sends and paid work. Refused here (platform staff still bypass
+  // the access half for support), nothing is deleted. The live CHECK vocabulary: active | archived | cancelled | suspended.
+  const tenantStatus = brkRes?.error ? null : ((brkRes?.data as { status?: string | null } | null)?.status ?? null)
+  if (tenantStatus && TENANT_LIFECYCLE_REFUSED.has(tenantStatus)) {
+    return { state: "expired", blocked: true, trialDaysLeft: null, graceDaysLeft: null, reason: `tenant_${tenantStatus}` }
+  }
   const sub = (subRes.data as (BillingSubRow & { updated_at?: string | null }) | null) ?? null
   if (!sub) return resolveBillingAccess(null, now)
 

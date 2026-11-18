@@ -402,6 +402,20 @@ export async function productionPooledBatchDataDeps(): Promise<PooledBatchDataDe
   }
 }
 
+/** WAVE 154 (lane 154A2): a provider refusal that means "quota / balance / rate limit" — the BatchData client's thrown
+ *  message carries the HTTP status (lib/external/batchdata-client.ts: `${label}: ${status} …`). */
+const PROVIDER_QUOTA_RE = /(?:^|[^\d])(?:402|429)(?:[^\d]|$)|\bquota\b|\brate[ -]?limit/i
+
+/** One cycle's spend commitments, keyed by the deps object the cron builds ONCE per cycle and hands to every lane (so the
+ *  motivated / cash-buyer / expired lanes share them). Module-private; a fresh deps object is a fresh cycle. */
+interface CycleCommitments { approved: Map<string, number>; platform: Map<string, number>; providerStopped: string | null }
+const CYCLE_COMMITMENTS = new WeakMap<object, CycleCommitments>()
+function cycleCommitmentsFor(deps: object): CycleCommitments {
+  let c = CYCLE_COMMITMENTS.get(deps)
+  if (!c) { c = { approved: new Map(), platform: new Map(), providerStopped: null }; CYCLE_COMMITMENTS.set(deps, c) }
+  return c
+}
+
 /**
  * THE POOLED BATCHDATA LANE. Every want is grouped into pools keyed by (trigger, request-side
  * window) — territories wanting the same trigger under the same window share ONE pull; each pool's
@@ -417,6 +431,7 @@ export async function runPooledBatchDataLane(
 ): Promise<{ byTerritory: Map<string, PooledShare<BatchDataRecord>>; ledger: PooledLaneLedger; errors: string[] }> {
   const byTerritory = new Map<string, PooledShare<BatchDataRecord>>()
   const errors: string[] = []
+  const cycle = cycleCommitmentsFor(deps)
   // THE APPROVAL GATE — before pooling, so an unapproved tenant's geography never widens a paid request.
   const approvedWants: PooledWant[] = []
   let unapproved = 0, throttled = 0, deferred = 0, escalations = 0
@@ -434,15 +449,27 @@ export async function runPooledBatchDataLane(
       const t = w.territory
       const recordCap = typeof t.max_records_per_run === "number" && t.max_records_per_run > 0 ? Math.floor(t.max_records_per_run) : (deps.defaultRecordsPerTerritory ?? 100)
       const triggers = Math.max(1, w.triggers.length)
+      // WAVE 154 (lane 154A2, canary 9): the spend ledger is read ONCE per cycle, so without this every want under the SAME
+      // approval (two territories of one tenant, or the motivated / cash-buyer / expired lanes on one deps) saw the whole
+      // ceiling and the approved total was admitted more than once. What earlier wants of this cycle were admitted for is
+      // reserved here; another tenant's approval / cap key is untouched.
+      const approvalKey = `${t.brokerage_id}|${lane}|${verdict.approvedAt ?? ""}`
+      const tenantKey = String(t.brokerage_id)
+      const spentRead = deps.spentSinceApproval ? deps.spentSinceApproval(t.brokerage_id as string, lane, verdict.approvedAt ?? null) : null
+      const capRead = deps.platformCapRemainingUsd ? deps.platformCapRemainingUsd((t.brokerage_id as string | null) ?? null) : undefined
       const bp = decideSpendBackpressure({
         wantRecords: recordCap * triggers,
         unitUsd: deps.unitUsd,
         approvedMaxUsd: verdict.maxSpendUsd,
-        approvedSpentUsd: deps.spentSinceApproval ? deps.spentSinceApproval(t.brokerage_id as string, lane, verdict.approvedAt ?? null) : null,
+        approvedSpentUsd: spentRead === null ? null : spentRead + (cycle.approved.get(approvalKey) ?? 0),
         territoryRemainingUsd: typeof t.monthly_budget_usd === "number" ? t.monthly_budget_usd - (t.spend_this_month ?? 0) : null,
-        platformCapRemainingUsd: deps.platformCapRemainingUsd ? deps.platformCapRemainingUsd((t.brokerage_id as string | null) ?? null) : undefined,
-        providerFailing: deps.providerFailing === true,
+        platformCapRemainingUsd: typeof capRead === "number" ? capRead - (cycle.platform.get(tenantKey) ?? 0) : capRead,
+        providerFailing: deps.providerFailing === true || cycle.providerStopped !== null,
       })
+      if (bp.action === "proceed" || bp.action === "throttle") {
+        cycle.approved.set(approvalKey, (cycle.approved.get(approvalKey) ?? 0) + bp.usd)
+        if (typeof capRead === "number") cycle.platform.set(tenantKey, (cycle.platform.get(tenantKey) ?? 0) + bp.usd)
+      }
       if (bp.escalate) {
         escalations++
         try { await deps.escalate?.({ brokerageId: t.brokerage_id as string, territoryId: t.id, lane, action: bp.action, reason: bp.reason }) } catch { /* never throws into the lane */ }
@@ -493,6 +520,12 @@ export async function runPooledBatchDataLane(
     const plan = planPooledGeography(territories, { maxValues: deps.maxInList })
     for (const id of plan.unpoolable) errors.push(`${lane}: territory ${id} names no state + ZIP/county/city — not pooled (the gate refuses an unspecified area too)`)
     for (const chunk of plan.chunks) {
+      // WAVE 154 (lane 154A2, A7.3 example 6): a provider that reported a quota / balance limit this cycle is STOPPED — its
+      // remaining chunks are not requested (nothing is charged, the budget is preserved) and the refusal is said, not retried blindly.
+      if (cycle.providerStopped !== null) {
+        errors.push(`${lane}: pooled ${pool.trigger} pull for ${chunk.state} ${chunk.kind}×${chunk.values.length} not requested — the provider reported a quota / balance limit this cycle (${cycle.providerStopped}); stopped, budget preserved`)
+        continue
+      }
       ledger.chunks++
       const members = territories.filter((t) => chunk.memberIds.includes(t.id))
       const cap = members.reduce((s, t) => s + perTerritoryCap(t), 0)
@@ -514,7 +547,9 @@ export async function runPooledBatchDataLane(
           if (r.records.length < take) break
         }
       } catch (e) {
-        errors.push(`${lane}: pooled ${pool.trigger} pull for ${chunk.state} ${chunk.kind}×${chunk.values.length} failed — ${e instanceof Error ? e.message : String(e)}`)
+        const msg = e instanceof Error ? e.message : String(e)
+        errors.push(`${lane}: pooled ${pool.trigger} pull for ${chunk.state} ${chunk.kind}×${chunk.values.length} failed — ${msg}`)
+        if (PROVIDER_QUOTA_RE.test(msg)) cycle.providerStopped = msg.slice(0, 160)
       }
       ledger.chargeUsd += chunkCost
       const memberWindow = new Map(pool.members.map((m) => [m.territory.id, m.lookbackDays]))

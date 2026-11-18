@@ -462,14 +462,26 @@ export async function requestDelegation(input: RequestDelegationInput, client?: 
     // brokerage subject_id) — a Lead's or a Transaction's asks are bounded exactly like a Contact's.
     const subjectId = subject?.id ?? (typeof entities.subject_id === "string" && entities.subject_id ? entities.subject_id : null)
     if (mission || subjectId) {
-      let q = svc.from("manager_delegations").select("id, requesting_manager, assigned_manager, requested_capability, status").eq("brokerage_id", input.brokerageId)
+      let q = svc.from("manager_delegations").select("id, requesting_manager, assigned_manager, requested_capability, status, state_changed_at, updated_at").eq("brokerage_id", input.brokerageId)
       q = mission ? q.eq("mission_id", mission.id) : q.is("mission_id", null).eq("input_entities->>subject_id", String(subjectId))
       const { data: peers, error: peerErr } = await q.limit(500)
       if (peerErr) return { ok: false, reason: `read_refused:${peerErr.message}` }
-      const rows = (peers ?? []) as Array<Pick<DelegationRow, "id" | "requesting_manager" | "assigned_manager" | "requested_capability" | "status">>
+      const rows = (peers ?? []) as Array<Pick<DelegationRow, "id" | "requesting_manager" | "assigned_manager" | "requested_capability" | "status" | "state_changed_at" | "updated_at">>
       const cycle = delegationWaitCycle(rows.filter((r) => !DELEGATION_TERMINAL_STATUSES.has(r.status)), input.requestingManager, input.assignedManager)
       if (cycle) return policyRefusal(`circular_delegation:${cycle.join("→")} — ${MANAGERS[input.assignedManager].label} is already waiting on ${MANAGERS[input.requestingManager].label} here; asking back would deadlock both`)
-      const rejected = rows.filter((r) => r.status === "REJECTED" && r.requested_capability === input.capability && r.assigned_manager === input.assignedManager).length
+      let rejectedRows = rows.filter((r) => r.status === "REJECTED" && r.requested_capability === input.capability && r.assigned_manager === input.assignedManager)
+      // WAVE 154 (lane 154A2, canary P8): "a person decides instead of a third ask" — and once a PERSON has decided (resumed the
+      // escalated mission: APPROVAL_REQUIRED → ACTIVE by a user), the refusals before that decision are not held against the
+      // resumed work. Before this the bound counted every refusal forever, so the human's resume could never recover the step
+      // (each new ask was refused attempts_exhausted and re-escalated the mission). A manager-initiated resume does not reset it.
+      if (mission && rejectedRows.length >= DELEGATION_MAX_REJECTED_ASKS) {
+        const { data: resumes, error: resumeErr } = await svc.from("mission_events").select("created_at").eq("brokerage_id", input.brokerageId).eq("mission_id", mission.id)
+          .eq("event_kind", "transition").eq("from_state", "APPROVAL_REQUIRED").eq("to_state", "ACTIVE").eq("actor_type", "user").order("created_at", { ascending: false }).limit(1)
+        if (resumeErr) return { ok: false, reason: `read_refused:${resumeErr.message}` }
+        const resumedAt = ((resumes ?? []) as Array<{ created_at: string | null }>)[0]?.created_at ?? null
+        if (resumedAt) rejectedRows = rejectedRows.filter((r) => (r.state_changed_at ?? r.updated_at ?? "") > resumedAt)
+      }
+      const rejected = rejectedRows.length
       if (rejected >= DELEGATION_MAX_REJECTED_ASKS) return policyRefusal(`attempts_exhausted:${input.capability} was rejected ${rejected} time(s) by ${MANAGERS[input.assignedManager].label} here — a person decides instead of a third ask`)
     }
     const { data: queue, error: queueErr } = await svc.from("manager_delegations").select("id").eq("brokerage_id", input.brokerageId)
