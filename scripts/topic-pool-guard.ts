@@ -238,6 +238,20 @@ async function main() {
     refurbishTriggerKindForTopicSource("google_trends") === "google_trend" && refurbishTriggerKindForTopicSource("community_post") === "public_chatter" && refurbishTriggerKindForTopicSource("meta_ad_creative") === "competitor_watch" && refurbishTriggerKindForTopicSource("local_fact") === null
       && g?.raw_data.intake.refurbish_trigger_kind === "google_trend" && f?.raw_data.intake.refurbish_trigger_kind === "public_chatter" && o?.raw_data.intake.refurbish_trigger_kind === null)
 
+  // I8 — the OTHER competitor_ads writer. MEASURED LIVE 2026-11-18: 0 rows, because its upsert named a GLOBAL PARTIAL unique index
+  // PostgREST cannot infer (42P10 — the whole upsert refused). The RULE: an upsert's conflict target leads with the tenant, and a
+  // migration creates a unique index on exactly those columns with no WHERE (a partial index is not inferable from a column list).
+  const exaAds = code("app/api/cron/competitor-ads-exa/route.ts")
+  const conflictTargetOf = (src: string) => /\.from\("competitor_ads"\)\.upsert\([\s\S]*?onConflict:\s*"([^"]+)"/.exec(src)?.[1] ?? null
+  const adTarget = conflictTargetOf(exaAds)
+  const inferableIndex = (sql: string, cols: string) => new RegExp(`CREATE UNIQUE INDEX[^;]*ON public\\.competitor_ads\\s*\\(\\s*${cols.split(",").map((c) => c.trim()).join("\\s*,\\s*")}\\s*\\)\\s*;`, "i").test(sql)
+  const m987 = read("supabase/migrations/m987-competitor-ads-are-unique-per-tenant.sql")
+  check("I8 the competitor-ads-exa upsert's conflict target LEADS WITH THE TENANT and a migration creates a NON-PARTIAL unique index on exactly it", !!adTarget && adTarget.split(",")[0].trim() === "brokerage_id" && inferableIndex(m987, adTarget), String(adTarget))
+  check("I8-control the finder reads the old global target, and refuses a PARTIAL index as inferable",
+    conflictTargetOf('svc.from("competitor_ads").upsert({ a: 1 }, { onConflict: "source_platform,provider_ad_id" })') === "source_platform,provider_ad_id"
+      && !inferableIndex("CREATE UNIQUE INDEX x ON public.competitor_ads (source_platform, provider_ad_id) WHERE provider_ad_id IS NOT NULL;", "source_platform,provider_ad_id")
+      && inferableIndex("CREATE UNIQUE INDEX x ON public.competitor_ads (brokerage_id, source_platform, provider_ad_id);", "brokerage_id,source_platform,provider_ad_id"))
+
   console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
   console.log(" blind spots: SIMULATED throughout (in-memory client, recording Trends transport, no actor / transport call); the community route")
   console.log("   and the apify mirror are checked on stripped source, not executed (next/server); publish → read-back of a topic-born asset is")

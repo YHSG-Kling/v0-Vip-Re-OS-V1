@@ -133,10 +133,14 @@ export async function GET(req: NextRequest) {
             raw_payload:         { ...(ad.raw_payload ?? {}), page_name: ad.page_name },
             last_seen_at:        new Date().toISOString(),
           }, {
-            onConflict: "source_platform,provider_ad_id",
+            // WAVE 154 (m987): the conflict target LEADS WITH THE TENANT and is a non-partial unique index. The old target
+            // ("source_platform,provider_ad_id") named a global PARTIAL index PostgREST cannot infer — every upsert was
+            // refused (42P10) and the table stayed empty; had it been inferable it would have updated another tenant's row.
+            onConflict: "brokerage_id,source_platform,provider_ad_id",
           })
           if (error) {
-            errors.push(`upsert ${ad.provider_ad_id}: ${error.message}`)
+            // 23505 here is the OLD global index (owner SQL drops it): another tenant already stores this ad. Reported, never overwritten.
+            errors.push(`upsert ${ad.provider_ad_id}: ${error.code === "23505" ? "held — another tenant already stores this ad and the global index has not been dropped (owner SQL)" : error.message}`)
           } else {
             upsertedAdIds.push(ad.provider_ad_id)
             ingested++
