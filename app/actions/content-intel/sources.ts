@@ -175,7 +175,9 @@ export async function saveTopicObservationAction(input: { note: string; link?: s
     // LAW 5 — who saved what into the pool, and what the intake did with it.
     const r = await withActionLedger(
       {
-        brokerageId, action: "intel.topic_observation_saved", actor: { type: "user", userId: ctx.userId },
+        // Wave 154 (lane 154L): three segments — the two-segment "intel.topic_observation_saved" was REFUSED by the ledger's
+        // domain.entity.action rule, so the save never ran (test:action-ledger §14 red at c07048ea).
+        brokerageId, action: "intel.topic_observation.save", actor: { type: "user", userId: ctx.userId },
         subject: { type: "content_topic", ref: link ?? "own_observation" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED",
         systemSource: "content-intel/sources", reasonDetail: "a subscriber saved their own observation / a permitted link into the topic pool",
       },

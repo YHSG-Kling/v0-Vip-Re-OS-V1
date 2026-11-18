@@ -19,6 +19,7 @@
     "app/components/shared/ManagerChip.tsx": 2,
     "app/constants/auth.ts": 1,
     "app/dashboard/isa/components/speed-to-lead-panel.tsx": 1,
+    "lib/acquisition-plays/public-request.ts": 2,
     "lib/ads/ad-creative-engine.ts": 2,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 4,
@@ -123,7 +124,9 @@
     "lib/connections/zoom.ts": 6,
     "lib/contact-promotion/conversion-welcome.ts": 1,
     "lib/contacts/card-classifier.ts": 1,
-    "lib/content-intel/local-intel.ts": 9,
+    "lib/content-intel/local-intel.ts": 8,
+    "lib/content-intel/public-chatter-topics.ts": 3,
+    "lib/content-intel/search-demand.ts": 5,
     "lib/crm/import-pull.ts": 3,
     "lib/crm/sync.ts": 1,
     "lib/data-guard/index.ts": 1,
@@ -146,7 +149,7 @@
     "lib/education/dedup-guard.ts": 2,
     "lib/education/depth-reauthor.ts": 2,
     "lib/education/onboarding-curriculum.ts": 1,
-    "lib/education/question-gap.ts": 2,
+    "lib/education/question-gap.ts": 1,
     "lib/education/regulatory-curriculum.ts": 2,
     "lib/education/repeat-measure.ts": 2,
     "lib/education/seller-signal-education-context.ts": 1,
@@ -291,7 +294,7 @@
     "lib/kernel/manager-registry.ts": 1,
     "lib/kernel/manager-signals.ts": 2,
     "lib/kernel/marketing/public-copy-rewrite.ts": 1,
-    "lib/kernel/media-intelligence.ts": 11,
+    "lib/kernel/media-intelligence.ts": 10,
     "lib/kernel/mission-context.ts": 2,
     "lib/kernel/mission-controller.ts": 3,
     "lib/kernel/missions.ts": 5,
@@ -493,11 +496,12 @@
     "lib/providers/dispatch.ts": 4,
     "lib/providers/messaging/sms-adapters.ts": 2,
     "lib/providers/outbound-sender.ts": 3,
+    "lib/providers/scrape-checkpoint.ts": 1,
     "lib/providers/web-push.ts": 1,
     "lib/recruit-pipeline/recruit-sourcer.ts": 1,
     "lib/recruiting/career-tier.ts": 4,
     "lib/recruiting/challenge-runner.ts": 1,
-    "lib/recruiting/leaderboard.ts": 3,
+    "lib/recruiting/leaderboard.ts": 2,
     "lib/recruiting/license-readiness-sweep.ts": 2,
     "lib/recruiting/mentor-match.ts": 2,
     "lib/recruiting/mentorship-lifecycle.ts": 4,
@@ -516,6 +520,7 @@
     "lib/remotion/composition-cache.ts": 1,
     "lib/remotion/content-contract.ts": 1,
     "lib/remotion/voiceover-mixer.ts": 2,
+    "lib/repurpose/refurbish-run.ts": 2,
     "lib/security/oauth-refresh.ts": 2,
     "lib/security/secret-crypto.ts": 1,
     "lib/security/secret-migration.ts": 1,
@@ -589,7 +594,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 12858,
+  "census": 12970,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -721,7 +726,7 @@
     "app/actions/brief-audio.ts": 1,
     "app/actions/briefing-actions.ts": 10,
     "app/actions/brokerage-cda-setup.ts": 7,
-    "app/actions/brokerage-fees.ts": 8,
+    "app/actions/brokerage-fees.ts": 7,
     "app/actions/brokerage-intelligence.ts": 4,
     "app/actions/brokerage-transfer.ts": 6,
     "app/actions/business-card/business-card-actions.ts": 3,
@@ -815,7 +820,7 @@
     "app/actions/content-compliance.ts": 7,
     "app/actions/content-final-versions.ts": 1,
     "app/actions/content-generation-engine.ts": 9,
-    "app/actions/content-intel/sources.ts": 4,
+    "app/actions/content-intel/sources.ts": 5,
     "app/actions/content-prediction.ts": 4,
     "app/actions/content-studio.ts": 10,
     "app/actions/continuity-receipt.ts": 1,
@@ -862,6 +867,7 @@
     "app/actions/email-campaigns.ts": 11,
     "app/actions/embed-widgets.ts": 6,
     "app/actions/error-handler.ts": 7,
+    "app/actions/events-and-circles.ts": 8,
     "app/actions/exception-center.ts": 5,
     "app/actions/external-services.ts": 2,
     "app/actions/fair-housing-older-persons.ts": 3,
@@ -870,7 +876,7 @@
     "app/actions/financials.ts": 13,
     "app/actions/flight-recorder.ts": 6,
     "app/actions/forms-kernel.ts": 10,
-    "app/actions/gamification.ts": 6,
+    "app/actions/gamification.ts": 8,
     "app/actions/generate-marketing-image.ts": 1,
     "app/actions/generate-page-insight.ts": 1,
     "app/actions/generated-documents.ts": 1,
@@ -942,7 +948,7 @@
     "app/actions/marketing-ai-approvals.ts": 3,
     "app/actions/marketing-cadence-policy.ts": 2,
     "app/actions/marketing-campaigns-admin.ts": 2,
-    "app/actions/marketing-intelligence.ts": 3,
+    "app/actions/marketing-intelligence.ts": 4,
     "app/actions/marketing-ops.ts": 2,
     "app/actions/marketing-package-automation.ts": 11,
     "app/actions/marketing-studio.ts": 18,
@@ -1329,6 +1335,7 @@
     "app/api/cron/consent-recovery/route.ts": 1,
     "app/api/cron/contact-enrichment/route.ts": 1,
     "app/api/cron/content-intel-apify/route.ts": 1,
+    "app/api/cron/content-intel-community/route.ts": 1,
     "app/api/cron/content-intel-exa/route.ts": 1,
     "app/api/cron/content-intel-reddit/route.ts": 1,
     "app/api/cron/content-intel-rss/route.ts": 1,
@@ -1554,6 +1561,7 @@
     "app/api/leads/route.ts": 1,
     "app/api/listings/[listingId]/upload-document/route.ts": 1,
     "app/api/live-agent/simli-turn/route.ts": 1,
+    "app/api/marketing/content-command/route.ts": 1,
     "app/api/meetings/sdk-signature/route.ts": 1,
     "app/api/migrate/verify/route.ts": 1,
     "app/api/objection-training/voice-session/route.ts": 1,
@@ -2211,6 +2219,7 @@
     "app/dashboard/campaigns/mail/mail-dashboard.tsx": 1,
     "app/dashboard/campaigns/repurpose/components/snippet-wizard-panel.tsx": 1,
     "app/dashboard/campaigns/repurpose/newsletter-teasers-card.tsx": 1,
+    "app/dashboard/campaigns/repurpose/refurbish-results-card.tsx": 1,
     "app/dashboard/campaigns/repurpose/repurpose-dashboard-client.tsx": 1,
     "app/dashboard/campaigns/repurpose/video-url-repurpose-card.tsx": 1,
     "app/dashboard/campaigns/roi/roi-dashboard-client.tsx": 1,
@@ -2406,7 +2415,8 @@
     "app/dashboard/marketing/blog/[id]/blog-editor-client.tsx": 1,
     "app/dashboard/marketing/blog/blog-dashboard-client.tsx": 1,
     "app/dashboard/marketing/competitors/competitors-client.tsx": 1,
-    "app/dashboard/marketing/content-intel/content-source-form.tsx": 1,
+    "app/dashboard/marketing/content-intel/content-source-form.tsx": 2,
+    "app/dashboard/marketing/content-intel/events-and-circles-panel.tsx": 1,
     "app/dashboard/marketing/content-intel/toggle-button.tsx": 2,
     "app/dashboard/marketing/content-intel/topic-actions.ts": 3,
     "app/dashboard/marketing/content-intel/topics/topic-doors.tsx": 1,
@@ -2425,6 +2435,7 @@
     "app/dashboard/marketing/review/review-client.tsx": 1,
     "app/dashboard/marketing/seo/citation-share-card.tsx": 1,
     "app/dashboard/marketing/seo/components/market-trends-panel.tsx": 1,
+    "app/dashboard/marketing/seo/components/search-demand-card.tsx": 1,
     "app/dashboard/marketing/seo/landing-citation-card.tsx": 1,
     "app/dashboard/marketing/seo/search-visibility-card.tsx": 1,
     "app/dashboard/marketing/seo/seo-keywords-client.tsx": 1,
@@ -2921,7 +2932,8 @@
     "lib/acquisition-plays/moving-corridor.ts": 2,
     "lib/acquisition-plays/negative-evidence.ts": 2,
     "lib/acquisition-plays/property-candidates.ts": 2,
-    "lib/acquisition-plays/public-request.ts": 2,
+    "lib/acquisition-plays/public-request.ts": 4,
+    "lib/acquisition-plays/public-statement.ts": 1,
     "lib/acquisition-plays/runner.ts": 1,
     "lib/activities/activity-tenant.ts": 3,
     "lib/admin/tool-call-metrics.ts": 1,
@@ -3067,7 +3079,7 @@
     "lib/ai-isa/direct-mail-trigger.ts": 2,
     "lib/ai-isa/email-generator.ts": 2,
     "lib/ai-isa/first-touch-copy.ts": 1,
-    "lib/ai-isa/followup-arbiter.ts": 21,
+    "lib/ai-isa/followup-arbiter.ts": 32,
     "lib/ai-isa/followup-policy.ts": 4,
     "lib/ai-isa/generate-handoff-brief.ts": 1,
     "lib/ai-isa/ghost-escalation.ts": 2,
@@ -3159,6 +3171,7 @@
     "lib/behavior-learning/signal-mapping.ts": 7,
     "lib/billing/ai-overage.ts": 4,
     "lib/billing/billing-access.ts": 6,
+    "lib/billing/brokerage-fee-charges.ts": 1,
     "lib/billing/discount-codes.ts": 5,
     "lib/billing/dunning.ts": 3,
     "lib/billing/past-due-clock.ts": 2,
@@ -3428,18 +3441,22 @@
     "lib/content-generation/context-enricher.ts": 2,
     "lib/content-generation/generation-logger.ts": 5,
     "lib/content-guardian/index.ts": 2,
-    "lib/content-intel/apify-scraper.ts": 1,
+    "lib/content-intel/apify-scraper.ts": 2,
     "lib/content-intel/exa-scraper.ts": 1,
     "lib/content-intel/local-intel.ts": 13,
     "lib/content-intel/market-leadership.ts": 3,
     "lib/content-intel/newsapi-ai.ts": 2,
     "lib/content-intel/performance-aggregator.ts": 2,
+    "lib/content-intel/public-chatter-topics.ts": 12,
     "lib/content-intel/reddit-scraper.ts": 1,
     "lib/content-intel/rss-scraper.ts": 2,
+    "lib/content-intel/search-demand-volume.ts": 1,
+    "lib/content-intel/search-demand.ts": 10,
     "lib/content-intel/system-topic-source.ts": 1,
     "lib/content-intel/topic-bank.ts": 2,
+    "lib/content-intel/topic-intake.ts": 7,
     "lib/content-intel/topic-intelligence.ts": 2,
-    "lib/content-intel/topic-themes.ts": 9,
+    "lib/content-intel/topic-themes.ts": 10,
     "lib/copilot/seven-day-plan.ts": 1,
     "lib/credit/credit-event-handlers.ts": 4,
     "lib/crm/import-pull.ts": 5,
@@ -3448,6 +3465,7 @@
     "lib/crm/providers/lofty.ts": 2,
     "lib/crm/sync.ts": 2,
     "lib/cron-auth.ts": 1,
+    "lib/customer-intelligence/website-question-topics.ts": 1,
     "lib/data/brokerKPIs.ts": 2,
     "lib/data/serviceDeliveryMetrics.ts": 2,
     "lib/data-guard/guarded-generate.ts": 1,
@@ -3855,6 +3873,7 @@
     "lib/kernel/approval-sources.ts": 4,
     "lib/kernel/area-query.ts": 3,
     "lib/kernel/assistant-starter.ts": 1,
+    "lib/kernel/authority-reactions.ts": 4,
     "lib/kernel/autonomy-budgets.ts": 10,
     "lib/kernel/bidding-war-concierge.ts": 5,
     "lib/kernel/billing.ts": 9,
@@ -3943,7 +3962,7 @@
     "lib/kernel/experiment-pipeline.ts": 10,
     "lib/kernel/experiments.ts": 3,
     "lib/kernel/farm-play.ts": 3,
-    "lib/kernel/financial.ts": 24,
+    "lib/kernel/financial.ts": 25,
     "lib/kernel/financing-pit-stop.ts": 8,
     "lib/kernel/fire-drills.ts": 3,
     "lib/kernel/flow-integrity.ts": 10,
@@ -4046,7 +4065,7 @@
     "lib/kernel/reputation.ts": 5,
     "lib/kernel/resolve-event-contacts.ts": 1,
     "lib/kernel/resolve-user-office.ts": 4,
-    "lib/kernel/resolve-user-team.ts": 3,
+    "lib/kernel/resolve-user-team.ts": 4,
     "lib/kernel/resource-allocation.ts": 16,
     "lib/kernel/returning-customer.ts": 8,
     "lib/kernel/reverse-prospecting.ts": 3,
@@ -4149,6 +4168,7 @@
     "lib/lead-governance/stale-lead-processor.ts": 1,
     "lib/lead-import/list-cost-stamp.ts": 2,
     "lib/lead-intelligence/behavioral-summary.ts": 6,
+    "lib/lead-intelligence/first-party-search.ts": 2,
     "lib/lead-intelligence/interest-level.ts": 1,
     "lib/lead-intelligence/person-spend.ts": 3,
     "lib/lead-intelligence/person-timeline.ts": 3,
@@ -4336,9 +4356,11 @@
     "lib/marketing/cadence-policy.ts": 2,
     "lib/marketing/campaign-measurer.ts": 1,
     "lib/marketing/campaign-publisher.ts": 2,
-    "lib/marketing/campaign-registry.ts": 4,
+    "lib/marketing/campaign-registry.ts": 5,
     "lib/marketing/capture-render-asset.ts": 1,
     "lib/marketing/channel-touchpoint-plan.ts": 1,
+    "lib/marketing/circle-tactics.ts": 5,
+    "lib/marketing/content-catalog.ts": 3,
     "lib/marketing/content-publish-gate.ts": 1,
     "lib/marketing/content-topics-runner.ts": 1,
     "lib/marketing/content-topics.ts": 2,
@@ -4395,6 +4417,7 @@
     "lib/net-sheet/net-sheet-guard-runner.ts": 1,
     "lib/net-sheet/net-sheet-reconciler.ts": 4,
     "lib/newsletter/insider-edit.ts": 1,
+    "lib/newsletter/local-events.ts": 5,
     "lib/newsletter/schedule-time.ts": 1,
     "lib/newsletter/seo-score.ts": 2,
     "lib/notifications/brokerage-admins.ts": 1,
@@ -4612,11 +4635,11 @@
     "lib/providers/outbound-sender.ts": 7,
     "lib/providers/payment/index.ts": 7,
     "lib/providers/peopledata/client.ts": 1,
-    "lib/providers/provider-capability-matrix.ts": 1,
+    "lib/providers/provider-capability-matrix.ts": 2,
     "lib/providers/provider-pilot.ts": 2,
     "lib/providers/provider-scorecard.ts": 7,
     "lib/providers/quickbooks/client.ts": 1,
-    "lib/providers/scrape-checkpoint.ts": 2,
+    "lib/providers/scrape-checkpoint.ts": 3,
     "lib/providers/simli/client.ts": 2,
     "lib/providers/simli/faces.ts": 1,
     "lib/providers/stackadapt-ads.ts": 5,
@@ -4678,9 +4701,11 @@
     "lib/remotion/stock-pick.ts": 1,
     "lib/remotion/stock-scope.ts": 1,
     "lib/remotion/voiceover-mixer.ts": 3,
-    "lib/repurpose/actions.ts": 10,
+    "lib/repurpose/actions.ts": 13,
     "lib/repurpose/distribute.ts": 1,
     "lib/repurpose/omnipresence-plan.ts": 2,
+    "lib/repurpose/refurbish-idea.ts": 10,
+    "lib/repurpose/refurbish-run.ts": 7,
     "lib/repurpose/shared.ts": 2,
     "lib/repurpose/transcribe-core.ts": 1,
     "lib/repurpose/transcribe.ts": 1,
@@ -4740,7 +4765,7 @@
     "lib/social/token-refresh.ts": 2,
     "lib/social/video-post-approval.ts": 1,
     "lib/sphere/followup-moments.ts": 1,
-    "lib/sphere/lifetime-touch-arbitration.ts": 2,
+    "lib/sphere/lifetime-touch-arbitration.ts": 5,
     "lib/sphere/lifetime-touchpoint-ledger.ts": 2,
     "lib/sphere/lifetime-touchpoint-reaper-policy.ts": 1,
     "lib/sphere/lifetime-touchpoint-reaper.ts": 1,
@@ -5954,8 +5979,7 @@
       "getMyOpenCharges",
       "listBrokerageCharges",
       "markChargePaid",
-      "waiveCharge",
-      "generatePeriodicCharges"
+      "waiveCharge"
     ],
     "app/actions/brokerage-intelligence.ts": [
       "getBrokerageInsights",
@@ -6562,7 +6586,8 @@
       "listContentSources",
       "createContentSource",
       "toggleContentSource",
-      "deleteContentSource"
+      "deleteContentSource",
+      "saveTopicObservationAction"
     ],
     "app/actions/content-prediction.ts": [
       "predictPerformanceAction",
@@ -6838,6 +6863,16 @@
       "assignErrorGroup",
       "getErrorMetrics"
     ],
+    "app/actions/events-and-circles.ts": [
+      "listEventsAndCirclesAction",
+      "registerEventSourceAction",
+      "saveTenantEventAction",
+      "refreshEventSourcesAction",
+      "shareCircleTacticAction",
+      "revokeCircleTacticAction",
+      "evaluateCircleTacticAction",
+      "adaptCircleTacticAction"
+    ],
     "app/actions/exception-center.ts": [
       "getExceptionCenter",
       "resolveException",
@@ -6922,6 +6957,8 @@
       "getAgentBadges",
       "getAgentPointsAndTier",
       "checkAndAwardBadges",
+      "correctAgentPoints",
+      "getPointsCorrectionRoster",
       "getAgentPointsHistory",
       "getLeaderboard",
       "getLeaderboardWidget"
@@ -7403,6 +7440,7 @@
     ],
     "app/actions/marketing-intelligence.ts": [
       "getTrendingKeywords",
+      "getSearchDemandIntelligence",
       "getCompetitorHighPerformers",
       "getCompetitorPostInspiration"
     ],
@@ -9643,6 +9681,9 @@
     "app/api/cron/content-intel-apify/route.ts": [
       "GET"
     ],
+    "app/api/cron/content-intel-community/route.ts": [
+      "GET"
+    ],
     "app/api/cron/content-intel-exa/route.ts": [
       "GET"
     ],
@@ -10331,6 +10372,9 @@
       "POST"
     ],
     "app/api/live-agent/simli-turn/route.ts": [
+      "POST"
+    ],
+    "app/api/marketing/content-command/route.ts": [
       "POST"
     ],
     "app/api/meetings/sdk-signature/route.ts": [
@@ -12337,6 +12381,9 @@
     "app/dashboard/campaigns/repurpose/newsletter-teasers-card.tsx": [
       "NewsletterTeasersCard"
     ],
+    "app/dashboard/campaigns/repurpose/refurbish-results-card.tsx": [
+      "RefurbishResultsCard"
+    ],
     "app/dashboard/campaigns/repurpose/repurpose-dashboard-client.tsx": [
       "RepurposeDashboardClient"
     ],
@@ -12933,7 +12980,11 @@
       "CompetitorsClient"
     ],
     "app/dashboard/marketing/content-intel/content-source-form.tsx": [
-      "ContentSourceForm"
+      "ContentSourceForm",
+      "SaveTopicObservationForm"
+    ],
+    "app/dashboard/marketing/content-intel/events-and-circles-panel.tsx": [
+      "EventsAndCirclesPanel"
     ],
     "app/dashboard/marketing/content-intel/toggle-button.tsx": [
       "ToggleButton",
@@ -12993,6 +13044,9 @@
     ],
     "app/dashboard/marketing/seo/components/market-trends-panel.tsx": [
       "MarketTrendsPanel"
+    ],
+    "app/dashboard/marketing/seo/components/search-demand-card.tsx": [
+      "SearchDemandCard"
     ],
     "app/dashboard/marketing/seo/landing-citation-card.tsx": [
       "LandingCitationCard"
@@ -14554,7 +14608,12 @@
     ],
     "lib/acquisition-plays/public-request.ts": [
       "publicRequestSearches",
+      "nonPersonIntelligenceClass",
+      "statementCopyKey",
       "runPublicRequestPlay"
+    ],
+    "lib/acquisition-plays/public-statement.ts": [
+      "readPublicStatement"
     ],
     "lib/acquisition-plays/runner.ts": [
       "runEarlyOpportunityPlays"
@@ -15275,6 +15334,7 @@
       "arbitrateFollowUp",
       "arbitrationLedgerDetail",
       "arbitrateCadence",
+      "lawfulChannelsForContact",
       "arbitratePlannedTouch",
       "arbitrateSpeedToLead",
       "countArbiterWaits",
@@ -15285,7 +15345,17 @@
       "arbitrateAndRecordExperience",
       "respondToPromisedDeliverable",
       "arbitrateProspectFollowup",
-      "arbitrateSectionDelivery"
+      "arbitrateSectionDelivery",
+      "evidenceFires",
+      "normalizeProviderEvidence",
+      "derivePersonTiming",
+      "screenNextActionCandidates",
+      "resolveNextActionRecord",
+      "nextActionLedgerDetail",
+      "nextActionFollowOnKey",
+      "persistNextActionFollowOn",
+      "supersedeFollowOnsForPerson",
+      "holdCampaignSends"
     ],
     "lib/ai-isa/followup-policy.ts": [
       "resolveFollowupPolicy",
@@ -15951,6 +16021,9 @@
       "mayUseFeature",
       "isPaywalledPath",
       "resolveRequestAccess"
+    ],
+    "lib/billing/brokerage-fee-charges.ts": [
+      "generatePeriodicCharges"
     ],
     "lib/billing/discount-codes.ts": [
       "resolveDiscountForCheckout",
@@ -17488,7 +17561,8 @@
       "attachApprovalSubject"
     ],
     "lib/content-intel/apify-scraper.ts": [
-      "runApifyScrape"
+      "runApifyScrape",
+      "apifySocialIdeas"
     ],
     "lib/content-intel/exa-scraper.ts": [
       "exaSearch"
@@ -17521,6 +17595,20 @@
       "logTopicUses",
       "aggregatePerformance"
     ],
+    "lib/content-intel/public-chatter-topics.ts": [
+      "fenceUntrusted",
+      "observationDigest",
+      "deriveRewordedTopic",
+      "routeChatter",
+      "researchCommunityPostTopics",
+      "apifyIdeaActorFor",
+      "apifyIdeaSourceProblem",
+      "apifyIdeaBudgetProblem",
+      "normalizeFacebookGroupItems",
+      "normalizeMetaAdItems",
+      "normalizeApifyIdeaItems",
+      "saveManualTopicObservation"
+    ],
     "lib/content-intel/reddit-scraper.ts": [
       "fetchTopThreads"
     ],
@@ -17528,12 +17616,36 @@
       "fetchRssFeed",
       "parseRssXml"
     ],
+    "lib/content-intel/search-demand-volume.ts": [
+      "displaySearchVolume"
+    ],
+    "lib/content-intel/search-demand.ts": [
+      "productionTrendsTransport",
+      "trendIdea",
+      "trendsProducer",
+      "productionSearchConsoleTransport",
+      "searchConsoleProducer",
+      "aggregateFirstPartyDemand",
+      "firstPartyDemandProducer",
+      "runSearchDemandScan",
+      "runSearchDemandCron",
+      "productionTopicIntake"
+    ],
     "lib/content-intel/system-topic-source.ts": [
       "resolveSystemTopicSource"
     ],
     "lib/content-intel/topic-bank.ts": [
       "pickTopics",
       "renderTopicsForPrompt"
+    ],
+    "lib/content-intel/topic-intake.ts": [
+      "consumerValueSentences",
+      "classifyTopicExclusion",
+      "rewordedNearCopyProblem",
+      "personalDataProblem",
+      "refurbishTriggerKindForTopicSource",
+      "intakeTopicIdeas",
+      "reevaluateRemovedTopicSource"
     ],
     "lib/content-intel/topic-intelligence.ts": [
       "runTopicIntelligencePass",
@@ -17548,7 +17660,8 @@
       "aiSearchGapThemes",
       "publicResearchThemes",
       "marketThemes",
-      "competitorAdTheme"
+      "competitorAdTheme",
+      "ruleDerivedTopic"
     ],
     "lib/copilot/seven-day-plan.ts": [
       "writeSevenDayNurturePlan"
@@ -17582,6 +17695,9 @@
     ],
     "lib/cron-auth.ts": [
       "verifyCronAuth"
+    ],
+    "lib/customer-intelligence/website-question-topics.ts": [
+      "considerWebsiteQuestion"
     ],
     "lib/data/brokerKPIs.ts": [
       "getBrokerKPIs",
@@ -19736,6 +19852,12 @@
     "lib/kernel/assistant-starter.ts": [
       "seedStarterAssistant"
     ],
+    "lib/kernel/authority-reactions.ts": [
+      "reactToSubscriptionAuthority",
+      "reactToMembershipChange",
+      "reactToCommissionDecision",
+      "reactToCdaApproved"
+    ],
     "lib/kernel/autonomy-budgets.ts": [
       "resolveAutonomyBudgets",
       "loadAutonomyBudgets",
@@ -20323,6 +20445,7 @@
       "recalculateCommissionState",
       "markCommissionApproved",
       "markCommissionPaid",
+      "commissionPayoutStanding",
       "initiateCommissionPayout",
       "attestCommissionReceived",
       "reconcileCommissionPayment",
@@ -21101,6 +21224,7 @@
     "lib/kernel/resolve-user-team.ts": [
       "resolveLedTeamId",
       "resolveUserTeam",
+      "rowInTeamScope",
       "resolveTeamAgentIds"
     ],
     "lib/kernel/resource-allocation.ts": [
@@ -21814,6 +21938,10 @@
       "buildBehavioralIntentSummary",
       "leadIntentObservations",
       "buildLeadDecayedIntent"
+    ],
+    "lib/lead-intelligence/first-party-search.ts": [
+      "saidSearchCriteria",
+      "summarizeSearchStatements"
     ],
     "lib/lead-intelligence/interest-level.ts": [
       "interestLevelToSignalScale"
@@ -22863,13 +22991,26 @@
       "getCampaignRegistry",
       "registerCampaignSource",
       "unregisterCampaignSource",
-      "getCampaignSources"
+      "getCampaignSources",
+      "getContentCommandCenter"
     ],
     "lib/marketing/capture-render-asset.ts": [
       "captureRenderAsMarketingAsset"
     ],
     "lib/marketing/channel-touchpoint-plan.ts": [
       "planCampaignTouchpoint"
+    ],
+    "lib/marketing/circle-tactics.ts": [
+      "shareCircleTactic",
+      "listCircleTacticsForViewer",
+      "revokeCircleTactic",
+      "evaluateCircleTacticForMe",
+      "adaptCircleTactic"
+    ],
+    "lib/marketing/content-catalog.ts": [
+      "resolveCatalogViewer",
+      "readContentCatalog",
+      "planContentAction"
     ],
     "lib/marketing/content-publish-gate.ts": [
       "enforceContentPublishRules"
@@ -23175,6 +23316,13 @@
     ],
     "lib/newsletter/insider-edit.ts": [
       "enforceInsiderTone"
+    ],
+    "lib/newsletter/local-events.ts": [
+      "authorizeEventSource",
+      "loadEventSources",
+      "runLocalEventsPass",
+      "tenantEventSource",
+      "loadEventOpportunities"
     ],
     "lib/newsletter/schedule-time.ts": [
       "validateScheduleTime"
@@ -24456,7 +24604,8 @@
       "enrichPerson"
     ],
     "lib/providers/provider-capability-matrix.ts": [
-      "providerCapabilityMatrix"
+      "providerCapabilityMatrix",
+      "acquisitionDecisionSupport"
     ],
     "lib/providers/provider-pilot.ts": [
       "projectMonthlyWaterfall",
@@ -24475,6 +24624,7 @@
       "refreshQuickBooksToken"
     ],
     "lib/providers/scrape-checkpoint.ts": [
+      "communityTopicTargetProblem",
       "scrapePurposeProblem",
       "fetchCheckpointedSnapshot"
     ],
@@ -24832,6 +24982,9 @@
       "togglePipelineActive",
       "deletePipeline",
       "repurposeVideoUrl",
+      "previewCompetitorIdeaBrief",
+      "refurbishCompetitorIdea",
+      "getRefurbishResults",
       "repurposeUrlToBrandedVideo",
       "repurposeUrlToBlogPost",
       "repurposeUrlToPodcast"
@@ -24842,6 +24995,27 @@
     "lib/repurpose/omnipresence-plan.ts": [
       "omnipresenceSourceKey",
       "planOmnipresenceSchedule"
+    ],
+    "lib/repurpose/refurbish-idea.ts": [
+      "assessOriginality",
+      "carriesSourceMedia",
+      "labelCompetitorEvidence",
+      "compareLikeWithLike",
+      "buildRefurbishIdeaBrief",
+      "fenceUntrustedSource",
+      "composeRefurbishPrompt",
+      "refurbishTriggerVerdict",
+      "refurbishPublicationVerdict",
+      "refurbishRetestDecision"
+    ],
+    "lib/repurpose/refurbish-run.ts": [
+      "loadRefurbishVoiceFor",
+      "draftRefurbishOutput",
+      "abstractIdeaFromUntrusted",
+      "startTopicRefurbish",
+      "executeTopicRefurbishDefault",
+      "runTopicRefurbishPass",
+      "refurbishExcludeDefault"
     ],
     "lib/repurpose/shared.ts": [
       "extractHashtags",
@@ -25128,7 +25302,10 @@
     ],
     "lib/sphere/lifetime-touch-arbitration.ts": [
       "arbitrateLifetimeTouch",
-      "deferLifetimeTouch"
+      "deferLifetimeTouch",
+      "settleLifetimeTouchSend",
+      "executeLifetimeFollowOn",
+      "recoverStaleLifetimeFollowOns"
     ],
     "lib/sphere/lifetime-touchpoint-ledger.ts": [
       "lifetimeTouchpointEventMetadata",

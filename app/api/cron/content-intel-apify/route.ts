@@ -129,21 +129,25 @@ export async function GET(req: NextRequest) {
           const writeMirror = async (): Promise<void> => {
           for (const { page_id, ...m } of mirror) {
             const rowOut = { ...m, brokerage_id: brokerageId, competitor_id: byPage.get(page_id) ?? null }
-            const { data: have, error: haveErr } = await svc.from("competitor_ads").select("id, brokerage_id").eq("source_platform", "facebook").eq("provider_ad_id", m.provider_ad_id).maybeSingle()
+            // TENANT-PINNED READ (wave 154, m987): this tenant's own row for the ad, never another tenant's. Until the owner drops
+            // the old GLOBAL index, a second tenant's insert of the same ad is refused by the database (23505) and reported below —
+            // the first tenant's row is never read, updated or overwritten from here.
+            const { data: have, error: haveErr } = await svc.from("competitor_ads").select("id, brokerage_id").eq("brokerage_id", brokerageId).eq("source_platform", "facebook").eq("provider_ad_id", m.provider_ad_id).maybeSingle()
             if (haveErr) { problems.push(`read ${m.provider_ad_id}: ${haveErr.message}`); continue }
             const held = have as { id: string; brokerage_id: string } | null
-            if (held && held.brokerage_id !== brokerageId) { problems.push(`ad ${m.provider_ad_id} is held by another tenant's row (global key)`); continue }
             const w = held
               ? await svc.from("competitor_ads").update({ last_seen_at: m.last_seen_at, ad_delivery_stop: m.ad_delivery_stop, raw_payload: m.raw_payload, categories: m.categories, competitor_id: rowOut.competitor_id }).eq("id", held.id).eq("brokerage_id", brokerageId).select("id")
               : await svc.from("competitor_ads").insert(rowOut).select("id")
-            if (w.error || (w.data ?? []).length !== 1) problems.push(`write ${m.provider_ad_id}: ${w.error?.message ?? "no row"}`)
+            if (w.error || (w.data ?? []).length !== 1) problems.push(`write ${m.provider_ad_id}: ${(w.error as { code?: string } | null)?.code === "23505" ? "held — another tenant already stores this ad and the global index has not been dropped (owner SQL)" : w.error?.message ?? "no row"}`)
           }
           }
           // LAW 5 — the mirror write leaves evidence (one row per source per run hour; a replay writes nothing twice).
           const { withActionLedger } = await import("@/lib/kernel/action-ledger")
           await withActionLedger(
             {
-              brokerageId, action: "intel.meta_ad_library_mirror", actor: { type: "manager", managerKey: "campaign_orchestrator" },
+              // Wave 154 (lane 154L, canary L7a): three segments — the two-segment "intel.meta_ad_library_mirror" was REFUSED by
+              // the ledger's domain.entity.action rule, so no competitor_ads mirror row was ever written.
+              brokerageId, action: "intel.meta_ad_library.mirror", actor: { type: "manager", managerKey: "campaign_orchestrator" },
               subject: { type: "content_topic_source", id: s.id }, idempotencyKey: `meta_ad_mirror:${s.id}:${now.toISOString().slice(0, 13)}`, riskClass: "LOW_RISK_WRITE",
               systemSource: "content-intel-apify", reasonDetail: "Meta Ad Library items shown on the competitor screen — ideas only, no ad wording", detail: { ads: mirror.length },
             },

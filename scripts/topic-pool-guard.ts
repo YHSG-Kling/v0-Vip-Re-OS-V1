@@ -233,7 +233,10 @@ async function main() {
   const mirror = meta.competitorAds[0]
   check("I5 a Meta Ad Library item yields its competitor_ads row — ideas only: no ad wording, engagement NULL, archive link + reworded theme kept", !!mirror && mirror.ad_copy === "" && mirror.ad_headline === "" && mirror.engagement_score === null && mirror.provider_ad_id === "998877" && typeof mirror.raw_payload.archive_url === "string" && !JSON.stringify(mirror).includes("over-renovate"))
   const ap = code("app/api/cron/content-intel-apify/route.ts")
-  check("I6 the cron writes that row tenant-scoped without an upsert on the GLOBAL partial key, and drops page_id (not a live column)", /\.from\("competitor_ads"\)\.insert\(rowOut\)/.test(ap) && !/\.from\("competitor_ads"\)\.upsert\(/.test(ap) && /\{ page_id, \.\.\.m \}/.test(ap) && /held by another tenant's row/.test(read("app/api/cron/content-intel-apify/route.ts")))
+  check("I6 the cron writes that row tenant-scoped without an upsert on the GLOBAL partial key, and drops page_id (not a live column)", /\.from\("competitor_ads"\)\.insert\(rowOut\)/.test(ap) && !/\.from\("competitor_ads"\)\.upsert\(/.test(ap) && /\{ page_id, \.\.\.m \}/.test(ap)
+    // …and its pre-read is PINNED TO THE TENANT (never another tenant's row), with a refused insert reported, not swallowed.
+    && /\.from\("competitor_ads"\)\.select\("id, brokerage_id"\)\.eq\("brokerage_id", brokerageId\)\.eq\("source_platform", "facebook"\)/.test(ap) && /"23505"/.test(ap))
+  check("I6-control a mirror pre-read with NO tenant predicate is recognised as the defect", !/\.from\("competitor_ads"\)\.select\("id, brokerage_id"\)\.eq\("brokerage_id", brokerageId\)/.test('svc.from("competitor_ads").select("id, brokerage_id").eq("source_platform", "facebook")'))
   check("I7 D2: one published mapping from pool source kinds to Refurbish trigger kinds, stamped on every stored row",
     refurbishTriggerKindForTopicSource("google_trends") === "google_trend" && refurbishTriggerKindForTopicSource("community_post") === "public_chatter" && refurbishTriggerKindForTopicSource("meta_ad_creative") === "competitor_watch" && refurbishTriggerKindForTopicSource("local_fact") === null
       && g?.raw_data.intake.refurbish_trigger_kind === "google_trend" && f?.raw_data.intake.refurbish_trigger_kind === "public_chatter" && o?.raw_data.intake.refurbish_trigger_kind === null)

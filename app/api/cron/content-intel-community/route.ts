@@ -69,7 +69,9 @@ export async function GET(req: NextRequest) {
       const day = new Date().toISOString().slice(0, 10)
       const ran = await withActionLedger(
         {
-          brokerageId, action: "intel.community_topic_research", actor: { type: "manager", managerKey: "campaign_orchestrator" },
+          // Wave 154 (lane 154L): three segments — the two-segment "intel.community_topic_research" was REFUSED by the ledger's
+          // domain.entity.action rule, so the scheduled research never ran (test:action-ledger §14 red at c07048ea).
+          brokerageId, action: "intel.community_topic.research", actor: { type: "manager", managerKey: "campaign_orchestrator" },
           subject: { type: "content_topic_source", id: s.id }, idempotencyKey: `community_topics:${s.id}:${day}`, riskClass: "LOW_RISK_WRITE",
           systemSource: "content-intel-community", reasonDetail: "scheduled public-post TOPIC research on the tenant's configured URLs — reworded topics only, never a person",
           detail: { urls: urls.length, budget_usd: budget },

@@ -1204,6 +1204,113 @@ Default: no — the saved home is held by name (`idx_by_id_unavailable`), never 
 Row 5 (CI peak RSS on a green build half) is a `.github/` change: the exact diff is in the lane-153K notes; the row closes only on a
 real CI run's printed "Maximum resident set size".
 
+## P. Wave 154 — owner SQL (lane 154L, 2026-11-18)
+
+None of these is release-blocking (the release blockers stay §F, §G, §I, §M.1). No lane and no integrator has run any of them.
+Every name below was checked against the migration headers that measured it live (m987, m988, m974) or against
+`scripts/schema-snapshot.ts` / `scripts/live-tables.ts`; where a fact was not measured it says **unresolved**.
+
+### P.1 REQUIRED before two tenants can each store the same competitor ad — drop the old global index
+
+**Why.** m987 (APPLIED LIVE 2026-11-18) added `uq_competitor_ads_tenant_source_provider` on
+`(brokerage_id, source_platform, provider_ad_id)`, which leads with the tenant. The old index `uq_competitor_ads_source_provider_id`
+on `(source_platform, provider_ad_id) WHERE provider_ad_id IS NOT NULL` is GLOBAL. Until it is dropped, a second tenant's insert of
+an ad another tenant already stores is refused (23505) and reported by the writer — never an overwrite of the first tenant's row.
+`public.competitor_ads` held 0 rows when m987 was measured.
+
+```sql
+DROP INDEX public.uq_competitor_ads_source_provider_id;
+```
+
+Read-back (expected: 0 · 1):
+
+```sql
+SELECT
+  (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'uq_competitor_ads_source_provider_id') AS old_global_index,
+  (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'uq_competitor_ads_tenant_source_provider') AS tenant_index;
+```
+
+**No code change is waiting on the drop.** Both writers already work per tenant: the Meta Ad Library mirror in
+`app/api/cron/content-intel-apify/route.ts` reads and updates only this tenant's own row for an ad, and
+`app/api/cron/competitor-ads-exa/route.ts` upserts on the tenant key. Until the drop, a second tenant storing the same ad is
+refused by the old index and the run reports "held — another tenant already stores this ad"; after the drop that tenant's row
+is simply stored on its next run.
+
+### P.2 Optional cleanup — four partial unique indexes made redundant by m988
+
+**Why.** m988 (APPLIED LIVE 2026-11-18) added a non-partial unique index on the same columns for each of these, so the upsert
+conflict targets are inferable. The partial ones admit nothing the new ones do not; dropping them only removes duplicate upkeep.
+Leaving them is safe.
+
+```sql
+DROP INDEX public.idx_ai_daily_briefings_agent_date;
+DROP INDEX public.outcome_reconciliations_ref_key;
+DROP INDEX public.idx_showings_showingtime_id;
+DROP INDEX public.uq_transaction_documents_provider_external_id;
+```
+
+Before dropping, confirm each replacement exists (expected: 4):
+
+```sql
+SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN (
+  'uq_ai_daily_briefings_agent_date_inferable', 'uq_outcome_reconciliations_channel_ref_inferable',
+  'uq_showings_showingtime_id_inferable', 'uq_transaction_documents_txn_provider_external_inferable');
+```
+
+Read-back after dropping (expected: 0): the same query over the four old names.
+
+### P.3 Optional — `contacts.ai_predicted_close_date` has no writer and no reader
+
+**Why.** Lane 154I stopped storing a model-guessed close date as a Contact fact (`app/actions/ai-lead-nurturing.ts` now records a
+timeline bucket or "unknown", labeled a model estimate). Lane 154L measured 0 code tokens for the column across 5,351 files in
+`app/`, `lib/`, `components/`, `hooks/` (comments stripped, string literals kept so a `.select("…")` would count; positive control
+passed). `test:contact-persona-service` holds "no writer remains". The column is still in `scripts/schema-snapshot.ts`.
+
+```sql
+ALTER TABLE public.contacts DROP COLUMN ai_predicted_close_date;
+```
+
+Read-back (expected: 0): `SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'contacts' AND column_name = 'ai_predicted_close_date';`
+Then `npm run schema:regen` (the snapshot must lose the column).
+
+### P.4 Optional and NOT recommended yet — the three legacy Google tables
+
+The Google search intelligence and lead property search **capabilities stay**, as you ruled; they now run on truthful writers
+(lane 154B: `lib/content-intel/search-demand.ts` for keyword / topic demand, `property_search_log` for lead property searches,
+statement-keyed public-need discovery for people who publicly state a need). The three older tables
+`google_search_activity`, `google_search_intelligence`, `lead_property_searches` are in `scripts/live-tables.ts`; no product code
+reads or writes them (the only code tokens are `lib/kernel/brokerage-transfer.ts` and `lib/kernel/manager-registry.ts`).
+**Live row counts: unresolved** (not read in wave 154). Do not drop them until you have confirmed the replacements serve you and the
+counts read 0 or the rows are archived. If you do:
+
+```sql
+SELECT 'google_search_activity' AS t, count(*) FROM public.google_search_activity
+UNION ALL SELECT 'google_search_intelligence', count(*) FROM public.google_search_intelligence
+UNION ALL SELECT 'lead_property_searches', count(*) FROM public.lead_property_searches;
+-- only when all three read 0 (or are archived):
+DROP TABLE public.google_search_activity;
+DROP TABLE public.google_search_intelligence;
+DROP TABLE public.lead_property_searches;
+```
+
+Afterwards the integrator removes them from `lib/kernel/brokerage-transfer.ts`, the registry's table-owner rows, and regenerates
+`scripts/live-tables.ts`.
+
+### P.5 Rollback only — the m974 follow-on index (lane 154H)
+
+Only to undo m974 (the unique partial index that makes a next-action follow-on persist once). Not a to-do.
+
+```sql
+DROP INDEX IF EXISTS public.orchestrator_tasks_next_action_follow_on_key;
+```
+
+### P.6 Decisions that would become SQL only after you rule (nothing written)
+- `engagement_score` NOT NULL DEFAULT 0 on `content_topic_bank` (m128): making it nullable is `ALTER … DROP NOT NULL`, and every
+  reader that sorts on it must be checked first — not proposed.
+- A distinct `source_type` for community-post sources would be a CHECK migration (m952 was not written; the live CHECK covers today's use).
+- A reason code for brokerage fee charges (today `UNSPECIFIED`) would be a CHECK migration — your call (lane 154A3).
+- A per-visitor anonymous-use flag on `chat_sessions` would be a column migration (lane 154I) — your call.
+
 ## After you run anything on this page
 
 1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.
