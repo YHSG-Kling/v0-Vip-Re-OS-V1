@@ -42,11 +42,17 @@ export function CommissionPaymentStateCell(props: {
   const [reference, setReference] = useState("")
   const [via, setVia] = useState<"quickbooks" | "manual">(props.quickbooksSynced ? "quickbooks" : "manual")
 
+  // WAVE 154 (lane 154K, ledger 143C-OL-04): the funds gate (lib/commission/ledger-sync.ts payoutFundsGate) refuses
+  // `funds_not_received` and tells the finance admin to STATE A REASON to pay ahead — this dialog had no field to state
+  // it, so the refusal was a dead end. The field appears once that refusal is seen; the server keeps the minimum.
+  const [advanceReason, setAdvanceReason] = useState("")
+  const [fundsRefused, setFundsRefused] = useState(false)
+
   function submitInitiate() {
     setError(null)
     startTransition(async () => {
-      const res = await initiateCommissionPayoutAction({ commissionId: props.commissionId, method: payoutMethod, reference: reference || null })
-      if (!res.success) { setError(res.error ?? "The payout initiation was refused."); return }
+      const res = await initiateCommissionPayoutAction({ commissionId: props.commissionId, method: payoutMethod, reference: reference || null, advanceReason: advanceReason.trim() || null })
+      if (!res.success) { if ((res.error ?? "").startsWith("funds_not_received")) setFundsRefused(true); setError(res.error ?? "The payout initiation was refused."); return }
       setOpen(null)
       router.refresh()
     })
@@ -93,6 +99,9 @@ export function CommissionPaymentStateCell(props: {
             <option value="check">Check</option>
           </select>
           <input className="w-full border rounded px-1 py-0.5" placeholder="Check # / batch reference (optional)" value={reference} onChange={(e) => setReference(e.target.value)} />
+          {fundsRefused && (
+            <textarea className="w-full border rounded px-1 py-0.5" rows={2} placeholder="Pay ahead of the funds — reason (kept on the record)" value={advanceReason} onChange={(e) => setAdvanceReason(e.target.value)} />
+          )}
           <div className="flex gap-2">
             <Button size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={submitInitiate}>Record initiation</Button>
             <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={pending} onClick={() => setOpen(null)}>Cancel</Button>

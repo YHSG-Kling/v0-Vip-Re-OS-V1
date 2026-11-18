@@ -62,7 +62,9 @@ export default async function TransactionFormsPage() {
       {formsError && (
         <p className="text-sm text-red-600">Your form library could not be read: {formsError.message}</p>
       )}
-      <TransactionFormsClient initialForms={forms ?? []} />
+      {/* WAVE 154 (lane 154K, ledger 145A-OL-05): a stored master's link is minted per view by GET /api/admin/transaction-forms
+          (the client reloads it on mount) — the first paint never carries the stored pdf_url of a storage_path row. */}
+      <TransactionFormsClient initialForms={(forms ?? []).map((f) => (f.storage_path ? { ...f, pdf_url: null } : f))} />
     </div>
   )
 }

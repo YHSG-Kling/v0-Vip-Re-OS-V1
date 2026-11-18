@@ -77,7 +77,7 @@ export default async function RequiredDocsSettingsPage() {
       .order("classification", { ascending: true }),
     supabase
       .from("brokerage_form_library")
-      .select("id, name, state, packet_type, pdf_url")
+      .select("id, name, state, packet_type, pdf_url, storage_path")
       .eq("brokerage_id", profile.brokerage_id)
       .eq("is_active", true)
       .order("name")
@@ -181,7 +181,13 @@ export default async function RequiredDocsSettingsPage() {
                       return form ? (
                         <p className="text-xs mt-1">
                           <span className="text-muted-foreground">Template: </span>
-                          {form.pdf_url ? (
+                          {/* WAVE 154 (lane 154K, ledger 145A-OL-05 / 146I-OL-06): a STORED master (storage_path) never renders its
+                              stored pdf_url (the 10-year bearer class) — its link is minted per view by the form library. */}
+                          {form.storage_path ? (
+                            <a href="/dashboard/admin/transaction-forms" className="text-primary underline underline-offset-2">
+                              {form.name as string}
+                            </a>
+                          ) : form.pdf_url ? (
                             <a href={form.pdf_url as string} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">
                               {form.name as string}
                             </a>

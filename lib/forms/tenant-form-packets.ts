@@ -211,7 +211,16 @@ export async function resolvePacketActor(svc: Svc, userId: string): Promise<{ ok
     if (teamId && !mine.has(teamId)) teamId = null
     if (ledTeamId && !mine.has(ledTeamId)) ledTeamId = null
   }
-  return { ok: true, actor: { userId, brokerageId, userType, teamId, ledTeamId, oversight: PACKET_OVERSIGHT_USER_TYPES.has(String(userType ?? "")) } }
+  // WAVE 154 (lane 154K — ledger 145A-SO-06 / 146I-OL-05, the SQL ↔ code twin): public.is_brokerage_admin() (m602) honours
+  // a user_role_assignments grant PINNED to the caller's brokerage; this resolver read users.user_type only, so an agent
+  // granted `admin` was oversight in SQL and not here. The ONE grant reader (lib/auth/role-grants.ts withTenantRoleGrants)
+  // now answers too — pinned to THIS brokerage, narrowed by the same oversight class. An unreadable grant list is said and
+  // the seat alone decides (never widens).
+  const { withTenantRoleGrants } = await import("@/lib/auth/role-grants")
+  const granted = await withTenantRoleGrants(svc, { userId, grantedRoles: null as readonly string[] | null }, brokerageId)
+  if (granted.note) console.warn(`[tenant-form-packets] ${granted.note}`)
+  const oversight = PACKET_OVERSIGHT_USER_TYPES.has(String(userType ?? "")) || (granted.actor.grantedRoles ?? []).some((r) => PACKET_OVERSIGHT_USER_TYPES.has(r))
+  return { ok: true, actor: { userId, brokerageId, userType, teamId, ledTeamId, oversight } }
 }
 
 // ── READS ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

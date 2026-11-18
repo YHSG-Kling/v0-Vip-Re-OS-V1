@@ -23,6 +23,11 @@ interface PayoutButtonProps {
 export function PayoutButton({ commissionId, brokerageId, method = "ach", onPaid }: PayoutButtonProps) {
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
+  // WAVE 154 (lane 154K, ledger 143C-OL-04): the funds gate refuses `funds_not_received` and asks for a reason to pay
+  // ahead of the funds — this button had nowhere to state it. The field appears once that refusal is seen; the server
+  // (lib/commission/ledger-sync.ts payoutFundsGate) keeps the minimum and records the reason as evidence.
+  const [advanceReason, setAdvanceReason] = useState("")
+  const [fundsRefused, setFundsRefused] = useState(false)
   const router = useRouter()
 
   const handlePayout = () => {
@@ -33,6 +38,7 @@ export function PayoutButton({ commissionId, brokerageId, method = "ach", onPaid
         brokerageId,
         paidAt: new Date().toISOString(),
         method,
+        advanceReason: advanceReason.trim() || null,
       })
       if (result.success) {
         onPaid?.()
@@ -42,7 +48,9 @@ export function PayoutButton({ commissionId, brokerageId, method = "ach", onPaid
         // refuses a non-broker actor. Both used to land here and do nothing at all:
         // the broker clicked "Mark as Paid", the button reset, and the agent stayed
         // unpaid with no explanation anywhere.
-        setError(("error" in result && result.error) || "Payout failed")
+        const message = ("error" in result && result.error) || "Payout failed"
+        if (message.startsWith("funds_not_received")) setFundsRefused(true)
+        setError(message)
       }
     })
   }
@@ -53,6 +61,9 @@ export function PayoutButton({ commissionId, brokerageId, method = "ach", onPaid
         <Send className="h-4 w-4 mr-2" />
         {isPending ? "Processing..." : "Mark as Paid"}
       </Button>
+      {fundsRefused && (
+        <textarea className="w-full max-w-[180px] border rounded px-1 py-0.5 text-[11px]" rows={2} placeholder="Pay ahead of the funds — reason (kept on the record)" value={advanceReason} onChange={(e) => setAdvanceReason(e.target.value)} />
+      )}
       {error && <span className="text-[11px] text-destructive max-w-[180px]">{error}</span>}
     </div>
   )
