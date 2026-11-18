@@ -521,20 +521,15 @@ export async function recordBuyerClosingCostAccuracy(
     cash_to_close: figures.cashToClose,
     total_closing_costs: figures.totalClosingCosts,
   }
-  let { data: saved, error } = await svc
+  // TOMBSTONE (wave 154): a second, "pre-1105" upsert on a two-column key (transaction + document, no side) ran here when
+  // the first one errored. The live table has `side` and its only unique key is (transaction_id, document_id, side) — the
+  // two-column target matches no index, so that retry could only ever be refused whole (42P10) and it replaced the FIRST
+  // error with its own. SURVIVOR: the upsert directly below (scripts/upsert-conflict-target-guard.ts holds the rule).
+  const { data: saved, error } = await svc
     .from("closing_cost_accuracy_observations")
     .upsert({ ...row, side: "buyer" }, { onConflict: "transaction_id,document_id,side" })
     .select("id")
     .maybeSingle()
-  if (error) {
-    // Pre-1105 ledger (no side column / legacy 2-column unique) — legacy write
-    // shape; those rows are buyer-side by construction.
-    ;({ data: saved, error } = await svc
-      .from("closing_cost_accuracy_observations")
-      .upsert(row, { onConflict: "transaction_id,document_id" })
-      .select("id")
-      .maybeSingle())
-  }
   if (error) {
     // Table not provisioned yet (migration 1104 is report-only until applied) or
     // any other write failure — degrade honestly, never throw into a close path.

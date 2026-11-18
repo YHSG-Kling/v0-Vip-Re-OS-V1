@@ -15,6 +15,7 @@ import {
   batchClassifyTemplatesAction,
   batchGetBrandRequirementsAction,
 } from "@/app/actions/brand-template-registry"
+import { saveBrandVoice } from "@/app/actions/onboarding/brand"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -320,21 +321,18 @@ export function BrandComplianceClient({
   async function handleSaveVoice() {
     setSavingVoice(true)
     try {
-      const { error } = await supabase
-        .from("brand_voice_profile")
-        .upsert(
-          {
-            brokerage_id: brokerageId,
-            tone: voiceDraft.tone,
-            formality_level: voiceDraft.formality_level,
-            key_brand_messages: voiceDraft.key_brand_messages,
-            prohibited_words: voiceDraft.prohibited_words,
-            is_active: true,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "brokerage_id" }
-        )
-      if (error) throw error
+      // WAVE 154: this Save used a browser upsert with onConflict "brokerage_id". The table's only unique index on that column
+      // is PARTIAL (brokerage-level rows only), which an upsert cannot name — the database refused every save (42P10). It now
+      // goes through the ONE brokerage voice writer (app/actions/onboarding/brand.ts saveBrandVoice: admin gate, session
+      // tenant, read-then-write on the brokerage-level row).
+      const res = await saveBrandVoice({
+        tone: voiceDraft.tone,
+        formalityLevel: voiceDraft.formality_level,
+        prohibitedWords: voiceDraft.prohibited_words,
+        keyBrandMessages: voiceDraft.key_brand_messages,
+        advanceWizard: false,
+      })
+      if (!res.success) throw new Error(res.error ?? "Failed to save brand voice")
       setVoiceProfile((prev) => ({
         ...(prev ?? { id: "", preferred_words: [], tagline: null, mission_statement: null }),
         tone: voiceDraft.tone,

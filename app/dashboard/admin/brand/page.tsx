@@ -50,6 +50,10 @@ export default async function BrandCompliancePage() {
       .from("brand_voice_profile")
       .select("id, tone, formality_level, key_brand_messages, prohibited_words, preferred_words, is_active, tagline, mission_statement, updated_at")
       .eq("brokerage_id", brokerageId)
+      // The BROKERAGE-level row only: agent- and team-level voice rows share this table, and without these two filters one
+      // agent saving their own voice made this read return several rows (an error) and the screen showed "no profile".
+      .is("agent_id", null)
+      .is("team_id", null)
       .maybeSingle(),
 
     getBrandTemplateStatisticsAction(),

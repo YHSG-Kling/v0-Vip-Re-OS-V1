@@ -106,7 +106,12 @@ export interface SaveVoiceData {
   tone: string
   formalityLevel: string
   prohibitedWords: string[]
-  signaturePhrases: string[]
+  /** Written to preferred_words when given. Omitted = leave the stored phrases as they are (the admin brand screen does not edit them). */
+  signaturePhrases?: string[]
+  /** Written to key_brand_messages when given (the admin brand screen edits these; the wizard does not). */
+  keyBrandMessages?: string[]
+  /** The onboarding wizard advances its step marker on save; the admin brand screen passes false so a finished wizard is not moved back. */
+  advanceWizard?: boolean
 }
 
 export interface SaveTemplateData {
@@ -327,13 +332,24 @@ export async function saveBrandVoice(
     if (!formalityLevel) return { success: false, error: `Unknown formality level "${data.formalityLevel}" — use formal, semi-formal or casual.` }
 
     // Check for existing brand voice profile
-    const { data: existing } = await supabase
+    const { data: existing, error: existingErr } = await supabase
       .from("brand_voice_profile")
       .select("id")
       .eq("brokerage_id", brokerageId)
       .is("agent_id", null)
       .is("team_id", null)
       .maybeSingle()
+    if (existingErr) {
+      // A refused read is NOT "no profile yet": inserting here would be refused by the brokerage-level unique index or, worse, duplicate.
+      console.error("[L11-Brand] brand voice read refused:", existingErr.message)
+      return { success: false, error: "Failed to save voice settings" }
+    }
+
+    // Only the fields the caller actually edits are written — a screen that does not show a field never blanks it.
+    const optional: Record<string, unknown> = {
+      ...(Array.isArray(data.signaturePhrases) ? { preferred_words: data.signaturePhrases } : {}),
+      ...(Array.isArray(data.keyBrandMessages) ? { key_brand_messages: data.keyBrandMessages } : {}),
+    }
 
     if (existing) {
       // Update existing
@@ -343,10 +359,12 @@ export async function saveBrandVoice(
           tone: data.tone,
           formality_level: formalityLevel,
           prohibited_words: data.prohibitedWords,
-          preferred_words: data.signaturePhrases,
+          ...optional,
+          is_active: true,
           updated_at: new Date().toISOString(),
         })
         .eq("id", existing.id)
+        .eq("brokerage_id", brokerageId)
 
       if (updateError) {
         console.error("[L11-Brand] Failed to update brand voice:", updateError)
@@ -361,7 +379,7 @@ export async function saveBrandVoice(
           tone: data.tone,
           formality_level: formalityLevel,
           prohibited_words: data.prohibitedWords,
-          preferred_words: data.signaturePhrases,
+          ...optional,
           is_active: true,
         })
 
@@ -371,17 +389,19 @@ export async function saveBrandVoice(
       }
     }
 
-    // Update wizard step
-    const { error: wizardStepErr } = await supabase
-      .from("brokerage_brand_settings")
-      .upsert({
-        brokerage_id: brokerageId,
-        wizard_step_reached: 3,
-        updated_at: new Date().toISOString(),
-      }, {
-        onConflict: "brokerage_id",
-      })
-    if (wizardStepErr) console.error(`[onboarding/brand] wizard step NOT saved: ${wizardStepErr.message}`)
+    // Update wizard step (the wizard's own saves only — see SaveVoiceData.advanceWizard)
+    if (data.advanceWizard !== false) {
+      const { error: wizardStepErr } = await supabase
+        .from("brokerage_brand_settings")
+        .upsert({
+          brokerage_id: brokerageId,
+          wizard_step_reached: 3,
+          updated_at: new Date().toISOString(),
+        }, {
+          onConflict: "brokerage_id",
+        })
+      if (wizardStepErr) console.error(`[onboarding/brand] wizard step NOT saved: ${wizardStepErr.message}`)
+    }
 
     return { success: true }
   } catch (error) {
