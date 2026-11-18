@@ -252,6 +252,22 @@ async function main() {
       && !inferableIndex("CREATE UNIQUE INDEX x ON public.competitor_ads (source_platform, provider_ad_id) WHERE provider_ad_id IS NOT NULL;", "source_platform,provider_ad_id")
       && inferableIndex("CREATE UNIQUE INDEX x ON public.competitor_ads (brokerage_id, source_platform, provider_ad_id);", "brokerage_id,source_platform,provider_ad_id"))
 
+  // J — A CIRCLE ADAPTATION BELONGS TO ITS MEMBER (wave 154, lane 154H2 — lane 154G3's request). lib/marketing/circle-tactics.ts
+  // files a member's adaptation as a topic whose raw_data.circle_adaptation names that member; another agent's picks skip it.
+  console.log("\n[J · a circle adaptation belongs to the member who adapted it]")
+  {
+    const AG1 = "00000000-0000-4000-8000-0000000000c1", AG2 = "00000000-0000-4000-8000-0000000000c2"
+    const exp = new Date(NOW.getTime() + 10 * DAY).toISOString()
+    const circleRow = (id: string, forAgent: string) => ({ id, source_id: g?.source_id, brokerage_id: A, topic_title: `Circle adaptation ${id}`, categories: [], engagement_score: 99, performance_score: 0, status: "fresh", expires_at: exp, scraped_at: NOW.toISOString(), topic_posted_at: null, geo_relevance: null, raw_data: { brand_owner_user_id: `user-${forAgent}`, circle_adaptation: { for_agent_id: forAgent, for_agent_user_id: `user-${forAgent}` } } })
+    db.tables.content_topic_bank.push(circleRow("circle-ag1", AG1), { ...circleRow("plain-control", AG1), raw_data: {} })
+    const p1 = await pickTopics({ brokerageId: A, limit: 25, agentId: AG1, client: db as any })
+    const p2 = await pickTopics({ brokerageId: A, limit: 25, agentId: AG2, client: db as any })
+    const pNone = await pickTopics({ brokerageId: A, limit: 25, client: db as any })
+    check("J1 the member who adapted the tactic picks their own adaptation", p1.some((p) => p.id === "circle-ag1"), `${p1.length} picks`)
+    check("J2 ANOTHER agent's picks skip it; an asker with no agents.id cannot take it (fail closed)", !p2.some((p) => p.id === "circle-ag1") && !pNone.some((p) => p.id === "circle-ag1"))
+    check("J3 POSITIVE CONTROL: a plain topic with the same score is offered to the other agent (the skip is the adaptation, not the fixture)", p2.some((p) => p.id === "plain-control") && pNone.some((p) => p.id === "plain-control"))
+  }
+
   console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
   console.log(" blind spots: SIMULATED throughout (in-memory client, recording Trends transport, no actor / transport call); the community route")
   console.log("   and the apify mirror are checked on stripped source, not executed (next/server); publish → read-back of a topic-born asset is")

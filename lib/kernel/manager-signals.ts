@@ -1675,6 +1675,31 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const { data: contact } = await ctx.supabase.from("contacts")
       .select("id, first_name, contact_type").eq("id", contactId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!contact) return null
+    // (wave 154, lane 154H2 — lane 154H gap 4) A LATE REEL NEVER LANDS ON TOP OF ITS ALTERNATE. When the milestone's durable
+    // follow-on (orchestrator_tasks next_action_follow_on, lib/sphere/lifetime-touch-arbitration.ts) already COMPLETED with an
+    // alternate (the render was late or failed, so the greeting went another way under the same attribution), this reel is that
+    // milestone's late render: proposing it would be a second delivery for one moment. Same render (the follow-on's
+    // agent_intro_videos row → video_project_id = this signal's entity) or the same milestone kind this UTC year. Unreadable → held.
+    {
+      const { data: fos, error: foErr } = await ctx.supabase.from("orchestrator_tasks").select("id, payload, updated_at")
+        .eq("brokerage_id", ctx.brokerageId).eq("task_type", "next_action_follow_on").eq("status", "completed").order("updated_at", { ascending: false }).limit(100)
+      if (foErr) return `held: the contact's follow-on record could not be read (${foErr.message}) — no reel proposed on top of a possible alternate`
+      const alternates = ((fos ?? []) as Array<{ payload: Record<string, any> | null }>).map((r) => r.payload ?? {})
+        .filter((p) => p.subject_type === "contact" && p.subject_id === contactId && p.outcome && p.outcome.alternate)
+      if (alternates.length) {
+        const introIds = alternates.map((p) => p.actor?.artifact?.table === "agent_intro_videos" ? String(p.actor.artifact.id) : null).filter((x): x is string => !!x)
+        let sameRender = false
+        if (introIds.length && signal.entityId) {
+          const { data: intros, error: inErr } = await ctx.supabase.from("agent_intro_videos").select("id, video_project_id").eq("brokerage_id", ctx.brokerageId).in("id", introIds)
+          if (inErr) return `held: the milestone render could not be read (${inErr.message}) — no reel proposed on top of a possible alternate`
+          sameRender = ((intros ?? []) as Array<{ video_project_id: string | null }>).some((r) => r.video_project_id === signal.entityId)
+        }
+        const kind = String(signal.payload?.kind ?? "")
+        const year = new Date().getUTCFullYear()
+        const sameMilestone = /anniversar/.test(kind) && alternates.some((p) => /anniversar/.test(String(p.source_event?.type ?? "")) && new Date(String(p.source_event?.at ?? "")).getUTCFullYear() === year)
+        if (sameRender || sameMilestone) return "skipped: this milestone already reached the contact through its alternate — the late reel is not proposed on top of it"
+      }
+    }
     const c = contact as { first_name: string | null; contact_type: string | null }
     const firstName = c.first_name || "there"
     const subject = `A quick personal update for you, ${firstName}`

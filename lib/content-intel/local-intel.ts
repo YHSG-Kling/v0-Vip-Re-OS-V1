@@ -926,9 +926,9 @@ export async function runLocalIntelPass(brokerageId: string, deps: LocalIntelDep
  * every live tenant WITH an active territory, bounded by tenants-per-run and a wall-clock budget. A
  * refused gate read fails CLOSED (nobody is searched) under its own reason.
  */
-export async function runLocalIntelSweep(db: Db, opts: { now?: Date; maxTenants?: number; budgetMs?: number; pullGate?: PullGateLike } = {}): Promise<{ tenants: number; ran: number; skipped: number; facts: number; topicIntel: number; platformCostUsd: number; reason: string; errors: string[] }> {
+export async function runLocalIntelSweep(db: Db, opts: { now?: Date; maxTenants?: number; budgetMs?: number; pullGate?: PullGateLike } = {}): Promise<{ tenants: number; ran: number; skipped: number; facts: number; topicIntel: number; topicRefurbish: number; platformCostUsd: number; reason: string; errors: string[] }> {
   const started = Date.now()
-  const out = { tenants: 0, ran: 0, skipped: 0, facts: 0, topicIntel: 0, platformCostUsd: 0, reason: "ok", errors: [] as string[] }
+  const out = { tenants: 0, ran: 0, skipped: 0, facts: 0, topicIntel: 0, topicRefurbish: 0, platformCostUsd: 0, reason: "ok", errors: [] as string[] }
   let pullGate = opts.pullGate
   if (!pullGate) {
     const { resolveActivePullGate } = await import("@/lib/lead-pipeline/scrape-territories")
@@ -957,6 +957,17 @@ export async function runLocalIntelSweep(db: Db, opts: { now?: Date; maxTenants?
       const intel = await runTopicIntelligencePass(db, b, { now: opts.now })
       out.topicIntel += intel.inserted + intel.refreshed
       for (const e of intel.errors.slice(0, 3)) out.errors.push(`${b}: topic intelligence: ${e}`)
+      // wave 154 (lane 154H2, carrying lane 154G3's request): the tenant's configured local-event feeds → verified local facts in
+      // the same pool (lib/newsletter/local-events.ts runLocalEventsPass — its own source rows, robots + fair-housing screens).
+      const { runLocalEventsPass } = await import("@/lib/newsletter/local-events")
+      const events = await runLocalEventsPass(db as never, b, { now: opts.now, markRun: true })
+      for (const e of events.errors.slice(0, 3)) out.errors.push(`${b}: local events: ${e}`)
+      // wave 154 (lane 154H2, directive H10): the day's FRESH pool topics → the sessionless Refurbish starter (bounded, ledgered,
+      // one opportunity per topic + freshness window) → an ORIGINAL master PENDING approval; approved masters → omnipresence variants.
+      const { runTopicRefurbishPass } = await import("@/lib/repurpose/refurbish-run")
+      const refurb = await runTopicRefurbishPass(db as never, b, { now: opts.now })
+      out.topicRefurbish += refurb.started
+      for (const e of refurb.errors.slice(0, 3)) out.errors.push(`${b}: topic refurbish: ${e}`)
     } catch (e) {
       out.errors.push(`${b}: ${(e as Error)?.message ?? String(e)}`)
     }

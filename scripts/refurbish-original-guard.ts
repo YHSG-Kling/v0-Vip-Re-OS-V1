@@ -190,7 +190,13 @@ async function main() {
   const crossText = renderSenderVoiceBrief(cross)
   check("ADVERSE: a second tenant naming the first tenant's agent gets NONE of the first tenant's brand (tagline, phrases)", !crossText.includes("Your block, your numbers") && !crossText.includes("straight talk") && crossText.includes("Other Realty"))
   check("executePipeline loads the voice ONCE per run from the session tenant and passes it to every draft (both paths)", calls(fnBody(act, "executePipeline"), "loadRefurbishVoice") && fnBody(act, "executePipeline").includes("voiceBriefText: voice.voiceBriefText"))
-  check("the voice loader is the ONE voice system (loadSenderVoiceBrief + renderSenderVoiceBrief), not a second one", calls(fnBody(act, "loadRefurbishVoice"), "loadSenderVoiceBrief") && calls(fnBody(act, "loadRefurbishVoice"), "renderSenderVoiceBrief"))
+  // RULE (restated wave 154, lane 154H2 — the body moved so the sessionless topic step shares it): the session door's loader is a thin
+  // wrapper over THE ONE loader (refurbish-run.ts loadRefurbishVoiceFor), and that loader is the one voice system.
+  const runSrc = code("lib/repurpose/refurbish-run.ts")
+  const oneLoader = (sessionBody: string, sharedBody: string) => calls(sessionBody, "loadRefurbishVoiceFor") && !calls(sessionBody, "loadSenderVoiceBrief") && calls(sharedBody, "loadSenderVoiceBrief") && calls(sharedBody, "renderSenderVoiceBrief")
+  check("the voice loader is the ONE voice system (loadSenderVoiceBrief + renderSenderVoiceBrief), not a second one — the session door delegates to it", oneLoader(fnBody(act, "loadRefurbishVoice"), fnBody(runSrc, "loadRefurbishVoiceFor")))
+  check("POSITIVE CONTROL: a session loader that calls loadSenderVoiceBrief itself (a second copy) is rejected", !oneLoader("function loadRefurbishVoice() { return loadSenderVoiceBrief(x) }", fnBody(runSrc, "loadRefurbishVoiceFor")))
+  check("the sessionless topic creative step loads the voice through the SAME loader (no third copy)", calls(runSrc, "loadRefurbishVoiceFor") && (runSrc.match(/\bloadSenderVoiceBrief\s*\(/g) ?? []).length === 1)
 
   // ── §F ────────────────────────────────────────────────────────────────────────────────────────────────────────────
   section("§F — RECIPIENT NEED + MARKET FACTS shape the creative; no protected-class exclusion; R9 exclusions")

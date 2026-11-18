@@ -23,7 +23,7 @@ import { VoiceNoteCard }          from "./components/voice-note-card"
 import { IsaOutreachCard }        from "./components/isa-outreach-card"
 import { SegmentMemberships }      from "./components/segment-memberships"
 import { ShowingRoutePlanner, ShowingPlanTourHandoff } from "./showing-route-planner"
-import { CampaignBundleSendCard, type BundleOption } from "./components/campaign-bundle-send-card"
+import { CampaignBundleSendCard, type BundleOption, type CampaignOption } from "./components/campaign-bundle-send-card"
 import { listCampaignBundles }      from "@/app/actions/campaign-bundles"
 import { AgentActionDispositionQueue } from "@/app/components/agent/AgentActionDispositionQueue"
 import { getAgentPortalStream }     from "@/app/actions/portal-stream"
@@ -313,13 +313,16 @@ export default async function ContactDetailPage({ params }: PageProps) {
   // Both actions gate themselves (session + the contact must be in the
   // caller's brokerage) and RETURN their refusals, so a refusal is reported
   // rather than rendered as an empty stream.
-  const [portalStreamResult, contactInboxResult, bundlesResult] = await Promise.all([
+  const [portalStreamResult, contactInboxResult, bundlesResult, campaignsResult] = await Promise.all([
     getAgentPortalStream({ contactId, limit: 25 }),
     getInboxMessages({ contactId, limit: 25 }),
     // Saved campaign bundles the caller may dispatch. The action resolves the
     // caller's own agent/team/brokerage policy scope, so this list is already
     // narrowed to bundles they are allowed to see.
     listCampaignBundles(),
+    // WAVE 154 (lane 154H2): the tenant's running campaigns, so a bundle sent from here can carry its campaign identity (SMS ROI).
+    // Cookie client (RLS) + the contact's own tenant; the action re-verifies the id against the SESSION tenant before use.
+    supabase.from("marketing_campaigns").select("id, campaign_name, status").eq("brokerage_id", brokerageId).in("status", ["live", "scheduled", "approved"]).order("created_at", { ascending: false }).limit(50),
   ])
   const portalStreamRows = portalStreamResult.success ? (portalStreamResult.rows ?? []) : []
   const portalStreamError = portalStreamResult.success ? null : (portalStreamResult.error ?? "Portal stream unavailable")
@@ -330,6 +333,8 @@ export default async function ContactDetailPage({ params }: PageProps) {
         .filter((b) => b.is_active && b.items.length > 0)
         .map((b) => ({ id: b.id, name: b.name, description: b.description, stepCount: b.items.length }))
     : []
+  if (campaignsResult.error) console.error(`[crm/contact] running campaigns unreadable — bundles send unattributed: ${campaignsResult.error.message}`)
+  const bundleCampaigns: CampaignOption[] = ((campaignsResult.data ?? []) as Array<{ id: string; campaign_name: string | null }>).map((c) => ({ id: c.id, name: c.campaign_name ?? "Untitled campaign" }))
 
   return (
     <div className="flex flex-col h-full min-h-screen bg-background">
@@ -481,7 +486,7 @@ export default async function ContactDetailPage({ params }: PageProps) {
       {/* Dispatch a saved multi-channel campaign bundle at this contact — the
           send side of the bundle builder, which had none. */}
       <div className="px-4 pt-3">
-        <CampaignBundleSendCard contactId={contactId} bundles={sendableBundles} />
+        <CampaignBundleSendCard contactId={contactId} bundles={sendableBundles} campaigns={bundleCampaigns} />
       </div>
 
       {/* Smart drip — enroll this contact into the brokerage's compliance-gated

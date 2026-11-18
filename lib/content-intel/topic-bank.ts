@@ -167,6 +167,16 @@ export async function pickTopics(args: {
     raw_data:         { evidence?: { kind?: string; metric?: string | null } | null; intake?: { rights?: string; source_kind?: string } | null; independent_observations?: number } | null
   }>
 
+  // ── A CIRCLE ADAPTATION BELONGS TO ITS MEMBER (wave 154, lane 154H2 — carrying lane 154G3's request) ──
+  // lib/marketing/circle-tactics.ts files a member's adaptation of a shared tactic as a NEW topic whose raw_data.circle_adaptation
+  // names the member (for_agent_id = agents.id, for_agent_user_id = users.id) and whose brand owner is that member. It is their
+  // piece in their voice: another agent's picks skip it, and an asker with no agents.id cannot take it (fail closed).
+  rows = rows.filter((r) => {
+    const ad = (r.raw_data as { circle_adaptation?: { for_agent_id?: string | null } | null } | null)?.circle_adaptation
+    if (!ad || typeof ad !== "object") return true
+    return !!args.agentId && ad.for_agent_id === args.agentId
+  })
+
   // ── THE OFFICE CLAIM (m357) ────────────────────────────────────────────
   // Owner's rule: an agent in the same office cannot write an article from a
   // topic another agent there already took. The claim ledger for that already

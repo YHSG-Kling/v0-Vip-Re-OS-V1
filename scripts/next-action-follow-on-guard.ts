@@ -43,6 +43,7 @@ import { memSupabase, type MemClient, type Row } from "./in-memory-supabase"
 const G = {
   svc: null as MemClient | null,
   published: [] as string[],
+  publishMode: "ok" as "ok" | "refuse" | "no_id",
 }
 ;(globalThis as any).__N154 = G
 const STUBS: Record<string, string> = {
@@ -52,7 +53,7 @@ const STUBS: Record<string, string> = {
   "next/server": "export const NextResponse = { json: (b, i) => ({ status: (i && i.status) || 200, body: b, json: async () => b }) }",
   "@/app/actions/cron-kernel": "export async function createCronRunContextAction(){ return { success: true, data: { context_id: 'ctx-154h' } } }; export async function recordCronStartAction(){ return { success: true } }; export async function recordCronSuccessAction(){ return { success: true } }; export async function recordCronFailureAction(){ return { success: true } }",
   "@/lib/cron-auth": "export const verifyCronAuth = () => null",
-  "@/lib/social/publisher": "export async function publishToSocialPlatform(a){ globalThis.__N154.published.push(String((a && (a.postId || (a.post && a.post.id))) || 'post')); return { success: true, externalPostId: 'ext-' + globalThis.__N154.published.length } }",
+  "@/lib/social/publisher": "export async function publishToSocialPlatform(a, l){ const g = globalThis.__N154; g.published.push(String((l && l.postId) || 'post')); if (g.publishMode === 'refuse') return { success: false, error: 'provider refused: token expired' }; if (g.publishMode === 'no_id') return { success: true }; return { success: true, externalPostId: 'ext-' + g.published.length } }",
   "@/lib/kernel/brand-compliance": "export async function checkBrandCompliance(){ return { passed: true, violations: [] } }",
   "@/lib/social/assemble-disclosures": "export async function assembleSocialDisclosures(){ return { lines: [] } }; export function appendDisclosures(c){ return c }",
   "@/lib/security/secret-crypto": "export function decryptSecret(v){ return v }; export function decryptSecretFields(o){ return o }",
@@ -421,33 +422,43 @@ async function main() {
   }
 
   // ── I ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  section("I — HOT TOPIC → REFURBISH / OMNIPRESENCE: the sessionless starter (154F D2)")
+  section("I — HOT TOPIC → REFURBISH / OMNIPRESENCE: the sessionless starter on the ONE published mapping (154F D2)")
+  const rr = await import("../lib/repurpose/refurbish-run")
+  const exp = new Date(NOW.getTime() + 3 * 86_400_000).toISOString()
+  const topic = (id: string, kind: string, extra: Row = {}, raw: Row = {}): Row => ({ id, brokerage_id: B, topic_title: "Why are homeowners insurance costs rising around Pace?", value_angle: "Explain what drives renewals and what a homeowner can ask their carrier.", categories: ["insurance", "homeownership"], geo_relevance: { cities: ["Pace"] }, expires_at: exp, status: "fresh", scraped_at: ago(30), raw_data: { intake: { source_kind: kind }, popularity_evidence_type: "proxy", evidence: { kind: "proxy", metric: "relative_index" }, creative_brief: { source_rights: "public_read_reworded", consumer_question: "Why are homeowners insurance costs rising around Pace?" }, ...raw }, ...extra })
+  const LEDGER_UNIQUE = { unique: { orchestrator_tasks: [["payload->>idempotency_key"]], agent_action_ledger: [["idempotency_key"]] } }
   {
-    const rr = await import("../lib/repurpose/refurbish-run")
-    const exp = new Date(NOW.getTime() + 3 * 86_400_000).toISOString()
-    const topic = (id: string, kind: string, extra: Row = {}, raw: Row = {}): Row => ({ id, brokerage_id: B, topic_title: "Why are homeowners insurance costs rising around Pace?", expires_at: exp, status: "active", raw_data: { intake: { source_kind: kind }, popularity_evidence_type: "proxy", creative_brief: { source_rights: "public_read_reworded" }, ...raw }, ...extra })
-    const T = { trend: randomUUID(), chatter: randomUUID(), own: randomUUID(), unmapped: randomUUID(), expired: randomUUID(), norights: randomUUID(), excluded: randomUUID(), weak: randomUUID(), other: randomUUID() }
+    const T = { trend: randomUUID(), chatter: randomUUID(), own: randomUUID(), unmapped: randomUUID(), stamped: randomUUID(), expired: randomUUID(), norights: randomUUID(), excluded: randomUUID(), weak: randomUUID(), other: randomUUID(), comp: randomUUID(), compOff: randomUUID(), compNoBind: randomUUID(), compForeign: randomUUID() }
+    const AD = { on: randomUUID(), off: randomUUID(), foreign: randomUUID() }, W = { on: randomUUID(), off: randomUUID(), foreign: randomUUID() }
     const svc = freshDb({
       content_topic_bank: [
-        topic(T.trend, "search_demand_trends"), topic(T.chatter, "community_post"), topic(T.own, "own_post_underperformer", {}, { own_performance: { measuredRate: 0.01, baselineRate: 0.03 } }),
-        topic(T.unmapped, "nextdoor_digest"), topic(T.expired, "search_demand_trends", { expires_at: ago(60) }), topic(T.norights, "community_post", {}, { creative_brief: { source_rights: "unknown" } }),
-        topic(T.excluded, "community_post", { topic_title: "Welcome our new agent to the Gulf Coast team!" }), topic(T.weak, "search_demand_trends", {}, { popularity_evidence_type: "unknown" }),
-        { ...topic(T.other, "search_demand_trends"), brokerage_id: B2 },
+        topic(T.trend, "google_trends"), topic(T.chatter, "community_post"), topic(T.own, "own_content_outcome", {}, { own_performance: { measuredRate: 0.01, baselineRate: 0.03 } }),
+        topic(T.unmapped, "nextdoor_digest"), topic(T.stamped, "nextdoor_digest", {}, { intake: { source_kind: "nextdoor_digest", refurbish_trigger_kind: "public_chatter" } }),
+        topic(T.expired, "google_trends", { expires_at: ago(60) }), topic(T.norights, "community_post", {}, { creative_brief: { source_rights: "unknown" } }),
+        topic(T.excluded, "community_post", { topic_title: "Welcome our new agent to the Gulf Coast team!" }), topic(T.weak, "google_trends", {}, { popularity_evidence_type: "unknown", evidence: { kind: "unknown" } }),
+        { ...topic(T.other, "google_trends"), brokerage_id: B2 },
+        topic(T.comp, "competitor_ad", {}, { promoted_from_competitor_ad_id: AD.on }), topic(T.compOff, "competitor_ad", {}, { promoted_from_competitor_ad_id: AD.off }),
+        topic(T.compNoBind, "meta_ad_creative"), topic(T.compForeign, "competitor_ad", {}, { promoted_from_competitor_ad_id: AD.foreign }),
       ],
+      competitor_ads: [{ id: AD.on, brokerage_id: B, competitor_id: W.on }, { id: AD.off, brokerage_id: B, competitor_id: W.off }, { id: AD.foreign, brokerage_id: B2, competitor_id: W.foreign }],
+      competitor_brokerages: [{ id: W.on, brokerage_id: B, is_active: true }, { id: W.off, brokerage_id: B, is_active: false }, { id: W.foreign, brokerage_id: B2, is_active: true }],
       social_media_accounts: [{ id: randomUUID(), brokerage_id: B, platform: "facebook", is_active: true }, { id: randomUUID(), brokerage_id: B, platform: "instagram", is_active: true }],
-    }, { unique: { orchestrator_tasks: [["payload->>idempotency_key"]], agent_action_ledger: [["idempotency_key"]] } })
-    const map = (k: string) => (({ search_demand_trends: "google_trend", community_post: "public_chatter", own_post_underperformer: "own_underperformer" }) as Record<string, "google_trend" | "public_chatter" | "own_underperformer">)[k] ?? null
+    }, LEDGER_UNIQUE)
     const executed: string[] = []
-    const deps = { kindToTrigger: map, execute: async (_s: unknown, a: { topicId: string }) => { executed.push(a.topicId); return { started: true, reason: "creative started (seam)" } } }
-    const go = (id: string, d: Record<string, unknown> = deps, brokerageId = B) => rr.startTopicRefurbish(svc as never, { brokerageId, topicId: id, now: NOW }, d as never)
+    const execute = async (_s: unknown, a: { topicId: string }) => { executed.push(a.topicId); return { started: true, reason: "creative started (seam)" } }
+    const go = (id: string, d: Record<string, unknown> = { execute }, brokerageId = B) => rr.startTopicRefurbish(svc as never, { brokerageId, topicId: id, now: NOW }, d as never)
     const tr = await go(T.trend), ch = await go(T.chatter), ow = await go(T.own)
-    check("a fresh verified TREND topic reaches the starter → trigger google_trend, routed to BOTH (one original master + variants for 2 connected platforms)", tr.trigger === "google_trend" && tr.route === "both" && tr.started, JSON.stringify(tr))
-    check("a fresh verified COMMUNITY topic → trigger public_chatter, started", ch.trigger === "public_chatter" && ch.started, JSON.stringify(ch))
-    check("an OWN under-performer (measured below its own baseline) → trigger own_underperformer, started", ow.trigger === "own_underperformer" && ow.started, JSON.stringify(ow))
+    check("with the PRODUCTION mapping (no injection) a fresh TREND topic (google_trends) → google_trend, routed BOTH (master + variants for 2 platforms)", tr.trigger === "google_trend" && tr.route === "both" && tr.started, JSON.stringify(tr))
+    check("…a COMMUNITY topic (community_post) → public_chatter, started; an OWN under-performer (own_content_outcome, measured below its baseline) → own_underperformer, started", ch.trigger === "public_chatter" && ch.started && ow.trigger === "own_underperformer" && ow.started, `${JSON.stringify(ch)} ${JSON.stringify(ow)}`)
+    // THE RULE (not a waypoint): a kind with NO mapping is held with its reason; a mapped kind proceeds — positive control both ways.
     const un = await go(T.unmapped)
-    check("an UNMAPPED source kind is HELD with its reason — not silently dropped, nothing started", un.route === "hold" && /no Refurbish trigger mapping/.test(un.reason) && !executed.includes(T.unmapped), JSON.stringify(un))
-    const unwired = await rr.startTopicRefurbish(svc as never, { brokerageId: B, topicId: T.chatter, now: NOW }, { execute: deps.execute } as never)
-    check("with the production mapping NOT yet wired, every kind is held (fail closed until the integrator wires 154G1's export)", unwired.route === "hold" && /no Refurbish trigger mapping/.test(unwired.reason))
+    check("RULE: a kind with NO mapping (nextdoor_digest) is HELD with its reason — not silently dropped, nothing started", un.route === "hold" && /no Refurbish trigger mapping/.test(un.reason) && !executed.includes(T.unmapped), JSON.stringify(un))
+    const svcB = freshDb({ content_topic_bank: [topic(T.unmapped, "nextdoor_digest"), topic(T.chatter, "community_post")], social_media_accounts: [] }, LEDGER_UNIQUE)
+    const unMapped = await rr.startTopicRefurbish(svcB as never, { brokerageId: B, topicId: T.unmapped, now: NOW }, { execute, kindToTrigger: (k: string) => (k === "nextdoor_digest" ? "public_chatter" : null) } as never)
+    const mappedHeld = await rr.startTopicRefurbish(svcB as never, { brokerageId: B, topicId: T.chatter, now: NOW }, { execute, kindToTrigger: () => null } as never)
+    check("POSITIVE CONTROL both ways: the SAME unmapped kind proceeds once a mapping names it; a mapped kind is held once the mapping says null", unMapped.trigger === "public_chatter" && unMapped.route !== "hold" && mappedHeld.route === "hold" && /no Refurbish trigger mapping/.test(mappedHeld.reason), `${JSON.stringify(unMapped)} / ${JSON.stringify(mappedHeld)}`)
+    const st = await go(T.stamped)
+    check("the intake's STAMPED raw_data.intake.refurbish_trigger_kind wins over the kind lookup (an unmapped kind stamped public_chatter proceeds)", st.trigger === "public_chatter" && st.started, JSON.stringify(st))
     check("a topic whose freshness window ENDED is CLOSED (never published late)", (await go(T.expired)).route === "close")
     check("rights UNKNOWN → held; a joining announcement → excluded before any generation", (await go(T.norights)).route === "hold" && /excluded/.test((await go(T.excluded)).reason))
     const weak = await go(T.weak)
@@ -458,8 +469,231 @@ async function main() {
     check("another tenant's topic is not reachable (tenant-pinned read)", (await go(T.other)).route === "hold")
     const opp = svc.tables.agent_action_ledger.find((x) => x.system_source === "topic_refurbish_starter" && x.detail?.opportunity?.topic_id === T.trend)
     check("the typed opportunity is ledgered with NO spend and first publication behind approval", opp?.detail?.opportunity?.spend === "none" && opp.detail.opportunity.first_publication === "approval_required")
-    const partial = await rr.startTopicRefurbish(freshDb({ content_topic_bank: [topic(T.trend, "search_demand_trends")] }, { unique: { agent_action_ledger: [["idempotency_key"]] } }) as never, { brokerageId: B, topicId: T.trend, now: NOW }, { kindToTrigger: map } as never)
-    check("PARTIAL stated, not hidden: with the production creative step the opportunity is READY but nothing is generated (executePipeline is session-bound)", partial.started === false && /PARTIAL/.test(partial.reason), partial.reason)
+    // competitor_watch — authorized only when the competitor is on THIS tenant's ACTIVE watchlist (fail closed).
+    const cOn = await go(T.comp), cOff = await go(T.compOff), cNo = await go(T.compNoBind), cFor = await go(T.compForeign)
+    check("competitor_watch: a topic promoted from a WATCHED competitor's ad (active competitor_brokerages row in this tenant) starts", cOn.trigger === "competitor_watch" && cOn.started, JSON.stringify(cOn))
+    check("competitor_watch NEGATIVES: an inactive watch row, an Ad Library idea with no watch binding, and an ad read only in ANOTHER tenant are all held", cOff.route === "hold" && /not on this tenant's active watchlist/.test(cOff.reason) && cNo.route === "hold" && /no watched competitor/.test(cNo.reason) && cFor.route === "hold" && !executed.includes(T.compForeign), `${cOff.reason} | ${cNo.reason} | ${cFor.reason}`)
+    const svcR = freshDb({ content_topic_bank: [topic(T.comp, "competitor_ad", {}, { promoted_from_competitor_ad_id: AD.on })], competitor_ads: [{ id: AD.on, brokerage_id: B, competitor_id: W.on }], competitor_brokerages: [{ id: W.on, brokerage_id: B, is_active: true }] }, { ...LEDGER_UNIQUE, refuse: { competitor_ads: "permission denied for table competitor_ads" } })
+    const cRef = await rr.startTopicRefurbish(svcR as never, { brokerageId: B, topicId: T.comp, now: NOW }, { execute } as never)
+    check("competitor_watch: a REFUSED watchlist read is NOT authorized (fail closed), with the refusal named", cRef.route === "hold" && /fail closed/.test(cRef.reason), cRef.reason)
+  }
+
+  // ── J ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  section("J — THE CREATIVE STEP (sessionless): tenant + sender from the ROW, entitlement first, original master PENDING approval")
+  const BROKER = randomUUID(), U_OFF = randomUUID(), AG_OFF = randomUUID()
+  const TJ = { main: randomUUID(), nosender: randomUUID(), offseat: randomUUID(), foreignOwner: randomUUID(), media: randomUUID(), late: randomUUID() }
+  const ACC = { fb: randomUUID(), li: randomUUID(), ig: randomUUID() }
+  const creativeDb = (extra: Record<string, Row[]> = {}, opts: Parameters<typeof memSupabase>[1] = {}) => freshDb({
+    users: [{ id: AGENT_USER, brokerage_id: B, user_type: "agent", status: "active", deleted_at: null, location_id: null }, { id: U_OFF, brokerage_id: B, user_type: "agent", status: "inactive", deleted_at: null, location_id: null }, { id: BROKER, brokerage_id: B, user_type: "broker", status: "active", deleted_at: null, location_id: null }],
+    agents: [{ id: AGENT, brokerage_id: B, user_id: AGENT_USER }, { id: AG_OFF, brokerage_id: B, user_id: U_OFF }],
+    content_topic_bank: [topic(TJ.main, "community_post"), topic(TJ.nosender, "community_post"), topic(TJ.offseat, "community_post", {}, { brand_owner_user_id: U_OFF }), topic(TJ.foreignOwner, "community_post", {}, { brand_owner_user_id: AGENT_USER, brand_owner_brokerage_id: B2 }), topic(TJ.media, "community_post", {}, { brand_owner_user_id: AGENT_USER }), topic(TJ.late, "community_post", { expires_at: ago(5) })],
+    content_topic_uses: [{ id: randomUUID(), topic_id: TJ.main, brokerage_id: B, agent_id: AGENT, asset_type: "newsletter_campaign", asset_id: null, used_at: ago(120) }],
+    social_media_accounts: [{ id: ACC.fb, brokerage_id: B, agent_id: AGENT, platform: "facebook", is_active: true, access_token: "tok", account_id: "fb-1" }, { id: ACC.li, brokerage_id: B, agent_id: AGENT, platform: "linkedin", is_active: true, access_token: "tok", account_id: "li-1" }, { id: ACC.ig, brokerage_id: B, agent_id: AGENT, platform: "instagram", is_active: true, access_token: "tok", account_id: "ig-1" }],
+    social_posts: [], repurposed_content_log: [], notifications: [], social_publish_log: [], social_engagement_tracking: [], locations: [], teams: [], organization_members: [],
+    ...extra,
+  }, { ...LEDGER_UNIQUE, ...opts })
+  const ORIGINAL = "Insurance renewals feel steep this year. Here is what is behind the jump in premiums, and three questions worth asking your carrier before you sign the renewal. #homeinsurance"
+  const creativeSeams = (o: { entitled?: boolean; compliant?: boolean; approvable?: boolean; text?: string } = {}) => {
+    const log: string[] = []; const prompts: string[] = []
+    const seams = {
+      generate: async (p: string, meta: { userId: string }) => { log.push(`generate:${meta.userId}`); prompts.push(p); return o.text ?? ORIGINAL },
+      entitle: async (_s: unknown, a: { userId: string; estTokens: number }) => { log.push(`entitle:${a.userId}`); return o.entitled === false ? { allowed: false, reason: "subscription_lapsed" } : { allowed: true, reason: "entitled" } },
+      countUse: async (_s: unknown, u: string) => { log.push(`count:${u}`) },
+      voice: async () => ({ voiceBriefText: "VOICE BRIEF: warm, plain-spoken, signs as Pat from Gulf Coast Realty.", voiceVersion: "voice-v7", themFirstText: "Lead with the reader's situation." }),
+      compliance: async (_s: unknown, a: { content: string }) => { log.push("compliance"); return o.compliant === false ? { allowed: false, reason: "fair housing: steering language" } : { allowed: true, reason: null } },
+      approvers: async () => (o.approvable === false ? { ok: false as const, reason: "the brokerage's approver seats could not be read" } : { ok: true as const, primaryUserIds: [AGENT_USER], permittedUserIds: [AGENT_USER, BROKER] }),
+      logUse: async (s: MemClient, a: { topicId: string; brokerageId: string; assetId: string; agentId: string }) => { s.tables.content_topic_uses.push({ id: randomUUID(), topic_id: a.topicId, brokerage_id: a.brokerageId, asset_type: "social_post", asset_id: a.assetId, agent_id: a.agentId, used_at: NOW.toISOString() }); return { error: null } },
+    }
+    return { log, prompts, seams }
+  }
+  const sj = creativeDb()
+  const cs = creativeSeams()
+  const r1 = await rr.startTopicRefurbish(sj as never, { brokerageId: B, topicId: TJ.main, now: NOW }, { creative: cs.seams } as never)
+  const master = sj.tables.social_posts.find((p) => p.post_brief?.topic_id === TJ.main)
+  check("a routed topic now PRODUCES a piece: started, ONE master social post filed (base: started:false, nothing generated)", r1.started === true && !!master && sj.tables.social_posts.length === 1, `${JSON.stringify(r1)}`)
+  check("the master is PENDING approval — status draft / approval_status pending; nothing scheduled to publish, no approver recorded", master?.status === "draft" && master?.approval_status === "pending" && !master?.approved_by)
+  check("tenant + sender come from the ROW: brokerage B, the OFFICE CLAIM's agent (agents.id) and their users.id — never a parameter", master?.brokerage_id === B && master?.agent_id === AGENT && master?.user_id === AGENT_USER && master?.post_brief?.sender_basis === "office_claim")
+  check("ENTITLEMENT + SPEND are asked for the row-derived sender BEFORE the one model call; usage counted after filing", cs.log[0] === `entitle:${AGENT_USER}` && cs.log.indexOf(`generate:${AGENT_USER}`) > 0 && cs.log.filter((x) => x.startsWith("generate")).length === 1 && cs.log.includes(`count:${AGENT_USER}`), cs.log.join(" → "))
+  check("the brief is the STORED reworded topic in the sender's VOICE (the voice brief leads the prompt; the consumer question is in it)", cs.prompts[0]?.startsWith("VOICE BRIEF:") && cs.prompts[0].includes("Why are homeowners insurance costs rising around Pace?"))
+  check("the ORIGINALITY gate ran (verdict on the post) and outbound COMPLIANCE ran on the draft before filing", ["original", "no_source_to_compare"].includes(String(master?.post_brief?.originality)) && cs.log.indexOf("compliance") > cs.log.indexOf(`generate:${AGENT_USER}`))
+  check("the sender's text channel carries the master (facebook); instagram is PARTIAL (media required) — stated, nothing invented", master?.platform === "facebook" && master?.social_account_id === ACC.fb && (master?.post_brief?.media_partial ?? []).includes("instagram") && (master?.post_brief?.variants_wanted ?? []).join() === "linkedin", JSON.stringify(master?.post_brief))
+  const lin = sj.tables.repurposed_content_log.find((l) => l.output_ref_id === master?.id)
+  check("lineage: repurposed_content_log content_topic:<id> → social_posts, '[refurbish …' note (the ROI reader's filter)", lin?.source_type === "content_topic" && lin?.source_id === TJ.main && lin?.output_ref_table === "social_posts" && String(lin?.notes).startsWith("[refurbish idea_only · lineage content_topic:"))
+  check("the topic USE is recorded on content_topic_uses (asset social_post, the master's id, the sender's agent)", sj.tables.content_topic_uses.some((u) => u.topic_id === TJ.main && u.asset_type === "social_post" && u.asset_id === master?.id && u.agent_id === AGENT))
+  check("the approvers approverFor names are rung (social_post_pending_approval on the post)", sj.tables.notifications.some((n) => n.type === "social_post_pending_approval" && n.entity_id === master?.id && n.user_id === AGENT_USER))
+  const why = sj.tables.agent_action_ledger.find((x) => x.system_source === "topic_refurbish_creative" && x.subject_id === master?.id)
+  check("the creative decision row's SUBJECT IS THE ARTIFACT (social_posts / id, ref content_topic:<id>) — 'why this piece' for the Command Center", why?.subject_type === "social_posts" && why?.subject_ref === `content_topic:${TJ.main}` && why?.detail?.creative?.outcome === "pending_approval", JSON.stringify(why ?? null).slice(0, 300))
+  const rep = await rr.executeTopicRefurbishDefault(sj as never, { brokerageId: B, topicId: TJ.main, route: "both", rights: "public_read_reworded", trigger: "public_chatter", now: NOW }, cs.seams as never)
+  check("IDEMPOTENT: a replay of the creative step drafts nothing and calls no model (lineage already holds the topic)", rep.started === false && /already drafted/.test(rep.reason) && cs.log.filter((x) => x.startsWith("generate")).length === 1 && sj.tables.social_posts.length === 1)
+  const ex = (id: string, s: ReturnType<typeof creativeSeams>, db = sj, brokerageId = B) => rr.executeTopicRefurbishDefault(db as never, { brokerageId, topicId: id, route: "both", rights: "public_read_reworded", trigger: "public_chatter", now: NOW }, s.seams as never)
+  const sN = creativeSeams(), nN = await ex(TJ.nosender, sN)
+  check("NO accountable sender (no brand owner, no office claim) → HELD with that reason; nothing generated, nothing spent", !nN.started && /no accountable sender/.test(nN.reason) && sN.log.length === 0, nN.reason)
+  const sO = creativeSeams(), nO = await ex(TJ.offseat, sO), sF = creativeSeams(), nF = await ex(TJ.foreignOwner, sF)
+  check("a brand owner whose seat is INACTIVE, or who belongs to ANOTHER workspace, holds — no model call", !nO.started && /no active seat/.test(nO.reason) && !nF.started && /another workspace/.test(nF.reason) && sO.log.length + sF.log.length === 0, `${nO.reason} | ${nF.reason}`)
+  const sjE = creativeDb(), sE = creativeSeams({ entitled: false })
+  const nE1 = await ex(TJ.main, sE, sjE), nE2 = await ex(TJ.main, sE, sjE)
+  check("NOT ENTITLED → held before any model call; the refusal is recorded ONCE (a second run in the window adds no row)", !nE1.started && /not entitled/.test(nE1.reason) && !sE.log.some((x) => x.startsWith("generate")) && !nE2.started && sjE.tables.agent_action_ledger.filter((x) => x.system_source === "topic_refurbish_creative").length === 1 && sjE.tables.social_posts.length === 0)
+  const sjC = creativeDb(), sC = creativeSeams({ compliant: false }), nC = await ex(TJ.main, sC, sjC)
+  check("COMPLIANCE (incl. fair housing) refuses → no post filed, outcome recorded", !nC.started && /compliance refused/.test(nC.reason) && sjC.tables.social_posts.length === 0)
+  const sjK = creativeDb(), sK = creativeSeams({ text: "Why are homeowners insurance costs rising around Pace? Explain what drives renewals and what a homeowner can ask their carrier." }), nK = await ex(TJ.main, sK, sjK)
+  check("ORIGINALITY: a draft that restates the stored topic is REJECTED (near copy) — no post", !nK.started && /too close/.test(nK.reason) && sjK.tables.social_posts.length === 0, nK.reason)
+  const sjA = creativeDb(), sA = creativeSeams({ approvable: false }), nA = await ex(TJ.main, sA, sjA)
+  check("NOBODY CAN APPROVE (approverFor refused) → nothing drafted, no model call (fail closed)", !nA.started && /nobody can approve/.test(nA.reason) && sA.log.length === 0 && sjA.tables.social_posts.length === 0)
+  const sjM = creativeDb({ social_media_accounts: [{ id: ACC.ig, brokerage_id: B, agent_id: AGENT, platform: "instagram", is_active: true }] }), sM = creativeSeams(), nM = await ex(TJ.media, sM, sjM)
+  check("only MEDIA platforms connected → held as PARTIAL (no media producer for a text master), nothing spent", !nM.started && /PARTIAL/.test(nM.reason) && sM.log.length === 0, nM.reason)
+  const sL = creativeSeams(), nL = await ex(TJ.late, sL)
+  check("a topic that EXPIRED before the creative began is closed — no model call", !nL.started && /freshness window ended/.test(nL.reason) && sL.log.length === 0)
+  const sW = creativeSeams(), nW = await ex(TJ.main, sW, creativeDb(), B2)
+  check("WRONG TENANT (the row is B's, the call says B2) → not in this tenant, nothing generated", !nW.started && /not in this tenant/.test(nW.reason) && sW.log.length === 0)
+  const sR = creativeSeams(), nR = await ex(TJ.main, sR, creativeDb({}, { refuse: { content_topic_uses: "permission denied for table content_topic_uses" } }))
+  check("a REFUSED office-claim read holds (fail closed) — never 'no claim, so anyone'", !nR.started && /could not be read/.test(nR.reason) && sR.log.length === 0, nR.reason)
+
+  // ── K ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  section("K — OMNIPRESENCE FROM THE APPROVED MASTER (variants each wait for their own approval)")
+  {
+    const before = sj.tables.social_posts.length
+    const k0 = await rr.runTopicRefurbishPass(sj as never, B, { now: NOW, max: 0 }, { creative: cs.seams } as never)
+    check("an UNAPPROVED master hands nothing to the variant producer", k0.variants === 0 && sj.tables.social_posts.length === before, JSON.stringify(k0))
+    Object.assign(master!, { approval_status: "approved", approved_by: AGENT_USER, approved_at: NOW.toISOString(), status: "scheduled" })
+    const genBefore = cs.log.filter((x) => x.startsWith("generate")).length
+    const k1 = await rr.runTopicRefurbishPass(sj as never, B, { now: NOW, max: 0 }, { creative: cs.seams } as never)
+    const variant = sj.tables.social_posts.find((p) => p.post_brief?.role === "variant")
+    check("the APPROVED master → ONE channel-native variant (linkedin) from the master's own words, PENDING its own approval", k1.variants === 1 && variant?.platform === "linkedin" && variant?.status === "draft" && variant?.approval_status === "pending" && variant?.post_brief?.master_post_id === master!.id && cs.prompts.at(-1)!.includes(String(master!.content).slice(0, 40)), JSON.stringify(k1))
+    check("…the variant is scheduled AFTER the master by the omnipresence planner, carries the lineage and the topic use; one model call", Date.parse(String(variant?.scheduled_for)) >= Date.parse(String(master!.scheduled_for)) && sj.tables.repurposed_content_log.some((l) => l.output_ref_id === variant?.id && String(l.notes).includes(`← social_posts:${master!.id}`)) && sj.tables.content_topic_uses.some((u) => u.asset_id === variant?.id) && cs.log.filter((x) => x.startsWith("generate")).length === genBefore + 1)
+    const k2 = await rr.runTopicRefurbishPass(sj as never, B, { now: NOW, max: 0 }, { creative: cs.seams } as never)
+    check("a REPLAY produces no second variant (one claim per master on the ledger)", k2.variants === 0 && sj.tables.social_posts.filter((p) => p.post_brief?.role === "variant").length === 1)
+    const sjX = creativeDb()
+    const csX = creativeSeams()
+    await rr.startTopicRefurbish(sjX as never, { brokerageId: B, topicId: TJ.main, now: NOW }, { creative: csX.seams } as never)
+    const mX = sjX.tables.social_posts[0]
+    Object.assign(mX, { approval_status: "approved", status: "scheduled", post_brief: { ...mX.post_brief, topic_expires_at: ago(1) } })
+    const kX = await rr.runTopicRefurbishPass(sjX as never, B, { now: NOW, max: 0 }, { creative: csX.seams } as never)
+    check("an approved master whose TOPIC EXPIRED gets no variants (closed, never published late)", kX.variants === 0 && kX.errors.some((e) => /topic expired/.test(e)), JSON.stringify(kX))
+  }
+
+  // ── L ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  section("L — THE DURABLE TRIGGER: one bounded, ledgered pass per tenant on the existing daily local-intel sweep")
+  {
+    const ids: string[] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()]
+    const sl = freshDb({ content_topic_bank: [...ids.map((id) => topic(id, "community_post")), { ...topic(randomUUID(), "community_post"), brokerage_id: B2 }, topic(randomUUID(), "community_post", { status: "used" })], social_media_accounts: [] }, LEDGER_UNIQUE)
+    const started: string[] = []
+    const execute = async (_s: unknown, a: { topicId: string }) => { started.push(a.topicId); return { started: true, reason: "seam" } }
+    const p1 = await rr.runTopicRefurbishPass(sl as never, B, { now: NOW, max: 3 }, { execute } as never)
+    check("the pass reads THIS tenant's FRESH topics and starts at most `max` (bounded): 3 of 5, none of B2's, none 'used'", p1.considered === 3 && started.length === 3 && started.every((id) => ids.includes(id)), JSON.stringify(p1))
+    const p2 = await rr.runTopicRefurbishPass(sl as never, B, { now: NOW, max: 3 }, { execute } as never)
+    check("the next run SKIPS topics already ledgered for the same freshness window and reaches the remaining two (no double start)", p2.skipped === 3 && p2.considered === 2 && new Set(started).size === 5 && started.length === 5, JSON.stringify(p2))
+    check("every start is ledgered by the starter (5 opportunity rows, one per topic)", sl.tables.agent_action_ledger.filter((x) => x.system_source === "topic_refurbish_starter").length === 5)
+    const slR = freshDb({ content_topic_bank: ids.map((id) => topic(id, "community_post")) }, { ...LEDGER_UNIQUE, refuse: { agent_action_ledger: "permission denied for table agent_action_ledger" } })
+    const pR = await rr.runTopicRefurbishPass(slR as never, B, { now: NOW, max: 3 }, { execute } as never)
+    check("an UNREADABLE opportunity ledger starts nothing (no double start on 'nobody checked')", pR.considered === 0 && pR.errors.some((e) => /unreadable/.test(e)))
+    const li = code("lib/content-intel/local-intel.ts")
+    const sweep = li.slice(li.indexOf("export async function runLocalIntelSweep"), li.indexOf("export async function runLocalIntelSweep") + 4000)
+    const wired = (src: string) => src.indexOf("runTopicIntelligencePass(") > 0 && src.indexOf("runLocalEventsPass(db") > src.indexOf("runTopicIntelligencePass(") && src.indexOf("runTopicRefurbishPass(db") > src.indexOf("runLocalEventsPass(db") && /markRun:\s*true/.test(src)
+    check("the sweep runs topic intelligence → local events (markRun) → the topic refurbish pass, per tenant", wired(sweep))
+    check("POSITIVE CONTROL: the base sweep (topic intelligence only) is rejected by the same finder", !wired(sweep.replace(/runLocalEventsPass\(db[\s\S]*?runTopicRefurbishPass\(db/, "")))
+  }
+
+  // ── M ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  section("M — DELIVERY READ-BACK: approved topic-born post → the real publish cron → provider evidence → the ROI reader's rows")
+  {
+    const route = await import("../app/api/cron/publish-social-posts/route")
+    const ri = await import("../lib/repurpose/refurbish-idea")
+    const mk = (mode: "ok" | "refuse" | "no_id", expires = exp) => {
+      const db = creativeDb()
+      const p: Row = { id: randomUUID(), brokerage_id: B, agent_id: AGENT, user_id: AGENT_USER, social_account_id: ACC.fb, platform: "facebook", post_type: "custom", content: ORIGINAL, media_urls: [], hashtags: [], status: "scheduled", approval_status: "approved", approved_by: AGENT_USER, scheduled_for: ago(5), ai_generated: true, post_brief: { source: "topic_refurbish", role: "master", topic_id: TJ.main, topic_expires_at: expires } }
+      db.tables.social_posts.push(p)
+      db.tables.repurposed_content_log.push({ id: randomUUID(), brokerage_id: B, source_type: "content_topic", source_id: TJ.main, output_type: "facebook_post", output_ref_table: "social_posts", output_ref_id: p.id, platform_target: "facebook", status: "generated", approval_status: "pending_review", notes: "[refurbish idea_only · lineage content_topic:x] text", created_by: AGENT_USER })
+      G.svc = db; G.publishMode = mode
+      return { db, p }
+    }
+    const ok = mk("ok"); const n0 = G.published.length
+    await route.GET(new Request("http://x/api/cron/publish-social-posts"))
+    check("the APPROVED topic-born post reaches the real publisher and is marked published ONLY with the provider's id (external_post_id)", ok.p.status === "published" && typeof ok.p.external_post_id === "string" && ok.p.external_post_id.startsWith("ext-") && G.published.length === n0 + 1, `${ok.p.status} ${ok.p.external_post_id} ${ok.p.error_message ?? ""}`)
+    check("…and the ROI verdict counts it published (provider acknowledged)", ri.refurbishPublicationVerdict(ok.p as never).published === true)
+    const bad = mk("refuse"); await route.GET(new Request("http://x/api/cron/publish-social-posts"))
+    check("a provider REFUSAL never reads as published (the request alone marks nothing): failed with the provider's reason", bad.p.status === "failed" && !bad.p.external_post_id && /token expired/.test(String(bad.p.error_message)) && !ri.refurbishPublicationVerdict(bad.p as never).published, `${bad.p.status}: ${bad.p.error_message}`)
+    const noid = mk("no_id"); await route.GET(new Request("http://x/api/cron/publish-social-posts"))
+    check("a 'success' with NO provider id is not counted by the ROI reader (awaiting_provider) — status alone is not evidence", ri.refurbishPublicationVerdict(noid.p as never).state === "awaiting_provider", `${noid.p.status} ${noid.p.external_post_id}`)
+    const late = mk("ok", ago(10)); const nL2 = G.published.length
+    await route.GET(new Request("http://x/api/cron/publish-social-posts"))
+    check("a topic-born post whose TOPIC EXPIRED while it waited is CLOSED at egress (cancelled, reason) — the publisher is never called", late.p.status === "cancelled" && /never published late/.test(String(late.p.error_message)) && G.published.length === nL2, `${late.p.status}: ${late.p.error_message}`)
+    G.publishMode = "ok"
+    const act = code("lib/repurpose/actions.ts")
+    const reader = act.slice(act.indexOf("export async function getRefurbishResults"), act.indexOf("export async function getRefurbishResults") + 1500)
+    const readerMatches = (row: Row) => /\.eq\("output_ref_table", "social_posts"\)/.test(reader) && /\.like\("notes", "\[refurbish %"\)/.test(reader) && row.output_ref_table === "social_posts" && String(row.notes).startsWith("[refurbish ")
+    check("the ROI reader (getRefurbishResults: output_ref_table social_posts + notes '[refurbish %') selects the topic-born lineage row", readerMatches(ok.db.tables.repurposed_content_log[0]))
+    check("POSITIVE CONTROL: a non-refurbish lineage row is not selected by the same predicates", !readerMatches({ output_ref_table: "social_posts", notes: "Generated but not distributed" }))
+  }
+
+  // ── N ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  section("N — CARRIED FIXES (each red at base)")
+  {
+    // b — the arbiter's decision row names the artifact
+    const svcA = freshDb({}, LEDGER_UNIQUE)
+    const intro = randomUUID()
+    const dec = { optionId: "send_now", kind: "communication", channel: "email", format: null, waitHours: null, rationale: "warm greeting", evidence: [], confidence: 1, source: "deterministic", menu: ["send_now"] }
+    await fa.recordArbitration(svcA as never, { brokerageId: B, subject: { type: "contact", id: C.base }, decision: dec as never, now: NOW, policyRef: null, systemSource: "lifetime_touch", extraDetail: { next_action: { action: { artifact: { format: "avatar_video", ref: { table: "agent_intro_videos", id: intro } } } } } })
+    const rows = svcA.tables.agent_action_ledger
+    check("b: a decision that rides an EXISTING artifact is ALSO recorded with the artifact as subject (agent_intro_videos / id, ref contact:<id>)", rows.some((r) => r.subject_type === "contact" && r.subject_id === C.base) && rows.some((r) => r.subject_type === "agent_intro_videos" && r.subject_id === intro && r.subject_ref === `contact:${C.base}`), JSON.stringify(rows.map((r) => [r.subject_type, r.subject_id])))
+    const svcW = freshDb({}, LEDGER_UNIQUE)
+    await fa.recordArbitration(svcW as never, { brokerageId: B, subject: { type: "contact", id: C.base }, decision: { ...dec, kind: "wait", optionId: "wait", waitHours: 4 } as never, now: NOW, policyRef: null, systemSource: "lifetime_touch", extraDetail: { next_action: { action: { artifact: { ref: { table: "agent_intro_videos", id: intro } } } } } })
+    await fa.recordArbitration(svcW as never, { brokerageId: B, subject: { type: "contact", id: C.pref }, decision: dec as never, now: NOW, policyRef: null, systemSource: "lifetime_touch", extraDetail: {} })
+    check("b CONTROL: a WAIT, or a decision with no existing artifact, writes only the person row", svcW.tables.agent_action_ledger.length === 2 && svcW.tables.agent_action_ledger.every((r) => r.subject_type === "contact"))
+    // d — the opt-out emit names the channels; the reactor consumes them
+    const ow = await import("../lib/ai-isa/opt-out-writer")
+    const emitted: any[] = []
+    const svcO = freshDb()
+    await ow.writeOptOut(svcO as never, B, { entityType: "contact", entityId: C.base, channel: "sms", source: "inbound_sms", rawMessage: "STOP" } as never, { emit: (async (e: unknown) => { emitted.push(e) }) as never })
+    check("d: the single-channel opt-out event carries metadata.channels = the channels it suppressed", emitted.length === 1 && JSON.stringify(emitted[0]?.metadata?.channels) === JSON.stringify(["sms"]), JSON.stringify(emitted[0] ?? null))
+    const reactor = code("lib/kernel/event-reactor.ts")
+    const br = reactor.slice(reactor.indexOf("const FOLLOW_ON_EVENTS"), reactor.indexOf("const FOLLOW_ON_EVENTS") + 3200)
+    const usesMeta = (src: string) => /params\.metadata[\s\S]{0,200}channels[\s\S]{0,600}supersedeFollowOnsForPerson\([^)]*reason:\s*"opt_out_channel",\s*channel:\s*ch/.test(src) && src.indexOf("channels") < src.indexOf("lawfulChannelsForContact")
+    check("d: the reactor's follow-on branch cancels exactly the event's channels, the lawfulness re-read stays the fallback", usesMeta(br))
+    check("d POSITIVE CONTROL: the base branch (lawful re-read only) is rejected by the same finder", !usesMeta(br.replace(/\} else if \(subject\.type === "contact" && Array\.isArray[\s\S]*?\} else if \(subject\.type === "contact"\)/, '} else if (subject.type === "contact")')))
+    // e — a late reel does not land on top of its alternate
+    const ms = await import("../lib/kernel/manager-signals")
+    const handler = ms.SIGNAL_HANDLERS["campaign_orchestrator:contact_outreach_ready"]
+    const VP = randomUUID(), IV = randomUUID(), URL = "https://media.example.test/reel.mp4"
+    const altTask = { id: randomUUID(), brokerage_id: B, task_type: "next_action_follow_on", status: "completed", updated_at: ago(30), payload: { subject_type: "contact", subject_id: C.base, actor: { artifact: { table: "agent_intro_videos", id: IV } }, source_event: { type: "anniversary_triggered", at: ago(600) }, outcome: { alternate: "email" } } }
+    const svcE = freshDb({ orchestrator_tasks: [altTask], agent_intro_videos: [{ id: IV, brokerage_id: B, contact_id: C.base, video_project_id: VP }], agent_client_messages: [] })
+    const sig = (entityId: string) => ({ id: randomUUID(), entityId, entityType: "video_project", payload: { contact_id: C.base, video_url: URL, kind: "situational" } }) as never
+    const rE = await handler(sig(VP), { brokerageId: B, supabase: svcE as never })
+    check("e: the milestone's follow-on COMPLETED with an alternate → the late reel (same render) is NOT proposed", /alternate/.test(String(rE)) && svcE.tables.agent_client_messages.length === 0, String(rE))
+    const svcE2 = freshDb({ orchestrator_tasks: [{ ...altTask, payload: { ...altTask.payload, outcome: { status: "completed" } } }], agent_intro_videos: [{ id: IV, brokerage_id: B, contact_id: C.base, video_project_id: VP }], agent_client_messages: [{ id: randomUUID(), brokerage_id: B, recipient_contact_id: C.base, body: `see ${URL}`, status: "proposed" }] })
+    const rE2 = await handler(sig(VP), { brokerageId: B, supabase: svcE2 as never })
+    check("e POSITIVE CONTROL: with NO alternate the handler proceeds past the skip (to its own dedup — no model reached)", /already proposed/.test(String(rE2)), String(rE2))
+    const svcE3 = freshDb({ orchestrator_tasks: [altTask] }, { refuse: { orchestrator_tasks: "permission denied for table orchestrator_tasks" } })
+    const rE3 = await handler(sig(VP), { brokerageId: B, supabase: svcE3 as never })
+    check("e: an UNREADABLE follow-on record holds the proposal (fail closed)", /^held:/.test(String(rE3)), String(rE3))
+    // a — the direct-mail writer refuses a dead QR
+    const dm = code("app/actions/direct-mail.ts")
+    const sc = dm.slice(dm.indexOf("export async function sendCampaign("), dm.indexOf("export async function sendCampaign(") + 12000)
+    const qrGate = (src: string) => /if \(campaign\.qr_code_id\)[\s\S]{0,300}\.from\("qr_codes"\)[\s\S]{0,120}\.select\("is_active, retired_at, target_url"\)[\s\S]{0,200}\.eq\("brokerage_id", params\.brokerageId\)[\s\S]{0,200}qrErr \|\| !qr \|\| qr\.retired_at \|\| qr\.is_active === false \|\| !qr\.target_url/.test(src) && src.indexOf('from("qr_codes")') > 0 && src.indexOf('from("qr_codes")') < src.indexOf("dispatchDirectMail(")
+    check("a: sendCampaign refuses a retired / paused / destination-less QR, tenant-pinned, BEFORE any print dispatch", qrGate(sc))
+    check("a POSITIVE CONTROL: the base writer (no QR read) is rejected by the same finder", !qrGate(sc.replace(/if \(campaign\.qr_code_id\) \{[\s\S]*?Fix the QR first, then release the mail\." \}\s*\}\s*\}/, "")))
+    // c — the bundle card passes a campaign
+    const card = code("app/crm/contacts/[contactId]/components/campaign-bundle-send-card.tsx"), page = code("app/crm/contacts/[contactId]/page.tsx")
+    const passes = (src: string) => /sendCampaignBundleToContactAction\(\{ bundleId, contactId, marketingCampaignId:/.test(src)
+    check("c: the bundle screen passes the chosen campaign; the page loads the tenant's running campaigns (cookie client, tenant-pinned)", passes(card) && /from\("marketing_campaigns"\)\.select\("id, campaign_name, status"\)\.eq\("brokerage_id", brokerageId\)/.test(page) && /campaigns=\{bundleCampaigns\}/.test(page))
+    check("c POSITIVE CONTROL: the base call (no campaign) is rejected by the same finder", !passes("await sendCampaignBundleToContactAction({ bundleId, contactId })"))
+    // addendum — a paused campaign pauses its personal sends; resume releases only what the pause held
+    const CX = randomUUID(), CY = randomUUID(), at = new Date(NOW.getTime() + 86_400_000).toISOString()
+    const tk = (id: string, type: string, campaign: string, extra: Row = {}): Row => ({ id, brokerage_id: B, task_type: type, status: "pending", scheduled_for: at, attempts: 0, payload: type === "bundle_follow_on" ? { marketing_campaign_id: campaign, audience: { contact_id: C.base } } : { subject_type: "contact", subject_id: C.base, actor: { campaign_id: campaign } }, ...extra })
+    const T1 = randomUUID(), T2 = randomUUID(), T3 = randomUUID(), T4 = randomUUID(), T5 = randomUUID()
+    const svcP = freshDb({ orchestrator_tasks: [tk(T1, "bundle_follow_on", CX), tk(T2, "next_action_follow_on", CX), tk(T3, "bundle_follow_on", CY), { ...tk(T4, "bundle_follow_on", CX), brokerage_id: B2 }, tk(T5, "bundle_follow_on", CX, { status: "cancelled", payload: { marketing_campaign_id: CX, outcome: { status: "cancelled", reason: "recipient replied" } } })] }, LEDGER_UNIQUE)
+    const st = (id: string) => svcP.tables.orchestrator_tasks.find((t) => t.id === id)!
+    const p1 = await fa.holdCampaignSends(svcP as never, { brokerageId: B, campaignId: CX, action: "pause", now: NOW, eventRef: "paused:1" })
+    check("addendum: PAUSE holds exactly the campaign's queued sends (a bundle piece + a follow-on) with a resumable marker", p1.moved === 2 && st(T1).status === "cancelled" && st(T2).status === "cancelled" && st(T1).payload.campaign_pause?.campaign_id === CX && st(T1).payload.campaign_pause?.prior_scheduled_for === at, JSON.stringify(p1))
+    check("addendum CONTROL: an UNRELATED campaign's send and the SAME campaign id in ANOTHER tenant are untouched", st(T3).status === "pending" && st(T4).status === "pending")
+    const p2 = await fa.holdCampaignSends(svcP as never, { brokerageId: B, campaignId: CX, action: "pause", now: NOW, eventRef: "paused:2" })
+    check("addendum: a replayed pause moves nothing (idempotent)", p2.moved === 0)
+    const r1 = await fa.holdCampaignSends(svcP as never, { brokerageId: B, campaignId: CX, action: "resume", now: NOW, eventRef: "live:1" })
+    check("addendum: RESUME releases only what the pause held, on its original schedule; a send a reply ended stays ended", r1.moved === 2 && st(T1).status === "pending" && st(T1).scheduled_for === at && !st(T1).payload.campaign_pause && st(T5).status === "cancelled", JSON.stringify(r1))
+    check("addendum: each move is ledgered once on the campaign (pause + resume)", svcP.tables.agent_action_ledger.filter((x) => x.subject_type === "marketing_campaign" && x.subject_id === CX).length === 2)
+    const rx = code("lib/kernel/event-reactor.ts")
+    const holdWired = (src: string) => /KernelEvent\.MARKETING_CAMPAIGN_PAUSED, KernelEvent\.MARKETING_CAMPAIGN_LAUNCHED/.test(src) && /"marketing_campaign_machine"/.test(src) && /holdCampaignSends\(svc, \{ brokerageId: params\.brokerageId, campaignId: params\.entityId/.test(src)
+    check("addendum: the reactor consumes MARKETING_CAMPAIGN_PAUSED / _LAUNCHED (entity marketing_campaign_machine — transitionCampaignStatus's) into holdCampaignSends", holdWired(rx))
+    check("addendum POSITIVE CONTROL: a reactor with no such branch is rejected", !holdWired(rx.replace(/holdCampaignSends\(svc/g, "noop(svc")))
   }
 
   // ── H ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

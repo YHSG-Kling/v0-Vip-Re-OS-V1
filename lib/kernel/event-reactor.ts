@@ -1193,6 +1193,12 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         await fa.supersedeFollowOnsForPerson(svc, { brokerageId: params.brokerageId, subject, reason: "recipient_replied", now, eventRef: `${params.event}:${params.entityId}` })
       } else if (params.event === KernelEvent.CONTACT_DNC_SET) {
         await fa.supersedeFollowOnsForPerson(svc, { brokerageId: params.brokerageId, subject, reason: "opt_out_all", now, eventRef: `${params.event}:${params.entityId}` })
+      } else if (subject.type === "contact" && Array.isArray((params.metadata as { channels?: unknown } | null | undefined)?.channels) && ((params.metadata as { channels: unknown[] }).channels).length > 0) {
+        // (154H2) the opt-out writer names the channels it suppressed on the event (lib/ai-isa/opt-out-writer.ts emit metadata) —
+        // cancel exactly those; the lawfulness re-read below stays the fallback for an emitter that names none.
+        for (const ch of new Set(((params.metadata as { channels: unknown[] }).channels).map(String))) {
+          await fa.supersedeFollowOnsForPerson(svc, { brokerageId: params.brokerageId, subject, reason: "opt_out_channel", channel: ch, now, eventRef: `${params.event}:${params.entityId}` })
+        }
       } else if (subject.type === "contact") {
         const lawful = await fa.lawfulChannelsForContact(svc, { brokerageId: params.brokerageId, contactId: subject.id })
         if (lawful.ok) {
@@ -1203,6 +1209,22 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       }
     } catch (e) {
       console.error(`[event-reactor] follow-on reconcile on ${params.event} failed — the executors' own re-read still holds:`, e instanceof Error ? e.message : e)
+    }
+  }
+
+  // (154H2) A PAUSED CAMPAIGN PAUSES ITS PERSONAL SENDS (wave 154, lane 154H2 — lane 154A3 coverage row: MARKETING_CAMPAIGN_PAUSED
+  // was emitted with no consumer). The pause is the tenant's transitionCampaignStatus → transitionLifecycle (entity
+  // 'marketing_campaign_machine'); a resume is the same door to 'live' (MARKETING_CAMPAIGN_LAUNCHED — a first launch has nothing held,
+  // so it moves nothing). lib/ai-isa/followup-arbiter.ts holdCampaignSends holds / releases ONLY the queued bundle pieces and
+  // follow-ons carrying that campaign id, tenant-pinned, status-guarded, ledgered. Best-effort: each executor re-reads before it sends.
+  const CAMPAIGN_HOLD_EVENTS: string[] = [KernelEvent.MARKETING_CAMPAIGN_PAUSED, KernelEvent.MARKETING_CAMPAIGN_LAUNCHED]
+  if (params.brokerageId && params.entityId && (params.entityType === "marketing_campaign" || params.entityType === "marketing_campaign_machine") && CAMPAIGN_HOLD_EVENTS.includes(params.event)) {
+    try {
+      const { holdCampaignSends } = await import("@/lib/ai-isa/followup-arbiter")
+      const held = await holdCampaignSends(svc, { brokerageId: params.brokerageId, campaignId: params.entityId, action: params.event === KernelEvent.MARKETING_CAMPAIGN_PAUSED ? "pause" : "resume", now: new Date(), eventRef: `${params.event}:${params.entityId}:${new Date().toISOString().slice(0, 16)}` })
+      if (held.errors.length) console.error(`[event-reactor] campaign send hold on ${params.event}:`, held.errors.slice(0, 3).join("; "))
+    } catch (e) {
+      console.error(`[event-reactor] campaign send hold on ${params.event} failed — each executor's own re-read still holds:`, e instanceof Error ? e.message : e)
     }
   }
 

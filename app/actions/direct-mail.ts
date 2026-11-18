@@ -938,6 +938,22 @@ export async function sendCampaign(params: SendCampaignParams) {
       return { success: false, error: "Campaign already mailed" }
     }
 
+    // ── WAVE 154 (lane 154H2, carrying lane 154G2's request 1): A PRINTED QR MUST HAVE A LIVE DESTINATION — AT THE WRITER ──
+    // The Command Center door refused a retired / paused QR, but this writer printed whatever qr_code_id the campaign named: a
+    // retired code, a paused one, or one with no destination went to print and every scan landed nowhere. Read under THIS tenant
+    // (qr_codes columns per scripts/schema-snapshot.ts: is_active, retired_at, target_url); a refused read refuses the release.
+    if (campaign.qr_code_id) {
+      const { data: qr, error: qrErr } = await supabase
+        .from("qr_codes")
+        .select("is_active, retired_at, target_url")
+        .eq("id", campaign.qr_code_id)
+        .eq("brokerage_id", params.brokerageId)
+        .maybeSingle()
+      if (qrErr || !qr || qr.retired_at || qr.is_active === false || !qr.target_url) {
+        return { success: false, error: "The QR code this piece prints has no live destination. Fix the QR first, then release the mail." }
+      }
+    }
+
     const { data: recipients, error: recipientsError } = await supabase
       .from("direct_mail_recipients")
       .select("*")

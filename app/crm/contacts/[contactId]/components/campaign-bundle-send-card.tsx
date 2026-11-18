@@ -44,14 +44,23 @@ export interface BundleOption {
   stepCount: number
 }
 
+/** A running marketing campaign this send may belong to (wave 154, lane 154H2 — the SMS piece then carries campaign identity). */
+export interface CampaignOption {
+  id: string
+  name: string
+}
+
 export function CampaignBundleSendCard({
   contactId,
   bundles,
+  campaigns = [],
 }: {
   contactId: string
   bundles: BundleOption[]
+  campaigns?: CampaignOption[]
 }) {
   const [bundleId, setBundleId] = useState<string>("")
+  const [campaignId, setCampaignId] = useState<string>("none")
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [outcomes, setOutcomes] = useState<Array<{ channel: string; success: boolean; error?: string }> | null>(null)
@@ -68,7 +77,8 @@ export function CampaignBundleSendCard({
       setOutcomes(null)
       setSentBundleName(null)
       setFollowOn(null)
-      const result = await sendCampaignBundleToContactAction({ bundleId, contactId })
+      // The campaign is optional; the action verifies it against the SESSION tenant and drops an unverifiable id (sent unattributed).
+      const result = await sendCampaignBundleToContactAction({ bundleId, contactId, marketingCampaignId: campaignId !== "none" ? campaignId : null })
       // The dispatcher reports per-channel outcomes and an overall ok that is
       // "at least one channel succeeded". Both halves are shown: claiming a
       // send for a piece the compliance gate refused is exactly the failure
@@ -116,6 +126,21 @@ export function CampaignBundleSendCard({
                   ))}
                 </SelectContent>
               </Select>
+              {campaigns.length > 0 && (
+                <Select value={campaignId} onValueChange={setCampaignId}>
+                  <SelectTrigger className="max-w-72" aria-label="Campaign this send belongs to">
+                    <SelectValue placeholder="Part of a campaign (optional)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Not part of a campaign</SelectItem>
+                    {campaigns.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
               <Button size="sm" onClick={send} disabled={isPending}>
                 {isPending ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" /> : null}
                 Send bundle

@@ -328,6 +328,9 @@ export async function writeOptOut(supabase: Svc, brokerageId: string, params: Op
     brokerageId,
     entityType,
     entityId,
+    // wave 154 (lane 154H2, lane 154H request 3): the channels this opt-out suppressed ride the event, so the reactor's follow-on
+    // branch (lib/kernel/event-reactor.ts "(154H) FOLLOW-ONS ANSWER TO REAL EVENTS") cancels exactly those without a re-read.
+    metadata: { channels: channelsSuppressed },
   })
 
   return { success: true, channelsSuppressed, globalDNC, listSynced, enrollmentsEnded }

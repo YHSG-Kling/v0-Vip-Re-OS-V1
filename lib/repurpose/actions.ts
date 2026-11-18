@@ -23,7 +23,7 @@ import { createPodcastEpisode, generatePodcastAudio } from "@/app/actions/podcas
 import { transcribeFromUrl } from "@/lib/repurpose/transcribe"
 import { DISTRIBUTABLE_PLATFORMS, extractHashtags, assessRefurbishSource } from "@/lib/repurpose/shared"
 import { buildRefurbishIdeaBrief, labelCompetitorEvidence, carriesSourceMedia, refurbishPublicationVerdict, refurbishRetestDecision, refurbishTriggerVerdict, type LocalFact, type RefurbishIdeaBrief } from "@/lib/repurpose/refurbish-idea"
-import { draftRefurbishOutput, abstractIdeaFromUntrusted, refurbishExcludeDefault } from "@/lib/repurpose/refurbish-run"
+import { draftRefurbishOutput, abstractIdeaFromUntrusted, refurbishExcludeDefault, loadRefurbishVoiceFor } from "@/lib/repurpose/refurbish-run"
 import type {
   SourceType,
   OutputFormat,
@@ -116,16 +116,9 @@ async function loadRefurbishVoice(
   userId: string,
   audiencePersona: string | null = null,
 ): Promise<{ voiceBriefText: string; voiceVersion: string; themFirstText: string }> {
-  const [{ loadSenderVoiceBrief, renderSenderVoiceBrief }, { themFirstDraftBrief, renderThemFirstDraftBrief }] = await Promise.all([
-    import("@/lib/kernel/brand-voice"),
-    import("@/lib/marketing/them-first-draft-brief"),
-  ])
-  const brief = await loadSenderVoiceBrief(supabase as never, { brokerageId, agentUserId: userId })
-  return {
-    voiceBriefText: renderSenderVoiceBrief(brief),
-    voiceVersion: brief.version,
-    themFirstText: renderThemFirstDraftBrief(themFirstDraftBrief({ personas: audiencePersona, source: "refurbish broadcast audience" })),
-  }
+  // TOMBSTONE (wave 154, lane 154H2 — §1 one canonical path): the body moved to lib/repurpose/refurbish-run.ts loadRefurbishVoiceFor
+  // so the sessionless topic creative step loads the SAME voice; this session wrapper only hands it the cookie client.
+  return loadRefurbishVoiceFor(supabase, brokerageId, userId, audiencePersona)
 }
 
 /** The competitor post behind an idea-only refurbish, re-read under the SESSION tenant (a forged id reads nothing). */

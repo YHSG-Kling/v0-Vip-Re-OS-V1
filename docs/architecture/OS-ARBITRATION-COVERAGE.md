@@ -5,7 +5,7 @@
 
 ## 1. Totals (numerator / denominator)
 
-Rows: **3190** — working **1592** · partial **1305** · missing **292** · owner-held **1**. Consequential rows: 2711.
+Rows: **3190** — working **1593** · partial **1305** · missing **291** · owner-held **1**. Consequential rows: 2711.
 
 | population | rows / scanned |
 |---|---|
@@ -30,22 +30,22 @@ Rows: **3190** — working **1592** · partial **1305** · missing **292** · ow
 | capability | 11 | 11 | 0 | 0 |
 | cron | 220 | 109 | 111 | 0 |
 | http | 123 | 80 | 38 | 5 |
-| kernel_event | 456 | 93 | 169 | 193 |
+| kernel_event | 456 | 94 | 169 | 192 |
 | manager_signal | 326 | 326 | 0 | 0 |
 | orchestrator_event | 24 | 4 | 4 | 16 |
 | provider_egress | 6 | 6 | 0 | 0 |
 | server_action | 1937 | 895 | 964 | 78 |
 | webhook | 28 | 25 | 3 | 0 |
 
-Missing links across all rows: evidence 1158 · decision 327 · trigger 207 · worker 193 · owner 131 · readback 12.
+Missing links across all rows: evidence 1158 · decision 327 · trigger 207 · worker 192 · owner 131 · readback 12.
 
 ## 2. Kernel-to-customer map (existing components, by contract step)
 
 | contract step (A1) | existing component (live code) |
 |---|---|
 | OBSERVE (triggers) | `dispatchDueCrons` @ lib/kernel/cron-dispatch.ts:427 · `emitKernelEvent` @ lib/kernel/emit.ts:155 · `publishManagerSignal` @ lib/kernel/manager-signals.ts:71 · `runIngressReconciliation` @ lib/kernel/ingress-reconciliation.ts:288 |
-| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3450 · `authorityAllows` @ lib/voice/tool-registry.ts:869 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:62 |
-| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3435 · `requestDelegation` @ lib/kernel/manager-delegation.ts:399 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
+| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3451 · `authorityAllows` @ lib/voice/tool-registry.ts:869 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:62 |
+| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3436 · `requestDelegation` @ lib/kernel/manager-delegation.ts:399 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
 | CHECK AUTHORITY / POLICY / BUDGET | `isToolAllowedAtAuthority` @ lib/ai-isa/persona-tool-policy.ts:616 · `autonomyDecision` @ lib/managers/autonomy-gate.ts:91 · `approverFor` @ lib/kernel/approval-authority.ts:117 |
 | COORDINATE OR HOLD | `arbitratePlannedTouch` @ lib/ai-isa/followup-arbiter.ts:1857 · `evaluateApprovalSla` @ lib/kernel/approval-sla.ts:17 |
 | EXECUTE THROUGH ONE WRITER / EGRESS | `dispatchEmail` @ lib/providers/dispatch.ts:331 · `dispatchSms` @ lib/providers/dispatch.ts:332 · `callConnector` @ lib/agentic-os/connector-gateway.ts:246 |
@@ -61,7 +61,7 @@ Missing links across all rows: evidence 1158 · decision 327 · trigger 207 · w
 | P3 command center · NL / voice · tasks · approvals | 674 | 444 | 184 | 46 |
 | P4 raw acquisition · RawData · Raw Lead · Lead | 477 | 350 | 83 | 44 |
 | P5 prospects · contacts · portal · conversation | 915 | 570 | 285 | 60 |
-| P6 marketing · content · channels · ads | 956 | 539 | 379 | 38 |
+| P6 marketing · content · channels · ads | 956 | 540 | 379 | 37 |
 | P7 listings · shopping agent · MLS / IDX | 514 | 327 | 166 | 21 |
 | P8 offers · transactions · documents · closing | 901 | 547 | 276 | 78 |
 | P9 commission · settlement · brokerage finance | 475 | 362 | 90 | 22 |
@@ -177,10 +177,10 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | 16 | `server_action:app/actions/onboarding/tech-stack.ts#getMaskedCredentials` | owner, evidence | app/actions/onboarding/tech-stack.ts:384 | add the registry row (CRON_MANAGER / TABLE_MANAGER / CAPABILITY_MANAGER / VOICE_TOOL_MANAGER) — integrator |
 | 17 | `cron:/api/cron/bundle-attribution-rollup` | decision, evidence | app/api/cron/bundle-attribution-rollup/route.ts:106 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
 | 18 | `http:/api/open-house/register` | decision | app/api/open-house/register/route.ts:20 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 19 | `kernel_event:ai_feedback_received` | decision, evidence | lib/kernel/event-reactor.ts:4281 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 20 | `kernel_event:referral_received` | decision, evidence | lib/kernel/event-reactor.ts:1962 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 21 | `kernel_event:refinance_opportunity` | decision, evidence | lib/kernel/event-reactor.ts:4372 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 22 | `kernel_event:subscription_created` | decision, evidence | lib/kernel/event-reactor.ts:1726 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 19 | `kernel_event:ai_feedback_received` | decision, evidence | lib/kernel/event-reactor.ts:4303 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 20 | `kernel_event:referral_received` | decision, evidence | lib/kernel/event-reactor.ts:1984 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 21 | `kernel_event:refinance_opportunity` | decision, evidence | lib/kernel/event-reactor.ts:4394 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 22 | `kernel_event:subscription_created` | decision, evidence | lib/kernel/event-reactor.ts:1748 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
 | 23 | `orchestrator_event:credit.target_reached` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:226 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
 | 24 | `orchestrator_event:listing.live` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:207 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
 | 25 | `orchestrator_event:listing.price_reduction` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:208 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
@@ -196,22 +196,22 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | 35 | `http:/api/chat/stream` | evidence | app/api/chat/stream/route.ts:62 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
 | 36 | `http:/api/embed/session` | decision | app/api/embed/session/route.ts:57 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
 | 37 | `http:/api/onboarding/brand/generate-sample` | evidence | app/api/onboarding/brand/generate-sample/route.ts:17 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 38 | `kernel_event:buyer_offer_draft_started` | decision, evidence | lib/kernel/event-reactor.ts:2998 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 39 | `kernel_event:buyer_offer_submit_requested` | decision, evidence | lib/kernel/event-reactor.ts:3035 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 38 | `kernel_event:buyer_offer_draft_started` | decision, evidence | lib/kernel/event-reactor.ts:3020 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 39 | `kernel_event:buyer_offer_submit_requested` | decision, evidence | lib/kernel/event-reactor.ts:3057 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
 | 40 | `kernel_event:deal_at_risk_detected` | decision, evidence | lib/kernel/event-reactor.ts:877 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 41 | `kernel_event:deal_health_changed` | decision, evidence | lib/kernel/event-reactor.ts:1843 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 41 | `kernel_event:deal_health_changed` | decision, evidence | lib/kernel/event-reactor.ts:1865 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
 | 42 | `kernel_event:deal_health_score_updated` | decision, evidence | lib/kernel/event-reactor.ts:860 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 43 | `kernel_event:esign_envelope_requested` | decision, evidence | lib/kernel/event-reactor.ts:2203 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 43 | `kernel_event:esign_envelope_requested` | decision, evidence | lib/kernel/event-reactor.ts:2225 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
 | 44 | `kernel_event:offer_accepted` | decision, evidence | lib/kernel/event-fanout.ts:210 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 45 | `kernel_event:offer_ai_extracted` | decision, evidence | lib/kernel/event-reactor.ts:3842 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 46 | `kernel_event:offer_comparison_generated` | decision, evidence | lib/kernel/event-reactor.ts:3818 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 47 | `kernel_event:offer_os_ai_analyzed` | decision, evidence | lib/kernel/event-reactor.ts:4693 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 48 | `kernel_event:offer_os_counter_responded` | decision, evidence | lib/kernel/event-reactor.ts:4737 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 49 | `kernel_event:offer_os_countered` | decision, evidence | lib/kernel/event-reactor.ts:4724 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 50 | `kernel_event:offer_os_rejected` | decision, evidence | lib/kernel/event-reactor.ts:4750 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 51 | `kernel_event:offer_os_withdrawn` | decision, evidence | lib/kernel/event-reactor.ts:4763 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 52 | `kernel_event:system_sync_completed` | trigger, decision, evidence | lib/kernel/event-reactor.ts:2242 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 53 | `kernel_event:vendor_assigned_to_transaction` | decision, evidence | lib/kernel/event-reactor.ts:2010 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 45 | `kernel_event:offer_ai_extracted` | decision, evidence | lib/kernel/event-reactor.ts:3864 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 46 | `kernel_event:offer_comparison_generated` | decision, evidence | lib/kernel/event-reactor.ts:3840 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 47 | `kernel_event:offer_os_ai_analyzed` | decision, evidence | lib/kernel/event-reactor.ts:4715 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 48 | `kernel_event:offer_os_counter_responded` | decision, evidence | lib/kernel/event-reactor.ts:4759 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 49 | `kernel_event:offer_os_countered` | decision, evidence | lib/kernel/event-reactor.ts:4746 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 50 | `kernel_event:offer_os_rejected` | decision, evidence | lib/kernel/event-reactor.ts:4772 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 51 | `kernel_event:offer_os_withdrawn` | decision, evidence | lib/kernel/event-reactor.ts:4785 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 52 | `kernel_event:system_sync_completed` | trigger, decision, evidence | lib/kernel/event-reactor.ts:2264 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 53 | `kernel_event:vendor_assigned_to_transaction` | decision, evidence | lib/kernel/event-reactor.ts:2032 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
 | 54 | `orchestrator_event:agent.delegated_to_ai` | owner, evidence | lib/orchestrator/internal.ts:242 | add the registry row (CRON_MANAGER / TABLE_MANAGER / CAPABILITY_MANAGER / VOICE_TOOL_MANAGER) — integrator |
 | 55 | `server_action:app/actions/ai-agent-onboarding.ts#generateWelcomeMessage` | evidence | app/actions/ai-agent-onboarding.ts:201 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
 | 56 | `server_action:app/actions/ai-chat.ts#sendChatMessage` | evidence | app/actions/ai-chat.ts:235 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
@@ -237,7 +237,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `http:/api/embed/session/end` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/embed/session/end/route.ts:30 |
 | `http:/api/v1/[resource]` | missing | trigger | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ lib/kerne | app/api/v1/[resource]/route.ts:11 |
 | `kernel_event:billing_invoice_generated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:subscription_created` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1726 |
+| `kernel_event:subscription_created` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1748 |
 | `kernel_event:subscription_reminder_sent` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:usage_threshold_reached` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:webhook_subscription_auto_disabled` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -302,7 +302,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/vendors/vendor-plan-subscriptions.ts#enrolVendorInPackageAction` | partial | evidence | data_steward | session actor (getAgentContext @ lib/platform/acting-context.ts:214) | app/actions/vendors/vendor-plan-subscriptions.ts:250 |
 | `server_action:app/actions/voice-assistant/core/parse-intent.ts#parseIntent` | partial | evidence | cron_manager | session actor (getAgentContext @ app/actions/voice-assistant/core/pars | app/actions/voice-assistant/core/parse-intent.ts:70 |
 | `server_action:app/actions/voice-tenancy.ts#setTwilioByoCredsAction` | partial | evidence | data_steward | session actor (getAgentContext @ lib/platform/acting-context.ts:143) | app/actions/voice-tenancy.ts:107 |
-| `server_action:lib/repurpose/actions.ts#createRepurposePipeline` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ lib/repur | lib/repurpose/actions.ts:327 |
+| `server_action:lib/repurpose/actions.ts#createRepurposePipeline` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ lib/repur | lib/repurpose/actions.ts:320 |
 | `server_action:lib/vendor-tracking.ts#trackVendorUsage` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ lib/vendo | lib/vendor-tracking.ts:5 |
 
 ### P2 tenant provisioning · seats · offices · websites — 71 not working
@@ -321,8 +321,8 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:custom_domain_connected` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:custom_domain_error` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:custom_domain_verified` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:onboarding_completed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1360 |
-| `kernel_event:onboarding_stalled` | partial | decision, evidence | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2736 |
+| `kernel_event:onboarding_completed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1382 |
+| `kernel_event:onboarding_stalled` | partial | decision, evidence | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2758 |
 | `kernel_event:team_heatmap_snapshot_taken` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:team_rollup_completed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:user_domain_records_created` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -334,7 +334,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:user_onboarding_started` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:user_onboarding_step_completed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:user_provisioned` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:website_visitor_identified` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1555 |
+| `kernel_event:website_visitor_identified` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1577 |
 | `server_action:app/actions/admin/agent-360.ts#setAgentOnboardingStatusAction` | partial | evidence | recruiting_manager | session actor (auth.getUser @ app/actions/admin/agent-360.ts:481) | app/actions/admin/agent-360.ts:549 |
 | `server_action:app/actions/admin/invitations.ts#revokeInvitationAction` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/admin/invitations.ts:26) | app/actions/admin/invitations.ts:138 |
 | `server_action:app/actions/admin/locations.ts#createLocationAction` | partial | evidence | data_steward | session actor (requireAdmin @ app/actions/admin/locations.ts:127) | app/actions/admin/locations.ts:115 |
@@ -394,25 +394,25 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `assistant_tool:standup_action` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:708 |
 | `http:/api/voice/end-call` | partial | owner | unresolved: it writes only carriers / unstewarded tables (vo | session actor (createClient() from "@/lib/supabase/server" @ app/api/v | app/api/voice/end-call/route.ts:13 |
 | `http:/api/voice/twilio/recording` | partial | owner, decision | unresolved: it writes only carriers / unstewarded tables (vo | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/voice/twilio/recording/route.ts:38 |
-| `kernel_event:agent_task_dispatched` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4065 |
+| `kernel_event:agent_task_dispatched` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4087 |
 | `kernel_event:manager_delegation_requested` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:manager_delegation_state_changed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:mission_created` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:mission_state_changed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:setup_assistant_escalated` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2713 |
-| `kernel_event:setup_assistant_query_made` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3960 |
-| `kernel_event:task_completed` | partial | decision, evidence | finance_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1574 |
-| `kernel_event:task_due` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1452 |
+| `kernel_event:setup_assistant_escalated` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2735 |
+| `kernel_event:setup_assistant_query_made` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3982 |
+| `kernel_event:task_completed` | partial | decision, evidence | finance_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1596 |
+| `kernel_event:task_due` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1474 |
 | `kernel_event:voice_call_completed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_call_initiated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_call_missed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:voice_clone_default_set` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2580 |
-| `kernel_event:voice_clone_profile_created` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2546 |
-| `kernel_event:voice_clone_ready` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2381 |
+| `kernel_event:voice_clone_default_set` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2602 |
+| `kernel_event:voice_clone_profile_created` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2568 |
+| `kernel_event:voice_clone_ready` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2403 |
 | `kernel_event:voice_clone_sample_uploaded` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_clone_training_completed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_clone_training_failed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:voice_clone_training_started` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2563 |
+| `kernel_event:voice_clone_training_started` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2585 |
 | `kernel_event:voice_command_executed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_command_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_command_received` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -457,32 +457,32 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `cron:/api/cron/platform-lead-distribution` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/platform-lead-distribution/route.ts:47 |
 | `http:/api/leads/raw` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/api/l | app/api/leads/raw/route.ts:47 |
 | `kernel_event:ai_isa_call_completed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:ai_isa_handoff_to_agent` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2270 |
+| `kernel_event:ai_isa_handoff_to_agent` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2292 |
 | `kernel_event:contact_captured` | partial | decision | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/campaign-sequences/first-touch-coordination.ts:80 |
 | `kernel_event:contact_dedup_match_found` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:contact_dedup_merged` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1689 |
+| `kernel_event:contact_dedup_merged` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1711 |
 | `kernel_event:contact_enriched` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_enrichment_completed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:contact_enrichment_failed` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2872 |
-| `kernel_event:contact_enrichment_queued` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3149 |
+| `kernel_event:contact_enrichment_failed` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2894 |
+| `kernel_event:contact_enrichment_queued` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3171 |
 | `kernel_event:contact_suppression_applied` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_suppression_cleared` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:enrichment_completed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:enrichment_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:ghost_lead_detected` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3908 |
-| `kernel_event:isa_appointment_scheduled` | partial | decision, evidence | shopping_agent | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1311 |
-| `kernel_event:isa_max_touches_reached` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3256 |
-| `kernel_event:isa_outreach_paused` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2894 |
-| `kernel_event:isa_outreach_sent` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3182 |
-| `kernel_event:isa_qualification_started` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3165 |
-| `kernel_event:isa_qualified_lead` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3224 |
-| `kernel_event:lead_assigned` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1993 |
-| `kernel_event:lead_assignment_failed` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1655 |
+| `kernel_event:ghost_lead_detected` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3930 |
+| `kernel_event:isa_appointment_scheduled` | partial | decision, evidence | shopping_agent | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1333 |
+| `kernel_event:isa_max_touches_reached` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3278 |
+| `kernel_event:isa_outreach_paused` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2916 |
+| `kernel_event:isa_outreach_sent` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3204 |
+| `kernel_event:isa_qualification_started` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3187 |
+| `kernel_event:isa_qualified_lead` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3246 |
+| `kernel_event:lead_assigned` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2015 |
+| `kernel_event:lead_assignment_failed` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1677 |
 | `kernel_event:lead_captured` | partial | evidence | ai_isa | ai_isa under resource/spend:checkVendorBudget @ lib/enrichment/lead-en | lib/kernel/event-reactor.ts:473 |
-| `kernel_event:lead_converted_to_contact` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3890 |
-| `kernel_event:lead_import_completed` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1672 |
-| `kernel_event:lead_ready_for_assignment` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2059 |
-| `kernel_event:lead_scored` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1624 |
+| `kernel_event:lead_converted_to_contact` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3912 |
+| `kernel_event:lead_import_completed` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1694 |
+| `kernel_event:lead_ready_for_assignment` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2081 |
+| `kernel_event:lead_scored` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1646 |
 | `kernel_event:lead_sla_breached` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:928 |
 | `kernel_event:lead_tagged_hot` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:raw_lead_viability_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -504,7 +504,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:scraping_cron_completed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:scraping_cron_failed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:scraping_cron_started` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:stale_lead_alert` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2113 |
+| `kernel_event:stale_lead_alert` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2135 |
 | `kernel_event:unknown_sender_identified_as_lead` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `orchestrator_event:lead.created` | missing | trigger | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:199 |
 | `orchestrator_event:lead.engaged` | missing | trigger, worker | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:202 |
@@ -560,30 +560,30 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:buyer_search_configured` | partial | evidence | data_steward | data_steward under authority:selectToolsForPersona @ lib/kernel/missio | lib/kernel/event-reactor.ts:234 |
 | `kernel_event:buyer_search_executed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:buyer_state_changed` | partial | evidence | data_steward | data_steward under authority:selectToolsForPersona @ lib/kernel/missio | lib/kernel/event-reactor.ts:232 |
-| `kernel_event:buyer_under_contract` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1887 |
-| `kernel_event:client_portal_message_sent` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4460 |
+| `kernel_event:buyer_under_contract` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1909 |
+| `kernel_event:client_portal_message_sent` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4482 |
 | `kernel_event:contact_agent_notified` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_archived` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_channel_opt_out` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_consented_intake` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_followup_draft_generated` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_merged` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:contact_scored` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1639 |
+| `kernel_event:contact_scored` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1661 |
 | `kernel_event:contact_source_attribution_set` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_updated` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:form_draft_saved` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:home_value_contact_created` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2030 |
-| `kernel_event:message_created` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4675 |
-| `kernel_event:message_needs_response` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1338 |
-| `kernel_event:portal_accessed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4402 |
-| `kernel_event:portal_education_viewed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4511 |
-| `kernel_event:portal_module_viewed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4436 |
+| `kernel_event:home_value_contact_created` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2052 |
+| `kernel_event:message_created` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4697 |
+| `kernel_event:message_needs_response` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1360 |
+| `kernel_event:portal_accessed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4424 |
+| `kernel_event:portal_education_viewed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4533 |
+| `kernel_event:portal_module_viewed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4458 |
 | `kernel_event:portal_view_determined` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:price_alert_triggered` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2131 |
+| `kernel_event:price_alert_triggered` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2153 |
 | `kernel_event:search_alert_triggered` | missing | trigger | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-fanout.ts:528 |
 | `kernel_event:seller_declined` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:showing_request_sent` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:showing_requested` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2184 |
+| `kernel_event:showing_requested` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2206 |
 | `kernel_event:sms_send_requested` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:territory_alert_triggered` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:tour_completed` | partial | evidence | campaign_orchestrator | campaign_orchestrator under resource/spend:logAIUsage @ lib/ai/models. | lib/kernel/event-fanout.ts:553 |
@@ -620,7 +620,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/buyer-move.ts#setServiceModeAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/buyer-move.ts:106 |
 | … 57 more in the JSON | | | | | |
 
-### P6 marketing · content · channels · ads — 298 not working
+### P6 marketing · content · channels · ads — 297 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
@@ -665,46 +665,46 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:ad_campaign_created` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:ad_campaign_launched` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:agent_work_anniversary` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:blog_post_generated` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3466 |
-| `kernel_event:blog_post_published` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3678 |
+| `kernel_event:blog_post_generated` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3488 |
+| `kernel_event:blog_post_published` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3700 |
 | `kernel_event:campaign_roi_updated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1001 |
-| `kernel_event:competitor_content_alerted` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3449 |
-| `kernel_event:content_performance_predicted` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3663 |
-| `kernel_event:content_repurposed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2423 |
-| `kernel_event:direct_mail_campaign_created` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3711 |
-| `kernel_event:direct_mail_sent` | partial | decision, evidence | finance_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3538 |
-| `kernel_event:email_campaign_created` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3521 |
-| `kernel_event:email_campaign_sent` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3694 |
+| `kernel_event:competitor_content_alerted` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3471 |
+| `kernel_event:content_performance_predicted` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3685 |
+| `kernel_event:content_repurposed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2445 |
+| `kernel_event:direct_mail_campaign_created` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3733 |
+| `kernel_event:direct_mail_sent` | partial | decision, evidence | finance_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3560 |
+| `kernel_event:email_campaign_created` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3543 |
+| `kernel_event:email_campaign_sent` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3716 |
 | `kernel_event:lifetime_customer` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:lifetime_customer_touchpoint_sent` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:lifetime_education_delivered` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:market_data_refreshed` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4140 |
-| `kernel_event:market_insight_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4122 |
+| `kernel_event:market_data_refreshed` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4162 |
+| `kernel_event:market_insight_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4144 |
 | `kernel_event:marketing_campaign_approved` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:marketing_campaign_created` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3369 |
-| `kernel_event:marketing_campaign_ended` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2226 |
-| `kernel_event:marketing_campaign_launched` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3387 |
-| `kernel_event:marketing_campaign_paused` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:newsletter_scheduled` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2677 |
-| `kernel_event:newsletter_send_deferred` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3488 |
-| `kernel_event:newsletter_sent` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1710 |
-| `kernel_event:omnipresence_pipeline_completed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2444 |
-| `kernel_event:omnipresence_pipeline_started` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3727 |
-| `kernel_event:podcast_episode_distributed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2655 |
-| `kernel_event:podcast_episode_failed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2487 |
-| `kernel_event:podcast_episode_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2467 |
+| `kernel_event:marketing_campaign_created` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3391 |
+| `kernel_event:marketing_campaign_ended` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2248 |
+| `kernel_event:marketing_campaign_launched` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3409 |
+| `kernel_event:newsletter_scheduled` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2699 |
+| `kernel_event:newsletter_send_deferred` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3510 |
+| `kernel_event:newsletter_sent` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1732 |
+| `kernel_event:omnipresence_pipeline_completed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2466 |
+| `kernel_event:omnipresence_pipeline_started` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3749 |
+| `kernel_event:podcast_episode_distributed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2677 |
+| `kernel_event:podcast_episode_failed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2509 |
+| `kernel_event:podcast_episode_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2489 |
 | `kernel_event:portal_lifetime_section_viewed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:qr_attached_to_asset` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3743 |
-| `kernel_event:qr_scan_received` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3273 |
+| `kernel_event:qr_attached_to_asset` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3765 |
+| `kernel_event:qr_scan_received` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3295 |
 | `kernel_event:recruiting_roi_calculated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:social_post_failed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1084 |
-| `kernel_event:social_post_published` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3647 |
-| `kernel_event:social_post_scheduled` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3631 |
-| `kernel_event:social_post_shared_by_agent` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3431 |
-| `kernel_event:training_video_completed` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3777 |
-| `kernel_event:training_video_started` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3760 |
-| `kernel_event:video_generation_completed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3360 |
-| … 218 more in the JSON | | | | | |
+| `kernel_event:social_post_published` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3669 |
+| `kernel_event:social_post_scheduled` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3653 |
+| `kernel_event:social_post_shared_by_agent` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3453 |
+| `kernel_event:training_video_completed` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3799 |
+| `kernel_event:training_video_started` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3782 |
+| `kernel_event:video_generation_completed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3382 |
+| `kernel_event:video_generation_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
+| … 217 more in the JSON | | | | | |
 
 ### P7 listings · shopping agent · MLS / IDX — 153 not working
 
@@ -725,22 +725,22 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `http:/api/internal/remotion/render-composition` | partial | decision | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/internal/remotion/render-composition/route.ts:80 |
 | `http:/api/open-house/register` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/open-house/register/route.ts:20 |
 | `kernel_event:buyer_property_action_recorded` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:cma_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1943 |
-| `kernel_event:listing_agreement_initiated` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2149 |
-| `kernel_event:listing_archived` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1593 |
+| `kernel_event:cma_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1965 |
+| `kernel_event:listing_agreement_initiated` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2171 |
+| `kernel_event:listing_archived` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1615 |
 | `kernel_event:listing_at_risk_detected` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:911 |
 | `kernel_event:listing_health_score_updated` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:894 |
 | `kernel_event:listing_mls_live_date_changed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-fanout.ts:244 |
 | `kernel_event:listing_stage_transition_failed` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1143 |
-| `kernel_event:listing_tier_assigned` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3555 |
-| `kernel_event:listing_unarchived` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1606 |
+| `kernel_event:listing_tier_assigned` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3577 |
+| `kernel_event:listing_unarchived` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1628 |
 | `kernel_event:open_house_attendee_created` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:open_house_follow_up_queued` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:open_house_marketing_started` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2782 |
+| `kernel_event:open_house_marketing_started` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2804 |
 | `kernel_event:property_alert_created` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:property_alert_paused` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:property_recommended` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:vendor_assigned_to_listing` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4607 |
+| `kernel_event:vendor_assigned_to_listing` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4629 |
 | `orchestrator_event:listing.live` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:207 |
 | `orchestrator_event:listing.price_reduction` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:208 |
 | `orchestrator_event:listing.signed` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:206 |
@@ -822,38 +822,38 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `http:/api/workflow/buyer-intake/upload` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/workflow/buyer-intake/upload/route.ts:37 |
 | `kernel_event:brand_compliance_failed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:brand_compliance_passed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:buyer_offer_draft_started` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2998 |
+| `kernel_event:buyer_offer_draft_started` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3020 |
 | `kernel_event:buyer_offer_eligible` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:buyer_offer_submit_requested` | partial | decision, evidence | shopping_agent | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3035 |
+| `kernel_event:buyer_offer_submit_requested` | partial | decision, evidence | shopping_agent | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3057 |
 | `kernel_event:buyer_offer_submitted` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:deal_at_risk_detected` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:877 |
-| `kernel_event:deal_health_changed` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1843 |
+| `kernel_event:deal_health_changed` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1865 |
 | `kernel_event:deal_health_score_updated` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:860 |
 | `kernel_event:deal_on_hold` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:document_received` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:document_uploaded` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:esign_envelope_requested` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2203 |
+| `kernel_event:esign_envelope_requested` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2225 |
 | `kernel_event:esign_signed_completed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:lender_portal_user_invited` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:offer_accepted` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-fanout.ts:210 |
-| `kernel_event:offer_ai_extracted` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3842 |
-| `kernel_event:offer_comparison_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3818 |
+| `kernel_event:offer_ai_extracted` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3864 |
+| `kernel_event:offer_comparison_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3840 |
 | `kernel_event:offer_eligible` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:offer_os_ai_analyzed` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4693 |
-| `kernel_event:offer_os_counter_responded` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4737 |
-| `kernel_event:offer_os_countered` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4724 |
+| `kernel_event:offer_os_ai_analyzed` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4715 |
+| `kernel_event:offer_os_counter_responded` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4759 |
+| `kernel_event:offer_os_countered` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4746 |
 | `kernel_event:offer_os_created` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:offer_os_draft_started` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:offer_os_outcome_recorded` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:offer_os_rejected` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4750 |
+| `kernel_event:offer_os_rejected` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4772 |
 | `kernel_event:offer_os_sent_for_esign` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:offer_os_withdrawn` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4763 |
+| `kernel_event:offer_os_withdrawn` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4785 |
 | `kernel_event:post_closing_plan_generated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:title_portal_user_invited` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:transaction_closed` | partial | decision | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/gamification/lifecycle-awards.ts:182 |
 | `kernel_event:transaction_compliance_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:transaction_compliance_passed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:vendor_assigned_to_transaction` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2010 |
+| `kernel_event:vendor_assigned_to_transaction` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2032 |
 | `orchestrator_event:listing.offer_received` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:209 |
 | `orchestrator_event:transaction.close_approaching` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:218 |
 | `orchestrator_event:transaction.closed` | missing | trigger | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:222 |
@@ -892,7 +892,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:accounting_push_completed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:accounting_push_requested` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:accounting_sync_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:ai_feedback_received` | partial | decision, evidence | cron_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4281 |
+| `kernel_event:ai_feedback_received` | partial | decision, evidence | cron_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4303 |
 | `kernel_event:brokerage_pl_updated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:buyer_financially_verified` | partial | evidence | data_steward | data_steward under authority:selectToolsForPersona @ lib/kernel/missio | lib/kernel/event-reactor.ts:233 |
 | `kernel_event:cda_generated` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -907,8 +907,8 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:referral_converted` | owner-held | decision | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/gamification/lifecycle-awards.ts:186 |
 | `kernel_event:referral_created` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:referral_partner_created` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:referral_received` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1962 |
-| `kernel_event:refinance_opportunity` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4372 |
+| `kernel_event:referral_received` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1984 |
+| `kernel_event:refinance_opportunity` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4394 |
 | `orchestrator_event:credit.partner_referred` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:227 |
 | `server_action:app/actions/academy.ts#addTemplateFeedback` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/academy.ts:241) | app/actions/academy.ts:234 |
 | `server_action:app/actions/accounting-sync.ts#clearResolvedErrors` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/accounting-sync.ts:593) | app/actions/accounting-sync.ts:590 |
@@ -1009,14 +1009,14 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `http:/api/voice/twilio/whisper` | partial | owner, decision | unresolved: it writes only carriers / unstewarded tables (vo | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/voice/twilio/whisper/route.ts:23 |
 | `http:/api/workflow/trigger` | missing | trigger, decision | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/workflow/trigger/route.ts:71 |
 | `kernel_event:appointment_no_show` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1121 |
-| `kernel_event:client_education_delivered` | partial | decision, evidence | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4542 |
+| `kernel_event:client_education_delivered` | partial | decision, evidence | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4564 |
 | `kernel_event:coaching_report_generated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:competency_improved` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:cron_completed_success` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4334 |
-| `kernel_event:cron_failed` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1769 |
+| `kernel_event:cron_completed_success` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4356 |
+| `kernel_event:cron_failed` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1791 |
 | `kernel_event:cron_started` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:gamification_badge_awarded` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4212 |
-| `kernel_event:neighborhood_report_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2324 |
+| `kernel_event:gamification_badge_awarded` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4234 |
+| `kernel_event:neighborhood_report_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2346 |
 | `kernel_event:recruiting_territory_scored` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:report_emailed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:report_exported_csv` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |

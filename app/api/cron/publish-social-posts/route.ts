@@ -145,6 +145,19 @@ export async function GET(request: Request) {
         continue
       }
 
+      // Step 0b — WAVE 154 (lane 154H2, directive H10.7): A TOPIC-BORN POST IS NEVER PUBLISHED LATE. A post written from a trending
+      // pool topic (lib/repurpose/refurbish-run.ts stamps post_brief.source 'topic_refurbish' + topic_expires_at) whose freshness window
+      // ended while it waited for approval is CLOSED (cancelled, with the reason) — never posted as stale "breaking" content.
+      const topicBrief = (post as { post_brief?: unknown }).post_brief as { source?: string; topic_expires_at?: string | null } | null
+      if (topicBrief && typeof topicBrief === "object" && topicBrief.source === "topic_refurbish" && !(Date.parse(String(topicBrief.topic_expires_at ?? "")) > now.getTime())) {
+        const { error: closeErr } = await supabase.from("social_posts")
+          .update({ status: "cancelled", error_message: `closed: the topic's freshness window ended (${topicBrief.topic_expires_at ?? "no expiry on record"}) before publication — never published late`, updated_at: new Date().toISOString() })
+          .eq("id", post.id).eq("brokerage_id", post.brokerage_id).eq("status", "scheduled")
+        if (closeErr) console.error(`[publish-social-posts] expired topic post ${post.id} NOT closed (still held — not published): ${closeErr.message}`)
+        results.push({ postId: post.id, status: "skipped", error: "topic expired before publication" })
+        continue
+      }
+
       try {
         // Step 1: UPDATE social_posts SET status='publishing'
         const { error: publishingFlagErr } = await supabase

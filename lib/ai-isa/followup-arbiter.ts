@@ -2102,6 +2102,21 @@ export async function recordArbitration(
       until: wait && a.decision.waitHours !== null ? new Date(a.now.getTime() + a.decision.waitHours * 3_600_000).toISOString() : null,
       detail: { ...arbitrationLedgerDetail(a.decision, a.policyRef), ...(a.extraDetail ?? {}) },
     }, { client: svc as never })
+    // (wave 154, lane 154H2 — lane 154G2 request 2) WHY THIS PIECE: when the chosen action rides an EXISTING artifact (table + id),
+    // the decision is also recorded with the ARTIFACT as its subject, so the Command Center catalog (lib/marketing/content-catalog.ts
+    // reads agent_action_ledger by subject_id IN its catalog ids) shows the decision beside the piece. The person-subject row above
+    // stays the primary record: countArbiterWaits and the conversation readers key on the person (subject_type contact / lead).
+    const art = (a.extraDetail as { next_action?: { action?: { artifact?: { ref?: { table?: string; id?: string } | null } | null } } } | null | undefined)?.next_action?.action?.artifact?.ref
+    if (!wait && art?.table && art.id) {
+      const ar = await recordNonAction({
+        brokerageId: a.brokerageId, domain: "followup", decision: "send_touch", actor: { type: "manager", managerKey: "ai_isa" },
+        subject: { type: art.table, id: art.id, ref: `${a.subject.type}:${a.subject.id}` }, reasonCode: "NURTURE_TOUCH", reasonDetail: a.decision.rationale.slice(0, 500),
+        cycle: `arb_artifact:${art.table}:${art.id}:${a.subject.type}:${a.subject.id}:${a.now.toISOString().slice(0, 10)}`,
+        systemSource: a.systemSource, policyKey: "followup_policy",
+        detail: { ...arbitrationLedgerDetail(a.decision, a.policyRef), ...(a.extraDetail ?? {}), decided_for: { type: a.subject.type, id: a.subject.id } },
+      }, { client: svc as never })
+      if (!ar.recorded) console.error(`[followup-arbiter] artifact decision row not recorded for ${art.table}/${art.id}: ${ar.error ?? "refused"}`)
+    }
     return { recorded: r.recorded, error: r.error }
   } catch (e) {
     return { recorded: false, error: e instanceof Error ? e.message : String(e) }
@@ -3442,6 +3457,60 @@ export async function supersedeFollowOnsForPerson(
         detail: { follow_on_reconcile: { reason: a.reason, channel: a.channel ?? null, consumed: out.consumed, cancelled: out.cancelled, notified: out.notified, event_ref: a.eventRef ?? null } },
       }, { client: svc as never }).catch((e: unknown) => ({ recorded: false, error: e instanceof Error ? e.message : String(e) }))
       if (!r.recorded) out.errors.push(`reconcile evidence not ledgered: ${r.error ?? "refused"}`)
+    }
+  } catch (e) {
+    out.errors.push(e instanceof Error ? e.message : String(e))
+  }
+  return out
+}
+
+/**
+ * A PAUSED CAMPAIGN PAUSES ITS PERSONAL SENDS (wave 154, lane 154H2 — lane 154A3's coverage rows: MARKETING_CAMPAIGN_PAUSED had no
+ * consumer). The tenant pauses a campaign through app/actions/marketing-studio.ts transitionCampaignStatus → transitionLifecycle →
+ * KernelEvent.MARKETING_CAMPAIGN_PAUSED (lib/kernel/lifecycle.ts 'marketing_campaign_paused'); a resume is the same door to 'live',
+ * which emits MARKETING_CAMPAIGN_LAUNCHED. The queued personal sends that CARRY that campaign — bundle pieces
+ * (orchestrator_tasks bundle_follow_on, payload.marketing_campaign_id) and next-action follow-ons (payload.actor.campaign_id) — stop:
+ * pending → 'cancelled' with a resumable marker (payload.campaign_pause; the live CHECK has no 'paused' status, so nothing is
+ * widened). A resume re-pends ONLY the rows this campaign's pause moved (never a row a reply / opt-out / executor ended), restoring
+ * their schedule; each executor still re-reads replies, consent and lawfulness before it sends. Tenant-pinned, status-guarded
+ * (counted UPDATEs), idempotent (a replayed pause finds nothing pending with the campaign; a replayed resume finds no marker),
+ * ledgered once per move. Another campaign's sends are never touched. Never throws.
+ */
+export async function holdCampaignSends(
+  svc: { from: (t: string) => any },
+  a: { brokerageId: string; campaignId: string; action: "pause" | "resume"; now: Date; eventRef?: string | null },
+): Promise<{ moved: number; errors: string[] }> {
+  const out = { moved: 0, errors: [] as string[] }
+  try {
+    const campaignOf = (taskType: string, p: Record<string, any>): string | null =>
+      taskType === "bundle_follow_on" ? (p.marketing_campaign_id ?? null) : (p.actor?.campaign_id ?? null)
+    const from = a.action === "pause" ? "pending" : "cancelled"
+    const { data, error } = await svc.from("orchestrator_tasks").select("id, task_type, payload, scheduled_for")
+      .eq("brokerage_id", a.brokerageId).eq("status", from).in("task_type", [NEXT_ACTION_FOLLOW_ON_TASK, "bundle_follow_on"]).limit(500)
+    if (error) { out.errors.push(`queued sends unreadable: ${error.message} — nothing moved`); return out }
+    const nowIso = a.now.toISOString()
+    for (const row of (data ?? []) as Array<{ id: string; task_type: string; payload: Record<string, any> | null; scheduled_for: string | null }>) {
+      const p = row.payload ?? {}
+      if (campaignOf(row.task_type, p) !== a.campaignId) continue
+      if (a.action === "resume" && p.campaign_pause?.campaign_id !== a.campaignId) continue
+      const { campaign_pause: pause, ...rest } = p
+      const patch = a.action === "pause"
+        ? { status: "cancelled", last_error: "held: the campaign was paused — resumes when the campaign resumes", updated_at: nowIso, payload: { ...p, campaign_pause: { campaign_id: a.campaignId, paused_at: nowIso, prior_scheduled_for: row.scheduled_for, event_ref: a.eventRef ?? null } } }
+        : { status: "pending", last_error: null, updated_at: nowIso, scheduled_for: pause?.prior_scheduled_for ?? null, payload: { ...rest, campaign_resumed: { campaign_id: a.campaignId, paused_at: pause?.paused_at ?? null, resumed_at: nowIso } } }
+      const { data: moved, error: mErr } = await svc.from("orchestrator_tasks").update(patch).eq("id", row.id).eq("brokerage_id", a.brokerageId).eq("status", from).select("id")
+      if (mErr) { out.errors.push(`${row.id}: ${mErr.message}`); continue }
+      if (Array.isArray(moved) && moved.length === 1) out.moved++
+    }
+    if (out.moved > 0) {
+      const { recordNonAction } = await import("@/lib/kernel/action-ledger")
+      const r = await recordNonAction({
+        brokerageId: a.brokerageId, domain: "marketing", decision: a.action === "pause" ? "wait" : "send_touch", actor: { type: "manager", managerKey: "campaign_orchestrator" },
+        subject: { type: "marketing_campaign", id: a.campaignId }, reasonCode: a.action === "pause" ? "WAIT_COOLDOWN" : "NURTURE_TOUCH",
+        reasonDetail: `Campaign ${a.action === "pause" ? "paused" : "resumed"}: ${out.moved} queued personal send(s) ${a.action === "pause" ? "held" : "released"}.`,
+        cycle: `campaign_sends:${a.action}:${a.campaignId}:${a.eventRef ?? nowIso}`, systemSource: "event_reactor", policyKey: "followup_policy",
+        detail: { campaign_sends: { action: a.action, campaign_id: a.campaignId, moved: out.moved, event_ref: a.eventRef ?? null } },
+      }, { client: svc as never }).catch((e: unknown) => ({ recorded: false, error: e instanceof Error ? e.message : String(e) }))
+      if (!r.recorded) out.errors.push(`campaign hold evidence not ledgered: ${r.error ?? "refused"}`)
     }
   } catch (e) {
     out.errors.push(e instanceof Error ? e.message : String(e))
