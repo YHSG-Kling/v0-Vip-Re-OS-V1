@@ -276,6 +276,13 @@ export function planSourceDiscovery(input: {
       adjustments: { knownOverlapRatio: observed.knownOverlapRatio, observedUsableRatio: observed.observedUsableRatio, uncertainty: (observed.basis === "no_history" ? 0.3 : 0) + (p ? 0 : 0.2) },
       cost: { recordCount: reach ?? 0, providerUnitUsd: q?.unitUsd ?? null, minimumUsd: q?.minimumUsd ?? null, enrichmentUsdPerRecord: input.enrichmentUsdPerRecord ?? null, aiUsdPerRecord: input.aiUsdPerRecord ?? null, paid },
       budget: { authorizedUsd: input.budgetUsd },
+      // Wave 154 (lane 154J, directive J3): say which of the factors above are MEASURED (this territory's own outcomes) and
+      // which are CONFIGURED planner weights (territory 1, fields 0.8 / 0.4, the side tilt) — so a configured weight never
+      // reads as a measurement. The planner does not know which specific fields a line would fill: that input stays UNKNOWN.
+      context: {
+        basis: { territoryMatch: "configured", freshness: observed.freshnessPenalty === null ? "configured" : "measured", expectedNewUsableFields: "configured", usefulOpportunityFactor: "configured" },
+        rights, missingFields: null, priceBasis: q?.basis ?? null,
+      },
     }) : null
     const line: PlanLine = {
       source, plays: SOURCE_PLAYS[source], side, vendor, rights, paid,

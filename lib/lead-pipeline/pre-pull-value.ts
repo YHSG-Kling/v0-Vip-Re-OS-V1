@@ -105,6 +105,32 @@ export const PRE_PULL_VALUE_CONFIG: Readonly<PrePullValueConfig> = Object.freeze
 
 export type PrePullDecision = "proceed" | "preview_first" | "hold" | "refuse"
 
+// ─── THE NINE PRE-PULL INPUTS, EACH NAMED WITH ITS BASIS (wave 154, lane 154J — directive J3) ──────────────────────────
+// Directive J3: the decision considers opportunity relevance, event age, duplicate likelihood, fields already verified,
+// territory, the specific missing data, source rights, expected unique useful yield and the real provider price — "using
+// values the system really has; where an input is not available it is named as unknown rather than replaced by an invented
+// probability, and the decision still runs". The formula above already resolves an unknown FACTOR to `unknownFactor` and
+// counts it into uncertainty; what it did not say is WHICH of the nine inputs a caller actually measured, which it merely
+// CONFIGURED (a planner constant such as "a vendor that sells contact points adds 0.8" — an operating weight, never a
+// measurement) and which it did not have at all. `inputs` says that per input; it never changes the decision.
+type PrePullInputBasis = "measured" | "configured" | "stated" | "unknown"
+const PRE_PULL_INPUTS = [
+  "opportunity_relevance", "event_age", "duplicate_likelihood", "fields_already_verified", "territory",
+  "specific_missing_data", "source_rights", "expected_unique_useful_yield", "provider_price",
+] as const
+type PrePullInput = (typeof PRE_PULL_INPUTS)[number]
+
+interface PrePullContext {
+  /** How the caller got each factor it passed (absent = "measured" for a known value — the caller's own claim). */
+  basis?: Partial<Record<PrePullFactorName, Exclude<PrePullInputBasis, "unknown">>> | null
+  /** The source's rights basis as the source catalogue names it (null = not supplied → unknown). */
+  rights?: string | null
+  /** The specific fields this pull is meant to fill (null = the caller does not know which → unknown). */
+  missingFields?: readonly string[] | null
+  /** Where the unit price came from (provider_quote / catalogue / history); null = not supplied. */
+  priceBasis?: string | null
+}
+
 export interface PrePullValueVerdict {
   version: string
   /** 0..1 — the adjusted product; compare only against this module's own thresholds. */
@@ -121,6 +147,10 @@ export interface PrePullValueVerdict {
   reasons: string[]
   disclaimer: string
   calibration: PrePullValueConfig["calibration"]
+  /** Wave 154 (lane 154J): the nine J3 inputs, each with its basis — a configured weight never reads as measured. */
+  inputs: Array<{ input: PrePullInput; basis: PrePullInputBasis; value: string }>
+  /** The J3 inputs this decision ran WITHOUT (named, never replaced by an invented probability). */
+  unknownInputs: PrePullInput[]
 }
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
@@ -132,7 +162,7 @@ const known = (v: number | null | undefined): v is number => typeof v === "numbe
  * returned as resolved (with whether it was known), the cost is itemized, and the decision names its reasons.
  */
 export function evaluatePrePullValue(
-  input: { factors: PrePullFactors; adjustments?: PrePullAdjustments | null; cost: PrePullCost; budget?: PrePullBudget | null },
+  input: { factors: PrePullFactors; adjustments?: PrePullAdjustments | null; cost: PrePullCost; budget?: PrePullBudget | null; context?: PrePullContext | null },
   config: Readonly<PrePullValueConfig> = PRE_PULL_VALUE_CONFIG,
 ): PrePullValueVerdict {
   const reasons: string[] = []
@@ -207,10 +237,31 @@ export function evaluatePrePullValue(
   return verdict("proceed")
 
   function verdict(decision: PrePullDecision): PrePullValueVerdict {
+    const inputs = namedInputs()
     return {
       version: config.version, score, decision, factors, expectedUsableRecords: expectedUsable, totalCostUsd: totalCost, costPerUsableUsd: costPerUsable,
       affordableRecords: affordable, uncertainty: round2(uncertainty), reasons, disclaimer: PRE_PULL_VALUE_DISCLAIMER, calibration: config.calibration,
+      inputs, unknownInputs: inputs.filter((i) => i.basis === "unknown").map((i) => i.input),
     }
+  }
+
+  function namedInputs(): PrePullValueVerdict["inputs"] {
+    const ctx = input.context ?? {}
+    const f = (name: PrePullFactorName): { basis: PrePullInputBasis; value: string } =>
+      factors[name].known ? { basis: ctx.basis?.[name] ?? "measured", value: String(factors[name].value) } : { basis: "unknown", value: `not supplied — read as ${config.unknownFactor} and counted into uncertainty` }
+    const measuredYield = known(adj.observedUsableRatio)
+    const yieldBasis: PrePullInputBasis = measuredYield ? "measured" : factors.sourceReliability.known && factors.identityMatchLikelihood.known ? "measured" : "unknown"
+    return [
+      { input: "opportunity_relevance", ...f("usefulOpportunityFactor") },
+      { input: "event_age", ...f("freshness") },
+      known(adj.knownOverlapRatio) ? { input: "duplicate_likelihood", basis: "measured", value: String(clamp01(adj.knownOverlapRatio)) } : { input: "duplicate_likelihood", basis: "unknown", value: "no overlap measured — read as 0 (nothing removed from the yield)" },
+      known(adj.existingDataCompleteness) ? { input: "fields_already_verified", basis: "measured", value: String(clamp01(adj.existingDataCompleteness)) } : { input: "fields_already_verified", basis: "unknown", value: "completeness of held fields not supplied — read as 0" },
+      { input: "territory", ...f("territoryMatch") },
+      ctx.missingFields && ctx.missingFields.length > 0 ? { input: "specific_missing_data", basis: "stated", value: ctx.missingFields.join(", ") } : { input: "specific_missing_data", basis: "unknown", value: factors.expectedNewUsableFields.known ? `which fields are missing was not stated — only a ${ctx.basis?.expectedNewUsableFields ?? "measured"} depth factor ${factors.expectedNewUsableFields.value}` : "not supplied" },
+      ctx.rights ? { input: "source_rights", basis: "stated", value: ctx.rights } : { input: "source_rights", basis: "unknown", value: "not supplied to the formula (the door decides rights before spend)" },
+      { input: "expected_unique_useful_yield", basis: yieldBasis, value: `${expectedUsable} of ${Math.max(0, Math.floor(input.cost.recordCount))}${yieldBasis === "unknown" ? " (from unknown factors — an operating estimate)" : ""}` },
+      !input.cost.paid ? { input: "provider_price", basis: "stated", value: "no vendor bill (first-party / keyless)" } : known(input.cost.providerUnitUsd) ? { input: "provider_price", basis: "stated", value: `${input.cost.providerUnitUsd} USD per unit (${ctx.priceBasis ?? "basis not supplied"})` } : { input: "provider_price", basis: "unknown", value: "no documented price — a paid pull at an unknown price is refused" },
+    ]
   }
 }
 

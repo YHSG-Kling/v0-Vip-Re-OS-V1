@@ -41,6 +41,15 @@
  *      (built only where a transport takes a tenant key; RentCast and the scrapers stay platform-gated); Exa is both doors;
  *      Datafiniti is BUILT and awaits its license on both routes (wave 153, lane 153M); a count never claims contacts; every needle
  *      playbook is a real survivor.
+ *   K  SOURCE-TO-BUSINESS (wave 154, lane 154J — directive J2–J6) — every row carries what it TRULY provides in one category
+ *      vocabulary, docs, credential owner, four rights cells, territory, timestamps, three costs (scorecard costs DERIVED from
+ *      published units; cost per usable record UNKNOWN for all), consumer, recovery and a REGISTERED manager — an UNKNOWN
+ *      always carries its reason; no row is LIVE_VERIFIED and an activation state named "active" is not live (controlled);
+ *      a transport / trend / discovery row provides no identity (controlled); J3 EXECUTED: no scraped source carries purchased
+ *      identity (controlled), provider-first, and the planner's verdict names all nine inputs with configured weights read as
+ *      configured and missing inputs named unknown; J4 Datafiniti license-held whatever the spend plan says; J5 EXECUTES
+ *      routeChatter / trendIdea; J6 the pilot authorizes nothing, keeps three tracks apart, never shows a per-match price as an
+ *      expected cost, and the stack is the smallest (an all-PRIMARY stack is refused — controlled).
  *
  * BLIND SPOTS (published): no vendor is called (every price is a published page figure or UNKNOWN; every hit rate ASSUMED); the
  * research execution proves the labelling, not RentCast's data; the engine's in-house-first order is read from stripped source,
@@ -64,6 +73,15 @@ const section = (t: string) => console.log(`\n[${t}]`)
 const raw = (p: string) => readFileSync(join(ROOT, p), "utf8")
 const code = (p: string) => stripComments(raw(p))
 const cell = (v: unknown) => String(v ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ")
+// An ANCHOR is a DECLARATION in stripped, string-blanked source — a tombstone, an import or a quoted name is not one (CLAUDE.md §2).
+// (Hoisted from §J by wave 154, lane 154J so §K's status rows are judged by the SAME rule.)
+function anchorProblem(a: { module: string; symbol: string } | null): string | null {
+  if (!a) return null
+  if (!existsSync(join(ROOT, a.module))) return `${a.module} does not exist`
+  const s = blankStrings(code(a.module))
+  return new RegExp(`\\b(?:function\\*?|const|let|var|class)\\s+${a.symbol.replace(/\$/g, "\\$")}\\b`).test(s) ? null : `${a.module} declares no ${a.symbol}`
+}
+const anchorOk = (a: { module: string; symbol: string }) => anchorProblem(a) === null
 
 // ── the generated blocks ─────────────────────────────────────────────────────
 type Renderers = Record<string, () => string>
@@ -162,7 +180,46 @@ async function renderers(): Promise<Renderers> {
     ),
     // Wave 153 (lane 153N): NEEDLE_PLAYBOOKS retired (owner: no invented plays) — ONLINE_HUNTING_WORKFLOWS, each a real search.
     "online-hunting-workflows": () => table(["Workflow", "Replaces", "Providers", "Search / page", "Evidence fields", "Freshness", "Rights", "Cost", "Survivor that runs it", "Output", "Never claims"], cm.ONLINE_HUNTING_WORKFLOWS.map((p) => [p.key, p.replaces ?? "—", p.providers.join(", "), p.query, p.evidenceFields, p.freshness, p.rights, p.cost, `\`${p.survivor.module}\` ${p.survivor.symbol}`, p.output, p.neverClaims])),
+    // Wave 154 (lane 154J, directive J2): the source-to-business columns, beside the thirteen technical ones above.
+    "business-matrix": () => table(
+      ["Provider", "Truly provides (one vocabulary)", "Official docs / version", "Credential owner", "SaaS resale / processing", "AI use", "Storage / retention", "Outreach", "Territory", "Freshness / source timestamps", "Cost per attempted call", "Cost per match", "Cost per usable record", "Status (J2)", "Consumer", "Failure / recovery", "Responsible manager", "Stack (J6)"],
+      cm.providerCapabilityMatrix().map((r) => { const b = r.business!; return [`**${r.label}**`, b.provides.map((c) => `\`${c}\``).join(", "), b.docs, b.credentialOwner, b.rights.resale, b.rights.ai, b.rights.retention, b.rights.outreach, b.territory, b.sourceTimestamps, b.costs.perAttempt, b.costs.perMatch, b.costs.perUsable, `**${r.businessStatus}**`, b.consumer, b.failureRecovery, `\`${b.manager}\``, `**${r.stack.tier}**${r.stack.tenantOption && r.stack.tier !== "TENANT_OWNED_OPTION" ? " + TENANT_OWNED_OPTION" : ""}`] }),
+    ),
+    // Wave 154 (lane 154J, directive J5): Google, Nextdoor and Meta as the owner ruled them (R1 / R2 / R3 / R5).
+    "source-status": () => table(["Source", "Yields", "Identity", "Status", "Ruling", "Enforced by", "Stored on this path"], cm.acquisitionDecisionSupport().sourceStatus.map((s) => [`**${s.source}**`, s.yields, `\`${s.identity}\``, s.status, s.ruling, `\`${s.survivor.module}\` ${s.survivor.symbol}`, s.stored])),
+    // Wave 154 (lane 154J, directives J4 + J6): the pilot proposal, the Datafiniti comparison and the smallest stack.
+    "pilot-stack": () => {
+      const p = cm.acquisitionDecisionSupport().pilot
+      const rows = cm.providerCapabilityMatrix()
+      const out = [
+        `Pilot \`${p.id}\` — **${p.status}** (extends \`${p.extendsDesign}\`). Paid pilot approved: **${p.approved ? "yes" : "no — not approved"}**; paid calls ${p.paidCalls}. ${p.note}.`,
+        "",
+        `Scale: about ${p.monthlyConsumers.toLocaleString("en-US")} consumers a month (the design's SIMULATION target, never a request size). Bound: ${p.bound}.`,
+        "",
+        ...p.steps.map((s) => `- ${s}`),
+        "",
+      ]
+      for (const t of p.tracks) {
+        out.push(`**Track \`${t.track}\`** — ${t.what}.`, "")
+        if (t.arms.length) out.push(table(["Arm", "Published unit", "Monthly figure basis", `Monthly figure at ${p.monthlyConsumers.toLocaleString("en-US")}`, "Terms / payer"], t.arms.map((a) => [a.provider, a.unit, a.basis === "ceiling_at_full_match" ? "CEILING at a 100% match rate (the match rate is UNMEASURED — never an expected cost)" : a.basis === "every_record_attempted" ? "every record attempted (published per-record unit)" : "UNKNOWN", a.monthlyUsd === null ? "UNKNOWN" : `$${a.monthlyUsd.toLocaleString("en-US")} (published unit × records)`, a.terms])), "")
+      }
+      out.push("**Metrics (each measured by an existing survivor; every value null until a live pull is on record):**", "", table(["Metric", "Measured by", "Value", "Status"], p.metrics.map((m) => [m.metric, m.measuredBy, m.value === null ? "null" : String(m.value), m.status])), "")
+      const pick = (id: string) => rows.find((r) => r.provider === id)!
+      out.push("**Datafiniti against Versium and the chosen property source (directive J4) — Datafiniti stays DORMANT pending rights; an approved spending plan is not a license:**", "",
+        table(["Provider", "Stack", "Status", "Provides", "What only it documents", "Cost per attempted call", "Cost per match", "Resale / outreach rights"], ["datafiniti", "versium", "rentcast"].map((id) => { const r = pick(id); const rec = (r.recommendation ? sc.PROVIDER_RECOMMENDATION[id as keyof typeof sc.PROVIDER_RECOMMENDATION] : null); return [r.label, r.stack.tier ?? "none", r.businessStatus, r.business!.provides.join(", "), rec ? rec.uniqueValue.join("; ") || "none found" : "—", r.business!.costs.perAttempt, r.business!.costs.perMatch, `${r.business!.rights.resale} / ${r.business!.rights.outreach}`] })), "")
+      out.push("**The recommended SMALLEST practical stack (a recommendation — the owner selects; nothing is activated):**", "",
+        table(["Stack status", "Providers", "Why (per provider)"], (["PRIMARY", "CONDITIONAL_GAP_FILL", "TENANT_OWNED_OPTION", "DORMANT", "LICENSE_HELD", "NOT_NEEDED"] as const).map((tier) => { const inTier = rows.filter((r) => r.stack.tier === tier || (tier === "TENANT_OWNED_OPTION" && r.stack.tenantOption && r.stack.tier !== tier)); return [`**${tier}**`, inTier.map((r) => r.label).join(", ") || "none", inTier.map((r) => `${r.label}: ${r.stack.tier === tier ? r.stack.why : "its tenant-owned route is built — the tenant's own account, with the tenant's own LICENSE attestation captured at connect (the platform's terms with the vendor are not implied)"}`).join(" · ") || "—"] })))
+      return out.join("\n")
+    },
   }
+}
+
+// Wave 154 (lane 154J): a block the doc does not carry yet is ADDED by --write under its own generated heading (the doc is
+// generated — no lane hand-edits it); without --write a missing block still fails §A.
+const NEW_BLOCK_HEADINGS: Record<string, string> = {
+  "business-matrix": "## 11. Source-to-business capability matrix (wave 154, lane 154J — directive J2; GENERATED from `providerCapabilityMatrix()`)",
+  "source-status": "## 12. Google, Nextdoor and Meta status as the owner ruled it (wave 154, lane 154J — directive J5; GENERATED from `acquisitionDecisionSupport()`)",
+  "pilot-stack": "## 13. The matched-record pilot proposal and the smallest practical stack (wave 154, lane 154J — directives J4 / J6; GENERATED)",
 }
 
 const START = (n: string) => `<!-- GENERATED:${n}:start — rendered by scripts/provider-gap-matrix-guard.ts --write; do not edit inside the markers -->`
@@ -196,7 +253,8 @@ async function main() {
     const R = await renderers()
     const blocks = Object.fromEntries(Object.entries(R).map(([k, f]) => [k, f()]))
     const exists = existsSync(join(ROOT, DOC))
-    const onDisk = exists ? raw(DOC) : ""
+    let onDisk = exists ? raw(DOC) : ""
+    if (process.argv.includes("--write")) for (const [name, heading] of Object.entries(NEW_BLOCK_HEADINGS)) if (!onDisk.includes(START(name))) onDisk = `${onDisk.replace(/\s*$/, "")}\n\n${heading}\n\n${START(name)}\n${END(name)}\n`
     const applied = applyBlocks(onDisk, blocks)
     if (process.argv.includes("--write")) { writeFileSync(join(ROOT, DOC), applied.text); console.log(`    wrote ${Object.keys(blocks).length} generated blocks into ${DOC}`) }
     const now = existsSync(join(ROOT, DOC)) ? raw(DOC) : ""
@@ -433,12 +491,6 @@ async function main() {
     const missingRows = DIRECTIVE.filter((p) => !rows.some((r) => r.provider === p))
     check(`every provider directive G1 names has a row (${DIRECTIVE.length}, incl. IDX / MLS) — plus the connected sources (${rows.length - DIRECTIVE.length})`, missingRows.length === 0, missingRows.join(", "))
     // An ANCHOR is a DECLARATION in stripped, string-blanked source — a tombstone, an import or a quoted name is not one (CLAUDE.md §2).
-    const anchorProblem = (a: { module: string; symbol: string } | null): string | null => {
-      if (!a) return null
-      if (!existsSync(join(ROOT, a.module))) return `${a.module} does not exist`
-      const s = blankStrings(code(a.module))
-      return new RegExp(`\\b(?:function\\*?|const|let|var|class)\\s+${a.symbol.replace(/\$/g, "\\$")}\\b`).test(s) ? null : `${a.module} declares no ${a.symbol}`
-    }
     const anchors = rows.flatMap((r) => [r.transport, r.producer.anchor, r.mapping.anchor, r.preview.anchor].filter((a): a is { module: string; symbol: string } => !!a).map((a) => ({ who: r.provider, a })))
     const badAnchors = anchors.map(({ who, a }) => { const p = anchorProblem(a); return p ? `${who}: ${p}` : null }).filter(Boolean)
     check(`every code anchor (${anchors.length}: transport / producer / mapping / preview) is a real declaration in stripped source`, badAnchors.length === 0, badAnchors.join(" | "))
@@ -496,6 +548,121 @@ async function main() {
     check(`every online hunting workflow (${W.length}) is run by a REAL survivor with matrix providers, a real search, evidence fields, freshness, rights and cost`, W.length >= 5 && badPlays.length === 0, badPlays.join(" | "))
     check("POSITIVE CONTROL: a retired-style combination row (no query, '×' name) is refused by the same rule", workflowProblems([{ key: "relocation_demand_x_inventory_mismatch", providers: ["exa"], survivor: W[0].survivor, query: "a × b × c", evidenceFields: "", freshness: "", rights: "", cost: "", neverClaims: "x" }]).length >= 4)
     check("NEEDLE_PLAYBOOKS is retired (no export of that name remains)", !("NEEDLE_PLAYBOOKS" in cm))
+  }
+
+  section("K. source-to-business matrix, structured data first, J5 status, the pilot and the smallest stack (wave 154, lane 154J)")
+  {
+    const cm = await import("../lib/providers/provider-capability-matrix")
+    const { MANAGERS } = await import("../lib/kernel/manager-registry")
+    const { GOOGLE_INDEXED_DISCOVERY_ROUTE } = await import("../lib/providers/exa/hunting")
+    const rows = cm.providerCapabilityMatrix()
+    type Row = (typeof rows)[number]
+    // J2 — every row carries every new column, and an UNKNOWN always carries its reason.
+    const unreasoned = (c: string) => !c.trim() || (/\bUNKNOWN\b/.test(c) && !/—|\(/.test(c)) || (/LICENSE-HELD/.test(c) && !/—/.test(c))
+    const j2Problems = (rs: readonly Row[]) => rs.flatMap((r) => {
+      const b = r.business
+      if (!b) return [`${r.provider}: no business facts`]
+      const cells: Record<string, string> = { docs: b.docs, territory: b.territory, sourceTimestamps: b.sourceTimestamps, consumer: b.consumer, failureRecovery: b.failureRecovery, ...b.rights, ...b.costs }
+      return [...Object.entries(cells).filter(([, v]) => unreasoned(String(v ?? ""))).map(([k]) => `${r.provider}.${k}`), ...(b.provides.length ? [] : [`${r.provider}.provides`]), ...(b.manager in MANAGERS ? [] : [`${r.provider}.manager '${b.manager}' is not a registered manager`])]
+    })
+    const j2 = j2Problems(rows)
+    check(`J2: every row (${rows.length}) carries provides / docs / credential owner / four rights / territory / timestamps / three costs / consumer / recovery and a REGISTERED manager — an UNKNOWN always says why`, j2.length === 0, j2.join(" | "))
+    const planted = rows.map((r) => r.provider === "zyte" ? { ...r, business: { ...r.business!, rights: { ...r.business!.rights, ai: "UNKNOWN" }, manager: "nobody_manager" } } : r)
+    check("POSITIVE CONTROL: a bare 'UNKNOWN' cell and an unregistered manager are both caught", j2Problems(planted).filter((p) => /^zyte\./.test(p)).length === 2)
+    check("J2: cost per USABLE record is UNKNOWN for every provider (no measured usable ratio — no live pull on record)", rows.every((r) => /^UNKNOWN — needs a measured usable ratio/.test(r.business!.costs.perUsable)))
+    const scorecardCostOk = rows.filter((r) => r.recommendation).every((r) => { const rows2 = sc.PROVIDER_FIELD_SCORECARD.filter((x) => x.provider === r.provider && x.unit !== "free" && x.unitUsd !== null); return rows2.length === 0 ? /^UNKNOWN — no published unit/.test(r.business!.costs.perAttempt) : rows2.every((x) => `${r.business!.costs.perAttempt} ${r.business!.costs.perMatch}`.includes(`$${x.unitUsd}`)) })
+    check("J2: every scorecard provider's cost cells are DERIVED from its published PROVIDER_FIELD_SCORECARD units (never retyped)", scorecardCostOk)
+    // J2 — status: LIVE_VERIFIED only with a recorded live call; an activation state "active" is not one.
+    const expectStatus = (r: Row) => { const s = r.states.platform ?? r.states.tenant; return s === "ready" ? "LIVE_VERIFIED" : s === "simulated" ? "SIMULATED_ONLY" : s === "awaiting_license" ? "PENDING_RIGHTS" : s === "awaiting_key" ? "NO_KEY" : null }
+    const statusBad = rows.filter((r) => { const e = expectStatus(r); return e ? r.businessStatus !== e : !["NO_ACCOUNT", "UNAVAILABLE"].includes(r.businessStatus) }).map((r) => `${r.provider}: ${r.businessStatus}`)
+    check("J2: every status is re-derived from the honest route state (LIVE_VERIFIED / SIMULATED_ONLY / PENDING_RIGHTS / NO_KEY / NO_ACCOUNT / UNAVAILABLE)", statusBad.length === 0, statusBad.join(", "))
+    check("J2: NO row claims LIVE_VERIFIED (no live call with a real credential is on record)", rows.every((r) => r.businessStatus !== "LIVE_VERIFIED"))
+    check("POSITIVE CONTROL: RentCast's activation state reads 'active' yet its status is SIMULATED_ONLY — a registry entry named active/live is not proof", sc.PROVIDER_ACTIVATION.rentcast.state === "active" && rows.find((r) => r.provider === "rentcast")!.businessStatus === "SIMULATED_ONLY")
+    // J2 — categories never conflated.
+    const IDENTITY = ["people", "contact_field_append", "property_owner_identity"]
+    const conflated = (rs: readonly Row[]) => rs.filter((r) => { const p = r.business!.provides as readonly string[]; return (p.includes("raw_web_transport") || p.includes("trend_insight") || p.includes("public_web_discovery")) && p.some((c) => IDENTITY.includes(c)) }).map((r) => r.provider)
+    check("J2: a transport, a trend index or a discovery search provides NO identity category (people / contact append / owner identity)", conflated(rows).length === 0, conflated(rows).join(", "))
+    check("POSITIVE CONTROL: Zyte planted with 'people' is caught as conflated", conflated(rows.map((r) => r.provider === "zyte" ? { ...r, business: { ...r.business!, provides: ["raw_web_transport", "people"] as never } } : r)).join() === "zyte")
+    check("J2: Zyte, ZenRows and Apify provide raw web transport ONLY; Exa provides public-web discovery ONLY", ["zyte", "zenrows", "apify"].every((p) => JSON.stringify(rows.find((r) => r.provider === p)!.business!.provides) === '["raw_web_transport"]') && JSON.stringify(rows.find((r) => r.provider === "exa")!.business!.provides) === '["public_web_discovery"]')
+    const photoRows = rows.filter((r) => (r.business!.provides as readonly string[]).includes("licensed_listing_photos")).map((r) => r.provider)
+    check("J2: licensed listing photos come ONLY from the tenant's IDX / MLS feed (RentCast carries none; imagery is never scraped)", photoRows.join() === "idxbroker", photoRows.join())
+    const credBad = rows.filter((r) => { const built = /tenant-owned: built/.test(r.connector); const o = r.business!.credentialOwner; return (built && !["either", "tenant"].includes(o)) || (o === "either" && !built) }).map((r) => r.provider)
+    check("J2: credential owner agrees with the routes ('either' only where a tenant-owned transport is built)", credBad.length === 0, credBad.join(", "))
+    const exa = rows.find((r) => r.provider === "exa")!
+    check("J2: the Exa row carries lane 154B's note (Google-indexed pages through Exa; Custom Search JSON API not used, withdrawn by 2027-01-01) and agrees with GOOGLE_INDEXED_DISCOVERY_ROUTE", /Custom Search JSON API is not used/.test(exa.endpoint) && exa.endpoint.includes("2027-01-01") && GOOGLE_INDEXED_DISCOVERY_ROUTE.includes("2027-01-01") && /Custom Search JSON API is not used/.test(GOOGLE_INDEXED_DISCOVERY_ROUTE))
+    check("J2: Google Trends, Search Console and the Meta / Apify idea actors have rows (Trends / Search Console NO_ACCOUNT, idea actors trend insight only)", ["google_trends", "search_console"].every((p) => rows.find((r) => r.provider === p)?.businessStatus === "NO_ACCOUNT") && JSON.stringify(rows.find((r) => r.provider === "apify_idea_actors")?.business?.provides) === '["trend_insight"]')
+
+    // J3 — structured data first: a scraper is never an identity database; a provider-supplied fact is not scraped.
+    const sim = await import("../lib/lead-pipeline/source-intent-map")
+    const planner = await import("../lib/lead-pipeline/source-discovery-planner")
+    const { evaluatePrePullValue } = await import("../lib/lead-pipeline/pre-pull-value")
+    const TRANSPORT_VENDORS = new Set(["zenrows", "zyte", "apify"])
+    const scrapedIdentity = (paid: Record<string, boolean>) => (Object.keys(sim.SOURCE_VENDOR) as Array<keyof typeof sim.SOURCE_VENDOR>).filter((k) => TRANSPORT_VENDORS.has(sim.SOURCE_VENDOR[k]) && paid[k])
+    const transportSources = (Object.keys(sim.SOURCE_VENDOR) as string[]).filter((k) => TRANSPORT_VENDORS.has((sim.SOURCE_VENDOR as Record<string, string>)[k]))
+    check(`J3: no transport-scraped source (${transportSources.length}) carries PURCHASED identity — a scraper is never an identity database (identity on a scraped row is only what the subject published, e.g. an FSBO card's own phone, or comes from a licensed enrichment rung)`, transportSources.length > 0 && scrapedIdentity(sim.SOURCE_PAID_PERSON_DATA).length === 0, scrapedIdentity(sim.SOURCE_PAID_PERSON_DATA).join(", "))
+    check("POSITIVE CONTROL: a scraped source planted as paid person data is caught", scrapedIdentity({ ...sim.SOURCE_PAID_PERSON_DATA, zenrows_zillow: true }).join() === "zenrows_zillow")
+    check("J3: a fact a configured structured provider supplies is planned from the provider, not scraped (rental listings → RentCast); without the provider the scrape line stays plannable", planner.providerFirstVerdict("rental_listing", ["rentcast"])?.provider === "rentcast" && planner.providerFirstVerdict("rental_listing", []) === null)
+    const plan = planner.planSourceDiscovery({ territory: { id: "t-j3", brokerageId: "b-j3", label: "J3 territory" }, budgetUsd: 500, enabledSources: ["batchdata_motivated"], history: { batchdata_motivated: { rawRows: 200, promoted: 20, duplicates: 30, costUsd: 10 } }, previews: { batchdata_motivated: { count: 100, at: "2026-11-18T00:00:00Z", via: "observed count" } }, quotes: { batchdata_motivated: { unitUsd: 0.05, basis: "catalogue" } }, now: new Date("2026-11-18T00:00:00Z") })
+    const v = plan.lines[0]?.value
+    const basisOf = (i: string) => v?.inputs.find((x) => x.input === i)?.basis
+    check("J3: the paid line's verdict names all nine inputs, each with its basis, and the decision still runs", !!v && v.inputs.length === 9 && new Set(v.inputs.map((i) => i.input)).size === 9 && ["proceed", "preview_first", "hold", "refuse"].includes(v.decision), v ? v.inputs.map((i) => `${i.input}:${i.basis}`).join(" ") : "no verdict")
+    check("J3: the planner's CONFIGURED weights read as configured (opportunity relevance, territory) — never as measured; measured history reads measured (duplicate likelihood)", basisOf("opportunity_relevance") === "configured" && basisOf("territory") === "configured" && basisOf("duplicate_likelihood") === "measured" && basisOf("provider_price") === "stated" && basisOf("source_rights") === "stated")
+    check("J3: what the planner does not have is NAMED unknown (the specific missing fields; held-field completeness) — never an invented probability", !!v && v.unknownInputs.includes("specific_missing_data") && v.unknownInputs.includes("fields_already_verified"))
+    const bare = evaluatePrePullValue({ factors: { territoryMatch: null, freshness: null, sourceReliability: null, expectedNewUsableFields: null, identityMatchLikelihood: null, usefulOpportunityFactor: null }, cost: { recordCount: 10, providerUnitUsd: null, paid: true } })
+    check("POSITIVE CONTROL: with nothing known, every input but none is named unknown and the decision still returns (refuse at an unknown price)", bare.decision === "refuse" && bare.unknownInputs.length === 9)
+
+    // J4 — Datafiniti stays dormant; a spending plan is not a license.
+    const df = rows.find((r) => r.provider === "datafiniti")!
+    check("J4: Datafiniti is LICENSE_HELD in the stack, PENDING_RIGHTS in status, and offers NO tenant option while its license is pending (its tenant route is built but not licensed)", df.stack.tier === "LICENSE_HELD" && df.businessStatus === "PENDING_RIGHTS" && df.stack.tenantOption === false && df.states.tenant === "awaiting_license")
+    const dfPlan = planner.paidPullApproval([{ id: "plan-j4", brokerage_id: "b-j4", status: "approved", valid_until: "2027-01-01T00:00:00Z", lines: [{ source: "datafiniti_people", status: "approved", maxSpendUsd: 100, approvedAt: "2026-11-01T00:00:00Z" }] }], { brokerageId: "b-j4", source: "datafiniti_people" }, new Date("2026-11-18T00:00:00Z"))
+    check("J4: an approved spending plan opens the SPEND gate only — the matrix still reads Datafiniti awaiting LICENSE on both routes (the rights gate is separate: test:datafiniti-connector)", dfPlan.allowed === true && df.states.platform === "awaiting_license")
+
+    // J5 — Google, Nextdoor and Meta as ruled; the survivors are EXECUTED.
+    const chatter = await import("../lib/content-intel/public-chatter-topics")
+    const sd = await import("../lib/content-intel/search-demand")
+    const { COMMUNITY_TOPIC_RESEARCH_PURPOSE, SCRAPE_PURPOSES } = await import("../lib/providers/scrape-checkpoint")
+    const firstPerson = () => ({ firstPerson: true, requestsAgentContact: false, statesHousingNeed: true })
+    const fenced = chatter.fenceUntrusted("We are selling our home next spring and need an agent.")
+    const nd = chatter.routeChatter(fenced, "community_post", firstPerson), fb = chatter.routeChatter(fenced, "facebook_group_question", firstPerson)
+    check("J5: a first-person Nextdoor post routes to a TOPIC with the person path LICENSE-HELD; a first-person Facebook group post is IDEAS ONLY (routeChatter executed)", nd.route === "first_person_topic_only" && /^license_held:nextdoor/.test(nd.personPath) && fb.route === "first_person_topic_only" && /^ideas_only:facebook/.test(fb.personPath))
+    check("POSITIVE CONTROL: an anonymous discussion is never a person; no classifier → not evaluated", chatter.routeChatter(fenced, "community_post", () => ({ firstPerson: false, requestsAgentContact: false, statesHousingNeed: false })).personPath.startsWith("none") && chatter.routeChatter(fenced, "community_post", null).personPath === "not_evaluated")
+    check("J5: the topic purpose is NOT a person purpose (community_topic_research is outside SCRAPE_PURPOSES)", !(SCRAPE_PURPOSES as readonly string[]).includes(COMMUNITY_TOPIC_RESEARCH_PURPOSE))
+    const t = sd.trendIdea({ term: "Mortgage rates", geo: { city: "Destin", state: "FL", label: "Destin, FL" }, relativeIndex: 64, windowStart: "2026-10-01", windowEnd: "2026-11-01" }, new Date("2026-11-18T00:00:00Z"))
+    const IDENT_KEYS = /\b(email|phone|name|author|profile|person|contact)\b/i
+    check("J5: a Trends point becomes a TOPIC with no identity field and a relative-index evidence label — never a searcher, never a count", !!t.idea && !Object.keys(t.idea).some((k) => IDENT_KEYS.test(k)) && t.idea.evidence.kind === "proxy" && /not a count/.test(t.idea.evidence.note ?? ""))
+    check("POSITIVE CONTROL: the identity-key finder sees a planted 'authorEmail' field", Object.keys({ ...t.idea, author_email: "x" }).some((k) => IDENT_KEYS.test(k.replace(/_/g, " "))))
+    const ss = cm.acquisitionDecisionSupport().sourceStatus
+    const statusOf = (k: string) => ss.find((s) => s.key === k)
+    check("J5: Trends / Search Console identity 'never'; Nextdoor person LICENSE-HELD; Facebook person and Meta Ad Library ideas only; Nextdoor / Facebook topics LISTED FOR COUNSEL", ["google_trends", "search_console", "google_custom_search"].every((k) => statusOf(k)?.identity === "never") && statusOf("nextdoor_person")?.identity === "license_held" && statusOf("facebook_person")?.identity === "ideas_only" && statusOf("meta_ad_library")?.identity === "ideas_only" && ["nextdoor_topics", "facebook_group_topics"].every((k) => /COUNSEL/.test(statusOf(k)?.status ?? "")))
+    const ssAnchors = ss.map((s) => anchorOk(s.survivor) ? null : `${s.key}: ${s.survivor.module} ${s.survivor.symbol}`).filter(Boolean)
+    check(`J5: every status row names a REAL enforcing survivor (${ss.length})`, ssAnchors.length === 0, ssAnchors.join(" | "))
+
+    // J6 — the pilot proposal authorizes nothing; the stack is the smallest, never "everything active".
+    const p = cm.acquisitionDecisionSupport().pilot
+    check("J6: the pilot is a PROPOSAL — not approved (the earlier $1,000 paid pilot is NOT approved), zero paid calls, about 50,000 consumers a month", p.approved === false && sc.PROVIDER_SELECTION_STATUS.paidPilotApproved === false && p.paidCalls === 0 && p.monthlyConsumers === 50000 && /NOT approved/.test(p.note))
+    check("J6: owner contacts, market statistics and licensed imagery / IDX are three SEPARATE tracks — only owner contacts has purchasable arms", JSON.stringify(p.tracks.map((x) => x.track)) === '["owner_contacts","market_statistics","licensed_imagery_idx"]' && p.tracks[0].arms.length > 0 && p.tracks.slice(1).every((x) => x.arms.length === 0))
+    check("J6: a per-match price is shown only as a CEILING at full match (never an expected cost); an unpublished unit stays UNKNOWN (null)", p.tracks[0].arms.every((a) => (/per_match/.test(a.unit) ? a.basis === "ceiling_at_full_match" : true) && (a.basis === "unknown" ? a.monthlyUsd === null : a.monthlyUsd !== null)))
+    const unmeasured = (ms: ReadonlyArray<{ value: unknown }>) => ms.every((m) => m.value === null)
+    check("J6: all nine directive metrics are named with their measuring survivor and every value is null (nothing measured is invented)", p.metrics.length === 9 && unmeasured(p.metrics) && p.metrics.every((m) => m.measuredBy.length > 20))
+    check("POSITIVE CONTROL: a planted measured value is caught", !unmeasured([...p.metrics, { value: 0.42 }]))
+    const tierOk = (rs: readonly Row[]) => {
+      const tiers = rs.map((r) => r.stack.tier)
+      const of = (id: string) => rs.find((r) => r.provider === id)?.stack.tier
+      const problems: string[] = []
+      if (tiers.some((x) => !x)) problems.push("a row has no stack tier")
+      for (const id of ["datafiniti", "tracerfy", "datazapp", "propertyradar"]) if (of(id) !== "LICENSE_HELD") problems.push(`${id} is not LICENSE_HELD`)
+      if (of("peopledata") !== "DORMANT") problems.push("peopledata is not DORMANT")
+      if (of("data_axle") !== "NOT_NEEDED") problems.push("data_axle is not NOT_NEEDED")
+      if (tiers.filter((x) => x === "PRIMARY").length * 3 > rs.length) problems.push("more than a third PRIMARY — not the smallest stack")
+      for (const tier of ["DORMANT", "LICENSE_HELD", "NOT_NEEDED"]) if (!tiers.includes(tier as never)) problems.push(`no ${tier}`)
+      if (rs.some((r) => r.stack.tier === "PRIMARY" && r.businessStatus === "PENDING_RIGHTS")) problems.push("a PENDING_RIGHTS provider is PRIMARY")
+      return problems
+    }
+    check("J6: the stack is the SMALLEST practical one — license-held and dormant providers marked correctly, PRIMARY ≤ a third, no pending-rights PRIMARY", tierOk(rows).length === 0, tierOk(rows).join("; "))
+    check("POSITIVE CONTROL: an 'everything PRIMARY' stack is refused by the same rule", tierOk(rows.map((r) => ({ ...r, stack: { ...r.stack, tier: "PRIMARY" as const } }))).length >= 5)
+    const stackMap: Record<string, string> = { PRIMARY: "PRIMARY", GAP_FILL: "CONDITIONAL_GAP_FILL", DORMANT_BACKUP: "DORMANT", WAITING_LICENSE: "LICENSE_HELD", UNNECESSARY: "NOT_NEEDED" }
+    const derivedBad = rows.filter((r) => r.recommendation && r.stack.tier !== stackMap[r.recommendation]).map((r) => r.provider)
+    check("J6: every scorecard provider's stack status is DERIVED from PROVIDER_RECOMMENDATION (one decision, one translation — never retyped)", derivedBad.length === 0, derivedBad.join(", "))
   }
 
   section("I. ownership")

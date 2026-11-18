@@ -26,7 +26,7 @@ import { HEALING_PROPOSAL_STATUSES, type HealingProposalStatus } from "@/lib/ker
 // queue, because activating a provider is the one provider-config change the healer may NEVER make (classifyProviderConfigChange).
 import { PROVIDER_ACTIVATION, PROVIDER_FIELD_SCORECARD, PROVIDER_RECOMMENDATION, PROVIDER_SELECTION_STATUS, activationVerdict, providerFieldMatrix, providerGapMatrix, type ScorecardProvider } from "@/lib/providers/provider-scorecard"
 import { MATCHED_COHORT_DESIGN, projectMonthlyWaterfall } from "@/lib/providers/provider-pilot"
-import { ONLINE_HUNTING_WORKFLOWS, providerCapabilityMatrix } from "@/lib/providers/provider-capability-matrix"
+import { ONLINE_HUNTING_WORKFLOWS, acquisitionDecisionSupport, providerCapabilityMatrix } from "@/lib/providers/provider-capability-matrix"
 import { simulateProviderPilot } from "@/lib/providers/provider-pilot"
 // Wave 151 (lane 151F): the owner's platform acquisition caps (null = stop before spend), the internal acquisition economics and
 // each provider's TENANT-connectability (route B) sit beside the provider stack — one console for what the platform may spend,
@@ -119,6 +119,8 @@ export default async function ConnectorHealingPage() {
   const selection = PROVIDER_SELECTION_STATUS
   const gapMatrix = providerGapMatrix()
   const capabilityMatrix = providerCapabilityMatrix()
+  // Wave 154 (154J): J5 source status (Google / Nextdoor / Meta as ruled) + the J6 pilot PROPOSAL — authorizes nothing.
+  const decisionSupport = acquisitionDecisionSupport()
   const cohortDesign = MATCHED_COHORT_DESIGN
   const waterfall = projectMonthlyWaterfall({ field: "owner_email" })
   // C39 — the matched pilot is a DESIGN. After the platform gate above, the design check runs over whatever cohort rows
@@ -371,7 +373,7 @@ export default async function ConnectorHealingPage() {
             <h3 className="p-3 font-medium">Provider choices — connector, producer door, preview, incremental support, validation and honest state (no provider is selected)</h3>
             <table className="w-full text-xs">
               <thead className="text-left text-muted-foreground">
-                <tr><th className="p-2">Provider</th><th className="p-2">Connector</th><th className="p-2">Acquisition</th><th className="p-2">Producer door</th><th className="p-2">Preview before paid pull</th><th className="p-2">Incremental (documented)</th><th className="p-2">Validation</th><th className="p-2">Honest state</th></tr>
+                <tr><th className="p-2">Provider</th><th className="p-2">Connector</th><th className="p-2">Acquisition</th><th className="p-2">Producer door</th><th className="p-2">Preview before paid pull</th><th className="p-2">Incremental (documented)</th><th className="p-2">Validation</th><th className="p-2">Honest state</th><th className="p-2">Provides · status · stack</th></tr>
               </thead>
               <tbody>
                 {capabilityMatrix.map((r) => (
@@ -384,6 +386,7 @@ export default async function ConnectorHealingPage() {
                     <td className="p-2">{r.incremental}</td>
                     <td className="p-2 text-muted-foreground">{r.validation}</td>
                     <td className="p-2"><Badge variant={r.states.platform === "simulated" || r.states.tenant === "simulated" ? "secondary" : "outline"}>{r.honestState}</Badge></td>
+                    <td className="p-2">{r.business?.provides.join(", ").replace(/_/g, " ")} · <span className="font-medium">{r.businessStatus.replace(/_/g, " ")}</span> · {r.stack.tier?.replace(/_/g, " ") ?? "no decision"}{r.stack.tenantOption && r.stack.tier !== "TENANT_OWNED_OPTION" ? " + tenant-owned option" : ""}</td>
                   </tr>
                 ))}
               </tbody>
@@ -394,6 +397,20 @@ export default async function ConnectorHealingPage() {
                 <p key={p.key}><span className="font-medium">{p.key}</span> ({p.providers.join(", ")}) — {p.query}. Evidence: {p.evidenceFields}. Window: {p.freshness}. Cost: {p.cost}. → {p.output}. <span className="text-muted-foreground">Never: {p.neverClaims}.</span></p>
               ))}
             </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="space-y-2 p-4 text-sm">
+            <h3 className="font-medium">Google, Nextdoor and Meta — as the owner ruled them</h3>
+            <ul className="text-xs">
+              {decisionSupport.sourceStatus.map((s) => <li key={s.key}><span className="font-medium">{s.source}</span> — {s.yields}. Identity: {s.identity.replace(/_/g, " ")}. {s.status} ({s.ruling}).</li>)}
+            </ul>
+            <h3 className="font-medium">Acquisition pilot — {decisionSupport.pilot.status}</h3>
+            <p className="text-xs text-muted-foreground">Paid pilot approved: {decisionSupport.pilot.approved ? "yes" : "no"} · paid calls {decisionSupport.pilot.paidCalls} · about {decisionSupport.pilot.monthlyConsumers.toLocaleString("en-US")} consumers a month · {decisionSupport.pilot.note}.</p>
+            <ul className="text-xs">
+              {decisionSupport.pilot.tracks.map((t) => <li key={t.track}><span className="font-medium">{t.track.replace(/_/g, " ")}</span> — {t.arms.length ? t.arms.map((a) => `${a.provider} ${a.monthlyUsd === null ? "UNKNOWN" : `$${a.monthlyUsd.toLocaleString("en-US")} (${a.basis === "ceiling_at_full_match" ? "ceiling at full match" : "every record attempted"})`}`).join(" · ") : t.what}</li>)}
+            </ul>
+            <p className="text-xs text-muted-foreground">Metrics (all unmeasured until a live pull is on record): {decisionSupport.pilot.metrics.map((m) => m.metric).join(" · ")}.</p>
           </CardContent>
         </Card>
         <Card>
