@@ -834,13 +834,14 @@ export const VOICE_TOOL_MANAGER = {
   get_income_truth: "finance_manager",
   get_buyer_financials: "shopping_agent",   // buyer journey (pre-approval is the Shopping Agent's handoff)
   confirm_buyer_financials: "shopping_agent",
-  // WAVE 154 (lane 154A3 — coverage-ledger gap rows 16–17): five CONSEQUENTIAL tools (they write or send) had no owner. Each
+  // WAVE 154 (lane 154A3 — coverage-ledger gap rows 16–17): CONSEQUENTIAL tools (they write or send) had no owner here. Each
   // takes the owner of the existing entry that does the same thing, so one action has one answer (CLAUDE.md §6):
   lender_confirm_financials: "shopping_agent", // the lender's side of confirm_buyer_financials — the same financing gate
   update_contact_status: "ai_isa",             // contact engagement / CRM touch, as log_activity
-  voice_followup: "ai_isa",                    // a gated follow-up to a contact, as log_activity's engagement owner
-  start_marketing: "campaign_orchestrator",    // enrolls a contact in a campaign sequence (sequence_enrollments' steward)
-  cut_promo: "asset_manager",                  // a listing promo reel on the Remotion rail, as stage_video_project
+  // voice_followup, start_marketing and cut_promo are NOT listed here: they are team commands and already have their one owner in
+  // lib/kernel/ai-teammates.ts TEAM_COMMAND_MANAGER (the two tables are disjoint by rule — test:voice-kernel-surface RM8; the one
+  // resolver reads this table first, then that one: lib/voice-admin/assistant-reach.ts toolOwner). A second answer here would
+  // give one tool two managers.
   // Still deliberately unattributed (bench-wide or multi-manager by construction, see above): run_skill (each skill's
   // delegation names its own capability manager), run_team_command (TEAM_COMMAND_MANAGER keeps its own six), kernel_resolve /
   // kernel_proposals / standup_action / broker_objective (the bench's exception and objective rails), fill_form_field /

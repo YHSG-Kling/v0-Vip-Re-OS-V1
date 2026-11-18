@@ -293,3 +293,10 @@ report).
   topics with no geo or date model, and brand-listening listens for mentions. A new route was the smallest correct change.
   Each tenant gathers once per UTC day (ledger replay). Owner campaign_orchestrator. Raised with `--write-baseline` by the
   convergence lane (144Z).
+- **2026-11-18, wave 154 (lane 154G1) — `/api/cron/content-intel-community`, `45 7 * * *` (+1 invocation/day).** Owner
+  ruling R2 (wave 154): public Nextdoor posts are read for TOPICS only and stored reworded. No existing cron reads a tenant's
+  configured public post URLs: content-intel-apify runs actor sources, content-intel-reddit reads subreddits, local-intel
+  gathers verified local facts. A new route was the smallest correct change. It runs once a day, per tenant, makes no paid
+  request without a recorded per-run budget, never runs a platform-wide source, and is ledgered
+  (`intel.community_topic.research`). Owner campaign_orchestrator (lib/kernel/manager-registry.ts CRON_MANAGER). Raised with
+  `--write-baseline` by the integrator.

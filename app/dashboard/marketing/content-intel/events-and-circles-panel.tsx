@@ -75,11 +75,11 @@ export function EventsAndCirclesPanel() {
           <select className={input} value={ev.relation} onChange={(e) => setEv({ ...ev, relation: e.target.value as "hosted" | "sponsored" })}><option value="hosted">We host it</option><option value="sponsored">We sponsor it</option></select>
           <button className={btn} disabled={pending} onClick={() => run(() => saveTenantEventAction({ ...ev, time: ev.time || null, timeZone: ev.timeZone || null }), "Event saved")}>Save event</button>
         </div>
-        <table className="w-full text-sm"><tbody>
+        <ul className="divide-y text-sm">
           {data?.events.map((e) => (
-            <tr key={String(e.topicId)} className="border-t"><td>{String(e.title)}</td><td>{label(e.format)}</td><td>{String(e.startDate ?? "")}</td><td>{label(e.listingKind)}</td><td>{e.stale ? "stale — not offered" : String(e.status)}</td></tr>
+            <li key={String(e.topicId)} className="flex flex-wrap gap-x-4 gap-y-1 py-1"><span className="font-medium">{String(e.title)}</span><span>{label(e.format)}</span><span>{String(e.startDate ?? "")}</span><span>{label(e.listingKind)}</span><span>{e.stale ? "stale — not offered" : String(e.status)}</span></li>
           ))}
-        </tbody></table>
+        </ul>
       </div>
 
       <div className="space-y-2">

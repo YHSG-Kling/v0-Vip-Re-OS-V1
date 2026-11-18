@@ -695,6 +695,7 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
   const capReg = await import("../lib/agentic-os/app-capability-registry")
   const { CAPABILITY_MANAGER } = await import("../lib/agentic-os/capability-ownership")
   const toolReg = await import("../lib/voice/tool-registry")
+  const { TEAM_COMMAND_MANAGER } = await import("../lib/kernel/ai-teammates")
   const { riskClassForTool } = await import("../lib/ai-isa/persona-tool-policy")
   let SIGNAL_HANDLER_KEYS: Set<string>
   let signalHandlersFrom = "runtime import of lib/kernel/manager-signals.ts SIGNAL_HANDLERS"
@@ -929,7 +930,8 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
         id: `assistant_tool:${name}`, kind: "assistant_tool", entry: m ? `${route}:${lineAt(v, m.index)}` : `lib/voice/tool-registry.ts:${lineAt(regV, regAt >>> 0)}`,
         action: `tool.${name} (${tool.category}, ${risk})`, source_event: "agent assistant / voice tool call",
         trigger: m ? `${route} POST (assistant session)` : null, worker: m ? `${route} runTool case "${name}"` : null,
-        owner: vtm[name] ?? null, ownerWhy: "VOICE_TOOL_MANAGER deliberately leaves bench-wide tools unattributed (lib/voice/tool-registry.ts)",
+        // ONE resolver, the production one (lib/voice-admin/assistant-reach.ts toolOwner): the tool table first, then the team-command table.
+        owner: vtm[name] ?? (TEAM_COMMAND_MANAGER as Readonly<Record<string, string>>)[name] ?? null, ownerWhy: "neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANAGER names it — bench-wide tools are deliberately unattributed (lib/voice/tool-registry.ts)",
         facts, consequentialHint: risk !== "READ" || ["send", "stage", "schedule"].includes(tool.category),
         lensTables, actorHint: "signed-in seat (assistant session)", decisionHint: `session seat under authorityAllows + declared gates [${tool.gates.join(", ") || "none"}] (${route})`,
       })

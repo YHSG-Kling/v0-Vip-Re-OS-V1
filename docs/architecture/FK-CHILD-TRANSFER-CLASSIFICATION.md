@@ -199,7 +199,7 @@ The closure report names each table and its count. For each one, the Data Stewar
 ## Generated classification (do not edit by hand — `tsx --conditions=react-server scripts/transfer-classification-guard.ts --write`)
 
 <!-- BEGIN GENERATED: fk-child-classification (scripts/transfer-classification-guard.ts --write) -->
-Census: 441 FKs from 310 child tables into the 41 moved families (289 tables carry brokerage_id; 21 have no tenant column and follow their parent's tenancy implicitly). 75 further FKs run between families (follows_parent by construction).
+Census: 441 FKs from 310 child tables into the 41 moved families (287 tables carry brokerage_id; 23 have no tenant column and follow their parent's tenancy implicitly). 75 further FKs run between families (follows_parent by construction).
 
 | Class | Tables | FKs |
 |---|---|---|
@@ -385,7 +385,7 @@ Census: 441 FKs from 310 child tables into the 41 moved families (289 tables car
 - `lead_behavioral_data` — lead_id → leads · ai_isa
 - `lead_external_behavior` — lead_id → leads · no tenant column · no TABLE_MANAGER
 - `lead_idx_property_interactions` — contact_id → contacts, lead_id → leads · ai_isa
-- `lead_property_searches` — lead_id → leads · ai_isa
+- `lead_property_searches` — lead_id → leads · no tenant column · ai_isa
 - `lead_score_history` — contact_id → contacts, lead_id → leads · ai_isa
 - `podcast_analytics_events` — listener_contact_id → contacts · campaign_orchestrator
 - `portal_access_logs` — contact_id → contacts · data_steward
@@ -398,7 +398,7 @@ Census: 441 FKs from 310 child tables into the 41 moved families (289 tables car
 - `video_engagement_events` — contact_id → contacts, video_asset_id → video_assets · asset_manager
 - `website_visitors` — contact_id → contacts, lead_id → leads · data_steward
 - `calculator_history` — contact_id → contacts, lead_id → leads · data_steward
-- `google_search_activity` — lead_id → leads · shopping_agent
+- `google_search_activity` — lead_id → leads · no tenant column · shopping_agent
 - `nextdoor_activity` — lead_id → leads · campaign_orchestrator
 - `listing_page_analytics` — listing_id → listings · listing_concierge
 - `ai_search_citation_observations` — project_id → ai_video_projects · shopping_agent

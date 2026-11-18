@@ -279,8 +279,12 @@ function accuracyLayer() {
     && /resolveSellerCommission/.test(acc) && /side: "seller"/.test(acc)
     && /onConflict: "transaction_id,document_id,side"/.test(acc)
     && /migration 1105/.test(acc))
-  check("buyer writer keeps working both sides of migration 1105: side:'buyer' + 3-col conflict, legacy 2-col fallback",
-    /side: "buyer"/.test(acc) && /onConflict: "transaction_id,document_id" \}/.test(acc))
+  // The RULE (wave 154): the live table has `side` and its only unique key is the three-column one, so the buyer writer names
+  // exactly that key. The old "legacy 2-col fallback" this check used to demand named a key the database does not have — every
+  // such upsert is refused whole (test:upsert-conflict-target holds that against the live index cache).
+  check("buyer writer upserts side:'buyer' on the three-column key, and no writer names the two-column key the live table does not have",
+    /side: "buyer"/.test(acc) && /\.upsert\(\{ \.\.\.row, side: "buyer" \}, \{ onConflict: "transaction_id,document_id,side" \}\)/.test(acc) && !/onConflict: "transaction_id,document_id" \}/.test(acc))
+  check("POSITIVE CONTROL: a two-column conflict target IS recognised", /onConflict: "transaction_id,document_id" \}/.test('.upsert(row, { onConflict: "transaction_id,document_id" })'))
   check("combined entrypoint grades BOTH sides (existing hook wiring unchanged); seller failure never blocks the buyer path",
     /const buyer = await recordBuyerClosingCostAccuracy/.test(acc) && /seller = await recordSellerClosingCostAccuracy/.test(acc))
 

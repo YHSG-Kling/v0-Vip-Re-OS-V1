@@ -5,7 +5,7 @@
 
 ## 1. Totals (numerator / denominator)
 
-Rows: **3190** — working **1593** · partial **1305** · missing **291** · owner-held **1**. Consequential rows: 2711.
+Rows: **3190** — working **1595** · partial **1303** · missing **291** · owner-held **1**. Consequential rows: 2711.
 
 | population | rows / scanned |
 |---|---|
@@ -26,7 +26,7 @@ Rows: **3190** — working **1593** · partial **1305** · missing **291** · ow
 
 | trigger kind | rows | working | partial | missing |
 |---|---|---|---|---|
-| assistant_tool | 59 | 43 | 16 | 0 |
+| assistant_tool | 59 | 45 | 14 | 0 |
 | capability | 11 | 11 | 0 | 0 |
 | cron | 220 | 109 | 111 | 0 |
 | http | 123 | 80 | 38 | 5 |
@@ -37,14 +37,14 @@ Rows: **3190** — working **1593** · partial **1305** · missing **291** · ow
 | server_action | 1937 | 895 | 964 | 78 |
 | webhook | 28 | 25 | 3 | 0 |
 
-Missing links across all rows: evidence 1158 · decision 327 · trigger 207 · worker 192 · owner 131 · readback 12.
+Missing links across all rows: evidence 1158 · decision 327 · trigger 207 · worker 192 · owner 129 · readback 12.
 
 ## 2. Kernel-to-customer map (existing components, by contract step)
 
 | contract step (A1) | existing component (live code) |
 |---|---|
 | OBSERVE (triggers) | `dispatchDueCrons` @ lib/kernel/cron-dispatch.ts:427 · `emitKernelEvent` @ lib/kernel/emit.ts:155 · `publishManagerSignal` @ lib/kernel/manager-signals.ts:71 · `runIngressReconciliation` @ lib/kernel/ingress-reconciliation.ts:288 |
-| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3451 · `authorityAllows` @ lib/voice/tool-registry.ts:869 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:62 |
+| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3451 · `authorityAllows` @ lib/voice/tool-registry.ts:870 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:62 |
 | BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3436 · `requestDelegation` @ lib/kernel/manager-delegation.ts:399 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
 | CHECK AUTHORITY / POLICY / BUDGET | `isToolAllowedAtAuthority` @ lib/ai-isa/persona-tool-policy.ts:616 · `autonomyDecision` @ lib/managers/autonomy-gate.ts:91 · `approverFor` @ lib/kernel/approval-authority.ts:117 |
 | COORDINATE OR HOLD | `arbitratePlannedTouch` @ lib/ai-isa/followup-arbiter.ts:1857 · `evaluateApprovalSla` @ lib/kernel/approval-sla.ts:17 |
@@ -58,14 +58,14 @@ Missing links across all rows: evidence 1158 · decision 327 · trigger 207 · w
 |---|---|---|---|---|
 | P1 platform · billing · metering | 682 | 442 | 221 | 19 |
 | P2 tenant provisioning · seats · offices · websites | 358 | 223 | 115 | 20 |
-| P3 command center · NL / voice · tasks · approvals | 674 | 444 | 184 | 46 |
+| P3 command center · NL / voice · tasks · approvals | 674 | 446 | 182 | 46 |
 | P4 raw acquisition · RawData · Raw Lead · Lead | 477 | 350 | 83 | 44 |
 | P5 prospects · contacts · portal · conversation | 915 | 570 | 285 | 60 |
 | P6 marketing · content · channels · ads | 956 | 540 | 379 | 37 |
 | P7 listings · shopping agent · MLS / IDX | 514 | 327 | 166 | 21 |
 | P8 offers · transactions · documents · closing | 901 | 547 | 276 | 78 |
 | P9 commission · settlement · brokerage finance | 475 | 362 | 90 | 22 |
-| P10 recruiting · gamification · support · ops | 951 | 679 | 235 | 36 |
+| P10 recruiting · gamification · support · ops | 951 | 680 | 234 | 36 |
 
 Unclassified rows (no plane matcher): 255.
 
@@ -81,12 +81,12 @@ Unclassified rows (no plane matcher): 255.
 | Kernel supervisor / mission board | 147 | 118 | 18 | 11 | `server_action:app/actions/ai-agent-goals.ts#upsertAgentGoal` @ app/actions/ai-agent-goals.ts:71 |
 | Manager-to-manager bus | 840 | 601 | 219 | 19 | `manager_signal:agent_escalated_to_human` @ lib/kernel/signal-registry.ts:312 |
 | Cron / scheduling / watchers | 292 | 150 | 134 | 8 | `cron:/api/cron/marketing-agent-weekly` @ app/api/cron/marketing-agent-weekly/route.ts:32 |
-| Natural-language and voice command | 307 | 187 | 101 | 19 | `assistant_tool:broadcast_announcement` @ app/api/agent-assistant/tool-call/route.ts:740 |
+| Natural-language and voice command | 307 | 189 | 99 | 19 | `assistant_tool:broadcast_announcement` @ app/api/agent-assistant/tool-call/route.ts:740 |
 | Raw external research | 46 | 21 | 17 | 8 | `capability:vendor:web_research` @ vendor manifest (buildFullActionManifest) |
 | RawData and identity | 81 | 61 | 15 | 5 | `capability:vendor:lead_skip_trace` @ vendor manifest (buildFullActionManifest) |
 | Raw Lead to Lead | 95 | 80 | 10 | 5 | `manager_signal:copy_variant_promoted` @ lib/kernel/signal-registry.ts:163 |
 | Lead to Contact | 195 | 145 | 39 | 11 | `capability:app:agent_coaching_assign` @ lib/agentic-os/app-capability-registry.ts:229 |
-| Existing Contact / Customer 360 | 503 | 380 | 97 | 26 | `kernel_event:contact_dnc_set` @ lib/kernel/event-reactor.ts:1194 |
+| Existing Contact / Customer 360 | 503 | 381 | 96 | 26 | `kernel_event:contact_dnc_set` @ lib/kernel/event-reactor.ts:1194 |
 | Conversation / AI ISA | 174 | 138 | 31 | 5 | `assistant_tool:voice_followup` @ app/api/agent-assistant/tool-call/route.ts:709 |
 | Consumer portals / stage education, collaboration | 274 | 198 | 64 | 12 | `server_action:app/actions/collaborative-search.ts#setFamilyFeedbackUseAction` @ app/actions/collaborative-search.ts:703 |
 | Shopping Agent / property search | 26 | 16 | 9 | 1 | `server_action:app/actions/buyer-search/conversational-search.ts#explainHomeForBuyerAction` @ app/actions/buyer-search/conversational-search.ts:575 |
@@ -309,8 +309,8 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
-| `assistant_tool:run_team_command` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:485 |
-| `assistant_tool:team_query` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:705 |
+| `assistant_tool:run_team_command` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:485 |
+| `assistant_tool:team_query` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:705 |
 | `cron:/api/cron/manager-learning` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/manager-learning/route.ts:20 |
 | `cron:/api/cron/office-hours` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/office-hours/route.ts:18 |
 | `cron:/api/cron/revenue-protection-rollup` | partial | decision | finance_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/revenue-protection-rollup/route.ts:25 |
@@ -381,17 +381,16 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/user-profile.ts#updateMyProfile` | partial | evidence | data_steward | session actor (getAgentContext @ lib/platform/acting-context.ts:214) | app/actions/user-profile.ts:74 |
 | `server_action:app/actions/vendor-invite.ts#revokeVendorInviteAction` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/vendor-invite.ts:538) | app/actions/vendor-invite.ts:534 |
 
-### P3 command center · NL / voice · tasks · approvals — 62 not working
+### P3 command center · NL / voice · tasks · approvals — 61 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
-| `assistant_tool:broker_objective` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:745 |
-| `assistant_tool:fill_form_field` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:694 |
-| `assistant_tool:kernel_resolve` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:713 |
-| `assistant_tool:next_unfilled_field` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:697 |
-| `assistant_tool:read_form_status` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:691 |
-| `assistant_tool:run_skill` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:746 |
-| `assistant_tool:standup_action` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:708 |
+| `assistant_tool:broker_objective` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:745 |
+| `assistant_tool:fill_form_field` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:694 |
+| `assistant_tool:next_unfilled_field` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:697 |
+| `assistant_tool:read_form_status` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:691 |
+| `assistant_tool:run_skill` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:746 |
+| `assistant_tool:standup_action` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:708 |
 | `http:/api/voice/end-call` | partial | owner | unresolved: it writes only carriers / unstewarded tables (vo | session actor (createClient() from "@/lib/supabase/server" @ app/api/v | app/api/voice/end-call/route.ts:13 |
 | `http:/api/voice/twilio/recording` | partial | owner, decision | unresolved: it writes only carriers / unstewarded tables (vo | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/voice/twilio/recording/route.ts:38 |
 | `kernel_event:agent_task_dispatched` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4087 |
@@ -964,17 +963,16 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/financials.ts#attachExpenseReceipt` | partial | evidence | finance_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/financials.ts:711 |
 | … 33 more in the JSON | | | | | |
 
-### P10 recruiting · gamification · support · ops — 87 not working
+### P10 recruiting · gamification · support · ops — 86 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
-| `assistant_tool:area_query` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:706 |
-| `assistant_tool:ask_guidance` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:714 |
-| `assistant_tool:explain_touches` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:790 |
-| `assistant_tool:kernel_proposals` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:712 |
-| `assistant_tool:manager_status` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:744 |
-| `assistant_tool:morning_standup` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:707 |
-| `assistant_tool:whos_slipping` | partial | owner | unresolved: VOICE_TOOL_MANAGER deliberately leaves bench-wid | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:787 |
+| `assistant_tool:area_query` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:706 |
+| `assistant_tool:ask_guidance` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:714 |
+| `assistant_tool:explain_touches` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:790 |
+| `assistant_tool:manager_status` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:744 |
+| `assistant_tool:morning_standup` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:707 |
+| `assistant_tool:whos_slipping` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:787 |
 | `cron:/api/cron/agent-health-check` | partial | decision | cron_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/agent-health-check/route.ts:40 |
 | `cron:/api/cron/appointment-whisper` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/appointment-whisper/route.ts:18 |
 | `cron:/api/cron/approval-push` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/approval-push/route.ts:18 |
@@ -1048,7 +1046,8 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/error-handler.ts#resolveErrorGroup` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/error-handler.ts:212 |
 | `server_action:app/actions/exception-center.ts#dismissException` | partial | owner | unresolved: it writes only carriers / unstewarded tables (se | session actor (auth.getUser @ app/actions/exception-center.ts:34) | app/actions/exception-center.ts:213 |
 | `server_action:app/actions/exception-center.ts#flagRepairWrong` | partial | owner | unresolved: it writes only carriers / unstewarded tables (se | session actor (auth.getUser @ app/actions/exception-center.ts:34) | app/actions/exception-center.ts:234 |
-| … 7 more in the JSON | | | | | |
+| `server_action:app/actions/exception-center.ts#getExceptionCenter` | partial | owner | unresolved: it writes only carriers / unstewarded tables (se | session actor (auth.getUser @ app/actions/exception-center.ts:34) | app/actions/exception-center.ts:98 |
+| … 6 more in the JSON | | | | | |
 
 ## 8. Blind spots (published beside the numbers, CLAUDE.md §2)
 

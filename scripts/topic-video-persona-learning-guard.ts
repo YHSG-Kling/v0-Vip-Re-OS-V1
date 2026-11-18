@@ -218,7 +218,8 @@ console.log("§pick — pickTopics reads the rows the pass writes")
 const bank = stripComments(read(BANK))
 ok(/\.from\("content_asset_persona_performance"\)[\s\S]{0,200}\.eq\("persona", args\.recipientPersona\)[\s\S]{0,80}\.eq\("asset_type", args\.assetType/.test(bank),
   "pickTopics filters content_asset_persona_performance by (recipientPersona, assetType)")
-const floor = Number(/MIN_RELIABLE_SAMPLES = (\d+)/.exec(bank)?.[1] ?? NaN)
+// The read floor lives in the picker's ONE named policy (wave 154, lane 154G1) and the query reads it by name — derive both.
+const floor = /MIN_RELIABLE_SAMPLES = PICKER_POLICY\.minReliablePersonaSamples\b/.test(bank) ? Number(/minReliablePersonaSamples:\s*(\d+)/.exec(bank)?.[1] ?? NaN) : Number(/MIN_RELIABLE_SAMPLES = (\d+)/.exec(bank)?.[1] ?? NaN)
 ok(Number.isFinite(floor) && TOPIC_VIDEO_MIN_SAMPLES >= floor, `the pass's floor (${TOPIC_VIDEO_MIN_SAMPLES}) meets pickTopics' read floor (${floor}) — no written row is invisible`)
 ok(TOPIC_VIDEO_PERSONA_KEY.length > 0 && !/\s/.test(TOPIC_VIDEO_PERSONA_KEY), `one metadata key: '${TOPIC_VIDEO_PERSONA_KEY}'`)
 
