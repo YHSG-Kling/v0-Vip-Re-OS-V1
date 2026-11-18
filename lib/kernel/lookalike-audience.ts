@@ -222,15 +222,18 @@ async function stageBriefs(svc: Svc, brokerageId: string, briefs: ResearchBrief[
   const { resolveSystemTopicSource } = await import("@/lib/content-intel/system-topic-source")
   const src = await resolveSystemTopicSource(svc, brokerageId, "lookalike_research")
   if (!src.ok || !src.active) return { staged: 0, existing: have.size, error: src.ok ? "look-alike topic source switched off by the tenant" : src.error }
-  let staged = 0
-  for (const b of briefs) {
-    if (have.has(b.key)) continue
-    const { error } = await svc.from("content_topic_bank").insert({
-      source_id: src.id,
-      brokerage_id: brokerageId, topic_title: b.title, value_angle: b.valueAngle, source_url: null,
-      categories: ["customer_lookalike_research"], engagement_score: b.engagement, topic_posted_at: nowIso, scraped_at: nowIso,
-      expires_at: new Date(ctx.now.getTime() + 30 * 86_400_000).toISOString(), status: "fresh", geo_relevance: null,
-      raw_data: {
+  // THROUGH THE ONE INTAKE (wave 154, lane 154G1 — a direct insert at the batch-2 base). Idempotent twice over: the
+  // `have` set above, and the intake's dedup key `lk:<lookalike_research_key>`.
+  const ideas = briefs.filter((b) => !have.has(b.key)).map((b) => ({
+    sourceKind: "lookalike_brief", sourceId: src.id, title: b.title, angle: b.valueAngle, sourceUrl: null,
+    categories: ["customer_lookalike_research"], geo: null, publishedAt: nowIso, observedAt: nowIso,
+    expiresAt: new Date(ctx.now.getTime() + 30 * 86_400_000).toISOString(),
+    // b.engagement = the SMALLEST share (%) of this tenant's seed customers carrying the brief's attributes — measured on
+    // the tenant's own book; kept on the 0–100 column it always fed.
+    evidence: { kind: "measured" as const, metric: "min_seed_attribute_share_pct", value: b.engagement, unit: "score_0_100", note: `percent of ${ctx.seedCount} seed customers sharing the brief's attributes` },
+    rights: "first_party" as const, dedupKey: `lk:${b.key}`,
+    brief: {
+        observation_key: `lk:${b.key}`, transport: "lookalike_research",
         lookalike_research_key: b.key, generated_at: nowIso, seed_count: ctx.seedCount, attributes: b.attributes,
         fair_housing: "describes the home and the moment — never the person; the Fair Housing gate still runs on the written copy",
         // The count carries its provenance (wave 144 — lane 144E Outside-lane 2): the vendor's query id (the audit join to the
@@ -241,10 +244,13 @@ async function stageBriefs(svc: Svc, brokerageId: string, briefs: ResearchBrief[
           retrieved_at: ctx.estimate.provenance?.retrievedAt ?? null,
         } : null,
       },
-    })
-    if (error) return { staged, existing: have.size, error: `topic bank insert: ${error.message}` }
-    staged += 1
-  }
+  }))
+  if (ideas.length === 0) return { staged: 0, existing: briefs.length }
+  const { intakeTopicIdeas } = await import("@/lib/content-intel/topic-intake")
+  const r = await intakeTopicIdeas(svc, { brokerageId, ideas, now: ctx.now })
+  const staged = r.inserted
+  const failure = r.refused ?? (r.errors.length ? r.errors.join("; ") : r.excluded.length ? `excluded: ${r.excluded.map((x) => x.reason).join(", ")}` : null)
+  if (failure) return { staged, existing: briefs.length - staged, error: `topic bank intake: ${failure}` }
   return { staged, existing: briefs.length - staged }
 }
 

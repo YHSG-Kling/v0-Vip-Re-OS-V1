@@ -1174,26 +1174,19 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                             <div className="flex items-start justify-between">
                               <div className="flex-1">
                                 <h4 className="font-bold text-lg text-slate-900 mb-2">{kw.keyword}</h4>
-                                <p className="text-sm text-slate-600 mb-3">{kw.description}</p>
-                                <div className="flex items-center gap-4">
+                                <p className="text-sm text-slate-600 mb-3">{kw.rationale ?? kw.description}</p>
+                                {/* WAVE 154 (154G1): a number nobody measured renders "unknown" — never a default. */}
+                                <div className="flex flex-wrap items-center gap-2">
                                   <Badge variant="secondary" className="font-semibold">
-                                    Volume: {kw.volume?.toLocaleString() || "High"}
+                                    Monthly searches: {typeof kw.searchVolume === "number" ? kw.searchVolume.toLocaleString() : "unknown"}
                                   </Badge>
-                                  <Badge
-                                    variant="outline"
-                                    className={cn(
-                                      "font-semibold",
-                                      kw.difficulty === "easy"
-                                        ? "bg-green-50 text-green-700"
-                                        : kw.difficulty === "medium"
-                                          ? "bg-amber-50 text-amber-700"
-                                          : "bg-red-50 text-red-700",
-                                    )}
-                                  >
-                                    {kw.difficulty || "Medium"}
-                                  </Badge>
-                                  <Badge className="bg-blue-100 text-blue-700 font-semibold">
-                                    Trend: {kw.trend || "↗️ Rising"}
+                                  {typeof kw.relativeIndex === "number" && (
+                                    <Badge variant="outline" className="font-semibold" title={kw.relativeIndexBasis ?? "relative index, not a count of searches"}>
+                                      Relative interest: {kw.relativeIndex}/100 (estimate)
+                                    </Badge>
+                                  )}
+                                  <Badge variant="outline" className="font-semibold">
+                                    Difficulty: {typeof kw.difficulty === "number" ? kw.difficulty : "unknown"}
                                   </Badge>
                                 </div>
                               </div>
@@ -1292,9 +1285,10 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                               <h4 className="font-bold text-lg text-slate-900 mb-2">{comp.title}</h4>
                               <p className="text-sm text-slate-600 mb-3 line-clamp-3">{comp.content}</p>
                               <div className="flex items-center gap-3 mb-4">
-                                <Badge className="bg-purple-100 text-purple-700">{comp.platform || "LinkedIn"}</Badge>
-                                <Badge variant="outline" className="font-semibold">
-                                  {comp.engagement || "2.4K"} engagements
+                                {/* WAVE 154 (154G1): no invented platform or engagement — the row's own evidence label. */}
+                                <Badge className="bg-purple-100 text-purple-700">{comp.platform ?? "platform unknown"}</Badge>
+                                <Badge variant="outline" className="font-semibold" title={comp.evidenceLabel ?? undefined}>
+                                  {typeof comp.engagement === "number" ? `${comp.engagement.toLocaleString()} public interactions` : "engagement unknown"}
                                 </Badge>
                               </div>
                               <div className="flex gap-2">

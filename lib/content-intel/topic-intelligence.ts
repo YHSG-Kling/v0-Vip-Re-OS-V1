@@ -35,6 +35,7 @@
 // Not server-only: scripts/content-distribution-guard.ts drives the pure half and the pass on an in-memory client.
 
 import { resolveSystemTopicSource } from "./system-topic-source"
+import { intakeTopicIdeas, type TopicIdea } from "./topic-intake"
 import {
   competitorPostThemes, viralPatternThemes, customerQuestionThemes, educationGapThemes, aiSearchGapThemes, marketThemes, publicResearchThemes,
   type CitationRow, type CompetitorContentRow, type IntelTheme, type MarketDataRow, type ModuleRow, type PublicResearchRow, type QuestionRow,
@@ -43,7 +44,43 @@ import {
 
 type Db = { from: (table: string) => any }
 
-// ── The pass (I/O) ────────────────────────────────────────────────────────────────────────────────
+// ── Theme → the ONE intake's TopicIdea (wave 154, lane 154G1) — PURE ─────────────────────────────
+
+const themeDedupKey = (themeKey: string): string => `ti:${themeKey}`
+
+/** Who may use what a source class yields: themes of public pages are reworded labels; the tenant's own records are first party. */
+const RIGHTS_BY_CLASS: Readonly<Partial<Record<TopicSourceClass, TopicIdea["rights"]>>> = Object.freeze({
+  competitor_post: "public_read_reworded", viral_pattern: "public_read_reworded", competitor_ad: "public_read_reworded",
+  public_market_research: "public_read_reworded",
+  customer_question: "first_party", education_gap: "first_party", ai_search_gap: "first_party",
+  property_value_trend: "first_party", market_change: "first_party", tenant_performance: "first_party",
+})
+
+/**
+ * The theme's evidence, honestly classed. IntelTheme.engagementScore is a RANKING HEURISTIC computed in topic-themes.ts from
+ * the counts it keeps in topic_evidence.engagement.metrics (e.g. 20 × distinct askers, capped at 100) — it is a proxy for
+ * priority, never a measured engagement figure, so it is filed as kind "proxy", metric `priority_from_<basis>`. A theme with
+ * no engagement basis files "unknown" (the 0–100 column is then not written). The measured counts stay in topic_evidence.
+ */
+function themeEvidence(t: IntelTheme): TopicIdea["evidence"] {
+  const basis = t.evidence.engagement.basis
+  if (basis === "none") return { kind: "unknown", metric: null, value: null, unit: null, note: "no engagement evidence for this theme" }
+  return { kind: "proxy", metric: `priority_from_${basis}`, value: t.engagementScore, unit: "score_0_100", note: `a ranking heuristic over ${basis.replace(/_/g, " ")} (raw counts in topic_evidence.engagement.metrics) — not a measured engagement figure` }
+}
+
+function themeToIdea(t: IntelTheme, ctx: { sourceId: string; sourceUrl: string | null; now: Date }): TopicIdea {
+  return {
+    sourceKind: "topic_intelligence", sourceId: ctx.sourceId, title: t.title, angle: t.valueAngle, categories: t.categories,
+    geo: t.geo ? { cities: t.geo.cities ?? [], states: t.geo.states ?? [], zip_codes: t.geo.zip_codes ?? [] } : null,
+    sourceUrl: ctx.sourceUrl, publishedAt: t.topicPostedAt, observedAt: t.evidence.observed_at || ctx.now.toISOString(),
+    expiresAt: new Date(ctx.now.getTime() + t.expiresDays * DAY_MS).toISOString(),
+    evidence: themeEvidence(t), rights: RIGHTS_BY_CLASS[t.evidence.source_class] ?? "first_party",
+    dedupKey: themeDedupKey(t.evidence.theme_key),
+    brief: { topic_evidence: t.evidence, source_class: t.evidence.source_class, observation_key: `theme:${t.evidence.theme_key}` },
+  }
+}
+
+// ── The pass (I/O)────────────────────────────────────────────────────────────────────────────────
 
 export interface TopicIntelligenceResult {
   brokerageId: string
@@ -107,6 +144,13 @@ export async function runTopicIntelligencePass(db: Db, brokerageId: string, opts
         .eq("brokerage_id", brokerageId).gte("created_at", since30).limit(500)
       if (inqErr) out.blindSpots.push(`listing inquiries not read (${inqErr.message ?? "unknown"})`)
       else for (const m of (inq ?? []) as Array<{ email: string | null; phone: string | null; message: string | null; created_at: string | null }>) q.push({ contact_key: m.email ? `e:${m.email.toLowerCase()}` : m.phone ? `p:${m.phone}` : null, text: m.message, at: m.created_at })
+      // FREQUENT SUPPORT SUBJECTS (wave 154, lane 154G1 — directive G2): the tenant's own user_to_brokerage tickets. Read in
+      // memory for THEME matching only; the subject / description never leave customerQuestionThemes (label + distinct-asker
+      // count only, ≥ MIN_DISTINCT_ASKERS). tenant_to_platform tickets are software support, not consumer content — not read.
+      const { data: tix, error: tixErr } = await db.from("support_tickets").select("submitted_by_user_id, contact_id, subject, description, created_at")
+        .eq("brokerage_id", brokerageId).eq("lane", "user_to_brokerage").gte("created_at", since30).limit(500)
+      if (tixErr) out.blindSpots.push(`support tickets not read (${tixErr.message ?? "unknown"})`)
+      else for (const t of (tix ?? []) as Array<{ submitted_by_user_id: string | null; contact_id: string | null; subject: string | null; description: string | null; created_at: string | null }>) q.push({ contact_key: t.contact_id ? `c:${t.contact_id}` : t.submitted_by_user_id ? `u:${t.submitted_by_user_id}` : null, text: `${t.subject ?? ""}. ${t.description ?? ""}`, at: t.created_at, channel: "support" })
       if (q.length === 0 && !msgErr && !inqErr) out.blindSpots.push("customer questions: no inbound messages or inquiries in the last 30 days")
       const cq = customerQuestionThemes(q, now)
       askersByTheme = cq.askersByTheme
@@ -153,42 +197,44 @@ export async function runTopicIntelligencePass(db: Db, brokerageId: string, opts
       }
     }
 
-    // File in the ONE pool (idempotent per theme while fresh), under the tenant's system source.
+    // File in the ONE pool THROUGH THE ONE INTAKE (wave 154, lane 154G1 — this pass inserted directly at the batch-2 base),
+    // under the tenant's system source. Idempotent per theme: the intake's dedup key is `ti:<theme_key>`.
     const { data: bank, error: bankErr } = await db.from("content_topic_bank").select("id, raw_data, source_url")
       .eq("brokerage_id", brokerageId).eq("source_id", src.id).gte("expires_at", now.toISOString())
     if (bankErr) { out.errors.push(`content_topic_bank read refused — nothing filed: ${bankErr.message ?? "unknown"}`); return out }
-    const existing = new Map<string, string>()
     const urlsTaken = new Set<string>()
-    for (const r of (bank ?? []) as Array<{ id: string; raw_data: { topic_evidence?: { theme_key?: string } } | null; source_url: string | null }>) {
+    for (const r of (bank ?? []) as Array<{ id: string; raw_data: { topic_evidence?: { theme_key?: string }; dedup_key?: string } | null; source_url: string | null }>) {
       const k = r.raw_data?.topic_evidence?.theme_key
-      if (k) existing.set(k, r.id)
       if (r.source_url) urlsTaken.add(r.source_url)
-    }
-    const filed: Array<{ id: string; theme: IntelTheme; isNew: boolean }> = []
-    for (const t of themes) {
-      const expiresAt = new Date(now.getTime() + t.expiresDays * DAY_MS).toISOString()
-      const rawData = { topic_evidence: t.evidence }
-      const prior = existing.get(t.evidence.theme_key)
-      if (prior) {
-        const { data, error } = await db.from("content_topic_bank").update({ value_angle: t.valueAngle, engagement_score: t.engagementScore, scraped_at: now.toISOString(), expires_at: expiresAt, raw_data: rawData, categories: t.categories })
-          .eq("id", prior).eq("brokerage_id", brokerageId).select("id")
-        if (error || (data ?? []).length !== 1) out.errors.push(`refresh refused (${t.evidence.theme_key}): ${error?.message ?? "matched no row"}`)
-        else { out.refreshed++; filed.push({ id: prior, theme: t, isNew: false }) }
-        continue
+      // A row filed before the cut-over carries its theme_key but no dedup_key: stamp it ONCE (counted, tenant-pinned) so the
+      // intake finds and refreshes it instead of filing a duplicate. An annotation of an existing row — not a producer.
+      if (k && typeof r.raw_data?.dedup_key !== "string") {
+        const { data: st, error: stErr } = await db.from("content_topic_bank").update({ raw_data: { ...(r.raw_data ?? {}), dedup_key: themeDedupKey(k) } })
+          .eq("id", r.id).eq("brokerage_id", brokerageId).select("id")
+        if (stErr || (st ?? []).length !== 1) out.errors.push(`legacy theme ${k} not keyed: ${stErr?.message ?? "matched no row"}`)
       }
+    }
+    const topicIdeas: TopicIdea[] = []
+    for (const t of themes) {
+      // (source_id, source_url) is UNIQUE (m128): a URL another theme of this source already holds is not claimed again.
       const sourceUrl = t.sourceUrl && !urlsTaken.has(t.sourceUrl) ? t.sourceUrl : null
       if (sourceUrl) urlsTaken.add(sourceUrl)
-      const { data, error } = await db.from("content_topic_bank").insert({
-        source_id: src.id, brokerage_id: brokerageId, topic_title: t.title, value_angle: t.valueAngle, source_url: sourceUrl,
-        categories: t.categories, engagement_score: t.engagementScore, topic_posted_at: t.topicPostedAt, scraped_at: now.toISOString(),
-        expires_at: expiresAt, status: "fresh", geo_relevance: t.geo, raw_data: rawData,
-      }).select("id")
-      const row = ((data ?? []) as Array<{ id: string }>)[0]
-      if (error || !row) { out.errors.push(`insert refused (${t.evidence.theme_key}): ${error?.message ?? "no row"}`); continue }
-      out.inserted++
-      out.bySource[t.evidence.source_class] = (out.bySource[t.evidence.source_class] ?? 0) + 1
-      existing.set(t.evidence.theme_key, row.id)
-      filed.push({ id: row.id, theme: t, isNew: true })
+      topicIdeas.push(themeToIdea(t, { sourceId: src.id, sourceUrl, now }))
+    }
+    const filed: Array<{ id: string; theme: IntelTheme; isNew: boolean }> = []
+    if (topicIdeas.length) {
+      const r = await intakeTopicIdeas(db, { brokerageId, ideas: topicIdeas, now })
+      if (r.refused) out.errors.push(`intake refused — nothing filed: ${r.refused}`)
+      out.errors.push(...r.errors)
+      for (const x of r.excluded) out.dropped[`intake:${x.reason}`] = (out.dropped[`intake:${x.reason}`] ?? 0) + 1
+      const byKey = new Map(themes.map((t) => [themeDedupKey(t.evidence.theme_key), t]))
+      for (const row of r.rows) {
+        const t = byKey.get(row.dedupKey)
+        if (!t) continue
+        if (row.isNew) { out.inserted++; out.bySource[t.evidence.source_class] = (out.bySource[t.evidence.source_class] ?? 0) + 1 }
+        else out.refreshed++
+        filed.push({ id: row.id, theme: t, isNew: row.isNew })
+      }
     }
 
     // The strongest NEW themes → original campaign ideas PENDING a human's approval.

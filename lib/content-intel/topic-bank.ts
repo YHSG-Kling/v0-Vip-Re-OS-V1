@@ -20,6 +20,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { refurbishTriggerKindForTopicSource } from "./topic-intake"
 
 export interface TopicCandidate {
   id:               string
@@ -33,7 +34,44 @@ export interface TopicCandidate {
   /** When set + matched against the recipient's location, the picker
    *  applied a +20 score boost (Wave 18 location-aware boost). */
   geo_match:        boolean
+  /** WAVE 154 (lane 154G1 — directive G3): the row's OWN evidence, so a consumer can show what the number is (or "unknown").
+   *  measured / proxy / unknown from THE ONE intake (raw_data.evidence); null for a row filed before the intake existed. */
+  evidence_kind?:   "measured" | "proxy" | "unknown" | null
+  /** The metric behind engagement_score (e.g. exa_search_relevance, priority_from_internal_count); null = not labeled. */
+  evidence_metric?: string | null
+  rights?:          string | null
+  /** Distinct observations behind the topic (a repeated article counts once). */
+  independent_observations?: number | null
+  source_kind?:     string | null
+  /** The Refurbish trigger this topic can offer (lib/content-intel/topic-intake.ts refurbishTriggerKindForTopicSource). */
+  refurbish_trigger_kind?: string | null
 }
+
+/**
+ * THE PICKER'S ORDERING POLICY, said plainly (wave 154, lane 154G1 — directive G3 "no invented universal scoring constants").
+ * These lifts are a PRODUCT ORDERING CHOICE made in waves 18–82 (local before national, recent before old, the recipient's
+ * place before elsewhere, in-season before off-season) — none is a measurement and none is presented as one. What IS
+ * evidence enters as the row carries it: engagement_score is each row's own labeled 0–100 evidence (raw_data.evidence — a
+ * proxy or a measure, or 0 when unknown, which then lifts nothing), and performance_score (0–30) is MEASURED from this
+ * tenant's own outcomes by lib/content-intel/performance-aggregator.ts. The office claim ledger removes what this office
+ * already published (difference from the tenant's own inventory); rights and freshness were enforced at intake.
+ */
+const PICKER_POLICY = Object.freeze({
+  /** a topic filed for THIS brokerage over the platform-wide bank */
+  tenantLocalLift: 15,
+  /** a source published within freshWindowDays */
+  freshLift: 10,
+  freshWindowDays: 7,
+  /** per day the ingest crons stopped re-observing it past freshWindowDays, capped (mirrors freshLift) */
+  staleDecayPerDay: 2,
+  staleDecayCap: 10,
+  /** the topic's geo_relevance names the recipient's city / state / ZIP */
+  geoMatchLift: 20,
+  /** an undated topic with no scrape date is treated as this many days old (a stated assumption, not a measurement) */
+  undatedAgeDays: 14,
+  /** fewer persona samples than this and the persona score is noise (read-time re-check of the aggregator's gate) */
+  minReliablePersonaSamples: 5,
+})
 
 /**
  * How long an office's claim on a topic holds. Long enough that two agents
@@ -44,7 +82,7 @@ export const OFFICE_CLAIM_WINDOW_DAYS = 30
 
 /** Wave 82C — the lift an in-season topic gets (below the +10 fresh / +15 local /
  *  +20 geo boosts: the season nudges ties, it never outranks a local story). */
-export const SEASONAL_BOOST = 8
+export const SEASONAL_BOOST = 8 // part of PICKER_POLICY below: an ordering choice, not a measurement
 
 export interface RecipientLocation {
   city?:     string | null
@@ -95,7 +133,7 @@ export async function pickTopics(args: {
   const limit = Math.min(args.limit ?? 6, 25)
 
   let q = svc.from("content_topic_bank")
-    .select("id, brokerage_id, topic_title, value_angle, source_url, categories, engagement_score, performance_score, topic_posted_at, scraped_at, geo_relevance")
+    .select("id, brokerage_id, topic_title, value_angle, source_url, categories, engagement_score, performance_score, topic_posted_at, scraped_at, geo_relevance, raw_data")
     .eq("status", "fresh")
     .gt("expires_at", new Date().toISOString())
     .or(`brokerage_id.is.null,brokerage_id.eq.${args.brokerageId}`)
@@ -126,6 +164,7 @@ export async function pickTopics(args: {
      *  published it and never moves. */
     scraped_at:       string | null
     geo_relevance:    { cities?: string[]; states?: string[]; zip_codes?: string[] } | null
+    raw_data:         { evidence?: { kind?: string; metric?: string | null } | null; intake?: { rights?: string; source_kind?: string } | null; independent_observations?: number } | null
   }>
 
   // ── THE OFFICE CLAIM (m357) ────────────────────────────────────────────
@@ -185,7 +224,7 @@ export async function pickTopics(args: {
   // shrinks below the floor would otherwise outrank reliable global
   // scores). Keeps the picker's reliability contract independent of
   // aggregator history.
-  const MIN_RELIABLE_SAMPLES = 5
+  const MIN_RELIABLE_SAMPLES = PICKER_POLICY.minReliablePersonaSamples
   const personaPerfMap = new Map<string, number>()
   if (args.recipientPersona && rows.length > 0) {
     try {
@@ -218,14 +257,14 @@ export async function pickTopics(args: {
     const scrapeAgeDays = r.scraped_at ? Math.max(0, (now - Date.parse(r.scraped_at)) / 86_400_000) : null
     const ageDays = r.topic_posted_at
       ? Math.max(0, (now - Date.parse(r.topic_posted_at)) / 86_400_000)
-      : (scrapeAgeDays ?? 14)
-    const localBoost = isLocal ? 15 : 0
-    const freshBoost = ageDays <= 7 ? 10 : 0
-    const staleDecay = scrapeAgeDays !== null && scrapeAgeDays > 7
-      ? -Math.min(10, Math.round((scrapeAgeDays - 7) * 2))
+      : (scrapeAgeDays ?? PICKER_POLICY.undatedAgeDays)
+    const localBoost = isLocal ? PICKER_POLICY.tenantLocalLift : 0
+    const freshBoost = ageDays <= PICKER_POLICY.freshWindowDays ? PICKER_POLICY.freshLift : 0
+    const staleDecay = scrapeAgeDays !== null && scrapeAgeDays > PICKER_POLICY.freshWindowDays
+      ? -Math.min(PICKER_POLICY.staleDecayCap, Math.round((scrapeAgeDays - PICKER_POLICY.freshWindowDays) * PICKER_POLICY.staleDecayPerDay))
       : 0
     const geoMatch   = matchesGeo(r.geo_relevance, args.recipientLocation)
-    const geoBoost   = geoMatch ? 20 : 0
+    const geoBoost   = geoMatch ? PICKER_POLICY.geoMatchLift : 0
     // Wave 19 — performance feedback loop. content_topic_uses → engagement
     // signals → aggregator → performance_score (0..30). Winning topics
     // compound; flops decay.
@@ -282,7 +321,22 @@ export async function pickTopics(args: {
     topic_posted_at:    s.topic_posted_at,
     is_brokerage_local: s.is_brokerage_local,
     geo_match:          s.geo_match,
+    ...evidenceOfRow(s.raw_data),
   }))
+}
+
+/** The row's own evidence fields for a candidate (null where the row predates THE ONE intake — never a guess). */
+function evidenceOfRow(raw: { evidence?: { kind?: string; metric?: string | null } | null; intake?: { rights?: string; source_kind?: string } | null; independent_observations?: number } | null): Pick<TopicCandidate, "evidence_kind" | "evidence_metric" | "rights" | "independent_observations" | "source_kind" | "refurbish_trigger_kind"> {
+  const k = raw?.evidence?.kind
+  const sourceKind = raw?.intake?.source_kind ?? null
+  return {
+    evidence_kind: k === "measured" || k === "proxy" || k === "unknown" ? k : null,
+    evidence_metric: raw?.evidence?.metric ?? null,
+    rights: raw?.intake?.rights ?? null,
+    independent_observations: typeof raw?.independent_observations === "number" ? raw.independent_observations : null,
+    source_kind: sourceKind,
+    refurbish_trigger_kind: refurbishTriggerKindForTopicSource(sourceKind),
+  }
 }
 
 /** Does the topic's geo_relevance match the recipient's location?

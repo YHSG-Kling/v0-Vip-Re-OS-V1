@@ -64,6 +64,9 @@ function makeDb(seed: Record<string, Row[]>, opts: { refuse?: Set<string> } = {}
   for (const [k, v] of Object.entries(seed)) tables[k] = v.map((r) => ({ ...r }))
   const log: Op[] = []
   let seq = 0
+  // PostgREST's JSON path (`raw_data->>dedup_key`, the topic intake's dedup read — wave 154): the fake speaks it as the live
+  // API does (the text of the key), so a re-observation through THE ONE intake is matched here as it is live.
+  const cell = (r: Row, c: string): any => { const m = /^(\w+)->>(\w+)$/.exec(c); if (!m) return r[c]; const v = r[m[1]]?.[m[2]]; return v == null ? null : String(v) }
   const containsPred = (cell: any, v: any) => Array.isArray(v)
     ? Array.isArray(cell) && v.every((x) => cell.includes(x))
     : !!cell && typeof cell === "object" && Object.entries(v).every(([k, x]) => cell[k] === x)
@@ -76,9 +79,9 @@ function makeDb(seed: Record<string, Row[]>, opts: { refuse?: Set<string> } = {}
       select() { if (op !== "select") wantRows = true; return b },
       insert(p: Row | Row[]) { op = "insert"; payload = Array.isArray(p) ? p : [p]; return b },
       update(p: Row) { op = "update"; patch = p; return b },
-      eq(c: string, v: any) { filters.push([c, v]); preds.push((r) => r[c] === v); return b },
-      is(c: string, v: any) { filters.push([c, v]); preds.push((r) => (v === null ? r[c] == null : r[c] === v)); return b },
-      in(c: string, vs: any[]) { filters.push([c, vs]); preds.push((r) => vs.includes(r[c])); return b },
+      eq(c: string, v: any) { filters.push([c, v]); preds.push((r) => cell(r, c) === v); return b },
+      is(c: string, v: any) { filters.push([c, v]); preds.push((r) => (v === null ? cell(r, c) == null : cell(r, c) === v)); return b },
+      in(c: string, vs: any[]) { filters.push([c, vs]); preds.push((r) => vs.includes(cell(r, c))); return b },
       gte(c: string, v: any) { filters.push([c, v]); preds.push((r) => r[c] != null && r[c] >= v); return b },
       lt(c: string, v: any) { filters.push([c, v]); preds.push((r) => r[c] != null && r[c] < v); return b },
       contains(c: string, v: any) { filters.push([c, v]); preds.push((r) => containsPred(r[c], v)); return b },
@@ -250,7 +253,7 @@ async function main() {
   check(`A5 no migration creates a second local-events / facts table (${migs.length} migration files scanned; local_news_sources is the pre-existing config table)`, newTables.length === 0, newTables.join(", "))
   check("A5c POSITIVE CONTROL: the finder sees a planted events table, and not the existing local_news_sources", SECOND_POOL.test("create table if not exists public.local_events (id uuid)") && !SECOND_POOL.test("create table public.local_news_sources (id uuid)"))
   check("A6 facts are written to content_topic_bank — the ONE pool pickTopics reads (no other table written by the pass)",
-    /from\("content_topic_bank"\)[\s\S]{0,40}\.insert\(row\)/.test(li) && !/from\("(local_|community_)/.test(li))
+    /\bintakeTopicIdeas\s*\(\s*db\b/.test(stripComments(li)) && !/from\("content_topic_bank"\)\s*\.insert\(/.test(stripComments(li)) && !/from\("(local_|community_)/.test(li))
 
   console.log("\n[B · discovery and screening — deterministic, every drop counted]")
   const r1 = await runLocalIntelPass(A, deps({ ledger: ledgerOnce }))

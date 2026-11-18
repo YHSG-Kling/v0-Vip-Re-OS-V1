@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { createContentSource, type SourceTypeUI } from "@/app/actions/content-intel/sources"
+import { createContentSource, saveTopicObservationAction, type SourceTypeUI } from "@/app/actions/content-intel/sources"
 
 export function ContentSourceForm() {
   const [type, setType] = useState<SourceTypeUI>("reddit")
@@ -119,6 +119,45 @@ function helperFor(type: SourceTypeUI): string {
     case "exa_query":   return "Required: query (natural language). Optional: withinDays, type ('neural'|'keyword'|'auto'), category ('news' etc.)."
     case "rss":         return "Required: feed_url (http or https). Optional: source_trust 40-90 (higher = trusted news source)."
     case "apify_actor": return "Required: actor (apify/name), input (actor-specific payload), title_field + url_field. Optional: engagement_fields, geo_relevance."
-    case "manual":      return "No config required. Manual sources hold hand-curated topics seeded directly into the bank."
+    case "manual":      return "No config required for a hand-seed bucket. For public-post TOPIC research add community_post_urls (public Nextdoor post URLs) and max_run_usd (the per-run budget — no request is made without one); only a reworded topic is stored, never the post or its author."
   }
+}
+
+/**
+ * WAVE 154 (lane 154G1): save your OWN observation or a permitted link as a topic — through THE ONE intake
+ * (app/actions/content-intel/sources.ts saveTopicObservationAction). Your words pass the same exclusion and personal-data
+ * screens as every other source; nothing is fetched from the link.
+ */
+export function SaveTopicObservationForm() {
+  const [note, setNote] = useState("")
+  const [link, setLink] = useState("")
+  const [status, setStatus] = useState<{ kind: "idle" } | { kind: "ok"; text: string } | { kind: "err"; message: string }>({ kind: "idle" })
+  const [pending, startTransition] = useTransition()
+  function onSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setStatus({ kind: "idle" })
+    startTransition(async () => {
+      const r = await saveTopicObservationAction({ note, link: link.trim() || null })
+      if (r.ok && r.inserted + r.merged > 0) { setStatus({ kind: "ok", text: r.merged ? "Added to an existing topic ✓" : "Saved ✓" }); setNote(""); setLink("") }
+      else if (r.ok) setStatus({ kind: "err", message: r.excluded.length ? `Not saved: ${r.excluded.map((x) => x.reason.replace(/_/g, " ")).join(", ")}` : "Not saved." })
+      else setStatus({ kind: "err", message: r.error ?? "Not saved." })
+    })
+  }
+  return (
+    <form onSubmit={onSubmit} className="border rounded-lg p-4 bg-gray-50 space-y-3">
+      <div>
+        <label className="block text-xs font-semibold text-gray-700 mb-1">Your topic idea or observation</label>
+        <input value={note} onChange={(e) => setNote(e.target.value)} maxLength={240} required placeholder="e.g. Buyers keep asking how insurance quotes change their closing timeline" className="w-full border rounded px-2 py-1.5 text-sm" />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-gray-700 mb-1">Link (optional — a page you may cite)</label>
+        <input value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://…" className="w-full border rounded px-2 py-1.5 text-sm" />
+      </div>
+      <div className="flex items-center gap-3">
+        <button type="submit" disabled={pending} className="px-4 py-1.5 bg-black text-white text-sm rounded disabled:opacity-50">{pending ? "Saving…" : "Save topic"}</button>
+        {status.kind === "ok" && <span className="text-sm text-green-700">{status.text}</span>}
+        {status.kind === "err" && <span className="text-sm text-red-700">{status.message}</span>}
+      </div>
+    </form>
+  )
 }

@@ -30,8 +30,11 @@ export interface ExaSearchResult {
   result_id:        string
   url:              string
   title:            string
-  /** Exa's relevance score 0-1, normalized to 0-100 for the topic bank. */
+  /** Exa's relevance score 0-1, normalized to 0-100 for the topic bank. A search-RELEVANCE proxy, never engagement. */
   engagement_score: number
+  /** Wave 154 (154G1): false when Exa returned no score and engagement_score holds the 50 fallback — that number is then
+   *  not evidence of anything, and the topic intake files it as "unknown". */
+  relevance_measured: boolean
   /** Short summary (Exa's "highlight" or first 240 chars of full text). */
   summary:          string
   /** Published date when known. */
@@ -137,7 +140,8 @@ export async function exaSearch(args: {
       url:              r.url,
       title:            (r.title ?? r.url).slice(0, 240),
       engagement_score: score,
-      summary:          summary.slice(0, 4000),
+      relevance_measured: typeof r.score === "number",
+      summary:         summary.slice(0, 4000),
       published_date:   r.publishedDate ?? null,
       categories:       inferCategoriesFromText(`${r.title ?? ""} ${summary}`),
       // §1.2 — the page image. `favicon` is deliberately NOT used as a fallback:

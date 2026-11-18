@@ -242,7 +242,7 @@ async function main() {
 
   // Every OTHER paid cron — derived, each classified (a NEW unclassified paid cron fails this proof).
   // runPooled…( is a pull too (wave 93): the pooled lanes ARE the lead-scraping cron's vendor pulls.
-  const PULL = /runPooled\w+\(|new BatchDataClient\(|fetchMotivatedSellers\(|exaSearch\(|runApifyScrape\(|fetchTopThreads\(|fetchExaCompetitorAds\(|refreshMarketData\(|generateMarketInsight\(|refreshInvestorOffMarketMatches\(|runAllActiveAlerts\(|runExternalMarketWatchForBuyer\(|runIntentCampaign\(|ingestBatchDataSellerSignals\(|searchRentcast\w*\(|getRentcastMarketStats\(/
+  const PULL = /runPooled\w+\(|new BatchDataClient\(|fetchMotivatedSellers\(|exaSearch\(|runApifyScrape\(|fetchTopThreads\(|fetchExaCompetitorAds\(|refreshMarketData\(|generateMarketInsight\(|refreshInvestorOffMarketMatches\(|runAllActiveAlerts\(|runExternalMarketWatchForBuyer\(|runIntentCampaign\(|ingestBatchDataSellerSignals\(|researchCommunityPostTopics\(|searchRentcast\w*\(|getRentcastMarketStats\(/
   const crons = readdirSync(join(ROOT, "app/api/cron")).map((c) => `app/api/cron/${c}/route.ts`).filter((p) => existsSync(join(ROOT, p)))
   const paid = crons.filter((p) => PULL.test(code(p)))
   const CLASSIFIED: Record<string, string> = {
@@ -255,6 +255,7 @@ async function main() {
     "app/api/cron/content-intel-exa/route.ts": "Exa semantic queries — a merged multi-city query degrades relevance; 10 results included per $0.007 request",
     "app/api/cron/content-intel-apify/route.ts": "per-source content watch (hashtags/handles) — not a geography pull",
     "app/api/cron/content-intel-reddit/route.ts": "per-subreddit content watch — not a geography pull",
+    "app/api/cron/content-intel-community/route.ts": "per-tenant configured public post URLs — topic research, not a geography pull",
     "app/api/cron/competitor-ads-exa/route.ts": "per-competitor ad lookup — tenant-owned subject",
     "app/api/cron/intent-campaign/route.ts": "TENANT-OWNED campaign audience",
     "app/api/cron/permit-signal-scan/route.ts": "Exa permit search per territory — semantic query (see content-intel-exa)",

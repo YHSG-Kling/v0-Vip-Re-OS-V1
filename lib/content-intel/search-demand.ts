@@ -67,7 +67,7 @@ export const productionTopicIntake: TopicIntake | null = async (db, a) => (await
 
 /** One vocabulary — the sourceKind every idea from this module carries. */
 export const SEARCH_DEMAND_SOURCE_KINDS = {
-  trends: "search_demand_trends",
+  trends: "google_trends", // wave 154 (154G1, §6): the live content_topic_sources.source_type spelling, and RELATIVE_INDEX_SOURCES' key — was "search_demand_trends"
   search_console: "search_demand_search_console",
   first_party: "search_demand_first_party",
   keyword_intel: "search_demand_keyword_intel",
@@ -93,7 +93,7 @@ const geoLabelOf = (g: { city?: string | null; state?: string | null; label?: st
   clean(g?.label) || [clean(g?.city), clean(g?.state)].filter(Boolean).join(", ")
 
 /** PURE — one vocabulary of content categories a demand phrase falls into (the topic bank's existing category words). */
-export function demandCategoriesOf(text: string): string[] {
+function demandCategoriesOf(text: string): string[] {
   const t = text.toLowerCase()
   const out = new Set<string>()
   if (/\b(buy|buying|first[- ]time|homes? for sale|house hunting|pre-?approv|offer)\b/.test(t)) out.add("buyer_advice")
@@ -130,6 +130,7 @@ export interface TrendsTransport {
 export function productionTrendsTransport(): TrendsTransport | null { return null }
 
 /** PURE — one trend point → one topic idea (or why not). */
+/** @proofSeam scripts/google-intelligence-guard.ts checks one trend row's evidence labels; production caller trendsProducer in this file. */
 export function trendIdea(p: TrendsPoint, now: Date): { idea: TopicIdea | null; why: string | null } {
   const term = clean(p.term)
   const where = geoLabelOf(p.geo)
@@ -157,6 +158,7 @@ export function trendIdea(p: TrendsPoint, now: Date): { idea: TopicIdea | null; 
   }
 }
 
+/** @proofSeam scripts/google-intelligence-guard.ts drives this producer with a recording transport; production caller runSearchDemandScan in this file. */
 export async function trendsProducer(transport: TrendsTransport | null, a: { geo: { city?: string | null; state?: string | null }; now: Date }): Promise<ProducerReport> {
   const base = { producer: "trends" as const, rowsRead: 0, ideas: [] as TopicIdea[], caveats: [] as string[] }
   if (!transport) return { ...base, status: "not_connected", reason: "Google Trends is not connected — Google's Trends API is access-limited and no grant is on record (OWNER-HELD); nothing is scraped and nothing is invented" }
@@ -206,7 +208,7 @@ export interface SearchConsoleTransport {
 export function productionSearchConsoleTransport(): SearchConsoleTransport | null { return null }
 
 /** PURE — the only fields of a Search Console row this module keeps. Anything else on a row is dropped here, by name. */
-export function whitelistSearchConsoleRow(r: Record<string, unknown>): SearchConsoleRow {
+function whitelistSearchConsoleRow(r: Record<string, unknown>): SearchConsoleRow {
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0)
   const o = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null)
   const s = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null)
@@ -214,7 +216,7 @@ export function whitelistSearchConsoleRow(r: Record<string, unknown>): SearchCon
 }
 
 /** PURE — the caveats Google's own reporting carries, said beside every idea. */
-export function searchConsoleCaveats(rep: SearchConsoleReport, rows: SearchConsoleRow[]): string[] {
+function searchConsoleCaveats(rep: SearchConsoleReport, rows: SearchConsoleRow[]): string[] {
   const out: string[] = []
   const anonymizedRows = rows.filter((r) => !r.query).length
   const listed = rows.reduce((s, r) => s + r.impressions, 0)
@@ -225,6 +227,7 @@ export function searchConsoleCaveats(rep: SearchConsoleReport, rows: SearchConso
   return out
 }
 
+/** @proofSeam scripts/google-intelligence-guard.ts drives this producer with a recording transport; production caller runSearchDemandScan in this file. */
 export async function searchConsoleProducer(
   transport: SearchConsoleTransport | null,
   a: { site: { url: string; verifiedOwner: boolean } | null; now: Date; windowDays?: number; maxIdeas?: number },
@@ -298,6 +301,7 @@ const LIFESTYLE_TOPIC: Readonly<Record<string, string>> = {
 interface UtteranceRow { contact_id: string | null; consent_basis: string | null; created_at: string | null; interpretation: Record<string, any> | null }
 
 /** PURE — consented statements → demand categories × city with distinct-contact counts (no words, no ids out). */
+/** @proofSeam scripts/google-intelligence-guard.ts drives the first-party aggregation on fixture rows; production caller firstPartyDemandProducer in this file. */
 export function aggregateFirstPartyDemand(rows: readonly UtteranceRow[]): Array<{ label: string; city: string | null; contacts: number; lastAt: string | null }> {
   const g = new Map<string, { label: string; city: string | null; who: Set<string>; lastAt: string | null }>()
   for (const r of rows) {
@@ -319,6 +323,7 @@ export function aggregateFirstPartyDemand(rows: readonly UtteranceRow[]): Array<
   return [...g.values()].map((e) => ({ label: e.label, city: e.city, contacts: e.who.size, lastAt: e.lastAt })).sort((a, b) => b.contacts - a.contacts)
 }
 
+/** @proofSeam scripts/google-intelligence-guard.ts drives this producer alone; production caller runSearchDemandScan in this file. */
 export async function firstPartyDemandProducer(db: Db, a: { brokerageId: string; now: Date; state?: string | null }): Promise<ProducerReport> {
   const base = { producer: "first_party" as const, rowsRead: 0, ideas: [] as TopicIdea[], caveats: [] as string[] }
   const since = iso(new Date(a.now.getTime() - FIRST_PARTY_WINDOW_DAYS * DAY_MS))
@@ -355,7 +360,7 @@ export async function firstPartyDemandProducer(db: Db, a: { brokerageId: string;
 
 const NICHE_LABEL: Readonly<Record<string, string>> = { buyer_advice: "Buying a home", seller_advice: "Selling a home", finance: "Mortgages and money", market_education: "Understanding the market", neighborhood: "Neighborhood life", home_improvement: "Improving a home" }
 
-export async function keywordIntelProducer(db: Db, a: { brokerageId: string; now: Date }): Promise<ProducerReport> {
+async function keywordIntelProducer(db: Db, a: { brokerageId: string; now: Date }): Promise<ProducerReport> {
   const base = { producer: "keyword_intel" as const, rowsRead: 0, ideas: [] as TopicIdea[], caveats: [] as string[] }
   const { data, error } = await db.from("keyword_intelligence")
     .select("id, source, intent_category, related_keywords, search_volume_monthly, trend_direction, trend_change_pct, city, state, zip_code, captured_at, expires_at")

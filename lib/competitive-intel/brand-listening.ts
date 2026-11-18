@@ -42,6 +42,7 @@
 // loaded lazily, so the proof never reaches the network.
 
 import { z } from "zod"
+import type { TopicIdea } from "@/lib/content-intel/topic-intake"
 import {
   detectOurCitation, detectCompetitorCitations, loadCompetitorTargets, type CompetitorTarget,
 } from "@/lib/kernel/ai-search-citation-monitor"
@@ -733,29 +734,31 @@ export async function runBrandListeningPass(brokerageId: string, deps: BrandList
         const have = new Set(bankRows.map((r) => r.raw_data?.listening_topic_key).filter(Boolean))
         // (source_id, source_url) is UNIQUE (m128): two themes of one mention must not both claim its URL.
         const urlsTaken = new Set(bankRows.filter((r) => r.source_id === topicSource.id && r.source_url).map((r) => r.source_url as string))
+        // THROUGH THE ONE INTAKE (wave 154, lane 154G1 — a direct insert at the batch-2 base; lane 154D Outside-lane 3).
+        const ideas: TopicIdea[] = []
         for (const t of candidates) {
           if (have.has(t.topic)) continue
           const urlOf = t.ids.map((id) => recentRows.find((r) => r.id === id)?.url ?? null).find((u): u is string => !!u && !urlsTaken.has(u)) ?? null
           if (urlOf) urlsTaken.add(urlOf)
-          const { error } = await db.from("content_topic_bank").insert({
-            source_id: topicSource.id,
-            brokerage_id: brokerageId,
-            topic_title: t.topic.slice(0, 120),
-            value_angle: `${t.mentions} public mentions in the last 7 days discussed this${t.negative ? ` (${t.negative} negative)` : ""} — answer the question the conversation is asking.`,
-            source_url: urlOf,
-            categories: ["brand_listening"],
-            engagement_score: Math.min(100, Math.round(t.reach / Math.max(1, t.mentions))),
-            topic_posted_at: t.newest || now.toISOString(),
-            scraped_at: now.toISOString(),
-            expires_at: new Date(now.getTime() + TOPIC_TTL_DAYS * DAY_MS).toISOString(),
-            status: "fresh",
-            geo_relevance: { cities: facts.brokerage.city ? [facts.brokerage.city] : [], states: facts.brokerage.state ? [facts.brokerage.state] : [] },
-            // WAVE 154 (154D, D3): engagement_score above is DERIVED (public reach ÷ mentions, capped at 100) — say so on the
-            // row, so a reader never presents it as measured engagement; the mention count is the measured part.
-            raw_data: { listening_topic_key: t.topic, mention_ids: t.ids.slice(0, 20), negative: t.negative, promoted_at: now.toISOString(), evidence: { kind: "proxy", metric: "reach_per_mention_capped_100", measured: { metric: "public_mentions_7d", value: t.mentions } } },
+          ideas.push({
+            sourceKind: "brand_listening", sourceId: topicSource.id, title: t.topic.slice(0, 120),
+            angle: `${t.mentions} public mentions in the last 7 days discussed this${t.negative ? ` (${t.negative} negative)` : ""} — answer the question the conversation is asking.`,
+            categories: ["brand_listening"], geo: { city: facts.brokerage.city ?? null, state: facts.brokerage.state ?? null },
+            sourceUrl: urlOf, publishedAt: t.newest || null, observedAt: now.toISOString(),
+            expiresAt: new Date(now.getTime() + TOPIC_TTL_DAYS * DAY_MS).toISOString(),
+            // WAVE 154 (154D, D3): the 0–100 number is DERIVED (public reach ÷ mentions, capped at 100) — a proxy; the mention
+            // count is the measured part and rides in the brief.
+            evidence: { kind: "proxy", metric: "reach_per_mention_capped_100", value: Math.min(100, Math.round(t.reach / Math.max(1, t.mentions))), unit: "score_0_100", note: `derived from public reach; measured: ${t.mentions} public mentions in 7 days` },
+            rights: "public_read_reworded", dedupKey: `bl:${t.topic}`,
+            brief: { observation_key: `bl:${t.topic}:${t.newest || now.toISOString().slice(0, 10)}`, transport: "brand_listening", listening_topic_key: t.topic, mention_ids: t.ids.slice(0, 20), negative: t.negative, promoted_at: now.toISOString(), measured: { metric: "public_mentions_7d", value: t.mentions } },
           })
-          if (error) out.errors.push(`content_topic_bank insert refused (${t.topic}): ${error.message ?? "unknown"}`)
-          else out.topicsFed++
+        }
+        if (ideas.length) {
+          const { intakeTopicIdeas } = await import("@/lib/content-intel/topic-intake")
+          const r = await intakeTopicIdeas(db, { brokerageId, ideas, now })
+          if (r.refused) out.errors.push(`topic intake refused — topics not fed: ${r.refused}`)
+          for (const e of r.errors) out.errors.push(`content_topic_bank: ${e}`)
+          out.topicsFed += r.inserted + r.merged
         }
       }
     }

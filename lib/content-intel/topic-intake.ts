@@ -44,15 +44,20 @@ type Db = { from: (table: string) => any }
 // ── The contract (WAVE154 charter — every lane calls this shape) ──────────────────────────────────────────────────────
 
 export type TopicEvidenceKind = "measured" | "proxy" | "unknown"
-export type TopicRights = "licensed" | "own_content" | "public_read_reworded" | "first_party" | "unknown"
+/** ADDITIVE (wave 154, lane 154G1): "public_citation" — a public article's HEADLINE, a short credited excerpt, its link and
+ *  date (the local-intelligence / RSS / Exa news rule since wave 144: "title, ≤280-char excerpt, link and date only — never
+ *  the article body"). It is NOT a rewording, so it never claims to be one. */
+export type TopicRights = "licensed" | "own_content" | "public_read_reworded" | "public_citation" | "first_party" | "unknown"
 
 export interface TopicIdea {
   sourceKind: string
-  /** The REWORDED consumer question / topic — never a source's own wording. */
+  /** The REWORDED consumer question / topic — never a source's own wording (a public_citation idea carries the credited headline). */
   title: string
   angle?: string | null
   categories?: string[]
-  geo?: { city?: string | null; state?: string | null; zip?: string | null; label?: string | null } | null
+  /** ADDITIVE (154G1): cities / states / zip_codes for a topic that spans several places of a territory. The stored
+   *  geo_relevance is ALWAYS the picker's reader shape { cities[], states[], zip_codes[] } (+ label) — see geoRelevanceOf. */
+  geo?: { city?: string | null; state?: string | null; zip?: string | null; label?: string | null; cities?: string[] | null; states?: string[] | null; zip_codes?: string[] | null } | null
   sourceUrl?: string | null
   publishedAt?: string | null
   observedAt: string
@@ -127,8 +132,12 @@ export function classifyTopicExclusion(input: { title: string; text?: string | n
   const sentences = full.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter((s) => words(s).length > 0)
   const noisy: Array<{ s: string; reason: TopicExclusionReason }> = []
   const clean: string[] = []
+  // A CIVIC local fact (wave 154, lane 154G1): a public news item / event of the place — "grand opening of the new library",
+  // "giveaway at the farmers market" — is the local content R9 must NOT remove; brand promotion and listing brags are rules
+  // about a COMPETITOR's own posts. Joining, recruiting and unverified performance claims still exclude it.
+  const rules = input.sourceKind === "local_fact" ? NOISE_RULES.filter((r) => r.reason !== "competitor_brand_self_promotion" && r.reason !== "no_consumer_value") : NOISE_RULES
   for (const s of sentences) {
-    const hit = NOISE_RULES.find((r) => r.re.test(s))
+    const hit = rules.find((r) => r.re.test(s))
     if (hit) noisy.push({ s, reason: hit.reason })
     else clean.push(s)
   }
@@ -137,7 +146,7 @@ export function classifyTopicExclusion(input: { title: string; text?: string | n
   const valueWords = clean.filter(sentenceHasConsumerValue).reduce((n, s) => n + words(s).length, 0)
   if (valueWords >= 8 && total > 0 && valueWords / total >= 0.4) return { excluded: false, reason: null }
   // The strongest reason, in rule order (joining > recruiting > performance > brand > brag).
-  for (const r of NOISE_RULES) if (noisy.some((n) => n.reason === r.reason)) return { excluded: true, reason: r.reason }
+  for (const r of rules) if (noisy.some((n) => n.reason === r.reason)) return { excluded: true, reason: r.reason }
   return { excluded: true, reason: noisy[0].reason }
 }
 
@@ -203,9 +212,32 @@ const KIND_WINDOWS: Readonly<Record<string, { expiresDays: number; maxSourceAgeD
   apify_social: { expiresDays: 14, maxSourceAgeDays: 90 },
   manual_link: { expiresDays: 30, maxSourceAgeDays: 365 },
   own_observation: { expiresDays: 30, maxSourceAgeDays: 365 },
+  // wave 154 (154G1) — the producers routed onto the intake keep the TTL they already wrote (cited at each caller).
+  news_article: { expiresDays: 21, maxSourceAgeDays: 120 },          // content-intel-rss (21 d)
+  web_research: { expiresDays: 14, maxSourceAgeDays: 120 },          // content-intel-exa (14 d)
+  refurbish_competitor_post: { expiresDays: 30, maxSourceAgeDays: 180 },
 })
 const DEFAULT_WINDOW = { expiresDays: 21, maxSourceAgeDays: 365 }
-export function topicWindowFor(kind: string): { expiresDays: number; maxSourceAgeDays: number } { return KIND_WINDOWS[kind] ?? DEFAULT_WINDOW }
+
+/**
+ * TOPIC SOURCE KIND → REFURBISH TRIGGER KIND (wave 154, lane 154G1 — cross-lane defect D2, lane 154F). The pool's kinds
+ * (this file's vocabulary + search-demand.ts SEARCH_DEMAND_SOURCE_KINDS + public-chatter-topics.ts) are not the names
+ * lib/repurpose/refurbish-idea.ts refurbishTriggerVerdict reads ("google_trend" / "public_chatter" / "competitor_watch" /
+ * "own_underperformer"), so a stored trend or community topic could never start a Refurbish draft. ONE published mapping;
+ * lane 154H's sessionless starter reads it (or the stamped raw_data.intake.refurbish_trigger_kind). null = this kind does not
+ * start a Refurbish (local facts, look-alike briefs, citations, manual notes, internal theme intelligence).
+ * "competitor_watch" still needs the trigger's own watchlist authorization — the mapping grants nothing.
+ */
+const REFURBISH_TRIGGER_BY_TOPIC_SOURCE: Readonly<Record<string, "google_trend" | "public_chatter" | "competitor_watch" | "own_underperformer">> = Object.freeze({
+  google_trends: "google_trend", search_demand_search_console: "google_trend", search_demand_first_party: "google_trend", search_demand_keyword_intel: "google_trend",
+  community_post: "public_chatter", facebook_group_question: "public_chatter", reddit_thread: "public_chatter", apify_social: "public_chatter", brand_listening: "public_chatter",
+  meta_ad_creative: "competitor_watch", competitor_ad: "competitor_watch", competitor_post: "competitor_watch", refurbish_competitor_post: "competitor_watch",
+  own_content_outcome: "own_underperformer",
+})
+export function refurbishTriggerKindForTopicSource(kind: string | null | undefined): "google_trend" | "public_chatter" | "competitor_watch" | "own_underperformer" | null {
+  return kind && Object.prototype.hasOwnProperty.call(REFURBISH_TRIGGER_BY_TOPIC_SOURCE, kind) ? REFURBISH_TRIGGER_BY_TOPIC_SOURCE[kind] : null
+}
+function topicWindowFor(kind: string): { expiresDays: number; maxSourceAgeDays: number } { return KIND_WINDOWS[kind] ?? DEFAULT_WINDOW }
 
 /** The system writer a source kind files under when the caller names no source row (the tenant's own off switch). */
 function systemWriterFor(kind: string): SystemTopicWriter {
@@ -222,14 +254,33 @@ const hostOf = (u: string | null | undefined): string | null => { try { return u
 const EVIDENCE_RANK: Record<TopicEvidenceKind, number> = { unknown: 0, proxy: 1, measured: 2 }
 
 /** PURE — the dedup key: the caller's, or the reworded title + the geography the source stated. */
-export function topicDedupKey(idea: Pick<TopicIdea, "title" | "geo" | "dedupKey">): string {
+function topicDedupKey(idea: Pick<TopicIdea, "title" | "geo" | "dedupKey">): string {
   if (idea.dedupKey && idea.dedupKey.trim()) return idea.dedupKey.trim().slice(0, 200)
-  const g = idea.geo ? normKey([idea.geo.zip, idea.geo.city, idea.geo.state, idea.geo.label].filter(Boolean).join(" ")) : ""
+  const gr = geoRelevanceOf(idea.geo)
+  const g = gr ? normKey([...gr.zip_codes, ...gr.cities, ...gr.states, gr.label].filter(Boolean).join(" ")) : ""
   return `t:${normKey(idea.title)}|g:${g}`
 }
 
+/**
+ * PURE — the stored geo_relevance, in the shape its READER expects. lib/content-intel/topic-bank.ts matchesGeo reads
+ * { cities[], states[], zip_codes[] }; at the batch-2 base this intake stored the idea's { city, state, zip, label } verbatim,
+ * so NO intake-filed topic could ever earn the picker's geo match (a localized topic ranked as if it were national). FIXED
+ * (wave 154, lane 154G1): singular and plural forms merge into the reader shape; the label rides along. null when no place.
+ */
+function geoRelevanceOf(geo: TopicIdea["geo"]): { cities: string[]; states: string[]; zip_codes: string[]; label: string | null } | null {
+  if (!geo) return null
+  const list = (one: string | null | undefined, many: string[] | null | undefined, f: (s: string) => string) =>
+    [...new Set([one, ...(many ?? [])].map((s) => String(s ?? "").trim()).filter(Boolean).map(f))]
+  const cities = list(geo.city, geo.cities, (s) => s)
+  const states = list(geo.state, geo.states, (s) => s.toUpperCase())
+  const zip_codes = list(geo.zip, geo.zip_codes, (s) => s.slice(0, 5))
+  const label = geo.label ? String(geo.label).trim() || null : null
+  if (!cities.length && !states.length && !zip_codes.length && !label) return null
+  return { cities, states, zip_codes, label }
+}
+
 /** PURE — the observation key: one real observation, however many transports found it. */
-export function topicObservationKey(idea: Pick<TopicIdea, "sourceUrl" | "brief" | "sourceKind" | "title">): string {
+function topicObservationKey(idea: Pick<TopicIdea, "sourceUrl" | "brief" | "sourceKind" | "title">): string {
   const k = idea.brief?.observation_key
   if (typeof k === "string" && k.trim()) return `o:${k.trim().slice(0, 120)}`
   if (idea.sourceUrl) {
@@ -354,6 +405,26 @@ export async function intakeTopicIdeas(db: Db, args: { brokerageId: string | nul
     const byKey = new Map<string, { id: string; status: string; categories: string[] | null; raw_data: Record<string, any> | null; expires_at: string | null }>()
     for (const r of (existingRows ?? []) as Array<any>) { const k = r?.raw_data?.dedup_key; if (typeof k === "string" && !byKey.has(k)) byKey.set(k, r) }
 
+    // LEGACY ADOPTION (wave 154, lane 154G1): the producers routed onto this intake in batch 2 (the rss / exa crons,
+    // local-intel) deduped by (source_id, source_url) — UNIQUE on the live table (m128) — and their rows carry no dedup_key.
+    // Without this, the first pass after the cut-over would refuse every re-observed article with 23505. A row of THIS tenant
+    // at the same source URL with NO dedup_key is adopted (the merge stamps the key); a row that already has another key is
+    // a different idea and is left alone.
+    const unmatchedUrls = [...new Set(ready.filter((p) => !byKey.has(p.dedupKey) && p.idea.sourceUrl).map((p) => p.idea.sourceUrl as string))]
+    if (unmatchedUrls.length) {
+      let lq = db.from("content_topic_bank").select("id, status, categories, raw_data, expires_at, source_url, engagement_score")
+      lq = brokerageId === null ? lq.is("brokerage_id", null) : lq.eq("brokerage_id", brokerageId)
+      const { data: legacyRows, error: legacyErr } = await lq.in("source_url", unmatchedUrls)
+      if (legacyErr) { out.refused = `content_topic_bank legacy read refused — nothing stored: ${legacyErr.message ?? "unknown"}`; return out }
+      const legacyByUrl = new Map<string, any>()
+      for (const r of (legacyRows ?? []) as Array<any>) if (r?.source_url && typeof r?.raw_data?.dedup_key !== "string" && !legacyByUrl.has(r.source_url)) legacyByUrl.set(r.source_url, r)
+      for (const p of ready) {
+        if (byKey.has(p.dedupKey) || !p.idea.sourceUrl) continue
+        const r = legacyByUrl.get(p.idea.sourceUrl)
+        if (r) { byKey.set(p.dedupKey, r); legacyByUrl.delete(p.idea.sourceUrl) }
+      }
+    }
+
     for (const p of ready) {
       const ev = evidenceOf(p)
       const entry: ProvenanceEntry = {
@@ -412,11 +483,11 @@ export async function intakeTopicIdeas(db: Db, args: { brokerageId: string | nul
         source_id: sourceId, brokerage_id: brokerageId, topic_title: p.idea.title,
         value_angle: p.idea.angle ? String(p.idea.angle).slice(0, 600) : null, source_url: p.idea.sourceUrl ?? null,
         categories: [...new Set(p.idea.categories ?? [])], topic_posted_at: iso(p.idea.publishedAt), scraped_at: now.toISOString(),
-        expires_at: p.expiresAt, status: "fresh", geo_relevance: p.idea.geo ?? null,
+        expires_at: p.expiresAt, status: "fresh", geo_relevance: geoRelevanceOf(p.idea.geo),
         ...(score !== undefined ? { engagement_score: score } : {}),
         raw_data: {
           ...p.extra, dedup_key: p.dedupKey, provenance: [entry], independent_observations: 1, evidence: ev, popularity_evidence_type: ev.kind,
-          intake: { version: 1, source_kind: p.idea.sourceKind, rights: p.idea.rights, first_observed_at: p.observedAt, last_observed_at: p.observedAt },
+          intake: { version: 1, source_kind: p.idea.sourceKind, rights: p.idea.rights, first_observed_at: p.observedAt, last_observed_at: p.observedAt, refurbish_trigger_kind: refurbishTriggerKindForTopicSource(p.idea.sourceKind) },
           creative_brief: creativeBrief(p),
         },
       }).select("id")

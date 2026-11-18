@@ -112,6 +112,48 @@ export async function GET(req: NextRequest) {
         ideas = n?.ideas ?? []
         row.excluded += n?.excluded.length ?? 0
         row.held += n?.held.length ?? 0
+        // Meta Ad Library items ALSO get their competitor_ads row so the competitor screen shows them (wave 154, lane 154G1 —
+        // lane 154C PARTIAL 4). Ideas only: no ad wording, engagement NULL. The page id matches the tenant's own watchlist
+        // (competitor_brokerages.facebook_page_id) when it can; page_id itself is not a competitor_ads column and is dropped.
+        const mirror = n?.competitorAds ?? []
+        if (mirror.length && s.brokerage_id) {
+          const { data: watch, error: watchErr } = await svc.from("competitor_brokerages").select("id, facebook_page_id").eq("brokerage_id", s.brokerage_id).in("facebook_page_id", [...new Set(mirror.map((m) => m.page_id))])
+          if (watchErr) row.reason = `${row.reason ? `${row.reason}; ` : ""}watchlist read refused (competitor_id left empty): ${watchErr.message}`
+          const byPage = new Map(((watch ?? []) as Array<{ id: string; facebook_page_id: string | null }>).map((w) => [String(w.facebook_page_id), w.id]))
+          // NOT an upsert: the live unique index uq_competitor_ads_source_provider_id is PARTIAL (WHERE provider_ad_id IS NOT
+          // NULL) — a bare ON CONFLICT cannot infer it — and GLOBAL, so one tenant's write must never land on another
+          // tenant's row. Read this ad's row first; update it only when it is THIS tenant's; insert when absent; when another
+          // tenant holds it, say so (owner SQL in the lane notes makes the key per tenant).
+          const problems: string[] = []
+          const brokerageId = s.brokerage_id
+          const writeMirror = async (): Promise<void> => {
+          for (const { page_id, ...m } of mirror) {
+            const rowOut = { ...m, brokerage_id: brokerageId, competitor_id: byPage.get(page_id) ?? null }
+            const { data: have, error: haveErr } = await svc.from("competitor_ads").select("id, brokerage_id").eq("source_platform", "facebook").eq("provider_ad_id", m.provider_ad_id).maybeSingle()
+            if (haveErr) { problems.push(`read ${m.provider_ad_id}: ${haveErr.message}`); continue }
+            const held = have as { id: string; brokerage_id: string } | null
+            if (held && held.brokerage_id !== brokerageId) { problems.push(`ad ${m.provider_ad_id} is held by another tenant's row (global key)`); continue }
+            const w = held
+              ? await svc.from("competitor_ads").update({ last_seen_at: m.last_seen_at, ad_delivery_stop: m.ad_delivery_stop, raw_payload: m.raw_payload, categories: m.categories, competitor_id: rowOut.competitor_id }).eq("id", held.id).eq("brokerage_id", brokerageId).select("id")
+              : await svc.from("competitor_ads").insert(rowOut).select("id")
+            if (w.error || (w.data ?? []).length !== 1) problems.push(`write ${m.provider_ad_id}: ${w.error?.message ?? "no row"}`)
+          }
+          }
+          // LAW 5 — the mirror write leaves evidence (one row per source per run hour; a replay writes nothing twice).
+          const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+          await withActionLedger(
+            {
+              brokerageId, action: "intel.meta_ad_library_mirror", actor: { type: "manager", managerKey: "campaign_orchestrator" },
+              subject: { type: "content_topic_source", id: s.id }, idempotencyKey: `meta_ad_mirror:${s.id}:${now.toISOString().slice(0, 13)}`, riskClass: "LOW_RISK_WRITE",
+              systemSource: "content-intel-apify", reasonDetail: "Meta Ad Library items shown on the competitor screen — ideas only, no ad wording", detail: { ads: mirror.length },
+            },
+            async () => { await writeMirror(); return problems.length },
+            { settle: (n) => ({ status: n === 0 ? "executed" as const : "failed" as const, outcome: `${mirror.length - n} of ${mirror.length} competitor_ads rows written`, error: n ? problems.slice(0, 3).join("; ") : null }),
+              replay: (claim) => { if (claim.kind === "refused") problems.push(`action ledger refused the mirror write — nothing written: ${claim.error}`); return problems.length } },
+            { client: svc },
+          )
+          if (problems.length) { row.status = "partial"; row.reason = `${row.reason ? `${row.reason}; ` : ""}competitor_ads mirror: ${problems.slice(0, 3).join("; ")}` }
+        }
       } else {
         const n = await apifySocialIdeas(run.items, { title_field: cfg.title_field, url_field: cfg.url_field, engagement_fields: cfg.engagement_fields, geo, sourceId: s.id, now })
         ideas = n.ideas

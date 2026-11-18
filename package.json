@@ -1166,6 +1166,7 @@
     "test:contact-persona-service": "tsx --conditions=react-server scripts/contact-persona-service-guard.ts",
     "test:content-command-center": "tsx --conditions=react-server scripts/content-command-center-guard.ts",
     "test:events-and-circles": "tsx --conditions=react-server scripts/events-and-circles-guard.ts",
+    "test:topic-pool": "tsx --conditions=react-server scripts/topic-pool-guard.ts",
     "test:subscription-acceptance": "tsx --conditions=react-server scripts/subscription-acceptance-guard.ts",
     "test:cross-office-rls": "tsx --conditions=react-server scripts/cross-office-rls-guard.ts",
     "test:rawdata-ingress": "tsx scripts/rawdata-ingress-guard.ts",

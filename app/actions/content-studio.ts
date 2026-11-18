@@ -150,12 +150,17 @@ export async function researchKeywords(topic: string, _userId?: string) {
     return { success: false, error: result.error ?? "Keyword research is temporarily unavailable." }
   }
 
-  // Map DiscoveredKeyword to the format the content-studio UI expects
+  // Map DiscoveredKeyword to the format the content-studio UI expects. WAVE 154 (lane 154G1 — directive G1 "no invented
+  // monthly search volume"): popularity_pct is a MODEL-ESTIMATED 0–100 relative score (app/actions/blog.ts DiscoveredKeyword),
+  // not a count of searches — it used to reach the screen ×100 as `searchVolume`, beside an invented `difficulty: 50` and a
+  // "competition" read off that same popularity number. A number nobody measured is null; the screen renders "unknown".
   const keywords = (result.keywords ?? []).map((k) => ({
     keyword: k.keyword,
-    searchVolume: Math.round(k.popularity_pct * 100), // relative score as proxy for volume
-    difficulty: 50, // AI doesn't provide difficulty; use neutral default
-    competition: k.popularity_pct > 70 ? "high" : k.popularity_pct > 40 ? "medium" : "low",
+    searchVolume: null as number | null,
+    relativeIndex: typeof k.popularity_pct === "number" && Number.isFinite(k.popularity_pct) ? Math.max(0, Math.min(100, Math.round(k.popularity_pct))) : null,
+    relativeIndexBasis: "model-estimated relative interest (0–100) — not a count of searches",
+    difficulty: null as number | null,
+    competition: null as string | null,
     keywordType: k.keyword_type,
     competitorUsage: k.competitor_usage,
     rationale: k.rationale,
@@ -200,47 +205,51 @@ export async function getContentIdeas(_userId?: string, _userRole?: string) {
   }
 }
 
-// Get Competitor Content — uses tracked competitors from the competitors table
+// Get Competitor Content — the tenant's OBSERVED competitor posts (competitor_content, written by
+// lib/competitive-intel/content-intel-scan.ts). WAVE 154 (lane 154G1 — directive G2 "verified competitor ideas with measured
+// or honestly proxy-labeled relative performance"): at the batch-2 base this asked a model to "use realistic metrics for
+// openRate (30-60) and clickRate (5-20)" and returned those invented numbers as competitor data on two screens. Now it reads
+// what was observed; open / click rates of another business's email are unknowable here and are null; hard counts are
+// summed only when present; an Exa row's number is a citation-rank proxy and is labeled so. The post's caption is NOT
+// returned — the theme (detected topics + hook) is what a subscriber builds an original piece from.
 export async function getCompetitorContent(_userId?: string, _userRole?: string) {
   const auth = await requireCaller()
   if (!auth.ok) return []
 
   const supabase = createServiceClient()
-
-  // Fetch the brokerage's tracked competitors for context-specific analysis
-  const { data: competitorRows } = await supabase
-    .from("competitors")
-    .select("competitor_name, competitor_url")
+  const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const { data, error } = await supabase
+    .from("competitor_content")
+    .select("id, platform, content_type, content_url, posted_at, observed_at, likes_count, comments_count, shares_count, views_count, raw_engagement_data, detected_topics, hook_type, competitor_profiles(competitor_name)")
     .eq("brokerage_id", auth.brokerageId)
-    .limit(10)
-
-  const competitorList =
-    competitorRows?.map((c) => c.competitor_name).join(", ") ||
-    "top local real estate agents and brokerages"
-
-  try {
-    const { text } = await generateText({
-      brokerageId: auth.brokerageId,
-      userId: auth.userId,
-      model: "openai/gpt-4o-mini",
-      prompt: `Analyze the high-performing content strategy for these local real estate competitors: ${competitorList}.
-
-      IMPORTANT: You must respond with ONLY valid JSON, no explanatory text.
-
-      Return exactly this format (5 items, using the competitor names listed above):
-      [
-        {"competitor_name": "Name from list", "content_summary": "What they post about and why it performs", "content_type": "video|blog|social", "sentToCount": 1500, "openRate": 45.2, "clickRate": 12.8}
-      ]
-
-      Use realistic metrics for openRate (30-60) and clickRate (5-20). Use the actual competitor names.`,
-    })
-
-    const competitorData = parseAIJsonResponse(text)
-    return competitorData
-  } catch (error) {
-    console.log("[v0] Competitor content generation error:", error)
+    .gte("observed_at", since)
+    .order("observed_at", { ascending: false })
+    .limit(20)
+  if (error) {
+    console.error(`[content-studio] competitor_content read refused — no competitor posts shown: ${error.message}`)
     return []
   }
+  return ((data ?? []) as Array<{
+    id: string; platform: string | null; content_type: string | null; content_url: string | null; posted_at: string | null; observed_at: string | null
+    likes_count: number | null; comments_count: number | null; shares_count: number | null; views_count: number | null
+    raw_engagement_data: { source?: string | null } | null; detected_topics: string[] | null; hook_type: string | null
+    competitor_profiles: { competitor_name: string | null } | Array<{ competitor_name: string | null }> | null
+  }>).map((r) => {
+    const profile = Array.isArray(r.competitor_profiles) ? r.competitor_profiles[0] : r.competitor_profiles
+    const counts = [r.likes_count, r.comments_count, r.shares_count, r.views_count].filter((n): n is number => typeof n === "number")
+    const engagement = counts.length ? counts.reduce((s, n) => s + n, 0) : null
+    const topics = (r.detected_topics ?? []).slice(0, 4)
+    const summary = topics.length ? `Theme: ${topics.join(", ")}${r.hook_type ? ` · hook: ${r.hook_type}` : ""}` : (r.hook_type ? `Hook: ${r.hook_type}` : "Theme not detected")
+    const evidenceLabel = engagement !== null
+      ? "measured public interactions (platform counts)"
+      : r.raw_engagement_data?.source === "exa" ? "search-citation rank proxy — not engagement; hard counts unknown" : "engagement unknown"
+    return {
+      id: r.id, competitor_name: profile?.competitor_name ?? "Unknown competitor", title: topics[0] ?? r.hook_type ?? "Competitor post",
+      content: summary, content_summary: summary, platform: r.platform, content_type: r.content_type, content_url: r.content_url,
+      posted_at: r.posted_at, observed_at: r.observed_at, engagement, evidenceLabel,
+      openRate: null as number | null, clickRate: null as number | null, sentToCount: null as number | null,
+    }
+  })
 }
 
 // Add Competitor to Monitor

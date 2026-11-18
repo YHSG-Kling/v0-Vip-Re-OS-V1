@@ -175,8 +175,10 @@ console.log("\n── §C: content-suggestion loop — writer → table → read
     "app/api/cron/content-intel-apify/route.ts",
   ]
   for (const w of organicWriters) {
-    check(`${w} exists and writes content_topic_bank`,
-      exists(w) && /\.from\("content_topic_bank"\)\.(insert|upsert)\(/.test(src(w)))
+    // Wave 154 (lane 154G1): the rule, not the waypoint — every organic writer files through THE ONE intake
+    // (lib/content-intel/topic-intake.ts intakeTopicIdeas, the pool's single inserter) — a direct .insert( was the base shape.
+    check(`${w} exists and files into content_topic_bank (through THE ONE intake)`,
+      exists(w) && /\bintakeTopicIdeas\s*\(/.test(src(w)) && !/\.from\("content_topic_bank"\)\.(insert|upsert)\(/.test(src(w)))
   }
 
   // Writer (competitor high-viral ads) → its own table → promoted into the

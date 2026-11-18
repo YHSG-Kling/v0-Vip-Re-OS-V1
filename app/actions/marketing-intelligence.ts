@@ -52,6 +52,8 @@ export interface CompetitorPost {
   contentUrl: string | null
   mediaUrl: string | null
   postedAt: string | null
+  /** When this row was observed (competitor_content.observed_at) — the freshness a screen may show beside the evidence. */
+  observedAt: string | null
   likesCount: number | null
   commentsCount: number | null
   sharesCount: number | null
@@ -219,7 +221,8 @@ export async function getCompetitorHighPerformers(params: {
   }
 
   const { data, error } = await query
-  if (error || !data) return []
+  if (error) { console.error("[marketing-intelligence] competitor_content read refused:", error.message); return [] }
+  if (!data) return []
 
   const posts = (data as unknown as Array<{
     id: string
@@ -278,7 +281,7 @@ export async function getCompetitorHighPerformers(params: {
   // Like with like (D3): a MEASURED post is upgraded to "verified high performer" only against comparable measured posts
   // (same platform, format and window; geography is unknown on these rows, so it is held equal). Proxy rows never rank.
   const pool: CohortPost[] = posts.map((p) => ({ id: p.id, platform: p.platform, contentType: p.contentType, geo: null, observedAt: p.observedAt, likesCount: p.likesCount, commentsCount: p.commentsCount, sharesCount: p.sharesCount, viewsCount: p.viewsCount, engagementRate: p.engagementRate, engagementSource: p.engagementSource }))
-  return posts.map(({ observedAt: _observedAt, ...p }, i) => {
+  return posts.map((p, i) => {
     if (p.evidence.kind !== "measured") return p
     const cmp = compareLikeWithLike(pool[i], pool, daysBack)
     return cmp.tier === "verified_high_performer"

@@ -59,6 +59,7 @@ import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing
 import { isRobotsAllowed } from "@/lib/assets/screenshot-capture"
 import { normalizeMentionUrl } from "@/lib/competitive-intel/brand-listening"
 import { resolveSystemTopicSource } from "@/lib/content-intel/system-topic-source"
+import { intakeTopicIdeas, type TopicIdea } from "@/lib/content-intel/topic-intake"
 
 type Db = { from: (table: string) => any }
 
@@ -484,22 +485,20 @@ function valueAngleFor(f: LocalFact): string {
   return `Local ${KIND_LABEL[f.kind]} ${when} by ${f.publisher}. Explain what it means for local homeowners and buyers in ORIGINAL words; ${credit}.`.slice(0, 400)
 }
 
-/** PURE — the content_topic_bank row a fact is stored as (insert shape). */
-function topicRowForFact(f: LocalFact, brokerageId: string, now: Date): Record<string, unknown> {
+/**
+ * PURE — the TopicIdea a fact is filed as through THE ONE intake (wave 154, lane 154G1; was a direct insert row). Rights
+ * "public_citation": the credited headline, a ≤280-char excerpt, link and date — the wave-144 rule, unchanged. The 0–100
+ * column keeps its wave-144 value (confidence × 90) but is now LABELED: a proxy for how well-sourced the fact is, never
+ * audience demand. (source_id, source_url) stays unique: the source is the fact's own row and the URL its own.
+ */
+function localFactIdea(f: LocalFact, priorRecord: Record<string, unknown> | null, now: Date): TopicIdea {
   return {
-    source_id: f.sourceId,
-    brokerage_id: brokerageId,
-    topic_title: f.title,
-    value_angle: valueAngleFor(f),
-    source_url: f.url,
-    categories: [...LOCAL_FACT_CATEGORIES[f.kind]],
-    engagement_score: Math.max(0, Math.min(100, Math.round(f.confidence * 90))),
-    topic_posted_at: f.publishedAt ?? (f.eventStart ? null : f.observedAt),
-    scraped_at: now.toISOString(),
-    expires_at: f.expiresAt,
-    status: "fresh",
-    geo_relevance: { cities: f.territory.city ? [f.territory.city] : [], states: f.territory.state ? [f.territory.state.toUpperCase()] : [], zip_codes: f.territory.zipCodes },
-    raw_data: { local_fact_key: f.key, local_fact: localFactRecord(f, null, now) },
+    sourceKind: "local_fact", sourceId: f.sourceId, title: f.title, angle: valueAngleFor(f), categories: [...LOCAL_FACT_CATEGORIES[f.kind]],
+    geo: { cities: f.territory.city ? [f.territory.city] : [], states: f.territory.state ? [f.territory.state.toUpperCase()] : [], zip_codes: f.territory.zipCodes },
+    sourceUrl: f.url, publishedAt: f.publishedAt ?? (f.eventStart ? null : f.observedAt), observedAt: f.observedAt, expiresAt: f.expiresAt,
+    evidence: { kind: "proxy", metric: "local_fact_confidence_x90", value: Math.max(0, Math.min(100, Math.round(f.confidence * 90))), unit: "score_0_100", note: `source confidence (${f.confidenceBasis.join(", ") || "single source"}) — how well-sourced the fact is, not audience demand` },
+    rights: "public_citation", dedupKey: `lf:${f.key}`,
+    brief: { observation_key: `lf:${f.key}`, transport: f.provider, local_fact_key: f.key, local_fact: localFactRecord(f, priorRecord, now) },
   }
 }
 
@@ -896,32 +895,14 @@ export async function runLocalIntelPass(brokerageId: string, deps: LocalIntelDep
       else {
         const byUrl = new Map<string, { id: string; status: string; categories: string[] | null; raw_data: Record<string, any> | null }>()
         for (const r of (existing ?? []) as Array<{ id: string; status: string; categories: string[] | null; raw_data: Record<string, any> | null; source_url: string }>) if (!byUrl.has(r.source_url)) byUrl.set(r.source_url, r)
-        for (const f of kept) {
-          const row = topicRowForFact(f, brokerageId, now)
-          const prior = byUrl.get(f.url)
-          if (prior) {
-            const patch = {
-              topic_title: row.topic_title, value_angle: row.value_angle, engagement_score: row.engagement_score,
-              categories: [...new Set([...(prior.categories ?? []), ...(row.categories as string[])])],
-              geo_relevance: row.geo_relevance, expires_at: row.expires_at, scraped_at: row.scraped_at,
-              status: prior.status === "used" || prior.status === "rejected" ? prior.status : "fresh",
-              raw_data: { ...(prior.raw_data ?? {}), local_fact_key: f.key, local_fact: localFactRecord(f, prior.raw_data?.local_fact ?? null, now) },
-            }
-            const { data: upd, error: updErr } = await db.from("content_topic_bank").update(patch).eq("id", prior.id).eq("brokerage_id", brokerageId).select("id")
-            if (updErr || !(upd ?? []).length) out.errors.push(`content_topic_bank update for ${f.url} refused or matched nothing: ${updErr?.message ?? "0 rows"}`)
-            else { out.updated++; out.topicIds.push(prior.id) }
-          } else {
-            const { data: ins, error: insErr } = await db.from("content_topic_bank").insert(row).select("id")
-            if (insErr) {
-              if (insErr.code === "23505") drop("duplicate_raced")
-              else out.errors.push(`content_topic_bank insert refused (${f.url}): ${insErr.message ?? "unknown"}`)
-            } else {
-              out.inserted++
-              const id = (Array.isArray(ins) ? ins[0] : ins)?.id
-              if (id) out.topicIds.push(String(id))
-            }
-          }
-        }
+        // THROUGH THE ONE INTAKE (wave 154, lane 154G1 — this pass inserted / updated directly at the batch-2 base). The
+        // by-URL read above stays: it carries the prior local_fact record so observed_count keeps counting re-observations.
+        const ideas = kept.map((f) => localFactIdea(f, byUrl.get(f.url)?.raw_data?.local_fact ?? null, now))
+        const r = await intakeTopicIdeas(db, { brokerageId, ideas, now })
+        if (r.refused) out.errors.push(`topic intake refused — facts not stored: ${r.refused}`)
+        for (const e of r.errors) out.errors.push(e)
+        for (const x of r.excluded) drop(`intake_${x.reason}`)
+        for (const row of r.rows) { if (row.isNew) out.inserted++; else out.updated++; out.topicIds.push(row.id) }
       }
     }
 

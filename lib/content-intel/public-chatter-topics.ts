@@ -28,6 +28,7 @@
 // Not server-only: the proofs drive it with in-memory clients and counting seams.
 
 import { createHash } from "node:crypto"
+import { readPublicStatement } from "@/lib/acquisition-plays/public-statement"
 import { intakeTopicIdeas, classifyTopicExclusion, rewordedNearCopyProblem, personalDataProblem, consumerValueSentences, type TopicIdea, type TopicIntakeResult } from "./topic-intake"
 import { ruleDerivedTopic } from "./topic-themes"
 
@@ -44,7 +45,7 @@ export function fenceUntrusted(text: unknown): UntrustedSourceText {
 }
 
 /** PURE — visible text of an HTML page (scripts / styles / tags removed); the result is fenced at once. */
-export function visibleTextOf(html: string): UntrustedSourceText {
+function visibleTextOf(html: string): UntrustedSourceText {
   return fenceUntrusted(String(html ?? "")
     .replace(/<script\b[\s\S]*?<\/script>/gi, " ").replace(/<style\b[\s\S]*?<\/style>/gi, " ").replace(/<noscript\b[\s\S]*?<\/noscript>/gi, " ")
     // A block boundary ends a sentence, so an author line or a nav label never fuses into the post's first sentence.
@@ -53,7 +54,7 @@ export function visibleTextOf(html: string): UntrustedSourceText {
 }
 
 /** PURE — the publication date a page itself declares (article:published_time / datePublished / <time datetime>), or null. */
-export function declaredPublishedAt(html: string): string | null {
+function declaredPublishedAt(html: string): string | null {
   const h = String(html ?? "")
   const m = /<meta[^>]+property=["']article:published_time["'][^>]+content=["']([^"']+)["']/i.exec(h)
     ?? /"datePublished"\s*:\s*"([^"]+)"/i.exec(h)
@@ -109,14 +110,17 @@ export async function deriveRewordedTopic(fenced: UntrustedSourceText, opts: { g
 
 // ── Routing: a public first-person question vs an anonymous discussion (directive C4) ────────────────────────────────
 
-/** The existing statement classifier's shape (lib/acquisition-plays/public-request.ts readPublicStatement — not exported at
- *  the base; the one-line production default is an Outside-lane request in the lane notes). Absent → "unclassified". */
+/** The statement classifier's shape. PRODUCTION DEFAULT (wave 154, lane 154G1): the ONE reader, readPublicStatement, from
+ *  the PURE module lib/acquisition-plays/public-statement.ts — an omitted (undefined) classifier uses it; an explicit null
+ *  records "not evaluated" (the seam the proofs use for the unclassified route). */
 export type StatementClassifier = (text: string) => { firstPerson: boolean; requestsAgentContact: boolean; statesHousingNeed: boolean }
 
 export type ChatterRoute = "first_person_topic_only" | "anonymous_topic" | "unclassified_topic"
 
 /** PURE — on this path BOTH routes end as a topic; they differ in what is recorded about the person path. */
-export function routeChatter(fenced: UntrustedSourceText, sourceKind: "community_post" | "facebook_group_question", classify: StatementClassifier | null | undefined): { route: ChatterRoute; personPath: string } {
+/** @proofSeam scripts/public-chatter-topics-guard.ts checks each route with a stand-in classifier; production callers researchCommunityPostTopics / normalizeFacebookGroupItems in this file. */
+export function routeChatter(fenced: UntrustedSourceText, sourceKind: "community_post" | "facebook_group_question", classifier: StatementClassifier | null | undefined): { route: ChatterRoute; personPath: string } {
+  const classify = classifier === undefined ? readPublicStatement : classifier
   if (!classify) return { route: "unclassified_topic", personPath: "not_evaluated" }
   const s = classify(fenced.text)
   if (s.firstPerson || s.requestsAgentContact) {
@@ -277,6 +281,13 @@ const isoOf = (v: unknown): string | null => {
   const t = Date.parse(String(v)); return Number.isFinite(t) ? new Date(t).toISOString() : null
 }
 
+/** A competitor_ads row for one Meta Ad Library item (live columns; the cron adds brokerage_id / competitor_id). */
+interface MetaAdMirrorRow {
+  source_platform: "facebook"; provider_ad_id: string; page_id: string; competitor_name: string; ad_headline: ""; ad_copy: ""; landing_page_url: null
+  ad_delivery_start: string | null; ad_delivery_stop: string | null; engagement_score: null; categories: string[]
+  geo_relevance: { cities: string[]; states: string[]; zip_codes: string[] } | null; raw_payload: Record<string, unknown>; last_seen_at: string
+}
+
 export interface IdeaNormalizeResult { ideas: TopicIdea[]; excluded: Array<{ reason: string }>; held: Array<{ reason: string }>; routes: Record<ChatterRoute, number>; droppedPersonFields: number }
 
 /**
@@ -284,6 +295,7 @@ export interface IdeaNormalizeResult { ideas: TopicIdea[]; excluded: Array<{ rea
  * the post text is fenced, reworded and discarded. Public counts the actor reports are MEASURED evidence in their own unit
  * (never folded into the 0–100 column).
  */
+/** @proofSeam scripts/public-chatter-topics-guard.ts drives group items directly; production caller normalizeApifyIdeaItems in this file (content-intel-apify cron). */
 export async function normalizeFacebookGroupItems(items: readonly Record<string, any>[], ctx: { geo?: TopicIdea["geo"]; now: Date; reword?: Rewording | null; classify?: StatementClassifier | null; sourceId?: string | null }): Promise<IdeaNormalizeResult> {
   const out: IdeaNormalizeResult = { ideas: [], excluded: [], held: [], routes: { first_person_topic_only: 0, anonymous_topic: 0, unclassified_topic: 0 }, droppedPersonFields: 0 }
   const geoLabel = ctx.geo?.label ?? ctx.geo?.city ?? null
@@ -317,8 +329,9 @@ export async function normalizeFacebookGroupItems(items: readonly Record<string,
  * long-running ad is NOT evidence of performance; versions of one campaign (collationId, else the creative digest) are ONE
  * observation.
  */
-export async function normalizeMetaAdItems(items: readonly Record<string, any>[], ctx: { geo?: TopicIdea["geo"]; now: Date; reword?: Rewording | null; sourceId?: string | null }): Promise<IdeaNormalizeResult & { campaignsCollapsed: number }> {
-  const out = { ideas: [] as TopicIdea[], excluded: [] as Array<{ reason: string }>, held: [] as Array<{ reason: string }>, routes: { first_person_topic_only: 0, anonymous_topic: 0, unclassified_topic: 0 } as Record<ChatterRoute, number>, droppedPersonFields: 0, campaignsCollapsed: 0 }
+/** @proofSeam scripts/public-chatter-topics-guard.ts drives Ad Library items directly; production caller normalizeApifyIdeaItems in this file (content-intel-apify cron). */
+export async function normalizeMetaAdItems(items: readonly Record<string, any>[], ctx: { geo?: TopicIdea["geo"]; now: Date; reword?: Rewording | null; sourceId?: string | null }): Promise<IdeaNormalizeResult & { campaignsCollapsed: number; competitorAds: MetaAdMirrorRow[] }> {
+  const out = { ideas: [] as TopicIdea[], excluded: [] as Array<{ reason: string }>, held: [] as Array<{ reason: string }>, routes: { first_person_topic_only: 0, anonymous_topic: 0, unclassified_topic: 0 } as Record<ChatterRoute, number>, droppedPersonFields: 0, campaignsCollapsed: 0, competitorAds: [] as MetaAdMirrorRow[] }
   const geoLabel = ctx.geo?.label ?? ctx.geo?.city ?? null
   const seen = new Set<string>()
   for (const raw of items) {
@@ -356,12 +369,26 @@ export async function normalizeMetaAdItems(items: readonly Record<string, any>[]
         ad_observation: { platform: Array.isArray(raw?.publisherPlatform) ? raw.publisherPlatform : null, page_id: pageId, paid_creative: true, started_at: startedAt, active: typeof raw?.isActive === "boolean" ? raw.isActive : null },
       },
     })
+    // The competitor screen's row (wave 154, lane 154G1 — lane 154C PARTIAL 4): only for an ad that PASSED the exclusion gate
+    // and the rewording, and only with its public Ad Library id. IDEAS ONLY (owner R3): the ad's own headline / body are NOT
+    // stored (empty, the existing Exa writer's fallback — the screen truncates the column and cannot take NULL); the reworded
+    // theme and the archive link ride in raw_payload; engagement is NULL (Ad Library shows none — and NULL keeps the competitor
+    // promoter, which needs a score and copy, from re-filing the same ad as a second topic).
+    if (archiveId) out.competitorAds.push({
+      source_platform: "facebook", provider_ad_id: String(archiveId), page_id: pageId,
+      competitor_name: typeof raw?.pageName === "string" && raw.pageName.trim() ? raw.pageName.trim().slice(0, 120) : "Unknown advertiser",
+      ad_headline: "", ad_copy: "", landing_page_url: null, ad_delivery_start: startedAt, ad_delivery_stop: isoOf(raw?.endDateFormatted ?? raw?.endDate),
+      engagement_score: null, categories: [...d.categories, "competitor_intel"],
+      geo_relevance: ctx.geo ? { cities: [ctx.geo.city, ...(ctx.geo.cities ?? [])].filter((x): x is string => !!x), states: [ctx.geo.state, ...(ctx.geo.states ?? [])].filter((x): x is string => !!x), zip_codes: [ctx.geo.zip, ...(ctx.geo.zip_codes ?? [])].filter((x): x is string => !!x) } : null,
+      raw_payload: { ideas_only: true, source: "apify/facebook-ads-scraper", reworded_theme: d.title, archive_url: `https://www.facebook.com/ads/library/?id=${encodeURIComponent(String(archiveId))}`, format, collation_id: campaign, observation_key: obs, ad_metrics: "unknown — Ad Library shows no engagement; longevity is not performance" },
+      last_seen_at: ctx.now.toISOString(),
+    })
   }
   return out
 }
 
 /** Route Apify dataset items to the idea normalizer of their actor; null for an actor this path does not own. */
-export async function normalizeApifyIdeaItems(actor: string, items: readonly Record<string, any>[], ctx: { geo?: TopicIdea["geo"]; now: Date; reword?: Rewording | null; classify?: StatementClassifier | null; sourceId?: string | null }): Promise<IdeaNormalizeResult | null> {
+export async function normalizeApifyIdeaItems(actor: string, items: readonly Record<string, any>[], ctx: { geo?: TopicIdea["geo"]; now: Date; reword?: Rewording | null; classify?: StatementClassifier | null; sourceId?: string | null }): Promise<(IdeaNormalizeResult & { competitorAds?: MetaAdMirrorRow[] }) | null> {
   const a = apifyIdeaActorFor(actor)
   if (a === "apify/facebook-groups-scraper") return normalizeFacebookGroupItems(items, ctx)
   if (a === "apify/facebook-ads-scraper") return normalizeMetaAdItems(items, ctx)

@@ -486,7 +486,10 @@ async function main() {
   check("the bundle's SMS piece passes the campaign to orchestrateSmsPresetSend", /marketingCampaignId:\s*s\.marketingCampaignId/.test(smsCall))
   check("POSITIVE CONTROL: the base SMS call (no campaign) is rejected by the same finder", !/marketingCampaignId:\s*s\.marketingCampaignId/.test("orchestrateSmsPresetSend({ brokerageId: s.brokerageId, presetId: item.preset_id, toPhone })"))
   const mig = raw("supabase/migrations/m974-next-action-follow-ons-ride-the-orchestrator-queue-once.sql")
-  check("m974 is WRITTEN (line 1 says so) with the partial unique index on next_action_follow_on only — no DROP in the migration", mig.startsWith("-- WRITTEN, NOT APPLIED (wave 154, lane 154H)") && /CREATE UNIQUE INDEX IF NOT EXISTS orchestrator_tasks_next_action_follow_on_key[\s\S]*WHERE task_type = 'next_action_follow_on'/.test(mig) && !/^\s*DROP\s/im.test(mig))
+  // The RULE, not a waypoint: line 1 states exactly one status (written, or applied with its date) — whichever is true today.
+  const m974Line1 = mig.split("\n")[0]
+  const m974Status = (/APPLIED LIVE \d{4}-\d{2}-\d{2}/.test(m974Line1) ? 1 : 0) + (m974Line1.startsWith("-- WRITTEN, NOT APPLIED") ? 1 : 0)
+  check("m974 states ONE status on line 1 and carries the partial unique index on next_action_follow_on only — no DROP in the migration", m974Status === 1 && /CREATE UNIQUE INDEX IF NOT EXISTS orchestrator_tasks_next_action_follow_on_key[\s\S]*WHERE task_type = 'next_action_follow_on'/.test(mig) && !/^\s*DROP\s/im.test(mig))
   const pub = code("app/api/cron/publish-social-posts/route.ts")
   check("the social publish re-checks the author BEFORE the 'publishing' flag (seat → resolveViewerHierarchy)", pub.indexOf("authorStillAdmits(supabase") > 0 && pub.indexOf("authorStillAdmits(supabase") < pub.indexOf('status: "publishing"') && /resolveViewerHierarchy\(/.test(pub))
 

@@ -33,6 +33,7 @@
 
 import type { MagnetType } from "@/lib/marketing/lead-magnet-copy"
 import { classifyConceptMagnetType } from "./ai-draft"
+import { displaySearchVolume } from "@/lib/content-intel/search-demand-volume"
 
 /** @proofSeam the registered signal type (lib/kernel/signal-registry.ts keys it literally); the proof asserts the registry entry against it. */
 export const LEAD_MAGNET_SUGGESTION_SIGNAL = "lead_magnet_suggestion"
@@ -238,7 +239,7 @@ function ideasFromSignals(signals: TopicSignal[], activeTypes: Set<string>): Lea
         out.push({
           key: `search_demand:${slugKey}`, kind: "search_demand", magnetType, magnetId: null,
           concept: `A ${magnetType.replace(/_/g, " ")} for people searching "${title}"${best.evidence.zip_code ? ` around ${best.evidence.zip_code}` : ""}`,
-          why: `"${title}" is a RISING search (${best.evidence.trend_change_pct != null ? `+${Math.round(Number(best.evidence.trend_change_pct))}% trend` : "trend up"}${best.evidence.search_volume_monthly != null ? `, interest ${best.evidence.search_volume_monthly}` : ""})`,
+          why: `"${title}" is a RISING search (${best.evidence.trend_change_pct != null ? `+${Math.round(Number(best.evidence.trend_change_pct))}% trend` : "trend up"}${best.evidence.search_count != null ? `, ~${best.evidence.search_count} searches/month` : best.evidence.relative_index != null ? `, relative interest ${best.evidence.relative_index}/100` : ""})`,
           evidence: { ...best.evidence, source, keyword: title },
         })
         break
@@ -296,14 +297,19 @@ export async function readTopicSignals(svc: Svc, brokerageId: string, now: Date,
   // 2. Rising keywords (the content-intel scan's keyword_intelligence rows; expiry filtered in code — the
   //    live predicate is an .or() the sweep client may not speak).
   try {
-    const { data, error } = await svc.from("keyword_intelligence").select("id, keyword, search_volume_monthly, trend_change_pct, intent_category, zip_code, expires_at")
+    const { data, error } = await svc.from("keyword_intelligence").select("id, keyword, search_volume_monthly, trend_change_pct, intent_category, zip_code, expires_at, source")
       .eq("brokerage_id", brokerageId).eq("trend_direction", "rising").order("trend_change_pct", { ascending: false }).limit(50)
     if (error) notes.push(`keyword_intelligence read refused: ${error.message}`)
     const nowIso = now.toISOString()
-    for (const k of ((data ?? []) as Array<{ id: string; keyword: string | null; search_volume_monthly: number | null; trend_change_pct: number | null; intent_category: string | null; zip_code: string | null; expires_at: string | null }>)) {
+    for (const k of ((data ?? []) as Array<{ id: string; keyword: string | null; search_volume_monthly: number | null; trend_change_pct: number | null; intent_category: string | null; zip_code: string | null; expires_at: string | null; source: string | null }>)) {
       if (!k.keyword?.trim()) continue
       if (k.expires_at && k.expires_at <= nowIso) continue
-      signals.push({ id: k.id, source: "keyword", title: k.keyword, angle: null, score: Number(k.trend_change_pct ?? 0) + Number(k.search_volume_monthly ?? 0) / 100, evidence: { search_volume_monthly: k.search_volume_monthly, trend_change_pct: k.trend_change_pct, intent_category: k.intent_category, zip_code: k.zip_code } })
+      // WAVE 154 (lane 154G1 — directive G1): the stored number is classified by its SOURCE (lib/content-intel/search-demand-volume.ts)
+      // before it becomes evidence. It rode here under the key `search_volume_monthly` although every live source is a RELATIVE
+      // index; the evidence now says `relative_index` (or `search_count` for a licensed volume source — none today). The ranking
+      // is unchanged: the same stored number feeds `score`.
+      const vol = displaySearchVolume(k.source, k.search_volume_monthly)
+      signals.push({ id: k.id, source: "keyword", title: k.keyword, angle: null, score: Number(k.trend_change_pct ?? 0) + Number(k.search_volume_monthly ?? 0) / 100, evidence: { relative_index: vol.relativeIndex, search_count: vol.searchCount, volume_basis: vol.basis.kind, trend_change_pct: k.trend_change_pct, intent_category: k.intent_category, zip_code: k.zip_code } })
       counts.keyword++
       if (counts.keyword >= 10) break
     }

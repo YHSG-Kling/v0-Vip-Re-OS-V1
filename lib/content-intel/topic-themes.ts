@@ -246,19 +246,24 @@ export function viralPatternThemes(rows: readonly CompetitorContentRow[], now: D
   })
 }
 
-export interface QuestionRow { contact_key: string | null; text: string | null; at: string | null }
+/** `channel` (wave 154, lane 154G1): "support" = a user_to_brokerage support ticket's subject + description. A ticket is a
+ *  request, not always phrased as a question, so it counts without the question test; like every row here it yields only a
+ *  theme LABEL and a distinct-asker COUNT — the ticket's text never leaves this function (directive G2 / G6 support canary). */
+export interface QuestionRow { contact_key: string | null; text: string | null; at: string | null; channel?: "message" | "inquiry" | "support" }
 
 /** PURE. CUSTOMER QUESTION themes — counts per theme of distinct askers; never the words, never who. */
 export function customerQuestionThemes(rows: readonly QuestionRow[], now: Date): { themes: IntelTheme[]; askersByTheme: Map<string, number>; dropped: Record<string, number> } {
   const dropped: Record<string, number> = {}
   const askers = new Map<string, Set<string>>()
   const newest = new Map<string, string>()
+  const supportThemes = new Set<string>()
   for (const r of rows) {
     const text = String(r.text ?? "")
-    if (!isQuestion(text)) continue
+    if (r.channel !== "support" && !isQuestion(text)) continue
     const why = excludedTopicReason(text)
     if (why) { dropped[`excluded_topic:${why}`] = (dropped[`excluded_topic:${why}`] ?? 0) + 1; continue }
     for (const t of themesOf(text)) {
+      if (r.channel === "support") supportThemes.add(t.key)
       const set = askers.get(t.key) ?? new Set<string>()
       set.add(r.contact_key ?? `anon:${set.size}`)
       askers.set(t.key, set)
@@ -283,7 +288,7 @@ export function customerQuestionThemes(rows: readonly QuestionRow[], now: Date):
       expiresDays: 30,
       geo: null,
       evidence: {
-        source_class: "customer_question", source: "messages (inbound) + listing_inquiries", observed_at: at, window_days: 30,
+        source_class: "customer_question", source: supportThemes.has(rule.key) ? "messages (inbound) + listing_inquiries + support_tickets (user_to_brokerage) — counts only" : "messages (inbound) + listing_inquiries", observed_at: at, window_days: 30,
         engagement: { basis: "internal_count", metrics: { distinct_askers: n } },
         confidence: clamp01(0.5 + 0.1 * Math.min(4, n - MIN_DISTINCT_ASKERS + 1)),
         confidence_basis: `${n} distinct askers (threshold ${MIN_DISTINCT_ASKERS})`,

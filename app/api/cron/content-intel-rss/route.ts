@@ -4,16 +4,16 @@
  * Wave 17 — RSS industry-news ingest. Daily 07:00 UTC.
  *
  * Iterates active content_topic_sources rows of source_type='rss', fetches
- * the feed via fetchRssFeed(), upserts each item into content_topic_bank
- * keyed on the item's link URL.
+ * the feed via fetchRssFeed(), files each item through THE ONE topic
+ * intake (lib/content-intel/topic-intake.ts — wave 154, lane 154G1).
  *
  * Auth: CRON_SECRET.
  */
-import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { createServiceClient } from "@/lib/supabase/service"
 import { fetchRssFeed } from "@/lib/content-intel/rss-scraper"
+import { intakeTopicIdeas } from "@/lib/content-intel/topic-intake"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -53,45 +53,27 @@ export async function GET(req: NextRequest) {
         sourceTrust: s.source_config?.source_trust ?? 70,
       })
       fetched = items.length
-      for (const it of items) {
-        const existing = await svc.from("content_topic_bank")
-          .select("id")
-          .eq("source_id", s.id)
-          .eq("source_url", it.link)
-          .maybeSingle()
-        const row = {
-          source_id:        s.id,
-          brokerage_id:     s.brokerage_id,
-          topic_title:      it.title,
-          value_angle:      it.summary.slice(0, 300),
-          source_url:       it.link,
-          raw_data: {
-            summary:        it.summary,
-            published_date: it.published_date,
-          },
-          engagement_score: it.engagement_score,
-          categories:       it.categories,
-          topic_posted_at:  it.published_date,
-          scraped_at:       new Date().toISOString(),
-          expires_at:       new Date(Date.now() + 21 * 86_400_000).toISOString(),
-        }
-        if (existing.data) {
-          await sentinelWrite(svc, svc.from("content_topic_bank")
-            .update({
-              engagement_score: row.engagement_score,
-              raw_data:         row.raw_data,
-              scraped_at:       row.scraped_at,
-              categories:       row.categories,
-              value_angle:      row.value_angle,
-            })
-            .eq("id", (existing.data as { id: string }).id), { table: "content_topic_bank", flow: "content_topic_bank_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
-          updated++
-        } else {
-          const ins = await svc.from("content_topic_bank").insert(row)
-          if (!ins.error) inserted++
-        }
-      }
-      await svc.from("content_topic_sources").update({ last_run_at: new Date().toISOString() }).eq("id", s.id)
+      // THROUGH THE ONE INTAKE (wave 154, lane 154G1 — this route inserted directly and stored the feed's summary verbatim
+      // as the angle at the batch-2 base). Stored now: the credited headline, link and date (rights public_citation). The
+      // feed score is the source's configured trust + an item-age adjustment (rss-scraper.ts parseRssXml) — a labeled proxy
+      // for source quality and freshness, never audience demand.
+      const now = new Date()
+      const r = await intakeTopicIdeas(svc, {
+        brokerageId: s.brokerage_id, now,
+        ideas: items.map((it) => ({
+          sourceKind: "news_article", sourceId: s.id, title: it.title,
+          angle: "Explain what this means for local buyers and sellers in ORIGINAL words; credit and link the source — never copy it.",
+          categories: it.categories, sourceUrl: it.link, publishedAt: it.published_date, observedAt: now.toISOString(),
+          evidence: { kind: "proxy" as const, metric: "feed_trust_plus_freshness", value: it.engagement_score, unit: "score_0_100", note: "configured source trust adjusted by item age — not engagement, not demand" },
+          rights: "public_citation" as const,
+          brief: { transport: "rss", feed_url: feedUrl },
+        })),
+      })
+      inserted = r.inserted
+      updated = r.merged
+      if (!r.ok) console.error(`[content-intel-rss] "${feedUrl}" intake: ${r.refused ?? r.errors.slice(0, 3).join("; ")}`)
+      const { error: lastRunErr } = await svc.from("content_topic_sources").update({ last_run_at: now.toISOString() }).eq("id", s.id).select("id")
+      if (lastRunErr) console.error(`[content-intel-rss] last_run_at not recorded for ${s.id}: ${lastRunErr.message}`)
     } catch (e) {
       console.error(`[content-intel-rss] "${feedUrl}" failed:`, (e as Error).message)
     }

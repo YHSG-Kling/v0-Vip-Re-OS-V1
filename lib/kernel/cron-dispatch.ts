@@ -342,6 +342,8 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/market-insights-weekly"              , schedule: "30 6 * * 1" },
   { path: "/api/cron/content-intel-exa"                   , schedule: "30 6,14 * * *" },
   { path: "/api/cron/content-intel-apify"                 , schedule: "30 7 * * *" },
+  // Wave 154 (lane 154G1): Nextdoor public-post TOPIC research — reworded topics only, never a person (owner R1 / R2).
+  { path: "/api/cron/content-intel-community"             , schedule: "45 7 * * *" },
   { path: "/api/cron/quarterly-home-value-reports"        , schedule: "30 7 * * *" },
   { path: "/api/cron/sphere-resonance"                    , schedule: "30 7 * * *" },
   { path: "/api/cron/weekly-ai-metrics"                   , schedule: "54 7 * * 1" }, // (staggered r43)

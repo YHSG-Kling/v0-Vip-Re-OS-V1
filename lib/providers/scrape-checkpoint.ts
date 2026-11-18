@@ -158,6 +158,7 @@ export const COMMUNITY_POST_TOPIC_RULES: Readonly<Record<string, CommunityPostTo
 })
 
 /** PURE — may this URL ride the community TOPIC mode? null = yes; otherwise the refusal (no request is made). */
+/** @proofSeam scripts/public-chatter-topics-guard.ts checks the public-URL rule alone; production caller fetchCheckpointedSnapshot in this file. */
 export function communityTopicTargetProblem(url: string): string | null {
   let u: URL
   try { u = new URL(url) } catch { return `not a fetchable http(s) URL: ${url}` }
@@ -172,7 +173,7 @@ export function communityTopicTargetProblem(url: string): string | null {
 }
 
 /** PURE — a fetched page that is really a sign-in / membership wall (the post is not public): its body is never used. */
-export function signInWallProblem(html: string): string | null {
+function signInWallProblem(html: string): string | null {
   const h = String(html ?? "")
   if (/<input[^>]+type=["']?password/i.test(h)) return "the page asks for a password — a sign-in wall, not a public post"
   if (/\b(?:log ?in|sign ?in|join) (?:to|on) (?:nextdoor|see|continue|view)\b|\bverify your address to (?:see|join)\b|\bthis (?:post|content) is (?:only )?(?:visible|available) to (?:members|neighbors)\b/i.test(h)) return "the page is a sign-in / membership wall — the post is not publicly visible"

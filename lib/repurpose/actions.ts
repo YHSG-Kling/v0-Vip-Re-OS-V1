@@ -211,6 +211,21 @@ async function ideaOnlyDraftFromTranscript(
     rights: "idea_only", audience: { label: null }, localFacts: [], ownAssets: [], availableFormats: [],
   })
   if (!brief.ok) return { ok: false, error: brief.userMessage }
+  // WAVE 154 (154G1 request 2): the IDEA (the reworded consumer question, never the transcript) is filed into the one topic
+  // pool so the same idea can feed other formats. A refusal is read and logged; it never blocks the draft.
+  try {
+    const ev = brief.brief.evidence
+    const { intakeTopicIdeas } = await import("@/lib/content-intel/topic-intake")
+    const filed = await intakeTopicIdeas(supabase as never, { brokerageId: ctx.brokerageId, ideas: [{
+      sourceKind: "refurbish_competitor_post", title: brief.brief.consumerQuestion, angle: brief.brief.whyFormatMayHelp,
+      sourceUrl: brief.brief.provenance.url, observedAt: new Date().toISOString(),
+      evidence: ev?.kind === "measured" ? { kind: "measured", metric: "public_interactions", value: ev.interactionsTotal, unit: "count" }
+        : ev?.kind === "proxy" ? { kind: "proxy", metric: ev.proxy?.metric ?? null, value: ev.proxy?.value ?? null, unit: "score_0_100" }
+        : { kind: "unknown" },
+      rights: "public_read_reworded",
+    }] })
+    if (!filed.ok) console.error("[refurbish] topic not filed:", filed.refused ?? "refused")
+  } catch (e) { console.error("[refurbish] topic not filed:", e instanceof Error ? e.message : String(e)) }
   const voice = await loadRefurbishVoice(supabase, ctx.brokerageId, ctx.userId)
   const d = await draftRefurbishOutput({ generate }, { mode: "idea_only", format: input.format, maxLength: input.maxLength ?? null, voiceBriefText: voice.voiceBriefText, themFirstText: voice.themFirstText, brief: brief.brief, reusableSourceText: null, sourceLabel: "an outside source", untrustedSourceText: input.transcript })
   if (!d.ok) return { ok: false, error: d.message }

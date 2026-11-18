@@ -32,7 +32,7 @@ export const RELATIVE_INDEX_SOURCES: Readonly<Record<string, string>> = Object.f
   google_trends: "Google Trends interest (0–100, relative to the peak for this term, region and window — not a search count)",
 })
 
-export function keywordVolumeBasis(source: string | null | undefined): VolumeBasis {
+function keywordVolumeBasis(source: string | null | undefined): VolumeBasis {
   const s = (source ?? "").trim()
   if (s && LICENSED_VOLUME_SOURCES.includes(s)) return { kind: "licensed_volume", label: `estimated monthly searches (${s}, licensed)` }
   const rel = s ? RELATIVE_INDEX_SOURCES[s] : undefined

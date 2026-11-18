@@ -9,7 +9,7 @@
  * (app/actions/content-intel/sources.ts) which gate on getAgentContext().
  */
 import { listContentSources, type ContentSourceRow } from "@/app/actions/content-intel/sources"
-import { ContentSourceForm } from "./content-source-form"
+import { ContentSourceForm, SaveTopicObservationForm } from "./content-source-form"
 import { ToggleButton, DeleteSourceButton } from "./toggle-button"
 import { EventsAndCirclesPanel } from "./events-and-circles-panel"
 
@@ -53,6 +53,11 @@ export default async function ContentIntelPage() {
       <section>
         <h2 className="text-lg font-semibold mb-3">Add a source</h2>
         <ContentSourceForm />
+      </section>
+
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Save a topic idea</h2>
+        <SaveTopicObservationForm />
       </section>
 
       <section>
