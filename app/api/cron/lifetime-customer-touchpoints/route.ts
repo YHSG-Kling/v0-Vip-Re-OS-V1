@@ -47,7 +47,7 @@ export async function GET(request: Request) {
     // WAVE 143 (143E): the post-close moments the arbiter reviewed this run (lib/sphere/followup-moments.ts).
     moments: {} as Record<string, number>,
     // WAVE 153 (153P): what the arbiter chose for each due calendar touch (send · agent · wait · halt).
-    arbiter: { send: 0, agent: 0, wait: 0, halt: 0 },
+    arbiter: { send: 0, agent: 0, wait: 0, halt: 0, video: 0, no_action: 0 },
     errors: [] as string[],
   }
 
@@ -105,15 +105,31 @@ export async function GET(request: Request) {
   // WAVE 153 (lane 153P — owner B9 "starts an arbiter on" lifetime): each due calendar touch is handed to the follow-up
   // arbiter (planner `lifetime_touch`, lib/sphere/lifetime-touch-arbitration.ts) before anything is sent — send now, the
   // agent reaches out personally, a persisted bounded wait, or a halt when no lawful channel is left. Only `send` sends.
-  const { arbitrateLifetimeTouch } = await import("@/lib/sphere/lifetime-touch-arbitration")
+  const { arbitrateLifetimeTouch, settleLifetimeTouchSend } = await import("@/lib/sphere/lifetime-touch-arbitration")
+  // WAVE 154 (lane 154H, H7/H9): the door now returns the whole decision (action + channel + artifact + manager); the cron sends
+  // only the greeting it chose (the avatar video is its own arbitrated option — `video` — requested and followed by the door) and
+  // then settles the send into the durable reply-watch follow-on (settleLifetimeTouchSend).
+  type LifetimeDecision = Awaited<ReturnType<typeof arbitrateLifetimeTouch>>
+  let lastDecision: { input: Parameters<typeof arbitrateLifetimeTouch>[1]; d: LifetimeDecision } | null = null
   async function arbiterSays(a: { brokerageId: string | null; contactId: string; agentId: string | null; kind: "anniversary" | "birthday"; channel: "email" | "sms"; yearsAgo?: number; transactionId?: string | null }): Promise<boolean> {
+    lastDecision = null
     if (!a.brokerageId) { results.blocked++; results.errors.push(`${a.kind} held for ${a.contactId}: no brokerage on the row — the arbiter cannot decide for an untenanted contact`); return false }
-    const d = await arbitrateLifetimeTouch(supabase as never, { brokerageId: a.brokerageId, contactId: a.contactId, agentId: a.agentId, kind: a.kind, channel: a.channel, yearsAgo: a.yearsAgo ?? null, transactionId: a.transactionId ?? null, now: today })
+    const input = { brokerageId: a.brokerageId, contactId: a.contactId, agentId: a.agentId, kind: a.kind, channel: a.channel, yearsAgo: a.yearsAgo ?? null, transactionId: a.transactionId ?? null, now: today }
+    const d = await arbitrateLifetimeTouch(supabase as never, input)
     results.arbiter[d.verdict]++
+    lastDecision = { input, d }
     if (d.verdict === "send") return true
     if (d.verdict === "halt") { results.blocked++; results.errors.push(`${a.kind} halted for ${a.contactId}: ${d.reason}`) }
     else if (d.verdict === "wait") results.deferred++
+    else if (d.verdict === "video" && d.followOn?.error) results.errors.push(`${a.kind} video follow-on NOT persisted for ${a.contactId}: ${d.followOn.error}`)
     return false
+  }
+  /** After a chosen greeting's send: persist the reply-watch follow-on (or say why none) — a sent touch never ends as an orphan. */
+  async function settleSend(sent: { success: boolean; messageId?: string | null; error?: string }) {
+    const last = lastDecision as { input: Parameters<typeof arbitrateLifetimeTouch>[1]; d: LifetimeDecision } | null
+    if (!last) return
+    const s = await settleLifetimeTouchSend(supabase as never, last.input, last.d, sent)
+    if (s.followOn === "error") results.errors.push(`${last.input.kind} follow-on NOT persisted for ${last.input.contactId}: ${s.reason}`)
   }
   /** Count a sender's result honestly: a gate refusal is `blocked`, not a touch. */
   function countSend(kind: "anniversaries" | "birthdays" | "referralRequests", res: { success: boolean; error?: string }, contactId: string) {
@@ -165,7 +181,9 @@ export async function GET(request: Request) {
         }
         if (!(await arbiterSays({ brokerageId: (txn as any).brokerage_id ?? null, contactId: txn.contact_id, agentId: txn.agent_id ?? null, kind: "anniversary", channel: "email", yearsAgo, transactionId: txn.id }))) continue
         try {
-          const sent = await sendAnniversaryMessage(txn.contact_id, yearsAgo, { agentId: txn.agent_id, client: supabase })
+          // The arbiter chose the written greeting (alone, or with the agent's reminder) — never the video beside it (video: false).
+          const sent = await sendAnniversaryMessage(txn.contact_id, yearsAgo, { agentId: txn.agent_id, client: supabase, video: false })
+          await settleSend(sent)
           if (!countSend("anniversaries", sent, txn.contact_id)) continue
 
           // EMIT THE EVENT. This cron was the only thing that knew an anniversary

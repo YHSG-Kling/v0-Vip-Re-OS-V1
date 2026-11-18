@@ -1136,6 +1136,37 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     }
   }
 
+  // (154H) FOLLOW-ONS ANSWER TO REAL EVENTS (wave 154, lane 154H — directive H5 / H8 / H9.5; owner R8). A reply and an opt-out
+  // RESHAPE the queued work for that person in that tenant: lib/ai-isa/followup-arbiter.ts supersedeFollowOnsForPerson consumes a
+  // follow-on that waited for the reply (the live conversation owns the next step; the agent is told when the plan says so) and
+  // cancels every stale scheduled item — next-action follow-ons and campaign-bundle pieces alike (orchestrator_tasks, counted,
+  // status-guarded). Before this branch: ISA_REPLY_RECEIVED only published a feed signal, and CONTACT_CHANNEL_OPT_OUT /
+  // CONTACT_DNC_SET had NO consumer at all (lib/ai-isa/opt-out-writer.ts says so) — a queued bundle piece waited for its send gate
+  // to refuse. A single-channel opt-out carries no channel on the event, so the branch re-reads which channels are still LAWFUL
+  // and cancels only the follow-ons riding one that is not. Best-effort: the executors re-read the same evidence before any send.
+  const FOLLOW_ON_EVENTS: string[] = [KernelEvent.ISA_REPLY_RECEIVED, KernelEvent.CONTACT_CHANNEL_OPT_OUT, KernelEvent.CONTACT_DNC_SET]
+  if (params.brokerageId && params.entityId && (params.entityType === "contact" || params.entityType === "lead") && FOLLOW_ON_EVENTS.includes(params.event)) {
+    try {
+      const fa = await import("@/lib/ai-isa/followup-arbiter")
+      const subject = { type: params.entityType as "contact" | "lead", id: params.entityId }
+      const now = new Date()
+      if (params.event === KernelEvent.ISA_REPLY_RECEIVED) {
+        await fa.supersedeFollowOnsForPerson(svc, { brokerageId: params.brokerageId, subject, reason: "recipient_replied", now, eventRef: `${params.event}:${params.entityId}` })
+      } else if (params.event === KernelEvent.CONTACT_DNC_SET) {
+        await fa.supersedeFollowOnsForPerson(svc, { brokerageId: params.brokerageId, subject, reason: "opt_out_all", now, eventRef: `${params.event}:${params.entityId}` })
+      } else if (subject.type === "contact") {
+        const lawful = await fa.lawfulChannelsForContact(svc, { brokerageId: params.brokerageId, contactId: subject.id })
+        if (lawful.ok) {
+          for (const ch of ["email", "sms", "phone", "direct_mail", "in_app"] as const) {
+            if (!lawful.lawful.has(ch)) await fa.supersedeFollowOnsForPerson(svc, { brokerageId: params.brokerageId, subject, reason: "opt_out_channel", channel: ch, now, eventRef: `${params.event}:${params.entityId}` })
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`[event-reactor] follow-on reconcile on ${params.event} failed — the executors' own re-read still holds:`, e instanceof Error ? e.message : e)
+    }
+  }
+
   // (D-novies) DISCLOSURE COMPLIANCE — AUTONOMOUS, on a transaction document
   // arriving. Owner ruling: this OS runs autonomous loops; every capability
   // should run on a manager signal / cron / kernel event rather than waiting

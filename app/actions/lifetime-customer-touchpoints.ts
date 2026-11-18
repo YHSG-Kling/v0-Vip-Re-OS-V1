@@ -11,6 +11,10 @@ import { recordLifetimeTouchpointSent } from "@/lib/sphere/lifetime-touchpoint-l
 // so they pass the owning agentId + a service-role client; UI callers pass neither
 // and the acting agent is resolved from the session.
 type TouchpointActorOpts = { agentId?: string; client?: SupabaseClient }
+/** WAVE 154 (lane 154H, H9): `video: false` = the arbiter chose the written greeting ALONE — the avatar video is a separate,
+ *  arbitrated option (lib/sphere/lifetime-touch-arbitration.ts), never fired beside every email. Omitted (a person's click in the
+ *  UI) keeps the click's existing behavior. */
+type AnniversaryOpts = TouchpointActorOpts & { video?: boolean }
 
 async function resolveTouchpointActor(opts: TouchpointActorOpts | undefined) {
   const supabase = opts?.client ?? (await createClient())
@@ -48,7 +52,7 @@ function touchLedger(opts: TouchpointActorOpts | undefined, cycle: string): { re
 // model (newsletter baseline + the situational reel rail + equity/anniversary/life-event triggers).
 
 // Send anniversary message
-export async function sendAnniversaryMessage(contactId: string, yearsAgo: number, opts?: TouchpointActorOpts) {
+export async function sendAnniversaryMessage(contactId: string, yearsAgo: number, opts?: AnniversaryOpts) {
   const { supabase, agentId, brokerageId } = await resolveTouchpointActor(opts)
 
   const { data: contact } = await supabase
@@ -109,7 +113,9 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
   // email. Gated on contacts.video_opt_out + agent voice profile, idempotent
   // per calendar year via agent_intro_videos (m121). Never throws — a video
   // failure must not block the email touchpoint that just succeeded.
-  if (agentId) {
+  // WAVE 154 (154H): only when the caller did not say otherwise — the daily cron passes the arbiter's choice (video: false when
+  // the written greeting was chosen alone), so one milestone is never answered with every artifact at once.
+  if (agentId && opts?.video !== false) {
     try {
       const { dispatchAnniversaryVideo } = await import("@/lib/video/intro-video-reactor")
       // CONTACT-FACING LANGUAGE (owner ruling, wave 51/52 — task item 3): the
@@ -134,7 +140,8 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
   }
 
   revalidatePath("/lifetime-customers")
-  return { success: true }
+  // The provider's reference is ACCEPTED evidence only (the provider took the message) — never "delivered".
+  return { success: true, messageId: result.messageId ?? null }
 }
 
 // Send birthday message

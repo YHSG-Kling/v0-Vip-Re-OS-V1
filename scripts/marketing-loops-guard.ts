@@ -49,7 +49,9 @@ async function main() {
   check("refurbish's automatic starter: a finished broadcast reel → the Asset Manager's repurpose_shorts_handoff (manager-signals)", code("lib/kernel/manager-signals.ts").includes(`"asset_manager:repurpose_shorts_handoff"`) && calls(code("lib/kernel/manager-signals.ts"), "planRepurposeChannels"))
   const arbSrc = code("lib/ai-isa/followup-arbiter.ts")
   check("the lifetime_touch planner row is in ARBITER_PLANNER_ENTRY_POINTS (door lib/sphere/lifetime-touch-arbitration.ts)", /lifetime_touch:\s*\{\s*planner:\s*"app\/api\/cron\/lifetime-customer-touchpoints\/route\.ts",\s*door:\s*"lib\/sphere\/lifetime-touch-arbitration\.ts",\s*via:\s*"arbitratePlannedTouch"/.test(arbSrc))
-  check("the lifetime door calls arbitratePlannedTouch( and requires the touch's channel (halt on no lawful channel)", calls(code("lib/sphere/lifetime-touch-arbitration.ts"), "arbitratePlannedTouch") && code("lib/sphere/lifetime-touch-arbitration.ts").includes("requiredChannels: [a.channel]"))
+  // WAVE 154 (154H): the rule, not the waypoint literal — the touch's channel LEADS requiredChannels; other candidates' channels
+  // (the portal for a video greeting) may follow, and the door still halts when none of them is lawful.
+  check("the lifetime door calls arbitratePlannedTouch( and requires the touch's channel (halt on no lawful channel)", calls(code("lib/sphere/lifetime-touch-arbitration.ts"), "arbitratePlannedTouch") && /requiredChannels:\s*\[a\.channel\b/.test(code("lib/sphere/lifetime-touch-arbitration.ts")))
   const cronSrc = code("app/api/cron/lifetime-customer-touchpoints/route.ts")
   const annIdx = cronSrc.indexOf("sendAnniversaryMessage(txn.contact_id"), bdayIdx = cronSrc.indexOf("sendBirthdayMessage(contact.id")
   const askA = cronSrc.lastIndexOf('kind: "anniversary"', annIdx), askB = cronSrc.lastIndexOf('kind: "birthday"', bdayIdx)

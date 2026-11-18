@@ -37,6 +37,27 @@ async function recordSocialPostOut(svc: any, post: any, via: string, ref: string
   }
 }
 
+/**
+ * WAVE 154 (lane 154H): does the post's author still hold a seat in the post's workspace? `admitted` / `revoked` (with why) /
+ * `unverified` (a read was refused — the caller holds the post). A post with no author row (a platform / system post that a person
+ * approved) is admitted on its approval. Module-private (a route file exports only its handlers).
+ */
+async function authorStillAdmits(svc: ReturnType<typeof createServiceClient>, post: { user_id?: string | null; brokerage_id?: string | null }): Promise<{ verdict: "admitted" | "revoked" | "unverified"; why: string }> {
+  if (!post.user_id) return { verdict: "admitted", why: "no author seat on the post — its approval stands" }
+  if (!post.brokerage_id) return { verdict: "revoked", why: "the post names no workspace" }
+  const { data: u, error } = await svc.from("users").select("status, deleted_at, brokerage_id").eq("id", post.user_id).maybeSingle()
+  if (error) return { verdict: "unverified", why: `seat read refused (${error.message})` }
+  const user = u as { status?: string | null; deleted_at?: string | null; brokerage_id?: string | null } | null
+  if (!user) return { verdict: "revoked", why: "the author no longer has an account" }
+  if (user.deleted_at) return { verdict: "revoked", why: "the author's account was removed" }
+  if (user.status != null && user.status !== "active") return { verdict: "revoked", why: `the author's seat is ${user.status}` }
+  if (user.brokerage_id !== post.brokerage_id) return { verdict: "revoked", why: "the author no longer belongs to this workspace" }
+  const { resolveViewerHierarchy } = await import("@/lib/kernel/resolve-user-office")
+  const h = await resolveViewerHierarchy(svc as never, { userId: post.user_id, brokerageId: post.brokerage_id })
+  if (!h.ok) return /refused/.test(h.error) ? { verdict: "unverified", why: `membership read refused (${h.error})` } : { verdict: "revoked", why: `membership: ${h.error}` }
+  return { verdict: "admitted", why: `seat active; membership ${h.scope.kind}` }
+}
+
 export async function GET(request: Request) {
   // Cron auth — see lib/cron-auth.ts
   const unauth = verifyCronAuth(request)
@@ -101,6 +122,26 @@ export async function GET(request: Request) {
       // Idempotent check — skip if already published
       if (post.status === "published") {
         results.push({ postId: post.id, status: "skipped" })
+        continue
+      }
+
+      // Step 0 — WAVE 154 (lane 154H, carried from lane 154A2 P14 example 8): THE AUTHOR MUST STILL HOLD A SEAT. A post approved
+      // while its author was a member could publish after the seat was revoked or the person left the workspace. Re-read the seat
+      // (users.status / deleted_at / brokerage) and the membership (resolveViewerHierarchy — it refuses a non-member and fails
+      // closed on any refused read) at egress. A revoked seat fails the post with the reason; an UNREADABLE check leaves the post
+      // scheduled for the next tick (never published on "nobody checked").
+      const admit = await authorStillAdmits(supabase, post as { user_id?: string | null; brokerage_id?: string | null })
+      if (admit.verdict === "unverified") {
+        console.error(`[publish-social-posts] post ${post.id} held: the author's seat could not be verified (${admit.why})`)
+        results.push({ postId: post.id, status: "skipped", error: admit.why })
+        continue
+      }
+      if (admit.verdict === "revoked") {
+        const { error: heldErr } = await supabase.from("social_posts")
+          .update({ status: "failed", error_message: `held at egress: ${admit.why}`, updated_at: new Date().toISOString() })
+          .eq("id", post.id).eq("status", "scheduled")
+        if (heldErr) console.error(`[publish-social-posts] post ${post.id} hold NOT recorded: ${heldErr.message}`)
+        results.push({ postId: post.id, status: "skipped", error: admit.why })
         continue
       }
 

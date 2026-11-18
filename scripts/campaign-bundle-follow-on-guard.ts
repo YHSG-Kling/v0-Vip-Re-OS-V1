@@ -90,7 +90,9 @@ const STUBS: Record<string, string> = {
   "@/lib/social/orchestrate-social-preset-publish": sendStub("social_post", "orchestrateSocialPresetPublish"),
   "@/lib/podcast/orchestrate-podcast-preset-publish": sendStub("podcast_episode", "orchestratePodcastPresetPublish"),
   "@/lib/ads/orchestrate-ad-retarget-send": sendStub("ad_retarget", "orchestrateAdRetargetSend"),
-  "@/lib/ai-isa/followup-arbiter": "export async function arbitratePlannedTouch(svc, input){ return globalThis.__B153.arbitrate(input) }",
+  // WAVE 154 (154H): the executor now also reads who owns the thread (a reply since the bundle began stops the chain) — the stub
+  // answers from the proof's own messages table (none here, so no chain stops); the real reader is proved in test:arbiter-timing.
+  "@/lib/ai-isa/followup-arbiter": "export async function arbitratePlannedTouch(svc, input){ return globalThis.__B153.arbitrate(input) }; export async function loadConversationOwnership(svc, a){ const rows = ((globalThis.__B153.svc && globalThis.__B153.svc.tables.messages) || []).filter((m) => m.contact_id === a.contactId && m.direction === 'inbound').map((m) => m.created_at).sort(); return { ok: true, ownership: { humanOwnedUntil: null, ownedReason: null, humanEngagedAt: null, lastOutboundAt: null, lastInboundAt: rows.length ? rows[rows.length - 1] : null } } }",
   "@/lib/contacts/resolve-mailing-address": "export async function resolveMailingAddressForContact(){ return { street: '12 Gulf Breeze Pkwy', city: 'Pace', state: 'FL', zip: '32571' } }",
   // queue-drain route plumbing (its other queues are empty in this proof)
   "@/lib/cron-auth": "export const verifyCronAuth = () => null",
@@ -428,7 +430,10 @@ async function main() {
   check("the click no longer loops every item through a sender (the single synchronous pass is gone)", !/for\s*\(\s*const\s+item\s+of\s+items\s*\)/.test(clickBody) && /dispatchBundleItem\)?\(svc,\s*first,/.test(clickBody))
   check("POSITIVE CONTROL: the loop finder sees the old shape", /for\s*\(\s*const\s+item\s+of\s+items\s*\)/.test("for (const item of items) {"))
   check("a person-facing follow-on asks arbitratePlannedTouch with the item's channel as requiredChannels", /requiredChannels:\s*\[arbiterChannel\]/.test(ob) && /planner:\s*"bundle_follow_on"/.test(ob))
-  check("the follow-on timing never reads the stored send_after_minutes (owner ruling: order only, the arbiter times it)", !/send_after_minutes/.test(ob))
+  // WAVE 154 (154H, H8): the field now HAS a consumer (the arbiter reads it as guidance), so the assertion holds the RULE — the
+  // author's offset never becomes a timetable: no scheduled_for is ever derived from it (positive control below).
+  const timetable = (src: string) => /scheduled_?[fF]or[^\n;]{0,160}(send_after_minutes|author_spacing)|(send_after_minutes|author_spacing)[^\n;]{0,160}scheduled_?[fF]or/.test(src)
+  check("the follow-on timing never schedules by the stored send_after_minutes (owner ruling: order only, the arbiter times it)", !timetable(ob) && timetable("scheduled_for: new Date(now + item.send_after_minutes * 60000)"))
   const cb = code("app/actions/campaign-bundles.ts")
   check("upsertCampaignBundle no longer deletes every item by bundle_id alone on an edit", !/from\("campaign_bundle_items"\)\.delete\(\)\.eq\("bundle_id",\s*bundleId\)\s*\n/.test(cb) && /syncBundleItems\(svc,\s*brokerageId,\s*bundleId,\s*input\.items\)/.test(cb))
   // The RULE, not the waypoint (CLAUDE.md §2): line 1 is the lane's WRITTEN line until applied, then the integrator's APPLIED LIVE stamp.

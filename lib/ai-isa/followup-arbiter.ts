@@ -1691,6 +1691,9 @@ export interface PlannedTouchInput {
    *  its step channel). When every one of them is unlawful for this contact (opted out, no consent, no address), the arbiter HALTS
    *  the planner instead of letting each send refuse late. Absent → derived from the options' channels; none known → no judgment. */
   requiredChannels?: readonly string[]
+  /** WAVE 154 (lane 154H, H7): the planner's NEXT-ACTION record (nextActionLedgerDetail) — persisted on THIS decision's ledger row
+   *  as `next_action` (why now, who owns it, the options refused / deferred and why, the follow-on plan or `no_follow_on`). */
+  nextAction?: Record<string, unknown> | null
 }
 
 export interface PlannedTouchArbitration {
@@ -1714,7 +1717,7 @@ const EVERY_SETTINGS_GRANT: readonly string[] = Object.freeze(["email", "sms", "
  * granted and no frequency / provider / budget input, so the only refusals left are the lawful ones. Fails closed to "unknown"
  * ({ ok: false }) on an unreadable contact — a halt is never decided on a guess. Module-private (reached through arbitratePlannedTouch).
  */
-async function lawfulChannelsForContact(svc: { from: (t: string) => any }, a: { brokerageId: string; contactId: string }): Promise<{ ok: true; lawful: Set<ArbiterChannel>; refusals: Record<string, string[]> } | { ok: false; reason: string }> {
+export async function lawfulChannelsForContact(svc: { from: (t: string) => any }, a: { brokerageId: string; contactId: string }): Promise<{ ok: true; lawful: Set<ArbiterChannel>; refusals: Record<string, string[]> } | { ok: false; reason: string }> {
   const { data: contact, error } = await svc.from("contacts").select(READINESS_CONTACT_COLUMNS).eq("id", a.contactId).eq("brokerage_id", a.brokerageId).maybeSingle()
   if (error) return { ok: false, reason: `contact consent read refused: ${error.message}` }
   if (!contact) return { ok: false, reason: "contact not in this brokerage" }
@@ -1887,7 +1890,7 @@ export async function arbitratePlannedTouch(
           const r = await recordNonAction({
             brokerageId: a.brokerageId, domain: "followup", decision: "do_nothing", actor: { type: "manager", managerKey: "ai_isa" }, subject: a.subject,
             reasonCode: "NO_ACTION_NEEDED", reasonDetail: decision.rationale.slice(0, 500), cycle: `arb:${a.planner}:halt:${a.subject.type}:${a.subject.id}:${a.now.toISOString().slice(0, 10)}`,
-            systemSource: a.planner, policyKey: "followup_policy", detail: { ...arbitrationLedgerDetail(decision, null), halt: { reason: "no_lawful_channel", required, refusals } },
+            systemSource: a.planner, policyKey: "followup_policy", detail: { ...arbitrationLedgerDetail(decision, null), halt: { reason: "no_lawful_channel", required, refusals }, ...(a.nextAction ? { next_action: a.nextAction } : {}) },
           }, { client: svc as never })
           recorded = r.recorded; ledgerError = r.error
         } catch (e) { ledgerError = e instanceof Error ? e.message : String(e) }
@@ -1919,7 +1922,7 @@ export async function arbitratePlannedTouch(
     let recorded = false
     let ledgerError: string | undefined
     if (deps.record !== false) {
-      const r = await recordArbitration(svc, { brokerageId: a.brokerageId, subject: a.subject, decision, now: a.now, policyRef: null, systemSource: a.planner, cycleScope: a.planner, extraDetail: { timing: timingDetail } })
+      const r = await recordArbitration(svc, { brokerageId: a.brokerageId, subject: a.subject, decision, now: a.now, policyRef: null, systemSource: a.planner, cycleScope: a.planner, extraDetail: { timing: timingDetail, ...(a.nextAction ? { next_action: a.nextAction } : {}) } })
       recorded = r.recorded
       ledgerError = r.error
     }
@@ -1977,7 +1980,7 @@ export async function arbitratePlannedTouch(
   let recorded = false
   let ledgerError: string | undefined
   if (deps.record !== false) {
-    const r = await recordArbitration(svc, { brokerageId: a.brokerageId, subject: a.subject, decision, now: a.now, policyRef: null, systemSource: a.planner, cycleScope: a.planner, extraDetail: { timing: timingDetail } })
+    const r = await recordArbitration(svc, { brokerageId: a.brokerageId, subject: a.subject, decision, now: a.now, policyRef: null, systemSource: a.planner, cycleScope: a.planner, extraDetail: { timing: timingDetail, ...(a.nextAction ? { next_action: a.nextAction } : {}) } })
     recorded = r.recorded
     ledgerError = r.error
   }
@@ -3058,4 +3061,390 @@ export async function arbitrateSectionDelivery(
   } catch (e) {
     return { deliver: true, holdUntil: null, rationale: `the plan stands — the arbiter could not be asked (${e instanceof Error ? e.message : String(e)})`, source: "deterministic" }
   }
+}
+
+// ══ WAVE 154 (lane 154H — owner ruling R8, directive H7 + H8): THE NEXT-ACTION DECISION CONTRACT AND THE DURABLE FOLLOW-ON ═══════
+//
+// MEASURED AT BASE 6b53af30: the arbiter chose an OPTION and a wait (ArbiterDecision), and the ledger row said why — but nothing
+// recorded WHICH artifact, which managers, which options were refused and why, which gate permitted unattended execution, or what
+// comes NEXT. The lifetime anniversary rode a hard-coded email channel (lib/sphere/lifetime-touch-arbitration.ts) and its sender
+// (app/actions/lifetime-customer-touchpoints.ts sendAnniversaryMessage) fired the avatar video BESIDE every email, un-arbitrated —
+// the "send all of them" shape H9 forbids — and a sent anniversary ended with no follow-on at all.
+//
+// This block is the CONTRACT, not a second arbiter: the planner states its candidates (each an action verb + channels + artifact
+// + manager), the deterministic gates screen them (identity · consent / DNC · channel availability · licensing · subscription ·
+// tenant scope · conversation owner · spend · review · sensitivity · artifact readiness), the EXISTING door (arbitratePlannedTouch)
+// lets the model recommend among the ELIGIBLE ones only, and resolveNextActionRecord writes the whole decision onto that door's
+// ledger row (PlannedTouchInput.nextAction → detail.next_action). The follow-on is DURABLE WORK on the campaign orchestrator's own
+// queue (orchestrator_tasks, the m931 survivor), task_type NEXT_ACTION_FOLLOW_ON_TASK, drained by app/api/cron/queue-drain — never a
+// loose `send_after_minutes`, a reminder or a note. Pure where it can be (LAW 4: the model never grants authority).
+
+/** The action verbs a decision may resolve to (H7.3) — `no_action` is an explicit, recorded silence. */
+export const NEXT_ACTION_VERBS = Object.freeze(["send", "create", "draft", "regenerate", "research", "notify_agent", "schedule", "wait", "decline", "request_approval", "escalate", "no_action"] as const)
+export type NextActionVerb = (typeof NEXT_ACTION_VERBS)[number]
+
+/** How ready an artifact is. Only `approved_ready` (a verified, approved, rendered item) or `composed_at_send` (a written message the
+ *  brand-voice + compliance gates compose at the one send door) may be SENT; `creation_request` may be CREATED (a governed Asset
+ *  Manager request) and is delivered only on its own verified ready evidence. `unrendered` / `unapproved` / `stale` are never sent. */
+export type ArtifactReadiness = "approved_ready" | "composed_at_send" | "creation_request" | "unrendered" | "unapproved" | "stale" | "not_needed"
+
+export interface NextActionArtifact {
+  format: ArbiterFormat
+  /** The existing record (table + id) when one exists; null for a creation request not yet issued. */
+  ref: { table: string; id: string } | null
+  readiness: ArtifactReadiness
+  /** A video is an ARTIFACT: the channels that can actually PLAY it to this person (empty = none — it cannot be delivered). */
+  playableVia: ArbiterChannel[]
+  why: string
+}
+
+export interface NextActionCandidate {
+  id: string
+  verb: NextActionVerb
+  /** The channels it rides (human_task = a private agent task, never an external delivery). */
+  channels: ArbiterChannel[]
+  artifact: NextActionArtifact | null
+  /** The registered manager accountable (lib/kernel/manager-registry.ts key). */
+  manager: string
+  supporting: string[]
+  /** External deliveries this candidate causes — a coordinated pair is ONE external delivery plus a private task, never two sends. */
+  externalDeliveries: number
+  why: string[]
+}
+
+export type NextActionGateName = "identity" | "consent" | "channel_available" | "licensing" | "subscription" | "tenant_scope" | "conversation_owner" | "spend" | "review" | "sensitivity" | "artifact"
+/** One deterministic gate verdict. `ok: null` = could not be verified — FAIL CLOSED (it refuses unattended execution). A gate names
+ *  the candidate or the channel it governs; neither = it governs every candidate. */
+export interface NextActionGate { gate: NextActionGateName; ok: boolean | null; why: string; candidate?: string; channel?: ArbiterChannel }
+
+export interface NextActionEvent {
+  /** The event's existing name (lib/kernel/events.ts KernelEvent value, or the planner moment key) — never a new vocabulary. */
+  type: string
+  /** The source row's id and version — a stale or superseded event is refused at the follow-on. */
+  eventId: string | null
+  version: number | null
+  at: string
+  sourceEvidence: string
+  causalParent: string | null
+  brokerageId: string
+  recipient: { type: "contact" | "lead"; id: string }
+  objective: string
+}
+
+export interface NextActionOwner {
+  manager: string
+  /** agents.id of the responsible seat (null = none assigned). */
+  responsibleSeat: string | null
+  /** Who owns the live conversation right now: `ai` (no person is in it) or `human` (and why). */
+  conversationOwner: { owner: "ai" | "human" | "unknown"; why: string }
+  supporting: string[]
+}
+
+/** The provider evidence vocabulary (H8, H11 "event distinction"). Never interchanged and never upgraded: accepted ≠ delivered ≠
+ *  opened; nothing is `opened` / `clicked` unless the provider reported it; `unknown` is reconciled, never assumed. */
+export const PROVIDER_EVIDENCE = Object.freeze(["accepted", "delivered", "opened", "clicked", "replied", "bounced", "failed", "unknown"] as const)
+export type ProviderEvidence = (typeof PROVIDER_EVIDENCE)[number]
+
+/** The follow-on triggers (H8's conceptual names mapped onto what this tree actually emits: ISA_REPLY_RECEIVED for a reply,
+ *  CONTACT_CHANNEL_OPT_OUT / CONTACT_DNC_SET for an opt-out, the agent_intro_videos terminal status for a render). */
+export type FollowOnTrigger = "recipient_replied" | "video_render_ready" | "timer_due" | "delivery_failed" | "send_outcome_unknown"
+
+/** PURE. Which triggers a piece of provider evidence may fire — and nothing more (an `accepted` never fires a delivered-only step). */
+export function evidenceFires(evidence: ProviderEvidence): FollowOnTrigger[] {
+  switch (evidence) {
+    case "replied": return ["recipient_replied"]
+    case "bounced": case "failed": return ["delivery_failed"]
+    case "unknown": return ["send_outcome_unknown"]
+    // accepted / delivered / opened / clicked are EVIDENCE, not reasons to act: they only let the reply-watch timer run out honestly.
+    default: return []
+  }
+}
+
+/** PURE. A provider / ledger status word → the evidence vocabulary, WITHOUT upgrading it. Unrecognised → `unknown`. */
+export function normalizeProviderEvidence(raw: string | null | undefined): ProviderEvidence {
+  const s = String(raw ?? "").trim().toLowerCase()
+  if (["accepted", "queued", "sent", "submitted", "processed", "executed"].includes(s)) return "accepted"
+  if (s === "delivered") return "delivered"
+  if (s === "opened" || s === "open") return "opened"
+  if (s === "clicked" || s === "click") return "clicked"
+  if (s === "replied" || s === "reply") return "replied"
+  if (s === "bounced" || s === "bounce" || s === "undeliverable") return "bounced"
+  if (s === "failed" || s === "rejected" || s === "refused" || s === "dropped") return "failed"
+  return "unknown"
+}
+
+export interface NextActionTiming {
+  /** stated_preference = what the person told us; interaction_history = derived from THEIR authorized inbound history;
+   *  evidence_now = no preference and too little history — the arbiter decides now inside the legal send window. */
+  basis: "stated_preference" | "interaction_history" | "evidence_now"
+  localHour: number | null
+  window: { start: number; end: number; label: string } | null
+  earliestAt: string
+  reason: string
+}
+
+/** The minimum inbound replies before an hour of day is read as THIS person's pattern (fewer is noise, not a preference). */
+const HISTORY_MIN_SAMPLES = 3
+
+/**
+ * PURE. WHEN, for ONE person (H7.6): their stated time window and time zone first; otherwise the local hour they actually reply in
+ * (the mode of their authorized inbound timestamps, at least HISTORY_MIN_SAMPLES); otherwise now — always clipped to the tenant's
+ * legal send window (policy.guardrails.quietHours, a statutory floor, never a cadence). No generic interval anywhere.
+ */
+export function derivePersonTiming(i: { statedTime: string | null; timeZone: string | null; inboundAts: readonly string[]; now: Date; sendWindow: { startHour: number; endHour: number } }): NextActionTiming {
+  const localHour = localHourIn(i.timeZone, i.now)
+  const atLocal = (hour: number): string => {
+    if (localHour === null) return i.now.toISOString()
+    const ahead = (hour - localHour + 24) % 24
+    return new Date(i.now.getTime() + ahead * 3_600_000 - i.now.getUTCMinutes() * 60_000).toISOString()
+  }
+  const clip = (w: { start: number; end: number; label: string }) => ({ start: Math.max(w.start, i.sendWindow.startHour), end: Math.min(w.end, i.sendWindow.endHour), label: w.label })
+  const stated = i.statedTime ? STATED_TIME_WINDOWS.find((w) => w.re.test(i.statedTime as string)) ?? null : null
+  if (stated) {
+    const w = clip(stated)
+    const inside = localHour !== null && localHour >= w.start && localHour < w.end
+    return { basis: "stated_preference", localHour, window: w, earliestAt: inside || localHour === null ? i.now.toISOString() : atLocal(w.start), reason: `they asked to be reached ${stated.label}${i.timeZone ? ` (${i.timeZone})` : " — no time zone on file, so the window cannot be placed; the send gate's quiet hours still apply"}` }
+  }
+  const hours: number[] = []
+  for (const at of i.inboundAts) {
+    const d = new Date(at)
+    if (!Number.isFinite(d.getTime())) continue
+    const h = localHourIn(i.timeZone, d)
+    if (h !== null) hours.push(h)
+  }
+  if (hours.length >= HISTORY_MIN_SAMPLES) {
+    const counts = new Map<number, number>()
+    for (const h of hours) counts.set(h, (counts.get(h) ?? 0) + 1)
+    const mode = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0][0]
+    const w = clip({ start: mode, end: Math.min(24, mode + 2), label: `around ${mode}:00, when they usually reply` })
+    if (w.start < w.end) {
+      const inside = localHour !== null && localHour >= w.start && localHour < w.end
+      return { basis: "interaction_history", localHour, window: w, earliestAt: inside ? i.now.toISOString() : atLocal(w.start), reason: `derived from ${hours.length} of their own replies (most at ${mode}:00 their time)` }
+    }
+  }
+  const inLegal = localHour === null || (localHour >= i.sendWindow.startHour && localHour < i.sendWindow.endHour)
+  return { basis: "evidence_now", localHour, window: null, earliestAt: inLegal ? i.now.toISOString() : atLocal(i.sendWindow.startHour), reason: hours.length ? `only ${hours.length} timed repl${hours.length === 1 ? "y" : "ies"} on record — too few to call a pattern; the arbiter decides now inside the legal send window` : "no stated preference and no reply history — the arbiter decides now inside the legal send window" }
+}
+
+/** PURE. Screen candidates through the deterministic gates (H7.7). A model may only recommend among the ELIGIBLE ones. */
+export function screenNextActionCandidates(candidates: readonly NextActionCandidate[], gates: readonly NextActionGate[]): { eligible: NextActionCandidate[]; refused: Array<{ id: string; why: string[] }> } {
+  const eligible: NextActionCandidate[] = []
+  const refused: Array<{ id: string; why: string[] }> = []
+  for (const c of candidates) {
+    const why: string[] = []
+    for (const g of gates) {
+      if (g.ok === true) continue
+      const governs = g.candidate ? g.candidate === c.id : g.channel ? c.channels.includes(g.channel) : true
+      if (!governs) continue
+      why.push(`${g.gate}: ${g.ok === null ? `not verified — ${g.why}` : g.why}`)
+    }
+    // An artifact that is not ready is never SENT. A creation request may be CREATED; it is delivered only on its own ready evidence.
+    if (c.artifact && c.externalDeliveries > 0) {
+      const r = c.artifact.readiness
+      if (r === "unrendered" || r === "unapproved" || r === "stale") why.push(`artifact: ${r} — an unrendered or unapproved asset is never sent`)
+      if (c.artifact.playableVia.length === 0 && (c.artifact.format === "avatar_video" || c.artifact.format === "video_reel")) why.push("artifact: no channel can play this video to them — a video is an artifact and still needs a playable delivery channel")
+    }
+    if (c.externalDeliveries > 1) why.push("contract: a candidate may cause at most one external delivery")
+    if (why.length) refused.push({ id: c.id, why }); else eligible.push(c)
+  }
+  return { eligible, refused }
+}
+
+export type NextActionNext =
+  | { kind: "follow_on"; trigger: FollowOnTrigger; waitsFor: FollowOnTrigger[]; condition: string; expectedEvidence: string[]; dependencies: string[]; windowEnd: string | null }
+  | { kind: "no_follow_on"; reason: string }
+
+export interface NextActionRecord {
+  contract: "next_action/v1"
+  whyNow: NextActionEvent
+  owner: NextActionOwner
+  action: { candidate: string | null; verb: NextActionVerb; channels: ArbiterChannel[]; artifact: NextActionArtifact | null; manager: string | null }
+  when: NextActionTiming
+  autonomy: { unattended: boolean; decidedBy: "ai" | "deterministic"; gates: NextActionGate[] }
+  next: NextActionNext
+  refused: Array<{ id: string; why: string[] }>
+  deferred: Array<{ id: string; why: string }>
+}
+
+/**
+ * PURE. The full record of ONE decision (H7.1–H7.8). `chosen` is the candidate the door returned (null = the door held — a wait —
+ * or nothing was eligible → `no_action`). Every candidate not chosen is listed as refused (a gate) or deferred (eligible, not chosen).
+ */
+export function resolveNextActionRecord(i: { event: NextActionEvent; owner: NextActionOwner; candidates: readonly NextActionCandidate[]; gates: readonly NextActionGate[]; refused: Array<{ id: string; why: string[] }>; chosen: NextActionCandidate | null; held: { waitHours: number | null; rationale: string } | null; decidedBy: "ai" | "deterministic"; timing: NextActionTiming; next: NextActionNext }): NextActionRecord {
+  const refusedIds = new Set(i.refused.map((r) => r.id))
+  const chosen = i.chosen
+  const deferred = i.candidates.filter((c) => c.id !== chosen?.id && !refusedIds.has(c.id)).map((c) => ({ id: c.id, why: i.held ? `held: ${i.held.rationale.slice(0, 160)}` : `eligible, not chosen — ${chosen ? `the decision preferred ${chosen.id}` : "nothing was chosen"}` }))
+  const verb: NextActionVerb = chosen ? chosen.verb : i.held ? "wait" : "no_action"
+  // Unattended only when every gate that governs the chosen candidate passed — a hold or a silence needs no authority at all.
+  const governsChosen = (g: NextActionGate) => !!chosen && (g.candidate ? g.candidate === chosen.id : g.channel ? chosen.channels.includes(g.channel) : true)
+  return {
+    contract: "next_action/v1",
+    whyNow: i.event,
+    owner: i.owner,
+    action: { candidate: chosen?.id ?? null, verb, channels: chosen?.channels ?? [], artifact: chosen?.artifact ?? null, manager: chosen?.manager ?? null },
+    when: i.timing,
+    autonomy: { unattended: !!chosen && !i.gates.some((g) => g.ok !== true && governsChosen(g)), decidedBy: i.decidedBy, gates: [...i.gates] },
+    next: i.next,
+    refused: i.refused,
+    deferred,
+  }
+}
+
+/** The ledger shape of a record (snake_case, bounded) — what PlannedTouchInput.nextAction carries onto the decision row. */
+export function nextActionLedgerDetail(r: NextActionRecord): Record<string, unknown> {
+  return {
+    contract: r.contract,
+    why_now: { event_type: r.whyNow.type, event_id: r.whyNow.eventId, version: r.whyNow.version, event_at: r.whyNow.at, source_evidence: r.whyNow.sourceEvidence.slice(0, 200), causal_parent: r.whyNow.causalParent, recipient: r.whyNow.recipient, objective: r.whyNow.objective.slice(0, 200) },
+    owner: { manager: r.owner.manager, responsible_seat: r.owner.responsibleSeat, conversation_owner: r.owner.conversationOwner, supporting: r.owner.supporting },
+    action: { candidate: r.action.candidate, verb: r.action.verb, channels: r.action.channels, manager: r.action.manager, artifact: r.action.artifact ? { format: r.action.artifact.format, ref: r.action.artifact.ref, readiness: r.action.artifact.readiness, playable_via: r.action.artifact.playableVia } : null },
+    when: { basis: r.when.basis, local_hour: r.when.localHour, window: r.when.window?.label ?? null, earliest_at: r.when.earliestAt, reason: r.when.reason.slice(0, 200) },
+    autonomy: { unattended: r.autonomy.unattended, decided_by: r.autonomy.decidedBy, gates: r.autonomy.gates.map((g) => ({ gate: g.gate, ok: g.ok, why: g.why.slice(0, 160), ...(g.candidate ? { candidate: g.candidate } : {}), ...(g.channel ? { channel: g.channel } : {}) })) },
+    next: r.next.kind === "follow_on" ? { kind: "follow_on", trigger: r.next.trigger, waits_for: r.next.waitsFor, condition: r.next.condition, expected_evidence: r.next.expectedEvidence, dependencies: r.next.dependencies, window_end: r.next.windowEnd } : { kind: "no_follow_on", reason: r.next.reason },
+    refused: r.refused.map((x) => ({ id: x.id, why: x.why.slice(0, 4) })),
+    deferred: r.deferred,
+  }
+}
+
+// ── the durable follow-on (H8) ────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** THE task type of a next-action follow-on on orchestrator_tasks (one spelling; app/api/cron/queue-drain routes it by planner). */
+export const NEXT_ACTION_FOLLOW_ON_TASK = "next_action_follow_on"
+
+/** Every field H8 requires of a persisted follow-on. Ids and channel keys only — never a message body or contact PII. */
+export interface NextActionFollowOnPayload {
+  idempotency_key: string
+  planner: PlannerEntryPoint
+  brokerage_id: string
+  source_event: { type: string; id: string | null; version: number | null; at: string; causal_parent: string | null }
+  subject_type: "contact" | "lead"
+  subject_id: string
+  actor: { agent_id: string | null; campaign_id: string | null; artifact: { table: string; id: string } | null }
+  manager: string
+  trigger: FollowOnTrigger
+  waits_for: FollowOnTrigger[]
+  condition: string
+  expected_evidence: string[]
+  dependencies: string[]
+  eligibility: { channels: ArbiterChannel[]; lawful: ArbiterChannel[]; conversation_owner: string; taken_at: string }
+  window: { start: string; end: string | null }
+  /** The origin decision this follow-on answers to (attribution survives an alternate channel). */
+  origin: { candidate: string | null; verb: NextActionVerb; channels: ArbiterChannel[]; years_ago?: number | null; transaction_id?: string | null; provider_message_id?: string | null }
+  notify_agent_on_reply: boolean
+  state: "waiting" | "suspended"
+  evaluations: number
+  recovery_waits: number
+  outcome?: Record<string, unknown>
+}
+
+/** The idempotency / causation key: one follow-on per (tenant, source event, version, recipient, trigger). */
+export function nextActionFollowOnKey(p: { brokerageId: string; eventType: string; eventId: string | null; version: number | null; subject: { type: string; id: string }; trigger: FollowOnTrigger }): string {
+  return `${NEXT_ACTION_FOLLOW_ON_TASK}:${p.brokerageId}:${p.eventType}:${p.eventId ?? "-"}:v${p.version ?? 0}:${p.subject.type}:${p.subject.id}:${p.trigger}`
+}
+
+/** Persist ONE follow-on (idempotent: pre-read + the m974 partial unique index → 23505 = already persisted). Never throws. */
+export async function persistNextActionFollowOn(svc: { from: (t: string) => any }, payload: NextActionFollowOnPayload, a: { scheduledFor: string; now: Date }): Promise<{ persisted: boolean; duplicate: boolean; id?: string; error?: string }> {
+  try {
+    const { data: prior, error: readErr } = await svc.from("orchestrator_tasks").select("id")
+      .eq("brokerage_id", payload.brokerage_id).eq("task_type", NEXT_ACTION_FOLLOW_ON_TASK).eq("payload->>idempotency_key", payload.idempotency_key).limit(1).maybeSingle()
+    if (readErr) return { persisted: false, duplicate: false, error: `follow-on read refused: ${readErr.message}` }
+    if (prior) return { persisted: false, duplicate: true, id: (prior as { id: string }).id }
+    const { data: ins, error } = await svc.from("orchestrator_tasks").insert({
+      brokerage_id: payload.brokerage_id, task_type: NEXT_ACTION_FOLLOW_ON_TASK, status: "pending", payload,
+      scheduled_for: a.scheduledFor, attempts: 0, last_error: null, created_at: a.now.toISOString(), updated_at: a.now.toISOString(),
+    }).select("id")
+    if (error) {
+      if ((error as { code?: string }).code === "23505") return { persisted: false, duplicate: true }
+      return { persisted: false, duplicate: false, error: `follow-on insert refused: ${error.message}` }
+    }
+    if (!Array.isArray(ins) || ins.length !== 1) return { persisted: false, duplicate: false, error: "follow-on insert returned no row" }
+    return { persisted: true, duplicate: false, id: (ins[0] as { id: string }).id }
+  } catch (e) {
+    return { persisted: false, duplicate: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/**
+ * A REAL EVENT RESHAPES THE QUEUED WORK (H5, H8 "follow-on eligibility is dynamic") — called by lib/kernel/event-reactor.ts on
+ * ISA_REPLY_RECEIVED (a reply) and CONTACT_CHANNEL_OPT_OUT / CONTACT_DNC_SET (an opt-out), and by the follow-on executors' own
+ * re-read at dispatch (a delayed or missed webhook cannot let a stale item through). For ONE person in ONE tenant:
+ *   · reply → a next-action follow-on that WAITED for a reply is CONSUMED (completed: the live conversation owns the next step; the
+ *     agent is told when the plan says so); every other pending follow-on — next-action or campaign-bundle — is CANCELLED as stale,
+ *     and a bundle chain stops there (the conversation, not the stale plan, decides what follows);
+ *   · global opt-out → every pending follow-on is cancelled (every channel and schedule);
+ *   · channel opt-out → next-action follow-ons on that channel are cancelled; a bundle piece on that channel is left to its own
+ *     executor, whose arbiter halt skips it and lets the chain continue on the channels still lawful.
+ * Every move is a counted, status-guarded UPDATE (pending → terminal); a row another worker already claimed is not touched (its
+ * executor re-reads the same evidence before it sends). Never throws.
+ */
+export async function supersedeFollowOnsForPerson(
+  svc: { from: (t: string) => any },
+  a: { brokerageId: string; subject: { type: "contact" | "lead"; id: string }; reason: "recipient_replied" | "opt_out_all" | "opt_out_channel"; channel?: string | null; now: Date; eventRef?: string | null },
+  deps: { routeToAgent?: typeof routeToAgent } = {},
+): Promise<{ consumed: number; cancelled: number; notified: number; errors: string[] }> {
+  const out = { consumed: 0, cancelled: 0, notified: 0, errors: [] as string[] }
+  try {
+    // THE DECISION for an opt-out: the canonical suppression check confirms it on the person's own flags and the platform list
+    // before anything is cancelled (an event that was reversed, or that names nobody suppressed, cancels nothing). A reply needs
+    // no gate: the inbound message IS the evidence. A refused check cancels nothing here — every send still meets the same gate.
+    if (a.reason !== "recipient_replied" && a.subject.type === "contact") {
+      const { checkSuppression } = await import("@/lib/kernel/compliance/check-suppression")
+      const ch = a.reason === "opt_out_all" ? "email" : canonicalArbiterChannel(a.channel ?? "")
+      const supChannel = ch === "email" || ch === "sms" || ch === "phone" ? ch : ch === "direct_mail" ? "mail" : null
+      if (supChannel) {
+        const sup = await checkSuppression({ brokerageId: a.brokerageId, contactId: a.subject.id, channel: supChannel }, { client: svc as never })
+        if (!sup.suppressed) { out.errors.push(`not suppressed on re-check (${supChannel}) — nothing cancelled`); return out }
+      }
+    }
+    const { data, error } = await svc.from("orchestrator_tasks").select("id, task_type, payload")
+      .eq("brokerage_id", a.brokerageId).eq("status", "pending").in("task_type", [NEXT_ACTION_FOLLOW_ON_TASK, "bundle_follow_on"]).limit(500)
+    if (error) { out.errors.push(`pending follow-ons unreadable: ${error.message}`); return out }
+    const channel = a.channel ? canonicalArbiterChannel(a.channel) : null
+    const nowIso = a.now.toISOString()
+    for (const row of (data ?? []) as Array<{ id: string; task_type: string; payload: Record<string, any> | null }>) {
+      const p = row.payload ?? {}
+      const isNext = row.task_type === NEXT_ACTION_FOLLOW_ON_TASK
+      const mine = isNext
+        ? p.subject_type === a.subject.type && p.subject_id === a.subject.id && p.brokerage_id === a.brokerageId
+        : (a.subject.type === "contact" ? p.audience?.contact_id === a.subject.id : p.audience?.lead_id === a.subject.id)
+      if (!mine) continue
+      let status: "completed" | "cancelled" | null = null
+      let why = ""
+      if (a.reason === "recipient_replied") {
+        if (isNext && Array.isArray(p.waits_for) && p.waits_for.includes("recipient_replied")) { status = "completed"; why = "recipient_replied — the reply is the next trigger; the live conversation (AI ISA inbound responder / the assigned agent) owns the next step" }
+        else { status = "cancelled"; why = "superseded: the recipient replied — the live conversation owns the next step and this stale scheduled item is cancelled" }
+      } else if (a.reason === "opt_out_all") {
+        status = "cancelled"; why = "superseded: the recipient opted out of every channel — every schedule ends"
+      } else if (isNext && channel && Array.isArray(p.eligibility?.channels) && (p.eligibility.channels as string[]).includes(channel)) {
+        status = "cancelled"; why = `superseded: the recipient opted out of ${channel}`
+      }
+      // A channel opt-out leaves a bundle piece to its own executor: the arbiter halt skips it and the chain continues lawfully.
+      if (!status) continue
+      const { data: moved, error: mErr } = await svc.from("orchestrator_tasks").update({
+        status, last_error: status === "cancelled" ? why.slice(0, 500) : null, executed_at: nowIso, updated_at: nowIso,
+        payload: { ...p, outcome: { ...(p.outcome ?? {}), status, reason: why, trigger: a.reason, event_ref: a.eventRef ?? null, decided_at: nowIso, ...(isNext ? {} : { chain: "stopped" }) } },
+      }).eq("id", row.id).eq("brokerage_id", a.brokerageId).eq("status", "pending").select("id")
+      if (mErr) { out.errors.push(`${row.id}: ${mErr.message}`); continue }
+      if (!Array.isArray(moved) || moved.length !== 1) continue
+      if (status === "completed") out.consumed++; else out.cancelled++
+      if (status === "completed" && isNext && p.notify_agent_on_reply === true && a.subject.type === "contact") {
+        const route = deps.routeToAgent ?? routeToAgent
+        const told = await route(svc, { brokerageId: a.brokerageId, contactId: a.subject.id, agentId: (p.actor?.agent_id as string | null) ?? null, now: a.now, transactionId: (p.origin?.transaction_id as string | null) ?? null, title: "They replied to your anniversary touch", description: "Your past client wrote back after the anniversary touch. The AI ISA answers routine questions on its own; a personal reply from you is the natural next step. No automated follow-up will compete with it." }).catch(() => false)
+        if (told) out.notified++
+      }
+    }
+    // THE EVIDENCE (LAW 5): one ledger row per reconcile that moved anything — what event, what it consumed / cancelled.
+    if (out.consumed + out.cancelled > 0) {
+      const { recordNonAction } = await import("@/lib/kernel/action-ledger")
+      const r = await recordNonAction({
+        brokerageId: a.brokerageId, domain: "followup", decision: "do_nothing", actor: { type: "manager", managerKey: "ai_isa" }, subject: a.subject,
+        reasonCode: "NO_ACTION_NEEDED", reasonDetail: `Queued follow-ons reshaped by ${a.reason}${a.channel ? ` (${a.channel})` : ""}: ${out.consumed} consumed, ${out.cancelled} cancelled.`,
+        cycle: `followon_supersede:${a.reason}:${a.channel ?? "all"}:${a.subject.type}:${a.subject.id}:${a.eventRef ?? nowIso}`, systemSource: "event_reactor", policyKey: "followup_policy",
+        detail: { follow_on_reconcile: { reason: a.reason, channel: a.channel ?? null, consumed: out.consumed, cancelled: out.cancelled, notified: out.notified, event_ref: a.eventRef ?? null } },
+      }, { client: svc as never }).catch((e: unknown) => ({ recorded: false, error: e instanceof Error ? e.message : String(e) }))
+      if (!r.recorded) out.errors.push(`reconcile evidence not ledgered: ${r.error ?? "refused"}`)
+    }
+  } catch (e) {
+    out.errors.push(e instanceof Error ? e.message : String(e))
+  }
+  return out
 }

@@ -414,9 +414,12 @@ async function drainOrchestratorTasks(supabase: Svc): Promise<QueueCounts> {
   const counts = emptyCounts()
   const nowIso = new Date().toISOString()
   const bundleFollowOns = await import("@/lib/direct-mail/orchestrate-bundle-send")
+  const nextAction = await import("@/lib/ai-isa/followup-arbiter")
   const stale = await bundleFollowOns.recoverStaleBundleFollowOns(supabase)
   if (stale.recovered > 0) counts.failed += stale.recovered
   counts.errors.push(...stale.errors.map((e) => `bundle follow-on recovery: ${e}`))
+  const staleNext = await (await import("@/lib/sphere/lifetime-touch-arbitration")).recoverStaleLifetimeFollowOns(supabase as never)
+  counts.errors.push(...staleNext.errors.map((e) => `next-action follow-on recovery: ${e}`))
   const { data: tasks, error } = await supabase
     .from("orchestrator_tasks")
     .select("id, task_type, payload, attempts, scheduled_for")
@@ -454,6 +457,20 @@ async function drainOrchestratorTasks(supabase: Svc): Promise<QueueCounts> {
         else if (r.verdict === "failed" || r.verdict === "cancelled") counts.failed++
         else counts.deferred++
         if (r.verdict === "skipped" && /refused|threw/.test(r.reason)) counts.errors.push(`bundle follow-on ${task.id}: ${r.reason}`)
+        continue
+      }
+
+      // WAVE 154 (lane 154H — H8): a NEXT-ACTION follow-on (lib/ai-isa/followup-arbiter.ts NEXT_ACTION_FOLLOW_ON_TASK) is executed by
+      // its planner's own executor, which claims, re-reads the person and settles — this drain only routes and counts.
+      if (task.task_type === nextAction.NEXT_ACTION_FOLLOW_ON_TASK) {
+        const planner = (task.payload as Record<string, unknown> | null)?.planner
+        if (planner !== "lifetime_touch") { await close("failed", `no executor registered for next-action planner '${String(planner)}'`); continue }
+        const { executeLifetimeFollowOn } = await import("@/lib/sphere/lifetime-touch-arbitration")
+        const r = await executeLifetimeFollowOn(supabase as never, task)
+        if (r.verdict === "completed" || r.verdict === "alternate") counts.sent++
+        else if (r.verdict === "failed" || r.verdict === "cancelled") counts.failed++
+        else counts.deferred++
+        if (r.verdict === "skipped" && /refused|threw/.test(r.reason)) counts.errors.push(`next-action follow-on ${task.id}: ${r.reason}`)
         continue
       }
 

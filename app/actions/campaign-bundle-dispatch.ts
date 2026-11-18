@@ -77,6 +77,9 @@ const inWords = (code: string | undefined): string | undefined => (code ? OUTCOM
 export async function sendCampaignBundleToContactAction(params: {
   bundleId: string
   contactId: string
+  /** WAVE 154 (lane 154H): the marketing campaign this send belongs to (optional). Verified below against the SESSION tenant
+   *  through the cookie client; an unverifiable id is dropped (the send still goes, unattributed), never trusted from the body. */
+  marketingCampaignId?: string | null
 }): Promise<SendCampaignBundleResult> {
   if (!isValidUUID(params.bundleId) || !isValidUUID(params.contactId)) {
     return { success: false, error: "Invalid bundle or contact id" }
@@ -154,8 +157,17 @@ export async function sendCampaignBundleToContactAction(params: {
     console.error("[campaign-bundle-dispatch] tracked QR unavailable:", (err as Error)?.message)
   }
 
+  // The campaign, verified in THIS tenant under RLS (a refused or empty read leaves the send unattributed, never mis-attributed).
+  let marketingCampaignId: string | null = null
+  if (params.marketingCampaignId && isValidUUID(params.marketingCampaignId)) {
+    const { data: camp, error: campErr } = await supabase.from("marketing_campaigns").select("id").eq("id", params.marketingCampaignId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (campErr) console.error(`[campaign-bundle-dispatch] campaign not verified (sent unattributed): ${campErr.message}`)
+    marketingCampaignId = (camp?.id as string | undefined) ?? null
+  }
+
   const { orchestrateBundleSend } = await import("@/lib/direct-mail/orchestrate-bundle-send")
   const result = await orchestrateBundleSend({
+    marketingCampaignId,
     brokerageId,
     bundleId:  params.bundleId,
     contactId: params.contactId,

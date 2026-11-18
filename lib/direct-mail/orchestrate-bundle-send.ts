@@ -87,6 +87,10 @@ export interface OrchestrateBundleSendArgs {
   teamId?:      string | null
   agentUserId?: string | null
   systemSource?: string
+  /** WAVE 154 (lane 154H — carried fix): the marketing campaign this bundle send belongs to, when the caller has one (the SMS
+   *  orchestrator verifies it against the tenant). Carried on every follow-on so the SMS piece's return on investment is
+   *  attributed instead of reading N/A. */
+  marketingCampaignId?: string | null
 }
 
 export interface BundleChannelOutcome {
@@ -113,6 +117,8 @@ interface BundleItem {
   channel:     string
   preset_id:   string | null
   order_index: number
+  /** The author's suggested spacing after the previous piece — GUIDANCE the arbiter weighs (never a gate, never a timetable). */
+  send_after_minutes?: number | null
 }
 
 /** THE task type of a persisted bundle follow-on on orchestrator_tasks (one spelling; the drain route reads it). */
@@ -134,6 +140,7 @@ interface ItemSender {
   agentUserId?: string | null
   qrScanUrl?: string | null
   systemSource?: string
+  marketingCampaignId?: string | null
 }
 
 interface ItemRecipient {
@@ -219,6 +226,8 @@ async function dispatchBundleItem(svc: Svc, item: Pick<BundleItem, "channel" | "
     const res = await orchestrateSmsPresetSend({
       brokerageId: s.brokerageId, presetId: item.preset_id, contactId: s.contactId, leadId: s.leadId, toPhone,
       recipientFirstName: r.recipientFirstName, teamId: s.teamId, agentUserId: s.agentUserId, systemSource: source,
+      // WAVE 154 (154H): the bundle's campaign, when it carries one — the SMS touchpoint is attributed (ROI no longer N/A).
+      marketingCampaignId: s.marketingCampaignId ?? null,
     })
     return { channel: item.channel, preset_id: item.preset_id, success: res.success, messageId: res.messageId, error: res.error }
   }
@@ -307,8 +316,10 @@ interface FollowOnPayload {
   bundle_item_id: string
   origin_item_id: string | null
   depends_on: string[]
-  item: { channel: string; preset_id: string | null; order_index: number }
+  item: { channel: string; preset_id: string | null; order_index: number; author_spacing_minutes?: number | null }
   audience: { contact_id: string | null; lead_id: string | null }
+  /** WAVE 154 (154H): the marketing campaign the send belongs to (ids only), threaded to the SMS piece's attribution. */
+  marketing_campaign_id?: string | null
   sender: { user_id: string | null; agent_id: string | null; agent_user_id: string | null; team_id: string | null }
   qr_scan_url: string | null
   system_source: string | null
@@ -329,6 +340,7 @@ interface ChainContext {
   sender: FollowOnPayload["sender"]
   qrScanUrl: string | null
   systemSource: string | null
+  marketingCampaignId?: string | null
 }
 
 function payloadFor(ctx: ChainContext, item: BundleItem, originItemId: string | null): FollowOnPayload {
@@ -340,8 +352,13 @@ function payloadFor(ctx: ChainContext, item: BundleItem, originItemId: string | 
     bundle_item_id: item.id,
     origin_item_id: originItemId,
     depends_on: originItemId ? [originItemId] : [],
-    item: { channel: item.channel, preset_id: item.preset_id, order_index: item.order_index },
+    // WAVE 154 (154H, H8): campaign_bundle_items.send_after_minutes had NO consumer (lib/marketing/creative-playbooks.ts's
+    // tombstone: "the offsets were never honoured"). It is now carried as the author's spacing GUIDANCE and handed to the arbiter
+    // as evidence on the follow-on's option (executeBundleFollowOnTask) — never a gate and never a timetable (owner: "no fixed
+    // timetables anywhere"); 0 / null = the author suggested none.
+    item: { channel: item.channel, preset_id: item.preset_id, order_index: item.order_index, author_spacing_minutes: typeof item.send_after_minutes === "number" && item.send_after_minutes > 0 ? item.send_after_minutes : null },
     audience: ctx.audience,
+    marketing_campaign_id: ctx.marketingCampaignId ?? null,
     sender: ctx.sender,
     qr_scan_url: ctx.qrScanUrl,
     system_source: ctx.systemSource,
@@ -397,7 +414,7 @@ async function persistFollowOnRecord(svc: Svc, ctx: ChainContext, item: BundleIt
 
 /** The bundle's items NOW (tenant-pinned), in order. A refused read is reported, never read as "no items". */
 async function loadItems(svc: Svc, brokerageId: string, bundleId: string): Promise<{ items: BundleItem[]; error: string | null }> {
-  const { data, error } = await svc.from("campaign_bundle_items").select("id, channel, preset_id, order_index")
+  const { data, error } = await svc.from("campaign_bundle_items").select("id, channel, preset_id, order_index, send_after_minutes")
     .eq("bundle_id", bundleId).eq("brokerage_id", brokerageId).order("order_index", { ascending: true })
   if (error) return { items: [], error: error.message }
   return { items: ((data ?? []) as BundleItem[]).slice().sort((a, b) => a.order_index - b.order_index), error: null }
@@ -476,6 +493,7 @@ export async function orchestrateBundleSend(
     brokerageId: args.brokerageId, bundleName: bundle.name, bundleDispatchId,
     leadId: args.leadId, contactId: args.contactId, userId: args.userId, agentId: args.agentId,
     teamId: args.teamId, agentUserId: args.agentUserId, qrScanUrl: args.qrScanUrl ?? null, systemSource: args.systemSource,
+    marketingCampaignId: args.marketingCampaignId ?? null,
   }
   let outcome: BundleChannelOutcome
   try {
@@ -490,7 +508,7 @@ export async function orchestrateBundleSend(
     brokerageId: args.brokerageId, bundleId: args.bundleId, bundleDispatchId,
     audience: { contact_id: args.contactId ?? null, lead_id: args.leadId ?? null },
     sender: { user_id: args.userId ?? null, agent_id: args.agentId ?? null, agent_user_id: args.agentUserId ?? null, team_id: args.teamId ?? null },
-    qrScanUrl: args.qrScanUrl ?? null, systemSource: args.systemSource ?? null,
+    qrScanUrl: args.qrScanUrl ?? null, systemSource: args.systemSource ?? null, marketingCampaignId: args.marketingCampaignId ?? null,
   }
   const root = await persistFollowOnRecord(svc, ctx, first, null, {
     status: firstStatus, now, lastError: outcome.success ? null : outcome.error ?? null,
@@ -579,6 +597,7 @@ export async function executeBundleFollowOnTask(svc: Svc, task: { id: string }, 
     const ctx: ChainContext = {
       brokerageId: B, bundleId: p.bundle_id, bundleDispatchId: p.bundle_dispatch_id, audience: p.audience ?? { contact_id: null, lead_id: null },
       sender: p.sender ?? { user_id: null, agent_id: null, agent_user_id: null, team_id: null }, qrScanUrl: p.qr_scan_url ?? null, systemSource: p.system_source ?? null,
+      marketingCampaignId: isId(p.marketing_campaign_id) ? p.marketing_campaign_id : null,
     }
     const origin = { itemId: p.bundle_item_id, orderIndex: p.item.order_index }
     const hold = async (why: string) => {
@@ -623,7 +642,7 @@ export async function executeBundleFollowOnTask(svc: Svc, task: { id: string }, 
     }
 
     // 3. RE-VALIDATE against the live rows (tenant-pinned).
-    const { data: dispatch, error: dErr } = await svc.from("campaign_bundle_dispatches").select("id, bundle_id, contact_id, lead_id")
+    const { data: dispatch, error: dErr } = await svc.from("campaign_bundle_dispatches").select("id, bundle_id, contact_id, lead_id, dispatched_at")
       .eq("id", p.bundle_dispatch_id).eq("brokerage_id", B).maybeSingle()
     if (dErr) return await hold(`the dispatch could not be read (${dErr.message})`)
     if (!dispatch) return await stopChain("the bundle dispatch no longer exists in this tenant")
@@ -674,6 +693,20 @@ export async function executeBundleFollowOnTask(svc: Svc, task: { id: string }, 
       return await stopChain("the dispatch names no recipient")
     }
 
+    // 4b. WAVE 154 (lane 154H — directive H5): A REPLY SINCE THE BUNDLE BEGAN WINS. The arbiter's per-person timing reads a reply
+    // after our last touch as "answer now" — right for an ANSWER, wrong for the next MARKETING piece, which at base went out on top
+    // of the person's own reply. A reply from this Contact after the dispatch began means the live conversation owns the next step:
+    // this stale piece is cancelled and the chain stops (the reactor's ISA_REPLY_RECEIVED branch cancels pending pieces at once;
+    // this re-read covers a delayed or missed event). An unreadable thread holds the piece (fail closed), never sends it.
+    if (subject?.type === "contact") {
+      const { loadConversationOwnership } = await import("@/lib/ai-isa/followup-arbiter")
+      const own = await loadConversationOwnership(svc as never, { brokerageId: B, contactId: subject.id, conversationId: null, now })
+      if (!own.ok) return await hold(`the conversation could not be read (${own.reason})`)
+      const began = (dispatch as { dispatched_at?: string | null }).dispatched_at ?? null
+      const lastIn = own.ownership.lastInboundAt
+      if (began && lastIn && lastIn > began) return await stopChain(`the recipient replied at ${lastIn}, after this bundle began — the live conversation owns the next step; this stale piece is cancelled and no later piece is sent`)
+    }
+
     // 5. THE CONTACT-ENGAGEMENT ARBITER — person-facing touches only. Send now, a bounded wait, or a HALT (no lawful channel).
     const arbiterChannel = PERSON_FACING_ARBITER_CHANNEL[p.item.channel] ?? null
     let decisionNote: Record<string, unknown> | null = null
@@ -683,7 +716,7 @@ export async function executeBundleFollowOnTask(svc: Svc, task: { id: string }, 
       try {
         arb = await arbitrate(svc, {
           brokerageId: B, planner: "bundle_follow_on", subject, now,
-          options: [{ id: "send_now", kind: "communication", channels: [], why: [`item ${p.item.order_index + 1} of the tenant's bundle "${bundleName}" (${p.item.channel}) follows the previous item, which has finished — the author set the ORDER, the timing is yours`] }],
+          options: [{ id: "send_now", kind: "communication", channels: [], why: [`item ${p.item.order_index + 1} of the tenant's bundle "${bundleName}" (${p.item.channel}) follows the previous item, which has finished — the author set the ORDER, the timing is yours`, p.item.author_spacing_minutes ? `the author suggested about ${p.item.author_spacing_minutes} minutes after the previous piece — guidance to weigh, never a gate` : "the author suggested no spacing"] }],
           planned: "send_now",
           moment: { key: "bundle_follow_on_due", intent: `The next piece of a campaign bundle (${p.item.channel}) is ready for this person — decide whether now is right, or hold it a bounded time.` },
           relationship: { type: subject.type, persona: null, hasAssignedAgent: !!ctx.sender.agent_id },
@@ -714,7 +747,7 @@ export async function executeBundleFollowOnTask(svc: Svc, task: { id: string }, 
       brokerageId: B, bundleName, bundleDispatchId: p.bundle_dispatch_id,
       contactId: contactId ?? undefined, leadId: (isId((dispatch as { lead_id?: string | null }).lead_id) ? (dispatch as { lead_id: string }).lead_id : leadId) ?? undefined,
       userId: ctx.sender.user_id ?? undefined, agentId: ctx.sender.agent_id ?? undefined, agentUserId: ctx.sender.agent_user_id, teamId: ctx.sender.team_id,
-      qrScanUrl: ctx.qrScanUrl, systemSource: ctx.systemSource ?? undefined,
+      qrScanUrl: ctx.qrScanUrl, systemSource: ctx.systemSource ?? undefined, marketingCampaignId: ctx.marketingCampaignId ?? null,
     }
     const send = deps.dispatchItem ?? dispatchBundleItem
     // WAVE 153 (lane 153S — owner B10): the send runs under THIS follow-on's own intent key, so every governed send inside it
