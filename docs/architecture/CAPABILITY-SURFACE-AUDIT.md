@@ -294,7 +294,7 @@ A fallback naming an APPLIED migration fires only on a database missing it — d
 | `app/actions/vendor-portfolio.ts:35` | m906 | applied |
 | `app/actions/vendor-w9.ts:172` | m275 | applied |
 | `app/api/cron/review-response-auto-publish/route.ts:92` | m625 | applied |
-| `app/crm/contacts/[contactId]/page.tsx:394` | m868 | applied |
+| `app/crm/contacts/[contactId]/page.tsx:399` | m868 | applied |
 | `app/dashboard/admin/command-center/allocation-card.tsx:33` | m709 | applied |
 | `app/dashboard/admin/manager-trust/improvement-proposals-panel.tsx:56` | m709 | applied |
 | `app/dashboard/admin/manager-trust/tenant-constitution-panel.tsx:70` | m696 | applied |

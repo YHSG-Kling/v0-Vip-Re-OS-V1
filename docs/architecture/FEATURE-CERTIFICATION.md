@@ -127,7 +127,7 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 | listing_marketing_tiers | R01 | CERTIFIED | 2 |
 | marketing_studio | R19 | CERTIFIED | 1 |
 | newsletter_engine | R11 | NOT CONFIGURED | 2 |
-| omnipresence_repurposer | R13 | NOT CONFIGURED | 1 |
+| omnipresence_repurposer | R13 | NOT CONFIGURED | 2 |
 | podcast_generation | R17 | NOT CONFIGURED | 4 |
 | repurposing | R13 | NOT CONFIGURED | 0 |
 | seo_blog_engine | R18 | CERTIFIED | 5 |
