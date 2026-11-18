@@ -10,6 +10,11 @@
  * Schedule: 0 10 * * * — daily 10:00 UTC, an hour BEFORE competitor-ads-exa
  * so the Marketing Studio's briefs have both organic + paid pictures.
  * Auth: CRON_SECRET dual scheme. No-op when EXA_API_KEY is missing.
+ *
+ * WAVE 154 (lane 154B, owner ruling R5(b)): the SEARCH-DEMAND pass runs first and does not need Exa — consented
+ * first-party search statements, the tenant's own Search Console and regional trends become topic ideas for THE ONE
+ * intake (lib/content-intel/search-demand.ts runSearchDemandCron). Producers without a grant report not_connected /
+ * owner_held; until the intake is wired the pass reads, reports `intake_unwired` and stores nothing.
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
@@ -23,11 +28,18 @@ export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
 
+  const svc = createServiceClient()
+  const sd = await import("@/lib/content-intel/search-demand")
+  const searchDemand = await sd.runSearchDemandCron(svc, {
+    intake: sd.productionTopicIntake,
+    trends: sd.productionTrendsTransport(),
+    searchConsole: sd.productionSearchConsoleTransport(),
+  })
+
   if (!process.env.EXA_API_KEY) {
-    return NextResponse.json({ ran_at: new Date().toISOString(), skipped: "EXA_API_KEY not configured" })
+    return NextResponse.json({ ran_at: new Date().toISOString(), skipped: "EXA_API_KEY not configured", searchDemand })
   }
 
-  const svc = createServiceClient()
   const result = await runContentIntelScan(svc)
-  return NextResponse.json({ ran_at: new Date().toISOString(), ...result })
+  return NextResponse.json({ ran_at: new Date().toISOString(), ...result, searchDemand })
 }

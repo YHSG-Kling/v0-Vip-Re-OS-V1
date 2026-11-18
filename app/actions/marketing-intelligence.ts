@@ -19,10 +19,18 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { displaySearchVolume, type VolumeBasisKind } from "@/lib/content-intel/search-demand-volume"
 
 export interface TrendingKeyword {
   keyword: string
+  /** A search COUNT — non-null ONLY from a licensed keyword-volume source (wave 154, lane 154B; none is licensed today, so
+   *  this is null for every row). The stored number of an Exa / NewsAPI row is a RELATIVE index — see relativeIndex. */
   searchVolume: number | null
+  /** The relative index (0–100) when the row's source is one — never a number of searches. */
+  relativeIndex: number | null
+  /** What the number is: licensed_volume / relative_index / unknown, with its plain-words label. */
+  volumeBasis: VolumeBasisKind
+  volumeLabel: string
   competitionScore: number | null
   trendChangePct: number | null
   intentCategory: string | null
@@ -89,7 +97,7 @@ export async function getTrendingKeywords(params: {
     .from("keyword_intelligence")
     .select(
       "keyword, search_volume_monthly, competition_score, trend_change_pct, " +
-        "intent_category, related_keywords, zip_code"
+        "intent_category, related_keywords, zip_code, source"
     )
     .eq("brokerage_id", ctx.brokerageId)
     .eq("trend_direction", "rising")
@@ -115,15 +123,55 @@ export async function getTrendingKeywords(params: {
     intent_category: string | null
     related_keywords: string[] | null
     zip_code: string | null
-  }>).map((row) => ({
+    source: string | null
+  }>).map((row) => {
+    // WAVE 154 (lane 154B): the stored number is classified by its SOURCE before it is shown — the Exa / NewsAPI rows hold
+    // a relative index, which used to reach the panel as "N searches". Only a licensed volume source yields a count.
+    const vol = displaySearchVolume(row.source, row.search_volume_monthly)
+    return {
     keyword: row.keyword,
-    searchVolume: row.search_volume_monthly,
+    searchVolume: vol.searchCount,
+    relativeIndex: vol.relativeIndex,
+    volumeBasis: vol.basis.kind,
+    volumeLabel: vol.basis.label,
     competitionScore: row.competition_score,
     trendChangePct: row.trend_change_pct,
     intentCategory: row.intent_category,
     relatedKeywords: row.related_keywords ?? [],
     zipCode: row.zip_code,
-  }))
+  }})
+}
+
+/**
+ * SEARCH DEMAND — the dashboard reader for Google / search demand intelligence (wave 154, lane 154B; owner ruling R5(b),
+ * directive B3 "Google regional demand / keywords → topical intelligence, content queue and market report ideas"). Runs
+ * the search-demand producers for the SESSION tenant WITHOUT storing (intake null) and returns each producer's honest
+ * status and its topic ideas. Never a person: the producers emit category labels, counts and relative indexes only.
+ */
+export async function getSearchDemandIntelligence(): Promise<
+  | { ok: true; producers: Array<{ producer: string; status: string; reason: string | null; caveats: string[]; ideas: Array<{ title: string; angle: string | null; evidence: { kind: string; metric: string | null; value: number | null; unit: string | null; note: string | null }; categories: string[] }> }> }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+  const supabase = await createClient()
+  const { data: br, error: brErr } = await supabase.from("brokerages").select("city, state").eq("id", ctx.brokerageId).maybeSingle()
+  if (brErr) console.error("[marketing-intelligence] brokerage geo read refused:", brErr.message)
+  const sd = await import("@/lib/content-intel/search-demand")
+  const r = await sd.runSearchDemandScan(supabase, {
+    brokerageId: ctx.brokerageId,
+    geo: { city: (br as { city?: string | null } | null)?.city ?? null, state: (br as { state?: string | null } | null)?.state ?? null },
+  }, { intake: null, trends: sd.productionTrendsTransport(), searchConsole: sd.productionSearchConsoleTransport() })
+  return {
+    ok: true,
+    producers: r.producers.map((p) => ({
+      producer: p.producer, status: p.status, reason: p.reason, caveats: p.caveats,
+      ideas: p.ideas.slice(0, 8).map((i) => ({
+        title: i.title, angle: i.angle ?? null, categories: i.categories ?? [],
+        evidence: { kind: i.evidence.kind, metric: i.evidence.metric ?? null, value: i.evidence.value ?? null, unit: i.evidence.unit ?? null, note: i.evidence.note ?? null },
+      })),
+    })),
+  }
 }
 
 /**

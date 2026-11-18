@@ -2,12 +2,13 @@ import Link from "next/link"
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
-import { getTrendingKeywords, getCompetitorHighPerformers } from "@/app/actions/marketing-intelligence"
+import { getTrendingKeywords, getCompetitorHighPerformers, getSearchDemandIntelligence } from "@/app/actions/marketing-intelligence"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Search } from "lucide-react"
 import { SeoKeywordsDashboardClient } from "./seo-keywords-client"
 import { CompetitorsClient } from "../competitors/competitors-client"
 import { MarketTrendsPanel } from "./components/market-trends-panel"
+import { SearchDemandCard } from "./components/search-demand-card"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import {
   AiCitationVisibilityCard,
@@ -169,11 +170,19 @@ async function CompetitorsTab({
 
 // ─── Market Trends ───────────────────────────────────────────────────────────
 async function TrendsTab() {
-  const [keywords, competitors] = await Promise.all([
+  const [keywords, competitors, demand] = await Promise.all([
     getTrendingKeywords({ limit: 24 }),
     getCompetitorHighPerformers({ limit: 12 }),
+    getSearchDemandIntelligence(),
   ])
-  return <MarketTrendsPanel keywords={keywords} competitors={competitors} />
+  // WAVE 154 (lane 154B, owner ruling R5(b)): the search-demand reader sits beside the trends — each producer's honest status
+  // and the topic ideas it feeds the topic pool (lib/content-intel/search-demand.ts).
+  return (
+    <div className="space-y-6">
+      <SearchDemandCard data={demand} />
+      <MarketTrendsPanel keywords={keywords} competitors={competitors} />
+    </div>
+  )
 }
 
 // ─── GEO / AI Visibility ─────────────────────────────────────────────────────

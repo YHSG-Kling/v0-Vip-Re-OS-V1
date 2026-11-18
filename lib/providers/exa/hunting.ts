@@ -28,6 +28,11 @@
 // ONE ADAPTER (LAW 2): every live call is lib/providers/exa/client.ts (the official exa-js adapter);
 // the row normalizer is lib/external/exa-client.ts normalizeExaRow (one Exa row vocabulary).
 //
+// "GOOGLE-INDEXED" DISCOVERY (wave 154, lane 154B — owner ruling R5(a), directive B1 "API caution"): people who publicly state
+// a housing need on pages Google also indexes are reached through THIS Exa index, not through Google. The Google Custom
+// Search JSON API is being withdrawn (existing users must migrate by 2027-01-01) and no adapter for it exists in this repo;
+// none is built. Search-result pages are never scraped. The route rides every person record (GOOGLE_INDEXED_DISCOVERY_ROUTE).
+//
 // CHEAPEST ADEQUATE METHOD: a structured `/search` (list price $7 / 1k requests incl. 10 results —
 // exa-client.ts) over the open web with a JSON-schema summary; Search Monitors (lib/providers/exa/
 // monitors.ts) replace REPEATED searches with pushed deltas. `/research` is not used by any play.
@@ -35,6 +40,10 @@
 import { normalizeExaRow, type ExaResult } from "@/lib/external/exa-client"
 
 const DAY_MS = 86_400_000
+
+/** Provider note carried on person evidence (wave 154, lane 154B): how a "Google-indexed" public statement was reached. */
+export const GOOGLE_INDEXED_DISCOVERY_ROUTE =
+  "exa_web_index — public pages (including those Google indexes) reached through Exa; the Google Custom Search JSON API is not used (withdrawn for existing users by 2027-01-01) and no search-result page is scraped"
 
 /** One Exa result as the hunting path reads it: the normalized row + the schema-shaped extraction + its publisher. */
 export interface ExaHuntResult extends ExaResult {

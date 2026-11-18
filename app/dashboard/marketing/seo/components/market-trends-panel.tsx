@@ -78,7 +78,7 @@ export function MarketTrendsPanel({
             <TrendingUp className="h-4 w-4" />
             Trending Keywords
           </CardTitle>
-          <CardDescription>Ranked by search volume — use these as content topics.</CardDescription>
+          <CardDescription>Ranked by trend change — use these as content topics. A search count is shown only from a licensed volume source; an index is relative, never searches.</CardDescription>
         </CardHeader>
         <CardContent>
           {keywords.length === 0 ? (
@@ -101,7 +101,10 @@ export function MarketTrendsPanel({
                     )}
                   </div>
                   <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
-                    {k.searchVolume != null && <span>{k.searchVolume.toLocaleString()} searches</span>}
+                    {/* WAVE 154 (lane 154B): a relative index is labelled as one — it never renders as a number of searches. */}
+                    {k.volumeBasis === "licensed_volume" && k.searchVolume != null && <span>{k.searchVolume.toLocaleString()} est. monthly searches</span>}
+                    {k.volumeBasis === "relative_index" && k.relativeIndex != null && <span title={k.volumeLabel}>interest index {k.relativeIndex}/100 (relative)</span>}
+                    {k.volumeBasis === "unknown" && <span title={k.volumeLabel}>volume unknown</span>}
                     {k.intentCategory && (
                       <Badge variant="secondary" className="text-[10px]">
                         {k.intentCategory}

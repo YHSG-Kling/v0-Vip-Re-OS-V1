@@ -21,7 +21,7 @@
 // NO OUTBOUND HERE: this module never dispatches anything (test:early-opportunity-plays scans it).
 
 import type { IngestBatchResult, IngestRawSourceBatchParams } from "@/lib/kernel/scraping"
-import { groundedEvidence, freshnessProblem, huntTerritory, sourceRightsForUrl, type ExaHuntClient, type ExaHuntResult, type ExaHuntSearch, type GroundedEvidence, type SourceRights } from "@/lib/providers/exa/hunting"
+import { GOOGLE_INDEXED_DISCOVERY_ROUTE, groundedEvidence, freshnessProblem, huntTerritory, sourceRightsForUrl, type ExaHuntClient, type ExaHuntResult, type ExaHuntSearch, type GroundedEvidence, type SourceRights } from "@/lib/providers/exa/hunting"
 import type { NormalizedScrapedRecord } from "@/lib/lead-pipeline/raw-record-types"
 import type { KnownAcquisitionKeys, PrePullCandidate } from "@/lib/lead-pipeline/pre-pull-dedup"
 import { EXA_PLAY_CHANNEL, EXA_PLAY_SOURCE, PLAY_ACTOR, PUBLIC_REQUEST_MAX_AGE_DAYS, emptyResult, evidenceRecord, personCandidateProblem, type PersonCandidate, type PlayAction, type PlayResult } from "./contract"
@@ -91,7 +91,9 @@ function readPublicStatement(text: string): PublicStatement {
   const needSentences = sentences.filter((s) => FIRST_PERSON_NEED_RE.test(s) && !THIRD_PARTY_RE.test(s) && NEED_PATTERNS.some((p) => p.re.test(s)))
   const needKinds = Array.from(new Set(needSentences.flatMap((s) => NEED_PATTERNS.filter((p) => p.re.test(s)).map((p) => p.kind))))
   const questionSentence = sentences.find((s) => QUESTION_RE.test(s) && /\b(home|house|buy|sell|mortgage|closing|agent|realtor|neighborhood|rent)\b/i.test(s)) ?? null
-  const quoteSrc = requestSentence ?? needSentences[0] ?? questionSentence
+  // Wave 154 (B1 "exact supporting statement"): the most complete need sentence, not a headline that merely names it.
+  const bestNeed = [...needSentences].sort((x, y) => y.length - x.length)[0]
+  const quoteSrc = requestSentence ?? bestNeed ?? questionSentence
   const thirdParty = !!requestSentence && THIRD_PARTY_RE.test(requestSentence)
   const requests = !!requestSentence && FIRST_PERSON_RE.test(requestSentence) && !thirdParty
   return {
@@ -123,9 +125,38 @@ function identityFromStatement(r: ExaHuntResult, rights: SourceRights): PersonCa
   return { basis: "none" }
 }
 
+// ── WAVE 154 (lane 154B — owner ruling R5(a), directive B1) ─────────────────────────────────────────────────────
+// B1 asks every person record for the author AS PUBLISHED, the identity-link confidence, the contact channel AS PUBLISHED,
+// and an expiry; it asks a non-person page to be classified for what it is (an article / public record or permit is
+// market or property intelligence, never a person); and it asks older indexed copies and rediscoveries not to duplicate.
+
+/** What a page that did NOT pass the person path is (one vocabulary; rides the evidence record). */
+export const NON_PERSON_INTELLIGENCE_CLASSES = ["article", "public_record_or_permit", "partial_profile", "anonymous_forum_post", "unattributed_page"] as const
+export type NonPersonIntelligenceClass = (typeof NON_PERSON_INTELLIGENCE_CLASSES)[number]
+
+/** PURE — an article or a public record / permit is MARKET or PROPERTY intelligence; a name with no published contact point is
+ *  a partial profile; a forum post without one stays an anonymous question. None of them is ever a person. */
+export function nonPersonIntelligenceClass(rights: Pick<SourceRights, "sourceClass">, identityBasis: string): NonPersonIntelligenceClass {
+  if (rights.sourceClass === "news") return "article"
+  if (rights.sourceClass === "official_record") return "public_record_or_permit"
+  if (identityBasis === "name_only") return "partial_profile"
+  if (rights.sourceClass === "public_forum" || identityBasis === "handle_only") return "anonymous_forum_post"
+  return "unattributed_page"
+}
+
+/** PURE — one statement's identity across indexed copies: the author's published contact point + their words, normalized.
+ *  A mirror, a cached copy or a rediscovery under a new result id carries the same key (FNV-1a, deterministic). */
+export function statementCopyKey(a: { email?: string | null; phone?: string | null; quote: string | null }): string {
+  const contact = (a.email ?? "").trim().toLowerCase() || (a.phone ?? "").replace(/\D/g, "")
+  const words = (a.quote ?? "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim()
+  let h = 0x811c9dc5
+  for (const ch of `${contact}|${words}`) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0 }
+  return h.toString(16).padStart(8, "0")
+}
+
 type Classified =
-  | { kind: "person_candidate"; candidate: PersonCandidate; evidence: GroundedEvidence; rights: SourceRights; statement: PublicStatement }
-  | { kind: "anonymous_question"; evidence: GroundedEvidence; rights: SourceRights; statement: PublicStatement; why: string }
+  | { kind: "person_candidate"; candidate: PersonCandidate; evidence: GroundedEvidence; rights: SourceRights; statement: PublicStatement; author: string | null }
+  | { kind: "anonymous_question"; evidence: GroundedEvidence; rights: SourceRights; statement: PublicStatement; why: string; identityBasis: string }
   | { kind: "dropped"; why: string }
 
 /** PURE — one result → what it may become. Every refusal of the person path names its rule (personCandidateProblem). */
@@ -140,17 +171,23 @@ function classifyPublicRequest(r: ExaHuntResult, now: Date): Classified {
   const identity = identityFromStatement(r, rights)
   const candidate: PersonCandidate = { statement: { firstPerson: statement.firstPerson, requestsAgentContact: statement.requestsAgentContact, statesHousingNeed: statement.statesHousingNeed, quote: statement.quote }, identity, rights, publishedAt: evidence.publishedAt }
   const problem = personCandidateProblem(candidate, now)
-  if (!problem) return { kind: "person_candidate", candidate, evidence, rights, statement }
-  return { kind: "anonymous_question", evidence, rights, statement, why: problem }
+  if (!problem) return { kind: "person_candidate", candidate, evidence, rights, statement, author: r.author?.trim() || null }
+  return { kind: "anonymous_question", evidence, rights, statement, why: problem, identityBasis: identity.basis }
 }
 
-/** PURE — the Raw Lead record for a person who asked, by the contact point they published. No handle rides it. */
+/** PURE — the Raw Lead record for a person who asked, by the contact point they published. The author's name AS THE PAGE
+ *  SHOWS IT rides the evidence only here, where the same author published a contact point for this need (directive B1). */
 function personRecord(c: Classified & { kind: "person_candidate" }, market: PlayMarket): NormalizedScrapedRecord {
   const e = c.evidence
   const needs = c.statement.needKinds
   const sells = needs.includes("selling") || needs.includes("fsbo_selling")
+  const copyKey = statementCopyKey({ email: c.candidate.identity.email, phone: c.candidate.identity.phone, quote: c.statement.quote })
+  const expires = c.candidate.publishedAt && Number.isFinite(Date.parse(c.candidate.publishedAt))
+    ? new Date(Date.parse(c.candidate.publishedAt) + PUBLIC_REQUEST_MAX_AGE_DAYS * 86_400_000).toISOString() : null
   return {
-    sourceRecordId: `exa-${e.resultId}`,
+    // Keyed on the STATEMENT, not the Exa result id (wave 154): an older indexed copy or a rediscovery of the same words by
+    // the same author replays the held row (re-verified) instead of filing a second Raw Lead.
+    sourceRecordId: `exa-stmt-${copyKey}`,
     source: EXA_PLAY_SOURCE,
     behaviorType: c.statement.requestsAgentContact ? "agent_request" : "stated_housing_need",
     intentType: sells ? "seller" : "buyer",
@@ -163,10 +200,20 @@ function personRecord(c: Classified & { kind: "person_candidate" }, market: Play
     rawPayload: { id: e.resultId, url: e.sourceUrl, title: e.title, published: e.publishedAt, publisher: e.publisher, excerpt: e.quotedBasis, source_class: c.rights.sourceClass },
     envelope: {
       subjectKind: "person",
-      externalEventId: `exa:${e.resultId}`,
+      externalEventId: `exa:stmt:${copyKey}`,
       proofUrls: [e.sourceUrl],
+      // After the play's window the statement is history, not a person asking now (ttl anchors on the published date).
+      ttlDays: PUBLIC_REQUEST_MAX_AGE_DAYS,
       evidence: {
         play: PLAY, evidence_class: "expressed_interest",
+        // Directive B1 fields (wave 154, lane 154B).
+        author_as_published: c.author,
+        identity_link: { basis: c.candidate.identity.basis, confidence: "direct", why: "the contact point appears in the author's own first-person statement on this page — no inference, no lookup" },
+        contact_channel_as_published: { email: !!c.candidate.identity.email, phone: !!c.candidate.identity.phone, where: "in the text of the author's own post" },
+        evidence_expires_at: expires,
+        statement_copy_key: copyKey,
+        exa_result_id: e.resultId,
+        discovery_route: GOOGLE_INDEXED_DISCOVERY_ROUTE,
         consent_basis: "the author published this contact point in a first-person request for an agent or statement of their own real-estate need, on a public page class whose use the owner permitted (ruling B4)",
         identity_basis: c.candidate.identity.basis,
         author_relationship: "first_person_author — the person who posted states the need as their own",
@@ -246,7 +293,11 @@ export async function runPublicRequestPlay(
     evidence.push(c.evidence)
     if (c.kind === "anonymous_question") {
       refused.push({ what: `person path for ${c.evidence.sourceUrl}`, why: c.why })
-      questions.push(evidenceRecord({ subject: "anonymous_question", evidence: c.evidence, market: a.market, play: PLAY, evidenceClass: "expressed_interest", rights: c.rights, tags: c.statement.requestsAgentContact ? ["agent_request_anonymous"] : ["question"], extracted: { quote: c.statement.quote, requests_agent: c.statement.requestsAgentContact, relocating: c.statement.relocating }, side: "buyer" }))
+      // Wave 154 (B1.4): an article or a public record / permit is MARKET / PROPERTY intelligence (subject 'market'); a forum
+      // post or a partial profile stays an anonymous question. Either way: no person, no identity on the record.
+      const klass = nonPersonIntelligenceClass(c.rights, c.identityBasis)
+      const marketSubject = klass === "article" || klass === "public_record_or_permit"
+      questions.push(evidenceRecord({ subject: marketSubject ? "market" : "anonymous_question", evidence: c.evidence, market: a.market, play: PLAY, evidenceClass: "expressed_interest", rights: c.rights, tags: [klass, ...(marketSubject ? [] : c.statement.requestsAgentContact ? ["agent_request_anonymous"] : ["question"])], extracted: { intelligence_class: klass, quote: c.statement.quote, requests_agent: c.statement.requestsAgentContact, relocating: c.statement.relocating }, side: "buyer" }))
       continue
     }
     // An existing Contact by their own published contact point → THE arbiter, never a new row (no provider bill).
@@ -266,6 +317,24 @@ export async function runPublicRequestPlay(
     persons.push(personRecord(c, a.market))
   }
   blind.push(`dropped: ${JSON.stringify(dropped)}`)
+
+  // OLDER INDEXED COPIES (wave 154, B1.5): the same author's same statement found on several URLs in ONE pass (a mirror, a
+  // cached copy, a cross-post) is ONE person — the newest-published copy is kept, every other copy is named and held.
+  {
+    const byKey = new Map<string, number>()
+    const keep: NormalizedScrapedRecord[] = []
+    const published = (p: NormalizedScrapedRecord) => String((p.rawPayload as { published?: string | null } | undefined)?.published ?? "")
+    for (const p of persons) {
+      const k = p.sourceRecordId ?? ""
+      const at = byKey.get(k)
+      if (at === undefined) { byKey.set(k, keep.length); keep.push(p); continue }
+      const [newer, older] = published(p) > published(keep[at]) ? [p, keep[at]] : [keep[at], p]
+      keep[at] = newer
+      refused.push({ what: `person path for ${older.sourceUrl}`, why: `an older indexed copy of the same statement — kept ${newer.sourceUrl}` })
+    }
+    persons.length = 0
+    persons.push(...keep)
+  }
 
   // PRE-PULL DEDUP (wave 153, lane 153N — directive Part B §4 "pre-pull dedup → RawData"): a person we already hold — the
   // same Exa result filed before, or a Lead / Contact / raw observation with the same published email or phone — is HELD

@@ -298,6 +298,10 @@ export interface BehavioralIntentSummary {
   // summary with their writers (app/actions/lead-intelligence.ts — the lead name-search loop and the Google phrase sampler, both
   // outside the scraping scope and both recording a results page as a person's behaviour). Public statements by a named person
   // are the Exa person-mention survivor's (lib/providers/exa → the RawData door); nothing reads those two tables any more.
+  /** WAVE 154 (lane 154B, owner ruling R5 "lead property searches stay"): the Contact's OWN search statements on a first-party
+   *  channel (buyer_criteria_utterances — portal turn, call, email / SMS; written only by lib/buyer-search/criteria-turn.ts),
+   *  as counts / channels / consent bases. Never a search engine's report about them; null when the read was refused. */
+  searchStatements: import("./first-party-search").SearchStatementSummary | null
   osintSignalCount: number
   osintSources: string[]
   /** FULL `data_content` payload per OSINT row (wave 66 — see the FAIR HOUSING
@@ -335,6 +339,7 @@ const EMPTY_SUMMARY = (contactId: string): BehavioralIntentSummary => ({
   osintSignalCount: 0, osintSources: [], osintProfiles: [],
   loggedSignalCount: 0, topSignalStrength: null,
   outreachAttemptCount: 0,
+  searchStatements: null,
   behavioralIntentScore: 0,
   decayedIntent: scoreDecayedIntent([]),
   narrative: "No external behavioral or search signals collected yet.",
@@ -391,6 +396,17 @@ export async function buildBehavioralIntentSummary(
     .select("timeline, metadata")
     .eq("id", contactId)
   if (brokerageId) contactQuery = contactQuery.eq("brokerage_id", brokerageId)
+  // Wave 154 (lane 154B): the Contact's own consented search statements (counts only — the words stay in their own view).
+  // The tenant bound is UNCONDITIONAL: without a tenant the read is not made and the field is null ("unknown"), never a
+  // read across every tenant.
+  const statementsRead = brokerageId
+    ? supabase.from("buyer_criteria_utterances")
+        .select("channel, consent_basis, created_at")
+        .eq("contact_id", contactId)
+        .eq("brokerage_id", brokerageId)
+        .order("created_at", { ascending: false })
+        .limit(50)
+    : Promise.resolve({ data: null, error: { message: "no tenant — the statements are not read" } })
 
   const [
     { data: signals, error: signalsError },
@@ -401,8 +417,13 @@ export async function buildBehavioralIntentSummary(
     { data: valuations, error: valuationError },
     { data: callbacks, error: callbackError },
     { data: contactRow, error: contactError },
+    { data: statementRows, error: statementsError },
   ] = await Promise.all([signalsQuery, nextdoorQuery, osintQuery, signalsLogQuery, outreachQuery,
-    valuationQuery.limit(20), callbackQuery.limit(20), contactQuery.maybeSingle()])
+    valuationQuery.limit(20), callbackQuery.limit(20), contactQuery.maybeSingle(),
+    statementsRead])
+  if (statementsError && brokerageId) console.error("[behavioral-summary] buyer_criteria_utterances read refused:", statementsError.message)
+  const { summarizeSearchStatements } = await import("./first-party-search")
+  const searchStatements = statementsError ? null : summarizeSearchStatements((statementRows ?? []) as Array<{ channel: string | null; consent_basis: string | null; created_at: string | null }>)
   if (valuationError) console.error("[behavioral-summary] valuation_requests read refused:", valuationError.message)
   if (callbackError) console.error("[behavioral-summary] tasks(ai_callback) read refused:", callbackError.message)
   if (contactError) console.error("[behavioral-summary] contacts(timeline) read refused:", contactError.message)
@@ -512,6 +533,7 @@ export async function buildBehavioralIntentSummary(
   if ((valuations ?? []).length > 0) narrativeParts.push(`${(valuations ?? []).length} home-valuation request(s)`)
   if ((callbacks ?? []).length > 0) narrativeParts.push(`${(callbacks ?? []).length} callback request(s)`)
   if (outreachRows.length > 0) narrativeParts.push(`${outreachRows.length} prior intelligent-outreach attempt(s)`)
+  if (searchStatements && searchStatements.count > 0) narrativeParts.push(`${searchStatements.count} own search statement(s) on ${searchStatements.channels.join(", ") || "first-party channels"}`)
   const narrative = narrativeParts.length > 0
     ? `${narrativeParts.join("; ")}. Behavioral intent score ${behavioralIntentScore}/100 (${decayedIntent.trend}, ${decayedIntent.velocityPerDay}/day, ${decayedIntent.confidence} confidence).`
     : EMPTY_SUMMARY(contactId).narrative
@@ -554,6 +576,7 @@ export async function buildBehavioralIntentSummary(
     loggedSignalCount: signalsLogRows.length,
     topSignalStrength,
     outreachAttemptCount: outreachRows.length,
+    searchStatements,
     behavioralIntentScore,
     decayedIntent,
     narrative,

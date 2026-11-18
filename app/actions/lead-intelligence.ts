@@ -1706,6 +1706,7 @@ async function updateIntelligenceProfile(
   // TOMBSTONE (orphan doctrine §1.3; wave 153): the lead_property_searches read that stood here had no writer left — its only
   // writer (searchRealEstateSites) scraped portal pages outside the owner's scraping scope and never produced a row. A person's
   // own property-search behaviour is the Contact's consented portal / IDX activity (lib/lead-intelligence/behavioral-summary.ts).
+  // Survivor (wave 154, lane 154B): the Contact's stated criteria, read below (lib/lead-intelligence/first-party-search.ts).
 
   // IDX property interactions are NOT read here any more (wave 18). Property
   // search is a CONTACTS capability by owner ruling; lead_idx_property_interactions,
@@ -1770,11 +1771,22 @@ async function updateIntelligenceProfile(
     buyerSellerType = sellerSignals && sellerSignals.length > 2 ? "seller" : "both"
   }
 
-  // Property types, locations and a price range used to be folded from lead_property_searches rows; with that source retired
-  // (see the tombstone above) they are honestly empty / unknown here — never inferred.
-  const propertyTypes: string[] = []
-  const locations: string[] = []
-  const priceRange: string | null = null
+  // Property types, locations and a price range used to be folded from lead_property_searches rows (retired — see the tombstone
+  // above). WAVE 154 (lane 154B, owner ruling R5 "lead property searches stay"): they come back from the Contact's OWN stated
+  // search — property_preferences fields with 'said' provenance, written by the one consented writer
+  // (lib/buyer-search/criteria-turn.ts recordStatedCriteriaTurn: portal turn, call, email / SMS). An inferred or default value
+  // is not their search and stays empty; a refused read stays empty and is said (never inferred).
+  const { loadBuyerCriteria } = await import("@/lib/buyer-search/buyer-criteria")
+  const { saidSearchCriteria } = await import("@/lib/lead-intelligence/first-party-search")
+  let saidSearch = saidSearchCriteria(null)
+  try {
+    saidSearch = saidSearchCriteria(await loadBuyerCriteria(supabase, leadId, { brokerageId }))
+  } catch (e) {
+    console.error("[v0] stated search criteria unreadable — preferences left unknown:", (e as Error)?.message ?? e)
+  }
+  const propertyTypes: string[] = saidSearch.propertyTypes
+  const locations: string[] = saidSearch.locations
+  const priceRange: string | null = saidSearch.priceRange
 
   // `lead_intelligence.timeline`. TYPED against the one vocabulary
   // (constants/crm-standards.ts:STANDARD_TIMELINES) — this writer already spoke
@@ -2109,9 +2121,11 @@ export async function getAgentWorkloadStats() {
  * applies to it a fortiori. It was NOT WIRED for two product reasons, neither
  * of them compliance:
  *
- *  1. google_search_intelligence HAS NO DASHBOARD READER yet (verified by
- *     search — still true, UNRESOLVED, not fixed by this lane: it needs a
- *     market-demand panel). Wiring it into the autonomous loop (below) is
+ *  1. TOMBSTONE (wave 154, lane 154B — owner ruling R5(b)): google_search_intelligence is
+ *     NOT the demand store any more and nothing writes it. Survivor for regional search demand:
+ *     lib/content-intel/search-demand.ts runSearchDemandScan (Trends / Search Console / consented
+ *     first-party search / keyword_intelligence → THE topic pool), read on the SEO Trends tab by
+ *     app/actions/marketing-intelligence.ts getSearchDemandIntelligence. Wiring it into the autonomous loop (below) is
  *     still worth doing — the row feeds any future demand panel and the run
  *     is cheap (ZENROWS_CALL_COST_USD/search) — but a reader is still owed.
  *  2. ZENROWS_API_KEY may not be configured in a given environment. A dark
@@ -2153,7 +2167,7 @@ export async function analyzeGoogleSearchIntent(
   // the Exa content / territory research survivor (lib/providers/exa), which cites its sources.
   return {
     success: false,
-    error: "Google phrase sampling is not part of the lead-hunting scope (public real-estate-need posts and for-sale-by-owner listings only). Use the territory research in Lead Hunting instead.",
+    error: "Google phrase sampling is not part of the lead-hunting scope (public real-estate-need posts and for-sale-by-owner listings only). Regional search demand reaches your topic pool from Search Demand (Marketing → SEO / GEO → Trends); people who publicly ask for help are found by Lead Hunting.",
     scopeRefused: true as const,
   }
 }
