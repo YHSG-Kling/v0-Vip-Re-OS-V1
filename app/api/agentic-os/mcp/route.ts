@@ -3,7 +3,8 @@
 // Any MCP-speaking agent points here and gets the WHOLE app surface as tools:
 //   • initialize           → server info + tools capability
 //   • tools/list           → buildFullActionManifest mapped to MCP tools (vendor + app + connected)
-//   • tools/call           → scope-gated: runs the read executors, returns the gated plan otherwise
+//   • tools/call           → scope-gated: runs the read executors, or files a capability REQUEST through the manager
+//                            delegation service for a capability whose survivor has a worker (see CALLABLE below)
 // Auth: agent bearer token (or session) via resolveAgenticCaller — the caller's scopes gate
 // every tools/call exactly like the REST invoke route. Every call is audit-logged.
 import { NextResponse } from "next/server"
@@ -62,6 +63,29 @@ const READ_EXECUTORS: Record<string, (args: any, ctx: { brokerageId: string }) =
   },
 }
 
+// ── CALLABLE OVER THIS API (wave 154, lane 154A3 — coverage-ledger gap row 9) ──────────────────────────────────────
+// tools/list used to advertise EVERY manifest entry, and a mutating one answered `requires_confirmation` pointing at
+// /api/agentic-os/actions/<cap>/invoke — which 404s for an app capability and 501s (`no_executor`) for the rest. 26 mutating
+// capabilities (transaction_advance, listing_publish, payment_transfer, …) were offered to an agent as available while nothing
+// on this surface could run them. Now a tool is LISTED only when it can actually be served here:
+//   · a read executor above (READ_EXECUTORS), or
+//   · an APP capability whose survivor has a worker in the manager delegation runtime (lib/kernel/manager-delegation.ts
+//     DELEGATION_WORKERS): tools/call files the request through requestDelegation — the SAME door the versioned domain API
+//     uses (lib/kernel/domain-api.ts step 5a): tenant from the credential, scope, entitlement (mayUseAndAfford), the
+//     capability's registered manager (CAPABILITY_MANAGER), a person accepts it on that manager's rail, then the worker runs.
+// Everything else stays DISCOVERABLE as catalog-only (tools/list `_meta.catalogOnly`, with the reason) and a direct tools/call
+// is refused naming where it runs — never "requires_confirmation" through a path that cannot run it.
+async function delegationWorkers(): Promise<Readonly<Record<string, unknown>>> {
+  const { DELEGATION_WORKERS } = await import("@/lib/kernel/manager-delegation")
+  return DELEGATION_WORKERS as Readonly<Record<string, unknown>>
+}
+function callableHere(a: { capability: string; kind: string }, workers: Readonly<Record<string, unknown>>): "read" | "delegate" | null {
+  if (Object.prototype.hasOwnProperty.call(READ_EXECUTORS, a.capability)) return "read"
+  if (a.kind === "app" && Object.prototype.hasOwnProperty.call(workers, a.capability)) return "delegate"
+  return null
+}
+const CATALOG_ONLY_REASON = "Not callable over the agentic API: no executor on this surface. It runs on its own guarded rail (its screen, or its manager's own runtime) with the confirmation that rail requires."
+
 export async function POST(req: Request) {
   const caller = await resolveAgenticCaller(req)
   if (caller.via === "none") {
@@ -89,8 +113,11 @@ export async function POST(req: Request) {
       return rpcResult(id ?? null, {})
 
     case "tools/list": {
-      const tools = manifestToMcpTools(buildFullActionManifest())
-      return rpcResult(id, { tools })
+      const manifest = buildFullActionManifest()
+      const workers = await delegationWorkers()
+      const tools = manifestToMcpTools(manifest.filter((a) => callableHere(a, workers) !== null))
+      const catalogOnly = manifest.filter((a) => callableHere(a, workers) === null).map((a) => ({ capability: a.capability, kind: a.kind, mutates: a.mutates }))
+      return rpcResult(id, { tools, _meta: { catalogOnly, catalogOnlyReason: CATALOG_ONLY_REASON } })
     }
 
     case "tools/call": {
@@ -127,15 +154,47 @@ export async function POST(req: Request) {
         }
       }
 
-      // Side-effecting / dedicated-route capability — authorized but planned, not auto-fired.
-      void recordInvocation({ capability: action.capability, kind: action.kind as any, verb: action.verb, decision: action.mutates ? "requires_confirmation" : "no_executor", brokerageId: caller.brokerageId ?? null, callerVia: caller.via, authorized: true, detail: { via: "mcp" } })
+      const mode = callableHere(action, await delegationWorkers())
+      if (mode !== "delegate") {
+        // Catalog-only: said as a refusal the agent can act on — never a plan through a path that cannot run it.
+        void recordInvocation({ capability: action.capability, kind: action.kind as any, verb: action.verb, decision: "no_executor", brokerageId: caller.brokerageId ?? null, callerVia: caller.via, authorized: true, detail: { via: "mcp", catalog_only: true } })
+        return rpcResult(id, { isError: true, content: [{ type: "text", text: JSON.stringify({ status: "not_callable", capability: action.capability, message: CATALOG_ONLY_REASON }) }] })
+      }
+
+      // DELEGATE — a capability REQUEST through the manager delegation service (the domain API's door, step 5a). The tenant is
+      // the caller's (never an argument); the arguments are DATA on the request (a `brokerageId` in them is dropped).
+      if (!caller.brokerageId) {
+        void recordInvocation({ capability: action.capability, kind: action.kind as any, verb: action.verb, decision: "unauthorized", brokerageId: null, callerVia: caller.via, authorized: false, detail: { via: "mcp", why: "no_tenant" } })
+        return rpcResult(id, { isError: true, content: [{ type: "text", text: "This credential is not bound to an account, so it cannot request work." }] })
+      }
+      const { mayUseAndAfford } = await import("@/lib/billing/billing-access")
+      const ent = await mayUseAndAfford({ brokerageId: caller.brokerageId, capability: "app.access" })
+      if (!ent.allowed) {
+        void recordInvocation({ capability: action.capability, kind: action.kind as any, verb: action.verb, decision: "blocked", brokerageId: caller.brokerageId, callerVia: caller.via, authorized: true, detail: { via: "mcp", why: "entitlement", reason: ent.reason } })
+        return rpcResult(id, { isError: true, content: [{ type: "text", text: "The account's subscription does not currently allow requests through the API." }] })
+      }
+      const { CAPABILITY_MANAGER } = await import("@/lib/agentic-os/capability-ownership")
+      const { requestDelegation } = await import("@/lib/kernel/manager-delegation")
+      const { brokerageId: _ignoredTenantHint, objective, ...entities } = args as Record<string, unknown>
+      const r = await requestDelegation({
+        brokerageId: caller.brokerageId, requestingManager: "data_steward",
+        assignedManager: CAPABILITY_MANAGER[action.capability as keyof typeof CAPABILITY_MANAGER],
+        capability: action.capability as keyof typeof CAPABILITY_MANAGER, objective: String(objective ?? `Requested over MCP: ${action.capability}`),
+        inputEntities: { ...entities, requested_via: "mcp", api_credential_id: caller.credentialId ?? null },
+        authority: 0 as never, actor: { type: "system", id: caller.credentialId ?? `mcp:${caller.via}` },
+      })
+      if (!r.ok) {
+        void recordInvocation({ capability: action.capability, kind: action.kind as any, verb: action.verb, decision: "refused", brokerageId: caller.brokerageId, callerVia: caller.via, authorized: true, detail: { via: "mcp", reason: r.reason } })
+        return rpcResult(id, { isError: true, content: [{ type: "text", text: JSON.stringify({ status: "refused", reason: r.reason }) }] })
+      }
+      void recordInvocation({ capability: action.capability, kind: action.kind as any, verb: action.verb, decision: "requested", brokerageId: caller.brokerageId, callerVia: caller.via, authorized: true, detail: { via: "mcp", delegation_id: r.delegation.id, duplicate: r.duplicate === true } })
       return rpcResult(id, {
         content: [{
           type: "text",
           text: JSON.stringify({
-            status: action.mutates ? "requires_confirmation" : "no_executor",
-            message: `Authorized. ${action.mutates ? "This action mutates state and is executed via its guarded endpoint after confirmation." : "Served by its dedicated endpoint."}`,
-            invoke: { method: "POST", path: `/api/agentic-os/actions/${action.capability}/invoke` },
+            status: "requested",
+            delegation: { id: r.delegation.id, status: r.delegation.status, assigned_manager: r.delegation.assigned_manager },
+            message: "Requested. The capability's manager rail accepts it (a person confirms) before its worker runs; the result is returned on the delegation.",
           }),
         }],
       })

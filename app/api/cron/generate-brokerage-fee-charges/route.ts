@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { generatePeriodicCharges } from "@/app/actions/brokerage-fees"
+import { generatePeriodicCharges } from "@/lib/billing/brokerage-fee-charges"
 import { verifyCronAuth } from "@/lib/cron-auth"
 
 /**

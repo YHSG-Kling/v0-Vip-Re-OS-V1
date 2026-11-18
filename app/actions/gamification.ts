@@ -229,15 +229,8 @@ export async function correctAgentPoints(input: {
   if (!Number.isFinite(points) || points === 0 || points !== Number(input.points)) return { ok: false, error: "A correction is a whole, non-zero number of points." }
   if (reason.length < 10) return { ok: false, error: "Say why (at least 10 characters) — the reason is kept on the audit record." }
 
-  const { resolveTenantAdmin, isPlatformStaffIdentity } = await import("@/lib/auth/resolve-user-role")
-  const userType = String(caller.userType ?? "").toLowerCase()
-  const platformStaff = isPlatformStaffIdentity(caller.userType, caller.platformRole)
-  if (!platformStaff) {
-    if (userType === "team_lead" || userType === "compliance_officer") return { ok: false, error: "Points corrections are made by a brokerage admin." }
-    const admin = await resolveTenantAdmin(caller.supabase as any, caller.userId, { user_type: caller.userType, brokerage_id: caller.brokerageId })
-    if (!admin.ok) return { ok: false, error: admin.error }
-    if (!admin.isTenantAdmin) return { ok: false, error: "Points corrections are made by a brokerage admin." }
-  }
+  const gate = await pointsCorrectionGate(caller)
+  if (!gate.ok) return { ok: false, error: gate.error }
 
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
@@ -270,16 +263,83 @@ export async function correctAgentPoints(input: {
     },
     {
       settle: (r) => r.ok ? { status: "executed", outcome: r.alreadyApplied ? "already_applied" : "points_corrected" } : { status: "failed", outcome: "refused", error: r.error ?? null },
-      replay: () => ({ ok: true, alreadyApplied: true }),
+      // CLAIM-AWARE (wave 154, lane 154A3; test:action-evidence-census II.2): only an EXECUTED winner is "already applied".
+      // A refused claim (the ledger could not record the at-most-once key) acted on nothing and says so; an in-flight or
+      // unknown claim is neither applied nor safe to repeat blindly. The raw ledger error stays in the server log, never in
+      // the sentence the admin reads.
+      replay: (claim) => {
+        if (claim.kind === "replay") return { ok: true, alreadyApplied: true }
+        if (claim.kind === "refused") {
+          console.error(`[correctAgentPoints] action ledger refused the claim for ${input.correctionId}: ${claim.error}`)
+          return { ok: false, error: "The correction could not be recorded, so nothing was changed. Try again in a moment." }
+        }
+        if (claim.kind === "in_flight") return { ok: false, error: "This correction is already being applied — refresh in a moment to see it." }
+        return { ok: false, error: "This correction was attempted and its result is not confirmed. Check the agent's points history before submitting it again." }
+      },
     },
   )
   if (!res.ok) return res
+
+  // THE BOARD FOLLOWS THE CORRECTION (wave 154, lane 154A3). The standings an agent compares against are
+  // leaderboard_rankings, re-populated weekly by the recruit-outreach cron — so a correction used to sit on the ledger
+  // while the board showed the old order for up to a week. The SAME populator (lib/recruiting/leaderboard.ts
+  // runLeaderboardSnapshot, recruiting_manager's writer) re-snapshots this tenant's boards now. Best-effort: the points
+  // already landed atomically; a refused snapshot is logged and the weekly cron is the recovery.
+  if (!res.alreadyApplied) {
+    try {
+      const { runLeaderboardSnapshot } = await import("@/lib/recruiting/leaderboard")
+      await runLeaderboardSnapshot(svc as any, { brokerageId: caller.brokerageId })
+    } catch (e) {
+      console.error(`[correctAgentPoints] leaderboard refresh after correction ${input.correctionId} failed (the weekly cron recovers it):`, (e as Error)?.message)
+    }
+  }
 
   const { data: after } = await svc.from("agents").select("gamification_points").eq("id", input.agentId).maybeSingle()
   const { data: rows, error: sumErr } = await svc.from("agent_points_log").select("points").eq("agent_id", input.agentId)
   const newTotal = Number((after as { gamification_points?: number | null } | null)?.gamification_points) || 0
   const ledgerSum = sumErr ? undefined : ((rows ?? []) as Array<{ points: number }>).reduce((s, r) => s + (Number(r.points) || 0), 0)
   return { ...res, newTotal, ledgerSum, reconciled: ledgerSum === undefined ? undefined : ledgerSum === newTotal }
+}
+
+/**
+ * THE ONE GATE for the points-correction door (wave 154, lane 154A3 — extracted from correctAgentPoints so the screen
+ * that offers the form and the action that applies it can never disagree). Platform staff, or a tenant admin
+ * (resolveTenantAdmin) MINUS team_lead and compliance_officer by name. Not exported: a "use server" export is a public
+ * endpoint (CLAUDE.md §4), and this is a helper.
+ */
+async function pointsCorrectionGate(caller: { userId: string; brokerageId: string; userType?: string | null; platformRole?: string | null; supabase: unknown }): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { resolveTenantAdmin, isPlatformStaffIdentity } = await import("@/lib/auth/resolve-user-role")
+  const userType = String(caller.userType ?? "").toLowerCase()
+  if (isPlatformStaffIdentity(caller.userType ?? null, caller.platformRole ?? null)) return { ok: true }
+  if (userType === "team_lead" || userType === "compliance_officer") return { ok: false, error: "Points corrections are made by a brokerage admin." }
+  const admin = await resolveTenantAdmin(caller.supabase as any, caller.userId, { user_type: caller.userType, brokerage_id: caller.brokerageId })
+  if (!admin.ok) return { ok: false, error: admin.error }
+  if (!admin.isTenantAdmin) return { ok: false, error: "Points corrections are made by a brokerage admin." }
+  return { ok: true }
+}
+
+/**
+ * THE SCREEN ENTRY for the correction door (wave 154, lane 154A3). The Motivation page asks this once on the server; it
+ * answers `{ allowed: false }` to anyone the gate refuses (the form is never rendered for them), and to an admin the
+ * session tenant's agents — never the caller's own record — with their stored totals, so the form can only name an
+ * agent the action will accept. Read-only; the tenant is the session's.
+ */
+export async function getPointsCorrectionRoster(): Promise<{ allowed: boolean; agents: Array<{ id: string; name: string; points: number }> }> {
+  const { requireCaller } = await import("@/lib/auth/require-caller")
+  const caller = await requireCaller()
+  if (!caller.ok) return { allowed: false, agents: [] }
+  const gate = await pointsCorrectionGate(caller)
+  if (!gate.ok) return { allowed: false, agents: [] }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { data, error } = await createServiceClient().from("agents").select("id, user_id, gamification_points, users:user_id(first_name, last_name)")
+    .eq("brokerage_id", caller.brokerageId).limit(500)
+  if (error) { console.error(`[getPointsCorrectionRoster] agent roster read refused: ${error.message}`); return { allowed: true, agents: [] } }
+  type R = { id: string; user_id: string | null; gamification_points: number | null; users: { first_name: string | null; last_name: string | null } | null }
+  const agents = ((data ?? []) as unknown as R[])
+    .filter((a) => a.user_id !== caller.userId)
+    .map((a) => ({ id: a.id, name: [a.users?.first_name, a.users?.last_name].filter(Boolean).join(" ") || "Unnamed agent", points: Number(a.gamification_points) || 0 }))
+    .sort((x, y) => x.name.localeCompare(y.name))
+  return { allowed: true, agents }
 }
 
 // ─── ADD POINTS — RETIRED (wave 153, lane 153I) ───────────────────────────────

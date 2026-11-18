@@ -997,7 +997,8 @@ export async function markCommissionApproved(
         event:  KernelEvent.COMMISSION_APPROVED,
         metadata:    { oldStatus, newStatus, approvedBy },
         createdAt:  approvedAt,
-        auditOnly: true,
+        // FANS OUT (wave 154, lane 154A3 — was auditOnly, so the reactor never heard an approval): Finance Manager's consumer
+        // (lib/kernel/authority-reactions.ts reactToCommissionDecision) records whether the payout is releasable or what holds it.
       }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_approved_echo", brokerageId: brokerageId, reason: "lifecycle echo after the approval landed" })
 
     return {
@@ -1189,6 +1190,36 @@ async function readAgentCommissionRow(supabase: ReturnType<typeof createServiceC
  * only whether a payout may be initiated / recorded. Proved through markCommissionPaid / initiateCommissionPayout
  * (scripts/concession-ledger-guard.ts), so no export exists only for a proof.
  */
+/**
+ * THE FINANCE MANAGER'S PAYOUT STANDING (wave 154, lane 154A3) — the decision the commission reactions ask
+ * (lib/kernel/authority-reactions.ts reactToCommissionDecision, called from lib/kernel/event-reactor.ts on COMMISSION_DISPUTED /
+ * COMMISSION_APPROVED / COMMISSION_PAID). Not a second gate: it reads the row tenant-pinned and, for an approved commission, asks
+ * the SAME payoutReleaseGate + loadPayoutGateInputs the payout writers ask (no advance reason — an advance is a person's
+ * stated choice at initiation, never inferred by a reaction). Read-only. A refused read is ok:false, never "releasable".
+ */
+export async function commissionPayoutStanding(
+  supabase: ReturnType<typeof createServiceClient>,
+  brokerageId: string,
+  commissionId: string,
+): Promise<{ ok: true; status: string; transactionId: string | null; initiated: boolean; paidAt: string | null; releasable: boolean; hold: string | null } | { ok: false; error: string }> {
+  const { row, error } = await readAgentCommissionRow(supabase, commissionId, brokerageId)
+  if (!row) return { ok: false, error: error ?? "Commission not found" }
+  const status = String(row.status ?? "")
+  const base = {
+    status,
+    transactionId: (row.transaction_id as string | null | undefined) ?? null,
+    initiated: !!row.payment_initiated_at,
+    paidAt: (row.paid_at as string | null | undefined) ?? null,
+  }
+  if (status !== "approved") {
+    return { ok: true, ...base, releasable: false, hold: status === "paid" ? null : status === "disputed" ? "disputed: the payout writers refuse a disputed commission until it is resolved" : `not approved (status ${status})` }
+  }
+  const inputs = await loadPayoutGateInputs(supabase, brokerageId, row)
+  if (!inputs.ok) return { ok: true, ...base, releasable: false, hold: inputs.error }
+  const gate = payoutReleaseGate({ timing: inputs.timing, commission: row as { deposit_received_at?: string | null }, cda: inputs.cda, closedVerified: inputs.closedVerified })
+  return { ok: true, ...base, releasable: gate.ok && !gate.advance, hold: gate.ok ? null : gate.error }
+}
+
 function payoutReleaseGate(input: {
   timing: "at_closing_per_cda" | "after_brokerage_receipt"
   commission: { deposit_received_at?: string | null }
@@ -1522,7 +1553,8 @@ export async function markCommissionDisputed(input: {
       brokerageId: brokerageId, // NOT NULL (pass 5)
       entityType: "agent_commission", entityId: commissionId,
       event: KernelEvent.COMMISSION_DISPUTED, metadata: { reason: trimmed, disputedBy: ctx.userId }, createdAt: now,
-      auditOnly: true,
+      // FANS OUT (wave 154, lane 154A3 — was auditOnly): Finance Manager's consumer verifies the payout hold, opens ONE deal task
+      // and escalates a payout already in flight (lib/kernel/authority-reactions.ts reactToCommissionDecision).
     }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_disputed_echo", brokerageId: brokerageId, reason: "lifecycle echo after the dispute landed" })
 
     return { success: true, data: { commissionId, status: "disputed" } }
@@ -1589,7 +1621,9 @@ export async function resolveCommissionDispute(input: {
       entityType: "agent_commission", entityId: commissionId,
       event: nextStatus === "approved" ? KernelEvent.COMMISSION_APPROVED : KernelEvent.COMMISSION_CALCULATED,
       metadata: { dispute_resolution: resolution, notes: notes ?? null, resolvedBy: ctx.userId }, createdAt: now,
-      auditOnly: true,
+      // An APPROVED resolution fans out (wave 154, lane 154A3) so the consumer records the payout standing and closes the dispute
+      // task; a reopen (COMMISSION_CALCULATED) stays an audit echo, as before.
+      auditOnly: nextStatus !== "approved",
     }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "commission_dispute_resolved_echo", brokerageId: brokerageId, reason: "lifecycle echo after the resolution landed" })
 
     return { success: true, data: { commissionId, status: nextStatus } }

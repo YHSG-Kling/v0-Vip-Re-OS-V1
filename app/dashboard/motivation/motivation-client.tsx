@@ -62,6 +62,7 @@ import {
   getAgentPointsAndTier,
   getAgentPointsHistory,
   getLeaderboard,
+  correctAgentPoints,
 } from "@/app/actions/gamification"
 import { getChallenges } from "@/app/actions/challenges"
 import { POINT_VALUES, POINT_EARNING_ACTIONS } from "@/lib/gamification/award-points"
@@ -88,6 +89,9 @@ interface MotivationClientProps {
   initialScope?: LeaderboardScope | null
   initialMetric?: LeaderboardMetric | null
   initialPeriod?: string | null
+  /** The points-correction form (wave 154, lane 154A3): present ONLY when the server-side gate
+   *  (app/actions/gamification.ts getPointsCorrectionRoster) admitted the viewer. Absent → no form. */
+  correction?: { agents: Array<{ id: string; name: string; points: number }> } | null
 }
 // TOMBSTONE: `brokerageId` and `userId` removed (wave 52, hidden-wire-census
 // category c passed-never-read). Every server action this component calls —
@@ -145,6 +149,7 @@ export function MotivationClient({
   initialScope = null,
   initialMetric = null,
   initialPeriod = null,
+  correction = null,
 }: MotivationClientProps) {
   const [loading, setLoading] = useState(true)
   const [pointsData, setPointsData] = useState<{ points: number; tierId: PointsTier } | null>(null)
@@ -688,6 +693,63 @@ export function MotivationClient({
           )}
         </CardContent>
       </Card>
+
+      {correction ? <PointsCorrectionPanel agents={correction.agents} /> : null}
     </div>
+  )
+}
+
+/**
+ * THE ADMIN POINTS CORRECTION (wave 154, lane 154A3) — the screen entry for app/actions/gamification.ts correctAgentPoints.
+ * Rendered only when the server-side gate admitted the viewer; the action re-checks the same gate, the tenant, the
+ * never-yourself rule and the reason on every submit. `correctionId` is minted ONCE per form fill, so a double submit
+ * applies once (the action's once-key); it is re-minted only after a submit that landed.
+ */
+function PointsCorrectionPanel({ agents }: { agents: Array<{ id: string; name: string; points: number }> }) {
+  const mint = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : "")
+  const [agentId, setAgentId] = useState("")
+  const [points, setPoints] = useState("")
+  const [reason, setReason] = useState("")
+  const [correctionId, setCorrectionId] = useState(mint)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null)
+  const submit = async () => {
+    setBusy(true)
+    setResult(null)
+    try {
+      const r = await correctAgentPoints({ agentId, points: Number(points), reason, correctionId })
+      if (r.ok) {
+        setResult({ ok: true, text: r.alreadyApplied ? "This correction was already applied." : `Applied. New total: ${r.newTotal ?? "unknown"}${r.reconciled === false ? " (the total and the ledger disagree — flagged for review)" : ""}.` })
+        setPoints(""); setReason(""); setCorrectionId(mint())
+      } else {
+        setResult({ ok: false, text: r.error ?? "The correction was not applied." })
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Correct an agent&apos;s points</CardTitle>
+        <CardDescription>An audited adjustment on the same ledger the board is built from. It never changes commission.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Select value={agentId} onValueChange={setAgentId}>
+          <SelectTrigger aria-label="Agent"><SelectValue placeholder="Choose an agent" /></SelectTrigger>
+          <SelectContent>
+            {agents.map((a) => (
+              <SelectItem key={a.id} value={a.id}>{a.name} — {a.points.toLocaleString()} pts</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <input className="w-full rounded-md border px-3 py-2 text-sm" inputMode="numeric" placeholder="Points (e.g. 50 or -50)" value={points} onChange={(e) => setPoints(e.target.value)} aria-label="Points" />
+        <textarea className="w-full rounded-md border px-3 py-2 text-sm" rows={2} placeholder="Why (kept on the audit record, at least 10 characters)" value={reason} onChange={(e) => setReason(e.target.value)} aria-label="Reason" />
+        <Button onClick={submit} disabled={busy || !agentId || !points || reason.trim().length < 10 || !correctionId}>
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Apply correction"}
+        </Button>
+        {result ? <p className={result.ok ? "text-sm text-green-700" : "text-sm text-red-700"}>{result.text}</p> : null}
+      </CardContent>
+    </Card>
   )
 }

@@ -217,8 +217,9 @@ export interface OnceKey {
 
 export type AwardOnceResult = AwardPointsResult | { ok: true; alreadyAwarded: true }
 
-/** PostgREST's "no such function" (the RPC is not on this database yet). @proofSeam */
-export function isMissingFunction(err: { message: string; code?: string } | null | undefined): boolean {
+/** PostgREST's "no such function" (the RPC is not on this database yet). Module-internal (wave 154, lane 154A3:
+ *  test:orphan-exports — no proof and no other module calls it, so it is not exported; its one caller is awardAgentPointsOnce). */
+function isMissingFunction(err: { message: string; code?: string } | null | undefined): boolean {
   if (!err) return false
   return (err as { code?: string }).code === "PGRST202" || /could not find the function|function .* does not exist/i.test(err.message)
 }
@@ -422,8 +423,9 @@ function referenceFor(rule: LifecycleAwardRule, ctx: MilestoneContext): string |
   return isUuid(raw) ? raw : null
 }
 
-/** Monday 00:00 UTC of the ISO week holding `now`. @proofSeam */
-export function isoWeekStartUtc(now: Date): Date {
+/** Monday 00:00 UTC of the ISO week holding `now`. Module-internal (wave 154, lane 154A3 — test:orphan-exports): its one caller is
+ *  planLifecycleAwards, and scripts/gamification-guard.ts asserts the boundary through that planner's weekly once-key. */
+function isoWeekStartUtc(now: Date): Date {
   const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
   d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7))
   return d

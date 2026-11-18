@@ -561,6 +561,208 @@ async function main() {
     base("example 10 and the door recheck were EXISTING VERIFIED; example 8's queued-publication recheck is PARTIAL (see the notes).")
   }
 
+  // ══ P15 ══ (lane 154A3 — the coverage-ledger gaps closed in place: R7, directive A3 / A6 item 3 / A7.1 / A7.4)
+  section("P15 · the ledger's ranked gaps closed in place: authority loss stops outgoing work, a seat change rechecks its queue, Finance decides disputes, a CDA approval rechecks readiness, money crons leave evidence, the agentic surface offers only what it can run")
+  {
+    const { dispatchKernelEvent } = await import("../lib/kernel/event-reactor")
+    const { KernelEvent } = await import("../lib/kernel/events")
+    const SUB = "5b000000-0000-4000-8000-0000000000a1"
+    const E = (n: number) => `5e000000-0000-4000-8000-00000000000${n}`
+    const fire = (event: string, brokerageId: string, entityType: string, entityId: string, metadata: Row = {}) =>
+      dispatchKernelEvent({ event, brokerageId, entityType, entityId, metadata }).catch((e: unknown) => ({ threw: String(e) }))
+    const enr = (id: string, b: string, status: string, extra: Row = {}): Row => ({ id, brokerage_id: b, sequence_id: "seq-1", contact_id: null, status, current_step: 1, next_step_at: iso(-60_000), trigger_metadata: { source: "auto_enroll" }, enrolled_by: null, ...extra })
+    const actionRows = (w: MemClient, action: string) => ledgerRows(w).filter((r) => r.action === action)
+
+    // P15a — SUBSCRIPTION AUTHORITY (gap rows 1–2), through the REAL reactor entry.
+    const w = world({
+      subscriptions: [{ id: SUB, brokerage_id: B1, status: "canceled", trial_end: null, created_at: iso(-90 * 86_400_000) }, { brokerage_id: B2, status: "active", trial_end: null, created_at: iso(-90 * 86_400_000) }],
+      brokerages: [{ id: B1, status: "active", plan_tier: "team", trial_ends_at: null }, { id: B2, status: "active", plan_tier: "team", trial_ends_at: null }],
+      billing_invoices: [],
+      sequence_enrollments: [enr(E(1), B1, "active"), enr(E(2), B1, "active"), enr(E(3), B1, "paused"), enr(E(4), B2, "active")],
+    })
+    await fire(KernelEvent.SUBSCRIPTION_STATUS_CHANGED, B1, "subscription", SUB, { from: "past_due", to: "canceled", via: "webhook" })
+    const st = (id: string) => (w.tables.sequence_enrollments as Row[]).find((r) => r.id === id)!
+    check("P15a ADVERSE · a canceled tenant's subscription_status_changed now STOPS its outgoing work: both active enrollments paused (marked as the lapse's), lawful history kept (rows not deleted)",
+      st(E(1)).status === "paused" && st(E(2)).status === "paused" && (st(E(1)).trigger_metadata as Row).authority_paused_by === "subscription_authority" && (w.tables.sequence_enrollments as Row[]).length === 4,
+      JSON.stringify((w.tables.sequence_enrollments as Row[]).map((r) => [r.id.slice(-1), r.status])))
+    check("P15a · another tenant's queue is untouched (B2 active), and an enrollment an agent paused by hand is not re-marked", st(E(4)).status === "active" && !(st(E(3)).trigger_metadata as Row).authority_paused_by)
+    const subRows = actionRows(w, "subscription.authority.recheck")
+    check("P15a EVIDENCE · ONE agent_action_ledger row: Finance Manager decided with the entitlement re-read (mayUseAndAfford app.access), outcome outreach_paused:2", subRows.length === 1 && subRows[0].status === "executed" && subRows[0].outcome === "outreach_paused:2" && subRows[0].actor_manager_key === "finance_manager" && /mayUseAndAfford/.test(JSON.stringify(subRows[0].detail)), JSON.stringify(subRows.map((r) => [r.status, r.outcome])))
+    await fire(KernelEvent.SUBSCRIPTION_STATUS_CHANGED, B1, "subscription", SUB, { from: "past_due", to: "canceled", via: "webhook" })
+    check("P15a REPLAY · the same transition delivered again acts once (still one executed row, nothing re-paused)", actionRows(w, "subscription.authority.recheck").filter((r) => r.status === "executed").length === 1)
+    ;(w.tables.subscriptions as Row[])[0].status = "active"
+    await fire(KernelEvent.SUBSCRIPTION_TRIAL_CONVERTED, B1, "subscription", SUB, { from: "canceled", to: "active", via: "reconcile" })
+    check("P15a POSITIVE · authority restored → EXACTLY the lapse-paused enrollments resume; the hand-paused one stays paused",
+      st(E(1)).status === "active" && st(E(2)).status === "active" && st(E(3)).status === "paused" && !(st(E(1)).trigger_metadata as Row).authority_paused_by)
+    const wr = world({ subscriptions: [{ id: SUB, brokerage_id: B1, status: "active", created_at: iso(-1000) }], brokerages: [{ id: B1, status: "active", plan_tier: "team" }], sequence_enrollments: [enr(E(5), B1, "active")] }, {})
+    const { reactToSubscriptionAuthority } = await import("../lib/kernel/authority-reactions")
+    const unread = await reactToSubscriptionAuthority(wr as never, { event: KernelEvent.SUBSCRIPTION_DOWNGRADED, brokerageId: B1, entityType: "brokerage", entityId: B1, metadata: { previous_tier: "brokerage", new_tier: "team" } },
+      { decide: async () => { throw new Error("subscriptions read refused") } })
+    check("P15a FAIL-SAFE · an UNREADABLE entitlement changes nothing (the egress billing gate still refuses per send) and is recorded skipped, not executed",
+      unread.decision === "unreadable" && (wr.tables.sequence_enrollments as Row[])[0].status === "active" && actionRows(wr, "subscription.authority.recheck")[0]?.status === "skipped")
+    base("SUBSCRIPTION_STATUS_CHANGED / _TRIAL_EXPIRED / _DOWNGRADED / _TRIAL_CONVERTED / _UPGRADED had no reactor branch (coverage ledger: missing worker); SUBSCRIPTION_CANCELLED only published a signal (no decision, no evidence). A lapsed tenant's queue ran until each step hit the egress gate.")
+
+    // P15b — MEMBERSHIP / ROLE CHANGE (gap row 3): the producer fans out now, the branch rechecks the seat's queue.
+    const SP1 = "5f000000-0000-4000-8000-0000000000b1", SP2 = "5f000000-0000-4000-8000-0000000000b2"
+    const seatWorld = (status: string) => world({
+      users: [{ id: UA, brokerage_id: B1, user_type: "agent", status, deleted_at: null, location_id: null }],
+      brokerages: [{ id: B1, plan_tier: "team", status: "active" }], locations: [], teams: [], organization_members: [],
+      social_posts: [{ id: SP1, brokerage_id: B1, user_id: UA, status: "scheduled", approval_status: "approved", content: "x" }, { id: SP2, brokerage_id: B1, user_id: UH, status: "scheduled", approval_status: "approved", content: "y" }],
+      sequence_enrollments: [enr(E(6), B1, "active", { enrolled_by: UA }), enr(E(7), B1, "active", { enrolled_by: UH })],
+    })
+    const sw = seatWorld("suspended")
+    const users = await import("../lib/kernel/users")
+    await users.emitUserProvisionedEvent({ userId: UA, userType: "agent", brokerageId: B1, callerUserId: UH, eventType: KernelEvent.USER_ROLE_CHANGED, metadata: { newRole: "agent" } })
+    const post = (w2: MemClient, id: string) => (w2.tables.social_posts as Row[]).find((r) => r.id === id)!
+    check("P15b ADVERSE · a seat that no longer covers the account (suspended) — its role change now FANS OUT from the canonical writer, and the branch HOLDS its scheduled post (draft + pending approval, content kept)",
+      post(sw, SP1).status === "draft" && post(sw, SP1).approval_status === "pending" && post(sw, SP1).content === "x", JSON.stringify(post(sw, SP1)))
+    check("P15b · only THAT user's queue: the colleague's post and enrollment are untouched; the user's own enrollment is paused",
+      post(sw, SP2).status === "scheduled" && (sw.tables.sequence_enrollments as Row[]).find((r) => r.id === E(7))!.status === "active" && (sw.tables.sequence_enrollments as Row[]).find((r) => r.id === E(6))!.status === "paused")
+    check("P15b EVIDENCE · ledgered by the Data Steward with the seat decision", actionRows(sw, "membership.queue.recheck")[0]?.outcome === "queue_held:posts=1,enrollments=1")
+    const lw = seatWorld("active")
+    await users.emitUserProvisionedEvent({ userId: UA, userType: "team_lead", brokerageId: B1, callerUserId: UH, eventType: KernelEvent.USER_TEAM_ASSIGNED, metadata: { teamId: "t-1" } })
+    check("P15b POSITIVE CONTROL · a LIVE seat (resolveViewerHierarchy admits it) keeps its queue — the doors re-read the actor at action time; recorded seat_live_no_change",
+      post(lw, SP1).status === "scheduled" && actionRows(lw, "membership.queue.recheck")[0]?.outcome === "seat_live_no_change", JSON.stringify(actionRows(lw, "membership.queue.recheck").map((r) => r.outcome)))
+    const aw = seatWorld("suspended")
+    await users.emitUserProvisionedEvent({ userId: UA, userType: "agent", brokerageId: B1, callerUserId: UH, eventType: KernelEvent.USER_BROKERAGE_ASSIGNED, metadata: {} })
+    check("P15b CONTROL · every OTHER provisioning event stays an audit echo (no recheck runs on it)", actionRows(aw, "membership.queue.recheck").length === 0)
+    base("USER_ROLE_CHANGED / USER_TEAM_ASSIGNED were written auditOnly (lib/kernel/emit.ts shouldFanOut skips the reactor) and had no consumer — a removed or suspended seat's scheduled posts still published.")
+
+    // P15c — COMMISSION (gap rows 4–5): Finance Manager decides; a dispute holds the payout.
+    const T1 = "5c000000-0000-4000-8000-0000000000c1"
+    const C = (n: number) => `5c000000-0000-4000-8000-00000000000${n}`
+    const cw = world({
+      agent_commissions: [
+        { id: C(1), brokerage_id: B1, transaction_id: T1, agent_id: "ag-1", status: "disputed", payment_initiated_at: null, paid_at: null, deposit_received_at: null },
+        { id: C(2), brokerage_id: B1, transaction_id: T1, agent_id: "ag-2", status: "disputed", payment_initiated_at: iso(-3_600_000), paid_at: null },
+        { id: C(3), brokerage_id: B1, transaction_id: T1, agent_id: "ag-3", status: "approved", payment_initiated_at: null, paid_at: null, deposit_received_at: null },
+        { id: C(4), brokerage_id: B1, transaction_id: T1, agent_id: "ag-4", status: "paid", payment_initiated_at: iso(-86_400_000), paid_at: iso(-3_600_000) },
+      ],
+      brokerages: [{ id: B1, plan_tier: "brokerage", status: "active", offers_cda: false }],
+      users: [{ id: UH, brokerage_id: B1, user_type: "broker" }], transaction_tasks: [], notifications: [],
+    })
+    await fire(KernelEvent.COMMISSION_DISPUTED, B1, "agent_commission", C(1), { reason: "split miscalculated" })
+    const tasks = () => (cw.tables.transaction_tasks as Row[]).filter((t) => t.category === "commission_dispute")
+    check("P15c ADVERSE · a dispute HOLDS the payout: Finance records `held` and opens ONE deal task (the payout writers already refuse a disputed commission)",
+      tasks().length === 1 && tasks()[0]?.status === "pending" && actionRows(cw, "commission.disputed.react")[0]?.outcome === "held:task_opened", JSON.stringify(actionRows(cw, "commission.disputed.react").map((r) => r.outcome)))
+    await fire(KernelEvent.COMMISSION_DISPUTED, B1, "agent_commission", C(1), { reason: "split miscalculated" })
+    check("P15c REPLAY · the same dispute again opens no second task", tasks().length === 1)
+    await fire(KernelEvent.COMMISSION_DISPUTED, B1, "agent_commission", C(2), { reason: "late dispute" })
+    const crit = (cw.tables.notifications as Row[]).filter((n) => n.type === "commission_dispute_payout_in_flight")
+    check("P15c ESCALATION · a dispute on a payout ALREADY initiated is escalated critical to the brokerage's admins (money in flight is a person's call)", crit.length === 1 && crit[0].priority === "critical" && crit[0].user_id === UH)
+    await fire(KernelEvent.COMMISSION_DISPUTED, B1, "agent_commission", C(3), {})
+    check("P15c CONTROL · a stale dispute event (the row is approved now) acts on nothing — recorded `stale`", actionRows(cw, "commission.disputed.react").some((r) => r.outcome === "stale") && tasks().length === 1)
+    ;(cw.tables.agent_commissions as Row[])[0].status = "approved"
+    await fire(KernelEvent.COMMISSION_APPROVED, B1, "agent_commission", C(1), { dispute_resolution: "upheld" })
+    check("P15c POSITIVE · the dispute resolved to APPROVED: Finance asks the payout release gate (funds not received → held, by name) and closes the dispute task",
+      tasks()[0]?.status === "completed" && /^held/.test(String(actionRows(cw, "commission.approved.react")[0]?.outcome)) && /deposit|received|funds/i.test(String(actionRows(cw, "commission.approved.react")[0]?.reason_detail)), JSON.stringify(actionRows(cw, "commission.approved.react").map((r) => [r.outcome, r.reason_detail])))
+    await fire(KernelEvent.COMMISSION_PAID, B1, "agent_commission", C(4), {})
+    check("P15c EVIDENCE · commission_paid is now read BACK (status paid + paid_at) and ledgered — it used to publish with no decision and no evidence", actionRows(cw, "commission.paid.react")[0]?.outcome === "paid_verified")
+    const { reactToCommissionDecision } = await import("../lib/kernel/authority-reactions")
+    const resid = await reactToCommissionDecision(cw as never, { event: KernelEvent.COMMISSION_APPROVED, brokerageId: B1, entityType: "commission_distribution", entityId: C(1) })
+    check("P15c CONTROL · a residual distribution approval (ledgered at its own writer) is not re-handled", resid.decision === "not_applicable" && !resid.recorded)
+    base("COMMISSION_DISPUTED / COMMISSION_APPROVED were auditOnly echoes with no consumer; COMMISSION_PAID published a signal with no decision and no evidence.")
+
+    // P15d — CDA APPROVED (gap row 6): the approval rechecks closing readiness through loadClosingReadiness.
+    const T2 = "5d000000-0000-4000-8000-0000000000d2"
+    const dw = world({
+      transactions: [{ id: T2, brokerage_id: B1, offer_id: null, listing_id: null, buyer_contact_id: null, seller_contact_id: null, contact_id: null }],
+      brokerages: [{ id: B1, plan_tier: "brokerage", status: "active" }],
+      transaction_compliance_log: [{ brokerage_id: B1, transaction_id: T2, check_type: "closing_docs.required.purchase_agreement", check_label: "Purchase agreement", status: "fail", is_blocking: true, failure_reason: "missing" }],
+      trid_timeline: [], closing_disclosure_agreement: [{ id: "cda-1", brokerage_id: B1, transaction_id: T2, status: "approved", compliance_approved_at: iso(), broker_approved_at: null, sent_to_title_at: null, updated_at: iso() }],
+      policy_decisions: [], documents: [], commission_adjustments: [], transaction_tasks: [],
+    })
+    await fire(KernelEvent.CDA_APPROVED, B1, "transaction", T2, { cda_id: "cda-1", approver_role: "compliance_officer" })
+    const cdaRow = actionRows(dw, "cda.approved.readiness_recheck")[0]
+    const cdaTasks = (dw.tables.transaction_tasks as Row[]).filter((t) => t.category === "closing_readiness_after_cda")
+    check("P15d ADVERSE · a CDA approved while the readiness list still BLOCKS opens ONE task before the broker signs; the approval releases nothing",
+      cdaTasks.length === 1 && /^(not_ready|review_stale)/.test(String(cdaRow?.outcome)), JSON.stringify({ outcome: cdaRow?.outcome, reason: cdaRow?.reason_detail, tasks: cdaTasks.length }))
+    await fire(KernelEvent.CDA_APPROVED, B1, "transaction", T2, { cda_id: "cda-1" })
+    check("P15d REPLAY · the same approval on the same readiness fingerprint opens no second task", (dw.tables.transaction_tasks as Row[]).filter((t) => t.category === "closing_readiness_after_cda").length === 1)
+    const { reactToCdaApproved } = await import("../lib/kernel/authority-reactions")
+    const ready = await reactToCdaApproved(dw as never, { event: KernelEvent.CDA_APPROVED, brokerageId: B1, entityType: "transaction", entityId: "5d000000-0000-4000-8000-0000000000d9", metadata: { cda_id: "cda-2" } },
+      { load: async () => ({ ok: true, loaded: { readiness: { blocking: 0, fingerprint: "f-ready" }, standing: { blocker: null } } }) })
+    check("P15d POSITIVE CONTROL · a clear list and a holding review → `ready`, no task", ready.decision === "ready" && !ready.taskOpened)
+    const unreadCda = await reactToCdaApproved(memSupabase({ transactions: [{ id: T2, brokerage_id: B1 }] }, { refuse: { transaction_compliance_log: "permission denied" } }) as never, { event: KernelEvent.CDA_APPROVED, brokerageId: B1, entityType: "transaction", entityId: T2, metadata: {} })
+    check("P15d FAIL CLOSED · an unreadable readiness list is `unreadable` (never `ready`)", unreadCda.decision === "unreadable")
+    base("CDA_APPROVED reached the reactor (transitionLifecycle) and had no branch — the approval never asked whether the file was ready.")
+
+    // P15e — MONEY CRONS + AUTOPILOT (gap rows 7, 8, 22): evidence around the existing idempotent writes; amounts unchanged.
+    const FT = "5a000000-0000-4000-8000-0000000000e1"
+    const fw = world({
+      brokerage_fee_types: [{ id: FT, brokerage_id: B1, is_active: true, cadence: "monthly", applies_to: "all_agents", amount: 125, currency: "usd" }],
+      agents: [{ id: "ag-1", brokerage_id: B1 }, { id: "ag-2", brokerage_id: B1 }], agent_fee_charges: [],
+    }, { agent_fee_charges: [["agent_id", "fee_type_id", "period_start"]] })
+    const { generatePeriodicCharges } = await import("../lib/billing/brokerage-fee-charges")
+    const g1 = await generatePeriodicCharges()
+    const g2 = await generatePeriodicCharges()
+    const feeRows = actionRows(fw, "finance.fee_charges.generate")
+    check("P15e FEES · the scheduled charges land exactly as before (2 agents × 125, once per period — the rerun charges nothing new)",
+      g1.generated === 2 && g2.generated === 0 && (fw.tables.agent_fee_charges as Row[]).length === 2 && (fw.tables.agent_fee_charges as Row[]).every((r) => r.amount === 125), JSON.stringify({ g1, g2 }))
+    check("P15e FEES EVIDENCE · each run is recorded per fee type (finance_manager): charges:2 then dup:2 — the duplicate is COUNTED, not a silent skip",
+      feeRows.length === 2 && feeRows[0].outcome === "charges:2,dup:0" && feeRows[1].outcome === "charges:0,dup:2" && feeRows.every((r) => r.actor_manager_key === "finance_manager"), JSON.stringify(feeRows.map((r) => r.outcome)))
+    const { runAIOverageBilling } = await import("../lib/billing/ai-overage")
+    const { currentUsagePeriod } = await import("../lib/usage/period")
+    const now = new Date("2026-10-05T12:00:00Z")
+    const P = currentUsagePeriod(new Date(Date.parse(currentUsagePeriod(now).periodStartIso) - 1)).periodStartIso
+    const ow = memSupabase({
+      usage_counters: [{ brokerage_id: B1, metric: "video_minutes", period_start: P, value: 310 }],
+      brokerages: [{ id: B1, plan_tier: "brokerage" }],
+      plan_limits: [{ id: "pl_b", plan_tier: "brokerage", metric: "video_minutes", limit_value: 300, overage_allowed: true, overage_rate_cents_per_1k: 50000, stripe_meter_id: null, stripe_metered_price_id: null, stripe_metered_rate_cents_per_1k: null }],
+      subscriptions: [{ brokerage_id: B1, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", created_at: "2026-01-01" }],
+      ai_overage_invoices: [], agent_action_ledger: [],
+    }, { uuidIds: true, stampCreatedAt: true, unique: { ai_overage_invoices: [["brokerage_id", "period_start", "metric"]] } })
+    let stripeCalls = 0
+    const stripe = { invoiceItems: { create: async (a: Row) => { stripeCalls++; return { id: `ii_${stripeCalls}`, amount: a.amount } } } }
+    const o1 = await runAIOverageBilling({ now, metric: "video_minutes" as never, deps: { svc: ow, stripe: stripe as never } })
+    const o2 = await runAIOverageBilling({ now, metric: "video_minutes" as never, deps: { svc: ow, stripe: stripe as never } })
+    const inv = (ow.tables.ai_overage_invoices as Row[])
+    const ovRows = (ow.tables.agent_action_ledger as Row[]).filter((r) => r.action === "billing.ai_overage.bill")
+    check("P15e OVERAGE · billing unchanged: ONE invoice item for the 10 minutes over at the published rate (500¢), the rerun bills nothing (already_billed)",
+      o1.ok && o2.ok && stripeCalls === 1 && inv.length === 1 && inv[0].status === "billed" && inv[0].amount_cents === 500 && (o2 as Row).outcomes?.[0]?.reason === "already_billed", JSON.stringify({ stripeCalls, inv: inv.map((r) => [r.status, r.amount_cents]) }))
+    check("P15e OVERAGE EVIDENCE · the claim → provider → mark is ledgered (finance_manager, executed, provider ref = the invoice item); the rerun's skip happens before the claim and writes no second row",
+      ovRows.length === 1 && ovRows[0].status === "executed" && ovRows[0].provider_ref === "ii_1" && ovRows[0].actor_manager_key === "finance_manager", JSON.stringify(ovRows.map((r) => [r.status, r.provider_ref])))
+    const owf = memSupabase({ ...JSON.parse(JSON.stringify({ usage_counters: [{ brokerage_id: B1, metric: "video_minutes", period_start: P, value: 310 }], brokerages: [{ id: B1, plan_tier: "brokerage" }], plan_limits: [{ id: "pl_b", plan_tier: "brokerage", metric: "video_minutes", limit_value: 300, overage_allowed: true, overage_rate_cents_per_1k: 50000 }], subscriptions: [{ brokerage_id: B1, stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", created_at: "2026-01-01" }] })), ai_overage_invoices: [], agent_action_ledger: [] }, { uuidIds: true, stampCreatedAt: true })
+    const of1 = await runAIOverageBilling({ now, metric: "video_minutes" as never, deps: { svc: owf, stripe: { invoiceItems: { create: async () => { throw new Error("card_declined") } } } as never } })
+    check("P15e OVERAGE ADVERSE · a provider refusal releases the claim (nothing billed) and settles the ledger row FAILED, so a rerun may retry exactly as before",
+      (of1 as Row).outcomes?.[0]?.status === "refused" && (owf.tables.ai_overage_invoices as Row[]).length === 0 && (owf.tables.agent_action_ledger as Row[]).find((r) => r.action === "billing.ai_overage.bill")?.status === "failed")
+    process.env.CRON_SECRET = process.env.CRON_SECRET ?? "p15-canary-secret"
+    const pw = world({ platform_settings: [{ id: "ps-1", ai_enabled: true, emergency_mode: true, created_at: iso(-1000) }], platform_social_drafts: [], platform_content_topics: [] })
+    ;(await import("../lib/platform/platform-controls")).__clearPlatformHaltCache()
+    const { GET: autopilot } = await import("../app/api/cron/platform-product-autopilot/route")
+    const ar = await autopilot(new Request("https://app.example.test/api/cron/platform-product-autopilot", { headers: { authorization: `Bearer ${process.env.CRON_SECRET}` } }))
+    const arj = await ar.json() as Row
+    check("P15e AUTOPILOT · with the platform god switch HALTED the weekly drafts are NOT written (autonomyDecision holds) and the hold is ledgered `skipped` under the house tenant",
+      arj.held === true && (pw.tables.platform_social_drafts as Row[]).length === 0 && actionRows(pw, "platform.product_autopilot.run")[0]?.status === "skipped", JSON.stringify({ arj, rows: actionRows(pw, "platform.product_autopilot.run").map((r) => r.status) }))
+    base("ai-overage-billing, generate-brokerage-fee-charges and platform-product-autopilot wrote with no ledger evidence and (autopilot) no decision; a non-duplicate fee-charge refusal was a silent skip.")
+
+    // P15f — THE AGENTIC SURFACE OFFERS ONLY WHAT IT CAN RUN (gap row 9).
+    const mcpSrc = stripComments(raw("app/api/agentic-os/mcp/route.ts"))
+    const { buildFullActionManifest } = await import("../lib/agentic-os/app-capability-registry")
+    const { DELEGATION_WORKERS } = await import("../lib/kernel/manager-delegation")
+    const manifest = buildFullActionManifest()
+    const readExec = new Set([...mcpSrc.slice(mcpSrc.indexOf("const READ_EXECUTORS"), mcpSrc.indexOf("async function delegationWorkers")).matchAll(/^\s{2}([a-z_]+)\s*:/gm)].map((m) => m[1]))
+    const callable = manifest.filter((a) => readExec.has(a.capability) || (a.kind === "app" && Object.prototype.hasOwnProperty.call(DELEGATION_WORKERS, a.capability)))
+    const mutatingNoExec = manifest.filter((a) => a.mutates && !callable.includes(a))
+    check("P15f · tools/list is gated on the callable rule and a non-callable call is refused by name (stripped source) — no `requires_confirmation` through a path that cannot run it",
+      /manifest\.filter\(\(a\) => callableHere\(a, workers\) !== null\)/.test(mcpSrc) && /status: "not_callable"/.test(mcpSrc) && !/status: action\.mutates \? "requires_confirmation"/.test(mcpSrc))
+    check("P15f POSITIVE CONTROL · the finder still sees the pre-fix specimen as the defect", /status: action\.mutates \? "requires_confirmation"/.test('status: action.mutates ? "requires_confirmation" : "no_executor",'))
+    check(`P15f · the delegate-callable capabilities are exactly the app capabilities whose survivor has a DELEGATION_WORKERS worker (${callable.filter((a) => !readExec.has(a.capability)).map((a) => a.capability).join(", ")}); ${mutatingNoExec.length} mutating capabilities are catalog-only`,
+      callable.filter((a) => !readExec.has(a.capability)).every((a) => a.kind === "app") && mutatingNoExec.every((a) => !Object.prototype.hasOwnProperty.call(DELEGATION_WORKERS, a.capability) || a.kind !== "app"))
+    base("tools/list advertised every manifest entry; 26 mutating app capabilities answered requires_confirmation pointing at /api/agentic-os/actions/<cap>/invoke, which 404s for an app capability.")
+
+    // P15g — the gamification admin correction: a real screen entry and a claim-aware replay (lane 154E's new action).
+    const gam = stripComments(raw("app/actions/gamification.ts"))
+    const corr = (gam.match(/export async function correctAgentPoints[\s\S]*?\n\}(?=\n|$)/) ?? [""])[0]
+    const page = stripComments(raw("app/dashboard/motivation/page.tsx")), client = stripComments(raw("app/dashboard/motivation/motivation-client.tsx"))
+    check("P15g · correctAgentPoints' replay hook reads the claim (refused / in_flight / unknown each say so; only an executed replay reads as applied)",
+      /replay: \(claim\) => \{/.test(corr) && /claim\.kind === "replay"/.test(corr) && /claim\.kind === "refused"/.test(corr) && !/replay: \(\) =>/.test(corr))
+    check("P15g · the screen entry: the Motivation page asks the SAME gate server-side (getPointsCorrectionRoster → pointsCorrectionGate) and renders the form only when it admits; the form calls correctAgentPoints with a once-key",
+      /getPointsCorrectionRoster\(\)/.test(page) && /correction=\{roster\.allowed/.test(page) && /correctAgentPoints\(\{ agentId, points: Number\(points\), reason, correctionId \}\)/.test(client) && /pointsCorrectionGate\(caller\)/.test(gam.match(/export async function getPointsCorrectionRoster[\s\S]*?\n\}/)?.[0] ?? ""))
+    check("P15g POSITIVE CONTROL · the blind-hook finder still flags the pre-fix specimen", /replay: \(\) =>/.test("replay: () => ({ ok: true, alreadyApplied: true }),"))
+    base("correctAgentPoints had no caller (no screen), no owner on the ledger, and `replay: () => ({ ok: true, alreadyApplied: true })` read a REFUSED claim as applied.")
+  }
+
   console.log("\n BLIND SPOTS: SIMULATED throughout — the in-memory PostgREST models tables, filters, unique keys and refusals but not RLS, triggers or true concurrency (races interleave at await points, where the CAS / unique key decides). P2 / P9 / P11 inject the provider transport (counted); P4 / P6 / P13 inject the model and the channel executor; P5 injects the closing-compliance re-review (its own proofs: test:closing-compliance, test:closing-readiness) and drives the REAL attestation reopen, CDA correction, readiness load and close gate. P9's reservation is per approval and per tenant platform-cap reading within one cycle; the PLATFORM-WIDE monthly cap across tenants is still read once per cycle (platformCapRemainingFromLedger returns the min of the platform and tenant remainders — splitting them is a larger change). P12d executes the readiness fingerprint, not the commission request/decide doors. P13's timings are in-process (no network RTT). P14's door recheck is the QR authority door; the queued social publication is PARTIAL.")
   if (partial.length) console.log(`\n PARTIAL (${partial.length}):\n  - ${partial.join("\n  - ")}`)
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)

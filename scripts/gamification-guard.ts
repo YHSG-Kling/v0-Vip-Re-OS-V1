@@ -21,7 +21,7 @@ import { stripComments } from "./strip-comments"
 import { KernelEvent } from "../lib/kernel/events"
 import {
   POINT_VALUES, LIFECYCLE_AWARD_RULES, planLifecycleAwards, awardAgentPointsOnce, isUuid, type LedgerCapableClient,
-  POINT_EARNING_ACTIONS, isoWeekStartUtc,
+  POINT_EARNING_ACTIONS,
 } from "../lib/gamification/award-points"
 import { AWARD_CENSUS } from "../lib/gamification/award-census"
 import { REFERRAL_TERMINAL_WON } from "../lib/referrals/referral-status"
@@ -87,7 +87,10 @@ function pureLayer() {
   check("MENTOR_SESSION_HELD credits mentor AND mentee once per PAIRING per ISO week (Monday 00:00 UTC) — not per session row",
     mentorPlan?.party === "mentor_and_mentee" && mentorPlan.once.referenceId === U(70) && mentorPlan.once.since?.toISOString() === "2026-10-05T00:00:00.000Z" &&
       planLifecycleAwards(KernelEvent.MENTOR_SESSION_HELD, { entityId: SESSION, now }).length === 0)
-  check("isoWeekStartUtc: a Sunday belongs to the week that began the previous Monday", isoWeekStartUtc(new Date("2026-10-11T23:00:00Z")).toISOString() === "2026-10-05T00:00:00.000Z")
+  // WAVE 154 (lane 154A3): the week boundary is asserted THROUGH the planner that uses it (isoWeekStartUtc is module-internal now —
+  // test:orphan-exports counts a proof-only export against its file). Same instant, same expected Monday.
+  check("the ISO week boundary: a Sunday belongs to the week that began the previous Monday (via planLifecycleAwards' weekly once-key)",
+    planLifecycleAwards(KernelEvent.MENTOR_SESSION_HELD, { entityId: SESSION, now: new Date("2026-10-11T23:00:00Z"), metadata: { relationship_id: U(70) } })[0]?.once.since?.toISOString() === "2026-10-05T00:00:00.000Z")
   const review = (rating: number | null) => planLifecycleAwards(KernelEvent.REVIEW_RECEIVED, { entityId: U(80), entityType: "agent_review", now, metadata: { rating, contact_id: CONTACT } })
   check("REVIEW_RECEIVED: a 5-star or a testimonial (no rating) plans CLIENT_REVIEW_RECEIVED once per client per year; a 2-star plans nothing",
     review(5)[0]?.reason === "CLIENT_REVIEW_RECEIVED" && review(5)[0]?.once.referenceId === CONTACT && review(null).length === 1 && review(2).length === 0)
@@ -624,8 +627,12 @@ async function awardPathLayer() {
   check("an admin correction (−50) lands once on the SAME ledger; a double submit with the same correctionId lands nothing; total = ledger sum",
     adj1.ok && !("alreadyAwarded" in adj1) && adj2.ok && "alreadyAwarded" in adj2 && agentRow.gamification_points === 300 && ledgerAgrees(m))
   const corrFn = (g.match(/export async function correctAgentPoints[\s\S]*?\n\}(?=\n|$)/) ?? [""])[0]
+  // WAVE 154 (lane 154A3): the admin gate moved into ONE private helper (pointsCorrectionGate) so the Motivation page's roster read
+  // (getPointsCorrectionRoster) and the action can never disagree. The SAME tokens are asserted on the gate the action CALLS.
+  const corrGate = /pointsCorrectionGate\(caller\)/.test(corrFn) ? (g.match(/async function pointsCorrectionGate[\s\S]*?\n\}(?=\n|$)/) ?? [""])[0] : ""
   check("correctAgentPoints: session tenant (requireCaller), admin gate (resolveTenantAdmin / platform staff) minus team_lead + compliance_officer, never self, a reason, the once-key, withActionLedger audit, reconciliation",
-    /requireCaller\(\)/.test(corrFn) && /resolveTenantAdmin\(/.test(corrFn) && /isPlatformStaffIdentity\(/.test(corrFn) && /"team_lead" \|\| userType === "compliance_officer"/.test(corrFn) &&
+    /requireCaller\(\)/.test(corrFn) && /resolveTenantAdmin\(/.test(corrFn + corrGate) && /isPlatformStaffIdentity\(/.test(corrFn + corrGate) && /"team_lead" \|\| userType === "compliance_officer"/.test(corrFn + corrGate) &&
+      !/export\s+async\s+function\s+pointsCorrectionGate/.test(g) &&
       /cannot correct your own points/.test(corrFn) && /reason\.length < 10/.test(corrFn) && /\.eq\("brokerage_id", caller\.brokerageId\)/.test(corrFn) &&
       /withActionLedger<Out>\(/.test(corrFn) && /once: \{ referenceId: input\.correctionId \}/.test(corrFn) && /reconciled:/.test(corrFn) && !/\.update\(\s*\{\s*gamification_points/.test(corrFn))
   const ms = src("app/actions/onboarding/mentor-session.ts")

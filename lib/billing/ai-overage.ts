@@ -375,6 +375,15 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
       stripeSubscriptionId: (sub?.stripe_subscription_id as string | null) ?? null,
     })
 
+    // EVIDENCE (wave 154, lane 154A3 — coverage-ledger gap row 7). From the claim to the provider result, ONE tenant's overage
+    // billing is recorded on agent_action_ledger: finance_manager on the schedule, the period, the amount and the outcome
+    // (billed / refused / needs_reconciliation) with the provider's reference. RECORDING-ONLY (no idempotency key): the
+    // ai_overage_invoices UNIQUE(brokerage_id, period_start, metric) claim below stays the once-guard, so a ledger that cannot
+    // record never blocks, repeats or changes a charge — no amount, price, channel or billing rule changed. A refused or
+    // released attempt settles 'failed' (a rerun may retry, exactly as before); an in-doubt one settles 'unknown'.
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    // (the body keeps its pre-wave-154 indentation: two simulators locate the claim insert by its exact text)
+    const billOne = async (): Promise<OverageBillingOutcome> => {
     // CLAIM the idempotency row BEFORE calling Stripe. A 23505 means a
     // concurrent run holds the claim — stand down.
     const { data: claim, error: claimError } = await svc
@@ -395,9 +404,8 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
       .select("id")
       .single()
     if (claimError) {
-      if (claimError.code === "23505") { push({ brokerageId, status: "skipped", reason: "claimed_by_concurrent_run" }); continue }
-      push({ brokerageId, status: "refused", reason: `claim insert refused: ${claimError.message}` })
-      continue
+      if (claimError.code === "23505") { return { brokerageId, status: "skipped", reason: "claimed_by_concurrent_run" } }
+      return { brokerageId, status: "refused", reason: `claim insert refused: ${claimError.message}` }
     }
 
     // PROVIDER (a): the METER EVENT on the tenant's subscription. The metered
@@ -423,22 +431,19 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
             .eq("id", claim.id)
             .eq("status", "pending")
           if (releaseError) {
-            push({ brokerageId, status: "needs_reconciliation", reason: `${reported.error} AND claim release refused: ${releaseError.message}`, channel: "meter_event", stripeMeterEventIdentifier: identifier })
+            return { brokerageId, status: "needs_reconciliation", reason: `${reported.error} AND claim release refused: ${releaseError.message}`, channel: "meter_event", stripeMeterEventIdentifier: identifier }
           } else {
-            push({ brokerageId, status: "refused", reason: reported.error, channel: "meter_event" })
+            return { brokerageId, status: "refused", reason: reported.error, channel: "meter_event" }
           }
-          continue
         }
         const { error: meterMarkError } = await svc
           .from("ai_overage_invoices")
           .update({ status: "billed", billing_channel: "meter_event", stripe_meter_event_identifier: reported.identifier, billed_at: new Date().toISOString() })
           .eq("id", claim.id)
         if (meterMarkError) {
-          push({ brokerageId, status: "needs_reconciliation", reason: `meter event reported (${reported.identifier}) but marker update refused: ${meterMarkError.message}`, channel: "meter_event", stripeMeterEventIdentifier: reported.identifier })
-          continue
+          return { brokerageId, status: "needs_reconciliation", reason: `meter event reported (${reported.identifier}) but marker update refused: ${meterMarkError.message}`, channel: "meter_event", stripeMeterEventIdentifier: reported.identifier }
         }
-        push({ brokerageId, status: "billed", reason: "meter_event_reported", amountCents: status.overageAmountCents, overageTokens: status.overageTokens, channel: "meter_event", channelReason: decision.reason, stripeMeterEventIdentifier: reported.identifier })
-        continue
+        return { brokerageId, status: "billed", reason: "meter_event_reported", amountCents: status.overageAmountCents, overageTokens: status.overageTokens, channel: "meter_event", channelReason: decision.reason, stripeMeterEventIdentifier: reported.identifier }
       }
     }
 
@@ -466,11 +471,10 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
         .eq("id", claim.id)
         .eq("status", "pending")
       if (releaseError) {
-        push({ brokerageId, status: "needs_reconciliation", reason: `stripe refused (${stripeErr?.message ?? String(stripeErr)}) AND claim release refused: ${releaseError.message}` })
+        return { brokerageId, status: "needs_reconciliation", reason: `stripe refused (${stripeErr?.message ?? String(stripeErr)}) AND claim release refused: ${releaseError.message}` }
       } else {
-        push({ brokerageId, status: "refused", reason: `stripe invoice item refused: ${stripeErr?.message ?? String(stripeErr)}` })
+        return { brokerageId, status: "refused", reason: `stripe invoice item refused: ${stripeErr?.message ?? String(stripeErr)}` }
       }
-      continue
     }
 
     // OUTCOME: billed only WITH the provider result in hand.
@@ -481,10 +485,36 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
     if (markError) {
       // The provider item EXISTS but the marker didn't flip — loud, with the
       // provider id so a human can reconcile; never retried blindly.
-      push({ brokerageId, status: "needs_reconciliation", reason: `billed at provider (${invoiceItemId}) but marker update refused: ${markError.message}`, stripeInvoiceItemId: invoiceItemId })
-      continue
+      return { brokerageId, status: "needs_reconciliation", reason: `billed at provider (${invoiceItemId}) but marker update refused: ${markError.message}`, stripeInvoiceItemId: invoiceItemId }
     }
-    push({ brokerageId, status: "billed", reason: "invoice_item_created", amountCents: status.overageAmountCents, overageTokens: status.overageTokens, stripeInvoiceItemId: invoiceItemId, channel: "invoice_item", channelReason: decision.reason })
+    return { brokerageId, status: "billed", reason: "invoice_item_created", amountCents: status.overageAmountCents, overageTokens: status.overageTokens, stripeInvoiceItemId: invoiceItemId, channel: "invoice_item", channelReason: decision.reason }
+    }
+    push(await withActionLedger<OverageBillingOutcome>(
+      {
+        brokerageId,
+        action: "billing.ai_overage.bill",
+        actor: { type: "manager", managerKey: "finance_manager" },
+        subject: { type: "ai_overage_period", ref: `${metric}:${periodStartIso.slice(0, 10)}` },
+        reasonCode: "SUBSCRIPTION_LIFECYCLE",
+        reasonDetail: `${metric} overage for the closed period ${periodStartIso.slice(0, 10)} — ${status.overageTokens} over the included quota at the tier's published rate`,
+        riskClass: "FINANCIAL",
+        systemSource: "ai_overage_billing",
+        detail: { metric, period_start: periodStartIso, overage: status.overageTokens, amount_cents: status.overageAmountCents, plan_tier: status.planTier },
+      },
+      billOne,
+      {
+        settle: (o) => o.status === "billed"
+          ? { status: "executed", outcome: o.reason, provider: "stripe", providerRef: o.stripeInvoiceItemId ?? o.stripeMeterEventIdentifier ?? null, costUsd: null }
+          : o.status === "needs_reconciliation"
+            ? { status: "unknown", outcome: "needs_reconciliation", error: o.reason }
+            : o.status === "skipped"
+              ? { status: "skipped", outcome: o.reason }
+              : { status: "failed", outcome: "refused", error: o.reason },
+        // Recording-only, so a claim never refuses here; should a key ever be added, a non-acting claim bills NOTHING and says so.
+        replay: (claim) => ({ brokerageId, status: claim.kind === "replay" ? "skipped" : "needs_reconciliation", reason: claim.kind === "refused" ? `ledger refused: ${claim.error}` : `ledger claim ${claim.kind}` }),
+      },
+      { client: svc },
+    ))
   }
 
   return {

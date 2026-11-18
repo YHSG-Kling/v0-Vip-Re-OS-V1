@@ -47,7 +47,10 @@
 // must be flagged, or the guard itself is broken.
 //
 // Run:  npx tsx scripts/os-coverage-ledger.ts              (check: rules + the generated docs agree with the code)
-//       npx tsx scripts/os-coverage-ledger.ts --write      (emit docs/architecture/OS-ARBITRATION-COVERAGE.md + os-arbitration-coverage.json)
+//       npx tsx scripts/os-coverage-ledger.ts --write      (emit docs/architecture/OS-ARBITRATION-COVERAGE.md, the CHECKED document, and the
+//                                                           machine-readable twin coverage/os-arbitration-coverage.json — an ON-DEMAND
+//                                                           artifact outside git: `/coverage` is git-ignored, the run regenerates it in seconds)
+//       npx tsx scripts/os-coverage-ledger.ts --json      (write ONLY the on-demand JSON artifact, nothing checked in changes)
 //       npx tsx scripts/os-coverage-ledger.ts --write-baseline   (integrator: create, or PRUNE-only tighten, the frozen-gap baseline)
 // Summary line: `RESULT: N passed, M failed`.
 
@@ -78,7 +81,11 @@ const ROOT = process.cwd()
 const WRITE = process.argv.includes("--write")
 const WRITE_BASELINE = process.argv.includes("--write-baseline")
 const DOC_MD = "docs/architecture/OS-ARBITRATION-COVERAGE.md"
-const DOC_JSON = "docs/architecture/os-arbitration-coverage.json"
+// WAVE 154 (lane 154A3): the per-row JSON (~5.6 MB, one row per line) changed on every run and was never read by anything but a
+// person or a script. It is an ON-DEMAND ARTIFACT now, written OUTSIDE git (`/coverage` is in .gitignore) by --write / --json.
+// What is CHECKED is the committed Markdown (rendering of the code, line anchors excluded) and the frozen-gap baseline.
+const DOC_JSON = "coverage/os-arbitration-coverage.json"
+const WRITE_JSON = WRITE || process.argv.includes("--json")
 const BASELINE_FILE = "scripts/os-coverage-ledger-baseline.json"
 
 let pass = 0, fail = 0
@@ -90,7 +97,17 @@ const section = (s: string) => console.log(`\n═══ ${s} ═══`)
 const U = (why: string) => `unresolved: ${why}`
 
 // ══ OWNER-HELD — a path that is deliberately not autonomous, with the owner's reason. Each entry must still be a row. ══
-const OWNER_HELD: Record<string, string> = {}
+const OWNER_HELD: Record<string, string> = {
+  // WAVE 154 (lane 154A3). Lane 154E moved the referral reward onto a PROVEN close (lib/gamification/lifecycle-awards.ts: the
+  // award runs only when a closed / funded transaction evidences the won referral — referralEvidenceTransaction). Giving the
+  // event a consumer closed its frozen `worker` gap and exposed the next link: the deciding rule is a deterministic evidence
+  // read by the registered manager (recruiting_manager), not a named gate token. Whether a registered manager's deterministic
+  // rule counts as the decision owner is the OWNER's question (lane 154A1 owner decision 2: 538 autonomously triggered rows
+  // carry no named gate) — held here, with this reason, until the owner rules; never frozen by widening the baseline.
+  "kernel_event:referral_converted": "owner-held pending owner decision 2 (does a registered manager's deterministic evidence rule count as the decision owner?): the award is decided by referralEvidenceTransaction (a closed/funded transaction must evidence the won referral) under recruiting_manager — a rule, not a named gate token",
+}
+/** Set by the census: manifest capabilities that are discoverable but not callable over MCP / REST (published, not rows). */
+let capabilityCatalogOnly = 0
 
 // ══ 1. SOURCE VIEWS (one scanner — CLAUDE.md §2) ═════════════════════════════════════════════════════════════════════════
 // Kept per file: the blankStrings() view (tokens), the line index, every `.from("<table>")` literal with the 64 characters of
@@ -234,7 +251,11 @@ const DISPATCH_DOORS = [...blankStrings(rawOf(DISPATCH_FILE)).matchAll(/export\s
 const EGRESS_RE = new RegExp(`\\b(?:${[...DISPATCH_DOORS, "callConnector"].join("|")})\\s*\\(`)
 // The outbound policy chain's gates, as dispatch.ts calls them (the decision tokens a send path inherits).
 const OUTBOUND_GATES = ["autonomyGate", "checkSuppression", "deconflictGate", "evaluateOutboundCompliance", "channelRefusalForRecipient", "contentSafetyBackstop", "requireConsentForVideoAvatarSource"]
-const GATE_EXTRA_RE = new RegExp(`\\b(?:${[...OUTBOUND_GATES, "autonomyDecision", "authorityAllows", "isToolAllowedAtAuthority", "requireLenderVendorActor", "requirePortalActor", "requireContactPortal\\w*", "assertTenant\\w*", "governSpokenConfirm", "preflightDeclaredGates"].join("|")})\\s*\\(`)
+const GATE_EXTRA_RE = new RegExp(`\\b(?:${[...OUTBOUND_GATES, "autonomyDecision", "authorityAllows", "isToolAllowedAtAuthority", "requireLenderVendorActor", "requirePortalActor", "requireContactPortal\\w*", "assertTenant\\w*", "governSpokenConfirm", "preflightDeclaredGates",
+  // WAVE 154 (lane 154A3): the PAYOUT RELEASE GATE (lib/kernel/financial.ts payoutReleaseGate — owner ruling 8: funds received, or
+  // the verified closing + the broker-signed, delivered CDA) is THE money decision for a commission payout. It was missing from
+  // this vocabulary, so a path that asked it read as having no decision. Positive control in section A.
+  "payoutReleaseGate"].join("|")})\\s*\\(`)
 const CONSENT_RE = /\b(?:checkSuppression|requireContactConsent|requireConsent\w*|channelRefusalForRecipient|isSuppressed\w*|evaluateOutboundCompliance|captureConsentedContact|hasConsent\w*|isOptedOut\w*)\s*\(/
 const SIGNATURE_RE = /\b(?:timingSafeEqual|verify\w*Signature|validateRequest|constructEvent|verifyWebhook\w*|verifyHmac\w*|verifySvix\w*|validateTwilio\w*|verifyCronAuth)\s*\(|\bprocess\.env\.[A-Z0-9_]*(?:SECRET|SIGNING|WEBHOOK_TOKEN|VERIFY_TOKEN)[A-Z0-9_]*\b/
 const CRON_AUTH_RE = /\bverifyCronAuth\s*\(/
@@ -846,8 +867,29 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
     const routeFacts = merge(pathFacts(mcp), pathFacts(inv))
     const capMgr = CAPABILITY_MANAGER as Record<string, string>
     const capV = views("lib/agentic-os/app-capability-registry.ts")!
+    // WAVE 154 (lane 154A3): THE POPULATION IS WHAT THE SURFACE OFFERS AS CALLABLE. The MCP route lists a tool only when it can
+    // be served there (its callableHere rule): a read executor, or an APP capability whose survivor has a worker in the manager
+    // delegation runtime (DELEGATION_WORKERS) when the route files the request through requestDelegation. Both halves are read
+    // from code: the executor maps above, the DELEGATION_WORKERS keys out of lib/kernel/manager-delegation.ts, and the route's
+    // own tokens (it must call requestDelegation AND gate tools/list on callableHere, or no capability is delegate-callable).
+    // A manifest entry that is not callable is CATALOG-ONLY: counted in the denominators, not a row (it is not an executable
+    // action surface any more — the route refuses it by name instead of planning it through a path that cannot run it).
+    const delegationKeys = new Set<string>()
+    {
+      const mv = views(mcp)
+      const binds = !!mv && /\brequestDelegation\s*\(/.test(mv.ids) && /\bcallableHere\s*\(/.test(mv.ids) && /\bDELEGATION_WORKERS\b/.test(mv.ids)
+      const dv = views("lib/kernel/manager-delegation.ts")
+      const ds = dv ? dv.ids.search(/const\s+DELEGATION_WORKERS\b/) : -1
+      if (binds && dv && ds >= 0) {
+        const o = dv.ids.indexOf("{", dv.ids.indexOf("(", ds)); const e = matchBrace(dv.ids, o)
+        for (const m of dv.ids.slice(o, e).matchAll(/^\s{2}([a-z_]+)\s*:\s*async\b/gm)) delegationKeys.add(m[1])
+      }
+    }
+    let catalogOnly = 0
     for (const a of capReg.buildFullActionManifest() as Array<{ capability: string; kind: string; verb: string; mutates?: boolean }>) {
       const isApp = a.capability in capReg.APP_CAPABILITY_REGISTRY
+      const delegated = isApp && delegationKeys.has(a.capability)
+      if (!execKeys.has(a.capability) && !delegated) { catalogOnly++; continue }
       const at = isApp ? capV.ids.search(new RegExp(`^\\s*${a.capability}\\s*:`, "m")) : -1
       const facts = emptyFacts(); merge(facts, routeFacts)
       const lensTables: string[] = []
@@ -856,12 +898,14 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
         entry: isApp && at >= 0 ? `lib/agentic-os/app-capability-registry.ts:${lineAt(capV, at)}` : `${a.kind} manifest (buildFullActionManifest)`,
         action: `${a.verb} ${a.capability}`, source_event: `MCP tools/call · REST /api/agentic-os/actions/${a.capability}/invoke`,
         trigger: `${mcp} tools/call (buildFullActionManifest)`,
-        worker: execKeys.has(a.capability) ? `executor ${a.capability} (${mcp} / ${inv})` : null,
+        worker: execKeys.has(a.capability) ? `executor ${a.capability} (${mcp} / ${inv})` : `DELEGATION_WORKERS.${a.capability} (lib/kernel/manager-delegation.ts) via requestDelegation in ${mcp}`,
         owner: isApp ? capMgr[a.capability] ?? null : null, ownerWhy: isApp ? "CAPABILITY_MANAGER has no entry" : `a ${a.kind} capability: CAPABILITY_MANAGER covers app capabilities only`,
         facts, consequentialHint: !!a.mutates, actorHint: "agent token (scope-gated)",
         subject: a.capability, lensTables,
       })
     }
+    capabilityCatalogOnly = catalogOnly
+    blind.push(`agentic capabilities: rows are the CALLABLE ones (an executor, or a DELEGATION_WORKERS survivor bound through requestDelegation); ${catalogOnly} manifest entr${catalogOnly === 1 ? "y is" : "ies are"} catalog-only (refused by name on tools/call) and counted, not rows`)
   }
 
   // ── assistant / voice tools ──
@@ -953,6 +997,7 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
   const denominators: Record<string, number> = {}
   for (const r of rowsOut) denominators[r.trigger_kind] = (denominators[r.trigger_kind] ?? 0) + 1
   denominators["server_action (read-only, not rows)"] = readOnlyExports
+  denominators["capability (catalog-only, not callable — not rows)"] = capabilityCatalogOnly
   denominators["use-server modules scanned"] = useServerFiles.length
   denominators["runtime files scanned"] = FILES.length
   blind.push(`manager-signal consumers from ${signalHandlersFrom}; a publisher is a file that calls publishManagerSignal AND carries the type as an exact string literal (a type built at run time is invisible)`)
@@ -1086,7 +1131,7 @@ function render(c: Census, matrix: MatrixOut): { md: string; json: string } {
   const L: string[] = []
   L.push("# OS Arbitration and Autonomy Coverage Ledger", "",
     "> GENERATED by `scripts/os-coverage-ledger.ts --write` (wave 154, lane 154A1) — do not edit. One row per real executable action, derived by traversing the code;",
-    "> a field that cannot be derived reads `unresolved: <reason>`. Machine-readable twin: `docs/architecture/os-arbitration-coverage.json`.", "",
+    "> a field that cannot be derived reads `unresolved: <reason>`. Machine-readable twin (on demand, not committed): `npx tsx scripts/os-coverage-ledger.ts --json` → `coverage/os-arbitration-coverage.json`.", "",
     "## 1. Totals (numerator / denominator)", "",
     `Rows: **${rows.length}** — working **${all.working}** · partial **${all.partial}** · missing **${all.missing}** · owner-held **${all["owner-held"]}**. Consequential rows: ${rows.filter((r) => r.consequential).length}.`, "",
     "| population | rows / scanned |", "|---|---|", ...Object.entries(c.denominators).map(([k, v]) => `| ${k} | ${v} |`), "")
@@ -1154,6 +1199,8 @@ async function main(): Promise<void> {
   check("NEXT_RE / RECOVERY_RE / OUTCOME_RE / WRITE_RE / READ_RE still recognise their specimens", NEXT_RE.test("emitKernelEvent(") && RECOVERY_RE.test("recordSelfHeal(") && OUTCOME_RE.test("withActionLedger(") && new RegExp(WRITE_RE.source).test(`.from("deals").insert`) && new RegExp(READ_RE.source).test(`.from("deals").select`))
   check(`DOOR_TOKENS (${DOOR_TOKENS.length}) evaluated out of ${AEC}`, DOOR_TOKENS.includes("withActionLedger") && DOOR_RE.test("ledgerToolExecutions("))
   check(`egress doors derived from ${DISPATCH_FILE} exports (${DISPATCH_DOORS.join(", ")})`, DISPATCH_DOORS.includes("dispatchEmail") && DISPATCH_DOORS.includes("dispatchSms"))
+  check("POSITIVE CONTROL: the gate vocabulary recognises the payout release gate as a call, and not as a word in a comment (lane 154A3)",
+    GATE_EXTRA_RE.test("const gate = payoutReleaseGate({ timing: inputs.timing })") && !GATE_EXTRA_RE.test("the payoutReleaseGate decides") && /\bfunction payoutReleaseGate\s*\(/.test(views("lib/kernel/financial.ts")?.ids ?? ""))
   check(`every outbound gate this file names is still called in ${DISPATCH_FILE}`, OUTBOUND_GATES.slice(0, 3).every((g) => new RegExp(`\\b${g}\\s*\\(`).test(views(DISPATCH_FILE)!.ids)))
 
   section("B — the fact extractor reads code, not words (planted fixture; a tombstone and a string are not a call)")
@@ -1245,12 +1292,17 @@ async function main(): Promise<void> {
   check("every component on the kernel-to-customer map resolves to live code (a function token in stripped source)", !!mapSection && !mapSection.includes("MISSING"), mapSection.match(/MISSING[^|]*/g)?.join("; "))
   if (WRITE) {
     mkdirSync(join(ROOT, "docs/architecture"), { recursive: true })
-    writeFileSync(join(ROOT, DOC_MD), out.md); writeFileSync(join(ROOT, DOC_JSON), out.json)
-    console.log(`  · wrote ${DOC_MD} (${out.md.length} bytes) and ${DOC_JSON} (${out.json.length} bytes)`)
+    writeFileSync(join(ROOT, DOC_MD), out.md)
+    console.log(`  · wrote ${DOC_MD} (${out.md.length} bytes)`)
   }
-  const mdNow = rawOf(DOC_MD), jsonNow = rawOf(DOC_JSON)
-  check(`${DOC_MD} + ${DOC_JSON} are the rendering of the code (line anchors excluded)`, !!mdNow && !!jsonNow && structural(mdNow) === structural(out.md) && structural(jsonNow) === structural(out.json),
-    !mdNow || !jsonNow ? "absent — run `npx tsx scripts/os-coverage-ledger.ts --write`" : "stale — re-run with --write")
+  if (WRITE_JSON) {
+    mkdirSync(join(ROOT, dirname(DOC_JSON)), { recursive: true })
+    writeFileSync(join(ROOT, DOC_JSON), out.json)
+    console.log(`  · wrote the on-demand artifact ${DOC_JSON} (${out.json.length} bytes, git-ignored)`)
+  }
+  const mdNow = rawOf(DOC_MD)
+  check(`${DOC_MD} is the rendering of the code (line anchors excluded; the JSON twin is an on-demand artifact, not checked in)`, !!mdNow && structural(mdNow) === structural(out.md),
+    !mdNow ? "absent — run `npx tsx scripts/os-coverage-ledger.ts --write`" : "stale — re-run with --write")
 
   const st = { working: 0, partial: 0, missing: 0, "owner-held": 0 } as Record<State, number>
   for (const r of realRows) st[r.state]++

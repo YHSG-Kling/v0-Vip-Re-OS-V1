@@ -16,6 +16,7 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { registerEventDispatcher, type OrchestratorEvent as WorkflowEvent } from "@/lib/events"
 import type { Event, EventInput } from "@/lib/orchestrator/event-types"
 import { EVENT_TYPES } from "@/lib/orchestrator/event-types" // the module, not the barrel (proxy-graph budget)
+import { KernelEvent } from "@/lib/kernel/events"
 
 // THE SERVICE CLIENT, NOT THE COOKIE ONE (lane 86F). This module is dispatched
 // from emitEventFromCron (poll-did-videos, render-composition, the image
@@ -208,7 +209,11 @@ const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   "listing.offer_received": async (e) => mustSucceed("offer-received task", offerReceivedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
 
   // Transaction events
-  "transaction.milestone_overdue": assistantSuggestionsNotWired,
+  // TOMBSTONE (wave 154, lane 154A3 — CLAUDE.md §6, coverage-ledger gap row 11): `"transaction.milestone_overdue":
+  // assistantSuggestionsNotWired` stood here — a key NOTHING wrote, whose handler only threw. The overdue milestone has ONE
+  // spelling, KernelEvent.MILESTONE_OVERDUE ('milestone_overdue'), which lib/events/event-helpers.ts logMilestoneOverdue (called
+  // by app/actions/copilot.ts) actually writes. SURVIVOR: the `case KernelEvent.MILESTONE_OVERDUE:` in orchestrateEvent below →
+  // handleMilestoneOverdue (the urgent suggestion + the agent notification), which the dotted case label never let it reach.
   "transaction.contingency_cleared": async (e) => mustSucceed("contingency task", contingencyClearedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
   "transaction.close_approaching": async (e) => mustSucceed("closing tasks", closingApproachingTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
   // The closing gift takes a listings.id, not a payload — see the header.
@@ -357,7 +362,10 @@ export async function orchestrateEvent(event: Event): Promise<void> {
         results.push(await handleListingLive(event))
         break
 
-      case EVENT_TYPES.TRANSACTION_MILESTONE_OVERDUE:
+      // ONE SPELLING (wave 154, lane 154A3): logMilestoneOverdue writes KernelEvent.MILESTONE_OVERDUE ('milestone_overdue');
+      // this case used to wait for EVENT_TYPES.TRANSACTION_MILESTONE_OVERDUE ('transaction.milestone_overdue'), which nothing
+      // writes — so every overdue milestone the copilot found landed in the events table and stopped at `default:`.
+      case KernelEvent.MILESTONE_OVERDUE:
         results.push(await handleMilestoneOverdue(event))
         break
 

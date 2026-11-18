@@ -1505,7 +1505,10 @@ export async function emitUserProvisionedEvent(params: {
       brokerageId:  params.brokerageId,
       metadata:      params.metadata ?? {},
       createdAt:    new Date().toISOString(),
-      auditOnly: true,
+      // A SEAT CHANGE FANS OUT (wave 154, lane 154A3, directive A7.1 "Organization and membership"): USER_ROLE_CHANGED and
+      // USER_TEAM_ASSIGNED reach lib/kernel/event-reactor.ts, whose branch rechecks that user's queued work
+      // (lib/kernel/authority-reactions.ts reactToMembershipChange). Every other provisioning event stays an audit echo.
+      auditOnly: params.eventType !== KernelEvent.USER_ROLE_CHANGED && params.eventType !== KernelEvent.USER_TEAM_ASSIGNED,
     }).then(k.asWriteResult)), {
     table: "lifecycle_events",
     flow: "user_provisioning_audit",

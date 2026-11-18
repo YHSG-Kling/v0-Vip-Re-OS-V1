@@ -41,7 +41,8 @@ export const EVENT_TYPES = {
   LISTING_LIVE: "listing.live",
   LISTING_PRICE_REDUCTION: "listing.price_reduction",
   LISTING_OFFER_RECEIVED: "listing.offer_received",
-  TRANSACTION_MILESTONE_OVERDUE: "transaction.milestone_overdue",
+  // TOMBSTONE (wave 154, lane 154A3): TRANSACTION_MILESTONE_OVERDUE ("transaction.milestone_overdue") was a second spelling nothing
+  // wrote and, after the merge, nothing reads. SURVIVOR: KernelEvent.MILESTONE_OVERDUE — lib/orchestrator/internal.ts orchestrateEvent case.
   TRANSACTION_CONTINGENCY_CLEARED: "transaction.contingency_cleared",
   TRANSACTION_CLOSE_APPROACHING: "transaction.close_approaching",
   TRANSACTION_CLOSING_SOON: "transaction.closing_soon",

@@ -1033,6 +1033,45 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           payload:     params.metadata ?? {},
         }, svc)
       } catch { /* best-effort */ }
+      // WAVE 154 (lane 154A3, coverage-ledger gap row 2): the cancellation now STOPS outgoing work — Finance Manager re-reads the
+      // entitlement (mayUseAndAfford) and, when authority is lost, pauses the tenant's active outreach enrollments; ledgered.
+      try {
+        const { reactToSubscriptionAuthority } = await import("@/lib/kernel/authority-reactions")
+        const r = await reactToSubscriptionAuthority(svc, { event: params.event, brokerageId: params.brokerageId, entityType: params.entityType, entityId: params.entityId, metadata: params.metadata ?? null })
+        if (!r.recorded || r.truncated) console.warn(`[event-reactor] subscription authority (${params.event}) for ${params.brokerageId}: ${r.decision}, paused ${r.paused}${r.truncated ? " (more queued — the egress billing gate holds the rest)" : ""}${r.recorded ? "" : ` — not recorded (${r.claim})`}`)
+      } catch (err) {
+        console.error(`[event-reactor] subscription authority recheck failed for ${params.brokerageId} (the egress billing gate still refuses sends):`, err)
+      }
+    }
+
+    // 10b — subscription authority CHANGED (wave 154, lane 154A3; coverage-ledger gap row 1). These five were emitted by the
+    // Stripe write-through / lifecycle sweep (lib/billing/stripe-subscription-ops.ts emitSubscriptionTransition, the trial sweep)
+    // and the superadmin tier change (app/actions/superadmin/brokerage-management.ts) with NO consumer: a tenant that went
+    // past_due → expired / paused kept its outreach queue running until each step hit the egress billing gate. Finance Manager
+    // re-reads the entitlement (never the event's own `to`); lost → pause active enrollments; current again → resume exactly
+    // the ones a lapse paused. Lawful history is kept (no row deleted); the decision is on agent_action_ledger.
+    if (params.event === KernelEvent.SUBSCRIPTION_STATUS_CHANGED || params.event === KernelEvent.SUBSCRIPTION_TRIAL_EXPIRED || params.event === KernelEvent.SUBSCRIPTION_DOWNGRADED || params.event === KernelEvent.SUBSCRIPTION_TRIAL_CONVERTED || params.event === KernelEvent.SUBSCRIPTION_UPGRADED) {
+      try {
+        const { reactToSubscriptionAuthority } = await import("@/lib/kernel/authority-reactions")
+        const r = await reactToSubscriptionAuthority(svc, { event: params.event, brokerageId: params.brokerageId, entityType: params.entityType, entityId: params.entityId, metadata: params.metadata ?? null })
+        if (!r.recorded || r.truncated) console.warn(`[event-reactor] subscription authority (${params.event}) for ${params.brokerageId}: ${r.decision}, paused ${r.paused}, resumed ${r.resumed}${r.recorded ? "" : ` — not recorded (${r.claim})`}`)
+      } catch (err) {
+        console.error(`[event-reactor] subscription authority recheck failed for ${params.brokerageId} (the egress billing gate still refuses sends):`, err)
+      }
+    }
+
+    // 10c — a seat changed (wave 154, lane 154A3; coverage-ledger gap row 3; directive A7.1 "Organization and membership").
+    // USER_ROLE_CHANGED / USER_TEAM_ASSIGNED (lib/kernel/users.ts assignRole / assignUserToTeam) now fan out. The reaction
+    // re-resolves the seat (users row + resolveViewerHierarchy); a seat that no longer sits in the tenant has its scheduled
+    // social posts held for re-approval and the enrollments it started paused. Ledgered either way.
+    if (params.event === KernelEvent.USER_ROLE_CHANGED || params.event === KernelEvent.USER_TEAM_ASSIGNED) {
+      try {
+        const { reactToMembershipChange } = await import("@/lib/kernel/authority-reactions")
+        const r = await reactToMembershipChange(svc, { event: params.event, brokerageId: params.brokerageId, entityType: params.entityType, entityId: params.entityId, metadata: params.metadata ?? null })
+        if (r.decision !== "live" || !r.recorded) console.warn(`[event-reactor] seat recheck (${params.event}) for user ${params.entityId}: ${r.decision} — held ${r.postsHeld} post(s), paused ${r.enrollmentsPaused} enrollment(s)${r.recorded ? "" : ` — not recorded (${r.claim})`}`)
+      } catch (err) {
+        console.error(`[event-reactor] seat recheck failed for user ${params.entityId}:`, err)
+      }
     }
 
     // 11 — social post publish failure (app/api/cron/publish-social-posts/route.ts).
@@ -1449,6 +1488,42 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           payload:     params.metadata ?? {},
         }, svc)
       } catch { /* best-effort */ }
+      // WAVE 154 (lane 154A3, coverage-ledger gap row 5): Finance Manager reads the payment BACK (commissionPayoutStanding —
+      // status 'paid' with paid_at) and the reaction is ledgered; it used to publish the signal with no decision and no evidence.
+      try {
+        const { reactToCommissionDecision } = await import("@/lib/kernel/authority-reactions")
+        const r = await reactToCommissionDecision(svc, { event: params.event, brokerageId: params.brokerageId, entityType: params.entityType, entityId: params.entityId, metadata: params.metadata ?? null })
+        if (r.decision !== "paid_verified" && r.decision !== "not_applicable") console.warn(`[event-reactor] commission_paid ${params.entityId}: ${r.decision} — ${r.detail}`)
+      } catch (err) {
+        console.error(`[event-reactor] commission_paid readback failed for ${params.entityId}:`, err)
+      }
+    }
+
+    // 21b — commission DISPUTED / APPROVED (wave 154, lane 154A3; coverage-ledger gap row 4). lib/kernel/financial.ts emitted
+    // both as audit echoes only, so nothing reacted to a dispute. They fan out now; Finance Manager decides on the payout
+    // standing: a dispute holds the payout (the payout writers already refuse it), opens ONE deal task and escalates a payout
+    // already in flight; an approval records releasable-or-held and closes the dispute task. Ledgered.
+    if (params.event === KernelEvent.COMMISSION_DISPUTED || params.event === KernelEvent.COMMISSION_APPROVED) {
+      try {
+        const { reactToCommissionDecision } = await import("@/lib/kernel/authority-reactions")
+        const r = await reactToCommissionDecision(svc, { event: params.event, brokerageId: params.brokerageId, entityType: params.entityType, entityId: params.entityId, metadata: params.metadata ?? null })
+        if (r.decision === "escalated" || r.decision === "unreadable" || !r.recorded) console.warn(`[event-reactor] ${params.event} ${params.entityId}: ${r.decision} — ${r.detail}`)
+      } catch (err) {
+        console.error(`[event-reactor] ${params.event} reaction failed for ${params.entityId}:`, err)
+      }
+    }
+
+    // 21c — CDA approved (wave 154, lane 154A3; coverage-ledger gap row 6). app/actions/cda-portal.ts approves through
+    // transitionLifecycle → this reactor, which had no branch. The approval now RECHECKS closing readiness through the one
+    // loader (loadClosingReadiness); an unready list or a stale closing review opens ONE deal task before the broker signs.
+    if (params.event === KernelEvent.CDA_APPROVED) {
+      try {
+        const { reactToCdaApproved } = await import("@/lib/kernel/authority-reactions")
+        const r = await reactToCdaApproved(svc, { event: params.event, brokerageId: params.brokerageId, entityType: params.entityType, entityId: params.entityId, metadata: params.metadata ?? null })
+        if (r.decision !== "ready") console.warn(`[event-reactor] cda_approved ${params.entityId}: closing readiness ${r.decision} (${r.blocking} blocking)${r.taskOpened ? " — task opened" : ""}`)
+      } catch (err) {
+        console.error(`[event-reactor] cda_approved readiness recheck failed for ${params.entityId}:`, err)
+      }
     }
 
     // 22 — a review landed (lib/reputation/review-landed.ts). HANDLED — Sphere of

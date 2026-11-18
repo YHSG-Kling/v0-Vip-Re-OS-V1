@@ -9,6 +9,7 @@ import {
   type LeaderboardMetric,
 } from "@/lib/gamification/leaderboard-vocabulary"
 import { MotivationClient } from "./motivation-client"
+import { getPointsCorrectionRoster } from "@/app/actions/gamification"
 
 export const dynamic = "force-dynamic"
 
@@ -63,9 +64,13 @@ export default async function MotivationPage({
   const metric: LeaderboardMetric | null = isLeaderboardMetric(params.metric) ? params.metric : null
   const period = isCanonicalPeriodLabel(params.period?.trim()) ? (params.period as string).trim() : null
 
+  // The admin points-correction form is offered only to a viewer the action's own gate admits (wave 154, lane 154A3).
+  const roster = await getPointsCorrectionRoster()
+
   return (
     <MotivationClient
       agentId={agentId ?? ""}
+      correction={roster.allowed ? { agents: roster.agents } : null}
       initialScope={scope}
       initialMetric={metric}
       initialPeriod={period}
