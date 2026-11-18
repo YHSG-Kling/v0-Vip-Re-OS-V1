@@ -640,7 +640,11 @@ export async function loadSenderVoiceBrief(
   // ── the user (name, signature, team) ────────────────────────────────────────────────────────
   let userRow: UserRowForBrief | null = null
   if (agentUserId) {
-    const { data, error } = await client.from("users").select("first_name, last_name, email_signature, team_id").eq("id", agentUserId).maybeSingle()
+    // TENANT-PINNED (wave 154; found by lane 154I). This read was by id alone: a users.id from ANOTHER tenant — no agents row
+    // answers it under this tenant, so the token survives unclassified — returned that person's name and email signature into
+    // THIS tenant's voice brief. The tenant predicate is unconditional (CLAUDE.md §4): a user outside the tenant reads as no
+    // user, and the brief falls back to the team / brokerage signature exactly as it does for a seat with none.
+    const { data, error } = await client.from("users").select("first_name, last_name, email_signature, team_id").eq("id", agentUserId).eq("brokerage_id", scope.brokerageId).maybeSingle()
     if (!refused("users", error)) userRow = (data as UserRowForBrief | null) ?? null
   }
   const teamId = scope.teamId ?? userRow?.team_id ?? agentRow?.team_id ?? null

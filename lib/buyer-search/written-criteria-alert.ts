@@ -87,6 +87,8 @@ export async function proposeWrittenCriteriaAlert(svc: any, input: {
           allowModelAssist: false,
           // the ledger row goes through the same (service) client the inbound router handed us
           ledgerClient: svc,
+          // Wave 154 (154I): a material change written by the buyer reaches their agent like the portal turn does.
+          notifyAgent: { source: "buyer_written_message" },
         })
         if (turn.error) console.error("[written-criteria] stated criteria not saved to the buyer's search:", turn.error)
       }

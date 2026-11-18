@@ -162,6 +162,18 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
       metadata: { widget: true },
     }), { table: "chat_messages", flow: "chat_messages_write", reason: "chat history persistence; never blocks the streamed answer" })
 
+    // ── A question several visitors asked → one anonymized local FAQ topic (wave 154, lane 154I, directive I4/I1) ──
+    // The tenant's own website questions, counted by DISTINCT session against the first-party floor, become ONE reworded
+    // topic in the canonical pool — never a visitor's words, never a person, never a persona field. An unclassifiable
+    // question costs nothing; a refusal is said and never blocks the answer. Dynamic import: off this route's hot graph.
+    try {
+      const { considerWebsiteQuestion } = await import('@/lib/customer-intelligence/website-question-topics')
+      const topic = await considerWebsiteQuestion(supabase, { brokerageId: session.brokerage_id ?? null, text: userText })
+      if (topic.status === 'refused') console.error('[widget/message] website question topic not recorded:', topic.reason)
+    } catch (e) {
+      console.error('[widget/message] website question topic step failed (non-blocking):', e instanceof Error ? e.message : e)
+    }
+
     // ── Stream response ───────────────────────────────────────────────────
     const recentMessages = messages.slice(-MAX_HISTORY)
 

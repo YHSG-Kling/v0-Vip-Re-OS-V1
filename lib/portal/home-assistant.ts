@@ -105,7 +105,11 @@ export type HomeFollowUpKind = "home_value" | "refinance" | "vendor"
 
 const HOME_VALUE_RE = /\b(worth|home value|house value|property value|valuation|appraisal|equity|what (could|would|can) (it|my (home|house)) sell for|sell (it|my (home|house)) for|market value|cma|comps?)\b/i
 const REFINANCE_RE = /\b(refi|refinanc\w*|heloc|home equity (loan|line)|cash[- ]out|lower (my|the|our) (rate|payment|mortgage)|interest rate|mortgage rate|rate drop|second mortgage)\b/i
-const VENDOR_RE = /\b(plumber|plumbing|electrician|electrical|roofer|roofing|hvac|furnace|a\/?c|air condition\w*|contractor|handyman|landscap\w*|painter|painting|mover|moving company|cleaner|cleaning|pest|inspector|gutter\w*|window\w*|flooring|remodel\w*|renovat\w*|repair\w*|fix (my|the|our)|recommend(ation)? (for )?a|know (a|any|someone)|who (do|would) you (use|recommend)|referral for a|good (\w+ )?(guy|company|service|pro|vendor)|lender|mortgage broker)\b/i
+// Wave 154 (lane 154I, directive I4 — "title/lender questions escalated to those parties"): a title-company, closing-attorney
+// or insurance question is a TRANSACTION vendor ask too. Before, "who handles title insurance?" matched nothing and earned no
+// follow-up at all; it now files the intro under the canonical vendors.category (lib/kernel/vendor-categories.ts 'title',
+// 'attorney', 'insurance'). The answer itself still states no number for this client's deal.
+const VENDOR_RE = /\b(title (?:company|insurance|search|agent|officer)|escrow officer|closing attorney|real estate attorney|homeowners? insurance|insurance (?:agent|quote)|plumber|plumbing|electrician|electrical|roofer|roofing|hvac|furnace|a\/?c|air condition\w*|contractor|handyman|landscap\w*|painter|painting|mover|moving company|cleaner|cleaning|pest|inspector|gutter\w*|window\w*|flooring|remodel\w*|renovat\w*|repair\w*|fix (my|the|our)|recommend(ation)? (for )?a|know (a|any|someone)|who (do|would) you (use|recommend)|referral for a|good (\w+ )?(guy|company|service|pro|vendor)|lender|mortgage broker)\b/i
 
 /** PURE: which follow-up the question earns; null when none of the three. Vendor
  *  wins over refinance only when a trade is named ("a lender for a refi" is a
@@ -120,6 +124,9 @@ export function classifyHomeFollowUp(question: string | null | undefined): HomeF
 }
 
 const VENDOR_CATEGORY_WORDS: Array<[RegExp, string]> = [
+  // Wave 154 (154I): canonical transaction categories first, so "title insurance" is a title ask, not an insurance one.
+  [/title (?:company|insurance|search|agent|officer)|escrow officer/i, "title"], [/closing attorney|real estate attorney/i, "attorney"],
+  [/insurance|insurer/i, "insurance"],
   [/plumb/i, "plumbing"], [/electric/i, "electrical"], [/roof/i, "roofing"], [/hvac|furnace|a\/?c\b|air condition/i, "hvac"],
   [/landscap|lawn|yard/i, "landscaping"], [/paint/i, "painting"], [/mover|moving/i, "moving"], [/clean/i, "cleaning"],
   [/pest/i, "pest_control"], [/inspect/i, "inspection"], [/gutter/i, "gutters"], [/window/i, "windows"], [/floor/i, "flooring"],

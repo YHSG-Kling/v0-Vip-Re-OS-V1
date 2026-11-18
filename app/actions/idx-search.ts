@@ -28,6 +28,14 @@ interface PropertyFilters {
   keywords?: string
 }
 
+/** Module-private (a "use server" export is a public endpoint): the tenant a search-log row is filed under — the session
+ *  actor's, and only when the contact read under that session sits in the same tenant. Never a request field. */
+function logTenantForSearch(actorBrokerageId: string | null, contactBrokerageId: string | null): { ok: true; brokerageId: string } | { ok: false; reason: string } {
+  if (!actorBrokerageId) return { ok: false, reason: "no session tenant resolved — a tenantless row would be owned by no tenant" }
+  if (contactBrokerageId !== actorBrokerageId) return { ok: false, reason: "the contact is not in the session's tenant" }
+  return { ok: true, brokerageId: actorBrokerageId }
+}
+
 // Standard property search via IDX API
 export async function searchProperties(filters: PropertyFilters) {
   try {
@@ -172,14 +180,24 @@ export async function smartSearch(data: {
     // THE ERROR IS READ (§3): this log is the "previous searches" history the
     // agent's search screen reads; a refused write is reported, not swallowed.
     // It never fails the buyer's search — the results below are real.
-    const { error: searchLogError } = await supabase.from("property_search_log").insert({
-      contact_id: data.contactId,
-      query_text: data.naturalLanguageQuery,
-      extracted_filters: filters,
-      result_count: searchResult.properties?.length || 0,
-      metadata: { intent: filters.intent || "browsing" },
-    })
-    if (searchLogError) console.error("[smartSearch] property_search_log NOT recorded:", searchLogError.message)
+    // WAVE 154 (lane 154I, found by lane 154B): the row carried NO brokerage_id, so every logged search was a tenantless
+    // row no tenant-scoped reader could ever own. The tenant is the RESOLVED ACTOR's (getAgentContext — the session,
+    // CLAUDE.md §4), never a request field, and the contact must sit in that same tenant; otherwise nothing is logged
+    // and it is said (a search is still answered — the log is history, not the result).
+    const logTenant = logTenantForSearch(spendActor.brokerageId, (contact as { brokerage_id?: string | null } | null)?.brokerage_id ?? null)
+    if (!logTenant.ok) {
+      console.error(`[smartSearch] property_search_log NOT recorded: ${logTenant.reason}`)
+    } else {
+      const { error: searchLogError } = await supabase.from("property_search_log").insert({
+        brokerage_id: logTenant.brokerageId,
+        contact_id: data.contactId,
+        query_text: data.naturalLanguageQuery,
+        extracted_filters: filters,
+        result_count: searchResult.properties?.length || 0,
+        metadata: { intent: filters.intent || "browsing" },
+      })
+      if (searchLogError) console.error("[smartSearch] property_search_log NOT recorded:", searchLogError.message)
+    }
 
     return {
       success: true,

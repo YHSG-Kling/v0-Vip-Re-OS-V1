@@ -6,8 +6,8 @@
  * `app/actions/ai-lead-nurturing.ts:aiPredictConversion` reads the contact, their
  * activity log and their property views, and returns a conversion probability, a
  * confidence level, weighted factors, risks, accelerators and a recommendation.
- * It writes `contacts.ai_conversion_probability` and
- * `contacts.ai_predicted_close_date`. It had no caller anywhere, and neither
+ * It writes `contacts.ai_conversion_probability` (wave 154: no longer
+ * `contacts.ai_predicted_close_date` — the timeline is a labelled model estimate). It had no caller anywhere, and neither
  * column was read by anything either — so the forecast was written nowhere and
  * shown nowhere.
  *
@@ -33,7 +33,9 @@ import { aiPredictConversion } from "@/app/actions/ai-lead-nurturing"
 
 interface Prediction {
   conversionProbability: number
-  predictedCloseDate?: string
+  /** WAVE 154 (154I): a MODEL ESTIMATE bucket (constants/crm-standards.ts STANDARD_TIMELINES) or "unknown" — never a date. */
+  projectedTimeline?: string
+  timelineBasis?: "model_estimate"
   confidenceLevel: "low" | "medium" | "high"
   keyFactors: Array<{ factor: string; impact: "positive" | "negative" | "neutral"; weight: number }>
   riskFactors: string[]
@@ -101,9 +103,11 @@ export function ConversionForecastPanel({ contactId }: { contactId: string }) {
                 <Badge variant="secondary" className="text-[10px] capitalize">
                   {prediction.confidenceLevel} confidence
                 </Badge>
-                {prediction.predictedCloseDate && (
+                {/* WAVE 154 (lane 154I, directive I3): what the model SUSPECTS is labelled as its estimate, in a timeline
+                    bucket — never "Projected close <date>", which read as something the client said. */}
+                {prediction.projectedTimeline && prediction.projectedTimeline !== "unknown" && (
                   <span className="text-xs text-muted-foreground">
-                    Projected close {prediction.predictedCloseDate}
+                    Model estimate: {prediction.projectedTimeline.replace(/_/g, " ")} (not stated by the client)
                   </span>
                 )}
               </div>

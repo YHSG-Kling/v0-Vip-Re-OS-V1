@@ -32,7 +32,7 @@ import {
   type CriteriaChannel,
   type UtteranceSourceKind,
 } from "./buyer-criteria"
-import { applyConversationTurn, type CriteriaStatement } from "./conversational-search"
+import { applyConversationTurn, shouldNotifyAgent, type CriteriaStatement } from "./conversational-search"
 import type { ParsedBuyerCriteria } from "./parse-buyer-criteria"
 // Wave 150 (150W, C27): only a well-formed, BUYER-stated minimum in the lot_size_unit vocabulary is recorded as heard.
 import { validLotMinimum } from "./explanation-evidence"
@@ -132,6 +132,29 @@ export interface StatedTurnResult {
   error: string | null
   /** Wave 148E (ruling 9): the buyer's words as recorded — null when nothing searchable was said or m916 is absent. */
   utteranceId: string | null
+  /** Wave 154 (154I): the buyer's agent was told through the bus (true), the notice was not asked for / not material (null),
+   *  or it was asked for and the bus refused (false — said, never swallowed). */
+  agentNotified?: boolean | null
+}
+
+/**
+ * WAVE 154 (lane 154I, directive I2 — "the OS must notice meaningful changes in an existing Contact's own first-party
+ * behaviour"): the bus line to the buyer's Shopping Agent after a STATED, SAVED, MATERIAL criteria change. Before, only the
+ * portal door (app/actions/buyer-search/conversational-search.ts tellShoppingAgent) told the agent; the same change spoken on
+ * a call or written in an email / SMS was saved through this writer and reached NO decision (the second-window radar only
+ * reads REPEATED changes). One rule (shouldNotifyAgent — material fields only, proposals excluded), one door
+ * (publishManagerSignal, deduped by the bus to one open signal per contact), the tenant the caller verified. A replayed turn
+ * notifies nobody. Routine and lawful: no broker click — the shopping agent decides what follows.
+ */
+export type CriteriaAgentPublish = (a: {
+  brokerageId: string; fromManager: "ai_isa"; toManager: "shopping_agent"; signalType: "qualification_criteria_captured"
+  message: string; entityType: "contact"; entityId: string; contactId: string; payload: Record<string, unknown>
+}, client: unknown) => Promise<{ ok: boolean; reason?: string }>
+
+const defaultCriteriaAgentPublish: CriteriaAgentPublish = async (a, client) => {
+  const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+  const r = await publishManagerSignal(a as never, client as never)
+  return r.ok ? { ok: true } : { ok: false, reason: (r as { reason?: string }).reason }
 }
 
 /** The source kind a channel's turn is recorded under when the door does not name one (m916 vocabulary). */
@@ -183,7 +206,10 @@ export async function recordStatedCriteriaTurn(
     sourceRef?: string | null
     /** Wave 148E: the consent basis the door STATES (e.g. the call's recording disclosure). Never invented here. */
     consent?: CriteriaConsent | null
+    /** Wave 154 (154I): tell the buyer's agent about a material saved change (doors with no agent notice of their own). */
+    notifyAgent?: { source: string } | null
   },
+  deps: { publish?: CriteriaAgentPublish } = {},
 ): Promise<StatedTurnResult> {
   const { parseBuyerCriteria } = await import("./parse-buyer-criteria")
   const parsed = await parseBuyerCriteria(input.text, {
@@ -238,5 +264,19 @@ export async function recordStatedCriteriaTurn(
     reasonDetail: `buyer said (${input.channel}): ${input.text}`, ledgerClient: input.ledgerClient,
   })
   notes.push(...saved.notes)
-  return { statement, parsed, next, changes: drafts.map((c, i) => ({ ...c, id: saved.ids[i] ?? null })), notes, error: saved.error, utteranceId: utterance.id }
+  let agentNotified: boolean | null = null
+  if (input.notifyAgent && saved.acted && !saved.error) {
+    const verdict = shouldNotifyAgent({ changes: drafts })
+    if (verdict.notify) {
+      const r = await (deps.publish ?? defaultCriteriaAgentPublish)({
+        brokerageId: input.brokerageId, fromManager: "ai_isa", toManager: "shopping_agent", signalType: "qualification_criteria_captured",
+        message: `Buyer updated their search (${input.channel}: ${verdict.reason})`,
+        entityType: "contact", entityId: input.contactId, contactId: input.contactId,
+        payload: { source: input.notifyAgent.source, channel: input.channel, fields: drafts.map((c) => c.field), utterance_id: utterance.id },
+      }, svc)
+      agentNotified = r.ok
+      if (!r.ok) notes.push(`The buyer's agent could not be told about this change: ${r.reason ?? "the bus refused"}.`)
+    }
+  }
+  return { statement, parsed, next, changes: drafts.map((c, i) => ({ ...c, id: saved.ids[i] ?? null })), notes, error: saved.error, utteranceId: utterance.id, agentNotified }
 }

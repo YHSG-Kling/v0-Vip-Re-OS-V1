@@ -61,6 +61,7 @@ function walk(dir: string, out: string[] = []): string[] {
 const B1 = "11111111-1111-4111-8111-111111111111"
 const B2 = "22222222-2222-4222-8222-222222222222"
 const U1 = "aaaaaaaa-0000-4000-8000-000000000001", A1 = "aaaaaaaa-0000-4000-8000-00000000a001", T1 = "tttttttt-0000-4000-8000-000000000001"
+const U_FOREIGN = "ffffffff-0000-4000-8000-0000000000f9"
 const U2 = "bbbbbbbb-0000-4000-8000-000000000002", A2 = "bbbbbbbb-0000-4000-8000-00000000a002"
 const U3 = "cccccccc-0000-4000-8000-000000000003", A3 = "cccccccc-0000-4000-8000-00000000a003"
 const C1 = "dddddddd-0000-4000-8000-000000000001", C3 = "dddddddd-0000-4000-8000-000000000003"
@@ -76,9 +77,11 @@ function seed() {
       { id: "bv-a1", brokerage_id: B1, agent_id: A1, team_id: null, tone: "direct", formality_level: null, preferred_words: ["straight talk", "your block"], prohibited_words: [], key_brand_messages: [], tagline: "Straight talk about your block", mission_statement: null, tone_examples: ["Three homes on Alder sold last month; two went over asking.", "If you are weighing a move before school starts, here is how long it usually takes."], writing_style_notes: "short sentences, one number per paragraph" },
     ],
     users: [
-      { id: U1, first_name: "Jane", last_name: "Rivera", email_signature: "<p>Jane Rivera<br>Harbor &amp; Pine Homes · 555-0100</p>", team_id: T1 },
-      { id: U2, first_name: "Marcus", last_name: "Lee", email_signature: null, team_id: null },
-      { id: U3, first_name: "Priya", last_name: "Nair", email_signature: null, team_id: null },
+      { id: U1, brokerage_id: B1, first_name: "Jane", last_name: "Rivera", email_signature: "<p>Jane Rivera<br>Harbor &amp; Pine Homes · 555-0100</p>", team_id: T1 },
+      { id: U2, brokerage_id: B1, first_name: "Marcus", last_name: "Lee", email_signature: null, team_id: null },
+      { id: U3, brokerage_id: B1, first_name: "Priya", last_name: "Nair", email_signature: null, team_id: null },
+      // a seat in ANOTHER tenant (wave 154): its name and signature must never enter B1's brief
+      { id: U_FOREIGN, brokerage_id: "00000000-0000-4000-8000-0000000000b2", first_name: "Zed", last_name: "Outsider", email_signature: "<p>Zed Outsider · Rival Realty · 555-0199</p>", team_id: null },
     ],
     agents: [
       { id: A1, user_id: U1, brokerage_id: B1, team_id: T1, bio: "Fifteen years on the west side of Pace.", specializations: ["waterfront"], languages: ["English", "Spanish"], license_number: "SL123", license_state: "fl" },
@@ -150,6 +153,13 @@ async function main() {
   const b3 = await loadSenderVoiceBrief(db as never, { brokerageId: B1, agentUserId: U3 }, fresh)
   check("the sender's OWN approved edit (distribution_finals authored_by human, approved/published) is a writing sample; an AI-authored approved final is NOT (agent 3 stays settings-only)",
     b2c.hasWritingSample && b2c.writingSamples.some((s) => /own approved edit/.test(s.source) && /two homes on Alder closed/.test(s.text)) && b3.hasWritingSample === false, JSON.stringify({ b2c: b2c.writingSamples, b3: b3.hasWritingSample }))
+  // TENANT ISOLATION (wave 154): a users.id from another tenant is not this tenant's sender.
+  const foreign = await loadSenderVoiceBrief(db as never, { brokerageId: B1, agentUserId: U_FOREIGN }, fresh)
+  const foreignText = renderSenderVoiceBrief(foreign)
+  check("ISOLATION: a user id from ANOTHER tenant puts neither that person's name nor their signature into this tenant's brief (the brief falls back to the brokerage signature)",
+    !/Zed|Outsider|Rival Realty|555-0199/.test(foreignText) && !/Zed|Outsider|Rival Realty|555-0199/.test(JSON.stringify(foreign)) && foreign.signature.source !== "user", `${foreign.signature.source} · ${foreignText.slice(0, 160)}`)
+  check("POSITIVE CONTROL: the same reader DOES carry the name and the signature of a seat inside the tenant", /Jane/.test(JSON.stringify(b1)) && b1.signature.source === "user")
+
   // A REFUSED READ IS NAMED, NEVER GUESSED.
   const refusedDb = seed()
   const brRefused = await loadSenderVoiceBrief(memSupabase({ ...refusedDb.tables }, { uuidIds: true, refuse: { users: "permission denied for table users" } }) as never, { brokerageId: B1, agentUserId: U1 }, fresh)

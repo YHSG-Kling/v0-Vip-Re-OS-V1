@@ -8,6 +8,11 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
 import { requireCaller } from "@/lib/auth/require-caller"
+import { STANDARD_TIMELINES } from "@/constants/crm-standards"
+
+// The model's timeline answer: a bucket of the ONE vocabulary, or "unknown". Module-private ("use server": exports are endpoints).
+const PROJECTED_TIMELINES = [...STANDARD_TIMELINES, "unknown"] as const
+type ProjectedTimeline = (typeof PROJECTED_TIMELINES)[number]
 
 // Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
 const generateObject = bookedGenerateObject("ai_lead_nurturing")
@@ -487,7 +492,7 @@ Include a mix of email and SMS templates.`,
  * RLS (`is_lead_visible_role()`) admits broker/admin only, so an AGENT-facing
  * card fed from it is empty by construction; its own docblock says so. This one
  * writes two columns on `contacts` — `ai_conversion_probability` (numeric) and
- * `ai_predicted_close_date` (date), both verified live — which the contact's own
+ * (wave 154: no longer `ai_predicted_close_date` — a model's guessed date is not a fact; see the tombstone below), which the contact's own
  * agent can read. They are the ONLY conversion-probability values anything
  * agent-facing can reach, and nothing else in the tree writes them.
  */
@@ -497,7 +502,8 @@ export async function aiPredictConversion(params: {
   success: boolean
   prediction?: any
   persisted?: boolean
-  predictedCloseDate?: string | null
+  /** WAVE 154 (154I): a MODEL ESTIMATE in the one timeline vocabulary — never a date, never written to the Contact as fact. */
+  projectedTimeline?: ProjectedTimeline
   error?: string
 }> {
   const auth = await requireCaller()
@@ -531,7 +537,12 @@ export async function aiPredictConversion(params: {
       model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         conversionProbability: z.number().min(0).max(100),
-        predictedCloseDate: z.string().optional(),
+        // WAVE 154 (lane 154I, directive I3 — "don't claim one exact transaction date … from ambiguous signals"): the model
+        // used to return a free-text close DATE from activity counts and property views, stored on the Contact
+        // (ai_predicted_close_date) and shown as "Projected close 2027-03-14" — a suspicion presented as a fact. It now
+        // answers in the ONE timeline vocabulary (constants/crm-standards.ts STANDARD_TIMELINES buckets, CLAUDE.md §5) or
+        // "unknown", and the bucket is shown as a model estimate, never stored over what the person SAID (contacts.timeline).
+        projectedTimeline: z.enum(PROJECTED_TIMELINES),
         confidenceLevel: z.enum(["low", "medium", "high"]),
         keyFactors: z.array(z.object({
           factor: z.string(),
@@ -553,30 +564,26 @@ ${JSON.stringify(interactions?.slice(0, 20), null, 2)}
 PROPERTY VIEWS (${propertyViews?.length || 0}):
 ${JSON.stringify(propertyViews?.slice(0, 20), null, 2)}
 
-Analyze engagement patterns, timeline, and behavior to predict conversion likelihood.`,
+Analyze engagement patterns, timeline, and behavior to predict conversion likelihood.
+For projectedTimeline pick ONE bucket only when the contact's own words or a dated fact above support it; otherwise "unknown". Never name a calendar date and never state a personal motive the contact did not say.`,
     })
 
     // Update contact with prediction — scoped to caller's brokerage.
     //
-    // `ai_predicted_close_date` is a DATE column. The model returns a free string
-    // and an unparseable one is a 22007 that rejects the WHOLE update, taking the
-    // probability down with it — so the date is only sent when it is actually a
-    // date, and the probability lands either way.
+    // TOMBSTONE (wave 154, lane 154I — CLAUDE.md §1): the `ai_predicted_close_date` write that stood here filed a model's
+    // guessed calendar date on the Contact. Survivor for a stated date: lib/intent/movement-signals.ts reassessExistingContact
+    // (change `stated_date`, the person's own words); for a model view: `projectedTimeline` below, returned and shown as an
+    // estimate only. The column keeps no writer — its DROP is owner SQL (lane 154I notes).
     //
     // The refusal is read. supabase-js resolves a rejected update, so this
     // `await` used to report a stored prediction whether or not one was stored,
     // and the caller had no way to tell. `persisted` carries the truth.
-    const predictedCloseDate =
-      typeof prediction.predictedCloseDate === "string" &&
-      /^\d{4}-\d{2}-\d{2}/.test(prediction.predictedCloseDate.trim())
-        ? prediction.predictedCloseDate.trim().slice(0, 10)
-        : null
+    const projectedTimeline: ProjectedTimeline = (PROJECTED_TIMELINES as readonly string[]).includes(prediction.projectedTimeline) ? prediction.projectedTimeline : "unknown"
 
     const { data: updated, error: updateError } = await supabase
       .from("contacts")
       .update({
         ai_conversion_probability: prediction.conversionProbability,
-        ...(predictedCloseDate ? { ai_predicted_close_date: predictedCloseDate } : {}),
       })
       .eq("id", params.contactId)
       .eq("brokerage_id", auth.brokerageId)
@@ -588,7 +595,7 @@ Analyze engagement patterns, timeline, and behavior to predict conversion likeli
     // A zero-row update is a refusal wearing the shape of success.
     const persisted = !updateError && !!updated && updated.length > 0
 
-    return { success: true, prediction, persisted, predictedCloseDate }
+    return { success: true, prediction: { ...prediction, projectedTimeline, timelineBasis: "model_estimate" as const }, persisted, projectedTimeline }
   } catch (error) {
     console.error("[v0] AI conversion prediction error:", error)
     return handleError(error, "aiPredictConversion")

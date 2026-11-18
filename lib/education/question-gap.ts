@@ -21,6 +21,10 @@ const TOPIC_LEXICON: Array<{ topic: string; label: string; keywords: string[] }>
   { topic: "escrow", label: "how escrow works", keywords: ["escrow"] },
   { topic: "earnest_money", label: "earnest money", keywords: ["earnest"] },
   { topic: "appraisal", label: "the appraisal process", keywords: ["appraisal", "appraiser", "appraise"] },
+  // Wave 154 (lane 154I, directive I4): new-construction warranties — ahead of "inspection" so "does the builder warranty
+  // replace an inspection?" files under the warranty it is about. The ONE lexicon: the website-question topic feeder
+  // (lib/customer-intelligence/website-question-topics.ts) classifies with classifyQuestion too, never a second word list.
+  { topic: "new_construction_warranty", label: "new-construction warranties", keywords: ["builder warranty", "builder's warranty", "new construction warrant", "new-construction warrant", "new build warrant", "new home warrant", "warranty on a new", "warranty on new"] },
   { topic: "inspection", label: "the inspection process", keywords: ["inspection", "inspector"] },
   { topic: "contingency", label: "contingencies", keywords: ["contingency", "contingencies"] },
   { topic: "closing_costs", label: "closing costs", keywords: ["closing cost", "closing costs"] },

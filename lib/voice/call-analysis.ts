@@ -295,6 +295,8 @@ async function proposeSpokenCriteriaAlert(svc: any, call: {
           brokerageId: call.brokerage_id, contactId: call.contact_id, text: spoken, channel: "voice", actor: { type: "system" },
           idempotencyKey: `buyer_search.criteria.update:${call.contact_id}:call:${call.id}`, allowModelAssist: false, ledgerClient: svc,
           sourceRef: `voice_call:${call.id}`,
+          // Wave 154 (154I): a material change said on a call reaches the buyer's agent like the portal turn does.
+          notifyAgent: { source: "buyer_voice_call" },
           consent: {
             basis: "call_recording_disclosure",
             ref: `voice_call:${call.id}`,
