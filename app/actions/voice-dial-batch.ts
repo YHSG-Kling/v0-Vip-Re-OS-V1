@@ -63,6 +63,13 @@ export async function rejectDialBatchAction(batchId: string): Promise<{ ok: bool
   if (!batch) return { ok: false, error: "Batch not found" }
   const ownsIt = (batch as any).proposed_by_agent_id && (batch as any).proposed_by_agent_id === actor.agentId
   if (!ownsIt && !actor.isManager) return { ok: false, error: "Forbidden — not your batch" }
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt through ledgerSessionAction (lib/kernel/action-ledger.ts, the one
+  // helper) — session user + tenant from requireActor, the batch. A refusal (malformed name) maps onto this export's { ok, error }.
+  // NO cycle / idempotencyKey: the update itself only matches a 'proposed' batch, so a repeat reports "not in proposed state".
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "voice.dial_batch.reject", actor: { type: "user", userId: actor.userId }, subject: { type: "ai_isa_call_batch", id: batchId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { as_manager: !ownsIt } }, async (): Promise<{ ok: boolean; error?: string }> => {
+  ran = true
 
   const { data, error: rejectErr } = await svc.from("ai_isa_call_batches")
     .update({ status: "rejected", approved_by: actor.userId, approved_at: new Date().toISOString() })
@@ -70,4 +77,6 @@ export async function rejectDialBatchAction(batchId: string): Promise<{ ok: bool
   if (rejectErr) return { ok: false, error: `Could not reject the batch: ${rejectErr.message}` }
   revalidatePath("/dashboard/admin/voice-dial-batches")
   return { ok: !!data, error: data ? undefined : "not in proposed state" }
+  })
+  return ran ? (r as { ok: boolean; error?: string }) : { ok: false, error: (r as { error?: string }).error ?? "The rejection was not recorded and did not run." }
 }

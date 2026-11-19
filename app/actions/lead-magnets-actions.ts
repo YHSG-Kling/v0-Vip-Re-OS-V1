@@ -6,6 +6,20 @@ import { listLeadMagnets, createLeadMagnet, publishLeadMagnet, getMagnetPerforma
 import { FORM_DECLARABLE_CONTACT_TYPES } from "@/lib/lead-magnets/form-contact-types"
 import { headers } from "next/headers"
 
+// WAVE 155 (lane 155R4, G12): each write below leaves ONE agent_action_ledger receipt through ledgerSessionAction
+// (lib/kernel/action-ledger.ts, the one helper): the SESSION user + tenant (getAgentContext), the magnet / promise acted on,
+// never landing copy or a Contact's text. NO cycle / idempotencyKey: a second save runs and records again (the attest door is
+// already idempotent in its kernel — `reused`). `refused` maps the helper's typed refusal onto the export's failure shape.
+async function withSessionReceipt<T, R>(who: { userId: string; brokerageId: string | null } | null, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!who?.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sid = subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject.id) ? subject.id : null
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: "user", userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: "HUMAN_REQUESTED", detail }, () => { ran = true; return run() })
+  return ran ? (r as T) : refused((r as { error?: string }).error ?? "The action was not recorded and did not run.")
+}
+const refusedResult = (error: string) => ({ success: false as const, error })
+
 /**
  * ─── TOMBSTONE (wave 14) — the /api/lead-magnets HTTP twins ──────────────────
  * Three unreferenced route files duplicated the actions below and were retired
@@ -345,6 +359,7 @@ export async function saveMagnetLandingContentAction(
   try {
     const ctx = await getAgentContext()
     if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    return await withSessionReceipt({ userId: ctx.userId, brokerageId: ctx.brokerageId }, "marketing.lead_magnet_landing.save", { type: "lead_capture_form", id: magnetId }, "LOW_RISK_WRITE", { fields: Object.keys((landing ?? {}) as object) }, async () => {
     const supabase = createServiceClient()
     const { error } = await supabase
       .from("lead_capture_forms")
@@ -353,6 +368,7 @@ export async function saveMagnetLandingContentAction(
       .eq("brokerage_id", ctx.brokerageId)
     if (error) return { success: false as const, error: error.message }
     return { success: true as const }
+    }, refusedResult)
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to save landing content" }
   }
@@ -774,11 +790,13 @@ export async function generateQRCodeAction(input: { magnetId: string; url: strin
       .maybeSingle()
     if (formError) return { success: false as const, error: formError.message }
     if (!form) return { success: false as const, error: "Magnet not found" }
+    const brokerageId = ctx.brokerageId
+    return await withSessionReceipt({ userId: ctx.userId, brokerageId }, "marketing.lead_magnet_qr.mint", { type: "lead_capture_form", id: input.magnetId }, "LOW_RISK_WRITE", { agent_id: ctx.agentId ?? null }, async () => {
 
     const { generateQRCode } = await import("@/lib/kernel/lead-magnets")
     const result = await generateQRCode({
       magnetId: input.magnetId,
-      brokerageId: ctx.brokerageId,
+      brokerageId,
       agentId: ctx.agentId ?? null,
       label: `Lead Magnet QR: ${input.magnetId}`,
       targetUrl: input.url,
@@ -795,6 +813,7 @@ export async function generateQRCodeAction(input: { magnetId: string; url: strin
         image_url: result.qrImageUrl!,
       },
     }
+    }, refusedResult)
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to generate QR" }
   }
@@ -869,10 +888,12 @@ export async function attestPromiseDeliveredAction(promiseId: string, documentId
   try {
     const scope = await promiseScopeFor(promiseId)
     if (!scope.ok) return { success: false as const, error: scope.error }
+    return await withSessionReceipt({ userId: scope.userId, brokerageId: scope.brokerageId }, "marketing.lead_magnet_promise.attest", { type: "lead_magnet_promise", id: promiseId }, "LOW_RISK_WRITE", { document_id: documentId }, async () => {
     const { attestPromiseDelivered } = await import("@/lib/lead-magnets/promised-deliverables")
     const r = await attestPromiseDelivered(createServiceClient(), { brokerageId: scope.brokerageId, promiseId, actorUserId: scope.userId, documentId })
     if (!r.ok) return { success: false as const, error: r.error }
     return { success: true as const, reused: r.reused }
+    }, refusedResult)
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to record the delivery" }
   }

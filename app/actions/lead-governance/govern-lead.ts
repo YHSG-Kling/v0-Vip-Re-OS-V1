@@ -43,6 +43,19 @@ import {
 import { resolveAgentByRules } from '@/lib/lead-assignment/assignment-engine'
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from '@/lib/lead-assignment/capacity-pick'
 
+// WAVE 155 (lane 155R4, G12): the governance cycle leaves ONE agent_action_ledger receipt through ledgerSessionAction
+// (lib/kernel/action-ledger.ts, the one helper): the SESSION user, the session's tenant, the lead's opaque id — never lead
+// identity (Leads belong to the brokerage; the ledger is readable tenant-wide). A throw inside the cycle settles the receipt
+// failed and is rethrown to the existing catch. NO cycle / idempotencyKey: a re-run governs again and records again.
+async function withSessionReceipt<T, R>(who: { userId: string; brokerageId: string | null } | null, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!who?.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import('@/lib/kernel/action-ledger')
+  const sid = subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject.id) ? subject.id : null
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: 'user', userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: 'HUMAN_REQUESTED', detail }, () => { ran = true; return run() })
+  return ran ? (r as T) : refused((r as { error?: string }).error ?? 'The action was not recorded and did not run.')
+}
+
 export interface GovernanceResult {
   success: boolean
   leadId: string
@@ -87,6 +100,7 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
   const supabase = createServiceClient()
 
   try {
+    return await withSessionReceipt({ userId: user.id, brokerageId }, 'lead.governance.run', { type: 'lead', id: leadId }, 'LOW_RISK_WRITE', {}, async (): Promise<GovernanceResult> => {
     console.log(`[LeadGovernance] Starting governance cycle for lead ${leadId}`)
 
     // STEP 1: FETCH LEAD DATA — verify it belongs to caller's brokerage
@@ -303,6 +317,7 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
       message: 'Lead governance cycle completed successfully',
     }
 
+    }, (error): GovernanceResult => ({ success: false, leadId, score: 0, scoreExplanation: '', routingDecision: 'hold_for_review', agentAssigned: null, slaStatus: 'unknown', promotionReady: false, message: error }))
   } catch (error: any) {
     console.error(`[LeadGovernance] Error governing lead ${leadId}:`, error.message)
 

@@ -243,6 +243,16 @@ export async function createImportRecord(params: {
   if (listCost !== null && listCost < 0) throw new Error('A purchased list cost cannot be negative')
 
   const serviceClient = createServiceClient()
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt through ledgerSessionAction (lib/kernel/action-ledger.ts, the one
+  // helper): session user + tenant, the row count and the purchased-list cost (tenant spend → FINANCIAL; otherwise a plain
+  // LOW_RISK_WRITE); never the file name or its rows. NO cycle / idempotencyKey: a second upload of the same file is a second
+  // import. A refusal (malformed name) throws, this export's own failure idiom. No session tenant → unrecorded, as before.
+  const { ledgerSessionAction } = await import('@/lib/kernel/action-ledger')
+  const ran = { v: false }
+  const receipt = brokerageId ? await ledgerSessionAction({ brokerageId, action: 'lead_import.import.create', actor: { type: 'user', userId: user.id }, subject: { type: 'lead_import' }, riskClass: listCost === null ? 'LOW_RISK_WRITE' : 'FINANCIAL', reasonCode: 'HUMAN_REQUESTED', detail: { total_rows: params.totalRows, list_cost_usd: listCost, mapped_fields: Object.keys(params.fieldMap ?? {}).length } }, async () => { ran.v = true; return insertImportRecord() }) : await insertImportRecord()
+  if (brokerageId && !ran.v) throw new Error((receipt as { error?: string }).error ?? 'The import was not recorded and did not start.')
+  return receipt as { importId: string }
+  async function insertImportRecord(): Promise<{ importId: string }> {
   const { data, error } = await serviceClient
     .from('lead_imports')
     .insert({
@@ -264,6 +274,7 @@ export async function createImportRecord(params: {
   if (error || !data) throw new Error(`Failed to create import record: ${error?.message}`)
 
   return { importId: data.id }
+  }
 }
 
 // ─── runImport ────────────────────────────────────────────────────────────────

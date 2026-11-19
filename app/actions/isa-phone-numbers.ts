@@ -133,6 +133,11 @@ export async function createIsaPhoneNumber(params: {
     }
   }
 
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt per inventory write through ledgerSessionAction
+  // (lib/kernel/action-ledger.ts, the one helper) — session user + tenant from requireBrokerageAdmin; the number's last four
+  // digits and scope only (never the Twilio SID). NO cycle / idempotencyKey: a re-registration or re-toggle runs and records again.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "voice.phone_number.register", actor: { type: "user", userId: auth.userId }, subject: { type: "tenant_phone_number" }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { scope_type: params.scopeType, team_id: params.teamId ?? null, agent_user_id: params.agentUserId ?? null, number_last4: digitsOf(params.phoneNumber).slice(-4), number_source: params.numberSource, sid_present: !!sid } }, async () => {
   const { data, error } = await supabase
     .from("tenant_phone_numbers")
     .insert({
@@ -153,6 +158,7 @@ export async function createIsaPhoneNumber(params: {
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/settings/isa-calling")
   return { success: true, id: data?.id }
+  })
 }
 
 export async function toggleIsaPhoneNumber(params: {
@@ -164,6 +170,8 @@ export async function toggleIsaPhoneNumber(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = createServiceClient()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "voice.phone_number.toggle", actor: { type: "user", userId: auth.userId }, subject: { type: "tenant_phone_number", id: params.id }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { is_active: params.active } }, async () => {
   const { error } = await supabase
     .from("tenant_phone_numbers")
     .update({ is_active: params.active })
@@ -173,6 +181,7 @@ export async function toggleIsaPhoneNumber(params: {
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/settings/isa-calling")
   return { success: true }
+  })
 }
 
 export async function deleteIsaPhoneNumber(params: {
@@ -183,6 +192,8 @@ export async function deleteIsaPhoneNumber(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = createServiceClient()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "voice.phone_number.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "tenant_phone_number", id: params.id }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: {} }, async () => {
   const { error } = await supabase
     .from("tenant_phone_numbers")
     .delete()
@@ -192,4 +203,5 @@ export async function deleteIsaPhoneNumber(params: {
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/settings/isa-calling")
   return { success: true }
+  })
 }

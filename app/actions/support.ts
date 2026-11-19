@@ -325,6 +325,10 @@ export async function rateMyTicket(input: {
   const { canRateTicket } = await import("@/lib/support/support-sla")
   const gate = canRateTicket(mine.ticket as any, input.rating)
   if (!gate.ok) return { ok: false, error: gate.reason }
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt through ledgerSessionAction (lib/kernel/action-ledger.ts, the one
+  // helper) — the submitter (the SESSION user) and the session's tenant, the ticket, the rating number; never the comment text.
+  // NO cycle / idempotencyKey (canRateTicket already decides whether a rating may be given). No session tenant → unrecorded.
+  const rateRun = async (): Promise<{ ok: boolean; error?: string }> => {
 
   // `.select("id")` and a length check, not `error === null`: a zero-row RLS
   // refusal comes back as error:null with no rows, so an unchecked update
@@ -338,6 +342,12 @@ export async function rateMyTicket(input: {
   if ((rated?.length ?? 0) === 0) return { ok: false, error: "The rating was not stored" }
   revalidatePath("/dashboard/help")
   return { ok: true }
+  }
+  if (!ctx.brokerageId || !ctx.userId) return rateRun()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "support.ticket.rate", actor: { type: "user", userId: ctx.userId }, subject: { type: "support_ticket", id: input.ticketId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { rating: input.rating, comment_given: !!input.comment?.trim() } }, () => { ran = true; return rateRun() })
+  return ran ? (r as { ok: boolean; error?: string }) : { ok: false, error: (r as { error?: string }).error ?? "The rating was not recorded and was not saved." }
 }
 
 // ─── My tickets — the ones I RAISED, in either lane ──────────────────────────

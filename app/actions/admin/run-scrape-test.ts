@@ -43,6 +43,19 @@ import { createClient } from '@/lib/supabase/server'
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
+// WAVE 155 (lane 155R4, G12): the dry run below makes a PAID provider pull (BatchData / the Apify Google lane), so it leaves ONE
+// agent_action_ledger receipt through ledgerSessionAction (lib/kernel/action-ledger.ts, the one helper) naming the session user,
+// the session's tenant, the market, the source, and the budget + territory it ran under. NO cycle / idempotencyKey: a second
+// preview runs and records again. No session tenant (platform staff) → no valid row → it runs unrecorded, as before.
+async function withSessionReceipt<T, R>(who: { userId: string; brokerageId: string | null } | null, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!who?.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sid = subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject.id) ? subject.id : null
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: "user", userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: "HUMAN_REQUESTED", detail }, () => { ran = true; return run() })
+  return ran ? (r as T) : refused((r as { error?: string }).error ?? "The action was not recorded and did not run.")
+}
+
 export async function runScrapeTestAction(marketId: string, source: string) {
   const supabase = await createClient()
 
@@ -55,7 +68,7 @@ export async function runScrapeTestAction(marketId: string, source: string) {
   // Verify the user has admin access (superadmin or brokerage admin)
   const { data: userRow } = await supabase
     .from('users')
-    .select('user_type')
+    .select('user_type, brokerage_id')
     .eq('id', user.id)
     .maybeSingle()
 
@@ -81,6 +94,7 @@ export async function runScrapeTestAction(marketId: string, source: string) {
     counties:  market.counties,
   })
 
+  return withSessionReceipt({ userId: user.id, brokerageId: (userRow as { brokerage_id?: string | null }).brokerage_id ?? null }, "lead_scraping.provider_pull.preview", { type: "lead_scraping_market", id: market.id }, "FINANCIAL", { source, dry_run: true, market_brokerage_id: market.brokerage_id ?? null, budget: { monthly_budget_usd: market.monthly_budget_usd ?? null, spend_this_month: market.spend_this_month ?? null }, territory: { city: market.city, state: market.state, zip_codes: market.zip_codes ?? [], counties: market.counties ?? [] }, enabled_sources: market.enabled_sources ?? null }, async () => {
   const previewRecords: NormalizedScrapedRecord[] = []
   let estimatedCost = 0
   let errorMessage: string | null = null
@@ -158,6 +172,7 @@ export async function runScrapeTestAction(marketId: string, source: string) {
     error:              errorMessage,
     status:             200,
   }
+  }, (error) => ({ error, status: 500 }))
 }
 
 /**

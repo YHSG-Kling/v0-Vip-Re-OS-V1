@@ -478,6 +478,11 @@ export async function createEducationModule(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const service = createServiceClient()
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt per module write through ledgerSessionAction
+  // (lib/kernel/action-ledger.ts, the one helper) — admin + tenant from requireAdminInBrokerage (the SESSION); counts and flags,
+  // never the lesson body or quiz. NO cycle / idempotencyKey: a second create is a second draft.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "education.learning_module.create", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { surface: "license_tracking", required: params.required, target_roles: params.targetRoles, quiz_questions: params.quizQuestions?.length ?? 0, status: "draft" } }, async () => {
 
   const { data, error } = await service
     .from("learning_modules")
@@ -496,6 +501,7 @@ export async function createEducationModule(params: {
 
   if (error) return { success: false, error: error.message }
   return { success: true, moduleId: data.id }
+  })
 }
 
 export async function deleteEducationModule(moduleId: string): Promise<{ success: boolean; error?: string }> {
@@ -514,6 +520,8 @@ export async function deleteEducationModule(moduleId: string): Promise<{ success
   if (!auth.isSuperadmin && existing.brokerage_id !== auth.brokerageId) {
     return { success: false, error: "Forbidden" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "education.learning_module.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module", id: moduleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { surface: "license_tracking", cross_tenant_by_platform_staff: existing.brokerage_id !== auth.brokerageId } }, async () => {
 
   const { error } = await service
     .from("learning_modules")
@@ -523,4 +531,5 @@ export async function deleteEducationModule(moduleId: string): Promise<{ success
 
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }

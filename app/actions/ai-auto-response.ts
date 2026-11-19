@@ -5,6 +5,19 @@ import { getAgentContext } from "@/lib/identity"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { resolveModel } from "@/lib/ai/resolve-model"
 
+// WAVE 155 (lane 155R4, G12): each write below leaves ONE agent_action_ledger receipt through ledgerSessionAction
+// (lib/kernel/action-ledger.ts, the one helper): the SESSION user, the session's tenant (getAgentContext), the subject's opaque
+// id and what changed — never prompt text or event payloads. NO cycle / idempotencyKey: a second save runs and records again.
+// `refused` maps the helper's typed refusal (a malformed name) onto the export's own failure shape.
+async function withSessionReceipt<T, R>(who: { userId: string; brokerageId: string | null } | null, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!who?.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sid = subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject.id) ? subject.id : null
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: "user", userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: "HUMAN_REQUESTED", detail }, () => { ran = true; return run() })
+  return ran ? (r as T) : refused((r as { error?: string }).error ?? "The action was not recorded and did not run.")
+}
+
 // Get auto-response settings for the current agent
 export async function getAutoResponseSettings() {
   const supabase = await createClient()
@@ -51,11 +64,12 @@ export async function updateAutoResponseSettings(settings: {
   custom_prompt?: string | null
 }) {
   const supabase = await createClient()
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
 
   if (!agentId) {
     return { success: false, error: "Not authenticated" }
   }
+  return withSessionReceipt({ userId, brokerageId }, "ai_isa.auto_response.configure", { type: "agent", id: agentId }, "LOW_RISK_WRITE", { fields: Object.keys(settings ?? {}), is_enabled: settings?.is_enabled ?? null, tone: settings?.tone ?? null, delay_minutes: settings?.delay_minutes ?? null }, async () => {
 
   // auto_response_settings is keyed by agent_id (NOT NULL, UNIQUE, FK→agents).
   const { error } = await supabase
@@ -76,6 +90,7 @@ export async function updateAutoResponseSettings(settings: {
   }
 
   return { success: true }
+  }, (error) => ({ success: false, error }))
 }
 
 // Generate AI response for a message
@@ -264,6 +279,7 @@ export async function trackBehavioralEvent(params: {
   if (!brokerageId) {
     return { success: false, error: "no tenant context — event not recorded" }
   }
+  return withSessionReceipt({ userId: user.id, brokerageId }, "lead_scoring.behavioral_event.record", { type: "contact", id: params.contactId }, "LOW_RISK_WRITE", { event_type: params.eventType, points_stated: params.pointsAwarded ?? null }, async () => {
   const { recordBehavioralEvent } = await import("@/lib/lead-scoring/record-behavioral-event")
   const result = await recordBehavioralEvent({
     brokerageId,
@@ -296,6 +312,7 @@ export async function trackBehavioralEvent(params: {
   }
 
   return { success: true }
+  }, (error) => ({ success: false, error }))
 }
 
 // ─── THE LEGACY LOCAL SCORER IS GONE ─────────────────────────────────────────
@@ -341,6 +358,8 @@ export async function getLeadScore(contactId: string) {
     // lead_scores row, then read it back rather than returning a differently-shaped
     // ad-hoc object (the old local scorer returned its own shape here, so callers
     // saw two different score payloads depending on whether a row existed).
+    const ctx = await getAgentContext()
+    return withSessionReceipt({ userId: ctx.userId, brokerageId: ctx.brokerageId }, "lead_scoring.score_snapshot.compute", { type: "contact", id: contactId }, "LOW_RISK_WRITE", { reason: "no_snapshot" }, async () => {
     const { calculateLeadScore } = await import("@/lib/services/lead-management.service")
     await calculateLeadScore({ id: contactId, table: "contacts" })
     const { data: fresh } = await supabase
@@ -349,6 +368,7 @@ export async function getLeadScore(contactId: string) {
       .eq("contact_id", contactId)
       .maybeSingle()
     return { success: true, score: fresh ?? null }
+    }, (error) => ({ success: false, error, score: null }))
   }
 
   return { success: true, score: data }

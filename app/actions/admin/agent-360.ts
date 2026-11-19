@@ -473,6 +473,19 @@ export async function getAgent360Action(
 
 // ── Mutations — assign academy classes + apply/pause onboarding ───────────────
 
+// WAVE 155 (lane 155R4, G12): each mutation below leaves ONE agent_action_ledger receipt through ledgerSessionAction
+// (lib/kernel/action-ledger.ts, the one helper): the manager (requireManager — the SESSION) and tenant, the agent user acted on,
+// the module / status set. NO cycle / idempotencyKey: pause → resume → pause are three real decisions. `refused` maps the
+// helper's typed refusal onto this file's { ok, error } shape.
+async function withSessionReceipt<T, R>(who: { userId: string; brokerageId: string | null } | null, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!who?.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sid = subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject.id) ? subject.id : null
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: "user", userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: "HUMAN_REQUESTED", detail }, () => { ran = true; return run() })
+  return ran ? (r as T) : refused((r as { error?: string }).error ?? "The action was not recorded and did not run.")
+}
+
 async function requireManager(): Promise<
   | { ok: true; brokerageId: string; userId: string }
   | { ok: false; error: string }
@@ -528,6 +541,7 @@ export async function assignAcademyModuleAction(
     .eq("module_id", input.moduleId)
     .maybeSingle()
   if (existing) return { ok: true, duplicate: true }
+  return withSessionReceipt(auth, "education.academy_assignment.assign", { type: "user", id: input.targetUserId }, "LOW_RISK_WRITE", { module_id: input.moduleId, surface: "agent_360" }, async (): Promise<{ ok: boolean; error?: string; duplicate?: boolean }> => {
 
   const { error } = await svc.from("learning_assignments").insert({
     brokerage_id: auth.brokerageId,
@@ -539,6 +553,7 @@ export async function assignAcademyModuleAction(
   if (error) return { ok: false, error: error.message }
   revalidatePath(`/dashboard/admin/users/${input.targetUserId}`)
   return { ok: true }
+  }, (error) => ({ ok: false, error }))
 }
 
 /**
@@ -566,6 +581,7 @@ export async function setAgentOnboardingStatusAction(
     .eq("agent_id", agent.id)
     .eq("brokerage_id", auth.brokerageId)
     .maybeSingle()
+  return withSessionReceipt(auth, "onboarding.agent_onboarding.set_status", { type: "agent", id: agent.id }, "LOW_RISK_WRITE", { status: input.status, target_user_id: input.targetUserId, prior_status: existing?.status ?? null }, async (): Promise<{ ok: boolean; error?: string }> => {
 
   if (!existing) {
     if (input.status === "paused") return { ok: false, error: "Onboarding was never started for this agent" }
@@ -588,4 +604,5 @@ export async function setAgentOnboardingStatusAction(
   }
   revalidatePath(`/dashboard/admin/users/${input.targetUserId}`)
   return { ok: true }
+  }, (error) => ({ ok: false, error }))
 }

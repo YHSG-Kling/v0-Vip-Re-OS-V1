@@ -58,6 +58,19 @@ async function resolveActor(): Promise<Actor> {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+// WAVE 155 (lane 155R4, G12): each write below leaves ONE agent_action_ledger receipt through ledgerSessionAction
+// (lib/kernel/action-ledger.ts, the one helper): the actor and tenant from resolveActor (the SESSION), the lesson / client
+// acted on, counts — never lesson content. NO cycle / idempotencyKey: re-assigning is already refused by uq_la_contact_module,
+// and a second create is a second lesson. `refused` maps the helper's typed refusal onto the export's own failure idiom.
+async function withSessionReceipt<T, R>(who: { userId: string; brokerageId: string | null } | null, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!who?.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sid = subject.id && UUID_RE.test(subject.id) ? subject.id : null
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: "user", userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: "HUMAN_REQUESTED", detail }, () => { ran = true; return run() })
+  return ran ? (r as T) : refused((r as { error?: string }).error ?? "The action was not recorded and did not run.")
+}
+
 /**
  * Confirm every named module and contact really belongs to this brokerage.
  * The service client bypasses RLS, so nothing else will do this for us.
@@ -123,7 +136,8 @@ export async function createResourceAction(input: {
 
   const supabase = await createClient()
 
-  return createEducationalResource(supabase, {
+  return withSessionReceipt(actor, "education.learning_module.create", { type: "learning_module" }, "LOW_RISK_WRITE", { content_type: input.contentType, estimated_minutes: input.estimatedMinutes, ai_generated: !!input.isAiGenerated }, () =>
+  createEducationalResource(supabase, {
     title: input.title,
     description: input.description,
     contentType: input.contentType as "video" | "article" | "interactive" | "assessment" | "podcast",
@@ -133,6 +147,7 @@ export async function createResourceAction(input: {
     brokerageId: actor.brokerageId,
     isAiGenerated: !!input.isAiGenerated,
   })
+  , (error): never => { throw new Error(error) })
 }
 
 // ─── ACTION: assignResourceAction ────────────────────────────────────────────
@@ -153,6 +168,7 @@ export async function assignResourceAction(input: {
   const svc = createServiceClient()
   const owns = await assertTenantOwnsAll(svc, actor.brokerageId, [input.resourceId], [input.contactId])
   if (!owns.ok) return { success: false, error: owns.error }
+  return withSessionReceipt(actor, "education.learning_assignment.assign", { type: "contact", id: input.contactId }, "LOW_RISK_WRITE", { module_id: input.resourceId }, async (): Promise<{ success: boolean; assignmentId?: string; error?: string }> => {
 
   try {
     const result = await assignResource(svc, {
@@ -172,6 +188,7 @@ export async function assignResourceAction(input: {
     console.error("[assignResourceAction]", err)
     return { success: false, error: message }
   }
+  }, (error) => ({ success: false, error }))
 }
 
 // ─── ACTION: recordCompletionAction ──────────────────────────────────────────
@@ -269,6 +286,7 @@ export async function bulkAssignAction(input: {
     return count ?? 0
   }
 
+  return withSessionReceipt(actor, "education.learning_assignment.bulk_assign", { type: "learning_assignment_batch" }, "LOW_RISK_WRITE", { modules: resourceIds.length, contacts: contactIds.length, requested }, async () => {
   const before = await countExisting()
 
   const result = await bulkAssignResources(svc, {
@@ -299,6 +317,7 @@ export async function bulkAssignAction(input: {
     newlyAssigned,
     alreadyAssigned: requested - newlyAssigned,
   }
+  }, (error) => ({ success: false, ...zero, requested, error }))
 }
 
 // ─── ACTION: getAnalyticsAction ──────────────────────────────────────────────

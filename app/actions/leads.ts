@@ -57,6 +57,21 @@ import {
 
 type LeadDeskGate = { scope: LeadRowScope }
 
+// WAVE 155 (lane 155R4, G12): each lifecycle write below leaves ONE agent_action_ledger receipt through ledgerSessionAction
+// (lib/kernel/action-ledger.ts, the one helper): the SESSION user (getAgentContext's users.id), the session's tenant, the lead's
+// opaque id and the move — never a name, phone, email or note (the ledger is readable tenant-wide, and Leads belong to the
+// brokerage). NO cycle / idempotencyKey: a second pause or resume runs and records again. `refused` maps the helper's typed
+// refusal (a malformed name — the only non-run outcome without a key) onto the export's own failure shape.
+async function withSessionReceipt<T, R>(who: { userId: string; brokerageId: string | null } | null, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!who?.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sid = subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject.id) ? subject.id : null
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: "user", userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: "HUMAN_REQUESTED", detail }, () => { ran = true; return run() })
+  return ran ? (r as T) : refused((r as { error?: string }).error ?? "The action was not recorded and did not run.")
+}
+const refusedResult = (error: string) => ({ success: false as const, error })
+
 /**
  * THE gate for every export in this file. Async, because the row scope it
  * returns is resolved from `teams.team_lead_id` against the SESSION identity.
@@ -217,6 +232,7 @@ export async function qualifyLead(leadId: string) {
     const { userId, brokerageId, userType } = await getAgentContext()
     const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: false, error: "No brokerage context" }
+    return await withSessionReceipt({ userId, brokerageId }, "lead.lifecycle.qualify", { type: "lead", id: leadId }, "LOW_RISK_WRITE", { to_state: "isa_qualifying" }, async () => {
 
     const supabase = await createClient()
 
@@ -262,6 +278,7 @@ export async function qualifyLead(leadId: string) {
     )
 
     return { success: true }
+    }, refusedResult)
   } catch (err: any) {
     console.error("[leads] qualifyLead:", err.message)
     return { success: false, error: err.message }
@@ -386,6 +403,7 @@ export async function pauseAIISA(leadId: string) {
     const { userId, brokerageId, userType } = await getAgentContext()
     const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: false, error: "No brokerage context" }
+    return await withSessionReceipt({ userId, brokerageId }, "lead.ai_outreach.pause", { type: "lead", id: leadId }, "LOW_RISK_WRITE", { ai_outreach_paused: true }, async () => {
 
     const supabase = await createClient()
     const { error } = await applyLeadRowScope(
@@ -414,6 +432,7 @@ export async function pauseAIISA(leadId: string) {
     )
 
     return { success: true }
+    }, refusedResult)
   } catch (err: any) {
     console.error("[leads] pauseAIISA:", err.message)
     return { success: false, error: err.message }
@@ -425,6 +444,7 @@ export async function resumeAIISA(leadId: string) {
     const { userId, brokerageId, userType } = await getAgentContext()
     const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: false, error: "No brokerage context" }
+    return await withSessionReceipt({ userId, brokerageId }, "lead.ai_outreach.resume", { type: "lead", id: leadId }, "LOW_RISK_WRITE", { ai_outreach_paused: false }, async () => {
 
     const supabase = await createClient()
     const { error } = await applyLeadRowScope(
@@ -453,6 +473,7 @@ export async function resumeAIISA(leadId: string) {
     )
 
     return { success: true }
+    }, refusedResult)
   } catch (err: any) {
     console.error("[leads] resumeAIISA:", err.message)
     return { success: false, error: err.message }
@@ -464,6 +485,7 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
     const { userId, brokerageId, userType, agentId } = await getAgentContext()
     const { scope } = await assertLeadDesk({ userId, userType, brokerageId })
     if (!brokerageId) return { success: false, error: "No brokerage context" }
+    return await withSessionReceipt({ userId, brokerageId }, "lead.handoff.human", { type: "lead", id: leadId }, "LOW_RISK_WRITE", { target_agent_id: targetAgentId ?? null }, async () => {
 
     const supabase = await createClient()
 
@@ -578,6 +600,7 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
     )
 
     return { success: true }
+    }, refusedResult)
   } catch (err: any) {
     console.error("[leads] handOffToHumanAgent:", err.message)
     return { success: false, error: err.message }

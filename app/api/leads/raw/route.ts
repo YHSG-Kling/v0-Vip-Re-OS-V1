@@ -44,6 +44,23 @@ import { isRawProcessingStatus, RAW_PROCESSING_STATUSES } from "@/lib/lead-pipel
  * there is no manual door on raw records).
  */
 
+// WAVE 155 (lane 155R4, G12): the repair verb leaves ONE agent_action_ledger receipt through ledgerSessionAction
+// (lib/kernel/action-ledger.ts, the one helper): the staff user, the SESSION's tenant (requirePlatformStaffAuth's brokerageId —
+// never the body, never the raw row's), the raw row and the status set; never error_message text. A response with status >= 400
+// settles failed; the response itself is returned untouched. NO cycle / idempotencyKey (a repeated repair runs and records
+// again). Staff with no tenant on the session → no valid row → the repair runs unrecorded, as before.
+async function withRouteReceipt(who: { userId: string; brokerageId: string | null }, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<NextResponse>): Promise<NextResponse> {
+  if (!who.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sid = subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subject.id) ? subject.id : null
+  let res: NextResponse | null = null
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: "user", userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: "HUMAN_REQUESTED", detail }, async () => {
+    res = await run()
+    return res.status >= 400 ? { success: false, error: `HTTP ${res.status}` } : { success: true }
+  })
+  return res ?? NextResponse.json({ error: r.error ?? "The repair was not recorded and did not run." }, { status: 500 })
+}
+
 export async function PATCH(request: NextRequest) {
   // ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY — see the header. State
   // updates on raw rows are a platform-staff repair verb, never a tenant one.
@@ -68,6 +85,7 @@ export async function PATCH(request: NextRequest) {
       )
     }
 
+    return await withRouteReceipt({ userId: auth.userId, brokerageId: auth.brokerageId || null }, "lead_pipeline.raw_lead.repair", { type: "raw_scraped_lead", id: typeof id === "string" ? id : String(id) }, "LOW_RISK_WRITE", { processing_status: processing_status ?? null, error_message_changed: error_message !== undefined }, async () => {
     const svc = createServiceClient()
 
     // The error is READ (CLAUDE.md §3): a refused read resolved as "no row" and
@@ -103,6 +121,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     return NextResponse.json({ data })
+    })
   } catch (error) {
     console.error("[leads/raw] Unexpected error:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

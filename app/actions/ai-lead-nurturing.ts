@@ -242,6 +242,11 @@ ${empathyBlock}`,
       }
     }
 
+    // WAVE 155 (lane 155R4, G12): the draft sequence write leaves ONE agent_action_ledger receipt through ledgerSessionAction
+    // (lib/kernel/action-ledger.ts, the one helper): session user + tenant (requireCaller), the Contact it was modelled on, the
+    // campaign type and step count — never the generated copy. A DRAFT (inactive) is LOW_RISK_WRITE. NO cycle / idempotencyKey.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "campaign.drip_sequence.draft", actor: { type: "user", userId: auth.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { campaign_type: params.campaignType, duration: params.duration, agent_id: params.agentId, steps_offered: steps.length } }, async () => {
     const { createCampaignSequence, saveSequenceSteps } = await import("@/app/actions/campaign-sequences")
 
     const created = await createCampaignSequence({
@@ -310,6 +315,7 @@ ${empathyBlock}`,
         isActive: false,
       },
     }
+    })
   } catch (error) {
     console.error("[v0] AI drip campaign error:", error)
     return handleError(error, "aiGenerateDripCampaign")
@@ -580,6 +586,10 @@ For projectedTimeline pick ONE bucket only when the contact's own words or a dat
     // and the caller had no way to tell. `persisted` carries the truth.
     const projectedTimeline: ProjectedTimeline = (PROJECTED_TIMELINES as readonly string[]).includes(prediction.projectedTimeline) ? prediction.projectedTimeline : "unknown"
 
+    // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt (ledgerSessionAction — the one helper) for the probability
+    // written on the Contact; the number and bucket only, never the model's prose. NO cycle / idempotencyKey.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "contact.conversion_prediction.record", actor: { type: "user", userId: auth.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { conversion_probability: prediction.conversionProbability, projected_timeline: projectedTimeline, basis: "model_estimate" } }, async () => {
     const { data: updated, error: updateError } = await supabase
       .from("contacts")
       .update({
@@ -596,6 +606,7 @@ For projectedTimeline pick ONE bucket only when the contact's own words or a dat
     const persisted = !updateError && !!updated && updated.length > 0
 
     return { success: true, prediction: { ...prediction, projectedTimeline, timelineBasis: "model_estimate" as const }, persisted, projectedTimeline }
+    })
   } catch (error) {
     console.error("[v0] AI conversion prediction error:", error)
     return handleError(error, "aiPredictConversion")

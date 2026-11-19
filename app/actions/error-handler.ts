@@ -173,7 +173,14 @@ export async function getErrorGroupDetails(groupId: string) {
 
 export async function dismissErrorGroup(groupId: string, reason: string) {
   const supabase = await createClient()
-  const { brokerageId, userId } = await getAgentContext()
+  const { brokerageId, userId, isAuthenticated } = await getAgentContext()
+  // WAVE 155 (lane 155R4): the sibling assignErrorGroup's gate (below), applied here — this export reached
+  // `.eq("brokerage_id", null)` for an unauthenticated caller and answered { success: true } over zero rows.
+  if (!isAuthenticated || !brokerageId) throw new Error("Not authenticated")
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt through ledgerSessionAction (lib/kernel/action-ledger.ts, the one
+  // helper) — session user + tenant, the error group; never the reason text. NO cycle / idempotencyKey.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "recovery.automation_error.dismiss", actor: { type: "user", userId }, subject: { type: "automation_error", id: groupId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { reason_given: !!reason } }, async () => {
 
   // Update error group status
   const { error: updateError } = await supabase
@@ -207,11 +214,16 @@ export async function dismissErrorGroup(groupId: string, reason: string) {
   )
 
   return { success: true }
+  })
 }
 
 export async function resolveErrorGroup(groupId: string, solution: string) {
   const supabase = await createClient()
-  const { brokerageId, userId } = await getAgentContext()
+  const { brokerageId, userId, isAuthenticated } = await getAgentContext()
+  // WAVE 155 (lane 155R4): the sibling assignErrorGroup's gate, applied here (same defect as dismissErrorGroup above).
+  if (!isAuthenticated || !brokerageId) throw new Error("Not authenticated")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "recovery.automation_error.resolve", actor: { type: "user", userId }, subject: { type: "automation_error", id: groupId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { solution_given: !!solution } }, async () => {
 
   const { error: updateError } = await supabase
     .from("automation_errors")
@@ -244,6 +256,7 @@ export async function resolveErrorGroup(groupId: string, solution: string) {
   )
 
   return { success: true }
+  })
 }
 
 /**
@@ -327,6 +340,9 @@ export async function assignErrorGroup(groupId: string, assigneeId: string) {
     .maybeSingle()
   if (assigneeErr) throw new Error("Could not verify the assignee")
   if (!assignee) throw new Error("That person is not in your brokerage")
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt (ledgerSessionAction — the one helper); no key.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "recovery.automation_error.assign", actor: { type: "user", userId }, subject: { type: "automation_error", id: groupId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { assignee_user_id: assigneeId } }, async () => {
 
   // `.select("id")` so a zero-row update is observable. Without it a wrong id, or
   // an error belonging to another tenant, updated nothing and this still returned
@@ -352,6 +368,7 @@ export async function assignErrorGroup(groupId: string, assigneeId: string) {
   }
 
   return { success: true }
+  })
 }
 
 export async function getErrorMetrics() {

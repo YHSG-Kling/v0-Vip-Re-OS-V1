@@ -652,6 +652,11 @@ export async function updateISACampaign(params: {
     return { success: true, campaign: unchanged as ISACampaignRow }
   }
   updates.updated_at = new Date().toISOString()
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt through ledgerSessionAction (lib/kernel/action-ledger.ts, the one
+  // helper) — the session user and tenant from requireCaller, the campaign, the fields set (never the name text). This carries the
+  // actor the missing campaign-settings event (below) cannot. NO cycle / idempotencyKey: a second edit runs and records again.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "ai_isa.campaign.update", actor: { type: "user", userId: auth.userId }, subject: { type: "ai_isa_campaign", id: params.campaignId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(updates).filter((k) => k !== "updated_at"), status: existing.status, channels: updates.channels ?? null, max_touches: updates.max_touches ?? null } }, async () => {
 
   // §3: an UPDATE that matches nothing resolves with a null error. Select the
   // update and count what came back; the brokerage predicate is repeated so
@@ -677,6 +682,7 @@ export async function updateISACampaign(params: {
   // actor would ride in metadata.
 
   return { success: true, campaign: updated[0] as ISACampaignRow }
+  })
 }
 
 /** Send a single test touch for a campaign */
@@ -1170,6 +1176,9 @@ export async function skipGhostContact(params: {
     .maybeSingle()
   if (!contact) return { success: false, error: "Contact not found" }
   if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+  // WAVE 155 (lane 155R4, G12): ONE ledger receipt (ledgerSessionAction — the one helper); subject = the Contact. No key.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "ai_isa.ghost_contact.skip", actor: { type: "user", userId: auth.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { campaign_id: params.campaignId, event_type: "unsubscribed" } }, async () => {
 
   const { error } = await service.from("ai_isa_engagement_tracking").insert({
     brokerage_id: auth.brokerageId,
@@ -1181,6 +1190,7 @@ export async function skipGhostContact(params: {
   })
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }
 
 /** Retry ghost contact via specified channel */
@@ -1272,6 +1282,9 @@ export async function suppressGhostContact(params: {
     .maybeSingle()
   if (!contact) return { success: false, error: "Contact not found" }
   if (contact.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+  // WAVE 155 (lane 155R4, G12): ONE ledger receipt (ledgerSessionAction — the one helper); subject = the Contact. No key.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "ai_isa.ghost_contact.suppress", actor: { type: "user", userId: auth.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { event_type: "suppressed" } }, async () => {
 
   const { error } = await service.from("ai_isa_engagement_tracking").insert({
     brokerage_id: auth.brokerageId,
@@ -1282,4 +1295,5 @@ export async function suppressGhostContact(params: {
   })
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }

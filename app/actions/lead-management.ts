@@ -181,10 +181,15 @@ export async function enrichLead(leadId: string) {
     if (!gate.ok) return { success: false, error: gate.error }
     const inScope = await leadIsInScope(gate.scope, leadId)
     if (!inScope.ok) return { success: false, error: inScope.error }
-    const { agentId, brokerageId } = await getAgentContext()
+    const { agentId, brokerageId, userId } = await getAgentContext()
     if (!brokerageId) return { success: false, error: "Missing brokerage context" }
+    // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt (ledgerSessionAction, lib/kernel/action-ledger.ts — the one
+    // helper): session user + tenant, the lead's opaque id only (Leads belong to the brokerage; no identity in a receipt). No key.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId, action: "lead.enrichment.mark", actor: { type: "user", userId }, subject: { type: "lead", id: leadId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { enrichment_status: "enriched", provider_called: false } }, async () => {
     const lead = await serviceEnrichLead((agentId ?? null) as any, brokerageId, leadId)
     return { success: true, lead }
+    })
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -197,10 +202,13 @@ export async function rejectLead(leadId: string, reason?: string) {
     if (!gate.ok) return { success: false, error: gate.error }
     const inScope = await leadIsInScope(gate.scope, leadId)
     if (!inScope.ok) return { success: false, error: inScope.error }
-    const { agentId, brokerageId } = await getAgentContext()
+    const { agentId, brokerageId, userId } = await getAgentContext()
     if (!brokerageId) return { success: false, error: "Missing brokerage context" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId, action: "lead.lifecycle.reject", actor: { type: "user", userId }, subject: { type: "lead", id: leadId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { reason_given: !!reason } }, async () => {
     const lead = await serviceRejectLead((agentId ?? null) as any, brokerageId, leadId, reason)
     return { success: true, lead }
+    })
   } catch (error) {
     return { success: false, error: String(error) }
   }

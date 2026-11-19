@@ -11,6 +11,36 @@ import { resolveActiveListingSources, DEFAULT_ACTIVE_LISTING_SOURCES, type Activ
 import { DEFAULT_MARKET_SOURCES } from "@/lib/lead-pipeline/source-intent-map"
 import { KEYWORD_SOURCE_KEYS } from "@/lib/lead-pipeline/scrape-keywords"
 
+// WAVE 155 (lane 155R4, G12): every write below leaves ONE agent_action_ledger receipt through ledgerSessionAction
+// (lib/kernel/action-ledger.ts, the one helper): who (the SESSION user), which tenant (the session's users.brokerage_id),
+// what, on what, the risk class, and the territory / budget fields the change set. NO cycle or idempotencyKey: the receipt is
+// recording-only, so a second save runs and records again, and an absent ledger leaves the action exactly as it was. No
+// session tenant → no valid row → the write runs unrecorded, as before (RLS still decides it). `refused` maps the helper's
+// typed refusal (a malformed name, the only non-run outcome without a key) onto the export's own failure shape.
+const RECEIPT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+async function withSessionReceipt<T, R>(who: { userId: string; brokerageId: string | null } | null, action: string, subject: { type: string; id?: string | null }, riskClass: string, detail: Record<string, unknown>, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!who?.userId || !who.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sid = subject.id && RECEIPT_UUID_RE.test(subject.id) ? subject.id : null
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: who.brokerageId, action, actor: { type: "user", userId: who.userId }, subject: { type: subject.type, id: sid, ref: sid ? null : subject.id ?? null }, riskClass, reasonCode: "HUMAN_REQUESTED", detail }, () => { ran = true; return run() })
+  return ran ? (r as T) : refused((r as { error?: string }).error ?? "The action was not recorded and did not run.")
+}
+/** The SESSION's who + tenant (CLAUDE.md §4) — never an argument. */
+async function scrapeConfigSession(): Promise<{ userId: string; brokerageId: string | null } | null> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return null
+  const { data } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  return { userId: user.id, brokerageId: (data as { brokerage_id?: string | null } | null)?.brokerage_id ?? null }
+}
+const refusedResult = (error: string) => ({ success: false as const, error })
+// The result shapes these exports always returned (inferred before the receipt wrap; stated now so a caller's reads stand).
+type MarketResult = { success: boolean; market?: any; territory?: ServiceAreaSyncReport; error?: string }
+type KeywordResult = { success: boolean; keyword?: any; error?: string }
+type ParamsResult = { success: boolean; params?: any; error?: string }
+type DoneResult = { success: boolean; error?: string }
+
 // ============================================
 // MARKET CONFIGURATION
 // ============================================
@@ -159,7 +189,7 @@ export async function createScrapingMarket(marketData: {
   counties?: string[]
   radius_miles?: number
   priority?: number
-}) {
+}): Promise<MarketResult> {
   try {
     const supabase = await createClient()
     // TENANCY STAMP (round 42): the row must carry the caller's brokerage_id —
@@ -173,6 +203,7 @@ export async function createScrapingMarket(marketData: {
         .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
       brokerageId = (profile as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
     }
+    return await withSessionReceipt(user ? { userId: user.id, brokerageId } : null, "lead_scraping.market.create", { type: "lead_scraping_market" }, "FINANCIAL", { territory: { city: marketData.city, state: marketData.state, zip_codes: marketData.zip_codes ?? [], counties: marketData.counties ?? [], radius_miles: marketData.radius_miles ?? null }, enabled_sources: [...DEFAULT_MARKET_SOURCES], priority: marketData.priority ?? null }, async () => {
     // Lane 83A (owner verbatim: "marketplace and cashbuyer should be turned on.") — every new market
     // is born with THE ONE default source list stamped explicitly, so it never depends on the column
     // default having been migrated (m662 carries the same list).
@@ -193,6 +224,7 @@ export async function createScrapingMarket(marketData: {
     revalidatePath("/dashboard/admin/sla-monitor")
     revalidatePath("/dashboard/settings/territories")
     return { success: true, market: data, territory }
+    }, refusedResult)
   } catch (error) {
     console.error("[v0] Error creating scraping market:", error)
     return { success: false, error: String(error) }
@@ -217,9 +249,10 @@ export async function updateScrapingMarket(
     // — no second write path onto lead_scraping_markets.
     enabled_sources: string[]
   }>,
-) {
+): Promise<MarketResult> {
   try {
     const supabase = await createClient()
+    return await withSessionReceipt(await scrapeConfigSession(), "lead_scraping.market.update", { type: "lead_scraping_market", id }, "FINANCIAL", { fields: Object.keys(updates ?? {}), territory: { city: updates?.city, state: updates?.state, zip_codes: updates?.zip_codes, counties: updates?.counties, radius_miles: updates?.radius_miles }, enabled_sources: updates?.enabled_sources, is_active: updates?.is_active, priority: updates?.priority }, async () => {
     const { data, error } = await supabase
       .from("lead_scraping_markets")
       .update(updates)
@@ -232,13 +265,14 @@ export async function updateScrapingMarket(
     revalidatePath("/dashboard/admin/sla-monitor")
     revalidatePath("/dashboard/settings/territories")
     return { success: true, market: data, territory }
+    }, refusedResult)
   } catch (error) {
     console.error("[v0] Error updating scraping market:", error)
     return { success: false, error: String(error) }
   }
 }
 
-export async function deleteScrapingMarket(id: string) {
+export async function deleteScrapingMarket(id: string): Promise<DoneResult> {
   try {
     const supabase = await createClient()
     // Retire the territory claims BEFORE the market goes (history kept — the
@@ -267,6 +301,7 @@ export async function deleteScrapingMarket(id: string) {
     const doomedZips = Array.isArray((market as any)?.zip_codes)
       ? Array.from(new Set(((market as any).zip_codes as unknown[]).map(String).filter((z) => /^\d{5}$/.test(z))))
       : []
+    return await withSessionReceipt(await scrapeConfigSession(), "lead_scraping.market.delete", { type: "lead_scraping_market", id }, "FINANCIAL", { territory_retired_candidates: doomedZips }, async () => {
 
     if (brokerageId && doomedZips.length > 0) {
       const { data: survivors, error: survivorsError } = await supabase
@@ -299,6 +334,7 @@ export async function deleteScrapingMarket(id: string) {
     revalidatePath("/dashboard/admin/sla-monitor")
     revalidatePath("/dashboard/settings/territories")
     return { success: true }
+    }, refusedResult)
   } catch (error) {
     console.error("[v0] Error deleting scraping market:", error)
     return { success: false, error: String(error) }
@@ -331,7 +367,7 @@ export async function createScrapingKeyword(keywordData: {
   category: string
   weight?: number
   sources?: string[]
-}) {
+}): Promise<KeywordResult> {
   try {
     const supabase = await createClient()
     // Lane 83A — lead_scraping_keywords.brokerage_id is NOT NULL and this insert never stamped it (every
@@ -345,6 +381,7 @@ export async function createScrapingKeyword(keywordData: {
       .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
     const brokerageId = (profile as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
     if (profileError || !brokerageId) return { success: false, error: "No brokerage on this session — the scrape keyword was not added." }
+    return await withSessionReceipt({ userId: user.id, brokerageId }, "lead_scraping.keyword.create", { type: "lead_scraping_keyword" }, "LOW_RISK_WRITE", { category: keywordData.category, weight: keywordData.weight ?? null, sources: keywordData.sources ?? null }, async () => {
     // live column is keyword_type, not category
     const { category, ...rest } = keywordData
     const { data, error } = await supabase
@@ -361,6 +398,7 @@ export async function createScrapingKeyword(keywordData: {
     if (error) throw error
     revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, keyword: data }
+    }, refusedResult)
   } catch (error) {
     console.error("[v0] Error creating keyword:", error)
     return { success: false, error: String(error) }
@@ -376,9 +414,10 @@ export async function updateScrapingKeyword(
     sources: string[]
     is_active: boolean
   }>,
-) {
+): Promise<KeywordResult> {
   try {
     const supabase = await createClient()
+    return await withSessionReceipt(await scrapeConfigSession(), "lead_scraping.keyword.update", { type: "lead_scraping_keyword", id }, "LOW_RISK_WRITE", { fields: Object.keys(updates ?? {}), is_active: updates?.is_active, sources: updates?.sources }, async () => {
     // live column is keyword_type, not category
     const { category, ...rest } = updates
     const dbUpdates = category !== undefined ? { ...rest, keyword_type: category } : rest
@@ -387,20 +426,23 @@ export async function updateScrapingKeyword(
     if (error) throw error
     revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, keyword: data }
+    }, refusedResult)
   } catch (error) {
     console.error("[v0] Error updating keyword:", error)
     return { success: false, error: String(error) }
   }
 }
 
-export async function deleteScrapingKeyword(id: string) {
+export async function deleteScrapingKeyword(id: string): Promise<DoneResult> {
   try {
     const supabase = await createClient()
+    return await withSessionReceipt(await scrapeConfigSession(), "lead_scraping.keyword.delete", { type: "lead_scraping_keyword", id }, "LOW_RISK_WRITE", {}, async () => {
     const { error } = await supabase.from("lead_scraping_keywords").delete().eq("id", id)
 
     if (error) throw error
     revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true }
+    }, refusedResult)
   } catch (error) {
     console.error("[v0] Error deleting keyword:", error)
     return { success: false, error: String(error) }
@@ -423,9 +465,10 @@ export async function createPropertyParams(
     property_types?: string[]
     target_sites?: string[]
   },
-) {
+): Promise<ParamsResult> {
   try {
     const supabase = await createClient()
+    return await withSessionReceipt(await scrapeConfigSession(), "lead_scraping.property_params.create", { type: "lead_scraping_market", id: marketId }, "FINANCIAL", { target_sites: params?.target_sites ?? null, property_types: params?.property_types ?? null, price_band: [params?.min_price ?? null, params?.max_price ?? null] }, async () => {
     const { data, error } = await supabase
       .from("lead_scraping_property_params")
       .insert({ market_id: marketId, ...params })
@@ -435,6 +478,7 @@ export async function createPropertyParams(
     if (error) throw error
     revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, params: data }
+    }, refusedResult)
   } catch (error) {
     console.error("[v0] Error creating property params:", error)
     return { success: false, error: String(error) }
@@ -454,9 +498,10 @@ export async function updatePropertyParams(
     target_sites: string[]
     is_active: boolean
   }>,
-) {
+): Promise<ParamsResult> {
   try {
     const supabase = await createClient()
+    return await withSessionReceipt(await scrapeConfigSession(), "lead_scraping.property_params.update", { type: "lead_scraping_property_params", id }, "FINANCIAL", { fields: Object.keys(updates ?? {}), target_sites: updates?.target_sites, is_active: updates?.is_active }, async () => {
     const { data, error } = await supabase
       .from("lead_scraping_property_params")
       .update(updates)
@@ -467,6 +512,7 @@ export async function updatePropertyParams(
     if (error) throw error
     revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, params: data }
+    }, refusedResult)
   } catch (error) {
     console.error("[v0] Error updating property params:", error)
     return { success: false, error: String(error) }
@@ -517,10 +563,11 @@ export async function createMotivatedParams(
     reddit_subreddits?: string[]
     lookback_days?: number
   },
-) {
+): Promise<ParamsResult> {
   try {
     const supabase = await createClient()
     const lookback = cleanLookbackDays(params.lookback_days)
+    return await withSessionReceipt(await scrapeConfigSession(), "lead_scraping.motivated_params.create", { type: "lead_scraping_market", id: marketId }, "FINANCIAL", { signal_types: cleanSignalTypes(params.signal_types), is_active: params.is_active !== false, lookback_days: lookback ?? null }, async () => {
     const { data, error } = await supabase
       .from("lead_scraping_motivated_params")
       .insert({
@@ -537,6 +584,7 @@ export async function createMotivatedParams(
     if (error) throw error
     revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, params: data }
+    }, refusedResult)
   } catch (error) {
     console.error("[v0] Error creating motivated params:", error)
     return { success: false, error: String(error) }
@@ -552,7 +600,7 @@ export async function updateMotivatedParams(
     reddit_subreddits: string[]
     lookback_days: number
   }>,
-) {
+): Promise<ParamsResult> {
   try {
     const supabase = await createClient()
     const patch: Record<string, unknown> = {}
@@ -562,6 +610,7 @@ export async function updateMotivatedParams(
     if (updates.reddit_subreddits !== undefined) patch.reddit_subreddits = cleanSubreddits(updates.reddit_subreddits)
     const lookback = cleanLookbackDays(updates.lookback_days)
     if (lookback !== undefined) patch.lookback_days = lookback
+    return await withSessionReceipt(await scrapeConfigSession(), "lead_scraping.motivated_params.update", { type: "lead_scraping_motivated_params", id }, "FINANCIAL", { fields: Object.keys(patch), signal_types: patch.signal_types, is_active: patch.is_active, lookback_days: patch.lookback_days }, async () => {
     const { data, error } = await supabase
       .from("lead_scraping_motivated_params")
       .update(patch)
@@ -572,6 +621,7 @@ export async function updateMotivatedParams(
     if (error) throw error
     revalidatePath("/dashboard/admin/sla-monitor")
     return { success: true, params: data }
+    }, refusedResult)
   } catch (error) {
     console.error("[v0] Error updating motivated params:", error)
     return { success: false, error: String(error) }

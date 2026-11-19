@@ -63,7 +63,7 @@ interface LeadRow {
 // the brokerage's.
 
 async function assertCanActOnLead(leadId: string): Promise<
-  { ok: true; userId: string; lead: LeadRow } | { ok: false; error: string }
+  { ok: true; userId: string; lead: LeadRow; brokerageId: string | null } | { ok: false; error: string }
 > {
   const authClient = await createClient()
   const { data: { user } } = await authClient.auth.getUser()
@@ -96,7 +96,7 @@ async function assertCanActOnLead(leadId: string): Promise<
   // platform scope, which is the rule this file already documented.
   if (!leadRowInScope(vis.scope, l)) return { ok: false, error: "Forbidden" }
 
-  return { ok: true, userId: user.id, lead: l }
+  return { ok: true, userId: user.id, lead: l, brokerageId: profile?.brokerage_id ?? null }
 }
 
 // ── Verify email (Tier 1+2 free / Tier 3 PDL ~$0.01) ───────────────────────
@@ -124,10 +124,12 @@ export async function verifyLeadAddressAction(params: {
   const gate = await assertCanActOnLead(params.leadId)
   if (!gate.ok) return { success: false, error: gate.error }
   if (!gate.lead.mailing_address) return { success: false, error: "Lead has no mailing address on file" }
+  const mailingAddress = gate.lead.mailing_address
+  const verifyRun = async (): Promise<{ success: boolean; verified?: boolean; deliverability?: string | null; cost?: number; error?: string }> => {
   try {
     const { verifyAddressViaLob } = await import("@/lib/external/lob-address-verify")
     const { data, cost } = await verifyAddressViaLob({
-      primary_line: gate.lead.mailing_address,
+      primary_line: mailingAddress,
       zip_code:     gate.lead.mailing_zip ?? undefined,
     })
     if (!data) return { success: false, error: "Lob not configured (set LOB_API_KEY)", cost }
@@ -145,6 +147,14 @@ export async function verifyLeadAddressAction(params: {
     revalidatePath(`/leads/${params.leadId}`)
     return { success: true, verified: data.verified, deliverability: data.deliverability, cost }
   } catch (e: any) { return { success: false, error: e?.message ?? "address verify failed" } }
+  }
+  // WAVE 155 (lane 155R4, G12): the PAID Lob verification + its stamp leave ONE agent_action_ledger receipt through
+  // ledgerSessionAction (lib/kernel/action-ledger.ts, the one helper): session user + the SESSION's tenant (never the lead's),
+  // the lead's opaque id — never the address. NO cycle / idempotencyKey (a deliberate re-verify runs and records again).
+  // Platform staff with no session tenant → no valid row → unrecorded, as before.
+  if (!gate.brokerageId) return verifyRun()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: gate.brokerageId, action: "lead.mailing_address.verify", actor: { type: "user", userId: gate.userId }, subject: { type: "lead", id: params.leadId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { provider: "lob", zip_present: !!gate.lead.mailing_zip } }, verifyRun)
 }
 
 // ── Re-run PDL skip-trace enrichment (refresh person fields for an existing lead) ──────

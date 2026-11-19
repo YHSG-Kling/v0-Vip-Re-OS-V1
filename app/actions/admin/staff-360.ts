@@ -187,9 +187,17 @@ export async function assignAcademyModuleToStaffAction(
     .from("learning_assignments").select("id")
     .eq("staff_user_id", input.targetUserId).eq("module_id", input.moduleId).maybeSingle()
   if (existing) return { ok: true, duplicate: true }
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt through ledgerSessionAction (lib/kernel/action-ledger.ts, the one
+  // helper) — the manager and tenant from the SESSION above, the staff user and the module. A refusal (malformed name) maps onto
+  // this export's { ok, error }. NO cycle / idempotencyKey: the duplicate read above already answers a repeat.
+  const brokerageId = caller.brokerage_id as string
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId, action: "education.academy_assignment.assign", actor: { type: "user", userId: user.id }, subject: { type: "user", id: input.targetUserId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { module_id: input.moduleId, surface: "staff_360" } }, async (): Promise<{ ok: boolean; error?: string; duplicate?: boolean }> => {
+  ran = true
 
   const { error } = await svc.from("learning_assignments").insert({
-    brokerage_id: caller.brokerage_id,
+    brokerage_id: brokerageId,
     module_id: input.moduleId,
     staff_user_id: input.targetUserId,
     signal_source: "manager_assigned",
@@ -198,4 +206,6 @@ export async function assignAcademyModuleToStaffAction(
   if (error) return { ok: false, error: error.message }
   revalidatePath(`/dashboard/admin/users/${input.targetUserId}`)
   return { ok: true }
+  })
+  return ran ? (r as { ok: boolean; error?: string; duplicate?: boolean }) : { ok: false, error: (r as { error?: string }).error ?? "The assignment was not recorded and did not run." }
 }

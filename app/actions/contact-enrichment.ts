@@ -460,6 +460,11 @@ export async function markLifeChangeNotified(
     return { success: false, error: "No un-notified life event of that type on this contact" }
   }
 
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt (ledgerSessionAction, lib/kernel/action-ledger.ts — the one
+  // helper): session user + tenant, the Contact. The life-event TYPE is deliberately NOT recorded — the ledger is readable
+  // tenant-wide and a divorce or a death on a Contact is not every seat's to read. NO cycle / idempotencyKey.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "contact.life_event.mark_notified", actor: { type: "user", userId: ctx.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: {} }, async () => {
   const { error: writeError } = await supabase
     .from("contacts")
     .update({ life_events: updated })
@@ -468,6 +473,7 @@ export async function markLifeChangeNotified(
 
   if (writeError) return { success: false, error: writeError.message }
   return { success: true }
+  })
 }
 
 // TOMBSTONE (§6 one-vocabulary, lane E2 2026-08-28) — the "backward

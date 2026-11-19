@@ -1932,7 +1932,7 @@ const TIMELINES = STANDARD_TIMELINES
  * naming the id. The columns are now an allow-list, the row is anchored to the
  * caller's brokerage, and the update is confirmed to have matched something.
  */
-export async function updateLeadProfile(profileId: string, updates: LeadProfileTriage) {
+export async function updateLeadProfile(profileId: string, updates: LeadProfileTriage): Promise<{ success: boolean; error?: string; profile?: any }> {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
@@ -2004,6 +2004,11 @@ export async function updateLeadProfile(profileId: string, updates: LeadProfileT
     return { success: false, error: "Nothing to update" }
   }
   patch.updated_at = new Date().toISOString()
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt through ledgerSessionAction (lib/kernel/action-ledger.ts, the one
+  // helper): session user + tenant (requireCaller), the profile's opaque id, the field NAMES and the triage values — never the
+  // summary text or any lead identity. NO cycle / idempotencyKey: a second triage save runs and records again.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "lead_intelligence.profile.triage", actor: { type: "user", userId: auth.userId }, subject: { type: "unified_lead_profile", id: profileId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(patch).filter((k) => k !== "updated_at"), temperature: patch.temperature ?? null, intent_type: patch.intent_type ?? null, estimated_timeline: patch.estimated_timeline ?? null, ready_for_outreach: patch.ready_for_outreach ?? null, assigned_agent_id: patch.assigned_agent_id ?? null } }, async () => {
 
   const { data, error } = await supabase
     .from("unified_lead_profile")
@@ -2026,6 +2031,7 @@ export async function updateLeadProfile(profileId: string, updates: LeadProfileT
   revalidatePath("/leads")
   revalidatePath("/intelligence")
   return { success: true, profile: data }
+  })
 }
 
 export interface AgentWorkloadRow {
