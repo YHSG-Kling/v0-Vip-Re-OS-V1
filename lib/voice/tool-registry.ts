@@ -846,7 +846,62 @@ export const VOICE_TOOL_MANAGER = {
   // delegation names its own capability manager), run_team_command (TEAM_COMMAND_MANAGER keeps its own six), kernel_resolve /
   // kernel_proposals / standup_action / broker_objective (the bench's exception and objective rails), fill_form_field /
   // next_unfilled_field / read_form_status (the form's own packet owner decides), and the bench reads.
+  // WAVE 155 (155R7): those decided per call are named, with the fact each resolves, in VOICE_TOOL_PER_CALL_OWNER below.
 } as const satisfies Readonly<Record<string, ManagerKey>>
+
+/**
+ * WAVE 155 (lane 155R7) — THE TOOLS WHOSE OWNER IS DECIDED PER CALL. The ruling above stands: none of these gets a fixed
+ * VOICE_TOOL_MANAGER row, because the manager that acts differs call to call. Each names the fact its handler ALREADY
+ * resolves at run time, and voiceToolOwnerForCall turns that fact into the one manager for THAT call (or null — never a
+ * guess). The handler returns it as `ownerManager`, so the per-call audit row (agent_assistant_tool_calls.tool_output)
+ * carries it; scripts/os-coverage-ledger.ts credits a tool here only when its handler path really calls the resolver.
+ *   skill        — run_skill: the requested skill's declared manager_owner (lib/kernel/skill-marketplace.ts resolveRunnableSkill);
+ *                  runSkill's own ledger row already carries it as policy `authority_level:<manager_owner>`.
+ *   mission      — broker_objective: the mission it created, missions.owner_manager (lib/kernel/broker-objectives.ts
+ *                  submitBrokerObjective → resolveOwnership), read back by the Missions card.
+ *   standup_item — standup_action: the acted stand-up item's manager (lib/kernel/morning-standup.ts StandupItem.manager).
+ *   team_command — run_team_command: the parsed command's OWN owner (this table, then VOICE_TOOL_MANAGER, then the
+ *                  team-command table); a bench read it routes to has none, and acts on nothing.
+ *   form_packet  — fill_form_field: "the form's own packet owner decides" — the document's mode → the packet tool that
+ *                  stages it (FORM_MODE_PACKET_TOOL) → that tool's VOICE_TOOL_MANAGER row.
+ */
+export const VOICE_TOOL_PER_CALL_OWNER = {
+  run_skill: "skill",
+  broker_objective: "mission",
+  standup_action: "standup_item",
+  run_team_command: "team_command",
+  fill_form_field: "form_packet",
+} as const satisfies Readonly<Record<string, "skill" | "mission" | "standup_item" | "team_command" | "form_packet">>
+
+/** The packet tool that stages each fillable form mode (app/api/agent-assistant/tool-call/route.ts inferModeFromDocumentType). */
+export const FORM_MODE_PACKET_TOOL = {
+  offer: "stage_offer_packet",
+  listing: "stage_listing_packet",
+  bba: "stage_bba_packet",
+} as const satisfies Readonly<Record<string, keyof typeof VOICE_TOOL_MANAGER>>
+
+/**
+ * PURE — the one manager accountable for THIS call of `tool`, from the fact its handler resolved (`resolved.manager` for
+ * skill / mission / standup_item / team_command, `resolved.formMode` for form_packet). A fixed VOICE_TOOL_MANAGER row wins.
+ * Fails closed: a key that is not in `registry` (pass MANAGERS — this module takes no value import of the manager
+ * registry), an unknown form mode, or a tool not listed in either table resolves to null.
+ */
+export function voiceToolOwnerForCall(
+  tool: string,
+  resolved: { manager?: string | null; formMode?: string | null },
+  registry: Readonly<Record<string, unknown>>,
+): ManagerKey | null {
+  const known = (k: string | null | undefined): ManagerKey | null => (k && Object.prototype.hasOwnProperty.call(registry, k) ? (k as ManagerKey) : null)
+  const fixed = (VOICE_TOOL_MANAGER as Readonly<Record<string, string>>)[tool]
+  if (fixed) return known(fixed)
+  const kind = (VOICE_TOOL_PER_CALL_OWNER as Readonly<Record<string, string>>)[tool]
+  if (!kind) return null
+  if (kind === "form_packet") {
+    const packet = resolved.formMode ? (FORM_MODE_PACKET_TOOL as Readonly<Record<string, string>>)[resolved.formMode] : undefined
+    return packet ? known((VOICE_TOOL_MANAGER as Readonly<Record<string, string>>)[packet]) : null
+  }
+  return known(resolved.manager)
+}
 
 /**
  * Lookup helper — returns the registry entry or undefined.

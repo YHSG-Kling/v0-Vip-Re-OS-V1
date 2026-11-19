@@ -711,6 +711,23 @@ const TOOL_RISK_CLASS: Readonly<Record<string, ToolRiskClass>> = {
   stage_ad_campaign: "LOW_RISK_WRITE",
   // Reaches the client (in their portal inbox).
   send_portal_message: "COMMUNICATION",
+  // ── WAVE 155 (lane 155R7): ASSISTANT REPORT / LOOKUP TOOLS whose WHOLE handler path is a read (they resolved to IRREVERSIBLE
+  // only through the fail-closed default). Where this class is read at run time: the persona / seat mount gates
+  // (refuseUnmountableTools, selectToolsForSeat, isToolAllowedAtAuthority) — none mounts a tool by these names; the voice route
+  // (app/api/agent-assistant/tool-call/route.ts) gates them on authorityAllows + declared gates + the spoken-confirm hold, and
+  // never reads this class. So the change loosens no live gate; it states the truth the census re-proves on every run
+  // (scripts/owner-resolution-guard.ts: each tool's OWN path writes, sends and spends nothing).
+  //   bench reads (lib/voice/team-commands.ts → lib/kernel/team-query.ts runTeamQuery, area-query.ts runAreaQuery,
+  //   morning-standup.ts runMorningStandup, manager-delegation.ts pendingDelegationsFor + manager-activity.ts loadManagerActivity):
+  team_query: "READ",
+  area_query: "READ",
+  morning_standup: "READ",
+  manager_status: "READ",
+  //   route-local reads (readFormStatus, nextUnfilledField, whosSlipping → steer-my-day-runner, explainTouches → decision-receipts-runner):
+  read_form_status: "READ",
+  next_unfilled_field: "READ",
+  whos_slipping: "READ",
+  explain_touches: "READ",
 }
 
 /**

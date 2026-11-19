@@ -872,6 +872,86 @@ function caseSpanEnd(code: string, afterLabel: number): number {
     pos = nx.index + nx[0].length
   }
 }
+// WAVE 155 (lane 155R7) — A PER-CALL OWNER IS AN OWNER. A reactor block that picks its `toManager` at run time
+// (`const toManager: ManagerKey | null = params.entityType === "buyer" ? "shopping_agent" : … : null`, or
+// `routeForEvent("video_generation_requested", …).to`) addresses a registered manager on EVERY call that publishes —
+// the census read only a LITERAL `toManager: "x"`, so these blocks read "addresses no manager". The owner is credited only
+// when EVERY value the binding can take is provable from code (a literal / null result of a ternary or an assignment, or
+// the literal `to:` results of the signal-routing function routeForEvent dispatches that event to) AND every candidate is
+// in MANAGERS (checked by the caller). A binding assigned from anything else (a variable, a call, a body field) resolves
+// nothing. Controls: section F (positive, negative, a fake candidate).
+/** PURE. The statement that starts at `from`: lines are joined while the text so far ends in `=`, `?`, `:` or `||`. */
+function statementFrom(text: string, from: number): string {
+  const lines = text.slice(from).split("\n"); let out = ""
+  for (const ln of lines) { out += ` ${ln}`; if (out.trim() && !/(?:=|\?|:|\|\|)\s*$/.test(out.trimEnd())) break }
+  return out.trim()
+}
+/** PURE. The literal manager keys a per-call `toManager` binding can take inside `block`, or null when one is unprovable. */
+function perCallToManager(block: string, routeCandidates: (event: string) => string[] | null): { binding: string; candidates: string[] } | null {
+  if (/\btoManager\s*:\s*["']/.test(block)) return null // a literal is the addressed rule's, not this one
+  const prop = /\btoManager\s*:\s*([A-Za-z_$][\w$]*)(\s*\??\.\s*to)?\s*[,\n}]/.exec(block)
+  const ident = /\btoManager\s*[,\n}]/.test(block) ? "toManager" : prop?.[1]
+  if (!ident) return null
+  const id = ident.replace(/\$/g, "\\$")
+  if (prop?.[2]) {
+    const decl = new RegExp(`\\b(?:const|let)\\s+${id}\\s*=\\s*routeForEvent\\(\\s*["']([a-z_]+)["']`).exec(block)
+    const c = decl ? routeCandidates(decl[1]) : null
+    return decl && c && c.length ? { binding: `routeForEvent("${decl[1]}").to`, candidates: [...new Set(c)].sort() } : null
+  }
+  const decl = new RegExp(`\\b(?:const|let)\\s+${id}\\b[^=\\n]*=(?!=)`).exec(block); if (!decl) return null
+  const LIT = /^\s*(?:\?\s*["'][a-z_]+["']\s*:\s*)*(?:["'][a-z_]+["']|null)\s*$/
+  const strip = (s: string) => s.replace(/[\w$.?]+\s*===\s*["'][^"']*["']/g, "")
+  const rhs = strip(statementFrom(block, decl.index + decl[0].length))
+  if (!LIT.test(rhs)) return null
+  const out = [...rhs.matchAll(/["']([a-z_]+)["']/g)].map((x) => x[1])
+  for (const a of block.matchAll(new RegExp(`(?<![\\w$.])${id}\\s*=(?!=)`, "g"))) {
+    if (/(?:const|let)\s+$/.test(block.slice(Math.max(0, a.index - 8), a.index))) continue
+    const r = strip(statementFrom(block, a.index + a[0].length))
+    if (!LIT.test(r)) return null
+    out.push(...[...r.matchAll(/["']([a-z_]+)["']/g)].map((x) => x[1]))
+  }
+  return out.length ? { binding: ident, candidates: [...new Set(out)].sort() } : null
+}
+// WAVE 155 (lane 155R7) — the shared team-command dispatcher: a tool handed to it runs ONE case of routeTeamCommand.
+const TEAM_FILE = "lib/voice/team-commands.ts"
+/** The `case "<name>"` span of routeTeamCommand (fall-through labels joined, bounded by the function). */
+function teamCaseSpan(name: string): { start: number; end: number } | null {
+  const rt = fnsOf(TEAM_FILE).find((f) => f.name === "routeTeamCommand"); if (!rt) return null
+  const code = codeOf(TEAM_FILE)
+  const m = new RegExp(`case\\s+["']${reEsc(name)}["']\\s*:`).exec(code.slice(rt.start, rt.end)); if (!m) return null
+  const start = rt.start + m.index
+  return { start, end: Math.min(rt.end, caseSpanEnd(code, start + m[0].length)) }
+}
+/** A dispatched tool's OWN effects: its case in routeTeamCommand plus the same-file helpers that case calls. */
+function teamCaseFacts(name: string): Facts | null {
+  const v = views(TEAM_FILE); const span = teamCaseSpan(name); if (!v || !span) return null
+  const fns = fnsOf(TEAM_FILE); const shared = new Set(["routeTeamCommand", "dispatchTeamCommand"])
+  const f = pathFacts(TEAM_FILE, span.start, span.end, v); const seen = new Set<string>()
+  for (const c of v.ids.slice(span.start, span.end).matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+    const fn = fns.find((x) => x.name === c[1] && !shared.has(x.name)); if (!fn || seen.has(fn.name)) continue
+    seen.add(fn.name)
+    for (const s of closureSpans(fns, v, fn)) if (!shared.has(s.name)) merge(f, pathFacts(TEAM_FILE, s.start, s.end, v))
+  }
+  return f
+}
+/** PURE — the per-call owner rule for an assistant tool (inputs derived by toolPerCallCredited; controls: section F). */
+function toolPerCallRule(i: { failsClosed: boolean; pathCallsResolver: boolean; viaDispatcher: boolean; dispatcherCallsResolver: boolean; kind: string; caseSuppliesOwner: boolean }): boolean {
+  if (!i.failsClosed) return false
+  if (i.pathCallsResolver) return true
+  return i.viaDispatcher && i.dispatcherCallsResolver && (i.kind === "team_command" || i.caseSuppliesOwner)
+}
+function toolPerCallCredited(name: string, kind: string, pathText: string, resolve: (tool: string, r: { manager?: string | null; formMode?: string | null }) => string | null): boolean {
+  const code = codeOf(TEAM_FILE); const d = fnsOf(TEAM_FILE).find((f) => f.name === "dispatchTeamCommand"); const span = teamCaseSpan(name)
+  const RESOLVER = /\bvoiceToolOwnerForCall\s*\(/
+  return toolPerCallRule({
+    failsClosed: resolve(name, { manager: "__not_a_manager__", formMode: "__not_a_form_mode__" }) === null,
+    pathCallsResolver: RESOLVER.test(pathText),
+    viaDispatcher: /\bdispatchTeamCommand\s*\(/.test(pathText),
+    dispatcherCallsResolver: !!d && RESOLVER.test(code.slice(d.start, d.end)),
+    kind,
+    caseSuppliesOwner: !!span && /\bownerManager\s*:/.test(code.slice(span.start, span.end)),
+  })
+}
 function topLevelFns(v: Views): FnSpan[] {
   const out: FnSpan[] = []
   const re = /(^|\n)(export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*([A-Za-z_$][\w$]*)\s*[(<]|(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=>)/g
@@ -1045,10 +1125,20 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
       else if (emitCode.has(f) && !reactorFiles.includes(f)) { if (!emitSites.has(m[1])) emitSites.set(m[1], new Set()); emitSites.get(m[1])!.add(f) }
     }
   }
+  // WAVE 155 (lane 155R7): the literal `to:` results of the signal-routing function routeForEvent dispatches `event` to.
+  const routeCandidates = (event: string): string[] | null => {
+    const SR = "lib/kernel/signal-routing.ts"; if (!views(SR)) return null
+    const code = codeOf(SR); const fns = fnsOf(SR)
+    const rf = fns.find((f) => f.name === "routeForEvent"); if (!rf) return null
+    const m = new RegExp(`event\\s*===\\s*["']${reEsc(event)}["']\\s*\\)\\s*return\\s+([A-Za-z_$][\\w$]*)\\s*\\(`).exec(code.slice(rf.start, rf.end)); if (!m) return null
+    const fn = fns.find((f) => f.name === m[1]); if (!fn) return null
+    return [...code.slice(fn.start, fn.end).matchAll(/\bto\s*:\s*["']([a-z_]+)["']/g)].map((x) => x[1])
+  }
   for (const [key, value] of Object.entries(ev)) {
     if (typeof value !== "string") continue
     const emitters = [...new Set([...(emitSites.get(key) ?? []), ...emitterFiles.filter((f) => !reactorFiles.includes(f) && carriesLiteral(value, emitCode.get(f)!, views(f)!.ids))])]
     const facts = emptyFacts(); let worker: string | null = null; let addressed: string | null = null
+    let perCall: { binding: string; candidates: string[] } | null = null
     const signals = new Set<string>(); let outsideReactor = false
     for (const site of consumerSites.get(key) ?? []) {
       const v = views(site.file)!
@@ -1057,11 +1147,14 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
         merge(facts, pathFacts(site.file, site.idx, close + 1, v))
         const block = (reactorCode.get(site.file) ?? "").slice(site.idx, close + 1)
         addressed ??= /\btoManager\s*:\s*["']([a-z_]+)["']/.exec(block)?.[1] ?? null
+        perCall ??= perCallToManager(block, routeCandidates)
         for (const s of block.matchAll(/\bsignalType\s*:\s*["']([a-z_]+)["']/g)) signals.add(s[1])
       } else { merge(facts, pathFacts(site.file)); outsideReactor = true }
       worker ??= `${site.file}:${lineAt(v, site.idx)}`
     }
-    const ow = ownerFromWrites(facts, addressed)
+    const ow0 = ownerFromWrites(facts, addressed)
+    const pc = !ow0.owner && perCall && perCall.candidates.every((k) => MANAGER_KEYS.has(k)) ? perCall : null
+    const ow = pc ? { owner: `per-call: toManager ∈ {${pc.candidates.join(" | ")}} (${pc.binding} @ ${worker})`, why: "the reactor resolves its manager per call" } : ow0
     // WAVE 155 (lane 155B1) — A ROUTING HOP IS NOT A DECISION. A reactor block whose ONLY effect is publishManagerSignal (it
     // writes nothing but carriers, sends nothing) hands the event to a registered manager: the decision and the consequence
     // are that consumer's, and the census already judges them on the row `manager_signal:<type>` — where the very same
@@ -1221,31 +1314,48 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
     for (const [name, tool] of Object.entries(toolReg.voiceTools as Record<string, { category: string; authority: string; gates: string[] }>)) {
       const m = new RegExp(`case\\s+["']${name}["']\\s*:`).exec(rcode)
       let facts = emptyFacts()
+      let caseText = "", pathText = "" // the case's own code, and the case + its same-file helpers (wave 155, lane 155R7)
       if (m) {
         // WAVE 155 (lane 155B1) — A FALL-THROUGH LABEL RUNS THE SHARED BODY. `case "broker_objective": case "run_skill": … {
         // dispatchTeamCommand(…) }` gave broker_objective an EMPTY span (it ended at the very next label), so the tool read as
         // writing and sending nothing. The span now skips every label that has no code of its own. Control: section F.
         const end = caseSpanEnd(rcode, m.index + m[0].length)
         facts = pathFacts(route, m.index, end, v)
+        caseText = pathText = rcode.slice(m.index, end)
         // …and a helper the case calls that is defined in the route file itself (runTeamCommandTool, fillFormField) is part of
         // the path, exactly as a server action's same-file callees are (closureSpans).
         for (const c of v.ids.slice(m.index, end).matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
           const fn = routeFns.find((x) => x.name === c[1] && x.name !== "runTool"); if (!fn || seenHelpers.has(fn.name + name)) continue
           seenHelpers.add(fn.name + name)
-          for (const s of closureSpans(routeFns, v, fn)) if (s.name !== "runTool") merge(facts, pathFacts(route, s.start, s.end, v))
+          for (const s of closureSpans(routeFns, v, fn)) if (s.name !== "runTool") { merge(facts, pathFacts(route, s.start, s.end, v)); pathText += `\n${rcode.slice(s.start, s.end)}` }
         }
       }
       const lensTables = [...facts.writes.keys()]
-      const ownFacts = merge(emptyFacts(), facts) // the case alone, before the shared route head joins it (wave 155, lane 155B1)
+      let ownFacts = merge(emptyFacts(), facts) // the case alone, before the shared route head joins it (wave 155, lane 155B1)
+      // WAVE 155 (lane 155R7) — THE SHARED DISPATCHER RUNS ONLY THIS TOOL'S CASE. A fall-through label that hands `toolName`
+      // to lib/voice/team-commands.ts dispatchTeamCommand runs that module's `case "<name>"` and nothing else, but the walk
+      // folded the WHOLE switch into every such tool (each of ~25 tools "wrote" the same 27 tables). The tool's OWN effects
+      // (ownFacts → path_effects, the read-only rule and the ratchet's read-only check) now come from its own case there;
+      // `facts` (what state() judges) keeps the wide walk — narrowing it would move other rows' links (stated, a blind spot).
+      const own = m && /\bdispatchTeamCommand\s*\(\s*toolName\b/.test(caseText) ? teamCaseFacts(name) : null
+      if (own) ownFacts = merge(own, factsOfSpan(route, v, m!.index, caseSpanEnd(rcode, m!.index + m![0].length)))
       merge(facts, routeHead)
       const risk = riskClassForTool(name)
+      // WAVE 155 (lane 155R7) — A TOOL DECIDED PER CALL IS OWNED PER CALL. lib/voice/tool-registry.ts VOICE_TOOL_PER_CALL_OWNER
+      // names the fact each such handler resolves; voiceToolOwnerForCall turns it into the call's one manager (fail closed).
+      // Credited ONLY when (a) the tool is listed, (b) the resolver fails closed on a key outside MANAGERS and on an unknown
+      // form mode, and (c) the handler path really calls it — in the route case / its helpers, or through dispatchTeamCommand
+      // (which calls it) with the tool's own case there supplying `ownerManager:` (run_team_command passes its sub-command's).
+      const perCallKind = (toolReg.VOICE_TOOL_PER_CALL_OWNER as Readonly<Record<string, string>> | undefined)?.[name]
+      const perCallOwner = perCallKind && toolPerCallCredited(name, perCallKind, pathText, (k, r) => toolReg.voiceToolOwnerForCall(k, r, reg.MANAGERS))
+        ? `per-call: voiceToolOwnerForCall(${name} → ${perCallKind}) in lib/voice/tool-registry.ts` : null
       const regAt = regV.ids.search(new RegExp(`^\\s*${name}\\s*:\\s*\\{`, "m"))
       drafts.push({
         id: `assistant_tool:${name}`, kind: "assistant_tool", entry: m ? `${route}:${lineAt(v, m.index)}` : `lib/voice/tool-registry.ts:${lineAt(regV, regAt >>> 0)}`,
         action: `tool.${name} (${tool.category}, ${risk})`, source_event: "agent assistant / voice tool call",
         trigger: m ? `${route} POST (assistant session)` : null, worker: m ? `${route} runTool case "${name}"` : null,
         // ONE resolver, the production one (lib/voice-admin/assistant-reach.ts toolOwner): the tool table first, then the team-command table.
-        owner: vtm[name] ?? (TEAM_COMMAND_MANAGER as Readonly<Record<string, string>>)[name] ?? null, ownerWhy: "neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANAGER names it — bench-wide tools are deliberately unattributed (lib/voice/tool-registry.ts)",
+        owner: vtm[name] ?? (TEAM_COMMAND_MANAGER as Readonly<Record<string, string>>)[name] ?? perCallOwner ?? null, ownerWhy: perCallKind ? `listed per call (${perCallKind}) but its handler path does not call voiceToolOwnerForCall with that fact` : "neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANAGER names it — bench-wide tools are deliberately unattributed (lib/voice/tool-registry.ts)",
         facts, consequentialHint: risk !== "READ" || ["send", "stage", "schedule"].includes(tool.category),
         lensTables, ownFacts: m ? ownFacts : undefined, toolRisk: risk, actorHint: "signed-in seat (assistant session)", decisionHint: `session seat under authorityAllows + declared gates [${tool.gates.join(", ") || "none"}] (${route})`,
       })
@@ -1779,6 +1889,31 @@ async function main(): Promise<void> {
       && /\bfunction resolveWidgetTenant\s*\(/.test(views("lib/widget/resolve-widget-tenant.ts")?.ids ?? "") && /\bfunction checkUsageCap\s*\(/.test(views("lib/usage/check-cap.ts")?.ids ?? ""))
     const fake = finish({ id: "planted:fake-manager", kind: "server_action", entry: `${FX}:3`, action: "x", source_event: "x", trigger: "t", worker: "w", owner: "invented_manager", facts: sigF("validateTwilioSignature") })
     check("POSITIVE CONTROL: an owner that is not in MANAGERS is never written onto a row (it reads unresolved and the row misses `owner`)", fake.registered_manager.startsWith("unresolved") && fake.missing.includes("owner"))
+    // WAVE 155 (lane 155R7) — the per-call owner rules.
+    const noRoute = () => null
+    const tern = `{\n const toManager: ManagerKey | null =\n   params.entityType === "buyer" ? "shopping_agent" :\n   params.entityType === "seller" ? "listing_concierge" : null\n if (toManager) await publishManagerSignal({ fromManager: "data_steward", toManager, signalType: "x" })\n}`
+    const assigned = `{\n let toManager: ManagerKey | null = null\n if (t === "seller") toManager = "listing_concierge"\n else if (t === "buyer") toManager = "shopping_agent"\n await publishManagerSignal({ toManager, signalType: "x" })\n}`
+    const fromBody = `{\n let toManager: ManagerKey | null = null\n toManager = params.metadata.manager\n await publishManagerSignal({ toManager, signalType: "x" })\n}`
+    const routed = `{\n const route = routeForEvent("ev_x", {})\n if (route?.to) await publishManagerSignal({ fromManager: route.from, toManager: route.to, signalType: "x" })\n}`
+    const pcT = perCallToManager(tern, noRoute), pcA = perCallToManager(assigned, noRoute)
+    check("POSITIVE: a reactor block whose toManager is a per-call ternary / assignment over literals names exactly those managers (comparison literals are not candidates) — and a routeForEvent binding takes the router's literal `to:` results",
+      JSON.stringify(pcT?.candidates) === `["listing_concierge","shopping_agent"]` && JSON.stringify(pcA?.candidates) === `["listing_concierge","shopping_agent"]`
+      && JSON.stringify(perCallToManager(routed, (e) => (e === "ev_x" ? ["listing_concierge", "campaign_orchestrator"] : null))?.candidates) === `["campaign_orchestrator","listing_concierge"]`)
+    check("NEGATIVE: a toManager assigned from a body field, a routeForEvent the router does not resolve, or a block with no toManager resolves nothing — and a literal toManager stays the addressed rule's",
+      perCallToManager(fromBody, noRoute) === null && perCallToManager(routed, noRoute) === null && perCallToManager(`{ await publishManagerSignal({ signalType: "x" }) }`, noRoute) === null
+      && perCallToManager(`{ await publishManagerSignal({ toManager: "deal_coordinator", signalType: "x" }) }`, noRoute) === null)
+    const fakeCand = perCallToManager(tern.replace(`"listing_concierge"`, `"invented_manager"`), noRoute)
+    check("POSITIVE CONTROL: a per-call candidate that is not in MANAGERS is extracted but never credited (the census requires every candidate in MANAGERS)",
+      !!fakeCand && fakeCand.candidates.includes("invented_manager") && !fakeCand.candidates.every((k) => MANAGER_KEYS.has(k)) && pcT!.candidates.every((k) => MANAGER_KEYS.has(k)))
+    const rule = (o: Partial<Parameters<typeof toolPerCallRule>[0]>) => toolPerCallRule({ failsClosed: true, pathCallsResolver: false, viaDispatcher: false, dispatcherCallsResolver: false, kind: "skill", caseSuppliesOwner: false, ...o })
+    check("POSITIVE: a per-call tool is owned when its handler calls voiceToolOwnerForCall, or reaches it through the dispatcher with its case supplying the fact — NEGATIVE: a handler that resolves nothing, a case that supplies nothing, or a resolver that does not fail closed is not",
+      rule({ pathCallsResolver: true }) && rule({ viaDispatcher: true, dispatcherCallsResolver: true, caseSuppliesOwner: true }) && rule({ viaDispatcher: true, dispatcherCallsResolver: true, kind: "team_command" })
+      && !rule({}) && !rule({ viaDispatcher: true, dispatcherCallsResolver: true }) && !rule({ viaDispatcher: true, caseSuppliesOwner: true }) && !rule({ pathCallsResolver: true, failsClosed: false }))
+    const toolRegC = await import("../lib/voice/tool-registry"); const regC = await import("../lib/kernel/manager-registry")
+    const own = (t: string, r: { manager?: string | null; formMode?: string | null }) => toolRegC.voiceToolOwnerForCall(t, r, regC.MANAGERS)
+    check("POSITIVE CONTROL: the registry's per-call resolver returns a registered manager for THAT call and fails closed on an invented manager, an unknown form mode and an unlisted tool",
+      own("run_skill", { manager: "ads_manager" }) === "ads_manager" && own("fill_form_field", { formMode: "listing" }) === "listing_concierge" && own("fill_form_field", { formMode: "offer" }) === "shopping_agent"
+      && own("run_skill", { manager: "invented_manager" }) === null && own("fill_form_field", { formMode: "deed" }) === null && own("team_query", { manager: "ads_manager" }) === null && own("create_task", {}) === "deal_coordinator")
   }
   // the ratchet, against the real rows, then against planted defects (each must be caught)
   const p0Now = WRITE_BASELINE ? new Set((JSON.parse(rawOf(BASELINE_FILE)) as { p0ExecutableGaps?: string[] }).p0ExecutableGaps ?? []) : p0Frozen

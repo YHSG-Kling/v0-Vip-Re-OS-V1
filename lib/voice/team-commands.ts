@@ -17,6 +17,8 @@ import {
   matchManagerInText, composeManagerStatus, composeTeamStatus, skillNameFromSpeech, assistantSkillRefusal, assistantRequestingManager,
   assistantReachMatrix, reachGaps,
 } from "@/lib/voice-admin/assistant-reach"
+import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { voiceToolOwnerForCall } from "@/lib/voice/tool-registry"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -31,6 +33,10 @@ export interface TeamCommandResult {
   /** The single spoken answer the voice admin reads back. */
   spoken: string
   data?: Record<string, unknown>
+  /** WAVE 155 (lane 155R7): the manager accountable for THIS call — lib/voice/tool-registry.ts voiceToolOwnerForCall over
+   *  the fact the case resolved (the skill's manager_owner, the mission's owner_manager), or the command's fixed owner.
+   *  null = no single manager acts (a bench read). Rides the per-call audit row (agent_assistant_tool_calls.tool_output). */
+  ownerManager?: ManagerKey | null
 }
 
 // Command-name catalog + isTeamCommand live in a PURE module so client/test code can import them
@@ -90,10 +96,13 @@ export async function dispatchTeamCommand(
   client?: Svc,
 ): Promise<TeamCommandResult> {
   const svc = client ?? createServiceClient()
-  const result = await routeTeamCommand(name, params, ctx, svc)
+  const routed = await routeTeamCommand(name, params, ctx, svc)
+  const { TEAM_COMMAND_MANAGER, formatTeammateAttribution } = await import("@/lib/kernel/ai-teammates")
+  // WAVE 155 (lane 155R7): ONE owner per call — the command's fixed owner, else the registry's per-call resolver over the
+  // fact the case resolved (a value outside MANAGERS fails closed to null). Refusals carry it too: who would have acted.
+  const result: TeamCommandResult = { ...routed, ownerManager: TEAM_COMMAND_MANAGER[name] ?? voiceToolOwnerForCall(name, { manager: routed.ownerManager ?? null }, MANAGERS) }
   if (!result.ok) return result
 
-  const { TEAM_COMMAND_MANAGER, formatTeammateAttribution } = await import("@/lib/kernel/ai-teammates")
   const managerKey = TEAM_COMMAND_MANAGER[name]
   if (!managerKey) return result
   try {
@@ -463,7 +472,7 @@ async function routeTeamCommand(
         : o.kind === "directive"
           ? (o.proposal.projection ? "I drafted a proposal — it waits for your approval on the Missions card." : `No proposal fits: ${o.proposal.reason}`)
           : `I split it into ${o.children.length} proposed child mission${o.children.length === 1 ? "" : "s"} across the managers — approve them on the Missions card.${o.refused.length ? ` ${o.refused.length} part(s) were refused.` : ""}`
-      return { ok: true, spoken, data: { kind: o.kind, missionId: o.mission.id } }
+      return { ok: true, spoken, data: { kind: o.kind, missionId: o.mission.id }, ownerManager: o.mission.owner_manager }
     }
     case "run_skill": {
       // REQUEST a skill through the ONE run path (runSkill — entitlement, metering, the owner's authority rung,
@@ -481,9 +490,9 @@ async function routeTeamCommand(
       const objective = String(params.objective ?? "").trim() || `requested through the assistant: ${skill.replace(/_/g, " ")}`
       const r = await runSkill({ brokerageId: ctx.brokerageId, skill, requestingManager: assistantRequestingManager(resolved.declaration.manager_owner), inputs, objective }, svc)
       if (!r.ok) {
-        return { ok: false, spoken: r.reason === "inputs_invalid" ? `That skill needs more: ${(r.errors ?? []).slice(0, 3).join("; ")}.` : `The request was refused: ${r.reason.replace(/_/g, " ")}.`, data: { reason: r.reason, errors: r.errors ?? [] } }
+        return { ok: false, spoken: r.reason === "inputs_invalid" ? `That skill needs more: ${(r.errors ?? []).slice(0, 3).join("; ")}.` : `The request was refused: ${r.reason.replace(/_/g, " ")}.`, data: { reason: r.reason, errors: r.errors ?? [] }, ownerManager: resolved.declaration.manager_owner }
       }
-      return { ok: true, spoken: `Asked ${resolved.declaration.manager_owner.replace(/_/g, " ")} to run ${skill.replace(/_/g, " ")} — ${r.delegationIds.length} request${r.delegationIds.length === 1 ? "" : "s"} wait for acceptance on the Missions card.`, data: { skill: r.skill, delegationIds: r.delegationIds, costUsd: r.costUsd } }
+      return { ok: true, spoken: `Asked ${resolved.declaration.manager_owner.replace(/_/g, " ")} to run ${skill.replace(/_/g, " ")} — ${r.delegationIds.length} request${r.delegationIds.length === 1 ? "" : "s"} wait for acceptance on the Missions card.`, data: { skill: r.skill, delegationIds: r.delegationIds, costUsd: r.costUsd }, ownerManager: resolved.declaration.manager_owner }
     }
 
     default:
