@@ -35,6 +35,11 @@
  *      Vercel preview smoke, real sign-in, Workflow timer, cron tick, storage-policy evidence — nine separate rows, each
  *      DERIVED from the evidence ledger (docs/operations/ACTIVATION-CHECKLIST.md §6.7) and the tree it was observed on
  *      (scripts/release-rules.ts gateVerdict / gitFreshness). PRODUCTION-LIVE = 0 obligations ∧ all nine; CI green never is.
+ *   G  (wave 155, lane 155A) THE P0 PACKET (docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md): every P0 item named with
+ *      who / before / after / rollback; its OWNER-SQL line references land in the section they name; SECRETS_ENCRYPTION_KEY
+ *      is an OBLIGATION until a dated deployment id and an observed share-link 302 are recorded (D5 only proves the name is
+ *      read); §P.1 is printed HELD as OPTIONAL, never blocking; the deployment item names a rollback and a database-reaching
+ *      health read (ECC production-audit lens).
  *
  * Every absence/refusal assertion carries a POSITIVE CONTROL (CLAUDE.md §2). Source scans read STRIPPED source.
  * BLIND SPOTS (published): the CI result of the matrix itself is GitHub's, not this repo's (the first run is the heap
@@ -432,6 +437,63 @@ check("E2 POSITIVE CONTROL — an unfrozen install, a different package manager 
   && installParityOpen({ pm: "npm", frozen: true }, installOf("npm ci"), lockDrift({ twilio: "^5" }, {}))
   && !installParityOpen({ pm: "npm", frozen: true }, installOf("npm ci"), lockDrift({ twilio: "^5" }, { twilio: "^5" }))
   && installOf("npm install").frozen === false)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// G · THE WAVE-155 P0 PACKET (lane 155A) — what the packet adds that A–E did not represent
+// ═════════════════════════════════════════════════════════════════════════════
+// G1 the owner's packet exists and names every P0 item with its read-backs. G2 its OWNER-SQL line references land inside the
+// section they name (a cite into the wrong section is drift — derived from the section headers every run, never pinned).
+// G3 SECRETS_ENCRYPTION_KEY becomes an OBLIGATION: D5 only proves the runtime READS the name; a name is not configuration,
+// and the key derives from ANY string. It is discharged only by the packet's status line saying RESOLVED with an ISO date, a
+// deployment id (dpl_…) and the observed 302 of a share link — evidence CI cannot produce. G4 §P.1 (optional, never blocking)
+// is printed HELD / done from its own status line. G5 (ECC production-audit lens) the deployment item names a rollback path
+// and a health read that reaches the database, and both routes exist.
+console.log("\n[G · the wave-155 P0 packet — docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md]")
+const PACKET = "docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md"
+const packet = has(PACKET) ? read(PACKET) : ""
+const P0_NEEDLES = ["§F", "§G", "§J", "§M.1", "§I", "SECRETS_ENCRYPTION_KEY", "§P.1", "R5", "M1", "M2", "Node **22.x**"]
+const packetMissing = P0_NEEDLES.filter((n) => !packet.includes(n))
+const p0Sections = packet.split(/^## /m).filter((s) => /^\d\. P0-\d/.test(s))
+const p0Thin = p0Sections.filter((s) => !(/\*\*Who/.test(s) && /\*\*Before/.test(s) && /\*\*After/.test(s) && /Rollback/.test(s))).map((s) => s.slice(0, 12))
+check(`G1 the P0 packet exists (${packet.split("\n").length} lines, ≤ 220), names every P0 item, and each of its ${p0Sections.length} P0 sections says who, before, after and rollback`,
+  !!packet && packet.split("\n").length <= 220 && packetMissing.length === 0 && p0Sections.length >= 5 && p0Thin.length === 0, [...packetMissing, ...p0Thin].join(", "))
+/** The 1-based line range of each top-level OWNER-SQL section, by its letter. */
+function ownerSqlSections(doc: string): Map<string, [number, number]> {
+  const lines = doc.split("\n"), out = new Map<string, [number, number]>()
+  let cur: string | null = null, start = 0
+  lines.forEach((l, i) => { const m = /^## ([A-Z])\.\s/.exec(l); if (m) { if (cur) out.set(cur, [start, i]); cur = m[1]; start = i + 1 } })
+  if (cur) out.set(cur, [start, lines.length])
+  return out
+}
+function misplacedCites(pkt: string, doc: string): string[] {
+  const secs = ownerSqlSections(doc), bad: string[] = []
+  for (const m of pkt.matchAll(/§([A-Z])[^\n(§]*?\(l\.(\d+)-(\d+)\)/g)) {
+    const r = secs.get(m[1]), a = Number(m[2]), b = Number(m[3])
+    if (!r || a < r[0] || b > r[1] || a > b) bad.push(`§${m[1]} l.${a}-${b}`)
+  }
+  return bad
+}
+const cites = [...packet.matchAll(/§([A-Z])[^\n(§]*?\(l\.(\d+)-(\d+)\)/g)].length
+const misplaced = misplacedCites(packet, ownerSql)
+check(`G2 every OWNER-SQL line reference in the packet lands inside the section it names (${cites} references)`, cites >= 20 && misplaced.length === 0, misplaced.join(", "))
+check("G2 POSITIVE CONTROL — a reference into the wrong section, and one past the end, are caught",
+  misplacedCites("§F x (l.580-595)", ownerSql).length === 1 && misplacedCites("§P y (l.99998-99999)", ownerSql).length === 1 && misplacedCites("§J z (l.580-595)", ownerSql).length === 0)
+/** RESOLVED only with an ISO date, a deployment id and the observed 302 — a CI run or a name in a list never discharges it. */
+const sekResolved = (doc: string) => /^- SEK status:\s*RESOLVED\b[^\n]*\d{4}-\d{2}-\d{2}[^\n]*\bdpl_[A-Za-z0-9]+[^\n]*\b302\b/m.test(doc)
+const sekOpen = !sekResolved(packet)
+obligations.push({ id: "SEK", kind: "owner-config", open: sekOpen, what: "SECRETS_ENCRYPTION_KEY generated as random 32 bytes and set (Sensitive) for Production + Preview, proven by an outside-recipient share link opening on a real deployment", where: `${PACKET} §5` })
+check(`G3 SECRETS_ENCRYPTION_KEY is held until real deployment evidence exists (now: ${sekOpen ? "OPEN" : "discharged"}); the packet carries its status line`, /^- SEK status:/m.test(packet) && sekOpen === !sekResolved(packet))
+check("G3 POSITIVE CONTROL — HELD blocks; RESOLVED without a deployment id, with CI evidence only, or without a date blocks; RESOLVED with date + dpl_ + 302 lifts",
+  !sekResolved("- SEK status: HELD — not verified") && !sekResolved("- SEK status: RESOLVED 2026-12-01 — share link 302") && !sekResolved("- SEK status: RESOLVED 2026-12-01 — CI run 123 green, 302")
+  && !sekResolved("- SEK status: RESOLVED — dpl_abc123 share link 302") && sekResolved("- SEK status: RESOLVED 2026-12-01 — dpl_abc123 lead-magnet share link 302, tampered 404"))
+const p1Done = (doc: string) => /^- P\.1 status:\s*RESOLVED\b[^\n]*\d{4}-\d{2}-\d{2}[^\n]*\b0 · 1\b[^\n]*two[- ]tenant/m.test(doc)
+console.log(`    ${p1Done(packet) ? "done            " : "HELD (optional) "} §P.1 the old global competitor-ads index — not release-blocking; required before two tenants store the same ad`)
+check("G4 §P.1 is carried as OPTIONAL (never an obligation) with its two-tenant verification in OWNER-SQL §Q.3, and its rule refuses a resolution without the read-back",
+  /^- P\.1 status:/m.test(packet) && !obligations.some((o) => /P\.1/.test(o.id)) && /two-tenant verification/.test(section("Q")) && /ROLLBACK;/.test(section("Q"))
+  && !p1Done("- P.1 status: RESOLVED 2026-12-01 — dropped") && p1Done("- P.1 status: RESOLVED 2026-12-01 — read-back 0 · 1, two-tenant probe 2 rows then ROLLBACK"))
+const deploySec = p0Sections.find((s) => /deployment/i.test(s.split("\n")[0])) ?? ""
+check("G5 (ECC production-audit) the deployment item names a rollback path and a health read that reaches the database, and both routes exist",
+  /Instant Rollback/.test(deploySec) && deploySec.includes("/api/health") && deploySec.includes("/api/admin/health-status") && has("app/api/health/route.ts") && has("app/api/admin/health-status/route.ts"))
 
 // ═════════════════════════════════════════════════════════════════════════════
 // F · THE C42 RELEASE GATE ROWS (wave 150, lane 150AAF)

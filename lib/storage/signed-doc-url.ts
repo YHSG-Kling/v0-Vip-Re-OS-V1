@@ -356,7 +356,7 @@ export type DocumentDoorActor = { userId: string; brokerageId: string; userType:
  */
 /** @proofSeam scripts/document-links-sign-on-read-guard.ts derives the writer census's column list from it */
 export const DOCUMENT_DOOR_KINDS = [
-  { kind: "transaction_document", table: "transaction_documents", column: "storage_url", select: "id, brokerage_id, transaction_id, contact_id, uploaded_by, client_visible, doc_type" },
+  { kind: "transaction_document", table: "transaction_documents", column: "storage_url", select: "id, brokerage_id, transaction_id, contact_id, uploaded_by, client_visible, doc_type, metadata" },
   { kind: "client_document", table: "client_documents", column: "document_url", select: "id, brokerage_id, transaction_id, contact_id, uploaded_by, client_visible" },
   { kind: "offer", table: "offers", column: "offer_document_url", select: "id, brokerage_id, transaction_id, contact_id, uploaded_by, agent_id" },
   { kind: "agent_license", table: "agent_licenses", column: "document_url", select: "id, brokerage_id, agent_id" },
@@ -397,6 +397,7 @@ type DocumentDoorRow = {
   client_visible?: boolean | null
   agent_id?: string | null
   doc_type?: string | null
+  metadata?: unknown
 }
 
 /** The existing access rules, injected by the route (lib/auth/deal-work-ownership.ts, lib/kernel/portal-auth.ts). */
@@ -486,9 +487,14 @@ async function mayOpenDocumentRow(q: Q, row: DocumentDoorRow, actor: DocumentDoo
   }
 
   if (ut === "vendor") {
-    // A DEAL document while the party's lane onto that deal stands — the live row rule (m888 transaction_documents_party_select
-    // → document_party_on_deal: title, lender or vendor party on the transaction).
+    // A DEAL document — EXACTLY the live row rule (m888 transaction_documents_party_select, read live 2026-11-19 by lane 155A):
+    // document_party_on_deal(transaction_id) AND (uploaded_by = auth.uid() OR (doc_type = 'cda' AND
+    // metadata->>'delivered_to_title_user_id' = auth.uid())). A lane onto the deal is NOT a pass to every file on it: the
+    // party's own upload, or the CDA delivered to that title user — never the buyer's pre-approval or another party's file.
     if (row.kind === "transaction_document" && row.transaction_id) {
+      const deliveredTo = (row.metadata as { delivered_to_title_user_id?: unknown } | null | undefined)?.delivered_to_title_user_id
+      const ownOrDelivered = (!!row.uploaded_by && row.uploaded_by === actor.userId) || (row.doc_type === "cda" && deliveredTo === actor.userId)
+      if (!ownOrDelivered) return { ok: true, allowed: false }
       const lane = await rules.partnerLane(row.transaction_id)
       if (!lane.ok) return lane
       return { ok: true, allowed: lane.granted }
@@ -605,8 +611,31 @@ export async function openDocumentReference(deps: DocumentDoorDeps, rawRef: stri
   return openForSession(deps, ref, who.actor)
 }
 
+/**
+ * IS THE SESSION'S SEAT STILL STANDING? A session token outlives a revocation (an access JWT lives up to an hour), so the door
+ * re-reads the seat on EVERY click: the users row must exist in the actor's tenant, not be soft-deleted, and be `active`
+ * (NULL reads active, as the database's own rule does); an agent seat deactivated in that tenant (every agents row of the user
+ * there is_active = false) is refused. Mirrors public.brokerage_forms_seat_active() (m854, read live 2026-11-19) for the seat
+ * standing it checks; the seat CLASS is left to each row's own rule. A read that cannot run fails CLOSED.
+ */
+async function seatStanding(q: Q, actor: DocumentDoorActor): Promise<{ ok: true; standing: boolean } | { ok: false; error: string }> {
+  if (!actor.userId || !actor.brokerageId) return { ok: true, standing: false }
+  const { data: u, error: uErr } = await q.from("users").select("id, status, deleted_at").eq("id", actor.userId).eq("brokerage_id", actor.brokerageId).maybeSingle()
+  if (uErr) return { ok: false, error: `the session seat could not be read: ${uErr.message}` }
+  const seat = (u ?? null) as { status?: string | null; deleted_at?: string | null } | null
+  if (!seat || (seat.deleted_at ?? null) !== null || (seat.status ?? "active") !== "active") return { ok: true, standing: false }
+  const { data: ag, error: aErr } = await q.from("agents").select("is_active").eq("user_id", actor.userId).eq("brokerage_id", actor.brokerageId).limit(20)
+  if (aErr) return { ok: false, error: `the agent seat could not be read: ${aErr.message}` }
+  const agentRows = (ag ?? []) as Array<{ is_active?: boolean | null }>
+  if (agentRows.length > 0 && !agentRows.some((a) => a.is_active !== false)) return { ok: true, standing: false }
+  return { ok: true, standing: true }
+}
+
 async function openForSession(deps: DocumentDoorDeps, ref: DocumentRef | null, actor: DocumentDoorActor): Promise<DocumentDoorAnswer> {
   if (!ref) return NOT_AVAILABLE
+  const seat = await seatStanding(deps.db, actor)
+  if (!seat.ok) return { status: 503, reason: seat.error }
+  if (!seat.standing) return NOT_AVAILABLE
   const located = await locateDocumentRows(deps.db, ref, actor)
   if (!located.ok) return { status: 503, reason: located.error }
   if (located.rows.length === 0) return NOT_AVAILABLE

@@ -328,6 +328,9 @@ async function main() {
     transaction_documents: [], client_documents: [], offers: [], agent_licenses: [], documents: [], generated_documents: [], ai_video_projects: [],
     contacts: [{ id: C1, brokerage_id: B1, contact_user_id: U_CONTACT, agent_id: A_OWNER, avatar_url: null }],
     agent_certifications: [], closing_disclosure_agreement: [], brokerage_forms: [], brokerage_cda_templates: [], business_expenses: [],
+    // Every session actor's SEAT (the door re-reads its standing on every click — lane 155A; status NULL reads active).
+    users: [U_OWNER, U_OTHER, U_CONTACT, "e0000000-0000-4000-8000-0000000000b9", "e0000000-0000-4000-8000-0000000000d1"].map((id) => ({ id, brokerage_id: B1, status: "active", deleted_at: null }))
+      .concat([{ id: U_B2, brokerage_id: B2, status: "active", deleted_at: null }]),
   })
 
   // UPLOAD through the real put function.
@@ -423,7 +426,6 @@ async function main() {
   // ── BINDING: a row may not point the door at ANOTHER tenant's object ───────────────────────────────────────────────────
   db.tables.agent_licenses.push({ id: "lic-own", brokerage_id: B1, agent_id: A_OWNER, document_url: mkRef0("agent-documents", `${U_OWNER}/license/1-own.pdf`) })
   db.tables.agent_licenses.push({ id: "lic-forged", brokerage_id: B1, agent_id: A_OWNER, document_url: mkRef0("agent-documents", `${U_B2}/license/1-theirs.pdf`) })
-  db.tables.users = [{ id: U_OWNER, brokerage_id: B1 }, { id: U_OTHER, brokerage_id: B1 }, { id: U_B2, brokerage_id: B2 }]
   const ownLic = await openDocumentReference(deps(owner), mkRef0("agent-documents", `${U_OWNER}/license/1-own.pdf`))
   const signsBeforeForged = db.storage.signs.length
   const forgedLic = await openDocumentReference(deps(owner), mkRef0("agent-documents", `${U_B2}/license/1-theirs.pdf`))
@@ -528,12 +530,20 @@ async function main() {
   const sHid = await openDocumentReference(deps(seller), mkRef("transaction-documents", `${B1}/${T1}/hidden.pdf`))
   const lead = await openDocumentReference(deps({ userId: U_CONTACT, brokerageId: B1, userType: "contact" }), mkRef("transaction-documents", `${B1}/${T1}/visible.pdf`))
   check("CONTACT a party to the deal opens a client-visible deal document; a hidden one and a non-party contact are refused (isClientVisibleDealDocument + the deal's contact columns)", sVis.status === 302 && sHid.status === 404 && lead.status === 404)
-  const title = { userId: "e0000000-0000-4000-8000-0000000000d1", brokerageId: B1, userType: "vendor" }
+  // Lane 155A: this row used to assert a party opens a deal document it did NOT upload. The live m888 rule (read 2026-11-19)
+  // is narrower — the party's OWN upload, or the CDA delivered to that title user — and the door now mirrors it.
+  const U_TITLE = "e0000000-0000-4000-8000-0000000000d1"
+  const title = { userId: U_TITLE, brokerageId: B1, userType: "vendor" }
+  db.tables.transaction_documents.push({ id: "d-title-own", brokerage_id: B1, transaction_id: T1, contact_id: null, uploaded_by: U_TITLE, client_visible: false, doc_type: "title_commitment", metadata: {}, storage_url: mkRef("transaction-documents", `${B1}/${T1}/title/commitment.pdf`) })
+  db.tables.transaction_documents.push({ id: "d-cda", brokerage_id: B1, transaction_id: T1, contact_id: null, uploaded_by: U_OWNER, client_visible: false, doc_type: "cda", metadata: { delivered_to_title_user_id: U_TITLE }, storage_url: mkRef("transaction-documents", `${B1}/${T1}/cda.pdf`) })
   partnerLaneOpen = true
-  const pOpen = await openDocumentReference(deps(title), mkRef("transaction-documents", `${B1}/${T1}/visible.pdf`))
+  const pOwn = await openDocumentReference(deps(title), mkRef("transaction-documents", `${B1}/${T1}/title/commitment.pdf`))
+  const pCda = await openDocumentReference(deps(title), mkRef("transaction-documents", `${B1}/${T1}/cda.pdf`))
+  const pOther = await openDocumentReference(deps(title), mkRef("transaction-documents", `${B1}/${T1}/visible.pdf`))
   partnerLaneOpen = false
-  const pShut = await openDocumentReference(deps(title), mkRef("transaction-documents", `${B1}/${T1}/visible.pdf`))
-  check("PARTY a title / lender / vendor party opens a deal document it did not upload while its lane stands (m888 transaction_documents_party_select), and is refused once the lane is gone", pOpen.status === 302 && pShut.status === 404)
+  const pShut = await openDocumentReference(deps(title), mkRef("transaction-documents", `${B1}/${T1}/title/commitment.pdf`))
+  check("PARTY a title / lender / vendor party opens its OWN upload and the CDA delivered to it while its lane stands, is refused a deal document it did not upload, and is refused its own once the lane is gone (m888 transaction_documents_party_select, live)",
+    pOwn.status === 302 && pCda.status === 302 && pOther.status === 404 && pShut.status === 404, JSON.stringify([pOwn.status, pCda.status, pOther.status, pShut.status]))
 
   control("the parser refuses traversal and non-references", parseDocumentRef("docref://documents/a/../b.pdf") === null && parseDocumentRef("https://example.com/a.pdf") === null && parseDocumentRef("docref://BAD BUCKET/x") === null && toDocumentRef("documents", "a b/c.pdf") === "docref://documents/a%20b/c.pdf")
 

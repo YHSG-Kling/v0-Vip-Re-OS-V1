@@ -1316,3 +1316,54 @@ DROP INDEX IF EXISTS public.orchestrator_tasks_next_action_follow_on_key;
 1. In the repository (or ask the integrator): flip the file's first-line status from `WRITTEN, NOT APPLIED` to `APPLIED <date>` and lower `NOT_APPLIED_BASELINE` in `scripts/migration-claim-guard.ts` by one per file applied.
 2. Regenerate the schema caches — never hand-edit them: `npm run schema:regen` (snapshot, FK map, agent FK, vocabularies). After a dropped column the cached `global_settings` column list must lose `airtable_api_key`.
 3. `NODE_OPTIONS=--max-old-space-size=6000 npm run test:schema-cache-drift` must be green before anything else is pushed.
+
+## Q. Wave 155 — live baseline, corrections, and two missing blocks (lane 155A, 2026-11-19)
+
+**Nothing in this section has been run.** The owner's ordered P0 work, with before / after values, JWT tests and rollback,
+is `docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md`. It points into §F / §G / §I / §M.1 / §P by line range, and this
+page stays the one place the executable statements live.
+
+**Live baseline (LIVE-VERIFIED 2026-11-19 21:38 UTC, read-only SQL via Supabase MCP; it supersedes the "last live reads"
+dates in §K and §N):** §K Q1 `postgres`, `can_alter_storage_objects = false` (route B). Q2 all prerequisite functions present.
+Q3 five `open` + `documents service_only`. Q5 `bucket_wide_on_five = 19`, `owner_policies = 0`, `agnostic_authenticated = 0`.
+Q6 0 objects in all 12 buckets. N.1c 4 PERMISSIVE listing-media rows, 0 RESTRICTIVE. Q7 4 unlinked. Q8 `ok_pairs = 4`.
+Q9 0 sign-ins since 2026-11-01, 0 bans, 0 invitations. §P.1 read-back `1 · 1`. Unchanged: §F, §G, §I and §M.1 are all still open.
+
+### Q.1 Corrections to this page and the wave-154 action sheet
+
+1. §I l.489-490 offers "2b REMOVE — delete the auth user". l.574 says neither remediation deletes anything and a deletion
+   needs your explicit authorization. **l.574 governs:** the scripted routes are A (link) and B (archive); deletion is not one.
+2. §G "What the policies admit" lets a title / lender party read every object in its `title/` / `lender/` folder. The ROW
+   rule a party passes in the app (m888 `transaction_documents_party_select`, live) is narrower: own upload, or the CDA
+   delivered to that title user. Since wave 155 the app's document door (`lib/storage/signed-doc-url.ts`) applies the row
+   rule. The storage rule only bounds a direct storage call.
+3. `WAVE154-OWNER-ACTION-SHEET.md` item 16 ("10-year persisted signed URLs remain") was already false at `9d9626b9`: lane
+   154M removed the ten-year lifetime (tombstone `lib/storage/signed-doc-url.ts:25`; ceiling one hour, view link 5 minutes).
+4. §F has no rollback block (§G has one). Q.2 is that block, measured from the live policy text on 2026-11-19.
+
+### Q.2 §F rollback — restores the four measured `brokerage-forms` policies (re-opens the exposure; only to undo a broken apply)
+
+```sql
+BEGIN;
+DROP POLICY IF EXISTS "brokerage-forms owner read" ON storage.objects;  DROP POLICY IF EXISTS "brokerage-forms owner upload" ON storage.objects;
+DROP POLICY IF EXISTS "brokerage-forms owner update" ON storage.objects;  DROP POLICY IF EXISTS "brokerage-forms owner delete" ON storage.objects;
+CREATE POLICY "auth read brokerage-forms" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'brokerage-forms');
+CREATE POLICY "auth upload brokerage-forms" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'brokerage-forms');
+CREATE POLICY "auth update brokerage-forms" ON storage.objects FOR UPDATE TO authenticated USING (bucket_id = 'brokerage-forms');
+CREATE POLICY "auth delete brokerage-forms" ON storage.objects FOR DELETE TO authenticated USING (bucket_id = 'brokerage-forms');
+COMMIT;
+```
+
+### Q.3 §P.1 — the two-tenant verification after the drop (writes nothing: it ends in ROLLBACK), and the undo
+
+```sql
+-- expect: 2 rows returned, then the ROLLBACK leaves competitor_ads exactly as it was. Before the §P.1 drop the second row raises 23505.
+BEGIN;
+INSERT INTO public.competitor_ads (brokerage_id, source_platform, competitor_name, provider_ad_id)
+SELECT b.id, 'facebook', 'wave-155 two-tenant probe', 'wave155-probe-ad'
+  FROM (SELECT id FROM public.brokerages ORDER BY id LIMIT 2) b
+RETURNING brokerage_id, source_platform, provider_ad_id;
+ROLLBACK;
+-- undo of §P.1 only if you want the global rule back (the live definition, measured 2026-11-19):
+-- CREATE UNIQUE INDEX uq_competitor_ads_source_provider_id ON public.competitor_ads USING btree (source_platform, provider_ad_id) WHERE (provider_ad_id IS NOT NULL);
+```

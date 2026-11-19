@@ -140,8 +140,9 @@ self-award door (canary J5).
   and variants drafted together.
 
 ### 16. Document and role hygiene still in code (lane 154K) — engineering, listed so you see the release impact
-- 10-year persisted signed URLs remain (146A-SO-02): once O1 lands, revoked access would outlive revocation until they are re-minted
-  per view. 31 hard-coded `.in("user_type", [...])` role lists remain (143G-OL-05). Both are code work, not owner steps.
+- Ten-year persisted signed URLs were REMOVED in wave 154 (lane 154M; lib/storage/signed-doc-url.ts tombstone): rows store docref://
+  references and every view mints a 5-minute link after a seat check (wave 155 lane 155A adds the seat-standing re-read). 31 hard-coded
+  `.in("user_type", [...])` role lists remain (143G-OL-05) — code work, not an owner step.
 
 ### 17. Small items (no action needed unless you want a change)
 - `FIRST_PARTY_MIN_CONTACTS = 3` (lib/content-intel/search-demand.ts:291) is a privacy floor you may change.
