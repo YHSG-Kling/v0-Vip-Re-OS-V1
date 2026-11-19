@@ -17,6 +17,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { spawnAssetManager } from "@/lib/agents/asset-manager"
 
@@ -27,6 +28,8 @@ export async function GET(req: NextRequest) {
   const url      = new URL(req.url)
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "asset-manager-weekly", cron_path: "/app/api/cron/asset-manager-weekly/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const svc = createServiceClient()
   const { data: brokerages } = await svc
@@ -59,6 +62,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id, records_processed: results.length })
   return NextResponse.json({
     ran_at: new Date().toISOString(),
     spawned: results.filter((r) => r.ok).length,

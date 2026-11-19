@@ -9,6 +9,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 
 export const dynamic = "force-dynamic"
 
@@ -31,6 +32,7 @@ export async function GET(request: NextRequest) {
     cron_name: "revenue-protection-rollup",
     cron_path: "/app/api/cron/revenue-protection-rollup/route.ts",
   })
+  if (ctx.data?.held) return NextResponse.json({ success: true, held: true, decision: ctx.data.decision }) // cron decision door (155R1): held before any domain write
   if (!ctx.success || !ctx.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }
@@ -122,6 +124,8 @@ export async function POST(request: NextRequest) {
       snapshot_type?: "daily" | "weekly" | "monthly" | "quarterly" | "ytd" | "lifetime"
     }
     if (!brokerage_id) return NextResponse.json({ error: "brokerage_id required" }, { status: 400 })
+    const cronDoor = await decideCronRun({ cron_name: "revenue-protection-rollup", cron_path: "/app/api/cron/revenue-protection-rollup/route.ts", brokerage_id }) // cron decision door (155R1): this tenant's halt too
+    if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
     const result = await calculateRevenueProtection({
       agentId:      agent_id ?? null,
       brokerageId:  brokerage_id,

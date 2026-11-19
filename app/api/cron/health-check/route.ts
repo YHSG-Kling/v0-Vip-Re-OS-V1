@@ -236,6 +236,7 @@ export async function POST(request: NextRequest) {
     cron_name: "System Health Check",
     cron_path: "/api/cron/health-check",
   })
+  if (runContext.data?.held) return NextResponse.json({ success: true, held: true, decision: runContext.data.decision }) // cron decision door (155R1): held before any domain write
   const contextId = runContext.success ? runContext.data?.context_id ?? null : null
   if (!contextId) {
     // FAIL LOUD, NOT CLOSED. The health check still has to run — refusing to

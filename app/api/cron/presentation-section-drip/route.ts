@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { deliverDueSections } from "@/lib/listing-presentation/section-drip"
 import { sweepPrelistingDeliveryGate } from "@/lib/listing-presentation/prelisting-delivery"
 
@@ -32,6 +33,8 @@ export const maxDuration = 60
 export async function GET(request: Request) {
   const authError = verifyCronAuth(request)
   if (authError) return authError
+  const cronDoor = await decideCronRun({ cron_name: "presentation-section-drip", cron_path: "/app/api/cron/presentation-section-drip/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
   try {
     const gate = await sweepPrelistingDeliveryGate({ limit: 50 })
     const result = await deliverDueSections({ limit: 50 })

@@ -18,6 +18,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { runContentIntelScan } from "@/lib/competitive-intel/content-intel-scan"
 
@@ -27,6 +28,8 @@ export const maxDuration = 300
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "content-intel-scan", cron_path: "/app/api/cron/content-intel-scan/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
   const sd = await import("@/lib/content-intel/search-demand")

@@ -32,6 +32,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 // Was `import { put } from "@vercel/blob"`. Survivor:
 // lib/remotion/media-host.ts#hostRenderedMedia — Supabase `video-assets`.
 import { hostRenderedMedia } from "@/lib/remotion/media-host"
@@ -58,6 +59,8 @@ interface ProjectRow {
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "listing-promo-hybrid-composite", cron_path: "/app/api/cron/listing-promo-hybrid-composite/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
 

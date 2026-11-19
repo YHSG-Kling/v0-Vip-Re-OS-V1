@@ -10,6 +10,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 
 export const dynamic = "force-dynamic"
 
@@ -32,6 +33,7 @@ export async function GET(request: NextRequest) {
     cron_name: "brokerage-intelligence-mine",
     cron_path: "/app/api/cron/brokerage-intelligence-mine/route.ts",
   })
+  if (ctx.data?.held) return NextResponse.json({ success: true, held: true, decision: ctx.data.decision }) // cron decision door (155R1): held before any domain write
   if (!ctx.success || !ctx.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }
@@ -82,6 +84,8 @@ export async function POST(request: NextRequest) {
   try {
     const { brokerage_id } = await request.json() as { brokerage_id: string }
     if (!brokerage_id) return NextResponse.json({ error: "brokerage_id required" }, { status: 400 })
+    const cronDoor = await decideCronRun({ cron_name: "brokerage-intelligence-mine", cron_path: "/app/api/cron/brokerage-intelligence-mine/route.ts", brokerage_id }) // cron decision door (155R1): this tenant's halt too
+    if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
     const { written, followupsRecorded } = await runMiningForBrokerage(brokerage_id)
     return NextResponse.json({ success: true, insights_written: written, followups_recorded: followupsRecorded })
   } catch (e) {

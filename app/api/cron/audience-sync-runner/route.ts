@@ -22,6 +22,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { graphPost } from "@/lib/providers/meta/client"
 import { isAudienceUploadEligible, AUDIENCE_CONSENT_COLUMNS } from "@/lib/ads/audience-eligibility"
@@ -77,6 +78,8 @@ export async function GET(req: NextRequest) {
   const url      = new URL(req.url)
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "audience-sync-runner", cron_path: "/app/api/cron/audience-sync-runner/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const appId     = process.env.META_APP_ID
   const appSecret = process.env.META_APP_SECRET

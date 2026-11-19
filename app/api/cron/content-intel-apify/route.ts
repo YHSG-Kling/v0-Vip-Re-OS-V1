@@ -28,6 +28,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { apifyToken } from "@/lib/env/aliases"
 import { runApifyScrape, apifySocialIdeas } from "@/lib/content-intel/apify-scraper"
@@ -62,6 +63,8 @@ const RESOLUTION = "Marketing → Content intelligence → Sources: record the s
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "content-intel-apify", cron_path: "/app/api/cron/content-intel-apify/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
   // ONE SPELLING (§6): APIFY_API_TOKEN is the survivor; APIFY_TOKEN accepted for
   // one release through lib/env/aliases.ts.
   if (!apifyToken()) return NextResponse.json({ skipped: "APIFY_API_TOKEN not configured", status: "disconnected_key", resolution: "Settings → Integrations → Apify: connect the key (an owner action)" })

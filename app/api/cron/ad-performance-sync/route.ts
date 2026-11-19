@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ingestAdPerformance } from "@/lib/ads/ad-performance-ingest"
 
@@ -17,6 +18,8 @@ export const maxDuration = 120
 export async function GET(request: Request) {
   const authError = verifyCronAuth(request)
   if (authError) return authError
+  const cronDoor = await decideCronRun({ cron_name: "ad-performance-sync", cron_path: "/app/api/cron/ad-performance-sync/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
   try {
     const svc = createServiceClient()
     const { data: live } = await svc.from("ad_campaigns").select("brokerage_id").in("status", ["live", "launching"])

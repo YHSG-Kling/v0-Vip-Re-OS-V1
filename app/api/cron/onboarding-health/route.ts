@@ -34,6 +34,7 @@ export async function GET(request: NextRequest) {
     cron_name: 'onboarding-health',
     cron_path: '/app/api/cron/onboarding-health/route.ts',
   })
+  if (contextResult.data?.held) return NextResponse.json({ success: true, held: true, decision: contextResult.data.decision }) // cron decision door (155R1): held before any domain write
   if (!contextResult.success || !contextResult.data) {
     return NextResponse.json({ error: 'Failed to create cron context' }, { status: 500 })
   }

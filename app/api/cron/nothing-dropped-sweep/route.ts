@@ -57,6 +57,7 @@ export async function GET(request: Request) {
     cron_name: "nothing-dropped-sweep",
     cron_path: "/app/api/cron/nothing-dropped-sweep/route.ts",
   })
+  if (contextResult.data?.held) return NextResponse.json({ success: true, held: true, decision: contextResult.data.decision }) // cron decision door (155R1): held before any domain write
   if (!contextResult.success || !contextResult.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }

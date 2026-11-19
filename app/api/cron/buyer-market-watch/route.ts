@@ -14,6 +14,7 @@
  */
 import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { runMarketWatchForBuyer } from "@/lib/buyer-search/market-watch"
 import { runExternalMarketWatchForBuyer, purgeStaleExternalReferences } from "@/lib/buyer-search/external-match"
@@ -26,6 +27,8 @@ const BATCH = 150
 export async function GET(request: Request) {
   const unauthorized = verifyCronAuth(request)
   if (unauthorized) return unauthorized
+  const cronDoor = await decideCronRun({ cron_name: "buyer-market-watch", cron_path: "/app/api/cron/buyer-market-watch/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()

@@ -46,6 +46,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { buildListingPresentation } from "@/lib/workflow/intelligence/listing-presentation-builder"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { CalendarEventType } from "@/lib/kernel/calendar-types"
 import {
   decideSafetyNetAction,
@@ -82,6 +83,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // Cron auth — see lib/cron-auth.ts
   const unauth = verifyCronAuth(req)
   if (unauth) return unauth
+  const cronDoor = await decideCronRun({ cron_name: "listing-presentation-prep", cron_path: "/app/api/cron/listing-presentation-prep/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
 

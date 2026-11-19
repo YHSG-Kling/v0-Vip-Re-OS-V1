@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction, recordCronFailureAction } from "@/app/actions/cron-kernel"
 import { ACTOR_REGISTRY, checkActorExists, type ApifyTask } from "@/lib/external/apify-actors"
 
 export const dynamic = "force-dynamic"
@@ -17,6 +18,8 @@ export const maxDuration = 120
 export async function GET(request: Request) {
   const unauth = verifyCronAuth(request)
   if (unauth) return unauth
+  const cronRun = await createCronRunContextAction({ cron_name: "actor-health", cron_path: "/app/api/cron/actor-health/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const supabase = createServiceClient()
   const results: Array<{ task: string; actor_id: string; alive: boolean }> = []
@@ -52,6 +55,7 @@ export async function GET(request: Request) {
     }
   }
 
+  if (cronRun.data) await (refusedWrites.length > 0 ? recordCronFailureAction({ context_id: cronRun.data.context_id, error: refusedWrites.join("; "), stage: "health-write" }) : recordCronSuccessAction({ context_id: cronRun.data.context_id, records_processed: results.length }))
   return NextResponse.json({
     checked: results.length,
     alive: results.filter((r) => r.alive).length,

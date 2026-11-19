@@ -33,6 +33,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail } from "@/lib/providers/dispatch"
 import { evaluateBroadcastDeconflict } from "@/lib/kernel/deconflict"
@@ -104,6 +105,8 @@ interface CampaignResult {
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "publish-newsletters", cron_path: "/app/api/cron/publish-newsletters/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
 

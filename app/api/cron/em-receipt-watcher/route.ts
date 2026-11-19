@@ -51,6 +51,7 @@
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import {
   raiseOfferComplianceFlag,
   resolveUnattendedRaiserUserId,
@@ -66,6 +67,8 @@ export async function GET(req: Request) {
   // CRON_SECRET was unset).
   const unauth = verifyCronAuth(req)
   if (unauth) return unauth
+  const cronDoor = await decideCronRun({ cron_name: "em-receipt-watcher", cron_path: "/app/api/cron/em-receipt-watcher/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const supabase = createServiceClient()
 

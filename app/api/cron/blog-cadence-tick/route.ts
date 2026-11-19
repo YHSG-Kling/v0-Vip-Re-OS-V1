@@ -21,6 +21,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 // 86C: the cron has NO session, so it calls the kernel writer with the policy row's tenant, not the
 // cookie-session door app/actions/blog.ts generateBlogPost (which refused it: anon feature gate, and
@@ -44,6 +45,8 @@ interface PolicyRow {
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "blog-cadence-tick", cron_path: "/app/api/cron/blog-cadence-tick/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
   const now      = new Date()

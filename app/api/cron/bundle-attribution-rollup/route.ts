@@ -87,6 +87,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
@@ -107,6 +108,8 @@ export async function GET(req: NextRequest) {
   const url      = new URL(req.url)
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "bundle-attribution-rollup", cron_path: "/app/api/cron/bundle-attribution-rollup/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const svc = createServiceClient()
   const since28d = new Date(Date.now() - 28 * 86_400_000).toISOString()
@@ -120,6 +123,7 @@ export async function GET(req: NextRequest) {
     .limit(5000)
   const dispatches = (dispatchRows ?? []) as DispatchRow[]
   if (dispatches.length === 0) {
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({ ran_at: new Date().toISOString(), dispatches_rolled_up: 0 })
   }
 
@@ -335,6 +339,7 @@ export async function GET(req: NextRequest) {
     byBundle.set(d.bundle_id, agg)
   }
 
+  if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
   return NextResponse.json({
     ran_at:               new Date().toISOString(),
     dispatches_rolled_up: totalUpdated,

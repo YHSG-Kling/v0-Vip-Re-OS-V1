@@ -26,6 +26,7 @@ export async function GET(request: Request) {
     cron_name: "predictive-listing-scoring",
     cron_path: "/app/api/cron/predictive-listing-scoring/route.ts",
   })
+  if (ctxResult.data?.held) return NextResponse.json({ success: true, held: true, decision: ctxResult.data.decision }) // cron decision door (155R1): held before any domain write
   if (!ctxResult.success || !ctxResult.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }

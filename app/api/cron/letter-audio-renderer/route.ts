@@ -21,6 +21,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { renderLetterAudio } from "@/lib/direct-mail/render-letter-audio"
 
@@ -31,8 +32,11 @@ export async function GET(req: NextRequest) {
   const url      = new URL(req.url)
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "letter-audio-renderer", cron_path: "/app/api/cron/letter-audio-renderer/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   if (!process.env.ELEVENLABS_API_KEY) {
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({ ran_at: new Date().toISOString(), skipped: "ELEVENLABS_API_KEY not configured" })
   }
 
@@ -48,6 +52,7 @@ export async function GET(req: NextRequest) {
     .limit(30)
   const campaigns = (rows ?? []) as Array<{ id: string }>
   if (campaigns.length === 0) {
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({ ran_at: new Date().toISOString(), rendered: 0 })
   }
 
@@ -62,6 +67,7 @@ export async function GET(req: NextRequest) {
     else                             { failed++;   outcomes.push({ campaign_id: c.id, result: `err:${r.error ?? "unknown"}` }) }
   }
 
+  if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
   return NextResponse.json({
     ran_at:    new Date().toISOString(),
     attempted: campaigns.length,

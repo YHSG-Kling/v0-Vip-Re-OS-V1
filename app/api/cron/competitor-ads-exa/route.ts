@@ -29,6 +29,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { fetchExaCompetitorAds } from "@/lib/competitive-intel/exa-competitor-ads"
 import { promoteCompetitorAdsToTopicBank } from "@/lib/competitive-intel/promote-to-topic-bank"
@@ -40,6 +41,8 @@ export async function GET(req: NextRequest) {
   const url      = new URL(req.url)
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "competitor-ads-exa", cron_path: "/app/api/cron/competitor-ads-exa/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   if (!process.env.EXA_API_KEY) {
     return NextResponse.json({

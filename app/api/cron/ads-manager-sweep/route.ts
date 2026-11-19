@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { proposeAdOptimizations, proposeAdLaunches } from "@/lib/ads/ad-manager"
 import { proposeCompetitorInspiredCreative } from "@/lib/ads/ad-creative-engine"
@@ -27,6 +28,8 @@ export const maxDuration = 60
 export async function GET(request: Request) {
   const authError = verifyCronAuth(request)
   if (authError) return authError
+  const cronDoor = await decideCronRun({ cron_name: "ads-manager-sweep", cron_path: "/app/api/cron/ads-manager-sweep/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
   try {
     const svc = createServiceClient()
     const { data: live } = await svc.from("ad_campaigns").select("brokerage_id").in("status", ["live", "launching"])

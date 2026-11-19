@@ -37,6 +37,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { composeBuyerConsultationDeck } from "@/lib/buyer-consultation/consultation-prep"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction, recordCronFailureAction } from "@/app/actions/cron-kernel"
 
 /** Same runway reasoning as listing-presentation-prep: the drip needs room
  *  between now and the appointment to spread six slides across. */
@@ -51,6 +52,8 @@ export const maxDuration = 300
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const unauth = verifyCronAuth(req)
   if (unauth) return unauth
+  const cronRun = await createCronRunContextAction({ cron_name: "buyer-consultation-prep", cron_path: "/app/api/cron/buyer-consultation-prep/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const svc = createServiceClient()
   const now = new Date().toISOString()
@@ -66,9 +69,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // A refused read is a FAILED tick, not a quiet one — scanned:0 here would
   // read exactly like "no consultations booked".
   if (apptErr) {
+    if (cronRun.data) await recordCronFailureAction({ context_id: cronRun.data.context_id, error: "HTTP 500 response", stage: "main-processing" }) // 155R1
     return NextResponse.json({ ok: false, error: apptErr.message }, { status: 500 })
   }
   if (!appointments || appointments.length === 0) {
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({ scanned: 0, built: 0, skipped: 0, deferred: 0 })
   }
 
@@ -108,6 +113,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     else skipped++ // deck already exists for this appointment (idempotent)
   }
 
+  if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
   return NextResponse.json({
     scanned: appointments.length,
     lookahead_days: PREP_LOOKAHEAD_DAYS,

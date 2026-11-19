@@ -10,6 +10,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
 
 export const dynamic = "force-dynamic"
@@ -54,6 +55,7 @@ export async function GET(request: NextRequest) {
     cron_name: "lifetime-npv-forecast-rollup",
     cron_path: "/app/api/cron/lifetime-npv-forecast-rollup/route.ts",
   })
+  if (ctx.data?.held) return NextResponse.json({ success: true, held: true, decision: ctx.data.decision }) // cron decision door (155R1): held before any domain write
   if (!ctx.success || !ctx.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }
@@ -134,6 +136,8 @@ export async function POST(request: NextRequest) {
       contact_id?:  string
     }
     if (!brokerage_id) return NextResponse.json({ error: "brokerage_id required" }, { status: 400 })
+    const cronDoor = await decideCronRun({ cron_name: "lifetime-npv-forecast-rollup", cron_path: "/app/api/cron/lifetime-npv-forecast-rollup/route.ts", brokerage_id }) // cron decision door (155R1): this tenant's halt too
+    if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
     if (contact_id) {
       const npv = await scoreContactNpv({ contactId: contact_id, brokerageId: brokerage_id })

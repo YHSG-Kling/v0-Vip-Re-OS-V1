@@ -22,6 +22,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 // ONE SPELLING FOR THE PUBLIC EVENT LABEL (§6) — the caption's hook and the
 // reel's cover frame are the same words seen by the same audience.
@@ -94,6 +95,8 @@ interface PromoRow {
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "listing-promo-social-publish", cron_path: "/app/api/cron/listing-promo-social-publish/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
 

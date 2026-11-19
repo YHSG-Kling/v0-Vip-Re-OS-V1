@@ -19,6 +19,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
@@ -28,6 +29,8 @@ export const runtime = "nodejs"
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "listing-promo-render", cron_path: "/app/api/cron/listing-promo-render/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
   // verifyCronAuth refused an unset CRON_SECRET above, so it is present here;
   // the self-calls below forward it as the same Bearer credential.
   const expected = process.env.CRON_SECRET as string

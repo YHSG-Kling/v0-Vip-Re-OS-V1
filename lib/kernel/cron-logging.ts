@@ -111,6 +111,321 @@ export interface CronRunContext {
   brokerage_id?: string
   started_at: string
   params?: Record<string, any>
+  /** WAVE 155 (lane 155R1): true when the door HELD this run — the route returns before any domain write. */
+  held?: boolean
+  /** WAVE 155 (lane 155R1): the ONE decision the door took for this run (also on the run row's metadata.decision). */
+  decision?: CronRunDecision
+}
+
+// ─── THE CRON DECISION DOOR (wave 155, lane 155R1) ───────────────────────────
+//
+// 104 crons asked no gate: no halt, authority, spend or approval decided whether the run happened, so the
+// platform god switch (lib/platform/platform-controls.ts — emergency mode / AI engine off) and the per-tenant
+// staff halt (feature_access_overrides 'autonomy') stopped autonomous SENDS at dispatch but never the cron that
+// drafts, renders, scrapes, spends and scores. Now every cron passes ONE door: createCronRunContext (below) for
+// the routes that keep a run row, decideCronRun for the few that keep none. The door resolves the cron's manager
+// (resolveCronManager) and asks the EXISTING gate (lib/managers/autonomy-gate.ts autonomyDecision) over the
+// platform halt and — when the run is tenant-scoped — that tenant's halt. Nothing new decides; the halt switches
+// staff already flip now reach the scheduler.
+//
+// TWO CLASSES, every route in ONE table (scripts/cron-decision-door-guard.ts holds the table to the route tree):
+//   · autonomous — HELD under a halt (outreach, content, spend, enrichment, AI authorship, scoring that acts).
+//   · obligation — RUNS under a halt and RECORDS why (consent, legal and closing deadlines, billing and provider
+//     truth, security, retention, health, queue recovery). Holding one of these would itself be the harm.
+// With NO halt in force the decision is "runs" for every class: same writes, same sends, same order as before;
+// the only addition is the decision written into the run row's metadata.
+// A halt read that fails reads as NOT halted (loadPlatformHalt / loadTenantAutonomyHalt fail open by design — a
+// freeze is a deliberate switch, never a DB hiccup); the decision says which halt it saw.
+export type CronRunClass = "autonomous" | "obligation"
+
+export interface CronRunDecision {
+  outcome: "runs" | "held"
+  run_class: CronRunClass | "unclassified"
+  manager: string
+  reason: string
+  platform_halt: boolean
+  tenant_halt: boolean | null
+  decided_at: string
+  rule: "lib/kernel/cron-logging.ts decideCronRun"
+}
+
+const A = "autonomous" as const
+const O = "obligation" as const
+/** Every cron route (key = the segment after /api/cron/) with its class and the reason for it. */
+export const CRON_RUN_CLASS: Readonly<Record<string, readonly [CronRunClass, string]>> = {
+  "actor-health": [O, "health: probes scraper actors and records alive/dead"],
+  "ad-performance-sync": [O, "provider truth: real ad spend and results — spend at Meta/Google must stay visible while AI is halted"],
+  "ads-manager-sweep": [A, "spend: proposes and launches ad spend"],
+  "affiliate-commissions": [O, "billing: monthly affiliate commission accrual on real MRR"],
+  "agent-coaching": [A, "AI authorship: per-agent coaching briefs"],
+  "agent-health-check": [O, "health: escalates stalled agent sessions"],
+  "ai-callback-dispatch": [A, "outreach: AI places the callback call"],
+  "ai-overage-billing": [O, "billing: bills the closed period's AI overage (m479)"],
+  "anniversary-equity": [A, "outreach: anniversary equity reports to past clients"],
+  "annual-home-value-reports": [A, "outreach: annual home-value touchpoints"],
+  "appointment-noshow": [A, "outreach: no-show re-book and re-engage"],
+  "appointment-whisper": [A, "AI authorship: pre-appointment voice briefings"],
+  "approval-push": [A, "alerts: approval reminders and manager escalations"],
+  "asset-manager-weekly": [A, "spend: spawns the Asset Manager managed agent"],
+  "audience-sync-runner": [A, "spend: pushes audience members to paid ad audiences"],
+  "automation-error-monitor": [O, "health: escalates automation breach state and credential rotation"],
+  "bidding-war-concierge": [A, "AI authorship: competitive-offer plays"],
+  "billing-dunning": [O, "billing: past-due payment recovery ladder"],
+  "blog-cadence-tick": [A, "content: generates blog posts"],
+  "board-packet": [A, "content: the monthly board packet document"],
+  "brand-listening": [A, "spend: paid brand-mention listening"],
+  "brokerage-intelligence-mine": [A, "scoring that acts: pattern insights for brokers"],
+  "brokerage-pl-rollup": [O, "billing: nightly brokerage P&L and payout truth"],
+  "bundle-attribution-rollup": [A, "scoring: campaign bundle attribution counts"],
+  "buyer-consultation-prep": [A, "content: pre-builds buyer consultation decks"],
+  "buyer-market-watch": [A, "outreach: buyer market matches and alerts"],
+  "buyer-reel-deliver": [A, "outreach: proposes finished buyer reels to buyers"],
+  "calendar-sync": [O, "provider truth: pulls calendar events from the connected provider"],
+  "campaign-orchestrator-weekly": [A, "spend: spawns the Campaign Orchestrator managed agent"],
+  "campaign-sequence-steps": [A, "outreach: executes campaign sequence steps"],
+  "capability-radar": [A, "spend: external search for new capabilities"],
+  "capacity-guardian": [A, "scoring that acts: workload rebalancing"],
+  "carrier-registration-tick": [O, "provider truth: lands ported numbers and walks A2P/toll-free registration (carrier compliance)"],
+  "client-pulse": [A, "outreach: weekly client pulse proposals"],
+  "closing-orchestration": [O, "closing deadlines: pending closing actions per transaction"],
+  "closing-watchtower": [O, "closing deadlines: chain-date moves on live deals"],
+  "commission-forecaster": [A, "AI authorship: commission and cap forecasts"],
+  "competitor-ads-exa": [A, "spend: paid competitor ad search"],
+  "compliance-monitoring": [O, "legal: license / CE / ethics lapse warnings and blockers"],
+  "composition-render-queue": [A, "spend: renders video compositions"],
+  "connector-auto-applier": [A, "acts: auto-applies connector healing proposals"],
+  "connector-health": [O, "health: connector fleet health and expiry alerts"],
+  "consent-recovery": [A, "outreach: fallback-channel contact and enrichment after a consent revocation (the revocation itself is honored at write time)"],
+  "contact-enrichment": [A, "enrichment: paid contact enrichment"],
+  "content-intel-apify": [A, "spend: paid scraping ingest"],
+  "content-intel-community": [A, "spend: community topic research"],
+  "content-intel-exa": [A, "spend: paid search ingest"],
+  "content-intel-reddit": [A, "content: topic bank scrape"],
+  "content-intel-rss": [A, "content: news topic intake"],
+  "content-intel-scan": [A, "spend: competitor content scan"],
+  "content-performance-aggregator": [A, "scoring that acts: topic performance scores"],
+  "context-spine-refresh": [A, "AI authorship: contact conversation summaries"],
+  "contingency-scan": [O, "legal deadlines: contingency deadlines within 3 days"],
+  "conversation-insights-refresh": [A, "AI authorship: conversation insights"],
+  "credential-refresh": [O, "security: refreshes expiring provider credentials"],
+  "daily-briefing": [A, "AI authorship: daily agent briefings"],
+  "deadline-watcher": [O, "legal deadlines: calendar deadline watcher"],
+  "deal-health-scan": [A, "scoring that acts: deal health scores and at-risk events"],
+  "deal-killer-radar": [A, "AI authorship: deal-killer risk copy"],
+  "did-agent-sync": [A, "spend: provider avatar agent sync"],
+  "did-result-url-rehost-sweep": [O, "retention: re-hosts paid renders before the provider URL expires"],
+  "director-reel-render": [A, "spend: renders directed videos"],
+  "dispatch": [O, "the scheduler itself: every due route decides at its own door"],
+  "distribute-podcast-episodes": [A, "content: syndicates podcast episodes"],
+  "document-autofile": [A, "AI authorship: classifies and files uploaded documents"],
+  "document-compliance-audit": [O, "legal: deal document compliance audit"],
+  "document-retention-scan": [O, "retention: flags documents past their retention window"],
+  "dotloop-sync": [O, "provider truth: signed transaction documents from the e-sign provider"],
+  "dual-transaction-timing": [A, "AI authorship: move-up choreography between two managers"],
+  "earnings-rollup": [O, "billing: commission and cap earnings truth"],
+  "education-delivery": [A, "outreach: stage lessons to clients"],
+  "em-receipt-watcher": [O, "legal deadlines: earnest-money receipt against the contract's due date"],
+  "engagement-scores": [A, "scoring that acts: engagement scores"],
+  "enrichment-processor": [A, "enrichment: lead and contact enrichment queue"],
+  "equity-trigger": [A, "outreach: past-client equity triggers"],
+  "esign-doc-sync": [O, "provider truth: signed envelopes from the e-sign provider"],
+  "farm-mail-weekly": [A, "spend: farm mail dispatch"],
+  "farm-play": [A, "outreach: geographic farming play"],
+  "financing-pit-stop": [O, "closing deadlines: financing milestone and stale pre-approval watch"],
+  "fire-drill": [O, "legal deadlines: uncovered contract deadlines inside 48h"],
+  "generate-brokerage-fee-charges": [O, "billing: periodic brokerage fee charges (idempotent per period)"],
+  "geo-citation-monitor": [A, "spend: AI-search citation monitoring"],
+  "geo-reel-autopublish": [A, "content: publishes video landing pages"],
+  "ghost-detection": [A, "outreach: ghosted-lead re-engagement"],
+  "health-check": [O, "health: platform health checks and cron counters"],
+  "identity-orphan-sweep": [O, "security: reconciles orphaned identities"],
+  "idle-hands": [A, "content: proactive manager drafts"],
+  "intent-campaign": [A, "spend: paid intent scraping"],
+  "intro-video-email-backfill": [A, "outreach: welcome video into the portal"],
+  "inventory-radar": [A, "scoring that acts: seller-intent candidates"],
+  "investor-offmarket-refresh": [A, "outreach: investor off-market matches"],
+  "journey-conformance-audit": [O, "legal: replays journey transitions against the constitutional contract (deterministic audit)"],
+  "launch-war-room": [A, "content: listing launch plays"],
+  "lead-action-plan": [A, "outreach: ISA lead action plans"],
+  "lead-scraping": [A, "spend: paid lead scraping"],
+  "letter-audio-renderer": [A, "spend: renders letter audio"],
+  "lifetime-customer-touchpoints": [A, "outreach: lifetime customer touches"],
+  "lifetime-npv-forecast-rollup": [A, "scoring: NPV and income forecasts"],
+  "listing-appointment-reminders": [A, "outreach: listing appointment reminders"],
+  "listing-health-scan": [A, "scoring that acts: listing health and interventions"],
+  "listing-presentation-prep": [A, "content: pre-builds listing presentations"],
+  "listing-promo-catchup": [A, "content: listing promo dispatch"],
+  "listing-promo-hybrid-composite": [A, "spend: composites promo renders"],
+  "listing-promo-render": [A, "spend: kicks off promo renders"],
+  "listing-promo-social-publish": [A, "content: publishes promo video to social"],
+  "listing-propensity": [A, "scoring that acts: ready-to-list briefs"],
+  "listing-seller-update-video": [A, "content: seller update video hand-off"],
+  "local-intel": [A, "spend: local intelligence pulls"],
+  "long-term-nurture": [A, "outreach: long-term nurture touches"],
+  "lookalike-audience": [A, "spend: paid lookalike indicators"],
+  "manager-eval": [O, "safety: deterministic red-team eval of the AI team (no outbound) — what tells staff the halt can lift"],
+  "manager-learning": [A, "acts: writes learned adjustments into tenant settings"],
+  "manager-signals": [A, "acts: manager bus heartbeat"],
+  "market-data-refresh": [A, "spend: market data pulls"],
+  "market-insights-weekly": [A, "AI authorship: market insights"],
+  "marketing-agent-weekly-measure": [A, "scoring: marketing plan outcomes"],
+  "marketing-agent-weekly": [A, "spend: spawns the Marketing managed agent"],
+  "marketing-attribution-engine": [A, "scoring: attribution models"],
+  "marketing-campaign-scheduler": [A, "outreach: launches scheduled campaigns"],
+  "marketing-image-regen": [A, "spend: regenerates images"],
+  "message-needs-response": [O, "human alert: a client message is waiting — when AI is halted a person must answer"],
+  "negotiation-strategy-generator": [A, "AI authorship: negotiation strategies"],
+  "network-intelligence": [A, "scoring: network benchmarks"],
+  "newsletter-cadence-tick": [A, "content: generates newsletters"],
+  "newsletter-video-render": [A, "spend: renders newsletter videos"],
+  "nothing-dropped-sweep": [A, "acts: publishes drop-risk signals to managers"],
+  "notification-delivery-escalation": [O, "queue recovery: escalates failed notification deliveries"],
+  "objection-library": [A, "AI authorship: objection library"],
+  "offer-expiry": [O, "legal: expires offers past their own terms"],
+  "offer-net-sheet": [A, "AI authorship: per-offer net sheets"],
+  "office-hours": [A, "alerts: batches approval pings"],
+  "onboarding-health": [A, "outreach: stalled onboarding nudges"],
+  "onboarding-progress-tracker": [A, "outreach: onboarding nudges"],
+  "onboarding-reminders": [A, "outreach: onboarding and mentorship reminders"],
+  "open-house-followup": [A, "outreach: open-house follow-up"],
+  "open-house-reminder": [A, "outreach: open-house reminder promos"],
+  "overnight-digest": [A, "AI authorship: overnight digest"],
+  "partners-meeting": [A, "AI authorship: partners' meeting presentation"],
+  "pattern-scan": [A, "spend: AI pattern detection"],
+  "permit-signal-scan": [A, "enrichment: permit signals"],
+  "photo-intelligence": [A, "spend: vision analysis and hero fill"],
+  "platform-lead-distribution": [A, "acts: distributes platform leads to subscribers"],
+  "platform-product-autopilot": [A, "content: platform acquisition content"],
+  "platform-prospect-followup": [A, "outreach: platform prospect pitches"],
+  "platform-sentinel": [O, "health: daily fleet watch"],
+  "podcast-weekly-auto": [A, "content: generates podcast episodes"],
+  "poll-did-avatars": [O, "provider truth: completes already-paid avatar jobs the webhook missed"],
+  "poll-did-videos": [O, "provider truth: completes already-paid video renders the webhook missed"],
+  "portal-stream-projector": [O, "provider truth: projects recorded deal events into the client portal (no AI authorship)"],
+  "predictive-listing-execute": [A, "outreach: predictive listing auto-touches"],
+  "predictive-listing-scoring": [A, "scoring that acts: queues auto-send touches"],
+  "presentation-section-drip": [A, "outreach: pre-listing drip"],
+  "proactive-intelligence": [A, "acts: fires proactive detectors"],
+  "prompt-calibration": [A, "acts: recalibrates prompts"],
+  "publish-newsletters": [A, "outreach: publishes newsletters"],
+  "publish-social-posts": [A, "outreach: publishes social posts"],
+  "qbr-invitations": [A, "outreach: QBR invitations"],
+  "quarterly-home-value-reports": [A, "outreach: quarterly home-value emails"],
+  "quarterly-tax-concierge": [A, "outreach: estimated-tax reminders to agents (advisory, not the brokerage's own filing)"],
+  "queue-drain": [O, "queue recovery: drains deferred queues (each send still passes dispatch's own autonomy gate)"],
+  "recalculate-roi": [A, "scoring: campaign ROI"],
+  "recruit-outreach": [A, "outreach: recruiting outreach"],
+  "referral-asks": [A, "outreach: referral asks"],
+  "referral-radar": [A, "outreach: referral radar"],
+  "refresh-market-rates": [A, "data: market rate snapshots"],
+  "regulatory-watcher": [A, "spend: paid regulatory search that heals law rules autonomously"],
+  "retry-errors": [O, "queue recovery: retries scheduled errors"],
+  "returning-customer-reengagement": [A, "outreach: returning customer re-engagement"],
+  "revenue-protection-rollup": [A, "scoring: revenue protection score"],
+  "reverse-prospecting": [A, "outreach: reverse prospecting"],
+  "review-request-on-close": [A, "outreach: review asks"],
+  "review-response-auto-publish": [A, "content: publishes review responses"],
+  "seller-updates": [A, "outreach: seller updates"],
+  "send-email-campaigns": [A, "outreach: sends scheduled email campaigns"],
+  "showing-lifecycle": [A, "outreach: showing feedback requests and reminders"],
+  "showing-prep": [A, "AI authorship: showing briefings"],
+  "signature-chase": [O, "closing deadlines: stalled signature nudges to the agent and broker"],
+  "social-analytics-sync": [A, "data: social engagement metrics"],
+  "social-cadence-tick": [A, "content: generates social posts"],
+  "source-conversion-learning": [A, "scoring: source conversion advice"],
+  "speed-to-lead": [A, "outreach: speed-to-lead contact"],
+  "sphere-resonance": [A, "outreach: sphere life-event touches"],
+  "sphere-weekly": [A, "spend: spawns the Sphere managed agent"],
+  "stale-contact-monitor": [A, "outreach: stale contact touches"],
+  "stale-lead-monitor": [A, "outreach: stale lead processing"],
+  "stale-listing-sphere-sweep": [A, "acts: publishes sphere hand-offs"],
+  "storage-orphan-sweep": [O, "retention: removes orphaned uploaded bytes"],
+  "stripe-drift": [O, "billing: plan catalog drift against the payment provider"],
+  "support-sla": [O, "health: support SLA breach escalation"],
+  "sync-facebook-audiences": [A, "spend: syncs paid ad audiences"],
+  "task-due": [O, "deadlines: task-due notices to the owning human"],
+  "task-overdue": [O, "deadlines: task-overdue notices to the owning human"],
+  "team-heatmap-snapshot": [A, "scoring: team heatmap"],
+  "team-optimization": [A, "acts: team optimization cycle"],
+  "tenant-safety-scan": [O, "security: tenant isolation scan"],
+  "territory-metrics": [A, "scoring: territory metrics"],
+  "tour-optimizer": [A, "acts: tour sequencing"],
+  "variant-outcomes-aggregator": [A, "scoring that acts: mail variant bandit"],
+  "vendor-follow-up-cadence": [A, "outreach: vendor follow-ups"],
+  "vendor-orchestration": [A, "outreach: vendor bench orchestration"],
+  "vendor-review-requests": [A, "outreach: vendor review requests"],
+  "video-plays": [A, "content: autonomous video plays"],
+  "voice-call-analysis": [A, "spend: AI call transcript analysis"],
+  "voice-distiller-weekly": [A, "spend: per-agent voice distiller"],
+  "voice-week-in-review": [A, "AI authorship: spoken weekly brief"],
+  "wealth-opportunity-scan": [A, "AI authorship: wealth opportunity narratives"],
+  "webhook-deliveries": [O, "queue recovery: tenant outbound webhook deliveries"],
+  "weekly-ai-metrics": [A, "scoring: AI feedback metrics"],
+  "weekly-income-digest": [A, "outreach: weekly income digest email"],
+  "wire-fraud-sentinel": [O, "security: wire-fraud detection"],
+  "zoom-transcript-reconcile": [O, "provider truth: recovers transcripts the webhook missed"],
+}
+
+/** "/app/api/cron/x/route.ts" | "/api/cron/x" | "x" → "x" (the CRON_RUN_CLASS key). */
+export function cronRouteKey(cronPath: string, cronName?: string): string {
+  const m = /(?:^|\/)api\/cron\/([^?]+?)(?:\/route\.ts)?(?:\?.*)?$/.exec(cronPath)
+  return m ? m[1] : (cronName ?? cronPath).replace(/^\/+|\/+$/g, "")
+}
+
+/**
+ * THE DECISION (no write). Platform halt first, then — only for a tenant-scoped run — that tenant's halt, both
+ * read through their existing loaders and judged by autonomyDecision. An autonomous run under a halt is HELD; an
+ * obligation runs and its decision says why. A route missing from CRON_RUN_CLASS is held as autonomous under a
+ * halt (scripts/cron-decision-door-guard.ts keeps that set empty).
+ */
+export async function resolveCronDecision(
+  input: { cron_path: string; cron_name?: string; brokerage_id?: string | null },
+  client?: ReturnType<typeof createServiceClient>,
+): Promise<CronRunDecision> {
+  const key = cronRouteKey(input.cron_path, input.cron_name)
+  const entry = CRON_RUN_CLASS[key]
+  const { resolveCronManager } = await import("@/lib/kernel/manager-registry")
+  const { autonomyDecision, loadTenantAutonomyHalt } = await import("@/lib/managers/autonomy-gate")
+  const { loadPlatformHalt } = await import("@/lib/platform/platform-controls")
+  const manager = resolveCronManager(`/api/cron/${key}`).key
+  const platformHalt = await loadPlatformHalt(client)
+  const tenantHalt = input.brokerage_id ? await loadTenantAutonomyHalt(input.brokerage_id, client) : null
+  const gate = autonomyDecision({ managerKey: manager, effective: null, platformHalt, tenantHalt: tenantHalt ?? undefined })
+  const base = { manager, platform_halt: platformHalt.halted, tenant_halt: tenantHalt ? tenantHalt.halted : null, decided_at: new Date().toISOString(), rule: "lib/kernel/cron-logging.ts decideCronRun" as const }
+  if (!gate.held) return { ...base, outcome: "runs", run_class: entry ? entry[0] : "unclassified", reason: "no halt in force" }
+  if (entry?.[0] === "obligation") return { ...base, outcome: "runs", run_class: "obligation", reason: `runs under halt: ${entry[1]} (halt: ${gate.reason})` }
+  return { ...base, outcome: "held", run_class: entry ? "autonomous" : "unclassified", reason: entry ? `held: ${gate.reason}` : `held: unclassified cron, held as autonomous until classed in CRON_RUN_CLASS (halt: ${gate.reason})` }
+}
+
+/**
+ * THE DOOR for a cron that keeps NO run row of its own. Decides, and — only when a halt is in force (a hold, or an
+ * obligation running under a halt) — records that decision as one terminal cron_execution_logs row, so the hold or
+ * the exemption is evidenced. With no halt it writes nothing: exactly today's behavior.
+ */
+export async function decideCronRun(input: { cron_name: string; cron_path: string; brokerage_id?: string | null }): Promise<{ held: boolean; decision: CronRunDecision }> {
+  const supabase = createServiceClient()
+  const decision = await resolveCronDecision(input, supabase)
+  if (decision.platform_halt || decision.tenant_halt) {
+    const { error } = await supabase.from("cron_execution_logs").insert({
+      id: uuidv4(), brokerage_id: input.brokerage_id ?? null, cron_name: input.cron_name, cron_path: input.cron_path,
+      status: "completed", started_at: decision.decided_at, completed_at: decision.decided_at, duration_ms: 0, records_processed: 0,
+      metadata: { decision, decision_record_only: true },
+    })
+    if (error) console.error("[cron-kernel] decideCronRun decision record refused:", error.message)
+  }
+  return { held: decision.outcome === "held", decision }
+}
+
+// The decision is carried onto the same run row by recordCronStart / recordCronProgress (both REPLACE metadata),
+// in-process: the route calls them in the same invocation. Bounded so a run that never closes cannot grow it.
+const carriedDecisions = new Map<string, CronRunDecision>()
+function carryDecision(contextId: string, decision: CronRunDecision): void {
+  carriedDecisions.set(contextId, decision)
+  if (carriedDecisions.size > 500) carriedDecisions.delete(carriedDecisions.keys().next().value as string)
+}
+function carried(contextId: string): { decision?: CronRunDecision } {
+  const d = carriedDecisions.get(contextId)
+  return d ? { decision: d } : {}
 }
 
 // ─── COMMAND 1: createCronRunContext ──────────────────────────────────────────
@@ -167,6 +482,9 @@ export async function createCronRunContext(
     // getCronHealth` and `lib/kernel/scraping.ts:loadScrapingDiagnostics`), which
     // is what makes an untenanted platform run readable rather than invisible.
     const supabase = createServiceClient()
+    // WAVE 155 (lane 155R1): THE DOOR — one decision per run, recorded on this row (see resolveCronDecision).
+    const decision = await resolveCronDecision(input, supabase)
+    const held = decision.outcome === "held"
     const { error: insertError } = await supabase
       .from("cron_execution_logs")
       .insert({
@@ -174,15 +492,19 @@ export async function createCronRunContext(
         brokerage_id: input.brokerage_id ?? null,
         cron_name:    input.cron_name,
         cron_path:    input.cron_path,
-        status:       "started",
+        status:       held ? "completed" : "started", // a HELD run is terminal at once: it did no work (CHECK: started|completed|failed|timeout)
         started_at,
-        metadata:     input.params ? { params: input.params } : {},
+        ...(held ? { completed_at: started_at, duration_ms: 0, records_processed: 0 } : {}),
+        metadata:     { ...(input.params ? { params: input.params } : {}), decision },
       })
 
     if (insertError) {
       // Log but don't fail — the cron should continue even if logging breaks
       console.error("[cron-kernel] createCronRunContext insert error:", insertError.message)
     }
+    // A held run stamps no 'running' snapshot (it is not running) and the route returns on `held`.
+    if (held) return { success: true, data: { ...context, held: true, decision } }
+    carryDecision(context_id, decision)
 
     // ── THE 'running' HALF, BUILT AT THE START CHOKE ─────────────────────────
     //
@@ -216,7 +538,7 @@ export async function createCronRunContext(
       console.error("[cron-kernel] createCronRunContext snapshot start-stamp refused:", snapshotError.message)
     }
 
-    return { success: true, data: context }
+    return { success: true, data: { ...context, held: false, decision } }
   } catch (error) {
     console.error("[cron-kernel] createCronRunContext error:", error)
     return {
@@ -258,7 +580,7 @@ export async function recordCronStart(
       .update({
         // 'started' is the only legal non-terminal status (CHECK: started|completed|failed|timeout)
         status:   "started",
-        metadata: input.input_count != null ? { input_count: input.input_count } : {},
+        metadata: { ...carried(input.context_id), ...(input.input_count != null ? { input_count: input.input_count } : {}) }, // 155R1: keep the door's decision on the row
       })
       .eq("id", input.context_id)
       .eq("status", "started")
@@ -309,7 +631,7 @@ export async function recordCronProgress(
       .from("cron_execution_logs")
       .update({
         records_processed: input.records_processed,
-        metadata:          input.metadata_delta,
+        metadata:          input.metadata_delta && { ...carried(input.context_id), ...input.metadata_delta }, // 155R1: keep the door's decision
       })
       .eq("id", input.context_id)
       .eq("status", "started")
@@ -347,6 +669,7 @@ export async function recordCronSuccess(
   input: RecordCronSuccessInput,
 ): Promise<KernelCronLoggingResult<RecordCronSuccessOutput>> {
   try {
+    carriedDecisions.delete(input.context_id) // 155R1: the run closes; its decision is already on the row
     const supabase = createServiceClient()
     const completed_at = new Date().toISOString()
 
@@ -438,6 +761,7 @@ export async function recordCronFailure(
   input: RecordCronFailureInput,
 ): Promise<KernelCronLoggingResult<RecordCronFailureOutput>> {
   try {
+    carriedDecisions.delete(input.context_id) // 155R1: the run closes; its decision is already on the row
     const supabase = createServiceClient()
     const completed_at = new Date().toISOString()
 

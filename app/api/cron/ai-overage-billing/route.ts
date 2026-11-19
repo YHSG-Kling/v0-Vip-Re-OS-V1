@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { runAIOverageBilling, VIDEO_OVERAGE_METRIC } from "@/lib/billing/ai-overage"
 
 /**
@@ -27,6 +28,8 @@ export async function GET(req: NextRequest) {
   // Fail-closed cron auth — missing CRON_SECRET is 500, mismatch is 401.
   const unauth = verifyCronAuth(req)
   if (unauth) return unauth
+  const cronDoor = await decideCronRun({ cron_name: "ai-overage-billing", cron_path: "/app/api/cron/ai-overage-billing/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const result = await runAIOverageBilling()
   if (!result.ok) {

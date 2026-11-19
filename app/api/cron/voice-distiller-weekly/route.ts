@@ -18,6 +18,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { distillVoiceForAgent } from "@/lib/voice-distiller/per-agent-voice"
 
@@ -28,6 +29,8 @@ export async function GET(req: NextRequest) {
   const url      = new URL(req.url)
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "voice-distiller-weekly", cron_path: "/app/api/cron/voice-distiller-weekly/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const dryRun = url.searchParams.get("dry") === "1"
   const svc = createServiceClient()
@@ -68,6 +71,7 @@ export async function GET(req: NextRequest) {
   }
 
   if (dryRun) {
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id, records_processed: 0, metadata: { dry_run: true } })
     return NextResponse.json({
       ran_at: new Date().toISOString(),
       dry_run: true,
@@ -86,6 +90,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id, records_processed: pairs.size })
   return NextResponse.json({
     ran_at: new Date().toISOString(),
     eligible_pairs: pairs.size,

@@ -23,6 +23,7 @@ export async function GET(request: Request) {
     cron_name: "lifetime-customer-touchpoints",
     cron_path: "/app/api/cron/lifetime-customer-touchpoints/route.ts",
   })
+  if (contextResult.data?.held) return Response.json({ success: true, held: true, decision: contextResult.data.decision }) // cron decision door (155R1): held before any domain write
   if (!contextResult.success || !contextResult.data) {
     return Response.json({ error: "Failed to create cron context" }, { status: 500 })
   }

@@ -12,6 +12,7 @@
  */
 import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
@@ -22,6 +23,8 @@ const PER_BROKERAGE_CAP = 60
 export async function GET(request: Request) {
   const unauthorized = verifyCronAuth(request)
   if (unauthorized) return unauthorized
+  const cronDoor = await decideCronRun({ cron_name: "proactive-intelligence", cron_path: "/app/api/cron/proactive-intelligence/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()

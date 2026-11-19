@@ -12,6 +12,7 @@
 // Auth: CRON_SECRET (lib/cron-auth). Writes via the service client (RLS-exempt by design).
 import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scanConnectivity } from "@/lib/agentic-os/resolve-connectivity"
 import { resolveConnection } from "@/lib/integrations/connection-manager"
@@ -29,6 +30,8 @@ const ATTENTION = new Set(["expired", "expiring_soon", "auth_failed", "shape_dri
 export async function GET(req: Request) {
   const unauthorized = verifyCronAuth(req)
   if (unauthorized) return unauthorized
+  const cronDoor = await decideCronRun({ cron_name: "connector-health", cron_path: "/app/api/cron/connector-health/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const probeLive = new URL(req.url).searchParams.get("probe") === "1"
   const svc = createServiceClient()

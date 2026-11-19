@@ -31,6 +31,7 @@ export async function GET(request: NextRequest) {
     cron_name: "source-conversion-learning",
     cron_path: "/app/api/cron/source-conversion-learning/route.ts",
   })
+  if (ctx.data?.held) return NextResponse.json({ success: true, held: true, decision: ctx.data.decision }) // cron decision door (155R1): held before any domain write
   if (!ctx.success || !ctx.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }

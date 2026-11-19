@@ -28,6 +28,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction, recordCronFailureAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { PICKABLE_RENDER_STATUS } from "@/lib/remotion/render-decision"
 import { recoverStalledRenders, requeueFailedRenders } from "@/lib/remotion/registry"
@@ -39,6 +40,8 @@ export const runtime = "nodejs"
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "composition-render-queue", cron_path: "/app/api/cron/composition-render-queue/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
   // verifyCronAuth refused an unset CRON_SECRET above, so it is present here;
   // the self-calls below forward it as the same Bearer credential.
   const expected = process.env.CRON_SECRET as string
@@ -132,6 +135,7 @@ export async function GET(req: NextRequest) {
     .limit(1)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   if (!rows || rows.length === 0) {
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({
       ran_at: new Date().toISOString(), processed: 0,
       leak_sweep: leakSweep, living_refresh: livingRefresh, stall_recovery: stallRecovery, auto_requeue: autoRequeue,
@@ -155,6 +159,7 @@ export async function GET(req: NextRequest) {
       body: JSON.stringify({ render_id: row.id }),
     })
     const renderBody = await r.json().catch(() => ({}))
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({
       ran_at:         new Date().toISOString(),
       processed:      1,
@@ -169,6 +174,7 @@ export async function GET(req: NextRequest) {
       failure_census: failureCensus,
     })
   } catch (e) {
+    if (cronRun.data) await recordCronFailureAction({ context_id: cronRun.data.context_id, error: "HTTP 500 response", stage: "main-processing" }) // 155R1
     return NextResponse.json({
       ran_at:    new Date().toISOString(),
       processed: 0,

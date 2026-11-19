@@ -40,6 +40,7 @@ export async function GET(req: NextRequest) {
     cron_name: "brokerage-pl-rollup",
     cron_path: "/app/api/cron/brokerage-pl-rollup/route.ts",
   })
+  if (ctx.data?.held) return NextResponse.json({ success: true, held: true, decision: ctx.data.decision }) // cron decision door (155R1): held before any domain write
   if (!ctx.success || !ctx.data) {
     return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   }

@@ -13,6 +13,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction, recordCronFailureAction } from "@/app/actions/cron-kernel"
 import { runCapabilityRadar } from "@/lib/kernel/capability-radar"
 
 export const runtime = "nodejs"
@@ -21,9 +22,12 @@ export const maxDuration = 120
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const unauth = verifyCronAuth(req)
   if (unauth) return unauth
+  const cronRun = await createCronRunContextAction({ cron_name: "capability-radar", cron_path: "/app/api/cron/capability-radar/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const svc = createServiceClient()
   const r = await runCapabilityRadar(svc as never, { maxPerQuery: 5 })
+  if (cronRun.data) await (r.errors.length === 0 ? recordCronSuccessAction({ context_id: cronRun.data.context_id, records_processed: r.searched, output_count: r.newFlags }) : recordCronFailureAction({ context_id: cronRun.data.context_id, error: r.errors.join("; "), stage: "radar" }))
   return NextResponse.json({
     ok:        r.errors.length === 0,
     searched:  r.searched,

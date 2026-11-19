@@ -22,6 +22,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { runAutoPodcast, currentIsoWeek } from "@/lib/podcast/auto-producer"
 
@@ -43,6 +44,8 @@ interface ShowRow {
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "podcast-weekly-auto", cron_path: "/app/api/cron/podcast-weekly-auto/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
   const isoWeek = currentIsoWeek()

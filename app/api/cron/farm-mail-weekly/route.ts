@@ -34,6 +34,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchFarmMail, type DispatchFarmMailResult } from "@/lib/farm-mail/dispatch-farm-mail"
 
@@ -55,6 +56,8 @@ export async function GET(req: NextRequest) {
   const url      = new URL(req.url)
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "farm-mail-weekly", cron_path: "/app/api/cron/farm-mail-weekly/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const dryRun         = url.searchParams.get("dry") === "1"
   const scopeBrokerage = url.searchParams.get("brokerage_id")  // dev-mode targeted run

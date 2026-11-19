@@ -16,11 +16,14 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scanContingenciesNearingDeadline } from "@/lib/workflow/intelligence/proactive-checks"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   // Cron auth — see lib/cron-auth.ts
   const unauth = verifyCronAuth(req)
   if (unauth) return unauth
+  const cronDoor = await decideCronRun({ cron_name: "contingency-scan", cron_path: "/app/api/cron/contingency-scan/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const findings = await scanContingenciesNearingDeadline({ withinDays: 3 })
   if (findings.length === 0) {

@@ -26,6 +26,7 @@ export async function GET(request: NextRequest) {
   const unauth = verifyCronAuth(request)
   if (unauth) return unauth
   const ctx = await createCronRunContextAction({ cron_name: "network-intelligence", cron_path: "/app/api/cron/network-intelligence/route.ts" })
+  if (ctx.data?.held) return NextResponse.json({ success: true, held: true, decision: ctx.data.decision }) // cron decision door (155R1): held before any domain write
   if (!ctx.success || !ctx.data) return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
   const contextId = ctx.data.context_id
   await recordCronStartAction({ context_id: contextId })

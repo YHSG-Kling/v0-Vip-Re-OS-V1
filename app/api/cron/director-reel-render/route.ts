@@ -20,6 +20,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
@@ -39,6 +40,8 @@ interface ReelRow {
 export async function GET(request: Request) {
   const unauthorized = verifyCronAuth(request)
   if (unauthorized) return unauthorized
+  const cronDoor = await decideCronRun({ cron_name: "director-reel-render", cron_path: "/app/api/cron/director-reel-render/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()

@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { runCarrierRegistrationTick } from "@/lib/voice/carrier-registration-loop"
 
 export const dynamic = "force-dynamic"
@@ -18,6 +19,8 @@ export const maxDuration = 300
 export async function GET(req: Request) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "carrier-registration-tick", cron_path: "/app/api/cron/carrier-registration-tick/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
   const svc = createServiceClient()
   const r = await runCarrierRegistrationTick(svc, { limit: 50 })
   return NextResponse.json({

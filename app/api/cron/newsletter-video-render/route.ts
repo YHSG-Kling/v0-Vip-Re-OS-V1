@@ -20,6 +20,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction, recordCronFailureAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 
@@ -30,6 +31,8 @@ export const runtime = "nodejs"
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "newsletter-video-render", cron_path: "/app/api/cron/newsletter-video-render/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
   // verifyCronAuth refused an unset CRON_SECRET above, so it is present here;
   // the self-calls below forward it as the same Bearer credential.
   const expected = process.env.CRON_SECRET as string
@@ -76,6 +79,7 @@ export async function GET(req: NextRequest) {
     .maybeSingle()
 
   if (!oneQueued) {
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({ ran_at: new Date().toISOString(), staged, dispatched: 0 })
   }
 
@@ -90,6 +94,7 @@ export async function GET(req: NextRequest) {
       body: JSON.stringify({ newsletter_campaign_id: (oneQueued as { newsletter_campaign_id: string }).newsletter_campaign_id }),
     })
     const body = await r.json().catch(() => ({}))
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({
       ran_at:    new Date().toISOString(),
       staged,
@@ -99,6 +104,7 @@ export async function GET(req: NextRequest) {
       render_body:   body,
     })
   } catch (e) {
+    if (cronRun.data) await recordCronFailureAction({ context_id: cronRun.data.context_id, error: "HTTP 500 response", stage: "main-processing" }) // 155R1
     return NextResponse.json({ error: (e as Error).message }, { status: 500 })
   }
 }

@@ -26,6 +26,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction, recordCronFailureAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { publishVideoProjectLanding } from "@/lib/geo/publish-video-landing"
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-status"
@@ -37,6 +38,8 @@ export const maxDuration = 120
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "geo-reel-autopublish", cron_path: "/app/api/cron/geo-reel-autopublish/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const svc = createServiceClient()
 
@@ -53,6 +56,7 @@ export async function GET(req: NextRequest) {
     .order("completed_at", { ascending: true })
     .limit(200)
   if (error) {
+    if (cronRun.data) await recordCronFailureAction({ context_id: cronRun.data.context_id, error: "HTTP 500 response", stage: "main-processing" }) // 155R1
     return NextResponse.json({ error: "scan failed", details: error.message }, { status: 500 })
   }
 
@@ -81,6 +85,7 @@ export async function GET(req: NextRequest) {
   const { ensureMissingListingSlugs } = await import("@/lib/listings/listing-slug")
   const listingPages = await ensureMissingListingSlugs(svc, 100).catch((e: unknown) => ({ scanned: 0, created: 0, errors: [(e as Error).message] }))
 
+  if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
   return NextResponse.json({
     ran_at: new Date().toISOString(),
     scanned: reels.length,

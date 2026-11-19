@@ -10,6 +10,7 @@
  */
 import { NextRequest, NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { shouldFireCadenceToday } from "@/lib/marketing/cadence-policy"
 import { stageNewsletterFromCadence } from "@/lib/marketing/newsletter-cadence"
@@ -29,6 +30,8 @@ interface PolicyRow {
 export async function GET(req: NextRequest) {
   const denied = verifyCronAuth(req)
   if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "newsletter-cadence-tick", cron_path: "/app/api/cron/newsletter-cadence-tick/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const svc = createServiceClient()
   const now = new Date()
@@ -76,5 +79,6 @@ export async function GET(req: NextRequest) {
     results.push({ scope_type: p.scope_type, scope_id: p.scope_id, outcome: r.staged ? `staged:${r.campaignId ?? ""}` : "skipped", reason: r.staged ? undefined : r.reason })
   }
 
+  if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
   return NextResponse.json({ ok: true, fired: results.filter((r) => r.outcome.startsWith("staged")).length, results })
 }

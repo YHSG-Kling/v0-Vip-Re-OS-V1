@@ -65,7 +65,7 @@ console.log("\n── 4 · scheduled ──")
 const entry = CRON_REGISTRY.find((c) => c.path === "/api/cron/capability-radar")
 check("registered in CRON_REGISTRY", !!entry)
 check("…weekly (five fields, a fixed weekday)", !!entry && /^\d+ \d+ \* \* \d$/.test(entry.schedule), entry?.schedule)
-check("the cron route verifies cron auth before running", /verifyCronAuth\(req\)\s*if \(unauth\) return unauth[\s\S]{0,200}runCapabilityRadar/.test(CRON))
+check("the cron route verifies cron auth before running", /verifyCronAuth\(req\)\s*if \(unauth\) return unauth/.test(CRON) && CRON.search(/if \(unauth\) return unauth/) < CRON.search(/runCapabilityRadar\(/))
 
 console.log("\n── 5 · the parser trusts nothing (proved by source shape — the parser is internal, not a proof-only export) ──")
 const PARSER = RADAR.slice(RADAR.indexOf("function parseRadarVerdicts("), RADAR.indexOf("export async function runCapabilityRadar("))
