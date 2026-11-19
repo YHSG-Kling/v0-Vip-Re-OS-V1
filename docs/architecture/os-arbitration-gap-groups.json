@@ -1,13 +1,13 @@
 {
  "generator": "scripts/os-coverage-ledger.ts --write (wave 155, lane 155B1) — GENERATED, do not edit; per-row ledger: coverage/os-arbitration-coverage.json (on demand)",
  "states": {
-  "working": 1757,
-  "partial": 1158,
+  "working": 1774,
+  "partial": 1144,
   "missing": 274,
   "owner-held": 1
  },
  "classification": {
-  "EXECUTABLE_GAP": 1240,
+  "EXECUTABLE_GAP": 1226,
   "LEGACY_ORPHAN": 96,
   "UNKNOWN": 80,
   "DECLARATIVE_READ_ONLY": 16,
@@ -45,7 +45,7 @@
    "OWNER_HELD": 1
   },
   "customer-facing": {
-   "EXECUTABLE_GAP": 247,
+   "EXECUTABLE_GAP": 233,
    "UNKNOWN": 9,
    "LEGACY_ORPHAN": 13,
    "DECLARATIVE_READ_ONLY": 2
@@ -62,9 +62,9 @@
   }
  },
  "executableGapRisk": {
-  "P1": 683,
+  "P1": 671,
   "P2": 301,
-  "P0": 256
+  "P0": 254
  },
  "groups": [
   {
@@ -232,7 +232,7 @@
    "leverage": [
     "lib/kernel/cron-logging.ts:125 createCronRunContext",
     "lib/managers/autonomy-gate.ts:91 autonomyDecision",
-    "lib/kernel/manager-registry.ts:3439 resolveCronManager"
+    "lib/kernel/manager-registry.ts:3442 resolveCronManager"
    ],
    "fix": "ONE cron decision at the shared run-context door: resolveCronManager(path) + autonomyDecision over the platform halt (god switch) and the tenant halt, recorded on the run row; a held run records `held` and does no work. Alternative is OWNER decision 2 (does a registered manager's deterministic rule count as the decision owner?) — that would be an analyzer change, not code",
    "proof": "planted platform halt: every manager cron returns `held` with zero domain writes; red at the base (they run)",
@@ -340,7 +340,7 @@
    },
    "leverage": [
     "scripts/os-coverage-ledger.ts:284 EVIDENCE_TABLE_RE",
-    "lib/kernel/manager-registry.ts:2144 TABLE_MANAGER"
+    "lib/kernel/manager-registry.ts:2147 TABLE_MANAGER"
    ],
    "fix": "ONE analyzer change, both directions together: narrow EVIDENCE_TABLE_RE to true logs (TRUE_LOG_RE) for ownership AND for evidence. It closes these owner gaps but also withdraws the false evidence credit on the rows counted under blindSpots.evidenceCreditedByAnEventsDomainTable — those must be ledgered in the same change (never one direction alone: that would only move a number)",
    "proof": "a planted write to calendar_events resolves its owner from TABLE_MANAGER and earns NO evidence; red at the base for both halves",
@@ -379,7 +379,7 @@
     "owner,readback": 1
    },
    "leverage": [
-    "lib/kernel/manager-registry.ts:3454 resolveTableManager"
+    "lib/kernel/manager-registry.ts:3457 resolveTableManager"
    ],
    "fix": "name the owner where the action is (the module's manager) or route the record through the owner's signal; never steward a log table to move a number",
    "proof": "census: owner resolves for each; planted log-only write stays red",
@@ -480,21 +480,21 @@
   },
   {
    "id": "G12-session-write-unledgered-P0",
-   "rows": 177,
+   "rows": 175,
    "title": "P0 user-initiated writes decided by the signed-in session that leave no action-ledger receipt",
    "risk": {
-    "P0": 177
+    "P0": 175
    },
    "domains": {
     "finance": 72,
     "transaction": 39,
     "platform": 35,
-    "customer-facing": 13,
+    "customer-facing": 11,
     "acquisition": 10,
     "marketing": 8
    },
    "missing": {
-    "evidence": 172,
+    "evidence": 170,
     "evidence,readback": 5
    },
    "leverage": [
@@ -530,21 +530,21 @@
   },
   {
    "id": "G12-session-write-unledgered-P1",
-   "rows": 545,
+   "rows": 533,
    "title": "P1 user-initiated writes decided by the signed-in session that leave no action-ledger receipt",
    "risk": {
-    "P1": 545
+    "P1": 533
    },
    "domains": {
     "marketing": 181,
-    "customer-facing": 161,
     "transaction": 158,
+    "customer-facing": 149,
     "acquisition": 31,
     "platform": 13,
     "education": 1
    },
    "missing": {
-    "evidence": 543,
+    "evidence": 531,
     "evidence,readback": 2
    },
    "leverage": [
@@ -563,7 +563,6 @@
    "modules": {
     "app/actions/ai-content-generation.tsx": 15,
     "app/actions/transactions.ts": 13,
-    "app/actions/seller-listing/execution-engine.ts": 12,
     "app/actions/ai-predictions.ts": 11,
     "app/actions/podcast-generation.ts": 10,
     "app/actions/campaign-sequences.ts": 9,
@@ -575,7 +574,8 @@
     "app/actions/listing-media.ts": 7,
     "app/actions/ai-direct-mail.ts": 6,
     "app/actions/ai-transaction-coordinator.ts": 6,
-    "app/actions/blog.ts": 6
+    "app/actions/blog.ts": 6,
+    "app/actions/photo-management.ts": 6
    }
   },
   {
@@ -773,7 +773,7 @@
  },
  "blindSpots": {
   "evidenceCreditedByAnEventsDomainTable": {
-   "rows": 114,
+   "rows": 116,
    "note": "EVIDENCE_TABLE_RE counts any `*_events` table written on the path as ledger evidence; a domain table so named (calendar_events …) is not a ledger. Correcting it ADDS gaps the frozen baseline does not hold — a batch-2 decision, not silently done here",
    "sample": [
     "assistant_tool:book_studio_session",
