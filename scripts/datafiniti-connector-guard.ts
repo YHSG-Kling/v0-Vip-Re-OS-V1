@@ -21,6 +21,9 @@
  *   J  no outreach — the producer and the client import no sender and write no Contact (positive control included)
  *   K  registry truth — matrix / scorecard / adapter / tenancy / catalogue / source rights / price row / m949 / package.json
  *   L  economics — published figures with their dates (derived from the scorecard, never re-typed)
+ *   N  (wave 155, lane 155I) the FOUR datasets over the MCP tools — license → 0 calls; schema → typed query → count → decision for
+ *      each type; the rental-status trap; overlap blocks spend; business never a Raw Lead; provenance + cost; explicit num_records;
+ *      download resumes with ONE charged job; tenant isolation; 401 vs coded errors; schema cache; selection result; one MCP path
  * Every absence assertion carries a positive control (CLAUDE.md §2).
  */
 import { readFileSync } from "node:fs"
@@ -510,8 +513,244 @@ async function main() {
     check("the comparison covers every provider the directive names, each from its scorecard row", cmp.every((p) => sc.PROVIDER_FIELD_SCORECARD.some((r) => r.provider === p)))
   }
 
+  // ─── N ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  // Wave 155 (lane 155I, owner R11): the FOUR datasets over the documented MCP tools, decided before a single credit. Every
+  // answer below is a SIMULATED MCP response through the counting transport seam — it proves mapping and decision logic only.
+  console.log("\nN — four datasets (property · people · business · product): rights → schema → typed query → count → decide → one charged step (SIMULATED)")
+  {
+    const dd = await import("../lib/lead-pipeline/datafiniti-dataset-door")
+    const T0 = new Date()
+    const PERMIT = Object.freeze({ multi_tenant: "permitted", storage: "permitted", enrichment: "permitted", ai_processing: "permitted", export: "permitted", outreach: "permitted", retentionDays: 365, source: "SIMULATED post-decision license (guard fixture)" }) as never
+    const ACTIVE = { ...PROVIDER_ACTIVATION.datafiniti, state: "active" as const }
+    const HEALTHY = { state: "healthy" as const, reason: "SIMULATED", actionable: null, mayIngest: true }
+    // Field names from the docs' MCP pages (digest 2026-11-19); the TYPE strings are synthetic — the docs state no type vocabulary.
+    const SCHEMA: Record<string, Record<string, string>> = {
+      property: { address: "string", city: "string", province: "string", postalCode: "string", country: "string", propertyType: "string", mostRecentStatus: "string", mostRecentRentalStatus: "string", mostRecentPriceAmount: "float", numBedroom: "integer", numBathroom: "float", dateUpdated: "date" },
+      people: { name: "string", title: "string", company: "string", emails: "string", phones: "string", city: "string", province: "string", country: "string" },
+      business: { name: "string", address: "string", city: "string", province: "string", postalCode: "string", country: "string", phones: "string", categories: "string", revenue: "integer", dateUpdated: "date" },
+      product: { name: "string", descriptions: "string", reviews: "string", "prices.amountMax": "float", country: "string" },
+    }
+    const daysBefore = (n: number) => new Date(T0.getTime() - n * 86_400_000).toISOString()
+    const BIZ = [
+      { id: "biz-1", name: "Example Logistics HQ", city: "Pensacola", province: "FL", postalCode: "32501", categories: ["logistics"], revenue: 2_000_000, phones: ["+1 850-555-0199"], employees: [{ firstName: "Pat", lastName: "Example" }], dateUpdated: daysBefore(30) },
+      { id: "biz-2", name: "Example Clinic", city: "Pensacola", province: "FL", postalCode: "32502", categories: ["clinic"], revenue: 1_500_000, dateUpdated: daysBefore(400) },
+    ]
+    type Mcp = { tool: string; args: any; token: string; brokerageId: string | null }
+    const mcp = (answer: (c: Mcp, n: number) => { status?: number | null; result?: unknown; error?: unknown; raw?: unknown }) => {
+      const calls: Mcp[] = []
+      const transport = async (req: Req) => {
+        const c = { tool: req.body?.params?.name, args: req.body?.params?.arguments ?? {}, token: req.token, brokerageId: req.brokerageId }
+        calls.push(c)
+        const a = answer(c, calls.length)
+        const status = a.status === undefined ? 200 : a.status
+        const data = a.raw !== undefined ? a.raw : { jsonrpc: "2.0", id: 1, ...(a.error ? { error: a.error } : { result: { structuredContent: a.result } }) }
+        return { status, data, error: status && status < 300 ? null : "err", headers: {} }
+      }
+      const paid = () => calls.filter((c) => dc.DATAFINITI_TOOL_CHARGE[c.tool as keyof typeof dc.DATAFINITI_TOOL_CHARGE] === "paid").length
+      return { calls, paid, transport: transport as never }
+    }
+    const happy = (over: Partial<Record<string, (c: Mcp) => unknown>> = {}) => mcp((c) => {
+      if (over[c.tool]) return { result: over[c.tool]!(c) }
+      if (c.tool === "df_get_schema") return { result: SCHEMA[c.args.data_type] }
+      if (c.tool === "df_count") return { result: { num_found: 2 } }
+      if (c.tool === "df_search") return { result: { num_found: 2, total_cost: 2, records: BIZ } }
+      if (c.tool === "df_get_record") return { result: BIZ[0] }
+      if (c.tool === "df_start_download") return { result: { id: 777 } }
+      return { result: { status: "completed", results: ["https://files.example.com/dl-777.json"] } }
+    })
+    let seq = 0
+    const tenant = (brokerageId: string, token: string) => ({ id: `conn-${brokerageId.slice(0, 4)}-${++seq}`, brokerageId, token, verdict: HEALTHY, rights: PERMIT })
+    const store = () => {
+      const rows: Array<{ id: string; brokerageId: string; dataType: string; requestId: string; status: string; metadata: any }> = []
+      return {
+        rows,
+        checkpoints: {
+          read: async (s: any) => ({ ok: true as const, row: (rows.find((r) => r.brokerageId === s.brokerageId && r.dataType === s.dataType && r.requestId === s.requestId && r.status === "running") ?? null) as never }),
+          write: async (s: any, meta: any) => { rows.push({ id: `cp-${rows.length + 1}`, brokerageId: s.brokerageId, dataType: s.dataType, requestId: s.requestId, status: "running", metadata: meta }); return true },
+          close: async (s: any, status: string) => { const r = rows.find((x) => x.id === s.id && x.brokerageId === s.brokerageId); if (!r) return false; r.status = status; return true },
+        },
+      }
+    }
+    const landed: Record<string, any[]> = {}
+    const sink = (brokerageId: string) => async (obs: any[]) => { (landed[brokerageId] ??= []).push(...obs); return true }
+    const bookings: any[] = []
+    const execDeps = (t: { transport: never }, brokerageId: string, over: Record<string, unknown> = {}) => ({ client: { transport: t.transport, env, sleep: noSleep }, chargeBooked: async () => false, book: async (i: any) => { bookings.push(i); return true }, deliver: sink(brokerageId), ...over })
+    const bizNeed = (delivery: "search" | "record" | "download" = "search", numRecords = 2) => ({ dataType: "business" as const, terms: [{ field: "categories", op: "any" as const, values: ["logistics", "clinic"] }, { field: "province", op: "eq" as const, value: "FL" }], uses: ["enrichment" as const], delivery, numRecords, recordId: "biz-1" })
+
+    // N1 — LICENSE unresolved → ZERO calls of any kind, all four datasets, every mode.
+    const held = happy()
+    let heldRefusals = 0
+    for (const dt of dc.DATAFINITI_DATA_TYPES) for (const mode of ["discover", "preflight", "execute"] as const) {
+      const r = await dd.runDatafinitiDatasetDoor({ mode, brokerageId: A, route: "platform", need: { ...bizNeed(), dataType: dt }, requestId: "r1", approval: { approvedBy: "u", maxCredits: 100 } }, { client: { transport: held.transport, env } })
+      if (!r.ok && r.stage === "rights" && /LICENSE-HELD/.test(r.refused ?? "")) heldRefusals++
+    }
+    const pending = await dd.runDatafinitiDatasetDoor({ mode: "discover", brokerageId: A, route: "tenant", tenantConnection: { id: "c", brokerageId: A, token: TOKEN_A, verdict: { state: "pending_owner_licensing", reason: "dormant", actionable: null, mayIngest: false } } }, { client: { transport: held.transport, env } })
+    const activeNoRights = await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "platform", need: bizNeed() }, { activation: ACTIVE, client: { transport: held.transport, env } })
+    check("N1 LICENSE unresolved: 12 / 12 (4 datasets × discover / preflight / execute) refused LICENSE-HELD at rights, tenant pending_owner_licensing refused, and activation alone is not a license (the rights registry still reads not_stated) — ZERO transport calls, free or charged", heldRefusals === 12 && !pending.ok && !activeNoRights.ok && activeNoRights.verdict === "license_held" && held.calls.length === 0, `${heldRefusals} refusals, ${held.calls.length} calls`)
+    const ctl = happy()
+    const ctlR = await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "platform", need: bizNeed() }, { activation: ACTIVE, rights: PERMIT, client: { transport: ctl.transport, env } })
+    check("N1 POSITIVE CONTROL: the same preflight with activation AND recorded rights reaches the transport (free schema + count only)", ctlR.ok && ctl.calls.length > 0 && ctl.paid() === 0, JSON.stringify(ctlR.refused))
+    check("N1 the shipped registry: DATAFINITI_SOURCE_RIGHTS is not_stated for all six uses and PROVIDER_ACTIVATION.datafiniti is dormant_pending_rights", (["multi_tenant", "storage", "enrichment", "ai_processing", "export", "outreach"] as const).every((u) => dd.DATAFINITI_SOURCE_RIGHTS[u] === "not_stated") && PROVIDER_ACTIVATION.datafiniti.state === "dormant_pending_rights")
+
+    // N2 — each of the four datasets has a schema → count → decision path, with zero charged calls.
+    const want: Record<string, string> = { property: "blocked_overlap", people: "route_people_gates", business: "needs_approval", product: "not_needed" }
+    const terms: Record<string, any[]> = {
+      property: [{ field: "city", op: "eq", value: "Austin" }, { field: "province", op: "eq", value: "TX" }, { field: "mostRecentStatus", op: "eq", value: "For Sale" }],
+      people: [{ field: "title", op: "eq", value: "Chief Executive Officer" }, { field: "country", op: "eq", value: "US" }],
+      business: bizNeed().terms,
+      product: [{ field: "descriptions", op: "eq", value: "deck stain" }],
+    }
+    for (const dt of dc.DATAFINITI_DATA_TYPES) {
+      const t = happy()
+      const r = await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: { dataType: dt, terms: terms[dt], uses: ["enrichment"], delivery: "search", numRecords: 2 } }, { client: { transport: t.transport, env } })
+      check(`N2 ${dt}: df_get_schema → typed query → df_count → decision "${want[dt]}" (2 free calls, 0 charged)`, r.ok && r.verdict === want[dt] && t.calls.map((c) => c.tool).join() === "df_get_schema,df_count" && t.paid() === 0 && r.count === 2 && t.calls.every((c) => c.args.data_type === dt), `${r.verdict} ${r.refused} ${t.calls.map((c) => c.tool)}`)
+    }
+
+    // N3 — the query is built from the REAL schema; the documented rental trap is refused before any count.
+    const q1 = happy()
+    const ghost = await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: { dataType: "property", terms: [{ field: "estimatedEquity", op: "eq", value: "high" }], uses: [], delivery: "search", numRecords: 1 } }, { client: { transport: q1.transport, env } })
+    check("N3 a field the schema does not carry (estimatedEquity) is refused at query — the count is never called", !ghost.ok && ghost.stage === "query" && /not a field in the property schema/.test(ghost.refused ?? "") && q1.calls.map((c) => c.tool).join() === "df_get_schema")
+    const q2 = happy()
+    const trap = await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: { dataType: "property", terms: [{ field: "province", op: "eq", value: "TX" }, { field: "mostRecentStatus", op: "eq", value: "For Rent" }], uses: [], delivery: "search", numRecords: 1 } }, { client: { transport: q2.transport, env } })
+    check("N3 the documented trap: a rental status on mostRecentStatus (returns ZERO with no error) is refused before the count", !trap.ok && /mostRecentRentalStatus/.test(trap.refused ?? "") && !q2.calls.some((c) => c.tool === "df_count"))
+    const q3 = happy()
+    const rent = await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: { dataType: "property", terms: [{ field: "country", op: "eq", value: "US" }, { field: "province", op: "eq", value: "TX" }, { field: "mostRecentRentalStatus", op: "eq", value: "For Rent" }, { field: "numBedroom", op: "range", from: 2, to: null }], uses: [], delivery: "search", numRecords: 1 } }, { client: { transport: q3.transport, env } })
+    check("N3 POSITIVE CONTROL: the docs' rental query on the RENTAL field builds the documented syntax (quoted values, a numeric range)", rent.query === `country:"US" AND province:"TX" AND mostRecentRentalStatus:"For Rent" AND numBedroom:[2 TO *]` && q3.calls.some((c) => c.tool === "df_count" && c.args.query === rent.query), String(rent.query))
+    const q4 = happy()
+    const badType = await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: { dataType: "business", terms: [{ field: "revenue", op: "eq", value: '1" OR *' }], uses: [], delivery: "search", numRecords: 1 } }, { client: { transport: q4.transport, env } })
+    check("N3 a value that fails its schema type (text on a numeric field) is refused — nothing is escaped into a live clause", !badType.ok && badType.stage === "query")
+
+    // N4 — overlap with an ACTIVE incumbent blocks the spend; a named gap field opens a field-gap path.
+    const o1 = happy()
+    const overlap = await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: { dataType: "property", terms: terms.property, uses: [], delivery: "search", numRecords: 2 }, requestId: "o1", approval: { approvedBy: "u-approver", maxCredits: 50 } }, execDeps(o1, A))
+    check("N4 property already served by RentCast (active) → blocked_overlap: an approved execute makes ZERO charged calls", !overlap.ok && overlap.verdict === "blocked_overlap" && overlap.overlap.includes("rentcast") && o1.paid() === 0, `${overlap.verdict} ${overlap.overlap}`)
+    const o2 = happy()
+    const people = await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: { dataType: "people", terms: terms.people, uses: [], delivery: "search", numRecords: 2 }, requestId: "o2", approval: { approvedBy: "u-approver", maxCredits: 50 } }, execDeps(o2, A))
+    check("N4 people (Versium active) are NEVER bought here — routed to the established people gates (runDatafinitiPeoplePull), ZERO charged calls", !people.ok && people.verdict === "route_people_gates" && people.overlap.includes("versium") && o2.paid() === 0)
+    const o3 = happy()
+    const gap = await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: { dataType: "property", terms: terms.property, uses: [], gapFields: ["mostRecentRentalStatus"], delivery: "search", numRecords: 2 } }, { client: { transport: o3.transport, env } })
+    check("N4 POSITIVE CONTROL: the same property need naming a schema gap field is no longer blocked (it waits on an approver)", gap.ok && gap.verdict === "needs_approval")
+
+    // N5 — a business result: one charged search, typed MARKET observations (never Raw Lead), provenance + credit share kept.
+    bookings.length = 0
+    const s1 = happy()
+    const biz = await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: bizNeed(), requestId: "biz-r1", approval: { approvedBy: "u-approver", maxCredits: 5 } }, execDeps(s1, A))
+    const ob = biz.observations[0]
+    check("N5 one charged df_search with num_records set EXPLICITLY to the estimate (2), then landed", biz.ok && s1.paid() === 1 && s1.calls.find((c) => c.tool === "df_search")?.args.num_records === 2 && biz.delivered === true, `${biz.refused}`)
+    check("N5 a business record is NEVER a Raw Lead: domain market, rawLead false, the named employees DROPPED", biz.observations.length === 2 && biz.observations.every((o) => o.domain === "market" && o.rawLead === false) && ob.dropped.includes("employees") && !("employees" in ob.fields))
+    check("N5 provenance and cost survive: vendor row id, dateUpdated → source age 30 d, the query, credit share total_cost / records = 1, USD unknown (null — never invented)", ob.vendorRecordId === "biz-1" && ob.provenance.sourceAgeDays === 30 && ob.provenance.query === biz.query && ob.provenance.creditShare === 1 && ob.provenance.costUsd === null && biz.creditsCharged === 2)
+    check("N5 ONE booking under the tenant's charge-once key, price_state unknown at $0 (no invented price), tenant-paid, the approver named", bookings.length === 1 && bookings[0].idempotencyKey === `datafiniti:business:${A}:biz-r1` && bookings[0].priceState === "unknown" && bookings[0].cost === 0 && bookings[0].unitCount === 2 && bookings[0].coverage === "tenant_paid" && bookings[0].metadata.approved_by === "u-approver")
+    const doorSrc = code("lib/lead-pipeline/datafiniti-dataset-door.ts")
+    // Import paths are string literals, so this scan reads comment-stripped (NOT string-blanked) source.
+    const doorImports = stripComments(read("lib/lead-pipeline/datafiniti-dataset-door.ts"))
+    const prodImports = stripComments(read("lib/lead-pipeline/datafiniti-people-producer.ts"))
+    // An IMPORT (static or dynamic) of the RawData producer / a sender, or a CALL — not prose naming the people route.
+    const rawdataRe = /(from|import\()\s*"@\/lib\/(kernel\/scraping|messaging|email|sms|outreach)[/"]|\bingestRawSourceBatch\(|\bsend(Email|Sms)\(/
+    check("N5 the dataset door imports no RawData producer and no sender (comment-stripped source) — POSITIVE CONTROL: the same pattern finds the people producer's RawData door", !rawdataRe.test(doorImports) && rawdataRe.test(prodImports))
+
+    // N6 — num_records is never left to the vendor default; the per-call ceiling is the documented 50.
+    const n6 = happy()
+    const noN = await dc.callDatafinitiTool(P, "df_search", { data_type: "business", query: "categories:hotels" }, { transport: n6.transport, env })
+    const n51 = await dc.callDatafinitiTool(P, "df_search", { data_type: "business", query: "categories:hotels", num_records: 51 }, { transport: n6.transport, env })
+    const badType2 = await dc.callDatafinitiTool(P, "df_count", { data_type: "homes", query: "x:y" }, { transport: n6.transport, env })
+    check("N6 df_search without an explicit num_records, with 51, or any tool with an undocumented data_type is refused BEFORE any call", !noN.ok && noN.kind === "invalid_request" && !n51.ok && !badType2.ok && n6.calls.length === 0)
+    const n50 = await dc.callDatafinitiTool(P, "df_search", { data_type: "business", query: "categories:hotels", num_records: 50 }, { transport: n6.transport, env })
+    check("N6 POSITIVE CONTROL: num_records 50 is sent as given", n50.ok && n6.calls.length === 1 && n6.calls[0].args.num_records === 50)
+
+    // N7 — an async download resumes with ONE charged job.
+    const st7 = store()
+    let dlState = "running"
+    const t7 = happy({ df_download_status: () => ({ status: dlState, ...(dlState === "completed" ? { results: ["https://files.example.com/dl-777.json"] } : {}) }) })
+    const files: string[] = []
+    const fetch7 = async (u: string) => { files.push(u); return BIZ as any[] }
+    const d1 = await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: bizNeed("download", 2), requestId: "dl-r1", approval: { approvedBy: "u-approver", maxCredits: 5 } }, execDeps(t7, A, { checkpoints: st7.checkpoints, fetchDownloadFile: fetch7 }))
+    dlState = "completed"
+    const d2 = await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: bizNeed("download", 2), requestId: "dl-r1", approval: { approvedBy: "u-approver", maxCredits: 5 } }, execDeps(t7, A, { checkpoints: st7.checkpoints, fetchDownloadFile: fetch7, chargeBooked: async () => true }))
+    const starts = t7.calls.filter((c) => c.tool === "df_start_download").length
+    check("N7 run 1 starts ONE download, writes the checkpoint at once and stops at download_pending (running)", d1.ok && d1.stage === "download_pending" && d1.downloadId === "777" && st7.rows.length === 1 && st7.rows[0].metadata.download_id === "777", `${d1.stage} ${d1.refused}`)
+    check("N7 run 2 RESUMES the checkpoint: free df_download_status only, the file read, observations landed, the checkpoint closed — df_start_download called ONCE across both runs", d2.ok && d2.resumed && d2.stage === "done" && starts === 1 && files.length === 1 && d2.observations.length === 2 && st7.rows[0].status === "completed", `${d2.stage} ${d2.refused} starts ${starts}`)
+
+    // N8 — tenant A cannot read tenant B's results (and a key never crosses tenants).
+    const st8 = store()
+    const t8a = happy({ df_download_status: () => ({ status: "running" }) })
+    await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: bizNeed("download", 2), requestId: "shared-r", approval: { approvedBy: "u-a", maxCredits: 5 } }, execDeps(t8a, A, { checkpoints: st8.checkpoints }))
+    const bRead = await st8.checkpoints.read({ brokerageId: B, dataType: "business", requestId: "shared-r" })
+    const t8b = happy()
+    const bRun = await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: B, route: "tenant", tenantConnection: tenant(B, TOKEN_B), need: bizNeed("search", 1), requestId: "shared-r", approval: { approvedBy: "u-b", maxCredits: 5 } }, execDeps(t8b, B))
+    check("N8 tenant B's checkpoint read for A's request id finds NOTHING; B's run spends only B's token and lands only under B", bRead.ok && bRead.row === null && bRun.ok && t8b.calls.every((c) => c.token === TOKEN_B && c.brokerageId === B) && (landed[B] ?? []).every((o) => o.brokerageId === B) && !(landed[A] ?? []).some((o) => o.brokerageId === B))
+    const t8c = happy()
+    const cross = await dd.runDatafinitiDatasetDoor({ mode: "discover", brokerageId: B, route: "tenant", tenantConnection: tenant(A, TOKEN_A) }, { client: { transport: t8c.transport, env } })
+    check("N8 tenant A's connection presented under tenant B is refused with ZERO calls", !cross.ok && cross.stage === "rights" && t8c.calls.length === 0)
+
+    // N9 — 401 vs coded errors: no retry on the final codes; bounded backoff on the two transient ones; a paid 5xx never re-sent.
+    let slept = 0
+    const sleepCount = async () => { slept++ }
+    const e401 = mcp(() => ({ status: 401, raw: "unauthorized" }))
+    const r401 = await dc.callDatafinitiTool(P, "df_count", { data_type: "property", query: "province:TX" }, { transport: e401.transport, env, sleep: sleepCount })
+    check("N9 HTTP 401 → auth_failed, ONE attempt, no retry, no token in the message", !r401.ok && r401.kind === "auth_failed" && e401.calls.length === 1 && !r401.message.includes(TOKEN_P))
+    const finalCodes = await Promise.all(dc.DATAFINITI_NON_RETRYABLE_CODES.map(async (code) => { const t = mcp(() => ({ result: { code, message: `simulated ${code}`, field: "query" } })); const r = await dc.callDatafinitiTool(P, "df_count", { data_type: "business", query: "categories:x" }, { transport: t.transport, env, sleep: sleepCount }); return !r.ok && r.kind === "coded_error" && r.code === code && !r.retryable && t.calls.length === 1 }))
+    check(`N9 every documented FINAL code (${dc.DATAFINITI_NON_RETRYABLE_CODES.length}) → coded_error with its code, ONE attempt, never retried`, finalCodes.every(Boolean) && slept === 0, `${finalCodes.filter((x) => !x).length} wrong, slept ${slept}`)
+    for (const code of dc.DATAFINITI_TRANSIENT_CODES) {
+      slept = 0
+      const t = mcp((_c, n) => (n === 1 ? { error: { code: -32000, message: "x", data: { code, message: `simulated ${code}` } } } : { result: { num_found: 3 } }))
+      const r = await dc.callDatafinitiTool(P, "df_count", { data_type: "business", query: "categories:x" }, { transport: t.transport, env, sleep: sleepCount })
+      check(`N9 transient ${code} → backoff once, then the answer (2 attempts)`, r.ok && t.calls.length === 2 && slept === 1 && r.payload.num_found === 3)
+    }
+    slept = 0
+    const tx = mcp(() => ({ result: { code: "internal_error", message: "simulated" } }))
+    const rx = await dc.callDatafinitiTool(P, "df_count", { data_type: "business", query: "categories:x" }, { transport: tx.transport, env, sleep: sleepCount, maxRetries: 2 })
+    check("N9 a transient code that persists stops after the bounded retries (3 attempts at maxRetries 2) and reads retryable", !rx.ok && rx.code === "internal_error" && rx.retryable && tx.calls.length === 3 && slept === 2)
+    const p5 = mcp(() => ({ status: 503, raw: "unavailable" }))
+    const r5 = await dc.callDatafinitiTool(P, "df_search", { data_type: "business", query: "categories:x", num_records: 5 }, { transport: p5.transport, env, sleep: sleepCount })
+    const f5 = mcp((_c, n) => (n === 1 ? { status: 503, raw: "unavailable" } : { result: { num_found: 1 } }))
+    const rf5 = await dc.callDatafinitiTool(P, "df_count", { data_type: "business", query: "categories:x" }, { transport: f5.transport, env, sleep: sleepCount })
+    check("N9 a PAID tool's 5xx is OUTCOME UNKNOWN and never re-sent (1 call); a FREE tool's 5xx is retried (POSITIVE CONTROL: 2 calls, answered)", !r5.ok && r5.kind === "outcome_unknown" && p5.calls.length === 1 && rf5.ok && f5.calls.length === 2)
+
+    // N10 — the schema cache: per credential scope, invalidated by schema drift and by a regenerated token.
+    const conn = tenant(A, TOKEN_A)
+    const c1 = happy()
+    await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: conn, need: bizNeed() }, { client: { transport: c1.transport, env } })
+    const c2 = happy()
+    const again = await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: conn, need: bizNeed() }, { client: { transport: c2.transport, env } })
+    check("N10 a second preflight on the same credential reuses the cached schema (no df_get_schema call)", again.schemas[0]?.cached === true && !c2.calls.some((c) => c.tool === "df_get_schema"))
+    const c3 = happy()
+    const regen = await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: { ...conn, token: `${TOKEN_A}regenerated` }, need: bizNeed() }, { client: { transport: c3.transport, env } })
+    check("N10 a regenerated token (the docs: it changes with the password) is a NEW scope — the schema is re-read", regen.schemas[0]?.cached === false && c3.calls[0]?.tool === "df_get_schema")
+    const c4 = mcp((c) => (c.tool === "df_count" ? { result: { code: "unknown_field", message: "simulated drift", field: "categories" } } : { result: SCHEMA[c.args.data_type] }))
+    await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: conn, need: bizNeed() }, { client: { transport: c4.transport, env } })
+    const c5 = happy()
+    await dd.runDatafinitiDatasetDoor({ mode: "preflight", brokerageId: A, route: "tenant", tenantConnection: conn, need: bizNeed() }, { client: { transport: c5.transport, env } })
+    check("N10 an unknown_field answer invalidates the cached schema — the next preflight re-reads it", c5.calls[0]?.tool === "df_get_schema")
+
+    // N11 — charge once, a canonical writer, an approver: each refuses BEFORE any charged call.
+    const k1 = happy(), k2 = happy(), k3 = happy(), k4 = happy()
+    const once = await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: bizNeed(), requestId: "biz-r1", approval: { approvedBy: "u", maxCredits: 5 } }, execDeps(k1, A, { chargeBooked: async () => true }))
+    const blind = await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: bizNeed(), requestId: "biz-r2", approval: { approvedBy: "u", maxCredits: 5 } }, execDeps(k2, A, { chargeBooked: async () => null }))
+    const nowhere = await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: bizNeed(), requestId: "biz-r3", approval: { approvedBy: "u", maxCredits: 5 } }, execDeps(k3, A, { deliver: undefined }))
+    const over = await dd.runDatafinitiDatasetDoor({ mode: "execute", brokerageId: A, route: "tenant", tenantConnection: tenant(A, TOKEN_A), need: bizNeed(), requestId: "biz-r4", approval: { approvedBy: "u", maxCredits: 1 } }, execDeps(k4, A))
+    check("N11 a booked charge key, an unreadable spend ledger, no canonical-domain writer, and an estimate over the approved ceiling each refuse with ZERO charged calls", !once.ok && !blind.ok && !nowhere.ok && /cannot land/.test(nowhere.refused ?? "") && !over.ok && over.verdict === "over_approval" && [k1, k2, k3, k4].every((t) => t.paid() === 0))
+
+    // N12 — the selection result (I3), derived from the same decision; read by the provider capability matrix.
+    const sel = dd.datafinitiDatasetSelection()
+    const by = Object.fromEntries(sel.map((r) => [r.dataType, r]))
+    check("N12 selection: property DORMANT behind RentCast · people CONDITIONAL GAP-FILL behind Versium · business CONDITIONAL GAP-FILL · product NOT NEEDED — every one LICENSE-held today", by.property.selection === "dormant" && by.property.incumbents.includes("rentcast") && by.people.selection === "conditional_gap_fill" && by.people.incumbents.includes("versium") && by.business.selection === "conditional_gap_fill" && by.business.incumbents.length === 0 && by.product.selection === "not_needed" && sel.every((r) => r.licenseHeld))
+    check("N12 cost: people from the scorecard's published-plan row ($0.19 ceiling); property / business / product read UNKNOWN — no invented price", /\$0\.19/.test(by.people.perRecordCost) && ["property", "business", "product"].every((d) => /^unknown/.test(by[d].perRecordCost)))
+    const selOpen = dd.datafinitiDatasetSelection({ activation: ACTIVE, rights: PERMIT })
+    check("N12 POSITIVE CONTROL: with activation and recorded rights the same rows read license-held FALSE", selOpen.every((r) => !r.licenseHeld))
+    const cm = await import("../lib/providers/provider-capability-matrix")
+    const dfRow = cm.providerCapabilityMatrix().find((r) => r.provider === "datafiniti")!
+    check("N12 the provider capability matrix carries the four-dataset selection on the Datafiniti row only", dfRow.datasets?.length === 4 && cm.providerCapabilityMatrix().filter((r) => r.datasets).length === 1)
+
+    // N13 — one MCP path; the connect step wired.
+    const clientRaw = stripComments(read("lib/external/datafiniti-client.ts"))
+    check("N13 the client builds an MCP tools/call in exactly ONE place (callDatafinitiTool); download status rides it", (clientRaw.match(/method: "tools\/call"/g) ?? []).length === 1 && /callDatafinitiTool\(cred, "df_download_status"/.test(clientRaw))
+    check("N13 the dataset door reaches charged tools only through callDatafinitiTool and opens no fetch of its own", !/\bfetch\(/.test(doorSrc) && /callDatafinitiTool\(cred, "df_start_download"/.test(stripComments(read("lib/lead-pipeline/datafiniti-dataset-door.ts"))))
+    const actionSrc = stripComments(read("app/actions/tenant-connections.ts"))
+    check("N13 the tenant connect step runs the DECLARED free account read and the free four-schema discovery for Datafiniti (it fell to 'no free health read' at the base)", /p\.provider === "datafiniti"/.test(actionSrc) && /getDatafinitiAccountHealth\(cred\)/.test(actionSrc) && /runDatafinitiDatasetDoor\(\{ mode: "discover"/.test(actionSrc))
+  }
+
   console.log("\nCERTIFICATION")
-  console.log("  code-certified (offline, injected transport + in-memory database): query builder, mapper, count, search, download start / status / resume, account health, failures, isolation, rights gate, charge-once, outcome-unknown reconcile, RawData ingest, registries")
+  console.log("  code-certified (offline, injected transport + in-memory database): query builder, mapper, count, search, download start / status / resume, account health, failures, isolation, rights gate, charge-once, outcome-unknown reconcile, RawData ingest, registries; four-dataset MCP door (schema / count / decision / one charged step / resume / isolation / coded errors) — SIMULATED")
   console.log("  live-verified: NONE — no Datafiniti account, no token, no live call (owner-held: licensing decision; license-held: SaaS / storage / AI / outreach rights)")
   console.log(`\nDATAFINITI CONNECTOR — RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log("❌ DATAFINITI_CONNECTOR_FAIL"); process.exit(1) }

@@ -211,6 +211,18 @@ async function renderers(): Promise<Renderers> {
         table(["Stack status", "Providers", "Why (per provider)"], (["PRIMARY", "CONDITIONAL_GAP_FILL", "TENANT_OWNED_OPTION", "DORMANT", "LICENSE_HELD", "NOT_NEEDED"] as const).map((tier) => { const inTier = rows.filter((r) => r.stack.tier === tier || (tier === "TENANT_OWNED_OPTION" && r.stack.tenantOption && r.stack.tier !== tier)); return [`**${tier}**`, inTier.map((r) => r.label).join(", ") || "none", inTier.map((r) => `${r.label}: ${r.stack.tier === tier ? r.stack.why : "its tenant-owned route is built — the tenant's own account, with the tenant's own LICENSE attestation captured at connect (the platform's terms with the vendor are not implied)"}`).join(" · ") || "—"] })))
       return out.join("\n")
     },
+    // Wave 155 (lane 155I, owner R11): the four Datafiniti datasets and the selection result — the dataset door's own decision.
+    "datafiniti-datasets": () => {
+      const ds = cm.providerCapabilityMatrix().find((r) => r.provider === "datafiniti")!.datasets ?? []
+      return [
+        "Every row is DORMANT — no live call is on record, and LICENSE-held until the owner's licensing decision (multi-tenant use, storage, enrichment, AI processing, export, outreach, retention are not stated in the documentation read). Fields are only those the documentation pages NAME; `df_get_schema` is the field authority at run time. About 50,000 records a month is a model scenario, never permission.",
+        "",
+        table(["Dataset", "Need", "Fields the docs name", "Active incumbent", "Datafiniti selection", "License", "Per-record cost", "Canonical domain", "Never"], ds.map((d) => [
+          `**${d.dataType}**`, d.need, d.documentedFields.join(", "), d.incumbents.join(", ") || "none", `${d.selection.replace(/_/g, " ")} — ${d.selectionWhy}`,
+          d.licenseHeld ? `LICENSE-HELD (${d.licenseGaps.join("; ")})` : "recorded", d.perRecordCost, d.canonicalDomain, d.never.join("; "),
+        ])),
+      ].join("\n")
+    },
   }
 }
 
@@ -220,6 +232,7 @@ const NEW_BLOCK_HEADINGS: Record<string, string> = {
   "business-matrix": "## 11. Source-to-business capability matrix (wave 154, lane 154J — directive J2; GENERATED from `providerCapabilityMatrix()`)",
   "source-status": "## 12. Google, Nextdoor and Meta status as the owner ruled it (wave 154, lane 154J — directive J5; GENERATED from `acquisitionDecisionSupport()`)",
   "pilot-stack": "## 13. The matched-record pilot proposal and the smallest practical stack (wave 154, lane 154J — directives J4 / J6; GENERATED)",
+  "datafiniti-datasets": "## 14. Datafiniti — four datasets and the provider selection result (wave 155, lane 155I — owner R11; GENERATED from `datafinitiDatasetSelection()`)",
 }
 
 const START = (n: string) => `<!-- GENERATED:${n}:start — rendered by scripts/provider-gap-matrix-guard.ts --write; do not edit inside the markers -->`
@@ -616,6 +629,9 @@ async function main() {
     check("J4: Datafiniti is LICENSE_HELD in the stack, PENDING_RIGHTS in status, and offers NO tenant option while its license is pending (its tenant route is built but not licensed)", df.stack.tier === "LICENSE_HELD" && df.businessStatus === "PENDING_RIGHTS" && df.stack.tenantOption === false && df.states.tenant === "awaiting_license")
     const dfPlan = planner.paidPullApproval([{ id: "plan-j4", brokerage_id: "b-j4", status: "approved", valid_until: "2027-01-01T00:00:00Z", lines: [{ source: "datafiniti_people", status: "approved", maxSpendUsd: 100, approvedAt: "2026-11-01T00:00:00Z" }] }], { brokerageId: "b-j4", source: "datafiniti_people" }, new Date("2026-11-18T00:00:00Z"))
     check("J4: an approved spending plan opens the SPEND gate only — the matrix still reads Datafiniti awaiting LICENSE on both routes (the rights gate is separate: test:datafiniti-connector)", dfPlan.allowed === true && df.states.platform === "awaiting_license")
+    // Wave 155 (lane 155I, owner R11): Datafiniti is four datasets, every one LICENSE-held while the platform row is awaiting license.
+    const dsRows = df.datasets ?? []
+    check("J4 (wave 155): the Datafiniti row carries property / people / business / product, each LICENSE-held while the route awaits its license, product never more than not-needed, and no dataset claims a price the scorecard did not publish", dsRows.map((d) => d.dataType).join() === "property,people,business,product" && dsRows.every((d) => d.licenseHeld === (df.states.platform === "awaiting_license")) && dsRows.find((d) => d.dataType === "product")?.selection === "not_needed" && dsRows.filter((d) => d.dataType !== "people").every((d) => /^unknown/.test(d.perRecordCost)), JSON.stringify(dsRows.map((d) => [d.dataType, d.selection, d.licenseHeld])))
 
     // J5 — Google, Nextdoor and Meta as ruled; the survivors are EXECUTED.
     const chatter = await import("../lib/content-intel/public-chatter-topics")

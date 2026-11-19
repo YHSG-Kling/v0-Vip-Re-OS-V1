@@ -1,6 +1,7 @@
 // lib/external/datafiniti-client.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// DATAFINITI PEOPLE DATA — THE ONE TRANSPORT (wave 153, lane 153M; owner ruling B1 "Datainfinit needs to be built").
+// DATAFINITI — THE ONE TRANSPORT (wave 153, lane 153M; owner ruling B1 "Datainfinit needs to be built"). People Data REST below;
+// wave 155 (lane 155I, owner R11) adds the documented MCP tool layer for all FOUR datasets (callDatafinitiTool, further down).
 // No purchase, no key, no live call was made building it: every request below is driven offline through the injected
 // transport seam by scripts/datafiniti-connector-guard.ts (test:datafiniti-connector). LIVE-VERIFIED: none.
 //
@@ -238,8 +239,10 @@ export const gatewayDatafinitiTransport: DatafinitiTransport = async (req) => {
 export type DatafinitiFailureKind =
   | "not_configured" | "auth_failed" | "quota" | "rate_limited" | "server_error" | "network" | "bad_request"
   | "count_unavailable" | "shape_drift" | "outcome_unknown" | "invalid_request"
+  /** Wave 155 (lane 155I): an MCP tool answered the documented { code, message, field } envelope — `code` says which. */
+  | "coded_error"
 
-export interface DatafinitiFailure { ok: false; kind: DatafinitiFailureKind; status: number | null; message: string; retryable: boolean; attempts: number }
+export interface DatafinitiFailure { ok: false; kind: DatafinitiFailureKind; status: number | null; message: string; retryable: boolean; attempts: number; code?: string | null }
 
 /** PURE — strip anything token-shaped from a message before it is stored or shown. */
 export function redactDatafinitiSecrets(text: string | null | undefined): string {
@@ -415,33 +418,120 @@ function collectHttpsLinks(v: unknown, out: Set<string>, depth = 0): void {
   if (v && typeof v === "object") for (const x of Object.values(v)) collectHttpsLinks(x, out, depth + 1)
 }
 
+// ─── THE FOUR-DATASET MCP TOOL LAYER (wave 155, lane 155I — owner R11 "datafinity is more than a person") ─────────────
+//
+// docs.datafiniti.co/mcp-server (+ the property / business / people MCP pages and reference/search-and-downloads, read
+// 2026-11-19): ONE endpoint (https://api.datafiniti.co/v4/mcp, Streamable HTTP, the SAME bearer token, permissions, field access
+// and credit accounting as REST), ONE tool set selected by `data_type` — property · people · business · product. Six tools:
+//   df_get_schema (FREE) · df_count (FREE) · df_search (charged per record RETURNED; num_records DEFAULT 1, MAX 50; 10,000-record
+//   ceiling per query) · df_get_record (1 credit) · df_start_download (async; charged per record requested AND found, size bounded
+//   by the plan) · df_download_status (FREE; result links expire after 7 days).
+// Errors: HTTP 401 for a missing / expired / invalid token; otherwise { code, message, field } — branch on code. Two codes are
+// transient (retry with backoff); every other documented code is final. Zero matches is a SUCCESS (num_found 0).
+// NOT stated on those pages (so NOT assumed here): the MCP initialize / session handshake requirement, numeric rate limits,
+// licensing / usage rights, full field lists (df_get_schema is the field authority), product field names.
+// This is the transport only. THE decision (rights → schema → typed query → count → overlap / cost → approval → one charged
+// step) is lib/lead-pipeline/datafiniti-dataset-door.ts runDatafinitiDatasetDoor — nothing else calls the charged tools.
+
+export type DatafinitiDataType = "property" | "people" | "business" | "product"
+export const DATAFINITI_DATA_TYPES: readonly DatafinitiDataType[] = Object.freeze(["property", "people", "business", "product"])
+export type DatafinitiTool = "df_get_schema" | "df_count" | "df_search" | "df_get_record" | "df_start_download" | "df_download_status"
+/** The documented credit class of each tool. A "paid" tool is never retried on an unknown outcome (5xx / network). */
+export const DATAFINITI_TOOL_CHARGE: Readonly<Record<DatafinitiTool, "free" | "paid">> = Object.freeze({
+  df_get_schema: "free", df_count: "free", df_search: "paid", df_get_record: "paid", df_start_download: "paid", df_download_status: "free",
+})
+/** df_search: "num_records … default 1, max 50" (mcp-server). */
+export const DATAFINITI_MCP_SEARCH_MAX_RECORDS = 50
+/** The documented FINAL codes — never retried. */
+export const DATAFINITI_NON_RETRYABLE_CODES: readonly string[] = Object.freeze([
+  "invalid_type", "invalid_enum", "missing_required_field", "out_of_range", "unknown_field", "invalid_field", "invalid_query",
+  "invalid_view", "not_found", "credit_limit_exceeded", "plan_restriction", "feature_not_enabled", "forbidden",
+])
+/** The documented TRANSIENT codes — retried with bounded backoff. */
+export const DATAFINITI_TRANSIENT_CODES: readonly string[] = Object.freeze(["query_runner_error", "internal_error"])
+
+/** PURE — the documented { code, message, field } envelope, wherever an MCP answer carries it (JSON-RPC error.data, an
+ *  isError tool result's text, or the structured content). null = no coded error in this answer. */
+function datafinitiCodedError(env: Record<string, unknown> | null, payload: unknown, isError: boolean): { code: string; message: string; field: string | null } | null {
+  const pick = (v: unknown): { code: string; message: string; field: string | null } | null => {
+    if (!v || typeof v !== "object") return null
+    const o = v as Record<string, unknown>
+    const inner = o.error && typeof o.error === "object" ? (o.error as Record<string, unknown>) : o
+    if (typeof inner.code !== "string" || !inner.code.trim()) return null
+    return { code: inner.code.trim(), message: typeof inner.message === "string" ? inner.message : inner.code.trim(), field: typeof inner.field === "string" ? inner.field : null }
+  }
+  const rpc = env?.error && typeof env.error === "object" ? (env.error as Record<string, unknown>) : null
+  if (rpc) return pick(rpc.data) ?? { code: typeof rpc.code === "string" ? rpc.code : "jsonrpc_error", message: typeof rpc.message === "string" ? rpc.message : "JSON-RPC error", field: null }
+  const coded = pick(payload)
+  if (coded) return coded
+  return isError ? { code: "tool_error", message: typeof payload === "object" && payload && typeof (payload as Record<string, unknown>).message === "string" ? String((payload as Record<string, unknown>).message) : "the tool reported an error", field: null } : null
+}
+
 /**
- * The download LIFECYCLE step: df_download_status over the documented MCP endpoint (no credit cost). The tool's exact result
- * payload is not documented beyond "status … and, once completed, links to the result files" — a status outside the four
- * documented values is SHAPE DRIFT, never guessed.
+ * ONE MCP tool call, any of the six, any data_type. Validates the documented required parameters BEFORE any call (a df_search
+ * without an EXPLICIT num_records is refused — the vendor default of 1 is never relied on), classifies HTTP 401 (auth) apart
+ * from the coded envelope, retries ONLY the two transient codes with backoff (a coded answer is a definite answer that
+ * returned no records, so no credit was charged per the documented rule), and never retries a paid tool on a 5xx / network
+ * failure (OUTCOME UNKNOWN — the caller reconciles first). Returns the tool's structured payload.
+ */
+export async function callDatafinitiTool(
+  cred: DatafinitiCredential, tool: DatafinitiTool, args: Record<string, unknown>, opts: DatafinitiClientOptions = {},
+): Promise<{ ok: true; payload: Record<string, unknown>; attempts: number } | DatafinitiFailure> {
+  const invalid = (message: string): DatafinitiFailure => ({ ok: false, kind: "invalid_request", status: null, message, retryable: false, attempts: 0, code: null })
+  if (!(tool in DATAFINITI_TOOL_CHARGE)) return invalid(`${String(tool)}: not one of the six documented Datafiniti MCP tools`)
+  const a = { ...(args ?? {}) }
+  if (tool !== "df_download_status" && !DATAFINITI_DATA_TYPES.includes(a.data_type as DatafinitiDataType)) return invalid(`data_type: one of ${DATAFINITI_DATA_TYPES.join(", ")}`)
+  if ((tool === "df_count" || tool === "df_search" || tool === "df_start_download") && !(typeof a.query === "string" && a.query.trim() && a.query.length <= 4000)) return invalid("query: a non-empty query string (≤ 4000)")
+  if (tool === "df_search") {
+    const n = a.num_records
+    if (!(typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= DATAFINITI_MCP_SEARCH_MAX_RECORDS)) return invalid(`num_records: set EXPLICITLY to an integer 1–${DATAFINITI_MCP_SEARCH_MAX_RECORDS} (the documented default is 1 and each returned record is charged)`)
+  }
+  if (tool === "df_get_record" && !(typeof a.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(a.id))) return invalid("id: the vendor record id")
+  if (tool === "df_download_status" && !(typeof a.download_id === "string" && /^\d{1,20}$/.test(a.download_id))) return invalid("download_id: the numeric string df_start_download / a download search returned")
+  const op = DATAFINITI_TOOL_CHARGE[tool] === "paid" ? "paid" : "free"
+  const sleep = opts.sleep ?? defaultSleep
+  const max = Math.max(0, Math.min(opts.maxRetries ?? 2, 4))
+  let total = 0
+  for (let codedTry = 0; ; codedTry++) {
+    const r = await send(opts, cred, {
+      method: "POST", path: "/mcp", responseType: "text",
+      headers: { Accept: "application/json, text/event-stream" },
+      body: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: a } },
+    }, op)
+    total += r.attempts
+    if (!r.ok) return { ...r, attempts: total, code: r.code ?? null }
+    const env = parseMcpEnvelope(r.data)
+    const result = (env?.result ?? null) as Record<string, unknown> | null
+    let payload: unknown = result?.structuredContent ?? null
+    if (!payload && result && Array.isArray(result.content)) {
+      const text = (result.content as Array<Record<string, unknown>>).find((c) => c?.type === "text" && typeof c.text === "string")?.text as string | undefined
+      if (text) { try { payload = JSON.parse(text) } catch { payload = { status: text.trim(), message: text.trim() } } }
+    }
+    const coded = datafinitiCodedError(env, payload, result?.isError === true)
+    if (coded) {
+      const transient = DATAFINITI_TRANSIENT_CODES.includes(coded.code)
+      if (transient && codedTry < max) { await sleep(backoffMs(codedTry, {})); continue }
+      return { ok: false, kind: "coded_error", status: 200, code: coded.code, message: redactDatafinitiSecrets(`${coded.code}${coded.field ? ` (${coded.field})` : ""}: ${coded.message}`), retryable: transient, attempts: total }
+    }
+    if (!env || !result) return { ok: false, kind: "shape_drift", status: 200, message: "no JSON-RPC result", retryable: false, attempts: total, code: null }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { ok: false, kind: "shape_drift", status: 200, message: `${tool} answered no structured payload`, retryable: false, attempts: total, code: null }
+    return { ok: true, payload: payload as Record<string, unknown>, attempts: total }
+  }
+}
+
+/**
+ * The download LIFECYCLE step: df_download_status over the documented MCP endpoint (no credit cost), through the ONE tool
+ * call above. The tool's exact result payload is not documented beyond "status … and, once completed, links to the result
+ * files" — a status outside the four documented values is SHAPE DRIFT, never guessed.
  */
 export async function datafinitiDownloadStatus(cred: DatafinitiCredential, downloadId: string, opts: DatafinitiClientOptions = {}):
   Promise<{ ok: true; status: DatafinitiDownloadStatus; links: string[]; attempts: number } | DatafinitiFailure> {
-  const id = String(downloadId ?? "").trim()
-  if (!/^\d{1,20}$/.test(id)) return { ok: false, kind: "invalid_request", status: null, message: "download_id: the numeric string df_start_download / a download search returned", retryable: false, attempts: 0 }
-  const r = await send(opts, cred, {
-    method: "POST", path: "/mcp", responseType: "text",
-    headers: { Accept: "application/json, text/event-stream" },
-    body: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "df_download_status", arguments: { download_id: id } } },
-  }, "free")
+  const r = await callDatafinitiTool(cred, "df_download_status", { download_id: String(downloadId ?? "").trim() }, opts)
   if (!r.ok) return r
-  const env = parseMcpEnvelope(r.data)
-  const result = (env?.result ?? null) as Record<string, unknown> | null
-  if (!result) return { ok: false, kind: env?.error ? "bad_request" : "shape_drift", status: 200, message: env?.error ? redactDatafinitiSecrets(JSON.stringify(env.error)) : "no JSON-RPC result", retryable: false, attempts: r.attempts }
-  let payload: unknown = result.structuredContent ?? null
-  if (!payload && Array.isArray(result.content)) {
-    const text = (result.content as Array<Record<string, unknown>>).find((c) => c?.type === "text" && typeof c.text === "string")?.text as string | undefined
-    if (text) { try { payload = JSON.parse(text) } catch { payload = { status: text.trim() } } }
-  }
-  const status = String((payload as Record<string, unknown> | null)?.status ?? "").trim().toLowerCase()
+  const status = String(r.payload.status ?? "").trim().toLowerCase()
   if (!["queued", "running", "completed", "cancelled"].includes(status)) return { ok: false, kind: "shape_drift", status: 200, message: `df_download_status answered an undocumented status "${status.slice(0, 40)}"`, retryable: false, attempts: r.attempts }
   const links = new Set<string>()
-  if (status === "completed") collectHttpsLinks(payload, links)
+  if (status === "completed") collectHttpsLinks(r.payload, links)
   return { ok: true, status: status as DatafinitiDownloadStatus, links: [...links], attempts: r.attempts }
 }
 

@@ -32,6 +32,9 @@ import { MATCHED_COHORT_DESIGN, projectMonthlyWaterfall } from "@/lib/providers/
 import { TENANT_ACQUISITION_PROVIDERS } from "@/lib/providers/tenant-provider-connections"
 import { PROVIDER_TENANCY } from "@/lib/providers/tenancy-matrix"
 import { SNAPSHOT_TRANSPORT_FACTS } from "@/lib/providers/scrape-checkpoint"
+// Wave 155 (lane 155I, owner R11): the four Datafiniti datasets and their selection result — computed by the SAME decision the
+// dataset door runs (lib/lead-pipeline/datafiniti-dataset-door.ts), never re-typed here.
+import { datafinitiDatasetSelection } from "@/lib/lead-pipeline/datafiniti-dataset-door"
 
 type HonestState = "ready" | "simulated" | "awaiting_license" | "awaiting_key" | "unavailable"
 type AcquisitionKind = "person" | "property" | "market" | "content"
@@ -209,10 +212,11 @@ const FACTS: readonly CapabilityFacts[] = Object.freeze([
   })),
   {
     // Wave 153 (lane 153M, owner ruling B1): People Data BUILT — the transport, the RawData producer and the offline proof exist;
-    // both routes stay dormant pending rights (PROVIDER_ACTIVATION.datafiniti) and no live call is on record. Property Data is
-    // NOT built (owner asked for People Data; a property record is RentCast's survivor).
+    // both routes stay dormant pending rights (PROVIDER_ACTIVATION.datafiniti) and no live call is on record. Wave 155 (lane 155I,
+    // owner R11): property / business / product are decided by lib/lead-pipeline/datafiniti-dataset-door.ts over the MCP tools
+    // (RentCast stays the property survivor — Datafiniti property is dormant behind it; see `datasets` on this row).
     provider: "datafiniti", label: "Datafiniti", scorecard: "datafiniti", tenancyKey: "datafiniti", kinds: ["person"],
-    endpoint: "People Data REST v4 (docs.datafiniti.co, read 2026-11-16): POST https://api.datafiniti.co/v4/people/search (Bearer token; query in Datafiniti / Lucene syntax, num_records ≤ 10 non-download, format json|csv, download, view) → num_found / total_cost / records / download_id; GET /v4/account (free credit read); MCP df_download_status (queued | running | completed | cancelled, links 7 days). Property Data endpoints exist but are not built here",
+    endpoint: "People Data REST v4 (docs.datafiniti.co, read 2026-11-16): POST https://api.datafiniti.co/v4/people/search (Bearer token; query in Datafiniti / Lucene syntax, num_records ≤ 10 non-download, format json|csv, download, view) → num_found / total_cost / records / download_id; GET /v4/account (free credit read). MCP https://api.datafiniti.co/v4/mcp (read 2026-11-19, same token / credits): the six tools over data_type property · people · business · product (df_get_schema / df_count / df_download_status free; df_search ≤ 50 per call and df_get_record / df_start_download charged) through callDatafinitiTool; property / business / product are decided by the dataset door (runDatafinitiDatasetDoor) — LICENSE-held",
     transport: A("lib/external/datafiniti-client.ts", "searchDatafinitiPeople"),
     producer: { door: "rawdata", anchor: A("lib/lead-pipeline/datafiniti-people-producer.ts", "runDatafinitiPeoplePull"), path: "rights gate (activation / tenant connection) → known keys → pre-pull dedup of held candidates → free count → paid-pull gate (paidPullApproval with the door context) → typed search / download → documented-schema mapper → grounded only → dedup again at ingress → THE ONE RawData producer (ingestRawSourceBatch, source datafiniti_people) → Raw Lead gate → Lead → AI ISA; never a Contact, never outreach" },
     mapping: { anchor: A("lib/lead-pipeline/datafiniti-people-producer.ts", "mapDatafinitiPerson"), provenance: "per-field provenance (vendor field, dateUpdated / lastDateSeen, retrieved_at); work location labelled as work (schema), never as a property address; sourceURLs kept as proof; tcpa-flagged phones suppressed; deceased records refused" },
@@ -525,6 +529,8 @@ export function providerCapabilityMatrix() {
       states: { platform: platformState, tenant: tenantState },
       honestState: [platformState ? `platform: ${ROUTE_LABEL[platformState]}` : null, tenantState ? `tenant-owned: ${ROUTE_LABEL[tenantState]}` : null].filter(Boolean).join(" · "),
       evaluated: f.evaluated,
+      // Wave 155 (lane 155I): the four datasets with the selection result (Datafiniti only; null elsewhere).
+      datasets: f.provider === "datafiniti" ? datafinitiDatasetSelection() : null,
       // Wave 154 (lane 154J — directive J2 / J6): the source-to-business columns, the derived status and the stack tier.
       business: b ? {
         provides: b.provides, docs: b.docs, credentialOwner: b.credentialOwner, rights: b.rights, territory: b.territory, sourceTimestamps: b.sourceTimestamps,

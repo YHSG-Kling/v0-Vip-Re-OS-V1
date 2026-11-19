@@ -346,6 +346,18 @@ export async function connectTenantAcquisitionProviderAction(input: ConnectTenan
     const f = r.ok ? classifyTenantProviderFailure({ httpStatus: 200 }, p.label) : classifyTenantProviderFailure({ httpStatus: r.httpStatus ?? null, networkError: r.httpStatus === null || r.httpStatus === undefined, message: r.error ?? null }, p.label)
     // The row keeps the INTERNAL detail (status + redacted provider text) for staff; the tenant reads the presenter's view.
     health = { kind: "wallet_balance", status: f.probe, at: new Date().toISOString(), detail: r.ok ? null : f.detail }
+  } else if (p.healthCheck.kind === "free_account_read" && p.provider === "datafiniti") {
+    // Wave 155 (lane 155I): the DECLARED free account read under the tenant's own token, then the free four-dataset schema
+    // discovery (df_get_schema per data_type) — no record is bought. Reached only after the licensing decision (preState above
+    // refuses pending_owner_licensing first); the dataset door re-checks the verdict itself.
+    const { getDatafinitiAccountHealth } = await import("@/lib/external/datafiniti-client")
+    const cred = { owner: "tenant" as const, brokerageId: ctx.brokerageId, connectionId: rowId, token: apiKey }
+    const a = await getDatafinitiAccountHealth(cred)
+    const { runDatafinitiDatasetDoor } = await import("@/lib/lead-pipeline/datafiniti-dataset-door")
+    const disc = a.ok ? await runDatafinitiDatasetDoor({ mode: "discover", route: "tenant", brokerageId: ctx.brokerageId, tenantConnection: { id: rowId, brokerageId: ctx.brokerageId, token: apiKey, verdict: preState } }) : null
+    const f = a.ok ? classifyTenantProviderFailure({ httpStatus: 200 }, p.label) : classifyTenantProviderFailure({ httpStatus: a.status, networkError: a.status === null, message: a.message }, p.label)
+    const datasets = disc ? disc.schemas.map((s) => `${s.dataType} ${s.ok ? `${s.fieldCount} fields` : "not readable"}`).join(", ") : null
+    health = { kind: "datafiniti_account_and_schemas", status: f.probe, at: new Date().toISOString(), detail: a.ok ? (datasets ? `datasets: ${datasets}` : null) : f.detail }
   } else {
     health = { kind: "none", status: "not_configured", at: new Date().toISOString(), detail: "no free health read for this provider" }
   }
