@@ -1,0 +1,791 @@
+{
+ "generator": "scripts/os-coverage-ledger.ts --write (wave 155, lane 155B1) — GENERATED, do not edit; per-row ledger: coverage/os-arbitration-coverage.json (on demand)",
+ "states": {
+  "working": 1757,
+  "partial": 1158,
+  "missing": 274,
+  "owner-held": 1
+ },
+ "classification": {
+  "EXECUTABLE_GAP": 1240,
+  "LEGACY_ORPHAN": 96,
+  "UNKNOWN": 80,
+  "DECLARATIVE_READ_ONLY": 16,
+  "OWNER_HELD": 1
+ },
+ "classificationByDomain": {
+  "transaction": {
+   "EXECUTABLE_GAP": 250,
+   "LEGACY_ORPHAN": 13,
+   "UNKNOWN": 40
+  },
+  "platform": {
+   "DECLARATIVE_READ_ONLY": 5,
+   "EXECUTABLE_GAP": 286,
+   "UNKNOWN": 5,
+   "LEGACY_ORPHAN": 40
+  },
+  "acquisition": {
+   "EXECUTABLE_GAP": 55,
+   "LEGACY_ORPHAN": 13,
+   "UNKNOWN": 12,
+   "DECLARATIVE_READ_ONLY": 3
+  },
+  "marketing": {
+   "EXECUTABLE_GAP": 247,
+   "DECLARATIVE_READ_ONLY": 2,
+   "LEGACY_ORPHAN": 5,
+   "UNKNOWN": 8
+  },
+  "finance": {
+   "EXECUTABLE_GAP": 92,
+   "UNKNOWN": 4,
+   "LEGACY_ORPHAN": 8,
+   "DECLARATIVE_READ_ONLY": 4,
+   "OWNER_HELD": 1
+  },
+  "customer-facing": {
+   "EXECUTABLE_GAP": 247,
+   "UNKNOWN": 9,
+   "LEGACY_ORPHAN": 13,
+   "DECLARATIVE_READ_ONLY": 2
+  },
+  "recovery": {
+   "EXECUTABLE_GAP": 39,
+   "UNKNOWN": 1,
+   "LEGACY_ORPHAN": 1
+  },
+  "education": {
+   "EXECUTABLE_GAP": 24,
+   "UNKNOWN": 1,
+   "LEGACY_ORPHAN": 3
+  }
+ },
+ "executableGapRisk": {
+  "P1": 683,
+  "P2": 301,
+  "P0": 256
+ },
+ "groups": [
+  {
+   "id": "G01-event-no-consumer",
+   "rows": 72,
+   "title": "kernel events emitted and fanned out, but the reactor has no case — the event dies at the bus",
+   "risk": {
+    "P2": 64,
+    "P0": 8
+   },
+   "domains": {
+    "platform": 41,
+    "customer-facing": 12,
+    "transaction": 7,
+    "acquisition": 4,
+    "marketing": 4,
+    "finance": 3,
+    "education": 1
+   },
+   "missing": {
+    "worker": 72
+   },
+   "leverage": [
+    "lib/kernel/event-reactor.ts:95 dispatchKernelEvent",
+    "lib/kernel/emit.ts:155 emitKernelEvent"
+   ],
+   "fix": "per event: a reactor case that publishes the owning manager's registered signal (the 151 routed events are the pattern), OR — where the owner has ruled it a record — `auditOnly: true` at the emit site (an owner decision, never a default)",
+   "proof": "a canary emits each event through dispatchKernelEvent against memSupabase and asserts a manager_signals row for the named consumer; red at the base (zero rows)",
+   "split": "split by domain (one lane per 2–3 domains); the reactor file is shared — serialize edits",
+   "sample": [
+    "kernel_event:agent_work_anniversary",
+    "kernel_event:brand_compliance_failed",
+    "kernel_event:brand_compliance_passed",
+    "kernel_event:brokerage_affiliation_declared",
+    "kernel_event:brokerage_archived"
+   ]
+  },
+  {
+   "id": "G02-consumer-no-emitter",
+   "rows": 14,
+   "title": "a handler waits for an event no code emits (reads with no writer)",
+   "risk": {
+    "P1": 6,
+    "P2": 6,
+    "P0": 2
+   },
+   "domains": {
+    "customer-facing": 4,
+    "transaction": 4,
+    "marketing": 2,
+    "platform": 2,
+    "acquisition": 1,
+    "finance": 1
+   },
+   "missing": {
+    "decision,evidence,owner,trigger": 8,
+    "trigger": 6
+   },
+   "leverage": [
+    "lib/kernel/emit.ts:155 emitKernelEvent",
+    "lib/orchestrator/internal.ts:198 EVENT_HANDLERS"
+   ],
+   "fix": "emit at the canonical writer of the domain fact (the table write that IS the event), or tombstone the handler naming its survivor (CLAUDE.md §1)",
+   "proof": "a canary drives the writer and asserts the handler ran; red at the base",
+   "split": "one lane (≤ 20 rows); coordinate orchestrator rows with lane 155B2",
+   "sample": [
+    "kernel_event:search_alert_triggered",
+    "kernel_event:system_sync_completed",
+    "orchestrator_event:credit.partner_referred",
+    "orchestrator_event:credit.status_updated",
+    "orchestrator_event:credit.target_reached"
+   ]
+  },
+  {
+   "id": "G03-orchestrator-unowned",
+   "rows": 4,
+   "title": "orchestrator EVENT_HANDLERS carry no owning manager (the census has no owner registry to read for them)",
+   "risk": {
+    "P1": 4
+   },
+   "domains": {
+    "customer-facing": 3,
+    "marketing": 1
+   },
+   "missing": {
+    "decision,owner": 2,
+    "decision,evidence,owner": 1,
+    "evidence,owner": 1
+   },
+   "leverage": [
+    "lib/orchestrator/internal.ts:198 EVENT_HANDLERS"
+   ],
+   "fix": "give each handler its registered manager through the existing registries (integrator: a row per handler in manager-registry, read by the census) — lane 155B2 owns these handlers now",
+   "proof": "census: orchestrator rows resolve an owner in MANAGERS; a planted handler with no row stays red",
+   "split": "hand to 155B2's follow-up; do not split",
+   "sample": [
+    "orchestrator_event:agent.delegated_to_ai",
+    "orchestrator_event:journey.all_tasks_done",
+    "orchestrator_event:journey.stage_completed",
+    "orchestrator_event:video.script_approved"
+   ]
+  },
+  {
+   "id": "G04-reactor-ungated",
+   "rows": 11,
+   "title": "reactor blocks that WRITE a domain table with no gate and no ledger receipt",
+   "risk": {
+    "P1": 8,
+    "P0": 2,
+    "P2": 1
+   },
+   "domains": {
+    "customer-facing": 3,
+    "acquisition": 2,
+    "transaction": 2,
+    "education": 1,
+    "finance": 1,
+    "marketing": 1,
+    "platform": 1
+   },
+   "missing": {
+    "evidence": 5,
+    "decision": 2,
+    "decision,evidence": 2,
+    "decision,evidence,owner": 2
+   },
+   "leverage": [
+    "lib/kernel/event-reactor.ts:95 dispatchKernelEvent",
+    "lib/kernel/action-ledger.ts:538 withActionLedger"
+   ],
+   "fix": "route the block through the owning manager's signal (decision moves to the consumer), or wrap its write in withActionLedger under the manager's gate",
+   "proof": "a canary per block: the reactor write leaves an agent_action_ledger row; red at the base",
+   "split": "one lane",
+   "sample": [
+    "kernel_event:buyer_financially_verified",
+    "kernel_event:buyer_search_configured",
+    "kernel_event:buyer_state_changed",
+    "kernel_event:client_education_delivered",
+    "kernel_event:coming_soon_sent"
+   ]
+  },
+  {
+   "id": "G05-cron-no-decision",
+   "rows": 104,
+   "title": "crons whose path asks no gate — no halt, authority, spend or approval decides the run",
+   "risk": {
+    "P1": 52,
+    "P2": 27,
+    "P0": 25
+   },
+   "domains": {
+    "marketing": 27,
+    "recovery": 23,
+    "customer-facing": 20,
+    "transaction": 12,
+    "platform": 9,
+    "finance": 6,
+    "education": 4,
+    "acquisition": 3
+   },
+   "missing": {
+    "decision": 95,
+    "decision,evidence": 9
+   },
+   "leverage": [
+    "lib/kernel/cron-logging.ts:125 createCronRunContext",
+    "lib/managers/autonomy-gate.ts:91 autonomyDecision",
+    "lib/kernel/manager-registry.ts:3437 resolveCronManager"
+   ],
+   "fix": "ONE cron decision at the shared run-context door: resolveCronManager(path) + autonomyDecision over the platform halt (god switch) and the tenant halt, recorded on the run row; a held run records `held` and does no work. Alternative is OWNER decision 2 (does a registered manager's deterministic rule count as the decision owner?) — that would be an analyzer change, not code",
+   "proof": "planted platform halt: every manager cron returns `held` with zero domain writes; red at the base (they run)",
+   "split": "one lane for the door; the per-route adoption is mechanical (routes already call the run-context actions)",
+   "sample": [
+    "cron:/api/cron/actor-health",
+    "cron:/api/cron/ad-performance-sync",
+    "cron:/api/cron/affiliate-commissions",
+    "cron:/api/cron/agent-coaching",
+    "cron:/api/cron/agent-health-check"
+   ],
+   "modules": {
+    "app/api/cron/board-packet/route.ts": 2,
+    "app/api/cron/actor-health/route.ts": 1,
+    "app/api/cron/ad-performance-sync/route.ts": 1,
+    "app/api/cron/affiliate-commissions/route.ts": 1,
+    "app/api/cron/agent-coaching/route.ts": 1,
+    "app/api/cron/agent-health-check/route.ts": 1,
+    "app/api/cron/ai-overage-billing/route.ts": 1,
+    "app/api/cron/appointment-whisper/route.ts": 1,
+    "app/api/cron/approval-push/route.ts": 1,
+    "app/api/cron/asset-manager-weekly/route.ts": 1,
+    "app/api/cron/audience-sync-runner/route.ts": 1,
+    "app/api/cron/automation-error-monitor/route.ts": 1,
+    "app/api/cron/bidding-war-concierge/route.ts": 1,
+    "app/api/cron/brokerage-intelligence-mine/route.ts": 1,
+    "app/api/cron/bundle-attribution-rollup/route.ts": 1
+   }
+  },
+  {
+   "id": "G06-cron-no-evidence",
+   "rows": 6,
+   "title": "crons that never open a cron run context, so no run row evidences what they did",
+   "risk": {
+    "P1": 4,
+    "P2": 2
+   },
+   "domains": {
+    "marketing": 3,
+    "platform": 2,
+    "customer-facing": 1
+   },
+   "missing": {
+    "evidence": 6
+   },
+   "leverage": [
+    "lib/kernel/cron-logging.ts:346 recordCronSuccess"
+   ],
+   "fix": "open createCronRunContext / recordCronSuccess / recordCronFailure like the other 200 crons",
+   "proof": "a canary runs the route against memSupabase and asserts a cron_execution_logs row; red at the base",
+   "split": "one lane",
+   "sample": [
+    "cron:/api/cron/buyer-reel-deliver",
+    "cron:/api/cron/capability-radar",
+    "cron:/api/cron/letter-audio-renderer",
+    "cron:/api/cron/newsletter-cadence-tick",
+    "cron:/api/cron/social-cadence-tick"
+   ]
+  },
+  {
+   "id": "G07-tool-unowned",
+   "rows": 10,
+   "title": "assistant tools that act but name no owning manager",
+   "risk": {
+    "P0": 10
+   },
+   "domains": {
+    "transaction": 10
+   },
+   "missing": {
+    "owner": 10
+   },
+   "leverage": [
+    "lib/voice/tool-registry.ts:806 VOICE_TOOL_MANAGER"
+   ],
+   "fix": "a VOICE_TOOL_MANAGER row per tool (integrator — shared registry); a tool that only reads is DECLARATIVE_READ_ONLY instead and needs its risk class set to READ",
+   "proof": "census: owner resolves in MANAGERS; the guard's fake-manager control stays red",
+   "split": "integrator, one change",
+   "sample": [
+    "assistant_tool:area_query",
+    "assistant_tool:ask_guidance",
+    "assistant_tool:broker_objective",
+    "assistant_tool:fill_form_field",
+    "assistant_tool:manager_status"
+   ]
+  },
+  {
+   "id": "G08b-stewarded-table-read-as-log",
+   "rows": 21,
+   "title": "the path writes a STEWARDED domain table whose name merely looks like a log (calendar_events, voice_calls, open_house_events…) — EVIDENCE_TABLE_RE skips it for ownership",
+   "risk": {
+    "P1": 13,
+    "P2": 7,
+    "P0": 1
+   },
+   "domains": {
+    "transaction": 7,
+    "customer-facing": 5,
+    "platform": 5,
+    "education": 3,
+    "marketing": 1
+   },
+   "missing": {
+    "owner": 21
+   },
+   "leverage": [
+    "scripts/os-coverage-ledger.ts:284 EVIDENCE_TABLE_RE",
+    "lib/kernel/manager-registry.ts:2142 TABLE_MANAGER"
+   ],
+   "fix": "ONE analyzer change, both directions together: narrow EVIDENCE_TABLE_RE to true logs (TRUE_LOG_RE) for ownership AND for evidence. It closes these owner gaps but also withdraws the false evidence credit on the rows counted under blindSpots.evidenceCreditedByAnEventsDomainTable — those must be ledgered in the same change (never one direction alone: that would only move a number)",
+   "proof": "a planted write to calendar_events resolves its owner from TABLE_MANAGER and earns NO evidence; red at the base for both halves",
+   "split": "one lane with the G12 module that owns the withdrawn-credit rows",
+   "sample": [
+    "http:/api/voice/end-call",
+    "http:/api/voice/initiate-call",
+    "http:/api/voice/twilio/recording",
+    "http:/api/voice/twilio/whisper",
+    "server_action:app/actions/ai-calendar-management.ts#cancelAppointment"
+   ]
+  },
+  {
+   "id": "G09-log-only-owner",
+   "rows": 78,
+   "title": "paths whose only writes are carriers or evidence tables (self_heal_events, audit_log, notifications…) — no steward is derivable",
+   "risk": {
+    "P2": 33,
+    "P1": 26,
+    "P0": 19
+   },
+   "domains": {
+    "platform": 32,
+    "customer-facing": 16,
+    "recovery": 10,
+    "marketing": 7,
+    "finance": 5,
+    "transaction": 4,
+    "acquisition": 2,
+    "education": 2
+   },
+   "missing": {
+    "owner": 63,
+    "evidence,owner": 13,
+    "decision,owner": 1,
+    "owner,readback": 1
+   },
+   "leverage": [
+    "lib/kernel/manager-registry.ts:3452 resolveTableManager"
+   ],
+   "fix": "name the owner where the action is (the module's manager) or route the record through the owner's signal; never steward a log table to move a number",
+   "proof": "census: owner resolves for each; planted log-only write stays red",
+   "split": "one lane",
+   "sample": [
+    "http:/api/admin/system/providers/test",
+    "http:/api/external-portal/actions/complete",
+    "kernel_event:behavioral_pattern_detected",
+    "kernel_event:client_portal_message_sent",
+    "kernel_event:portal_accessed"
+   ],
+   "modules": {
+    "lib/kernel/event-reactor.ts": 7,
+    "app/actions/exception-center.ts": 4,
+    "app/actions/conversation-analytics.ts": 3,
+    "app/actions/superadmin/provider-posture.ts": 3,
+    "app/actions/admin/manager-evals.ts": 2,
+    "app/actions/cron-kernel.ts": 2,
+    "app/actions/dotloop-integration.ts": 2,
+    "app/actions/notifications.ts": 2,
+    "app/actions/onboarding/tech-stack.ts": 2,
+    "app/actions/phone-provisioning.ts": 2,
+    "app/actions/superadmin/ai-ops.ts": 2,
+    "app/actions/vendor-portfolio.ts": 2,
+    "app/actions/accounting-sync.ts": 1,
+    "app/actions/admin/create-subscriber.ts": 1,
+    "app/actions/ai-agent-capabilities.ts": 1
+   }
+  },
+  {
+   "id": "G10-public-no-decision",
+   "rows": 35,
+   "title": "public / internal endpoints with no session and no decision on the path (tracking beacons, embeds, intake uploads)",
+   "risk": {
+    "P1": 20,
+    "P0": 8,
+    "P2": 7
+   },
+   "domains": {
+    "marketing": 11,
+    "customer-facing": 6,
+    "platform": 6,
+    "transaction": 5,
+    "education": 3,
+    "finance": 3,
+    "recovery": 1
+   },
+   "missing": {
+    "decision": 18,
+    "decision,evidence": 17
+   },
+   "leverage": [
+    "lib/widget/resolve-widget-tenant.ts:67 resolveWidgetTenant",
+    "lib/usage/check-cap.ts:49 checkUsageCap"
+   ],
+   "fix": "resolve the tenant fail-closed from the tenant's own opt-in (resolveWidgetTenant pattern) and cap spend (checkUsageCap) before the write; a rate limit alone is not a decision",
+   "proof": "INJECT-001 canary: a body-supplied tenant is ignored and an un-opted-in slug writes nothing; red where the route trusts the body",
+   "split": "one lane (≤ 25 rows)",
+   "sample": [
+    "http:/api/blog/track-share",
+    "http:/api/blog/track-view",
+    "http:/api/embed/session/end",
+    "http:/api/embed/session/heartbeat",
+    "http:/api/intelligence/coordinate"
+   ]
+  },
+  {
+   "id": "G11-ai-spend-unledgered",
+   "rows": 7,
+   "title": "AI generate-and-return actions whose only persisted effect is the cost ledger row (a model call with no action receipt)",
+   "risk": {
+    "P1": 3,
+    "P0": 2,
+    "P2": 2
+   },
+   "domains": {
+    "customer-facing": 2,
+    "platform": 2,
+    "transaction": 2,
+    "marketing": 1
+   },
+   "missing": {
+    "evidence": 7
+   },
+   "leverage": [
+    "lib/kernel/action-ledger.ts:634 ledgerToolCall"
+   ],
+   "fix": "wrap the model call in ledgerToolCall (tool, cost, actor, tenant) — ai_tool_usage keeps metering, the ledger carries why and under which policy",
+   "proof": "a canary calls the action with an injected model seam and asserts one ledger row + one ai_tool_usage row; red at the base",
+   "split": "one lane",
+   "sample": [
+    "server_action:app/actions/agent-insights.ts#loadMyAgentInsights",
+    "server_action:app/actions/ai-offer-creation.ts#aiOfferStrategyAdvisor",
+    "server_action:app/actions/content-studio.ts#researchKeywords",
+    "server_action:app/actions/counter-offer-diff.ts#loadCounterOfferDiff",
+    "server_action:app/actions/property-evaluation.ts#evaluatePropertyAction"
+   ]
+  },
+  {
+   "id": "G12-session-write-unledgered-P0",
+   "rows": 177,
+   "title": "P0 user-initiated writes decided by the signed-in session that leave no action-ledger receipt",
+   "risk": {
+    "P0": 177
+   },
+   "domains": {
+    "finance": 72,
+    "transaction": 39,
+    "platform": 35,
+    "customer-facing": 13,
+    "acquisition": 10,
+    "marketing": 8
+   },
+   "missing": {
+    "evidence": 172,
+    "evidence,readback": 5
+   },
+   "leverage": [
+    "lib/kernel/action-ledger.ts:538 withActionLedger"
+   ],
+   "fix": "per MODULE (not per export): resolve the ActionContext once where the module already resolves its session, and wrap each mutating export's write in withActionLedger (three-segment action name) — the module list with rows closed per change is in os-arbitration-gap-groups.json",
+   "proof": "per module: a canary invokes one export against memSupabase and asserts an agent_action_ledger row naming actor, tenant and policy; red at the base",
+   "split": "split by domain; P0 modules first",
+   "sample": [
+    "http:/api/admin/billing/entitlements/[brokerageId]",
+    "http:/api/admin/billing/subscriptions/[brokerageId]",
+    "http:/api/leads/raw",
+    "server_action:app/actions/academy.ts#addTemplateFeedback",
+    "server_action:app/actions/accounting-sync.ts#clearResolvedErrors"
+   ],
+   "modules": {
+    "app/actions/lead-scraping-config.ts": 10,
+    "app/actions/cda-portal.ts": 8,
+    "app/actions/ai-offer-creation.ts": 7,
+    "app/actions/financials.ts": 5,
+    "app/actions/vendor-payments.ts": 5,
+    "app/actions/ai-financial-management.ts": 4,
+    "app/actions/brokerage-fees.ts": 4,
+    "app/actions/buyer-broker-agreements.ts": 4,
+    "app/actions/buyer-offer-tools.ts": 4,
+    "app/actions/connections/connection-center.ts": 4,
+    "app/actions/transactions.ts": 4,
+    "app/actions/accounting-sync.ts": 3,
+    "app/actions/brokerage-cda-setup.ts": 3,
+    "app/actions/buyer-financial.ts": 3,
+    "app/actions/cda-template-field-actions.ts": 3
+   }
+  },
+  {
+   "id": "G12-session-write-unledgered-P1",
+   "rows": 545,
+   "title": "P1 user-initiated writes decided by the signed-in session that leave no action-ledger receipt",
+   "risk": {
+    "P1": 545
+   },
+   "domains": {
+    "marketing": 181,
+    "customer-facing": 161,
+    "transaction": 158,
+    "acquisition": 31,
+    "platform": 13,
+    "education": 1
+   },
+   "missing": {
+    "evidence": 543,
+    "evidence,readback": 2
+   },
+   "leverage": [
+    "lib/kernel/action-ledger.ts:538 withActionLedger"
+   ],
+   "fix": "per MODULE (not per export): resolve the ActionContext once where the module already resolves its session, and wrap each mutating export's write in withActionLedger (three-segment action name) — the module list with rows closed per change is in os-arbitration-gap-groups.json",
+   "proof": "per module: a canary invokes one export against memSupabase and asserts an agent_action_ledger row naming actor, tenant and policy; red at the base",
+   "split": "split by domain; P0 modules first",
+   "sample": [
+    "http:/api/admin/transaction-forms",
+    "http:/api/agent/update-video-profile",
+    "http:/api/chat/stream",
+    "http:/api/compliance/flags",
+    "http:/api/contacts/[contactId]/voice-note"
+   ],
+   "modules": {
+    "app/actions/ai-content-generation.tsx": 15,
+    "app/actions/transactions.ts": 13,
+    "app/actions/seller-listing/execution-engine.ts": 12,
+    "app/actions/ai-predictions.ts": 11,
+    "app/actions/podcast-generation.ts": 10,
+    "app/actions/campaign-sequences.ts": 9,
+    "app/actions/marketing/tenant-screenshots.ts": 9,
+    "app/actions/marketing-studio.ts": 8,
+    "app/actions/multi-persona.ts": 8,
+    "app/actions/twin-studio.ts": 8,
+    "app/actions/ai-chat.ts": 7,
+    "app/actions/listing-media.ts": 7,
+    "app/actions/ai-direct-mail.ts": 6,
+    "app/actions/ai-transaction-coordinator.ts": 6,
+    "app/actions/blog.ts": 6
+   }
+  },
+  {
+   "id": "G12-session-write-unledgered-P2",
+   "rows": 152,
+   "title": "P2 user-initiated writes decided by the signed-in session that leave no action-ledger receipt",
+   "risk": {
+    "P2": 152
+   },
+   "domains": {
+    "platform": 138,
+    "education": 9,
+    "recovery": 5
+   },
+   "missing": {
+    "evidence": 148,
+    "evidence,readback": 4
+   },
+   "leverage": [
+    "lib/kernel/action-ledger.ts:538 withActionLedger"
+   ],
+   "fix": "per MODULE (not per export): resolve the ActionContext once where the module already resolves its session, and wrap each mutating export's write in withActionLedger (three-segment action name) — the module list with rows closed per change is in os-arbitration-gap-groups.json",
+   "proof": "per module: a canary invokes one export against memSupabase and asserts an agent_action_ledger row naming actor, tenant and policy; red at the base",
+   "split": "split by module across lanes; lowest priority",
+   "sample": [
+    "http:/api/seed/users",
+    "server_action:app/actions/academy-learning.ts#dismissLearningAssignmentAction",
+    "server_action:app/actions/activities.ts#completeActivity",
+    "server_action:app/actions/activities.ts#logActivity",
+    "server_action:app/actions/admin/agent-360.ts#assignAcademyModuleAction"
+   ],
+   "modules": {
+    "app/actions/ai-predictions.ts": 5,
+    "app/actions/onboarding/brand.ts": 5,
+    "app/actions/vendors/vendor-plans.ts": 5,
+    "app/actions/ai-calendar-management.ts": 4,
+    "app/actions/collaborative-search.ts": 4,
+    "app/actions/vendor-verification.ts": 4,
+    "app/actions/voice-assistant.ts": 4,
+    "app/actions/admin/locations.ts": 3,
+    "app/actions/ai-teammates.ts": 3,
+    "app/actions/education-kernel.ts": 3,
+    "app/actions/error-handler.ts": 3,
+    "app/actions/income-engine.ts": 3,
+    "app/actions/knowledge/search.ts": 3,
+    "app/actions/learning-modules.ts": 3,
+    "app/actions/pattern-actions.ts": 3
+   }
+  },
+  {
+   "id": "G13-webhook-no-evidence",
+   "rows": 2,
+   "title": "provider callbacks that write without a ledger receipt",
+   "risk": {
+    "P0": 2
+   },
+   "domains": {
+    "acquisition": 1,
+    "finance": 1
+   },
+   "missing": {
+    "evidence": 2
+   },
+   "leverage": [
+    "lib/kernel/action-ledger.ts:538 withActionLedger"
+   ],
+   "fix": "record the callback's effect in withActionLedger (actor = provider of record)",
+   "proof": "replay a signed fixture payload; assert one ledger row; red at the base",
+   "split": "one lane",
+   "sample": [
+    "webhook:/api/webhooks/exa",
+    "webhook:/api/webhooks/stripe/vendor"
+   ]
+  },
+  {
+   "id": "G99-http-evidence",
+   "rows": 1,
+   "title": "unclustered: one kind + one missing-link signature (no shared door found)",
+   "risk": {
+    "P1": 1
+   },
+   "domains": {
+    "customer-facing": 1
+   },
+   "missing": {
+    "evidence": 1
+   },
+   "leverage": [],
+   "fix": "per row",
+   "proof": "per row",
+   "split": "per row",
+   "sample": [
+    "http:/api/widget/session"
+   ]
+  },
+  {
+   "id": "G99-server_action-evidence",
+   "rows": 1,
+   "title": "unclustered: one kind + one missing-link signature (no shared door found)",
+   "risk": {
+    "P1": 1
+   },
+   "domains": {
+    "acquisition": 1
+   },
+   "missing": {
+    "evidence": 1
+   },
+   "leverage": [],
+   "fix": "per row",
+   "proof": "per row",
+   "split": "per row",
+   "sample": [
+    "server_action:app/actions/direct-mail.ts#trackDelivery"
+   ]
+  }
+ ],
+ "residue": {
+  "DECLARATIVE_READ_ONLY": {
+   "rows": 16,
+   "byKind": {
+    "kernel_event": 12,
+    "assistant_tool": 4
+   },
+   "evidenceClass": {
+    "every emission site passes `auditOnly: true` (lib/kernel/emit.ts shouldFanOut skips the reactor): the lifecycle_events row IS the record; no": 12,
+    "the tool's own case writes no table, calls no egress door and passes no spend gate; it is consequential only because its risk class is not R": 4
+   },
+   "sample": [
+    "assistant_tool:explain_touches",
+    "assistant_tool:next_unfilled_field",
+    "assistant_tool:read_form_status",
+    "assistant_tool:whos_slipping",
+    "kernel_event:ad_campaign_created"
+   ]
+  },
+  "LEGACY_ORPHAN": {
+   "rows": 96,
+   "byKind": {
+    "kernel_event": 92,
+    "orchestrator_event": 2,
+    "server_action": 2
+   },
+   "evidenceClass": {
+    "vocabulary entry with no emitter, no consumer, and its value in no other runtime file and no SQL migration": 94,
+    "no importer, no same-module caller, the export name in no other runtime file; a server action has no cron, webhook, self-call or provider-co": 2
+   },
+   "sample": [
+    "kernel_event:accounting_push_completed",
+    "kernel_event:accounting_push_requested",
+    "kernel_event:accounting_sync_failed",
+    "kernel_event:agent_earnings_updated",
+    "kernel_event:ai_isa_call_completed"
+   ]
+  },
+  "SIMULATED_ONLY": {
+   "rows": 0,
+   "byKind": {},
+   "evidenceClass": {},
+   "sample": []
+  },
+  "OWNER_HELD": {
+   "rows": 1,
+   "byKind": {
+    "kernel_event": 1
+   },
+   "evidenceClass": {
+    "OWNER_HELD entry: owner-held pending owner decision 2 (does a registered manager's deterministic evidence rule count as the decision owner?)": 1
+   },
+   "sample": [
+    "kernel_event:referral_converted"
+   ]
+  },
+  "UNKNOWN": {
+   "rows": 80,
+   "byKind": {
+    "server_action": 59,
+    "kernel_event": 14,
+    "http": 5,
+    "orchestrator_event": 2
+   },
+   "evidenceClass": {
+    "no importer and no same-module caller, but the name …": 59,
+    "no emitter the census can read, but the value is …": 16,
+    "http: the caller may be outside the repo (provider console, external client, another scheduler) — unreferenced is not dead (CLAUDE.md §1)": 5
+   },
+   "sample": [
+    "http:/api/agentic-os/mcp",
+    "http:/api/errors/collect",
+    "http:/api/v1/[resource]",
+    "http:/api/voice/relay/plan",
+    "http:/api/workflow/trigger"
+   ]
+  }
+ },
+ "blindSpots": {
+  "evidenceCreditedByAnEventsDomainTable": {
+   "rows": 114,
+   "note": "EVIDENCE_TABLE_RE counts any `*_events` table written on the path as ledger evidence; a domain table so named (calendar_events …) is not a ledger. Correcting it ADDS gaps the frozen baseline does not hold — a batch-2 decision, not silently done here",
+   "sample": [
+    "assistant_tool:book_studio_session",
+    "assistant_tool:send_portal_message",
+    "assistant_tool:stage_open_house",
+    "cron:/api/cron/affiliate-commissions",
+    "cron:/api/cron/billing-dunning"
+   ]
+  },
+  "autonomousConsequentialWithoutRecovery": {
+   "rows": 318,
+   "note": "recovery is REPORTED per row but is not a judged link (ECC agent-architecture-audit layer 12 cross-check): a failed autonomous run with no retry / sweep / escalation on its path"
+  }
+ }
+}
