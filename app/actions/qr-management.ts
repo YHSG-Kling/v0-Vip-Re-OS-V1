@@ -36,6 +36,7 @@ import { resolveActingContext, resolveWriteContext } from '@/lib/platform/acting
 // stays the board's SESSION gate (tenant from the session, read-only impersonation refused) in front of them.
 // WAVE 153 (lane 153E): + the ONE QR authority and the board's scoped reads (codes in scope, link pickers).
 import { changeQrLifecycle, duplicateQrDesign, loadQrActivity, resolveQrAuthority, listQrCodesInScope, loadQrLinkTargets, type QrActor, type QrLifecycleAction, type QrActivity } from '@/lib/marketing/qr-governance'
+import { LEAD_DESK_USER_TYPES } from '@/lib/auth/lead-visibility'
 import { qrLifecycleState, type QrLifecycleState, type QrMintContext, type QrDestinationVersion } from '@/lib/marketing/qr-contract'
 
 /**
@@ -64,16 +65,30 @@ function qrDisplayName(input: {
   listingLine: string | null
   campaignName: string | null
 }): string {
-  const isGeneratedKey = /^[a-z_]+:[0-9a-f-]{8,}$/i.test(input.label)
+  // WAVE 155 (155E): an ARTIFACT slot's key (`artifact:<table>:<id>:<slot>:…`) and a video key read as what they are —
+  // the raw key is a server-side idempotency string, never a name a person typed.
+  const artifact = /^artifact:([a-z_]+):[^:]+:([a-z_]+):/.exec(input.label)
+  const video = /^video:([a-z_]+):/.exec(input.label)
+  const isGeneratedKey = /^[a-z_]+:[0-9a-f-]{8,}$/i.test(input.label) || !!artifact || !!video
   if (!isGeneratedKey) return input.label
+  if (artifact) return `${ARTIFACT_SOURCE_NAMES[artifact[1]] ?? artifact[1].replace(/_/g, ' ')} · ${artifact[2].replace(/_/g, ' ')}`
+  if (video && !input.listingLine && !input.campaignName) return `Video end card · ${video[1].replace(/_/g, ' ')}`
   if (input.listingLine) return input.listingLine
   if (input.campaignName) return input.campaignName
   return input.label
 }
 
-/** NOT EXPORTED (same reason as qrDisplayName above): the board's wave-152 provenance + lifecycle fields for one row. */
-function provenanceOf(c: Record<string, any>, creatorNames: Map<string, string>): Pick<QrManagerCode,
-  'lifecycle_state' | 'token_scope' | 'placement' | 'mail_layout' | 'tracking' | 'print_size_in' | 'consent_context' | 'destination_versions' | 'creator_name'> {
+/** The artifact tables a slot names (lib/marketing/tracked-qr.ts resolveArtifactQrSlot) in words. */
+const ARTIFACT_SOURCE_NAMES: Record<string, string> = {
+  blog_posts: 'Blog post', newsletter_campaigns: 'Newsletter', podcast_episodes: 'Podcast episode',
+  listing_presentations: 'Listing presentation', marketing_assets: 'Marketing asset', lead_magnets: 'Lead magnet',
+}
+
+/** NOT EXPORTED (same reason as qrDisplayName above): the board's wave-152 provenance + lifecycle fields for one row.
+ *  WAVE 155 (155E): + the source artifact, and the Contact / Lead the piece is addressed to — the LEAD only for a
+ *  lead-desk viewer (Leads belong to the tenant; agents see Contacts only — lib/auth/lead-visibility.ts). */
+function provenanceOf(c: Record<string, any>, creatorNames: Map<string, string>, viewerSeesLeads = false): Pick<QrManagerCode,
+  'lifecycle_state' | 'token_scope' | 'placement' | 'mail_layout' | 'tracking' | 'print_size_in' | 'consent_context' | 'destination_versions' | 'creator_name' | 'source_artifact' | 'contact_id' | 'lead_id'> {
   const ctx = (c.mint_context ?? {}) as Partial<QrMintContext>
   const history = Array.isArray(c.destination_history) ? (c.destination_history as QrDestinationVersion[]) : []
   return {
@@ -86,6 +101,9 @@ function provenanceOf(c: Record<string, any>, creatorNames: Map<string, string>)
     consent_context:      ctx.consent_context ?? null,
     destination_versions: history.length,
     creator_name:         c.created_by_user_id ? creatorNames.get(c.created_by_user_id) ?? null : null,
+    source_artifact:      ctx.source_table && ctx.asset_id ? { table: ctx.source_table, id: ctx.asset_id, slot: ctx.artifact_slot ?? null } : null,
+    contact_id:           ctx.contact_id ?? null,
+    lead_id:              viewerSeesLeads ? ctx.lead_id ?? null : null,
   }
 }
 
@@ -133,6 +151,12 @@ export interface QrManagerCode {
   creator_name:         string | null
   /** WAVE 153 (153E): the viewer minted this code themselves (the board's "Only codes I created" filter). */
   created_by_me:        boolean
+  /** WAVE 155 (155E): the artifact this code was minted for (mint_context source_table / asset_id / artifact_slot). */
+  source_artifact:      { table: string; id: string; slot: string | null } | null
+  /** WAVE 155 (155E): the Contact the piece is addressed to, where one was named. */
+  contact_id:           string | null
+  /** WAVE 155 (155E): the Lead the piece is addressed to — null unless the VIEWER is lead-desk staff. */
+  lead_id:              string | null
 }
 
 /** WAVE 153 (153E): one placement's codes, RAW scans and consented Contacts (never pooled across placements). */
@@ -370,7 +394,7 @@ export async function loadQrCodesForCaller(): Promise<QrManagerData> {
       listingLine:  c.listing_id ? listingAddresses.get(c.listing_id) ?? null : null,
       campaignName: c.marketing_campaign_id ? campaignNames.get(c.marketing_campaign_id) ?? null : null,
     }),
-    ...provenanceOf(c, creatorNames),
+    ...provenanceOf(c, creatorNames, !!ctx.userType && LEAD_DESK_USER_TYPES.has(ctx.userType)),
     created_by_me:         !!c.created_by_user_id && c.created_by_user_id === ctx.userId,
   }))
 

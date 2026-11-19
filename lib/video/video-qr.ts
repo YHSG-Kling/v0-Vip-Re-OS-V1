@@ -192,14 +192,20 @@ type AnyClient = ReturnType<typeof createServiceClient>
  * video kinds), then the contact (anniversary), then the campaign (newsletter),
  * then the brokerage as a last resort.
  */
+function videoQrEntity(args: MintVideoQrArgs): string {
+  return args.listingId ?? args.contactId ?? args.leadId ?? args.campaignId ?? args.brokerageId
+}
+
+/** WAVE 155 (155E) — the label names the CREATOR too: two agents' videos of one listing are two logical codes (their
+ *  scans must not pool). A re-render by the same creator still resolves to the same label. */
 function videoQrLabel(args: MintVideoQrArgs): string {
-  const entity =
-    args.listingId ??
-    args.contactId ??
-    args.leadId ??
-    args.campaignId ??
-    args.brokerageId
-  return `video:${args.kind}:${entity}`
+  return `video:${args.kind}:${videoQrEntity(args)}:u:${args.agentUserId}`
+}
+
+/** TOMBSTONE (155E): the pre-wave-155 key `video:<kind>:<entity>` — no creator. SURVIVOR: videoQrLabel above. Read only
+ *  to keep a code that already exists under it when it belongs to THIS creator (stable reporting on re-render). */
+function legacyVideoQrLabel(args: MintVideoQrArgs): string {
+  return `video:${args.kind}:${videoQrEntity(args)}`
 }
 
 /**
@@ -221,25 +227,42 @@ export async function mintVideoQr(
 ): Promise<MintedVideoQr | null> {
   if (!args.brokerageId || !args.agentUserId) return null
   const dest = qrDestinationForKind(args.kind)
+  const svc: AnyClient = client ?? createServiceClient()
+  // WAVE 155 (155E) — FIXED: qr_codes.agent_id is an FK to agents.id, and this used to write `agentUserId` (a users.id)
+  // into it. agents.id and users.id are DISJOINT (CLAUDE.md §3, 23503), so every FIRST mint of a video code was refused
+  // and mintTrackedQr returned null — the outro rendered with no QR ("qr code is missing from remotion"). The creator's
+  // agents row is resolved here under the same tenant; the users.id is stamped as created_by_user_id.
+  const { data: agentRow, error: agentErr } = await svc.from("agents").select("id").eq("user_id", args.agentUserId).eq("brokerage_id", args.brokerageId).maybeSingle()
+  if (agentErr) console.error("[mintVideoQr] creator's agents row not read — minting without agent_id:", agentErr.message)
+  const agentId = (agentRow as { id?: string } | null)?.id ?? null
+
+  let label = videoQrLabel(args)
+  const { data: legacy } = await svc.from("qr_codes").select("id, agent_id, created_by_user_id").eq("brokerage_id", args.brokerageId).eq("label", legacyVideoQrLabel(args)).eq("is_active", true).maybeSingle()
+  const legacyRow = legacy as { agent_id?: string | null; created_by_user_id?: string | null } | null
+  if (legacyRow && ((agentId && legacyRow.agent_id === agentId) || legacyRow.created_by_user_id === args.agentUserId)) label = legacyVideoQrLabel(args)
+
   // Delegate the DB write + PNG encode to the shared tracked-QR core; this module only owns the
   // video KIND→destination mapping + the idempotency label.
   const minted = await mintTrackedQr(
     {
       brokerageId: args.brokerageId,
-      agentId: args.agentUserId,
-      label: videoQrLabel(args),
+      agentId,
+      createdByUserId: args.agentUserId,
+      label,
       destinationType: dest.destinationType,
       targetUrl: dest.buildTargetUrl(normalizeOrigin(args.origin), args),
       listingId: args.listingId ?? null,
       // ★ TRACKING LINKED TO CAMPAIGN ★ every video minted under a marketing campaign stamps
       // qr_codes.marketing_campaign_id, so outro-QR scans roll up to that campaign in
-      // lib/marketing/campaign-measurer.ts instead of vanishing. The campaign already drives the
-      // newsletter destination URL below — it just was never written to the row.
+      // lib/marketing/campaign-measurer.ts instead of vanishing.
       marketingCampaignId: args.campaignId ?? null,
       purpose: "campaign",
       origin: args.origin,
+      // The slot this code fills (qr-contract.ts QR_ARTIFACT_SLOTS). A Lead id is stored server-side only — the board
+      // projects it to lead-desk viewers only.
+      mintContext: { artifact_slot: "video_end_card", placement: "video_endcard", channel: "video", contact_id: args.contactId ?? null, lead_id: args.leadId ?? null },
     },
-    client,
+    svc,
   )
   if (!minted) return null
   return {

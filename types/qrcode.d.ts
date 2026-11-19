@@ -41,7 +41,10 @@ declare module 'qrcode' {
   function toString(text: string, options?: QRCodeToStringOptions): Promise<string>
   function toCanvas(canvas: HTMLCanvasElement, text: string, options?: QRCodeToCanvasOptions): Promise<void>
   function toCanvas(text: string, options?: QRCodeToCanvasOptions): Promise<HTMLCanvasElement>
+  /** The symbol without rendering it — wave 155 (155E) reads `modules.size` (modules per side, quiet zone excluded) to
+   *  hold a placement to its minimum module size (lib/marketing/tracked-qr.ts qrModuleCount). */
+  function create(text: string, options?: { errorCorrectionLevel?: 'L' | 'M' | 'Q' | 'H' }): { modules: { size: number }; version: number }
 
-  export { toDataURL, toString, toCanvas }
+  export { toDataURL, toString, toCanvas, create }
   export type { QRCodeToDataURLOptions, QRCodeToStringOptions, QRCodeToCanvasOptions }
 }

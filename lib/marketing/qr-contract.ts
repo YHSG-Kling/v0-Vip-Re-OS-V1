@@ -101,6 +101,9 @@ export const QR_IN_APP_PUBLIC_PREFIXES: readonly string[] = [
   "/open-house/", // open-house sign-in kiosk + RSVP (app/open-house/[eventId]/…)
   "/forms/",      // tenant lead-capture forms (app/forms/[slug])
   "/site/",       // tenant website (app/site/[slug])
+  // WAVE 155 (155E): the public hosted blog post (app/blog/[slug], no auth). Without it a blog's printed QR landed on
+  // the generic /qr/<slug> capture form instead of the post it was printed from.
+  "/blog/",
 ] as const
 
 /** PURE — is `path` (no origin) under one of the in-app public prefixes? `/home-value` alone counts.
@@ -292,6 +295,103 @@ export interface QrMintContext {
   print_size_in?: number | null
   idempotency_key?: string | null
   duplicated_from?: string | null
+  // WAVE 155 (lane 155E) — the ARTIFACT SLOT a code was minted for (lib/marketing/tracked-qr.ts resolveArtifactQrSlot).
+  // These live in the jsonb (no migration): none of blog_posts / newsletter_campaigns / podcast_episodes /
+  // listing_presentations carries a qr_code_id, so the code names its source instead.
+  /** QR_ARTIFACT_SLOTS key — the precise slot (`placement` above stays the live CHECK vocabulary, or null). */
+  artifact_slot?: string | null
+  /** The source artifact's own table (`asset_id` is its id). */
+  source_table?: string | null
+  /** The creator / campaign VARIANT the code distinguishes (default `default`). */
+  variant?: string | null
+  /** A Contact the artifact is addressed to (contacts.id). Agents may see it. */
+  contact_id?: string | null
+  /** A Lead the artifact is addressed to (leads.id) — stored server-side; the board projects it ONLY to a lead-desk
+   *  viewer (lib/auth/lead-visibility.ts LEAD_DESK_USER_TYPES). Leads belong to the tenant; agents see Contacts only. */
+  lead_id?: string | null
+}
+
+// ─── 3b · artifact slots (wave 155, lane 155E) ────────────────────────────────
+//
+// Owner (verbatim, 2026-11-19): "qr code is missing from remotion, blogs, newsletter, etc." ONE QR authority
+// (lib/marketing/tracked-qr.ts) everywhere it fits — and never forced where it does not. Each slot names the MEDIUM
+// that decides its minimum size, and the live marketing_asset_qr_links.placement_type it maps to (null where that
+// CHECK has no honest counterpart — the link-table row is then not written; the code's own mint_context still names
+// the slot). `email_link` is not an image at all: inside an email body a tracked CLICKABLE link is the right form.
+
+export type QrSlotMedium = "print" | "screen" | "video" | "link"
+
+export const QR_ARTIFACT_SLOTS = {
+  video_end_card:     { medium: "video",  placementType: "video_endcard" },
+  presentation_slide: { medium: "screen", placementType: null },
+  flyer_panel:        { medium: "print",  placementType: "flyer" },
+  mail_panel:         { medium: "print",  placementType: "mailer" },
+  listing_material:   { medium: "print",  placementType: "listing_asset" },
+  print_footer:       { medium: "print",  placementType: null },
+  page_footer:        { medium: "screen", placementType: null },
+  podcast_page:       { medium: "screen", placementType: "podcast_landing" },
+  email_link:         { medium: "link",   placementType: null },
+} as const satisfies Record<string, { medium: QrSlotMedium; placementType: (typeof QR_PLACEMENT_TYPES)[number] | null }>
+
+export type QrArtifactSlot = keyof typeof QR_ARTIFACT_SLOTS
+
+export function isQrArtifactSlot(v: unknown): v is QrArtifactSlot {
+  return typeof v === "string" && Object.prototype.hasOwnProperty.call(QR_ARTIFACT_SLOTS, v)
+}
+
+/**
+ * THE MINIMUMS a placement must meet before a code is drawn on it (never forced onto a placement too small to scan).
+ * Measured against the REAL module count of the code's scan URL (tracked-qr.ts qrModuleCount — symbol plus the 4-module
+ * quiet zone on each side), not a guessed symbol size:
+ *   • print — the printed square (quiet zone included) is never under 0.8 in — the size every mail layout
+ *     (lib/direct-mail/mail-piece-rules.ts minSizeIn) and the governed mint already hold. Our scan URL encodes as
+ *     version 5 (37 modules + 8 quiet = 45), so 0.8 in is 0.45 mm per module: a phone camera at reading distance
+ *     (~25 cm) resolves ~0.25 mm, which leaves margin for ink spread and an un-flat page. A LONGER scan URL (a custom
+ *     origin) has more modules, so the check also holds the per-module floor of 0.4 mm.
+ *   • screen / video — 2 native pixels per module: below that the raster scaler and video compression merge modules.
+ *   • video — on screen for ≥ 2 seconds, so a viewer can raise a phone before it is gone.
+ * Contrast is not a per-placement knob: every encode is black on white (qrEncodeOptions) and every slot draws it on
+ * an opaque white plate, so the contrast ratio is 21:1 by construction.
+ */
+export const QR_PLACEMENT_MINIMUMS = {
+  printMinSideIn: 0.8,
+  printModuleMm: 0.4,
+  screenModulePx: 2,
+  videoMinVisibleSeconds: 2,
+} as const
+
+export type QrPlacementSize =
+  | { sideInches: number }
+  | { sidePx: number; visibleFrames?: number | null; fps?: number | null }
+
+/** PURE — does a placement of `size` carry a code of `moduleCount` modules (quiet zone included) scannably? */
+export function qrPlacementFit(slot: QrArtifactSlot, moduleCount: number, size: QrPlacementSize | null | undefined): { ok: true } | { ok: false; reason: string } {
+  const medium = QR_ARTIFACT_SLOTS[slot].medium
+  if (medium === "link") return { ok: true }
+  if (!size) return { ok: false, reason: "the generator did not state the placement's size, so its scannability cannot be checked" }
+  if (!Number.isFinite(moduleCount) || moduleCount <= 0) return { ok: false, reason: "the code's module count is unknown" }
+  if (medium === "print") {
+    if (!("sideInches" in size)) return { ok: false, reason: "a print placement must state its size in inches" }
+    const moduleMm = (size.sideInches * 25.4) / moduleCount
+    if (size.sideInches < QR_PLACEMENT_MINIMUMS.printMinSideIn) return { ok: false, reason: `the printed code would be ${size.sideInches} in, under the ${QR_PLACEMENT_MINIMUMS.printMinSideIn} in minimum` }
+    return moduleMm >= QR_PLACEMENT_MINIMUMS.printModuleMm
+      ? { ok: true }
+      : { ok: false, reason: `the printed code would be ${size.sideInches} in — ${moduleMm.toFixed(2)} mm per module, under the ${QR_PLACEMENT_MINIMUMS.printModuleMm} mm minimum` }
+  }
+  if (!("sidePx" in size)) return { ok: false, reason: "a screen or video placement must state its size in pixels" }
+  const modulePx = size.sidePx / moduleCount
+  if (modulePx < QR_PLACEMENT_MINIMUMS.screenModulePx) {
+    return { ok: false, reason: `the code would be ${size.sidePx} px — ${modulePx.toFixed(2)} px per module, under the ${QR_PLACEMENT_MINIMUMS.screenModulePx} px minimum` }
+  }
+  if (medium === "video") {
+    const fps = size.fps ?? 30
+    const frames = size.visibleFrames ?? null
+    if (frames === null) return { ok: false, reason: "a video placement must state how many frames the code is on screen" }
+    if (frames / fps < QR_PLACEMENT_MINIMUMS.videoMinVisibleSeconds) {
+      return { ok: false, reason: `the code would be on screen ${(frames / fps).toFixed(1)} s, under the ${QR_PLACEMENT_MINIMUMS.videoMinVisibleSeconds} s minimum` }
+    }
+  }
+  return { ok: true }
 }
 
 /** marketing_asset_qr_links.placement_type (live CHECK) — the ONE placement vocabulary a code's mint context names

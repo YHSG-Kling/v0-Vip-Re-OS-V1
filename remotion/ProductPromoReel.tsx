@@ -15,6 +15,8 @@
 import React from "react"
 import { AbsoluteFill, Sequence, cancelRender, continueRender, delayRender, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig } from "remotion"
 import { SafeImg } from "./components/SafeImg"
+import { QrOutroBadge } from "./components/QrOutroBadge"
+import { qrOutroBadgeWidth } from "../lib/video/cinema-finish"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
 import { compositionBookends } from "../lib/video/duration-model"
@@ -71,6 +73,10 @@ export interface ProductPromoReelProps {
   imageUrls?: string[]
   brand?: { primaryColor?: string; accentColor?: string; name?: string; tagline?: string }
   ctaDomain?: string
+  /** WAVE 155 (lane 155E) — the ONE optional QR slot: a PLATFORM-owned tracked code (lib/marketing/tracked-qr.ts
+   *  mintTrackedQr with owner "platform") drawn in the CTA scene's badge slot. Null / absent → no badge (default). */
+  qrCodeDataUrl?: string | null
+  qrCaption?: string | null
   /** SOUND-OFF CAPTIONS (additive + default-off, wave 61 caption-consolidation
    *  audit). Precomputed word-accurate cues built upstream from REAL alignment —
    *  preferred. See CaptionLayer. */
@@ -175,7 +181,7 @@ const KenBurnsShot: React.FC<{ src: string; primary: string }> = ({ src, primary
 }
 
 export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
-  hook, proofs, cta, brand, ctaDomain, imageUrls, captionsCues, captionScript, bodyVisualPlan,
+  hook, proofs, cta, brand, ctaDomain, imageUrls, captionsCues, captionScript, bodyVisualPlan, qrCodeDataUrl, qrCaption,
 }) => {
   const primary = brand?.primaryColor ?? "#0F172A"
   const accent = brand?.accentColor ?? "#F59E0B"
@@ -289,12 +295,15 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({
             {domain}
           </div>
           {/* capability ticker — the whole-business breadth, chip by chip */}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 34, maxWidth: width - pad * 2 }}>
+          {/* With a QR the chips stop short of the badge column, so the code never covers readable text. */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 34, maxWidth: width - pad * 2 - (qrCodeDataUrl ? qrOutroBadgeWidth() + pad : 0) }}>
             {CAPABILITIES.map((c, i) => (
               <CapabilityChip key={c} label={c} index={i} accent={accent} width={width} height={height} />
             ))}
           </div>
         </AbsoluteFill>
+        {/* The CTA scene is the end card: the badge fades in by frame (interpolate) and holds for the scene. */}
+        <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl ?? null} caption={qrCaption ?? "Scan to get started"} primaryColor={primary} accentColor={accent} />
       </Sequence>
 
       {/* NO CAPTION OVER THE CTA/DOMAIN TILE (wave 61, mirrors JustListedReel.tsx) —

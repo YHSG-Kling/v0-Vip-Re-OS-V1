@@ -11,7 +11,8 @@ import { KernelEvent } from '@/lib/kernel/events'
 // context (coarse device, referring host, a per-code-per-day visitor key — never the raw IP or browser string).
 import { resolveQrScanDestination, qrLifecycleState, qrUnavailableNotice, isAbsentColumnRefusal, type QrMintContext } from '@/lib/marketing/qr-contract'
 import { classifyScanForCode, loadQrTenantHosts } from '@/lib/marketing/qr-governance'
-import { qrScanEvidence } from '@/lib/marketing/tracked-qr'
+import { qrScanEvidence, openQrPersonalGrant } from '@/lib/marketing/tracked-qr'
+import { createHash } from 'node:crypto'
 
 export const dynamic = 'force-dynamic'
 
@@ -47,6 +48,28 @@ function refusalPage(status: number, notice: { heading: string; detail: string; 
 /** HTTP status per unavailable state: paused is resumable (403, not Gone); expired / retired / revoked are Gone (410). */
 const UNAVAILABLE_STATUS = { paused: 403, expired: 410, retired: 410, revoked: 410 } as const
 
+/**
+ * WAVE 155 (lane 155E) — A REFUSED SCAN IS STILL AN EVENT, NEVER A PERSON. A paused / expired / retired / revoked /
+ * unknown code shows the friendly page AND leaves one lifecycle_events row naming the CODE and its state — nothing about
+ * the scanner (no visitor key, no network, no browser string), so the page's "Nothing about you was saved" stays true.
+ * The tenant is the code row's. An UNKNOWN slug (and a platform code with no tenant) leaves NO row: the live table requires
+ * both `brokerage_id` and `entity_id` (NOT NULL, read live 2026-11-19 by the wave-155 integrator), so that insert could only
+ * be refused — and a stranger typing random slugs must not be able to fill the failure ledger. A row that is written
+ * carries a one-way hash of the slug, never the scanner-typed text itself.
+ */
+async function recordRefusedScan(supabase: ReturnType<typeof createServiceClient>, input: { brokerageId: string | null; qrCodeId: string | null; state: string; slug: string }): Promise<void> {
+  if (!input.brokerageId || !input.qrCodeId) return
+  try {
+    await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
+      brokerage_id: input.brokerageId,
+      entity_type: 'qr_code',
+      entity_id: input.qrCodeId,
+      event_type: 'qr_scan_refused',
+      metadata: { state: input.state, slug_hash: createHash('sha256').update(input.slug).digest('hex').slice(0, 16) },
+    }), { table: 'lifecycle_events', flow: 'qr_scan_refused', reason: 'audit record that a refused code was scanned; its loss changes no answer the scanner gets — ledgered, never silent' })
+  } catch { /* the scanner's page never waits on the audit row */ }
+}
+
 /** The code row this door reads (the m945 columns are absent until it is applied). */
 type ScanCodeRow = {
   // brokerage_id is null only for a PLATFORM code (m664); it is passed through exactly as before this type existed.
@@ -62,6 +85,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     if (!slug) {
       return refusalPage(400, qrUnavailableNotice('missing'))
+    }
+    // A slug is a token of the one shape the minter draws; anything longer is not ours (and is never stored raw).
+    if (slug.length > 64) {
+      return refusalPage(404, qrUnavailableNotice('missing'))
     }
 
     const supabase = createServiceClient()
@@ -90,6 +117,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return refusalPage(503, qrUnavailableNotice('error'))
     }
     if (!qr) {
+      await recordRefusedScan(supabase, { brokerageId: null, qrCodeId: null, state: 'missing', slug })
       return refusalPage(404, qrUnavailableNotice('missing'))
     }
 
@@ -98,7 +126,33 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // and it is true: we return before the scan row is written).
     const state = qrLifecycleState(qr)
     if (state !== 'active') {
+      await recordRefusedScan(supabase, { brokerageId: qr.brokerage_id ?? null, qrCodeId: qr.id, state, slug })
       return refusalPage(UNAVAILABLE_STATUS[state], qrUnavailableNotice(state))
+    }
+
+    // ── Step 1a': A PERSONAL scan only through a sealed, expiring grant (wave 155, 155E) ──
+    // A scan is not an identity (eval PRIV-005): with no `g`, or a grant that is forged, expired, for another code or
+    // another tenant, the scan stays ANONYMOUS. A valid grant names a Contact or Lead the tenant itself addressed this
+    // piece to; the person must still be a row of the CODE's tenant (read here, never trusted from the grant alone).
+    let personContactId: string | null = null
+    let personLeadId: string | null = null
+    const grantParam = searchParams.get('g')
+    if (grantParam && qr.brokerage_id) {
+      const { encryptSecret, decryptSecret, isEncrypted } = await import('@/lib/security/secret-crypto')
+      const person = openQrPersonalGrant({ seal: encryptSecret, open: decryptSecret, isSealed: isEncrypted }, grantParam, { qrCodeId: qr.id, brokerageId: qr.brokerage_id })
+      if (person) {
+        const { data: personRow, error: personErr } = await supabase
+          .from(person.kind === 'contact' ? 'contacts' : 'leads')
+          .select('id')
+          .eq('id', person.id)
+          .eq('brokerage_id', qr.brokerage_id)
+          .maybeSingle()
+        if (personErr) console.error('[qr/scan] personal grant subject not read — scan stays anonymous:', personErr.message)
+        else if (personRow) {
+          if (person.kind === 'contact') personContactId = person.id
+          else personLeadId = person.id
+        }
+      }
     }
 
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
@@ -149,7 +203,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // m946 is applied the classified columns are refused (PGRST204), and the row is written
     // once more without them — the scan still counts.
     if (trackScan) {
-      const baseScan = { qr_code_id: qr.id, brokerage_id: qr.brokerage_id, campaign_id: campaignId, referrer: evidence.referrerHost, is_first_scan: qr.scan_count === 0 }
+      // contact_id ONLY from a lawfully resolved personal grant (above) or the 1:1 mail campaign — never inferred.
+      const baseScan = { qr_code_id: qr.id, brokerage_id: qr.brokerage_id, campaign_id: campaignId, referrer: evidence.referrerHost, is_first_scan: qr.scan_count === 0, contact_id: personContactId ?? campaignContactId ?? null }
       const { error: scanError } = await supabase.from('qr_scan_events').insert({ ...baseScan, visitor_key: evidence.visitorKey, traffic_class: trafficClass, device_class: evidence.deviceClass })
       if (scanError && isAbsentColumnRefusal(scanError)) {
         await sentinelWrite(supabase, supabase.from('qr_scan_events').insert(baseScan), { table: "qr_scan_events", flow: "qr_scan_events_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
@@ -316,6 +371,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       // that routes from one whose destination is unreachable.
       routed:           destination.kind,
       routed_reason:    destination.reason,
+      // WAVE 155 (155E): a person ONLY when a sealed grant resolved one under this tenant; else the scan is anonymous.
+      personal:         personContactId || personLeadId ? 'grant' : 'anonymous',
+      ...(personLeadId ? { lead_id: personLeadId } : {}),
     }
     await sentinelWrite(supabase, supabase.from('lifecycle_events').insert({
       brokerage_id: qr.brokerage_id,
@@ -332,6 +390,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         brokerageId: qr.brokerage_id,
         entityType:  'qr_scan',
         entityId:    qr.id,
+        // The arbiter's opportunity reaches a person only through the lawfully resolved Contact (never an anonymous scan).
+        ...(personContactId ? { contactId: personContactId } : {}),
         metadata:    eventMeta,
         skipInsert:  true,
       })

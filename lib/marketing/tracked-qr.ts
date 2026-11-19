@@ -45,7 +45,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // THE ENCODING CONTRACT (wave 141F): quiet zone, error correction, contrast — one option
 // builder every encoder (server + client) shares. lib/marketing/qr-contract.ts is pure.
 // WAVE 152 (lane 152C): the token shape and the mint provenance shape live there too.
-import { qrEncodeOptions, QR_RENDER_DEFAULTS, QR_TOKEN_SHAPE, qrLabelKind, isAbsentColumnRefusal, qrDeviceClass, coarseNetworkPrefix, qrReferrerHost, type QrMintContext, type QrDestinationVersion, type QrDeviceClass } from "./qr-contract"
+import { qrEncodeOptions, QR_RENDER_DEFAULTS, QR_TOKEN_SHAPE, qrLabelKind, isAbsentColumnRefusal, qrDeviceClass, coarseNetworkPrefix, qrReferrerHost, qrLifecycleState, qrPlacementFit, isQrArtifactSlot, QR_ARTIFACT_SLOTS, type QrMintContext, type QrDestinationVersion, type QrDeviceClass, type QrArtifactSlot, type QrPlacementSize, type QrLifecycleState } from "./qr-contract"
 
 type AnyClient = ReturnType<typeof createServiceClient>
 
@@ -382,6 +382,234 @@ export async function mintTrackedQr(
     const qrCodeDataUrl = await renderQrPng(scanUrl)
 
     return { qrCodeId, slug, scanUrl, targetUrl, qrCodeDataUrl, destinationType, created }
+  } catch {
+    return null
+  }
+}
+
+// ─── WAVE 155 (lane 155E) · ONE OPTIONAL QR SLOT PER ARTIFACT ────────────────
+//
+// Owner (verbatim, 2026-11-19): "qr code is missing from remotion, blogs, newsletter, etc." Every generator asks THIS
+// resolver for its slot — it is not a second minter: the write is mintTrackedQr above. What it adds is the slot's
+// rules: the tenant's choice (none → absent), the placement's minimum size (never forced), one LOGICAL code per
+// (tenant, source artifact, slot, destination, creator, variant) — a re-render reuses it, a different creator /
+// variant / destination gets its own — a paused / expired / retired code HELD rather than silently re-minted, and a
+// chosen code from another tenant refused.
+
+/** Modules across the printed square for `url` — the symbol at the contract's error correction plus the 4-module quiet
+ *  zone on each side. The input to qr-contract.ts qrPlacementFit. */
+export function qrModuleCount(url: string): number {
+  const symbol = QRCode.create(url, { errorCorrectionLevel: QR_RENDER_DEFAULTS.errorCorrectionLevel }).modules.size
+  return symbol + 2 * QR_RENDER_DEFAULTS.margin
+}
+
+/** PURE — the ONE logical-slot key. The destination enters as a short one-way hash (a URL never sits in a label). */
+export function artifactQrLabel(input: { sourceTable: string; sourceId: string; slot: QrArtifactSlot; destinationUrl: string; creatorUserId?: string | null; variant?: string | null }): string {
+  const dest = createHash("sha256").update(input.destinationUrl.trim()).digest("hex").slice(0, 12)
+  return `artifact:${input.sourceTable}:${input.sourceId}:${input.slot}:${input.creatorUserId || "tenant"}:${(input.variant || "default").slice(0, 40)}:${dest}`
+}
+
+export type ArtifactQrChoice = { mode: "auto" } | { mode: "none" } | { mode: "existing"; qrCodeId: string }
+
+export interface ResolveArtifactQrArgs {
+  /** The tenant — from the caller's SESSION or the artifact row the caller already read under it. Never a body. */
+  brokerageId: string
+  sourceTable: string
+  sourceId: string
+  slot: QrArtifactSlot
+  /** The SEMANTIC destination (what the code means). The image always encodes the scan URL. */
+  destinationUrl: string
+  destinationType?: QrDestinationType | null
+  purpose?: QrPurpose
+  /** users.id of the creator; resolved to agents.id here (the two are DISJOINT — CLAUDE.md §3). */
+  creatorUserId?: string | null
+  marketingCampaignId?: string | null
+  listingId?: string | null
+  contactId?: string | null
+  /** Stored server-side only; projected to lead-desk viewers only (qr-contract.ts QrMintContext.lead_id). */
+  leadId?: string | null
+  variant?: string | null
+  expiresAt?: string | null
+  choice?: ArtifactQrChoice
+  /** The placement's size — required for every image slot (qrPlacementFit). */
+  size?: QrPlacementSize | null
+  origin?: string
+  /** A piece addressed to ONE person: the image / link carries a sealed, expiring grant for that person (never their
+   *  id). The logical code stays the artifact's; the grant only lets the scan door resolve the person lawfully. */
+  personal?: { sealer: QrGrantSealer; subject: { kind: "contact" | "lead"; id: string } } | null
+}
+
+export type ArtifactQrSlotResult =
+  | { status: "placed"; reused: boolean; qrCodeId: string; slug: string; scanUrl: string; targetUrl: string; qrCodeDataUrl: string | null; moduleCount: number; label: string; personalScanUrl?: string | null }
+  | { status: "absent"; reason: "tenant_chose_none" }
+  | { status: "too_small"; reason: string }
+  | { status: "held"; qrCodeId: string; state: Exclude<QrLifecycleState, "active">; reason: string }
+  | { status: "refused"; reason: string }
+
+type SlotCodeRow = { id: string; slug: string; brokerage_id: string | null; target_url: string | null; is_active: boolean | null; expires_at: string | null; retired_at?: string | null; retired_reason?: string | null }
+
+/** A placeholder of the real token's length — the module count of a scan URL depends only on its length and charset. */
+const SIZING_SLUG = "a".repeat(QR_TOKEN_SHAPE.length)
+
+/**
+ * resolveArtifactQrSlot — NEVER throws. Returns what the generator should draw (or why it draws nothing). The preview
+ * a person approves is rendered from this same result, so what is approved is what prints.
+ */
+export async function resolveArtifactQrSlot(args: ResolveArtifactQrArgs, client?: AnyClient): Promise<ArtifactQrSlotResult> {
+  const base = await resolveArtifactQrSlotCore(args, client)
+  if (base.status !== "placed" || !args.personal) return base
+  // PERSONAL: the same logical code, the URL carrying a sealed grant. A grant that cannot be sealed fails CLOSED to the
+  // anonymous code (the piece still scans; nobody is identified). The longer URL has more modules — re-checked.
+  const g = mintQrPersonalGrant(args.personal.sealer, { qrCodeId: base.qrCodeId, brokerageId: args.brokerageId, subject: args.personal.subject })
+  if (!g.ok) return base
+  const personalScanUrl = qrPersonalScanUrl(base.scanUrl, g.grant)
+  const moduleCount = qrModuleCount(personalScanUrl)
+  const fit = qrPlacementFit(args.slot, moduleCount, args.size)
+  if (!fit.ok) return { status: "too_small", reason: `a personal code needs a larger placement: ${fit.reason}` }
+  return { ...base, personalScanUrl, moduleCount, qrCodeDataUrl: base.qrCodeDataUrl === null ? null : await renderQrPng(personalScanUrl) }
+}
+
+async function resolveArtifactQrSlotCore(args: ResolveArtifactQrArgs, client?: AnyClient): Promise<ArtifactQrSlotResult> {
+  try {
+    const choice = args.choice ?? { mode: "auto" }
+    if (choice.mode === "none") return { status: "absent", reason: "tenant_chose_none" }
+    if (!args.brokerageId || !args.sourceTable || !args.sourceId || !isQrArtifactSlot(args.slot)) return { status: "refused", reason: "a QR slot needs a tenant, a source artifact and a known slot" }
+    const medium = QR_ARTIFACT_SLOTS[args.slot].medium
+    const origin = normalizeOrigin(args.origin)
+    const svc: AnyClient = client ?? createServiceClient()
+
+    // Size first — never mint a code for a placement that cannot carry it.
+    const sized = qrModuleCount(`${origin}/api/qr/scan?slug=${SIZING_SLUG}`)
+    const fit = qrPlacementFit(args.slot, sized, args.size)
+    if (!fit.ok) return { status: "too_small", reason: fit.reason }
+
+    const toPlaced = async (row: SlotCodeRow, reused: boolean, label: string): Promise<ArtifactQrSlotResult> => {
+      const scanUrl = `${origin}/api/qr/scan?slug=${row.slug}`
+      return {
+        status: "placed", reused, qrCodeId: row.id, slug: row.slug, scanUrl, targetUrl: row.target_url ?? `${origin}/qr/${row.slug}`,
+        // A link slot draws no image (the email body carries the clickable tracked URL).
+        qrCodeDataUrl: medium === "link" ? null : await renderQrPng(scanUrl),
+        moduleCount: qrModuleCount(scanUrl), label,
+      }
+    }
+    const heldOrNull = (row: SlotCodeRow): ArtifactQrSlotResult | null => {
+      const state = qrLifecycleState(row)
+      if (state === "active") return null
+      return { status: "held", qrCodeId: row.id, state, reason: `the code on this piece is ${state}; re-point it with Edit destination or resume it on the QR board, or choose another code, before this piece is released` }
+    }
+    const COLS = "id, slug, brokerage_id, target_url, is_active, expires_at, retired_at, retired_reason"
+
+    // A code the tenant CHOSE from the board: it must be the same tenant's and live.
+    if (choice.mode === "existing") {
+      const { data, error } = await svc.from("qr_codes").select(COLS).eq("id", choice.qrCodeId).maybeSingle()
+      if (error) return { status: "refused", reason: "the chosen code could not be read" }
+      const row = data as SlotCodeRow | null
+      if (!row || row.brokerage_id !== args.brokerageId) return { status: "refused", reason: "cross_tenant: the chosen code does not belong to this account" }
+      return heldOrNull(row) ?? (await toPlaced(row, true, ""))
+    }
+
+    const label = artifactQrLabel({ sourceTable: args.sourceTable, sourceId: args.sourceId, slot: args.slot, destinationUrl: args.destinationUrl, creatorUserId: args.creatorUserId, variant: args.variant })
+    // The SAME logical slot — looked up WITHOUT the is_active filter mintTrackedQr's reuse applies: a paused / expired /
+    // retired code for this slot must HOLD the piece, never be bypassed by a fresh mint that points at the same offer.
+    const { data: prior, error: priorErr } = await svc.from("qr_codes").select(COLS).eq("brokerage_id", args.brokerageId).eq("label", label).order("created_at", { ascending: false }).limit(1)
+    if (priorErr) return { status: "refused", reason: "the slot's existing code could not be read — refusing to mint a duplicate" }
+    const existing = ((prior ?? []) as SlotCodeRow[])[0] ?? null
+    if (existing) return heldOrNull(existing) ?? (await toPlaced(existing, true, label))
+
+    // The creator's agents row (qr_codes.agent_id → agents.id), resolved from users.id under the same tenant.
+    let agentId: string | null = null
+    if (args.creatorUserId) {
+      const { data: a } = await svc.from("agents").select("id").eq("user_id", args.creatorUserId).eq("brokerage_id", args.brokerageId).maybeSingle()
+      agentId = (a as { id?: string } | null)?.id ?? null
+    }
+    const placementType = QR_ARTIFACT_SLOTS[args.slot].placementType
+    const minted = await mintTrackedQr({
+      brokerageId: args.brokerageId, agentId, label,
+      destinationType: args.destinationType ?? null, targetUrl: args.destinationUrl,
+      listingId: args.listingId ?? null, marketingCampaignId: args.marketingCampaignId ?? null, expiresAt: args.expiresAt ?? null,
+      purpose: args.purpose ?? "campaign", origin, createdByUserId: args.creatorUserId ?? null,
+      mintContext: {
+        artifact_slot: args.slot, placement: placementType, source_table: args.sourceTable, asset_id: args.sourceId, source: args.sourceTable,
+        channel: medium, variant: args.variant ?? "default", contact_id: args.contactId ?? null, lead_id: args.leadId ?? null,
+        print_size_in: args.size && "sideInches" in args.size ? args.size.sideInches : null,
+      },
+    }, svc)
+    if (!minted) return { status: "refused", reason: "the code could not be minted" }
+
+    // marketing_asset_qr_links (live CHECK'd placement_type) — only where the source IS a marketing asset and the slot
+    // has an honest placement type. Read-then-insert: the table has no unique (asset, code) index to upsert on.
+    if (args.sourceTable === "marketing_assets" && placementType) {
+      const { data: link } = await svc.from("marketing_asset_qr_links").select("id").eq("marketing_asset_id", args.sourceId).eq("qr_code_id", minted.qrCodeId).maybeSingle()
+      if (!link) {
+        const { error: linkErr } = await svc.from("marketing_asset_qr_links").insert({ brokerage_id: args.brokerageId, marketing_asset_id: args.sourceId, qr_code_id: minted.qrCodeId, placement_type: placementType })
+        if (linkErr) console.error("[resolveArtifactQrSlot] asset link refused:", linkErr.message)
+      }
+    }
+    return {
+      status: "placed", reused: !minted.created, qrCodeId: minted.qrCodeId, slug: minted.slug, scanUrl: minted.scanUrl, targetUrl: minted.targetUrl,
+      qrCodeDataUrl: medium === "link" ? null : minted.qrCodeDataUrl, moduleCount: qrModuleCount(minted.scanUrl), label,
+    }
+  } catch (err) {
+    return { status: "refused", reason: err instanceof Error ? err.message : "the QR slot could not be resolved" }
+  }
+}
+
+/** PURE — the blog post's PRINT slot (a 1 in footer block, printed with the post). The editor's preview and the public
+ *  page both build it from the POST (its author, not the viewer), so the code a person approves is the code that prints. */
+export function blogPrintQrArgs(post: { id: string; brokerage_id: string; slug: string; agent_user_id?: string | null; marketing_campaign_id?: string | null }, origin?: string | null): ResolveArtifactQrArgs {
+  const o = normalizeOrigin(origin)
+  return {
+    brokerageId: post.brokerage_id, sourceTable: "blog_posts", sourceId: post.id, slot: "print_footer",
+    destinationUrl: `${o}/blog/${post.slug}`, destinationType: "landing_page", purpose: "campaign",
+    creatorUserId: post.agent_user_id ?? null, marketingCampaignId: post.marketing_campaign_id ?? null,
+    size: { sideInches: 1 }, origin: o,
+  }
+}
+
+// ─── WAVE 155 (155E) · A PERSONAL SCAN, LAWFULLY RESOLVED ─────────────────────
+//
+// A scan is NOT an identity (eval spec PRIV-005): an anonymous scan stays anonymous. The ONE way a scan names a person
+// is a SEALED, EXPIRING personal grant the tenant put on a piece addressed to that person — the share-grant pattern of
+// lib/storage/signed-doc-url.ts (an injected sealer: lib/security/secret-crypto.ts encryptSecret / decryptSecret), so
+// the URL carries an opaque sealed token and never a Contact or Lead id. The grant is bound to ONE code and ONE tenant.
+
+/** The sealer the caller injects (structurally lib/storage/signed-doc-url.ts ShareGrantSealer). */
+export type QrGrantSealer = { seal: (plain: string) => string; open: (sealed: string) => string | null; isSealed: (v: string) => boolean }
+type QrPersonalGrant = { k: "qr-person-v1"; q: string; b: string; s: "contact" | "lead"; i: string; e: number }
+
+/** Personal grants follow the marketing horizon of the personal-video share grant: 30 days. */
+export const QR_PERSONAL_GRANT_TTL_SECONDS = 30 * 24 * 60 * 60
+
+export function mintQrPersonalGrant(sealer: QrGrantSealer, input: { qrCodeId: string; brokerageId: string; subject: { kind: "contact" | "lead"; id: string }; nowMs?: number }): { ok: true; grant: string; expiresAt: string } | { ok: false; reason: string } {
+  if (!input.qrCodeId || !input.brokerageId || !input.subject?.id) return { ok: false, reason: "a personal grant needs a code, a tenant and a person" }
+  const e = Math.floor((input.nowMs ?? Date.now()) / 1000) + QR_PERSONAL_GRANT_TTL_SECONDS
+  const body: QrPersonalGrant = { k: "qr-person-v1", q: input.qrCodeId, b: input.brokerageId, s: input.subject.kind, i: input.subject.id, e }
+  try {
+    const grant = sealer.seal(JSON.stringify(body))
+    if (!sealer.isSealed(grant)) return { ok: false, reason: "the grant could not be sealed" }
+    return { ok: true, grant, expiresAt: new Date(e * 1000).toISOString() }
+  } catch (err) {
+    return { ok: false, reason: `the grant could not be sealed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+/** The scan URL carrying a personal grant (what a personal piece encodes / links). */
+export function qrPersonalScanUrl(scanUrl: string, grant: string): string {
+  return `${scanUrl}&g=${encodeURIComponent(grant)}`
+}
+
+/** Open a grant for THIS code under THIS tenant. Anything else — forged, expired, another code, another tenant — is null
+ *  and the scan stays anonymous. Fails closed. */
+export function openQrPersonalGrant(sealer: QrGrantSealer, grant: string | null | undefined, expect: { qrCodeId: string; brokerageId: string | null; nowMs?: number }): { kind: "contact" | "lead"; id: string } | null {
+  if (!grant || !expect.brokerageId) return null
+  try {
+    const plain = sealer.open(grant)
+    if (!plain) return null
+    const g = JSON.parse(plain) as Partial<QrPersonalGrant>
+    if (g.k !== "qr-person-v1" || g.q !== expect.qrCodeId || g.b !== expect.brokerageId) return null
+    if (typeof g.e !== "number" || g.e * 1000 <= (expect.nowMs ?? Date.now())) return null
+    if ((g.s !== "contact" && g.s !== "lead") || typeof g.i !== "string" || !g.i) return null
+    return { kind: g.s, id: g.i }
   } catch {
     return null
   }

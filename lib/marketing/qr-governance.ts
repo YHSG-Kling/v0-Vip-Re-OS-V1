@@ -35,7 +35,7 @@ import { mintTrackedQr, isQrDestinationType, isQrPurpose, normalizeOrigin, type 
 import {
   validateQrDestination, qrLifecycleState, appendQrDestinationVersion, classifyQrScan, qrReferrerHost,
   summarizeQrScans, isAbsentColumnRefusal, qrLabelKind, QR_TOKEN_SCOPES, QR_CONSENT_CONTEXTS, QR_PLACEMENT_TYPES, QR_REPEAT_WINDOW_MS,
-  QR_RETIRED_REASONS, QR_TRAFFIC_CLASSES, QR_DEVICE_CLASSES,
+  QR_RETIRED_REASONS, QR_TRAFFIC_CLASSES, QR_DEVICE_CLASSES, QR_PLACEMENT_MINIMUMS,
   type QrMintContext, type QrDestinationVersion, type QrLifecycleState, type QrScanSummary, type QrTokenScope, type QrConsentContext,
   type QrTrafficClass,
 } from "./qr-contract"
@@ -453,7 +453,7 @@ function inputRefusal(input: GovernedQrMintInput, nowMs: number): Refusal | null
   if (input.consentContext && !(QR_CONSENT_CONTEXTS as readonly string[]).includes(input.consentContext)) return bad("Choose what the destination does with personal details.")
   if (input.placement && !(QR_PLACEMENT_TYPES as readonly string[]).includes(input.placement)) return bad("Choose where the code is printed or shown.")
   if (input.mailLayout && !(input.mailLayout in MAIL_LAYOUT_LIBRARY && MAIL_LAYOUT_LIBRARY[input.mailLayout as keyof typeof MAIL_LAYOUT_LIBRARY].qrRegion)) return bad("That mail layout has no QR area. Choose a letter, personal note or postcard side.")
-  if (input.printSizeIn !== null && input.printSizeIn !== undefined && !(input.printSizeIn >= 0.8 && input.printSizeIn <= 4)) return bad("Print the code between 0.8 and 4 inches wide — smaller than 0.8 inches phones misread it.")
+  if (input.printSizeIn !== null && input.printSizeIn !== undefined && !(input.printSizeIn >= QR_PLACEMENT_MINIMUMS.printMinSideIn && input.printSizeIn <= 4)) return bad("Print the code between 0.8 and 4 inches wide — smaller than 0.8 inches phones misread it.")
   if (input.expiresAt) {
     const t = new Date(input.expiresAt).getTime()
     if (!Number.isFinite(t) || t <= nowMs) return bad("Pick an end date in the future, or leave it empty.")

@@ -275,7 +275,15 @@ export default function QRCodesClient({
     startTransition(async () => {
       const res = await duplicateQrCode({ qrCodeId: code.id, idempotencyKey: key })
       if (!res.ok) { setToggleError(res.error); return }
-      setNotice(`Created "${res.code.label}" with its own new code. It has its own scans; reload to see it in the list.`)
+      // WAVE 155 (155E, click-path audit): the duplicate used to say "reload to see it" and never reached the list — the
+      // button's promise ("a new code") had no state transition. The new row is the source design under its NEW token,
+      // with no scans and one destination version; the next load replaces it with the server's row.
+      const dup = res.code
+      setCodes((prev) => prev.some((c) => c.id === dup.id) ? prev : [{
+        ...code, id: dup.id, slug: dup.slug, label: dup.label, display_name: dup.label, target_url: dup.targetUrl,
+        scan_count: 0, lead_count: 0, lifecycle_state: 'active', is_active: true, destination_versions: 1, created_by_me: true,
+      } as QRCodeRow, ...prev])
+      setNotice(res.replayed ? 'That copy was already made from your earlier click — no second code was made.' : `Created "${dup.label}" with its own new code. It has its own scans.`)
     })
   }
 
@@ -355,7 +363,7 @@ export default function QRCodesClient({
           lifecycle_state: 'active', token_scope: createForm.tokenScope, placement: createForm.placement || null,
           mail_layout: null, tracking: createForm.trackingEnabled ? 'enabled' : 'disabled',
           print_size_in: Number(createForm.printSizeIn) || null, consent_context: null, destination_versions: 1, creator_name: null,
-          created_by_me: true,
+          created_by_me: true, source_artifact: null, contact_id: null, lead_id: null,
           ...minted,
         } as QRCodeRow, ...prev])
         setShowCreate(false)
@@ -790,6 +798,7 @@ export default function QRCodesClient({
                 {selectedCode.token_scope ? TOKEN_SCOPE_LABELS[selectedCode.token_scope as keyof typeof TOKEN_SCOPE_LABELS] ?? selectedCode.token_scope : 'Code type not recorded (created before this was tracked)'}
                 {selectedCode.print_size_in ? ` · prints at ${selectedCode.print_size_in} in` : ''}
                 {selectedCode.creator_name ? ` · created by ${selectedCode.creator_name}` : ''}
+                {selectedCode.source_artifact ? ` · on ${selectedCode.source_artifact.table.replace(/_/g, ' ')}${selectedCode.source_artifact.slot ? ` (${selectedCode.source_artifact.slot.replace(/_/g, ' ')})` : ''}` : ''}
                 {selectedCode.tracking === 'disabled' ? ' · per-scan tracking off' : ''}
               </p>
             </div>
