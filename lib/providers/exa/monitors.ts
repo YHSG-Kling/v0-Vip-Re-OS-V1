@@ -28,6 +28,7 @@ import { corridorSearches, type PlayMarket } from "@/lib/acquisition-plays/movin
 import { publicRequestSearches } from "@/lib/acquisition-plays/public-request"
 import { propertyCandidateSearches } from "@/lib/acquisition-plays/property-candidates"
 import { runEarlyOpportunityPlays } from "@/lib/acquisition-plays/runner"
+import { withActionLedger } from "@/lib/kernel/action-ledger"
 import { EXA_HUNTED_PLAYS, PLAY_KEYS, type PlayKey } from "@/lib/acquisition-plays/contract"
 import { normalizeExaHuntRow, type ExaHuntSearch } from "./hunting"
 
@@ -210,7 +211,23 @@ export async function handleExaWebhookDelivery(
   if (!audit.inserted) return { status: 503, body: { error: `delivery audit row refused: ${audit.error ?? "unknown"} — refusing to act unrecorded` } }
 
   // 6 · THE PLAY — the same gates a hunt passes; no provider call (hunt: null; results are the delta).
-  const run = await (deps.runPlays ?? runEarlyOpportunityPlays)(svc, { market, hunt: null, results: rows.map(normalizeExaHuntRow), plays: [row.play_key], now })
+  // RECEIPT (wave 155, lane 155R5 — G13): the callback's effect is claimed → run → settled on agent_action_ledger, actor =
+  // the provider of record (system / exa_webhook), keyed by Exa's event id — a redelivery past the 7-day audit window still
+  // replays instead of re-running. Only AFTER the signature, the registry row and the audit replay check above.
+  const results = rows
+  let receiptHeld: string | null = null
+  const run = await withActionLedger(
+    { brokerageId: row.brokerage_id, action: "acquisition.monitor_delivery.run_plays", actor: { type: "system" },
+      subject: { type: "provider_monitor", id: row.id }, idempotencyKey: `exa_webhook:${delivery.eventId}`, riskClass: "LOW_RISK_WRITE",
+      systemSource: "exa_webhook", detail: { event_type: delivery.eventType, run_id: delivery.runId, play: row.play_key, results: results.length } },
+    () => (deps.runPlays ?? runEarlyOpportunityPlays)(svc, { market, hunt: null, results: results.map(normalizeExaHuntRow), plays: [row.play_key], now }),
+    {
+      settle: (r) => ({ status: "executed", outcome: `plays_run:${r.results.length}`, provider: "exa", providerRef: delivery.eventId }),
+      replay: (claim) => { receiptHeld = claim.kind; return { status: "ok", marketId: market.id, results: [], costUsd: 0, monitors: null, notes: [] } as Awaited<ReturnType<typeof runEarlyOpportunityPlays>> },
+    },
+    { client: svc as never },
+  )
+  if (receiptHeld) return { status: receiptHeld === "replay" ? 200 : 202, body: { accepted: receiptHeld === "replay", replayed: receiptHeld === "replay", eventId: delivery.eventId, ...(receiptHeld === "replay" ? {} : { reason: `delivery receipt is ${receiptHeld}; plays not run` }) } }
 
   const { data: upd, error: uErr } = await svc.from("provider_monitors").update({ last_delivery_at: now.toISOString(), last_delivery_event_id: delivery.eventId, deliveries: (row.deliveries ?? 0) + 1, updated_at: now.toISOString() }).eq("id", row.id).select("id")
   const stamped = uErr ? 0 : (upd ?? []).length

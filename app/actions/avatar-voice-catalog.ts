@@ -99,6 +99,11 @@ export interface VoiceOption {
 export async function listElevenLabsVoices(): Promise<{ success: boolean; voices: VoiceOption[] }> {
   const apiKey = process.env.ELEVENLABS_API_KEY
   if (!apiKey) return { success: false, voices: [] }
+  // GATE (wave 155, lane 155R5 — CLAUDE.md §4): a "use server" export is a public endpoint, and this one spent the ONE platform
+  // ElevenLabs key on every anonymous POST. A signed-in seat is required before the provider is called; a refusal is the same
+  // `{ success: false }` the caller already falls back from (Twin Studio keeps its static voice list).
+  const { data: { user } } = await (await createClient()).auth.getUser()
+  if (!user) return { success: false, voices: [] }
   // Official server SDK adapter (lib/providers/elevenlabs/client.ts) — same
   // GET /v1/voices endpoint, same price, no more hand-rolled response mapping.
   const { listVoices } = await import("@/lib/providers/elevenlabs/client")

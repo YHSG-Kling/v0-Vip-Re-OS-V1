@@ -38,10 +38,19 @@ export async function POST(req: NextRequest) {
   const p = post as { id: string; brokerage_id: string | null } | null
   if (!p || !p.brokerage_id) return NextResponse.json({ error: "blog post not found" }, { status: 404 })
 
+  // Wave 155 (lane 155R5 — the sibling of track-view's 149Z fix, missed here): a PUBLIC endpoint's contact id is a claim. It is
+  // stored only when it names a contact of the POST's tenant (§4 — never another tenant's id); otherwise the share is anonymous.
+  let viewerContactId: string | null = null
+  if (typeof body.contact_id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.contact_id)) {
+    const { data: viewer, error: viewerErr } = await svc.from("contacts").select("id").eq("id", body.contact_id).eq("brokerage_id", p.brokerage_id).maybeSingle()
+    if (viewerErr) console.warn("[blog/track-share] viewer contact not verified — recorded anonymously:", viewerErr.message)
+    viewerContactId = (viewer as { id?: string } | null)?.id ?? null
+  }
+
   await sentinelWrite(svc, svc.from("blog_post_share_clicks").insert({
     blog_post_id:            p.id,
     brokerage_id:            p.brokerage_id,
-    viewer_contact_id:       body.contact_id ?? null,
+    viewer_contact_id:       viewerContactId,
     viewer_persona_snapshot: body.persona_snapshot ?? null,
     share_channel:           body.share_channel,
   }), { table: "blog_post_share_clicks", flow: "blog_post_share_clicks_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })

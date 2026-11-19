@@ -755,6 +755,27 @@ export async function regenerateEmbedding(
   sourceTable: 'help_topics_kb' | 'knowledge_articles',
   sourceId: string
 ) {
+  // GATE FIRST (wave 155, lane 155R5 — CLAUDE.md §4): this public endpoint re-embedded ANY row (a paid model call) for any
+  // caller. The row's own owner decides: a tenant row only for that tenant's session, a platform row only for platform
+  // staff (the same rule updateKnowledgeArticle applies above), and a tenant re-embed passes the tenant's usage cap first.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) throw new Error('Not authenticated')
+  if (sourceTable !== 'help_topics_kb' && sourceTable !== 'knowledge_articles') throw new Error('Unknown knowledge table')
+  const supabase = await createClient()
+  const { data: row, error: rowErr } = await supabase.from(sourceTable).select('id, brokerage_id').eq('id', sourceId).maybeSingle()
+  if (rowErr) throw new Error(`That article could not be read: ${rowErr.message}`)
+  if (!row) throw new Error('That article was not found')
+  if (row.brokerage_id === null ? !(await callerIsPlatformStaff()) : row.brokerage_id !== ctx.brokerageId) {
+    throw new Error('That article belongs to another workspace')
+  }
+  if (row.brokerage_id !== null) {
+    const { checkUsageCap } = await import('@/lib/usage/check-cap')
+    const cap = await checkUsageCap({ brokerageId: row.brokerage_id, metric: 'llm_calls', addQuantity: 1 })
+    if (!cap.allowed) throw new Error(cap.message ?? 'Your AI usage cap for this month is reached')
+  }
+  // RECEIPT (155R5): the paid re-embed is claimed → run → settled on agent_action_ledger under the row's tenant (a platform row
+  // under the staff member's own tenant, detail.scope = platform); with no tenant at all it runs exactly as before, unledgered.
+  const embed = async () => {
   if (sourceTable === 'help_topics_kb') {
     await updateHelpTopicEmbedding(sourceId)
   } else {
@@ -762,13 +783,31 @@ export async function regenerateEmbedding(
   }
 
   return { success: true }
+  }
+  const ledgerTenant = row.brokerage_id ?? ctx.brokerageId
+  if (!ledgerTenant) return embed()
+  const { withActionLedger } = await import('@/lib/kernel/action-ledger')
+  return withActionLedger({ brokerageId: ledgerTenant, action: 'knowledge.embedding.regenerate', actor: { type: 'user', userId: ctx.userId, agentId: ctx.agentId }, subject: { type: sourceTable, id: sourceId }, reasonCode: 'HUMAN_REQUESTED', riskClass: 'LOW_RISK_WRITE', systemSource: 'knowledge_base_settings', detail: { scope: row.brokerage_id === null ? 'platform' : 'tenant' } }, embed, {
+    settle: () => ({ status: 'executed', outcome: 'embedded' }),
+    replay: (claim) => { throw new Error(claim.kind === 'refused' ? claim.error : `This re-embed is already ${claim.kind}`) },
+  })
 }
 
 /**
  * Backfill all missing embeddings
  */
 export async function backfillAllEmbeddings() {
-  const result = await backfillHelpTopicEmbeddings()
+  // GATE FIRST (wave 155, lane 155R5): the backfill embeds every tenant's missing rows (platform-paid model spend) —
+  // platform staff only, resolved from the session's users row; anyone else is refused before any model call.
+  if (!(await callerIsPlatformStaff())) throw new Error('Only platform staff can backfill every embedding')
+  // RECEIPT (155R5): recorded under the staff member's own tenant (detail.scope = platform); none → unledgered, as before.
+  const staffCtx = await getAgentContext()
+  if (!staffCtx.brokerageId) return backfillHelpTopicEmbeddings()
+  const { withActionLedger } = await import('@/lib/kernel/action-ledger')
+  const result = await withActionLedger({ brokerageId: staffCtx.brokerageId, action: 'knowledge.embedding.backfill', actor: { type: 'user', userId: staffCtx.userId }, subject: { type: 'help_topics_kb' }, reasonCode: 'HUMAN_REQUESTED', riskClass: 'LOW_RISK_WRITE', systemSource: 'knowledge_base_settings', detail: { scope: 'platform' } }, () => backfillHelpTopicEmbeddings(), {
+    settle: (r) => ({ status: r.failed > 0 && r.processed === 0 ? 'failed' : 'executed', outcome: `processed:${r.processed}/${r.total} failed:${r.failed}` }),
+    replay: (claim) => { throw new Error(claim.kind === 'refused' ? claim.error : `A backfill is already ${claim.kind}`) },
+  })
   return result
 }
 

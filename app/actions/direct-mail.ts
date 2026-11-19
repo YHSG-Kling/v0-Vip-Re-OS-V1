@@ -521,7 +521,10 @@ export async function trackDelivery(params: TrackDeliveryParams & { webhookSecre
 
     const payload = (params.deliveryPayload ?? {}) as Record<string, string>
 
-    const { data, error } = await supabase
+    // RECEIPT (wave 155, lane 155R5 — G99): Lob's delivery truth lands through the action ledger, actor = the provider of record
+    // (system / lob_webhook), tenant from the campaign row above. Ledger absent = recorded exactly as before.
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    const { data, error } = await withActionLedger({ brokerageId: campaign.brokerage_id, action: "marketing.mail_tracking.record_provider_event", actor: { type: "system" }, subject: { type: "direct_mail_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", systemSource: "lob_webhook", detail: { batch_id: params.batchId ?? null, status: payload?.status ?? "unknown" } }, async () => await supabase
       .from("mail_tracking")
       .insert({
         brokerage_id: campaign.brokerage_id,
@@ -534,7 +537,10 @@ export async function trackDelivery(params: TrackDeliveryParams & { webhookSecre
         returned_at: payload?.returned_at ?? null,
       })
       .select()
-      .maybeSingle()
+      .maybeSingle(), {
+      settle: (r) => r.error ? { status: "failed", outcome: "insert_refused", provider: "lob", error: r.error.message } : { status: "executed", outcome: "recorded", provider: "lob" },
+      replay: (c) => ({ data: null, error: { message: c.kind === "refused" ? c.error : `delivery record ${c.kind}` } }) as never,
+    })
 
     if (error) throw error
 

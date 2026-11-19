@@ -131,9 +131,15 @@ export async function getLandingPageBySlug(slug: string): Promise<GeneratedLandi
 export async function incrementLandingPageViews(pageId: string, currentViewCount: number) {
   try {
     const supabase = createServiceClient()
+    // Wave 155 (lane 155R5 — CLAUDE.md §4): a public endpoint wrote `currentViewCount + 1` straight from the caller, so any
+    // POST could set any page's counter to any number, published or not. The count is now read from the row itself and only a
+    // PUBLISHED page (the same predicate getLandingPageBySlug serves) is counted; `currentViewCount` is kept for the caller's shape.
+    void currentViewCount
+    const { data: page, error: pageErr } = await supabase.from("listing_landing_pages").select("view_count").eq("id", pageId).eq("status", "published").maybeSingle()
+    if (pageErr || !page) return
     await sentinelWrite(supabase, supabase
       .from("listing_landing_pages")
-      .update({ view_count: currentViewCount + 1, updated_at: new Date().toISOString() })
+      .update({ view_count: (Number((page as { view_count?: number | null }).view_count) || 0) + 1, updated_at: new Date().toISOString() })
       .eq("id", pageId), { table: "listing_landing_pages", flow: "listing_landing_pages_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } catch (err) {
     // Fail silently - analytics should not block page load

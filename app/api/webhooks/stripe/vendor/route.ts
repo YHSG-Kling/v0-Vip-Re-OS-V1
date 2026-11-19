@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { verifyStripeWebhook } from "@/lib/billing/stripe-webhook-secrets"
-import { applyVendorSubscriptionEvent } from "@/app/actions/vendor-billing"
+import { mapStripeEventToStatus, normalizeTier } from "@/lib/kernel/vendor-subscription"
+import { withActionLedger } from "@/lib/kernel/action-ledger"
 import {
   applyVendorPayoutProviderEvent,
   VENDOR_PAYOUT_COMPLETION_EVENTS,
@@ -156,9 +157,86 @@ export async function POST(req: NextRequest) {
       stripeStatus: obj?.status ?? null,
       stripeSubscriptionId: subscriptionId,
       tier: obj?.metadata?.vendor_tier ?? null,
+      eventId: String(event.id),
     })
+    if ("held" in result) return NextResponse.json({ ok: false, error: result.held }, { status: 500 })
     return NextResponse.json({ ok: true, ...result })
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message ?? String(err) }, { status: 500 })
   }
+}
+
+/**
+ * THE VENDOR SUBSCRIPTION APPLIER — moved here from app/actions/vendor-billing.ts (wave 155, lane 155R5).
+ * It was an EXPORT of a "use server" file, which made it a public HTTP endpoint (CLAUDE.md §4): any caller could
+ * name any vendorProfileId and suspend or reinstate that vendor without the Stripe signature this route checks.
+ * It now runs only behind verifyStripeWebhook + the platform-signer refusal above.
+ *
+ * RECEIPT (G13): the write runs inside withActionLedger, actor = the provider of record (system / stripe_webhook),
+ * keyed `stripe_vendor:<event.id>` — a redelivered event replays the first outcome and adds no second row; a failed
+ * write re-claims on Stripe's retry. Tenant of the receipt = the vendor seat's users.brokerage_id read from OUR row,
+ * never from event metadata. A seat with no tenant is applied exactly as before, unledgered, and said (a finding).
+ * A non-acting claim (in flight / unknown / ledger refused) applies nothing and answers 500 so Stripe redelivers.
+ */
+async function applyVendorSubscriptionEvent(input: {
+  vendorProfileId: string
+  eventType: string
+  stripeStatus?: string | null
+  stripeSubscriptionId?: string | null
+  tier?: string | null
+  eventId: string
+}): Promise<{ status: string; suspended: boolean } | { held: string }> {
+  const svc = createServiceClient()
+  const mapped = mapStripeEventToStatus(input.eventType, input.stripeStatus)
+  const update: Record<string, unknown> = { subscription_status: mapped.status, updated_at: new Date().toISOString() }
+  if (input.stripeSubscriptionId) update.stripe_subscription_id = input.stripeSubscriptionId
+  if (input.tier) update.subscription_tier = normalizeTier(input.tier)
+  if (mapped.suspendAccount) update.status = "suspended"
+  else if (mapped.status === "active") update.status = "approved"
+  const result = { status: mapped.status, suspended: mapped.suspendAccount }
+  const write = async (): Promise<{ saved: boolean; error: string | null }> => {
+    const { error: subStatusErr } = await svc.from("vendor_marketplace_profiles").update(update).eq("id", input.vendorProfileId)
+    if (subStatusErr) console.error(`[vendor-billing] vendor subscription status NOT saved: ${subStatusErr.message}`)
+    return { saved: !subStatusErr, error: subStatusErr?.message ?? null }
+  }
+
+  const { data: prof, error: profErr } = await svc.from("vendor_marketplace_profiles").select("user_id").eq("id", input.vendorProfileId).maybeSingle()
+  const vendorUserId = (prof as { user_id?: string | null } | null)?.user_id ?? null
+  let brokerageId: string | null = null
+  if (vendorUserId) {
+    const { data: seat, error: seatErr } = await svc.from("users").select("brokerage_id").eq("id", vendorUserId).maybeSingle()
+    if (seatErr) console.error(`[Vendor Webhook] vendor seat tenant read refused — receipt cannot be keyed: ${seatErr.message}`)
+    brokerageId = (seat as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+  }
+  if (!brokerageId) {
+    console.warn(`[Vendor Webhook] FINDING — vendor profile ${input.vendorProfileId} has no tenant of record${profErr ? ` (${profErr.message})` : ""}; applied without a ledger receipt`)
+    await write()
+    return result
+  }
+
+  let held: string | null = null
+  await withActionLedger(
+    {
+      brokerageId,
+      action: "vendor.subscription.apply_provider_event",
+      actor: { type: "system" },
+      subject: { type: "vendor_marketplace_profile", id: input.vendorProfileId },
+      idempotencyKey: `stripe_vendor:${input.eventId}`,
+      reasonCode: "SUBSCRIPTION_LIFECYCLE",
+      riskClass: "FINANCIAL",
+      systemSource: "stripe_webhook",
+      detail: { event_type: input.eventType, mapped_status: mapped.status, suspended: mapped.suspendAccount },
+    },
+    write,
+    {
+      settle: (w) => w.saved
+        ? { status: "executed", outcome: mapped.status, provider: "stripe", providerRef: input.eventId }
+        : { status: "failed", outcome: "write_refused", provider: "stripe", providerRef: input.eventId, error: w.error },
+      replay: (claim) => {
+        if (claim.kind !== "replay") held = claim.kind === "refused" ? claim.error : `an earlier delivery of ${input.eventId} is ${claim.kind}`
+        return { saved: claim.kind === "replay", error: null }
+      },
+    },
+  )
+  return held ? { held } : result
 }

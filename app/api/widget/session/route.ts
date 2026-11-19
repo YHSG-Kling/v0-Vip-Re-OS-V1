@@ -143,7 +143,11 @@ export async function POST(req: NextRequest) {
     // ── Create new session ────────────────────────────────────────────────
     const token = randomUUID()
 
-    const { data: session, error } = await supabase
+    // RECEIPT (wave 155, lane 155R5 — G99): the mint is decided by resolveWidgetTenant above (the tenant's own opt-in, from the
+    // slug); it now leaves an action-ledger row (subject = the tenant; the new session id is the settled ref — never the bearer
+    // token). Ledger absent = minted exactly as before.
+    const { withActionLedger } = await import('@/lib/kernel/action-ledger')
+    const { data: session, error } = await withActionLedger({ brokerageId, action: 'customer.widget_session.open', actor: { type: 'system' }, subject: { type: 'brokerage', id: brokerageId }, riskClass: 'LOW_RISK_WRITE', systemSource: 'website_widget', detail: { agent_id: agentId, source } }, async () => await supabase
       .from('chat_sessions')
       .insert({
         brokerage_id: brokerageId,
@@ -156,7 +160,10 @@ export async function POST(req: NextRequest) {
         session_type: 'website_widget',
       })
       .select('id, widget_session_token, capture_state')
-      .maybeSingle()
+      .maybeSingle(), {
+      settle: (r) => r.error || !r.data ? { status: 'failed', outcome: 'insert_refused', error: r.error?.message ?? 'no row' } : { status: 'executed', outcome: 'session_opened', providerRef: r.data.id },
+      replay: (c) => ({ data: null, error: { message: c.kind === 'refused' ? c.error : `session mint ${c.kind}` } }) as never,
+    })
 
     if (error || !session) {
       console.error('[Widget/session] Insert failed:', error?.message)

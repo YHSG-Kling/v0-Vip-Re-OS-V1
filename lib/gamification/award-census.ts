@@ -64,7 +64,7 @@ export const AWARD_CENSUS: readonly AwardCensusRow[] = [
   { reason: "CERTIFICATION_EARNED", path: "reactor", trigger: "awardCertification inserts an agent_certifications row after a SERVER re-check of eligibility (once per certification name)", trust: "verified_outcome",
     emitters: [{ file: "lib/onboarding/certification-engine.ts", token: "KernelEvent.CERTIFICATION_AWARDED" }], agent: "agent_certifications.agent_id" },
   { reason: "CE_COMPLETED", path: "reactor", trigger: "an accredited CE provider webhook records a NEW agent_ce_completions row", trust: "verified_outcome",
-    emitters: [{ file: "app/actions/ce-provider.ts", token: "KernelEvent.CE_COMPLETED" }], agent: "metadata.agent_id (provider-resolved)" },
+    emitters: [{ file: "app/api/webhooks/ce-provider/route.ts", token: "KernelEvent.CE_COMPLETED" }], agent: "metadata.agent_id (provider-resolved)" },
   { reason: "COMPETENCY_IMPROVED", path: "reactor", trigger: "the adaptive development radar measured a competency RISE — once per competency per year", trust: "verified_outcome",
     emitters: [{ file: "lib/education/skill-freshness-radar.ts", token: "KernelEvent.COMPETENCY_IMPROVED" }], agent: "metadata.agent_id" },
   { reason: "MENTOR_SESSION_HELD", path: "reactor", trigger: "a session logged by a PARTY to an ACTIVE system-matched mentor pairing — both parties, once per pairing per ISO week", trust: "verified_outcome",

@@ -33,11 +33,20 @@ export async function recordClientOfferDecision(input: {
   const decision = input.decision as ClientOfferDecision
   const note = (input.note ?? "").trim().slice(0, 500)
 
+  // GATE FIRST (wave 155, lane 155R5 — CLAUDE.md §4): this export is a public endpoint and `contactId` is an argument, so
+  // "the caller is the buyer / the seller" was a claim. The SESSION now proves who is clicking (the portal's own rule,
+  // lib/portal/require-contact-access.ts), and only the client themself records the client's word — a staff preview of the
+  // portal must not file a decision the client never made. An offer outside that contact's tenant reads as not found (PRIV-001).
+  const { requireContactAccess, accessRefusal } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(String(input.contactId ?? ""))
+  if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+  if (!access.isContactSelf) return { success: false, error: "Only the client can send their own offer decision — record it for them from the CRM." }
+
   const svc = createServiceClient()
   const { data: offer } = await svc.from("offers")
     .select("id, contact_id, agent_id, brokerage_id, offer_price, status, listing_id, transaction_id, listing:listings(id, contact_id, seller_contact_id, agent_id, address)")
     .eq("id", input.offerId).maybeSingle()
-  if (!offer) return { success: false, error: "Offer not found" }
+  if (!offer || (offer as { brokerage_id?: string | null }).brokerage_id !== access.brokerageId) return { success: false, error: "Offer not found" }
 
   const listing: any = Array.isArray((offer as any).listing) ? (offer as any).listing[0] : (offer as any).listing
   const isBuyer = (offer as any).contact_id === input.contactId

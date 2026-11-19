@@ -6,7 +6,6 @@ import { stripe } from "@/lib/stripe"
 import {
   VENDOR_TIERS,
   normalizeTier,
-  mapStripeEventToStatus,
   resolveTierPrice,
   type TierPriceOverrides,
   type VendorTier,
@@ -133,26 +132,7 @@ export async function createVendorBillingPortalSession(returnUrl?: string): Prom
   return { url: await createBillingPortalUrl(profile.stripe_customer_id, `${base}/vendor/billing`) }
 }
 
-/**
- * Apply a Stripe subscription lifecycle event to a vendor profile — the shared updater the webhook calls.
- * mapStripeEventToStatus decides the new subscription_status; a cancellation also suspends the platform
- * account (status → suspended). Best-effort, service-scoped. Exported for the webhook route.
- */
-export async function applyVendorSubscriptionEvent(input: {
-  vendorProfileId: string
-  eventType: string
-  stripeStatus?: string | null
-  stripeSubscriptionId?: string | null
-  tier?: string | null
-}): Promise<{ status: string; suspended: boolean }> {
-  const svc = createServiceClient()
-  const mapped = mapStripeEventToStatus(input.eventType, input.stripeStatus)
-  const update: Record<string, unknown> = { subscription_status: mapped.status, updated_at: new Date().toISOString() }
-  if (input.stripeSubscriptionId) update.stripe_subscription_id = input.stripeSubscriptionId
-  if (input.tier) update.subscription_tier = normalizeTier(input.tier)
-  if (mapped.suspendAccount) update.status = "suspended"
-  else if (mapped.status === "active") update.status = "approved"
-  const { error: subStatusErr } = await svc.from("vendor_marketplace_profiles").update(update).eq("id", input.vendorProfileId)
-  if (subStatusErr) console.error(`[vendor-billing] vendor subscription status NOT saved: ${subStatusErr.message}`)
-  return { status: mapped.status, suspended: mapped.suspendAccount }
-}
+// TOMBSTONE (orphan doctrine §1, wave 155 lane 155R5): applyVendorSubscriptionEvent DELETED from this "use server" file —
+// as an export here it was a public HTTP endpoint that let any caller suspend or reinstate any vendor by profile id, with
+// no Stripe signature and no session (CLAUDE.md §4). SURVIVOR: app/api/webhooks/stripe/vendor/route.ts:181
+// applyVendorSubscriptionEvent (non-exported, behind verifyStripeWebhook + the platform-signer refusal, ledgered).

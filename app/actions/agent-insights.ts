@@ -18,8 +18,12 @@ export async function loadMyAgentInsights(): Promise<AgentInsights | null> {
     .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
   if (!userRow?.brokerage_id) return null
 
-  return getAgentPatternInsights({
+  // RECEIPT (wave 155, lane 155R5 — G11): the model call is claimed → run → settled on agent_action_ledger (who asked, under
+  // which risk class); ai_tool_usage stays the cost ledger, written by the same inner call with the same numbers (CLAUDE.md §5).
+  const brokerageId: string = userRow.brokerage_id
+  const { ledgerToolCall } = await import("@/lib/kernel/action-ledger")
+  return await ledgerToolCall({ brokerageId, action: "ai.agent_insights.generate", actor: { type: "user", userId: user.id }, subject: { type: "user", id: user.id }, reasonCode: "HUMAN_REQUESTED", riskClass: "READ", systemSource: "agent_insights" }, () => getAgentPatternInsights({
     agentUserId: user.id,
-    brokerageId: userRow.brokerage_id,
-  })
+    brokerageId,
+  })) as AgentInsights | null
 }

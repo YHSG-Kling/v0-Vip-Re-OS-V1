@@ -242,11 +242,15 @@ export async function setPrimaryMedia(mediaId: string, listingId: string) {
   return error ? { success: false, error: error.message } : { success: true }
 }
 
-export async function runComplianceCheck(mediaId: string, brokerageId: string) {
+export async function runComplianceCheck(mediaId: string, brokerageId: string): Promise<{ passed: boolean; violations: string[] }> {
+  // TENANT FROM THE SESSION (wave 155, lane 155R5 — CLAUDE.md §4): the argument brokerageId reached a service-client
+  // check-and-stamp for ANY tenant from a public endpoint. Asserted and re-keyed, exactly as uploadListingMedia above does.
+  const tenant = await requireCallerTenant(brokerageId)
+  if (!tenant.ok) return { passed: false, violations: [tenant.error] }
   const result = await checkBrandCompliance({
     contentType: "listing_media",
     contentId:   mediaId,
-    brokerageId,
+    brokerageId: tenant.brokerageId,
   })
   return result
 }

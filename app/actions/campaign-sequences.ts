@@ -21,6 +21,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+import { withActionLedger, type NonActingClaim } from "@/lib/kernel/action-ledger"
 import { revalidatePath } from "next/cache"
 import {
   type CampaignSequence,
@@ -438,6 +439,13 @@ export async function updateSequenceStep(
 // ─── Delete step ──────────────────────────────────────────────────────────────
 
 export async function deleteSequenceStep(stepId: string, sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  // GATE FIRST (wave 155, lane 155R5 — CLAUDE.md §4): this public endpoint deleted ANY step by id with the service client and
+  // no session. Same rule as updateSequenceStep: the step's OWN sequence must belong to the session's brokerage.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+  const brokerageId = ctx.brokerageId
+  if (!(await stepsOwnedBy([stepId], brokerageId))) return { success: false, error: "Unauthorized" }
+  return withActionLedger({ brokerageId, action: "marketing.sequence_step.delete", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "campaign_sequence_step", id: stepId }, riskClass: "LOW_RISK_WRITE", detail: { sequence_id: sequenceId } }, async () => {
   const service = createServiceClient()
   const { error } = await service
     .from("campaign_sequence_steps")
@@ -447,6 +455,29 @@ export async function deleteSequenceStep(stepId: string, sequenceId: string): Pr
   if (error) return { success: false, error: error.message }
   revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
   return { success: true }
+  }, SEQUENCE_STEP_LEDGER_HOOKS)
+}
+
+/** 155R5: every step id must sit in a sequence the session's brokerage owns (the step's own sequence_id, as
+ *  updateSequenceStep reads it). A refused read refuses (fail closed). */
+async function stepsOwnedBy(stepIds: string[], brokerageId: string): Promise<boolean> {
+  const ids = [...new Set(stepIds.map(String))]
+  if (!ids.length) return true
+  const svc = createServiceClient()
+  const { data: steps, error } = await svc.from("campaign_sequence_steps").select("id, sequence_id").in("id", ids)
+  if (error) { console.error("[campaign-sequences] step ownership read refused:", error.message); return false }
+  const stepRows = (steps ?? []) as Array<{ id: string; sequence_id: string | null }>
+  if (stepRows.length !== ids.length || stepRows.some((s) => !s.sequence_id)) return false
+  const seqIds = [...new Set(stepRows.map((s) => String(s.sequence_id)))]
+  const { data: seqs, error: seqErr } = await svc.from("campaign_sequences").select("id, brokerage_id").in("id", seqIds)
+  if (seqErr) { console.error("[campaign-sequences] sequence ownership read refused:", seqErr.message); return false }
+  const seqRows = (seqs ?? []) as Array<{ id: string; brokerage_id: string | null }>
+  return seqRows.length === seqIds.length && seqRows.every((s) => s.brokerage_id === brokerageId)
+}
+
+const SEQUENCE_STEP_LEDGER_HOOKS = {
+  settle: (r: { success: boolean; error?: string }) => r.success ? { status: "executed" as const, outcome: "applied" } : { status: "failed" as const, outcome: "write_refused", error: r.error ?? null },
+  replay: (claim: NonActingClaim) => ({ success: false, error: claim.kind === "refused" ? claim.error : `This change is already ${claim.kind === "in_flight" ? "in progress" : "recorded"}` }),
 }
 
 // ─── Reorder steps ────────────────────────────────────────────────────────────
@@ -455,6 +486,12 @@ export async function reorderSequenceSteps(
   steps: { id: string; step_number: number }[],
   sequenceId: string
 ): Promise<{ success: boolean; error?: string }> {
+  // GATE FIRST (wave 155, lane 155R5): same open door as deleteSequenceStep — every step must be the session brokerage's.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+  const brokerageId = ctx.brokerageId
+  if (!(await stepsOwnedBy((steps ?? []).map((s) => s.id), brokerageId))) return { success: false, error: "Unauthorized" }
+  return withActionLedger({ brokerageId, action: "marketing.sequence_step.reorder", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "campaign_sequence", id: sequenceId }, riskClass: "LOW_RISK_WRITE", detail: { steps: (steps ?? []).length } }, async () => {
   const service = createServiceClient()
   const results = await Promise.all(
     steps.map(s =>
@@ -465,6 +502,7 @@ export async function reorderSequenceSteps(
   if (failed?.error) return { success: false, error: failed.error.message }
   revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
   return { success: true }
+  }, SEQUENCE_STEP_LEDGER_HOOKS)
 }
 
 // ─── Campaign Operations ──────────────────────────────────────────────────────

@@ -70,7 +70,7 @@ export async function evaluatePropertyAction(params: {
   agentId?: string | null
 }): Promise<PropertyEvaluation> {
   const { brokerageId, agentUserId } = await resolveAgentTenant(params.agentId)
-  return evaluatePropertyValue({
+  const run = () => evaluatePropertyValue({
     address: params.address,
     city: params.city,
     state: params.state,
@@ -80,4 +80,9 @@ export async function evaluatePropertyAction(params: {
     agentUserId,
     systemSource: "home_value_investor_report",
   })
+  // RECEIPT (wave 155, lane 155R5 — G11): a visitor on an agent's public page asked; the tenant is that agent's row (never the
+  // body). With no tenant of record the evaluation runs exactly as before, unledgered (the ledger row needs a tenant).
+  if (!brokerageId) return run()
+  const { ledgerToolCall } = await import("@/lib/kernel/action-ledger")
+  return await ledgerToolCall({ brokerageId, action: "ai.property_evaluation.generate", actor: agentUserId ? { type: "user", userId: agentUserId } : { type: "system" }, subject: { type: "property_address", ref: [params.address, params.city, params.state].join(", ").slice(0, 200) }, reasonCode: "HUMAN_REQUESTED", riskClass: "READ", systemSource: "home_value_investor_report", detail: { audience: params.audience ?? null, requested_by: "public_visitor" } }, run) as PropertyEvaluation
 }

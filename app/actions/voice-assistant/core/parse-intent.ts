@@ -73,14 +73,18 @@ export async function parseIntent(request: ParseIntentRequest): Promise<ParseInt
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) return { success: false, error: 'Unauthorized' }
     const { interpretIntentLive } = await import('@/lib/voice-admin/intent-interface-live')
-    const interpretation = await interpretIntentLive({
+    // RECEIPT (wave 155, lane 155R5 — G11): the model call is claimed → run → settled on agent_action_ledger (who asked, under
+    // which risk class); ai_tool_usage stays the cost ledger, written by the same inner call with the same numbers (CLAUDE.md §5).
+    const { ledgerToolCall } = await import('@/lib/kernel/action-ledger')
+    const brokerageId: string = ctx.brokerageId
+    const interpretation = await ledgerToolCall({ brokerageId, action: 'ai.voice_intent.parse', actor: { type: 'user', userId: ctx.userId, agentId: ctx.agentId }, subject: { type: 'user', id: ctx.userId }, reasonCode: 'HUMAN_REQUESTED', riskClass: 'READ', systemSource: 'voice_center_parse_intent' }, () => interpretIntentLive({
       utterance: raw_transcript,
       modality: 'voice',
       actor: { userId: ctx.userId, userType: ctx.userType || null, platformRole: null, agentId: ctx.agentId },
-      tenant: { brokerageId: ctx.brokerageId },
+      tenant: { brokerageId },
       screen: 'voice_center',
       context: { listingId: context?.current_listing_id ?? null, contactId: context?.current_buyer_id ?? null },
-    })
+    })) as Awaited<ReturnType<typeof interpretIntentLive>>
 
     if (!interpretation.capability) {
       return { success: false, error: 'Could not understand command with sufficient confidence' }

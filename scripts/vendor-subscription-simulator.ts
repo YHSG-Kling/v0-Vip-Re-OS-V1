@@ -74,8 +74,10 @@ function sourceLayer() {
     // The helper reaches the proxy via a DYNAMIC import — same canonical module,
     // different syntax; match either so this tests the dependency, not the form.
     && /(from|import\()\s*"@\/lib\/stripe"/.test(portal) && /stripe\.billingPortal\.sessions\.create/.test(portal))
-  check("applyVendorSubscriptionEvent maps Stripe events → status + suspend", /applyVendorSubscriptionEvent/.test(act) && /mapStripeEventToStatus/.test(act) && /update\.status = "suspended"/.test(act))
+  // WAVE 155 (lane 155R5): the applier MOVED into the webhook route (as a "use server" export it was a public endpoint that
+  // skipped the signature) — the rule is asserted where the survivor lives, and the action file must no longer export it.
   const wh = src("app/api/webhooks/stripe/vendor/route.ts")
+  check("applyVendorSubscriptionEvent maps Stripe events → status + suspend (in the signed route, not a public action)", /async function applyVendorSubscriptionEvent/.test(wh) && /mapStripeEventToStatus/.test(wh) && /update\.status = "suspended"/.test(wh) && !/export\s+async\s+function\s+applyVendorSubscriptionEvent/.test(act))
   // WAS PINNED TO A WAYPOINT (CLAUDE.md §2). This asserted the literal
   // `constructEvent(body, sig, secret)` — the ONE-hardcoded-secret shape — so it
   // could only pass while the route verified every delivery against

@@ -78,7 +78,10 @@ export async function aiOfferStrategyAdvisor(params: {
 
     // Shared brain — the SAME core the autonomous offer-strategy producer uses (no drift).
     const { generateBuyerOfferStrategy } = await import("@/lib/offers/offer-strategy-advisor")
-    const strategy = await generateBuyerOfferStrategy({
+    // RECEIPT (wave 155, lane 155R5 — G11): the model call is claimed → run → settled on agent_action_ledger (who asked, under
+    // which risk class); ai_tool_usage stays the cost ledger, written by the same inner call with the same numbers (CLAUDE.md §5).
+    const { ledgerToolCall } = await import("@/lib/kernel/action-ledger")
+    const strategy = await ledgerToolCall({ brokerageId: ctx.brokerageId, action: "ai.offer_strategy.advise", actor: { type: "user", userId: ctx.userId || null, agentId: ctx.agentId }, subject: { type: "listing", id: params.listingId }, reasonCode: "HUMAN_REQUESTED", riskClass: "READ", systemSource: "ai_offer_strategy_advisor", detail: { buyer_id: params.buyerId } }, () => generateBuyerOfferStrategy({
       listPrice: params.listPrice,
       daysOnMarket: params.daysOnMarket,
       competingOffers: params.competingOffers,
@@ -89,7 +92,7 @@ export async function aiOfferStrategyAdvisor(params: {
       // §4 — the session, resolved above; `params.agentId` is ignored here.
       brokerageId: ctx.brokerageId,
       userId: ctx.userId || null,
-    })
+    })) as Awaited<ReturnType<typeof generateBuyerOfferStrategy>>
     if (!strategy) return { success: false, error: "Strategy generation failed" }
     return { success: true, strategy }
   } catch (error) {

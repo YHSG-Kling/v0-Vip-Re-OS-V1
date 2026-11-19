@@ -140,11 +140,14 @@ export async function researchKeywords(topic: string, _userId?: string) {
 
   // Delegate to the full keyword discovery engine (territory auto-resolved from brokerages table)
   const { discoverKeywordsAI } = await import("@/app/actions/blog")
-  const result = await discoverKeywordsAI(auth.userId, {
+  // RECEIPT (wave 155, lane 155R5 — G11): the model call is claimed → run → settled on agent_action_ledger (who asked, under
+  // which risk class); ai_tool_usage stays the cost ledger, written by the same inner call with the same numbers (CLAUDE.md §5).
+  const { ledgerToolCall } = await import("@/lib/kernel/action-ledger")
+  const result = await ledgerToolCall({ brokerageId, action: "ai.keyword_research.generate", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: brokerageId }, reasonCode: "HUMAN_REQUESTED", riskClass: "READ", systemSource: "content_studio_keywords" }, () => discoverKeywordsAI(auth.userId, {
     brokerageId,
     competitorNames: competitorNames.length ? competitorNames : undefined,
     focusArea: topic,
-  })
+  })) as Awaited<ReturnType<typeof discoverKeywordsAI>>
 
   if (!result.success) {
     return { success: false, error: result.error ?? "Keyword research is temporarily unavailable." }

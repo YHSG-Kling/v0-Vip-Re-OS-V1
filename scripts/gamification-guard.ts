@@ -314,7 +314,7 @@ function wiringLayer() {
   // review). The RULE it served is asserted in [verified outcomes only] below: no client-callable award door exists.
   check("no product source (app/, lib/) imports the retired client award door (app/lib/gamification/award-on-action.ts)", !all.filter((f) => !f.startsWith("scripts/")).some((f) => /from\s+["']@\/app\/lib\/gamification\/award-on-action["']/.test(src(f))))
   check("mentor-session emits MENTOR_SESSION_HELD and awards nothing itself", /KernelEvent\.MENTOR_SESSION_HELD/.test(src("app/actions/onboarding/mentor-session.ts")) && !/awardAgentPoints/.test(src("app/actions/onboarding/mentor-session.ts")))
-  check("ce-provider emits CE_COMPLETED on a NEW completion row (inside the !existing branch)", /if \(!existing\) \{[\s\S]*?KernelEvent\.CE_COMPLETED/.test(src("app/actions/ce-provider.ts")))
+  check("ce-provider emits CE_COMPLETED on a NEW completion row (inside the !existing branch)", /if \(!existing\) \{[\s\S]*?KernelEvent\.CE_COMPLETED/.test(src("app/api/webhooks/ce-provider/route.ts")))
   check("the weekly recruit-outreach cron runs runWorkAnniversariesAll (same cron as the leaderboard writer)", /runWorkAnniversariesAll\(supabase\)/.test(src("app/api/cron/recruit-outreach/route.ts")) && /runLeaderboardSnapshotAll\(supabase\)/.test(src("app/api/cron/recruit-outreach/route.ts")))
   const ev = src("lib/kernel/events.ts")
   check("KernelEvent carries the three new lifecycle members", /MENTOR_SESSION_HELD\s*=\s*'mentor_session_held'/.test(ev) && /CE_COMPLETED\s*=\s*'ce_completed'/.test(ev) && /AGENT_WORK_ANNIVERSARY\s*=\s*'agent_work_anniversary'/.test(ev))
