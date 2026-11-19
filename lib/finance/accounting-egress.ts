@@ -151,7 +151,16 @@ async function logSync(
     error_summary: p.success ? null : (p.error ?? "unknown error").slice(0, 500),
   }).select("id").single().then((r) => { syncLogId = ((r.data as { id?: string } | null)?.id) ?? null; return r }),
   { table: "accounting_sync_log", flow: "accounting_egress_log", brokerageId: p.brokerageId, reason: "sync log of a push that already happened (or failed) at QuickBooks; the caller already has the push result" })
-  if (p.success) return
+  if (p.success) {
+    // THE COMPLETION HALF (wave 155, lane 155B2 — wave 154 gap row 19). KernelEvent.SYSTEM_SYNC_COMPLETED had a consumer
+    // (lib/kernel/event-reactor.ts branch 22: Data Steward → Finance Manager) and no writer since the fake bulk route was
+    // retired (wave 152K); its START counterpart SYSTEM_SYNC_TRIGGERED is still emitted by app/actions/accounting-sync.ts. A REAL
+    // completion is this landed 'completed' row — so it is announced here, ONCE per row: the entity is the row's own id and the
+    // dedupe key names it (a re-run of logSync for another push is another row). Tenant: the push's brokerage (the caller's
+    // verified one). No row id (the log insert was refused) → nothing is announced; the refusal is already ledgered above.
+    if (syncLogId) await announceSyncCompleted(svc, p.brokerageId, syncLogId, p.syncType)
+    return
+  }
   await sentinelWrite(svc, svc.from("sync_errors").insert({
     sync_log_id: syncLogId,
     brokerage_id: p.brokerageId,
@@ -161,6 +170,29 @@ async function logSync(
     error_message: (p.error ?? "unknown error").slice(0, 1000),
     payload_snapshot: p.payload ?? null,
   }), { table: "sync_errors", flow: "accounting_egress_errors", brokerageId: p.brokerageId, reason: "the failed push already returned its error to the caller; this row is what the Sync errors panel shows and retries" })
+}
+
+/** One SYSTEM_SYNC_COMPLETED per landed 'completed' accounting_sync_log row (see logSync). Through the ONE kernel emitter
+ *  (lib/kernel/emit.ts — row + reactor fan-out), on the push's own client. Never throws: the push already happened. */
+async function announceSyncCompleted(svc: Svc, brokerageId: string, syncLogId: string, syncType: string): Promise<void> {
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    const r = await emitKernelEvent({
+      brokerageId,
+      event: KernelEvent.SYSTEM_SYNC_COMPLETED,
+      entityType: "accounting_sync_log",
+      entityId: syncLogId,
+      actorUserId: null,
+      metadata: { provider: "quickbooks", sync_type: syncType, records_synced: 1, sync_log_id: syncLogId },
+      dedupeKey: `system_sync_completed:${syncLogId}`,
+      dedupeWindowSec: 7 * 86_400,
+      client: svc,
+    })
+    if (r.error) console.error(`[accounting-egress] sync completion not announced for ${syncLogId}: ${r.error}`)
+  } catch (e) {
+    console.error(`[accounting-egress] sync completion announce threw for ${syncLogId}:`, e instanceof Error ? e.message : e)
+  }
 }
 
 /** Push ONE brokerage-scoped expense to the brokerage's QuickBooks as a

@@ -1,15 +1,15 @@
 {
  "generator": "scripts/os-coverage-ledger.ts --write (wave 155, lane 155B1) — GENERATED, do not edit; per-row ledger: coverage/os-arbitration-coverage.json (on demand)",
  "states": {
-  "working": 1774,
-  "partial": 1144,
-  "missing": 274,
+  "working": 1775,
+  "partial": 1143,
+  "missing": 263,
   "owner-held": 1
  },
  "classification": {
-  "EXECUTABLE_GAP": 1226,
-  "LEGACY_ORPHAN": 96,
-  "UNKNOWN": 80,
+  "EXECUTABLE_GAP": 1221,
+  "LEGACY_ORPHAN": 93,
+  "UNKNOWN": 76,
   "DECLARATIVE_READ_ONLY": 16,
   "OWNER_HELD": 1
  },
@@ -21,13 +21,13 @@
   },
   "platform": {
    "DECLARATIVE_READ_ONLY": 5,
-   "EXECUTABLE_GAP": 286,
+   "EXECUTABLE_GAP": 285,
    "UNKNOWN": 5,
    "LEGACY_ORPHAN": 40
   },
   "acquisition": {
    "EXECUTABLE_GAP": 55,
-   "LEGACY_ORPHAN": 13,
+   "LEGACY_ORPHAN": 10,
    "UNKNOWN": 12,
    "DECLARATIVE_READ_ONLY": 3
   },
@@ -38,15 +38,15 @@
    "UNKNOWN": 8
   },
   "finance": {
-   "EXECUTABLE_GAP": 92,
-   "UNKNOWN": 4,
+   "EXECUTABLE_GAP": 90,
+   "UNKNOWN": 2,
    "LEGACY_ORPHAN": 8,
    "DECLARATIVE_READ_ONLY": 4,
    "OWNER_HELD": 1
   },
   "customer-facing": {
-   "EXECUTABLE_GAP": 233,
-   "UNKNOWN": 9,
+   "EXECUTABLE_GAP": 231,
+   "UNKNOWN": 7,
    "LEGACY_ORPHAN": 13,
    "DECLARATIVE_READ_ONLY": 2
   },
@@ -62,9 +62,9 @@
   }
  },
  "executableGapRisk": {
-  "P1": 671,
-  "P2": 301,
-  "P0": 254
+  "P1": 669,
+  "P2": 300,
+  "P0": 252
  },
  "groups": [
   {
@@ -104,38 +104,37 @@
   },
   {
    "id": "G02-consumer-no-emitter",
-   "rows": 14,
+   "rows": 10,
    "title": "a handler waits for an event no code emits (reads with no writer)",
    "risk": {
-    "P1": 6,
-    "P2": 6,
-    "P0": 2
+    "P2": 5,
+    "P1": 4,
+    "P0": 1
    },
    "domains": {
-    "customer-facing": 4,
     "transaction": 4,
+    "customer-facing": 2,
     "marketing": 2,
-    "platform": 2,
     "acquisition": 1,
-    "finance": 1
+    "platform": 1
    },
    "missing": {
-    "decision,evidence,owner,trigger": 8,
-    "trigger": 6
+    "trigger": 6,
+    "decision,evidence,owner,trigger": 4
    },
    "leverage": [
     "lib/kernel/emit.ts:155 emitKernelEvent",
-    "lib/orchestrator/internal.ts:198 EVENT_HANDLERS"
+    "lib/orchestrator/internal.ts:213 EVENT_HANDLERS"
    ],
    "fix": "emit at the canonical writer of the domain fact (the table write that IS the event), or tombstone the handler naming its survivor (CLAUDE.md §1)",
    "proof": "a canary drives the writer and asserts the handler ran; red at the base",
    "split": "one lane (≤ 20 rows); coordinate orchestrator rows with lane 155B2",
    "sample": [
-    "kernel_event:search_alert_triggered",
-    "kernel_event:system_sync_completed",
-    "orchestrator_event:credit.partner_referred",
     "orchestrator_event:credit.status_updated",
-    "orchestrator_event:credit.target_reached"
+    "orchestrator_event:credit.target_reached",
+    "orchestrator_event:lead.created",
+    "orchestrator_event:listing.live",
+    "orchestrator_event:listing.offer_received"
    ]
   },
   {
@@ -155,7 +154,7 @@
     "evidence,owner": 1
    },
    "leverage": [
-    "lib/orchestrator/internal.ts:198 EVENT_HANDLERS"
+    "lib/orchestrator/internal.ts:213 EVENT_HANDLERS"
    ],
    "fix": "give each handler its registered manager through the existing registries (integrator: a row per handler in manager-registry, read by the census) — lane 155B2 owns these handlers now",
    "proof": "census: orchestrator rows resolve an owner in MANAGERS; a planted handler with no row stays red",
@@ -232,7 +231,7 @@
    "leverage": [
     "lib/kernel/cron-logging.ts:125 createCronRunContext",
     "lib/managers/autonomy-gate.ts:91 autonomyDecision",
-    "lib/kernel/manager-registry.ts:3442 resolveCronManager"
+    "lib/kernel/manager-registry.ts:3443 resolveCronManager"
    ],
    "fix": "ONE cron decision at the shared run-context door: resolveCronManager(path) + autonomyDecision over the platform halt (god switch) and the tenant halt, recorded on the run row; a held run records `held` and does no work. Alternative is OWNER decision 2 (does a registered manager's deterministic rule count as the decision owner?) — that would be an analyzer change, not code",
    "proof": "planted platform halt: every manager cron returns `held` with zero domain writes; red at the base (they run)",
@@ -340,7 +339,7 @@
    },
    "leverage": [
     "scripts/os-coverage-ledger.ts:284 EVIDENCE_TABLE_RE",
-    "lib/kernel/manager-registry.ts:2147 TABLE_MANAGER"
+    "lib/kernel/manager-registry.ts:2148 TABLE_MANAGER"
    ],
    "fix": "ONE analyzer change, both directions together: narrow EVIDENCE_TABLE_RE to true logs (TRUE_LOG_RE) for ownership AND for evidence. It closes these owner gaps but also withdraws the false evidence credit on the rows counted under blindSpots.evidenceCreditedByAnEventsDomainTable — those must be ledgered in the same change (never one direction alone: that would only move a number)",
    "proof": "a planted write to calendar_events resolves its owner from TABLE_MANAGER and earns NO evidence; red at the base for both halves",
@@ -379,7 +378,7 @@
     "owner,readback": 1
    },
    "leverage": [
-    "lib/kernel/manager-registry.ts:3457 resolveTableManager"
+    "lib/kernel/manager-registry.ts:3458 resolveTableManager"
    ],
    "fix": "name the owner where the action is (the module's manager) or route the record through the owner's signal; never steward a log table to move a number",
    "proof": "census: owner resolves for each; planted log-only write stays red",
@@ -411,11 +410,11 @@
   },
   {
    "id": "G10-public-no-decision",
-   "rows": 35,
+   "rows": 34,
    "title": "public / internal endpoints with no session and no decision on the path (tracking beacons, embeds, intake uploads)",
    "risk": {
     "P1": 20,
-    "P0": 8,
+    "P0": 7,
     "P2": 7
    },
    "domains": {
@@ -424,11 +423,11 @@
     "platform": 6,
     "transaction": 5,
     "education": 3,
-    "finance": 3,
+    "finance": 2,
     "recovery": 1
    },
    "missing": {
-    "decision": 18,
+    "decision": 17,
     "decision,evidence": 17
    },
    "leverage": [
@@ -713,14 +712,13 @@
    ]
   },
   "LEGACY_ORPHAN": {
-   "rows": 96,
+   "rows": 93,
    "byKind": {
-    "kernel_event": 92,
-    "orchestrator_event": 2,
+    "kernel_event": 91,
     "server_action": 2
    },
    "evidenceClass": {
-    "vocabulary entry with no emitter, no consumer, and its value in no other runtime file and no SQL migration": 94,
+    "vocabulary entry with no emitter, no consumer, and its value in no other runtime file and no SQL migration": 91,
     "no importer, no same-module caller, the export name in no other runtime file; a server action has no cron, webhook, self-call or provider-co": 2
    },
    "sample": [
@@ -750,16 +748,15 @@
    ]
   },
   "UNKNOWN": {
-   "rows": 80,
+   "rows": 76,
    "byKind": {
-    "server_action": 59,
+    "server_action": 57,
     "kernel_event": 14,
-    "http": 5,
-    "orchestrator_event": 2
+    "http": 5
    },
    "evidenceClass": {
-    "no importer and no same-module caller, but the name …": 59,
-    "no emitter the census can read, but the value is …": 16,
+    "no importer and no same-module caller, but the name …": 57,
+    "no emitter the census can read, but the value is …": 14,
     "http: the caller may be outside the repo (provider console, external client, another scheduler) — unreferenced is not dead (CLAUDE.md §1)": 5
    },
    "sample": [
@@ -773,7 +770,7 @@
  },
  "blindSpots": {
   "evidenceCreditedByAnEventsDomainTable": {
-   "rows": 116,
+   "rows": 115,
    "note": "EVIDENCE_TABLE_RE counts any `*_events` table written on the path as ledger evidence; a domain table so named (calendar_events …) is not a ledger. Correcting it ADDS gaps the frozen baseline does not hold — a batch-2 decision, not silently done here",
    "sample": [
     "assistant_tool:book_studio_session",
@@ -784,7 +781,7 @@
    ]
   },
   "autonomousConsequentialWithoutRecovery": {
-   "rows": 318,
+   "rows": 314,
    "note": "recovery is REPORTED per row but is not a judged link (ECC agent-architecture-audit layer 12 cross-check): a failed autonomous run with no retry / sweep / escalation on its path"
   }
  }

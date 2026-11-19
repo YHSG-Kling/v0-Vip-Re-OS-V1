@@ -114,6 +114,9 @@ export type AIOverageStatus =
       overageAllowed: boolean
       periodStartIso: string
       periodEndIso: string
+      /** plan_limits.updated_at of the tier's terms row (null = no row: unlimited / no terms) — the VERSION of the terms that
+       *  decided this period (wave 155, lane 155B2). Read-only evidence; it changes no amount. */
+      planTermsVersion: string | null
     } & OverageDerivation)
   | { ok: false; error: string }
 
@@ -155,7 +158,7 @@ export async function getAIOverageStatus(
   // 2. Included limit + overage terms for the tier.
   const { data: limitRow, error: limitError } = await svc
     .from("plan_limits")
-    .select("limit_value, overage_allowed, overage_rate_cents_per_1k")
+    .select("limit_value, overage_allowed, overage_rate_cents_per_1k, updated_at")
     .eq("plan_tier", planTier)
     .eq("metric", metric)
     .maybeSingle()
@@ -201,7 +204,7 @@ export async function getAIOverageStatus(
     overageRateCentsPer1k,
   })
 
-  return { ok: true, brokerageId, planTier, overageAllowed, periodStartIso, periodEndIso, ...derived }
+  return { ok: true, brokerageId, planTier, overageAllowed, periodStartIso, periodEndIso, planTermsVersion: (limitRow?.updated_at as string | null | undefined) ?? null, ...derived }
 }
 
 // ── PERIOD-CLOSE BILLING WRITETHROUGH ────────────────────────────────────────
@@ -499,7 +502,21 @@ export async function runAIOverageBilling(opts?: { now?: Date; metric?: OverageB
         reasonDetail: `${metric} overage for the closed period ${periodStartIso.slice(0, 10)} — ${status.overageTokens} over the included quota at the tier's published rate`,
         riskClass: "FINANCIAL",
         systemSource: "ai_overage_billing",
-        detail: { metric, period_start: periodStartIso, overage: status.overageTokens, amount_cents: status.overageAmountCents, plan_tier: status.planTier },
+        // THE DECISION OWNER, DERIVABLE (wave 155, lane 155B2 — wave 154 gap row 7, owner Q2). No hold was added and nothing
+        // billed changed: the deterministic gate that ALREADY decided this charge is now NAMED on the row — getAIOverageStatus
+        // (the tier's plan_limits terms: overage_allowed + included limit + approved ai_quota_overrides + the published rate,
+        // over the CLOSED m474 period) and chooseOverageChannel (meter event vs invoice item, decided from the DB). The policy
+        // version is the terms row's own updated_at — a recorded fact, not an invented policy key. No platform halt switch is
+        // consulted by this run today (none exists for billing): that stays the owner's question, not a guessed gate.
+        detail: {
+          metric, period_start: periodStartIso, overage: status.overageTokens, amount_cents: status.overageAmountCents, plan_tier: status.planTier,
+          decided_by: "getAIOverageStatus+chooseOverageChannel",
+          policy_version: `plan_limits:${status.planTier}:${metric}@${status.planTermsVersion ?? "no_terms_row"}`,
+          decision_basis: {
+            overage_allowed: status.overageAllowed, included: status.includedTokens, used: status.usedTokens, rate_cents_per_1k: status.overageRateCents,
+            period_start: periodStartIso, period_end: periodEndIso, channel: decision.channel, channel_reason: decision.reason,
+          },
+        },
       },
       billOne,
       {

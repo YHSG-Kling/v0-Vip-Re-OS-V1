@@ -454,55 +454,12 @@ export async function addContactNote(params: {
 // TRIGGER GHL AUTOMATION
 // =====================================================
 
-// =====================================================
-// SEND NOTIFICATION TO AGENT (Push/SMS/Email)
-// =====================================================
-
-export async function sendNotificationToAgent(
-  userId: string,
-  notification: {
-    title: string
-    message: string
-    priority?: "low" | "medium" | "high"
-    actionUrl?: string
-  },
-) {
-  // Get user details
-  const user = await supabaseService.getUserById(userId)
-
-  if (!user) {
-    console.error(`[v0] User not found: ${userId}`)
-    return { success: false, error: "User not found" }
-  }
-
-  // Write in-app notification to notifications table
-  const notifRecord = await supabaseService.createNotification({
-    user_id: userId,
-    type: "agent_notification",
-    title: notification.title,
-    body: notification.message,
-    priority: notification.priority || "medium",
-    channel: "in_app",
-  })
-
-  // Log to activity table
-  await supabaseService.logActivity({
-    user_id: userId,
-    activity_type: "notification_sent",
-    description: `${notification.priority?.toUpperCase() || "MEDIUM"}: ${notification.title}`,
-    metadata: {
-      title: notification.title,
-      message: notification.message,
-      priority: notification.priority || "medium",
-      action_url: notification.actionUrl,
-    },
-  })
-
-  return {
-    success: true,
-    notificationId: notifRecord?.id ?? `notif_${Date.now()}`,
-  }
-}
+// TOMBSTONE (wave 155, lane 155B2 — CLAUDE.md §1 / §4): sendNotificationToAgent(userId, notification) lived here — an UNGATED
+// "use server" export (every export of this file is a public endpoint) that wrote a notification and an activity row for ANY
+// users.id with caller-supplied text: no session, no tenant, no role. Its last callers (the orchestrator's hot-lead and
+// overdue bells) were retired in the same wave. SURVIVORS: lib/transactions/notification-service.ts (milestone notices, reached
+// through lib/transactions/deadline-monitor.ts raiseMilestoneOverdue) and broadcastTeamAnnouncement below (session-gated,
+// tenant-scoped in-app notices).
 
 // =====================================================
 // BROKER → THEIR-AGENTS BROADCAST (in-app announcement)

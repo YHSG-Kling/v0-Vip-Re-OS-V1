@@ -33,23 +33,27 @@ export interface Event extends EventInput {
 
 export const EVENT_TYPES = {
   LEAD_CREATED: "lead.created",
-  LEAD_TAGGED_HOT: "lead.tagged_hot",
-  LEAD_ENGAGED: "lead.engaged",
+  // TOMBSTONE (wave 155, lane 155B2): LEAD_TAGGED_HOT ("lead.tagged_hot") and LEAD_ENGAGED ("lead.engaged") — no emitter, retired
+  // with their handlers. SURVIVOR: LEAD_SCORED → AI ISA (lib/kernel/event-reactor.ts branch 27). See lib/orchestrator/internal.ts.
   LEAD_UNRESPONSIVE: "lead.unresponsive",
   LISTING_APPOINTMENT_SET: "listing.appointment_set",
-  LISTING_SIGNED: "listing.signed",
+  // TOMBSTONE (wave 155, lane 155B2): LISTING_SIGNED ("listing.signed") — no emitter. SURVIVOR: KernelEvent.LISTING_AGREEMENT_SIGNED
+  // → lib/orchestrator/internal.ts reactToListingAgreementSigned (event-reactor.ts branch "21d").
   LISTING_LIVE: "listing.live",
-  LISTING_PRICE_REDUCTION: "listing.price_reduction",
+  // TOMBSTONE (wave 155, lane 155B2): LISTING_PRICE_REDUCTION ("listing.price_reduction") — no emitter. SURVIVOR: app/actions/
+  // listing-lifecycle.ts handlePriceReduction (the Reduce Price sheet's follow-up task, after updateListing writes the price).
   LISTING_OFFER_RECEIVED: "listing.offer_received",
   // TOMBSTONE (wave 154, lane 154A3): TRANSACTION_MILESTONE_OVERDUE ("transaction.milestone_overdue") was a second spelling nothing
   // wrote and, after the merge, nothing reads. SURVIVOR: KernelEvent.MILESTONE_OVERDUE — lib/orchestrator/internal.ts orchestrateEvent case.
   TRANSACTION_CONTINGENCY_CLEARED: "transaction.contingency_cleared",
   TRANSACTION_CLOSE_APPROACHING: "transaction.close_approaching",
   TRANSACTION_CLOSING_SOON: "transaction.closing_soon",
-  TRANSACTION_CLOSED: "transaction.closed",
+  // TOMBSTONE (wave 155, lane 155B2): TRANSACTION_CLOSED ("transaction.closed") — no emitter on this vocabulary. SURVIVORS: the kernel
+  // close (KernelEvent.TRANSACTION_CLOSED, lib/kernel/transactions.ts) and lib/reputation/review-ask.ts for the review ask.
   CREDIT_STATUS_UPDATED: "credit.status_updated",
   CREDIT_TARGET_REACHED: "credit.target_reached",
-  CREDIT_PARTNER_REFERRED: "credit.partner_referred",
+  // TOMBSTONE (wave 155, lane 155B2): CREDIT_PARTNER_REFERRED ("credit.partner_referred") — no emitter. SURVIVOR: app/actions/
+  // credit-copilot.ts referToCreditPartner → lib/credit/credit-event-handlers.ts recordCreditPartnerReferral.
   VIDEO_GENERATED: "video.generated",
   VIDEO_SCRIPT_APPROVED: "video.script_approved",
   VIDEO_PUBLISHED: "video.published",

@@ -164,35 +164,11 @@ export function closingApproachingTasks(svc: any, brokerageId: string, payload: 
   ])
 }
 
-/**
- * transaction.closed — DISPATCHED. Validates that the closed deal's client belongs to the event's tenant and hands the
- * review ask to its ONE engine.
- *
- * TOMBSTONE (wave 143, lane 143E): this handler inserted THREE `scheduled` review_requests rows per closing — google,
- * zillow AND facebook — for one client, i.e. an ask on every platform at once, with no link and no idea whether the
- * client had already been asked; and the review-request-on-close cron skipped any contact that already had a row, so the
- * rows it queued were the reason the autonomous ask never went out. SURVIVOR: lib/reputation/review-ask.ts
- * askForReviewAtClose — it asks the agent's client(s) ONCE, on the ONE platform with a real link in the tenant's
- * reputation_profiles policy, after the tenant's review_request_delay_days, and adopts a queued `scheduled` row if
- * one exists. The unique behaviour merged onto it: the contact must be in the event's tenant (kept here as the gate
- * that the event is well-formed; the engine pins the tenant on every read as well).
- */
-export async function scheduleReviewRequests(
-  svc: any,
-  brokerageId: string,
-  payload: Record<string, any>,
-): Promise<LifecycleTaskResult> {
-  if (!brokerageId) return { success: false, error: "No brokerageId — review requests are never written untenanted" }
-  const contactId = payload?.contact_id
-  if (!contactId) return { success: false, error: "No contact_id on the transaction.closed payload — nobody to ask for a review" }
-  const { data: contact, error: cErr } = await svc
-    .from("contacts").select("id").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
-  if (cErr) return { success: false, error: `Contact read refused: ${cErr.message}` }
-  if (!contact) return { success: false, error: `Contact ${contactId} is not in brokerage ${brokerageId}` }
-  // Nothing is queued here: the verified closing IS the trigger, and askForReviewAtClose runs from the
-  // review-request-on-close sweep when the tenant's delay has elapsed.
-  return { success: true, inserted: 0 }
-}
+// TOMBSTONE (wave 155, lane 155B2 — CLAUDE.md §1; first retired from dispatch in wave 143, lane 143E): scheduleReviewRequests(svc,
+// brokerageId, payload) lived here — the "transaction.closed" handler that inserted THREE `scheduled` review_requests rows per closing
+// (google, zillow AND facebook at once, with no link), which was also why the autonomous ask never went out. SURVIVOR:
+// lib/reputation/review-ask.ts askForReviewAtClose — one ask per client, on the one platform with a real link in the tenant's
+// reputation policy, after the tenant's delay; it pins the tenant on every read (the gate this handler carried).
 
 /**
  * transaction.closing_soon — DISPATCHED. One closing gift a week before the

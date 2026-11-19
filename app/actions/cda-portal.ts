@@ -2080,6 +2080,31 @@ export async function uploadCdaCheckCopyAction(input: {
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
 
+  // GATE (wave 155, lane 155B2 — CLAUDE.md §4; wave 154 gap row 20). REACHABLE, not an orphan: app/dashboard/transactions/[id]/
+  // cda/cda-workflow-client.tsx → recordCdaClosingArtifactAction (this file) → here, with a document row it has just inserted.
+  // But this is ALSO a public endpoint, and it attached ANY documentId to the CDA — another deal's file, another tenant's id,
+  // or an id that names nothing (check_copy_document_id has no FK). The document must now be a `cda_check_copy`
+  // transaction_documents row of THIS CDA's own transaction, in the session's tenant — which is exactly what the screen's path
+  // always passes, so the screen is unchanged and only a forged id is refused.
+  const { data: cdaRow, error: cdaReadErr } = await supabase
+    .from("closing_disclosure_agreement")
+    .select("id, transaction_id")
+    .eq("id", input.cdaId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+  if (cdaReadErr) return { success: false as const, error: cdaReadErr.message }
+  if (!cdaRow) return { success: false as const, error: "not_found" }
+  const { data: docRow, error: docReadErr } = await supabase
+    .from("transaction_documents")
+    .select("id")
+    .eq("id", input.documentId)
+    .eq("transaction_id", cdaRow.transaction_id)
+    .eq("brokerage_id", auth.brokerageId)
+    .eq("doc_type", "cda_check_copy")
+    .maybeSingle()
+  if (docReadErr) return { success: false as const, error: docReadErr.message }
+  if (!docRow) return { success: false as const, error: "document_not_on_this_deal" }
+
   const { data: row, error } = await supabase
     .from("closing_disclosure_agreement")
     .update({

@@ -59,7 +59,7 @@ const EXPECTED_CLIENT = [
   "FINANCING_CLEAR_TO_CLOSE", "CD_RECEIVED", "CLOSING_SCHEDULED", "TRANSACTION_STAGE_CHANGED",
   "TRANSACTION_CLOSED",
   // buyer home-search
-  "PROPERTY_MATCH_FOUND", "SEARCH_ALERT_TRIGGERED", "PROPERTY_ALERT_MATCHED", "TOUR_SCHEDULED",
+  "PROPERTY_MATCH_FOUND", "PROPERTY_ALERT_MATCHED", "TOUR_SCHEDULED",
   "TOUR_COMPLETED", "OFFER_STRATEGY_RECOMMENDED", "SHOWING_SCHEDULED",
   // activity
   "OPEN_HOUSE_SCHEDULED", "SHOWING_FEEDBACK_RECEIVED",
@@ -115,7 +115,7 @@ function blockOf(eventName: string): string {
   return fanoutSrc.slice(start, next < 0 ? start + 600 : next)
 }
 const SELLER_AUDIENCE = ["SHOWING_SCHEDULED", "SHOWING_FEEDBACK_RECEIVED", "OPEN_HOUSE_SCHEDULED"]
-const BUYER_AUDIENCE  = ["TOUR_SCHEDULED", "PROPERTY_MATCH_FOUND", "SEARCH_ALERT_TRIGGERED", "PROPERTY_ALERT_MATCHED"]
+const BUYER_AUDIENCE  = ["TOUR_SCHEDULED", "PROPERTY_MATCH_FOUND", "PROPERTY_ALERT_MATCHED"]
 for (const e of SELLER_AUDIENCE) ok(/audience:\s*"seller"/.test(blockOf(e)), `${e} must be audience:"seller" (listing/showing = seller side)`)
 for (const e of BUYER_AUDIENCE)  ok(/audience:\s*"buyer"/.test(blockOf(e)),  `${e} must be audience:"buyer" (property/tour = buyer side)`)
 

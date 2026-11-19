@@ -203,8 +203,10 @@ export enum KernelEvent {
   PROPERTY_MATCH_FOUND           = 'property_match_found',
   BUYER_SEARCH_EXECUTED          = 'buyer_search_executed',
   PROPERTY_RECOMMENDED           = 'property_recommended',
-  SEARCH_ALERT_TRIGGERED         = 'search_alert_triggered',
-  TOUR_PLANNED                   = 'tour_planned',
+  // TOMBSTONE (wave 155, lane 155B2 — CLAUDE.md §6): SEARCH_ALERT_TRIGGERED ('search_alert_triggered') — consumed by one portal
+  // template, written by NOTHING (no emitter in the tree, zero live rows). Same real-world moment as PROPERTY_ALERT_MATCHED below,
+  // which lib/property-alerts/alert-engine.ts (the one saved-search matcher) emits; its portal card is the survivor.
+  TOUR_PLANNED                  = 'tour_planned',
   TOUR_COMPLETED                 = 'tour_completed',
   BUYER_FATIGUE_DETECTED         = 'buyer_fatigue_detected',
   BUYER_FATIGUE_ALERT            = 'buyer_fatigue_alert',
@@ -696,7 +698,8 @@ export enum KernelEvent {
   // Replacements for dotted-form lifecycle_events.event_type writes that were
   // never reaching the underscore-form KernelEvent reactor. Zero dotted rows
   // existed in production at consolidation time — no migration needed.
-  LEAD_TAGGED_HOT                    = 'lead_tagged_hot',
+  // TOMBSTONE (wave 155, lane 155B2): LEAD_TAGGED_HOT ('lead_tagged_hot') — the underscore twin of the orchestrator's
+  // "lead.tagged_hot"; neither spelling had an emitter. SURVIVOR: LEAD_SCORED → AI ISA (lib/kernel/event-reactor.ts branch 27).
   // LISTING_APPOINTMENT_SCHEDULED ('listing_appointment_scheduled') retired — it was a duplicate of
   // EVENT_TYPES.LISTING_APPOINTMENT_SET ('listing.appointment_set', the handled + chain-triggering
   // event). Its only emitter (logListingAppointmentSet) reached no chain/handler and is removed.

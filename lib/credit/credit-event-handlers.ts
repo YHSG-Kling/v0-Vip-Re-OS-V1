@@ -277,20 +277,6 @@ export async function recordCreditPartnerReferral(
   return { success: true, referral, taskWritten, ...(taskWritten ? {} : { taskSkipReason: out.skipped.join("; ") }) }
 }
 
-/** credit.partner_referred — DISPATCHED. The event door onto the one writer. */
-export async function reactToCreditPartnerReferred(
-  client: any,
-  brokerageId: string,
-  payload: Record<string, any>,
-  actorUserId: string | null | undefined,
-): Promise<CreditEventOutcome> {
-  const r = await recordCreditPartnerReferral(client, brokerageId, {
-    contactId: payload?.contact_id,
-    partnerId: payload?.partner_id,
-    referringUserId: payload?.user_id ?? actorUserId ?? "",
-    referralNotes: payload?.referral_notes ?? null,
-    expectedTimeline: payload?.expected_timeline ?? null,
-  })
-  if (!r.success) return { success: false, written: [], skipped: [], error: r.error }
-  return { success: true, written: r.taskWritten ? ["referral", "task"] : ["referral"], skipped: r.taskSkipReason ? [r.taskSkipReason] : [] }
-}
+// TOMBSTONE (wave 155, lane 155B2 — CLAUDE.md §1): reactToCreditPartnerReferred(client, brokerageId, payload) lived here — the
+// orchestrator's event door for "credit.partner_referred", an event no code emits. SURVIVOR: app/actions/credit-copilot.ts
+// referToCreditPartner → recordCreditPartnerReferral (above, in this file) — the one writer, reached from the session action.

@@ -30,22 +30,20 @@ import { KernelEvent } from "@/lib/kernel/events"
 // tenant (emitEvent: the session's; emitEventFromCron: its caller's).
 import { createServiceClient } from "@/lib/supabase/service"
 import { writeSmartSuggestion, type SuggestionPriority } from "@/lib/assistant/smart-suggestion"
-import { sendNotificationToAgent } from "@/app/actions/communications"
+// (wave 155, lane 155B2) sendNotificationToAgent is no longer imported: its two callers here — the hot-lead alert and the
+// copilot's overdue bell — are retired onto the AI ISA loop and raiseMilestoneOverdue's one notification.
 import {
   appointmentBookedTasks,
   agreementSignedTasks,
   listingLiveTasks,
-  priceReductionTasks,
   offerReceivedTasks,
   contingencyClearedTasks,
   closingApproachingTasks,
-  scheduleReviewRequests,
   scheduleClosingGiftForListing,
 } from "@/lib/listing-lifecycle/lifecycle-event-tasks"
 import {
   reactToCreditPartnerStatus,
   reactToCreditTargetReached,
-  reactToCreditPartnerReferred,
 } from "@/lib/credit/credit-event-handlers"
 import {
   reactToJourneyTaskCompleted,
@@ -135,6 +133,32 @@ interface ProcessingResult {
 //     lib/portal/journey-milestone-events.ts decides, after each recorded completion, whether
 //     it finished its stage / the journey (pure rule: journey-utils detectJourneyMilestones).
 //
+// ─── WAVE 155 (lane 155B2) — ONE OWNER PER EVENT for the handlers nothing fired (wave 154 gap rows 10, 12–15) ─────
+// Evidence per event: the dotted name has NO emitter (stripped-source census, migrations included; live lifecycle_events
+// holds zero rows of any of them); the same real-world moment is emitted TODAY under its KernelEvent spelling by the stage
+// writer and reaches lib/kernel/event-reactor.ts / event-fanout.ts / notification-engine.ts. Decision per event:
+//   · listing.signed      → MERGED onto KernelEvent.LISTING_AGREEMENT_SIGNED (execution-engine.ts emits it twice: via
+//                           transitionLifecycle and a direct processKernelEvent). The seller-portal card for that event
+//                           already promises "Photography + marketing prep begins" — the procurement + go-live checklist
+//                           that promise needs lived ONLY here, unfired. Survivor: reactToListingAgreementSigned (below),
+//                           called from event-reactor.ts branch "21d", once per listing (ledger key).
+//   · listing.price_reduction → RETIRED: the Reduce Price sheet already runs the same core directly through
+//                           app/actions/listing-lifecycle.ts handlePriceReduction (after updateListing writes the price).
+//   · transaction.closed  → RETIRED: its core (scheduleReviewRequests) is writer #3 of the five review_requests writers
+//                           lib/reputation/review-ask.ts consolidated — wiring it would re-create three platform asks per
+//                           client and make the autonomous review sender skip them. Survivor: lib/reputation/review-ask.ts.
+//   · credit.partner_referred → RETIRED: the one door is app/actions/credit-copilot.ts referToCreditPartner, which already
+//                           calls the same body (recordCreditPartnerReferral); an event too would double-write the referral.
+//   · lead.tagged_hot / lead.engaged → RETIRED (both spellings; KernelEvent.LEAD_TAGGED_HOT too): no emitter, and an agent
+//                           "hot lead" alert on an unqualified lead contradicts CLAUDE.md §5 (leads are the brokerage's). The
+//                           hot-lead path in force is LEAD_SCORED → AI ISA (event-reactor.ts branch 27) → the ISA handoff.
+//   · OWNER-HELD, unchanged (the SAFE default is what fires today; see lane 155B2 notes, "Owner decisions"):
+//     lead.created (7-day task plan vs the CONTACT_CREATED sequence enrollment already in force), listing.live (manual
+//     marketing tasks vs the automated promo video / mail / ads / social drafts LISTING_PUBLISHED already runs),
+//     listing.offer_received (a task beside the OFFER_RECEIVED notification), transaction.contingency_cleared /
+//     close_approaching (closing-orchestration already raises the walkthrough / CD signals), transaction.closing_soon (a
+//     closing GIFT is spend), credit.target_reached, video.published / video.high_engagement (no writer marks the moment).
+//
 // ─── ASKED AND ANSWERED: the six copilot/assistant "handlers" do NOT belong here ─────
 // app/actions/copilot.ts (handleSuggestionAccepted, handleCoachingSessionBooked,
 // handleMorningKickoff) and app/actions/assistant.ts (handleAssistantQuery,
@@ -163,18 +187,9 @@ interface ProcessingResult {
 /** One dispatch contract for every registered handler, whatever its own signature is. */
 type EventHandlerInvoker = (event: Event) => Promise<unknown>
 
-/**
- * The three keys that point at `generateAssistantSuggestions(agentId, { page, … })`.
- * FAILS CLOSED (§4): if a `case` is ever added for one of these without deciding what
- * page context the event carries, the dispatch reports a failure into
- * event_processing_log instead of calling the handler with a wrong shape.
- */
-const assistantSuggestionsNotWired: EventHandlerInvoker = async (event) => {
-  throw new Error(
-    `${event.event_type} maps to app/actions/assistant.ts:generateAssistantSuggestions(agentId, { page, entity_id, entity_type }) — ` +
-      `a UI page context this event does not carry. Recorded, not guessed; decide the mapping before adding a case.`,
-  )
-}
+// TOMBSTONE (wave 155, lane 155B2): `assistantSuggestionsNotWired` — the throwing invoker for lead.tagged_hot / lead.engaged —
+// lived here. Both keys are retired (see the WAVE 155 block above); SURVIVOR for a hot / engaged lead: LEAD_SCORED → AI ISA
+// (lib/kernel/event-reactor.ts branch 27) and the ISA handoff.
 
 /**
  * A reaction's `{ success: false, error }` is a FAILURE of the dispatch, not a
@@ -198,14 +213,17 @@ async function mustSucceed<T extends { success: boolean; error?: string }>(label
 const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // Lead events
   "lead.created": async (e) => mustSucceed("7-day nurture plan", writeSevenDayNurturePlan(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
-  "lead.tagged_hot": assistantSuggestionsNotWired,
-  "lead.engaged": assistantSuggestionsNotWired,
+  // TOMBSTONE (wave 155, lane 155B2): "lead.tagged_hot" and "lead.engaged" (both → assistantSuggestionsNotWired) lived here.
+  // SURVIVOR: LEAD_SCORED → AI ISA, lib/kernel/event-reactor.ts branch 27 (see the WAVE 155 block in the header).
 
   // Listing events
   "listing.appointment_set": async (e) => mustSucceed("appointment tasks", appointmentBookedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
-  "listing.signed": async (e) => mustSucceed("agreement-signed tasks", agreementSignedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  // TOMBSTONE (wave 155, lane 155B2): "listing.signed" → agreementSignedTasks lived here. SURVIVOR: reactToListingAgreementSigned
+  // (this file), run by lib/kernel/event-reactor.ts branch "21d" on KernelEvent.LISTING_AGREEMENT_SIGNED — the go-live checklist,
+  // the photography procurement and the agent's card, once per listing.
   "listing.live": async (e) => mustSucceed("listing-live tasks", listingLiveTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
-  "listing.price_reduction": async (e) => mustSucceed("price-reduction task", priceReductionTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  // TOMBSTONE (wave 155, lane 155B2): "listing.price_reduction" → priceReductionTasks lived here. SURVIVOR: app/actions/
+  // listing-lifecycle.ts handlePriceReduction, called by the Reduce Price sheet right after updateListing writes the price.
   "listing.offer_received": async (e) => mustSucceed("offer-received task", offerReceivedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
 
   // Transaction events
@@ -219,12 +237,14 @@ const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // The closing gift takes a listings.id, not a payload — see the header.
   "transaction.closing_soon": async (e) =>
     mustSucceed("closing gift", scheduleClosingGiftForListing(createServiceClient(), e.brokerage_id, (e.payload as Record<string, any>)?.listing_id ?? null)),
-  "transaction.closed": async (e) => mustSucceed("review requests", scheduleReviewRequests(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  // TOMBSTONE (wave 155, lane 155B2): "transaction.closed" → scheduleReviewRequests (three `scheduled` review_requests rows per
+  // client) lived here. SURVIVOR: lib/reputation/review-ask.ts — the ONE path from a verified closing to a sent ask.
 
   // Credit events
   "credit.status_updated": async (e) => mustSucceed("credit partner status", reactToCreditPartnerStatus(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
   "credit.target_reached": async (e) => mustSucceed("credit target reached", reactToCreditTargetReached(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
-  "credit.partner_referred": async (e) => mustSucceed("credit partner referral", reactToCreditPartnerReferred(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
+  // TOMBSTONE (wave 155, lane 155B2): "credit.partner_referred" → reactToCreditPartnerReferred lived here. SURVIVOR: app/actions/
+  // credit-copilot.ts referToCreditPartner → lib/credit/credit-event-handlers.ts recordCreditPartnerReferral (the same body).
 
   // Video events — lane 86F3: the server-only reactions in lib/video/video-event-reactions.ts
   // (the "use server" handlers in app/actions/video-content.ts are retired onto them).
@@ -346,17 +366,15 @@ export async function orchestrateEvent(event: Event): Promise<void> {
         results.push(await handleLeadCreated(event))
         break
 
-      case EVENT_TYPES.LEAD_TAGGED_HOT:
-        results.push(await handleLeadTaggedHot(event))
-        break
+      // TOMBSTONE (wave 155, lane 155B2): `case EVENT_TYPES.LEAD_TAGGED_HOT:` → handleLeadTaggedHot lived here (no emitter).
+      // SURVIVOR: LEAD_SCORED → AI ISA (lib/kernel/event-reactor.ts branch 27).
 
       case EVENT_TYPES.LISTING_APPOINTMENT_SET:
         results.push(await handleListingAppointmentSet(event))
         break
 
-      case EVENT_TYPES.LISTING_SIGNED:
-        results.push(await handleListingSigned(event))
-        break
+      // TOMBSTONE (wave 155, lane 155B2): `case EVENT_TYPES.LISTING_SIGNED:` → handleListingSigned lived here (no emitter).
+      // SURVIVOR: reactToListingAgreementSigned below, on KernelEvent.LISTING_AGREEMENT_SIGNED (event-reactor.ts branch "21d").
 
       case EVENT_TYPES.LISTING_LIVE:
         results.push(await handleListingLive(event))
@@ -391,14 +409,13 @@ export async function orchestrateEvent(event: Event): Promise<void> {
       // so the routed set remains readable to
       // scripts/event-dispatch-invariant-guard.ts, which derives it from these
       // case labels.
-      case EVENT_TYPES.LISTING_PRICE_REDUCTION:
+      // TOMBSTONE (wave 155, lane 155B2): LISTING_PRICE_REDUCTION, TRANSACTION_CLOSED and CREDIT_PARTNER_REFERRED were routed
+      // here. SURVIVORS (header, WAVE 155 block): handlePriceReduction, lib/reputation/review-ask.ts, referToCreditPartner.
       case EVENT_TYPES.LISTING_OFFER_RECEIVED:
       case EVENT_TYPES.TRANSACTION_CONTINGENCY_CLEARED:
       case EVENT_TYPES.TRANSACTION_CLOSE_APPROACHING:
       case EVENT_TYPES.TRANSACTION_CLOSING_SOON:
-      case EVENT_TYPES.TRANSACTION_CLOSED:
       case EVENT_TYPES.CREDIT_TARGET_REACHED:
-      case EVENT_TYPES.CREDIT_PARTNER_REFERRED:
       case EVENT_TYPES.VIDEO_SCRIPT_APPROVED:
       case EVENT_TYPES.VIDEO_PUBLISHED:
       case EVENT_TYPES.VIDEO_HIGH_ENGAGEMENT:
@@ -510,48 +527,9 @@ async function handleLeadCreated(event: WorkflowEvent): Promise<ProcessingResult
   }
 }
 
-async function handleLeadTaggedHot(event: Event): Promise<ProcessingResult> {
-  const startTime = Date.now()
-  try {
-    const { contact_id, reason } = event.payload
-
-    // Create urgent AI suggestion
-    await writeEventSuggestion({
-      brokerage_id: event.brokerage_id,
-      user_id: event.user_id!,
-      context_type: "contact",
-      context_id: contact_id,
-      suggestion_type: "outreach",
-      title: "🔥 Hot Lead Alert",
-      description: `Lead marked as HOT. ${reason}. Schedule a call ASAP.`,
-      action_payload: {
-        contact_id,
-        action: "schedule_call",
-        priority: "critical",
-      },
-    })
-
-    // Send push notification to agent
-    await sendNotificationToAgent(event.user_id!, {
-      title: "Hot Lead Alert",
-      message: `Contact flagged as hot lead. Action needed now.`,
-      priority: "high",
-    })
-
-    return {
-      success: true,
-      handler: "handleLeadTaggedHot",
-      processing_time_ms: Date.now() - startTime,
-    }
-  } catch (error) {
-    return {
-      success: false,
-      handler: "handleLeadTaggedHot",
-      error: error instanceof Error ? error.message : "Unknown error",
-      processing_time_ms: Date.now() - startTime,
-    }
-  }
-}
+// TOMBSTONE (wave 155, lane 155B2): handleLeadTaggedHot (a "Hot Lead Alert" card + bell to whoever emitted) lived here — no
+// emitter in either spelling. SURVIVOR: LEAD_SCORED → AI ISA (lib/kernel/event-reactor.ts branch 27) and the ISA handoff, which
+// is how a lead reaches an agent once qualified (CLAUDE.md §5).
 
 async function handleListingAppointmentSet(event: Event): Promise<ProcessingResult> {
   const startTime = Date.now()
@@ -593,59 +571,106 @@ async function handleListingAppointmentSet(event: Event): Promise<ProcessingResu
   }
 }
 
-async function handleListingSigned(event: Event): Promise<ProcessingResult> {
-  const startTime = Date.now()
-  try {
-    const { listing_id, go_live_date } = event.payload
+export type ListingAgreementSignedOutcome = {
+  decision: "acted" | "replayed" | "unreadable"
+  tasksInserted: number
+  procurement: "requested" | "not_recommended" | "threw" | "skipped"
+  suggestion: "written" | "skipped"
+  detail: string
+}
 
-    // Create checklist for going live
-    await writeEventSuggestion({
-      brokerage_id: event.brokerage_id,
-      user_id: event.user_id!,
-      context_type: "listing",
-      context_id: listing_id,
-      suggestion_type: "checklist",
-      title: "Listing Signed - Go Live Checklist",
-      description: `Listing agreement signed. Complete these steps before ${go_live_date}.`,
-      action_payload: {
-        listing_id,
-        tasks: ["order_photography", "write_description", "set_up_lockbox", "input_mls", "create_marketing_materials"],
-      },
-    })
-
-    // WAVE 107B — the Listing Concierge's MEDIA NEED goes through procurement (lib/kernel/procurement.ts):
-    // eligible photographers ranked by availability / price / quality / SLA / history, the top pick
-    // recorded as a 'requested' vendor_booking and put in the agent's approval queue (or booked under
-    // the tenant's procurement_autonomy policy). Best-effort: the checklist above already landed, and
-    // "no eligible vendor" is a named blind spot, not a failure of the signed listing.
-    if (listing_id && event.brokerage_id) {
-      try {
-        const { requestProcurement } = await import("@/lib/kernel/procurement")
-        const r = await requestProcurement(createServiceClient(), {
-          brokerageId: event.brokerage_id, serviceType: "photography", listingId: listing_id,
-          neededBy: typeof go_live_date === "string" ? go_live_date.slice(0, 10) : null,
-          requirements: { purpose: "listing launch media", source: "listing.signed" },
-          requestedByUserId: event.user_id ?? null,
-        })
-        if (!r.ok) console.warn(`[handleListingSigned] photography procurement not recommended for listing ${listing_id}: ${r.error}`)
-      } catch (e) {
-        console.error(`[handleListingSigned] photography procurement threw for listing ${listing_id}:`, e instanceof Error ? e.message : e)
-      }
-    }
-
-    return {
-      success: true,
-      handler: "handleListingSigned",
-      processing_time_ms: Date.now() - startTime,
-    }
-  } catch (error) {
-    return {
-      success: false,
-      handler: "handleListingSigned",
-      error: error instanceof Error ? error.message : "Unknown error",
-      processing_time_ms: Date.now() - startTime,
-    }
+/**
+ * THE ONE REACTION to a signed listing agreement (wave 155, lane 155B2 — merged from handleListingSigned + the "listing.signed"
+ * registry entry, neither of which any emitter reached). Called by lib/kernel/event-reactor.ts branch "21d" on
+ * KernelEvent.LISTING_AGREEMENT_SIGNED, the spelling app/actions/seller-listing/execution-engine.ts actually emits (twice per
+ * signing: transitionLifecycle + a direct processKernelEvent). ONCE PER LISTING: the agent_action_ledger idempotency key
+ * `listing.agreement_signed:<tenant>:<listing>` makes the second emit — and any replay — a no-op, so the agent gets one
+ * checklist, one procurement request and one card. Tenant: the event's (the reactor's verified brokerageId); the listing must
+ * be in it. The recipient is the LISTING's agent (listings.agent_id is agents-class → agents.user_id, §3), never a guess.
+ * What it does (each kept from the retired implementations, nothing new): the go-live task list (lifecycle-event-tasks
+ * agreementSignedTasks), the Listing Concierge's photography procurement (lib/kernel/procurement.ts, wave 107B — the
+ * "Photography + marketing prep begins" the seller-portal card for this event already promises), and the checklist card.
+ */
+export async function reactToListingAgreementSigned(
+  svc: any,
+  input: { brokerageId: string; listingId: string; plannedMlsLiveDate?: string | null },
+  deps: {
+    procure?: (svc: any, req: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>
+    suggest?: typeof writeEventSuggestion
+  } = {},
+): Promise<ListingAgreementSignedOutcome> {
+  const { brokerageId, listingId } = input
+  const { data: listing, error: lErr } = await svc
+    .from("listings").select("id, agent_id").eq("id", listingId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (lErr || !listing) {
+    return { decision: "unreadable", tasksInserted: 0, procurement: "skipped", suggestion: "skipped", detail: lErr ? `listing read refused: ${lErr.message}` : `listing ${listingId} is not in brokerage ${brokerageId}` }
   }
+  let agentUserId: string | null = null
+  if (listing.agent_id) {
+    const { data: agent, error: aErr } = await svc
+      .from("agents").select("user_id").eq("id", listing.agent_id).eq("brokerage_id", brokerageId).maybeSingle()
+    if (aErr) console.error(`[reactToListingAgreementSigned] agent read refused for listing ${listingId}: ${aErr.message}`)
+    agentUserId = (agent?.user_id as string | null) ?? null
+  }
+  const goLive = typeof input.plannedMlsLiveDate === "string" ? input.plannedMlsLiveDate.slice(0, 10) : null
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  return withActionLedger<ListingAgreementSignedOutcome>(
+    {
+      brokerageId,
+      action: "listing.agreement.signed_followup",
+      actor: { type: "manager", managerKey: "listing_concierge" },
+      subject: { type: "listing", id: listingId },
+      reasonCode: "UNSPECIFIED",
+      reasonDetail: "listing agreement executed → go-live checklist, photography procurement, agent card (once per listing)",
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "listing_agreement_signed",
+      idempotencyKey: `listing.agreement_signed:${brokerageId}:${listingId}`,
+      detail: { listing_id: listingId, planned_mls_live_date: goLive, decided_by: "KernelEvent.LISTING_AGREEMENT_SIGNED (the executed agreement)" },
+    },
+    async () => {
+      const tasks = await agreementSignedTasks(svc, brokerageId, { listing_id: listingId })
+      let procurement: ListingAgreementSignedOutcome["procurement"] = "skipped"
+      try {
+        const procure = deps.procure ?? (async (s: any, req: Record<string, unknown>) => {
+          const { requestProcurement } = await import("@/lib/kernel/procurement")
+          return requestProcurement(s, req as never) as Promise<{ ok: boolean; error?: string }>
+        })
+        const r = await procure(svc, {
+          brokerageId, serviceType: "photography", listingId, neededBy: goLive,
+          requirements: { purpose: "listing launch media", source: "listing_agreement_signed" },
+          requestedByUserId: agentUserId,
+        })
+        procurement = r.ok ? "requested" : "not_recommended"
+        if (!r.ok) console.warn(`[reactToListingAgreementSigned] photography procurement not recommended for listing ${listingId}: ${r.error}`)
+      } catch (e) {
+        procurement = "threw"
+        console.error(`[reactToListingAgreementSigned] photography procurement threw for listing ${listingId}:`, e instanceof Error ? e.message : e)
+      }
+      let suggestion: ListingAgreementSignedOutcome["suggestion"] = "skipped"
+      if (agentUserId) {
+        try {
+          await (deps.suggest ?? writeEventSuggestion)({
+            brokerage_id: brokerageId, user_id: agentUserId, context_type: "listing", context_id: listingId, suggestion_type: "checklist",
+            title: "Listing Signed - Go Live Checklist",
+            description: goLive ? `Listing agreement signed. Complete these steps before ${goLive}.` : "Listing agreement signed. Complete these steps before the listing goes live.",
+            action_payload: { listing_id: listingId, tasks: ["order_photography", "write_description", "set_up_lockbox", "input_mls", "create_marketing_materials"] },
+          })
+          suggestion = "written"
+        } catch (e) {
+          console.error(`[reactToListingAgreementSigned] checklist card not written for listing ${listingId}:`, e instanceof Error ? e.message : e)
+        }
+      }
+      const inserted = (tasks as { inserted?: number }).inserted ?? 0
+      return { decision: "acted", tasksInserted: inserted, procurement, suggestion, detail: tasks.success ? "ok" : `tasks: ${tasks.error}` }
+    },
+    {
+      settle: (o) => o.tasksInserted === 0 && o.procurement !== "requested" && o.suggestion !== "written"
+        ? { status: "failed", outcome: "nothing_landed", error: o.detail }
+        : { status: "executed", outcome: `tasks:${o.tasksInserted},procurement:${o.procurement},card:${o.suggestion}` },
+      replay: (claim) => ({ decision: "replayed", tasksInserted: 0, procurement: "skipped", suggestion: "skipped", detail: `ledger claim ${claim.kind}` }),
+    },
+    { client: svc },
+  )
 }
 
 async function handleListingLive(event: Event): Promise<ProcessingResult> {
@@ -738,31 +763,22 @@ async function handleListingLive(event: Event): Promise<ProcessingResult> {
 async function handleMilestoneOverdue(event: Event): Promise<ProcessingResult> {
   const startTime = Date.now()
   try {
-    const { milestone_id, milestone_title, days_overdue, listing_id } = event.payload
-
-    // Create urgent suggestion
-    await writeEventSuggestion({
-      brokerage_id: event.brokerage_id,
-      user_id: event.user_id!,
-      context_type: "transaction",
-      context_id: listing_id,
-      suggestion_type: "alert",
-      title: `⚠️ Overdue: ${milestone_title}`,
-      description: `This milestone is ${days_overdue} days overdue. Take action immediately.`,
-      action_payload: {
-        milestone_id,
-        listing_id,
-        action: "resolve_overdue_milestone",
-        priority: "critical",
-      },
+    // ONE BODY (wave 155, lane 155B2): the copilot's own suggestion + sendNotificationToAgent used to fire here BESIDE the
+    // deadline monitor's activity + notification for the same milestone. Both finders now end in raiseMilestoneOverdue
+    // (lib/transactions/deadline-monitor.ts) — one notification, one card, at most once per milestone per day.
+    const { milestone_id } = (event.payload ?? {}) as Record<string, any>
+    if (!milestone_id) throw new Error("milestone_overdue event carries no milestone_id")
+    const { raiseMilestoneOverdue } = await import("@/lib/transactions/deadline-monitor")
+    const r = await raiseMilestoneOverdue(createServiceClient(), {
+      brokerageId: event.brokerage_id, milestoneId: String(milestone_id), source: event.source === "cron" ? "deadline_monitor" : "copilot", actorUserId: event.user_id ?? null,
+    }, {
+      suggest: (p) => writeEventSuggestion({
+        brokerage_id: p.brokerageId, user_id: p.userId, context_type: "transaction", context_id: p.transactionId, suggestion_type: "alert",
+        title: `⚠️ Overdue: ${p.title}`, description: `This milestone is ${p.daysOverdue} days overdue. Take action immediately.`,
+        action_payload: { milestone_id: p.milestoneId, transaction_id: p.transactionId, action: "resolve_overdue_milestone", priority: "critical" },
+      }),
     })
-
-    // Send notification
-    await sendNotificationToAgent(event.user_id!, {
-      title: "Milestone Overdue",
-      message: `${milestone_title} is ${days_overdue} days overdue`,
-      priority: "high",
-    })
+    if (r.decision === "unreadable") throw new Error(r.detail)
 
     return {
       success: true,

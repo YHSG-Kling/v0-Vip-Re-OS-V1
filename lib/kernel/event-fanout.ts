@@ -511,28 +511,11 @@ const PORTAL_UPDATE_TEMPLATES: Partial<Record<KernelEvent, PortalUpdateTemplate>
     nextStep: "Review matches and tell your agent which to tour.",
     chatBody: "Fresh matches for your search just came up — take a look and let me know which you'd like to tour.",
   },
-  // UNRESOLVED, NOT A DUPLICATE TO DELETE (CLAUDE.md §1/§6, 2026-09-08 lane AB
-  // hidden-wire hunt) — this describes the exact same real-world moment as
-  // KernelEvent.PROPERTY_ALERT_MATCHED below (lib/property-alerts/alert-engine.ts,
-  // the ONE live saved-search/IDX-alert matcher), and neither
-  // 'search_alert_triggered' nor 'property_alert_matched' is a value
-  // campaign_sequences.trigger_event's live CHECK admits (only
-  // 'property_match_found' is — see the PROPERTY_MATCH_FOUND enrollment added
-  // there). Left as its own template rather than grep-verified as dead: no write
-  // site was found for it anywhere in the tree, but a second, narrower "search
-  // alert" concept distinct from a "property alert" (e.g. a saved SEARCH as
-  // opposed to a configured ALERT) may still be intended and simply unbuilt.
-  // Building a second emitter here would duplicate the portal card
-  // PROPERTY_ALERT_MATCHED already renders for the identical match — so this
-  // stays unresolved rather than guessed.
-  [KernelEvent.SEARCH_ALERT_TRIGGERED]: {
-    title: "New homes for you",
-    plainLanguageSummary:
-      "A new property matching your saved search is available. Check your portal for the full details.",
-    responsibleParty: "client",
-    audience: "buyer",
-    chatBody: "A new property matching your search just listed — want me to set up a tour?",
-  },
+  // TOMBSTONE (wave 155, lane 155B2 — CLAUDE.md §1/§6; resolves the lane-AB "UNRESOLVED" note that stood here): the
+  // SEARCH_ALERT_TRIGGERED card ("New homes for you") lived here. Re-checked: no write site anywhere (stripped
+  // source, migrations, zero live lifecycle_events rows), and the "saved SEARCH vs configured ALERT" split it waited for does not
+  // exist — lib/property-alerts/alert-engine.ts is the one matcher for both. Nothing to merge: the survivor below has the same
+  // fields (title, summary, client party, buyer audience, chat body). SURVIVOR: the PROPERTY_ALERT_MATCHED card directly below.
   [KernelEvent.PROPERTY_ALERT_MATCHED]: {
     title: "A home matched your alert",
     plainLanguageSummary:

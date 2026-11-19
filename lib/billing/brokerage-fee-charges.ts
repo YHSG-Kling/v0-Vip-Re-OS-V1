@@ -64,7 +64,17 @@ export async function generatePeriodicCharges(): Promise<{
         reasonDetail: `scheduled ${ft.cadence} fee charges for period ${periodStart} (${agentIds.length} agent(s) on the schedule)`,
         riskClass: "FINANCIAL",
         systemSource: "brokerage_fee_schedule",
-        detail: { fee_type_id: ft.id, period_start: periodStart, amount: ft.amount, currency: ft.currency, agents: agentIds.length },
+        // THE DECISION OWNER, DERIVABLE (wave 155, lane 155B2 — wave 154 gap row 8, owner Q2). Nothing charged changed: the rule
+        // that ALREADY decided these charges is named — the brokerage's own fee schedule row (brokerage_fee_types: is_active,
+        // cadence → computePeriodStart, applies_to → resolveAgentsForFeeType, amount / currency), versioned by its updated_at.
+        // NOT consulted today, recorded as-is for the owner (no guess added): start_date / end_date on the schedule row, and any
+        // platform halt switch (none exists for this run).
+        detail: {
+          fee_type_id: ft.id, period_start: periodStart, amount: ft.amount, currency: ft.currency, agents: agentIds.length,
+          decided_by: "brokerage_fee_types schedule (computePeriodStart+resolveAgentsForFeeType)",
+          policy_version: `brokerage_fee_types:${ft.id}@${ft.updated_at ?? "unknown"}`,
+          decision_basis: { is_active: ft.is_active === true, cadence: ft.cadence, applies_to: ft.applies_to, period_end: computePeriodEnd(ft.cadence, periodStart), due_date: computeDueDate(periodStart), schedule_start_date: ft.start_date ?? null, schedule_end_date: ft.end_date ?? null },
+        },
       },
       async () => {
         const out = { inserted: 0, duplicates: 0, refused: 0, lastError: null as string | null }

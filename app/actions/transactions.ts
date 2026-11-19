@@ -383,22 +383,14 @@ export async function reopenTransactionIfAuthorized(params: {
 // COMMISSIONS
 // ============================================
 
-/**
- * Recalculate commission state from agent_commission_profiles and transaction purchase_price.
- * Upserts transaction_commissions rows and writes commission_calculations record.
- */
-export async function recalculateCommissionState(params: {
-  transactionId: string
-  brokerageId: string
-  agentId: string
-}): Promise<{ success: boolean; error?: string; data?: unknown }> {
-  if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
-  const gate = await requireTransactionActor(params.transactionId)
-  if (!gate.ok) return { success: false, error: gate.error }
-
-  const { recalculateCommissionStateCommand } = await import("@/lib/kernel/transactions")
-  return recalculateCommissionStateCommand({ ...params, brokerageId: gate.brokerageId })
-}
+// TOMBSTONE (wave 155, lane 155B2 — CLAUDE.md §1/§4/§6; wave 154 gap row 20): `recalculateCommissionState(params)` LIVED HERE — a
+// public "use server" door (session gate requireTransactionActor, tenant re-keyed from the gate) with NO caller anywhere. It was
+// NOT a twin of lib/kernel/financial.ts recalculateCommissionState (that one is the brokerage-wide CAP-STATE refresh behind
+// app/actions/financial-kernel.ts recalculateCommissionStateAction — a different function under the same name, §6). This door
+// re-ran the per-deal waterfall, lib/kernel/transactions.ts recalculateCommissionStateCommand, which is already run by its real
+// triggers. SURVIVORS: lib/commission/commission-term-change.ts (the gated commission-terms door re-runs it after a rate moves,
+// :363) and lib/kernel/transactions.ts (:1445, its own stage path). A manual "recalculate this deal" button, if wanted, belongs on
+// the commission-terms screen through that same writer — not a second door.
 
 // ============================================
 // COMMISSION TERMS — pre-close changes (wave 153, lane 153B; owner ruling 4)

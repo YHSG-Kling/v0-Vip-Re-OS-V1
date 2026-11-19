@@ -1548,6 +1548,21 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       }
     }
 
+    // 21d — listing agreement signed (wave 155, lane 155B2; wave 154 gap row 12). app/actions/seller-listing/execution-engine.ts
+    // emits KernelEvent.LISTING_AGREEMENT_SIGNED (twice: transitionLifecycle + a direct processKernelEvent); the go-live
+    // checklist, the photography procurement and the agent card lived only on the dotted "listing.signed" orchestrator path,
+    // which nothing emits. ONE survivor (lib/orchestrator/internal.ts reactToListingAgreementSigned), once per listing.
+    if (params.event === KernelEvent.LISTING_AGREEMENT_SIGNED && (params.entityType === "listing_stage_machine" || params.entityType === "listing")) {
+      try {
+        const { reactToListingAgreementSigned } = await import("@/lib/orchestrator/internal")
+        const meta = (params.metadata ?? {}) as { planned_mls_live_date?: string | null }
+        const r = await reactToListingAgreementSigned(svc, { brokerageId: params.brokerageId, listingId: params.entityId, plannedMlsLiveDate: meta.planned_mls_live_date ?? null })
+        if (r.decision === "unreadable") console.warn(`[event-reactor] listing_agreement_signed ${params.entityId}: ${r.detail}`)
+      } catch (err) {
+        console.error(`[event-reactor] listing_agreement_signed follow-up failed for ${params.entityId}:`, err)
+      }
+    }
+
     // 22 — a review landed (lib/reputation/review-landed.ts). HANDLED — Sphere of
     // Influence proposes a gated thank-you to the reviewer when the rating is positive
     // (or unrated); a lower rating is left feed-visible for a human to follow up
@@ -2260,7 +2275,8 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       } catch { /* best-effort */ }
     }
 
-    // 22 — an accounting sync run completed (app/api/accounting/sync/route.ts:176).
+    // 22 — an accounting sync run completed. Emitter (wave 155, lane 155B2): lib/finance/accounting-egress.ts logSync →
+    // announceSyncCompleted, once per landed 'completed' accounting_sync_log row (the retired fake route no longer writes it).
     if (params.event === KernelEvent.SYSTEM_SYNC_COMPLETED) {
       try {
         await publishManagerSignal({
