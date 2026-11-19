@@ -173,6 +173,11 @@ export interface CreateAssetParams {
    *  action mints a TRACKED code in the QR registry (qr_codes) for it and
    *  stores that code's PNG as the asset — never a raw-URL QR (wave 81D). */
   qrTargetUrl?: string
+  /** WAVE 155 (155D, D4): the piece SPEAKS FOR the brokerage or a team — the actor needs a delegated marketing grant (or the
+   *  natural authority: an in-scope admin / the team's lead); the brand, sender and return address are the principal's
+   *  (resolveActingSender), never the platform's or another office's. */
+  actsFor?: "brokerage" | "team"
+  teamId?: string
 }
 
 export interface CreateCalendarEventParams {
@@ -511,6 +516,19 @@ export async function createAsset(params: CreateAssetParams) {
 
     const supabase = await createClient()
 
+    // D4 (wave 155, lane 155D): a brokerage-voice piece (or an explicit team-voice one) needs authority to speak for that
+    // principal and carries the principal's brand — at 9d9626b9 any seat could stamp visibility_scope 'brokerage' from the
+    // request body and publish in the brokerage's name.
+    const actsFor: "brokerage" | "team" | null = params.actsFor ?? (params.visibilityScope === "brokerage" ? "brokerage" : null)
+    let actingBrand: Record<string, unknown> | null = null
+    if (actsFor) {
+      if (!brokerageId || !userId) return { success: false, error: "Your workspace couldn't be confirmed. Sign in again." }
+      const { resolveActingSender } = await import("@/lib/kernel/approval-authority")
+      const sender = await resolveActingSender(undefined, { brokerageId, actorUserId: userId, actorUserType: ctxUserType ?? null, actsFor, teamId: params.teamId ?? null })
+      if (!sender.ok) return { success: false, error: sender.reason }
+      actingBrand = { level: sender.level, team_id: sender.teamId, brand_name: sender.brandName, return_address: sender.returnAddress, voice_sources: sender.voiceSources, signature_source: sender.signatureSource, acted_by: userId, basis: sender.basis }
+    }
+
     // A QR ASSET IS A REGISTERED CODE (wave 81D — owner: "any qrcode that gets
     // created for assets are added to the qrcode management"). The studio used
     // to encode the typed URL straight into a PNG on the client, so the asset's
@@ -558,7 +576,9 @@ export async function createAsset(params: CreateAssetParams) {
         thumbnail_url: params.thumbnailUrl ?? null,
         preview_text: params.previewText ?? null,
         tags: params.tags ?? [],
-        visibility_scope: params.visibilityScope ?? "agent",
+        visibility_scope: actsFor === "brokerage" ? "brokerage" : actsFor === "team" ? "team" : params.visibilityScope ?? "agent",
+        ...(actsFor === "team" ? { team_id: params.teamId ?? null } : {}),
+        ...(actingBrand ? { brand: actingBrand } : {}),
         approval_status: "pending",
       })
       .select("id")
@@ -640,11 +660,19 @@ export async function getAssets(filters?: {
 }
 
 export async function approveAsset(assetId: string) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId, userType } = await getAgentContext()
   const access = await assertMarketingStudioAccess(userId)
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  if (!brokerageId || !userId) return { success: false, error: "No workspace on your session; nothing was approved." }
+
+  // WHO MAY APPROVE (wave 155, lane 155D — owner R7): the ONE marketing rule (lib/kernel/approval-authority.ts
+  // decideMarketingApproval) — owner, team lead, assigned compliance / TC, an in-scope admin, a delegated office. At
+  // 9d9626b9 any seat with the studio feature approved any asset in the tenant (another office's included).
+  const { requireMarketingApprover, marketingAssetFingerprint, marketingScopeKey } = await import("@/lib/kernel/approval-authority")
+  const authority = await requireMarketingApprover({ brokerageId, approverUserId: userId, approverUserType: userType ?? null, table: "marketing_assets", id: assetId, authority: "content_brand" })
+  if (!authority.ok) return { success: false, error: authority.reason }
 
   const supabase = await createClient()
 
@@ -695,11 +723,17 @@ export async function approveAsset(assetId: string) {
   // COUNTED (CLAUDE.md §3): an update that matches nothing resolves exactly like one that
   // worked, so a wrong-tenant or already-gone asset would report "approved". .select() the
   // update and treat zero rows as the refusal it is.
+  // THE APPROVAL STAMP: the version approved (fingerprint of the substantive fields) + its scope. A later substantive edit
+  // changes the fingerprint and the catalog re-opens the approval (inheritance only on identical scope AND version).
+  const row = authority.row as Record<string, unknown>
+  const priorMeta = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? (row.metadata as Record<string, unknown>) : {}
+  const nowIso = new Date().toISOString()
   const { data: approved, error } = await supabase
     .from("marketing_assets")
     .update({
       approval_status: "approved",
-      updated_at: new Date().toISOString(),
+      metadata: { ...priorMeta, approval: { fingerprint: marketingAssetFingerprint(row), scope_key: marketingScopeKey(authority.scope), approved_by: userId, approved_at: nowIso, authority: "content_brand", basis: authority.decision.basis } },
+      updated_at: nowIso,
     })
     .eq("id", assetId)
     .eq("brokerage_id", brokerageId)
@@ -717,7 +751,7 @@ export async function approveAsset(assetId: string) {
 }
 
 export async function rejectAsset(assetId: string, reason?: string) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId, userType } = await getAgentContext()
   const access = await assertMarketingStudioAccess(userId)
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
@@ -726,6 +760,10 @@ export async function rejectAsset(assetId: string, reason?: string) {
   if (!brokerageId) {
     return { success: false, error: "No brokerage on your session; nothing was rejected." }
   }
+  // the same authority decides a rejection (a rejection is an approval decision — wave 155, lane 155D)
+  const { requireMarketingApprover } = await import("@/lib/kernel/approval-authority")
+  const authority = await requireMarketingApprover({ brokerageId, approverUserId: userId, approverUserType: userType ?? null, table: "marketing_assets", id: assetId, authority: "content_brand" })
+  if (!authority.ok) return { success: false, error: authority.reason }
 
   const supabase = await createClient()
 

@@ -3959,7 +3959,9 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                                     <SelectItem value="email">Email</SelectItem>
                                     <SelectItem value="sms">SMS</SelectItem>
                                     <SelectItem value="social_post">Social Post</SelectItem>
-                                    <SelectItem value="video">Video</SelectItem>
+                                    {/* R9 (wave 155, 155D): video is an ARTIFACT, not a channel — this step MAKES the video; an
+                                        email / SMS / portal step delivers it. (campaign_sequence_steps.channel is a step-kind list.) */}
+                                    <SelectItem value="video">Make a video (artifact — delivered by a following step)</SelectItem>
                                     <SelectItem value="direct_mail">Direct Mail</SelectItem>
                                     <SelectItem value="wait">Wait / Delay</SelectItem>
                                   </SelectContent>

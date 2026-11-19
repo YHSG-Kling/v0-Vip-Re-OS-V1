@@ -8,7 +8,7 @@
 // itself, and a field the records do not carry renders "unknown" — never a default.
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { getContentCommandCenter } from "@/lib/marketing/campaign-registry"
+import { getContentCommandCenter, getMarketingDelegations, grantMarketingDelegation, revokeMarketingDelegation } from "@/lib/marketing/campaign-registry"
 import type { CatalogRow, CatalogStatus, CatalogActionKind } from "@/lib/marketing/content-catalog"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -43,8 +43,8 @@ function groupKey(r: CatalogRow, view: View): string {
   switch (view) {
     case "campaign": return r.campaign ? r.campaign.name ?? r.campaign.id : "No campaign"
     case "topic": return r.topics.length ? r.topics.map((t) => t.title ?? t.id).join(" · ") : "No topic"
-    case "channel": return r.channels.length ? r.channels.join(", ") : "Channel unknown"
-    case "artifact": return r.artifactType.split(":")[0]
+    case "channel": return r.channels.length ? r.channels.map((c) => c.replace(/_/g, " ")).join(", ") : "No delivery channel"
+    case "artifact": return r.artifact.replace(/_/g, " ")
     case "recipient": return r.recipientContactId ? `Recipient ${r.recipientContactId.slice(0, 8)}` : "No single recipient"
     case "creator": return r.creatorUserId ?? r.creatorAgentId ?? "Creator unknown"
     case "status": return r.statusLabel
@@ -172,8 +172,11 @@ export default function ContentCommandCenter() {
             {selected.preview && <p className="text-muted-foreground whitespace-pre-wrap">{selected.preview}</p>}
             <dl className="grid grid-cols-[130px_1fr] gap-x-3 gap-y-1">
               <dt className="text-muted-foreground">Status</dt><dd>{selected.statusLabel} <span className="text-xs text-muted-foreground">({unknown(selected.rawStatus)})</span></dd>
-              <dt className="text-muted-foreground">Artifact</dt><dd>{selected.artifactType}</dd>
-              <dt className="text-muted-foreground">Channels</dt><dd>{selected.channels.join(", ") || "unknown"}</dd>
+              <dt className="text-muted-foreground">Artifact</dt><dd>{selected.artifact.replace(/_/g, " ")} <span className="text-xs text-muted-foreground">({selected.artifactType}{selected.format ? ` · ${selected.format}` : ""})</span></dd>
+              <dt className="text-muted-foreground">Delivered by</dt><dd>{selected.channels.length ? selected.channels.map((c) => c.replace(/_/g, " ")).join(", ") + (selected.channelVariants.length ? ` (${selected.channelVariants.join(", ")})` : "") : "no delivery channel"}</dd>
+              <dt className="text-muted-foreground">Lead link</dt><dd>{selected.leadLinkVisibility === "restricted" ? "restricted to the lead desk" : selected.leadLink ? `${selected.leadLink.relation.replace(/_/g, " ")} · ${selected.leadLink.leadIds.length} lead${selected.leadLink.leadIds.length === 1 ? "" : "s"} · owner: ${selected.leadLink.communicationOwner === "contact" ? "the contact's agent" : "lead desk"}` : "none"}</dd>
+              <dt className="text-muted-foreground">Contact</dt><dd>{selected.recipientContactId ? "linked" : "none"}</dd>
+              <dt className="text-muted-foreground">Version / expires</dt><dd>{unknown(selected.version)} · {unknown(selected.expiresAt)}</dd>
               <dt className="text-muted-foreground">Topic</dt><dd>{selected.topics.map((t) => t.title ?? t.id).join(" · ") || "none linked"}</dd>
               <dt className="text-muted-foreground">Campaign</dt><dd>{selected.campaign ? unknown(selected.campaign.name) : "none"}</dd>
               <dt className="text-muted-foreground">Audience</dt><dd>{unknown(selected.audience)}</dd>
@@ -194,6 +197,9 @@ export default function ContentCommandCenter() {
                 {selected.nextAction.why && <div className="text-xs">{selected.nextAction.why}</div>}
               </div>
             )}
+            {selected.approvals && (
+              <ul className="text-xs space-y-1">{selected.approvals.map((a) => <li key={a.authority} className={a.ok ? "text-emerald-700" : "text-muted-foreground"}>{a.ok ? "✓ You may decide" : "— Not yours"}: {a.authority.replace(/_/g, " ")} — {a.why}</li>)}</ul>
+            )}
             {selected.dependencies.length > 0 && (
               <ul className="space-y-1">{selected.dependencies.map((d) => <li key={`${d.kind}:${d.ref}`} className={d.satisfied ? "text-emerald-700" : "text-red-700"}>{d.satisfied ? "✓" : "✗"} {d.note}</li>)}</ul>
             )}
@@ -212,6 +218,11 @@ export default function ContentCommandCenter() {
             </div>
             {selected.blocked.length > 0 && <ul className="text-xs text-muted-foreground space-y-1">{selected.blocked.map((b) => <li key={b.kind}>Not available — {b.reason}</li>)}</ul>}
             {actionMessage && <p className="text-sm">{actionMessage}</p>}
+            {selected.openHref && selected.openHref !== selected.link && (
+              <a href={selected.openHref} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-violet-700 underline text-xs mr-3">
+                Preview {selected.artifact.replace(/_/g, " ")} <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
             {selected.link && (
               <a href={selected.link} className="inline-flex items-center gap-1 text-violet-700 underline text-xs">
                 {selected.secured ? "Open in its secured workspace" : "Open where it is edited"} <ExternalLink className="h-3 w-3" />
@@ -220,6 +231,73 @@ export default function ContentCommandCenter() {
           </CardContent>
         )}
       </Card>
+      <div className="lg:col-span-2"><DelegatedMarketingCard /></div>
     </div>
+  )
+}
+
+/** R7 / D4 — an office marketing FOR the brokerage or a team needs a delegated grant (organization_members.permissions on the
+ *  delegate's tenant / team membership). Shown only to a seat whose hierarchy may grant it; the server re-checks everything. */
+function DelegatedMarketingCard() {
+  type Board = Awaited<ReturnType<typeof getMarketingDelegations>>
+  const [board, setBoard] = useState<Board | null>(null)
+  const [person, setPerson] = useState("")
+  const [principal, setPrincipal] = useState("")
+  const [approve, setApprove] = useState(true)
+  const [message, setMessage] = useState<string | null>(null)
+  const [working, setWorking] = useState(false)
+  const refresh = useCallback(async () => { setBoard(await getMarketingDelegations()) }, [])
+  useEffect(() => { void refresh() }, [refresh])
+  if (!board || !board.success || (!board.canGrantBrokerage && board.teams.length === 0)) return null
+  const principalOf = (v: string) => (v === "brokerage" ? { actsFor: "brokerage" as const, teamId: null } : { actsFor: "team" as const, teamId: v })
+  async function grant() {
+    if (!person || !principal) { setMessage("Choose a person and who they market for."); return }
+    setWorking(true)
+    const r = await grantMarketingDelegation({ memberUserId: person, ...principalOf(principal), may: approve ? ["prepare", "approve"] : ["prepare"] })
+    setWorking(false)
+    setMessage(r.success ? "Delegation saved." : r.error ?? "The delegation was not saved.")
+    if (r.success) await refresh()
+  }
+  async function revoke(userId: string, actsFor: "brokerage" | "team", teamId: string | null) {
+    setWorking(true)
+    const r = await revokeMarketingDelegation({ memberUserId: userId, actsFor, teamId })
+    setWorking(false)
+    setMessage(r.success ? "Delegation removed." : r.error ?? "The delegation was not removed.")
+    if (r.success) await refresh()
+  }
+  const teamName = (id: string | null) => board.teams.find((t) => t.id === id)?.name ?? "a team"
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Delegated office marketing</CardTitle>
+        <CardDescription>Let an office prepare (and, if you choose, approve) marketing in the brokerage&apos;s or a team&apos;s name. It sends with that principal&apos;s brand and return address — never its own office&apos;s. An office association alone grants nothing.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <div className="flex flex-wrap gap-2 items-center">
+          <Select value={person} onValueChange={setPerson}>
+            <SelectTrigger className="w-[220px]"><SelectValue placeholder="Person" /></SelectTrigger>
+            <SelectContent>{board.people.map((p) => <SelectItem key={p.id} value={p.id}>{p.name} · {p.userType.replace(/_/g, " ")}</SelectItem>)}</SelectContent>
+          </Select>
+          <Select value={principal} onValueChange={setPrincipal}>
+            <SelectTrigger className="w-[220px]"><SelectValue placeholder="Markets for" /></SelectTrigger>
+            <SelectContent>
+              {board.canGrantBrokerage && <SelectItem value="brokerage">The brokerage</SelectItem>}
+              {board.teams.map((t) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={approve} onChange={(e) => setApprove(e.target.checked)} /> may also approve</label>
+          <Button size="sm" disabled={working} onClick={() => void grant()}>{working ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}Delegate</Button>
+        </div>
+        {message && <p className="text-xs">{message}</p>}
+        {board.current.length > 0 ? (
+          <ul className="space-y-1">{board.current.map((c) => (
+            <li key={`${c.userId}:${c.actsFor}:${c.teamId ?? ""}`} className="flex items-center gap-2 text-xs">
+              <span>{c.name} — for {c.actsFor === "brokerage" ? "the brokerage" : teamName(c.teamId)} ({c.may.join(", ")})</span>
+              <Button size="sm" variant="outline" disabled={working} onClick={() => void revoke(c.userId, c.actsFor, c.teamId)}>Remove</Button>
+            </li>
+          ))}</ul>
+        ) : <p className="text-xs text-muted-foreground">No delegations yet.</p>}
+      </CardContent>
+    </Card>
   )
 }

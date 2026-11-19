@@ -49,6 +49,17 @@ const CATALOG_WRITER_CALLS: Record<Exclude<CatalogWriterId, "route_omnipresence_
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? null
     return asResult(await editQrDestination({ qrCodeId: a.qrCodeId, targetUrl: a.targetUrl, reason: a.reason }, { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId ?? null, userType: ctx.userType }, { origin: appUrl, appOrigins: [appUrl] }))
   },
+  // wave 155 (155D) — the newly indexed formats' EXISTING writers (each resolves its own session and applies its own gate)
+  approve_ad_creative: async (a, who) => asResult(await (await import("@/lib/ads/ad-creator")).approveCreativeVariation(who.userId, a.variationId, who.brokerageId)),
+  reject_ad_creative: async (a, who) => asResult(await (await import("@/lib/ads/ad-creator")).rejectCreativeVariation(who.userId, a.variationId, who.brokerageId, a.reason ?? undefined)),
+  archive_qr: async (a) => {
+    const { resolveWriteContext } = await import("@/lib/platform/acting-context")
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok || !ctx.brokerageId) return { ok: false, error: ctx.ok ? "Your workspace couldn't be confirmed. Sign in again." : ctx.error }
+    const { changeQrLifecycle } = await import("@/lib/marketing/qr-governance")
+    return asResult(await changeQrLifecycle({ qrCodeId: a.qrCodeId, action: "retire", reason: a.reason }, { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId ?? null, userType: ctx.userType }))
+  },
+  archive_bundle: async (a) => asResult(await (await import("@/app/actions/campaign-bundles")).deactivateCampaignBundle(a.bundleId)),
 }
 
 /** Same-origin only (a cookie-authenticated POST): the browser's Origin must name this host. No Origin ⇒ refused (fail closed). */

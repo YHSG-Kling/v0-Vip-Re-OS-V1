@@ -9,45 +9,99 @@ Writers through an `.rpc()`, a trigger or a migration backfill are invisible to 
 |---|---|---|---|---|
 | ideas | Topic pool entries / research briefs / source-grounded trends | `content_topic_bank` (live · writer) | yes | `content_topic_bank` |
 | ideas | Competitor-concept briefs (Refurbish origins, ideas only) | `competitor_content` (live · writer) | yes | `competitor_content` |
-| ideas | Content Lab idea list | `content_ideas` (live · writer) | yes | no — PARTIAL — Content Lab idea scratch list (app/actions/content-studio.ts); not yet indexed |
-| text | AI text drafts (generation history) | `ai_generated_content` (live · writer) | yes | no — PARTIAL — generation history; the saved artifact is the channel row that IS indexed |
+| ideas | Content Lab idea list | `content_ideas` (live · writer) | yes | `content_ideas` |
+| text | AI text drafts (generation history) | `ai_generated_content` (live · writer) | yes | `ai_generated_content` |
 | text | Conversation reply drafts (email / SMS / in-app) | `ai_message_drafts` (live · writer) | yes | `ai_message_drafts` |
 | text | Personal 1:1 messages proposed by managers (email, SMS, voice drop, portal) | `agent_client_messages` (live · writer) | yes | `agent_client_messages` |
-| text | Sent SMS / message transport log | `messages` (live · writer) | yes | no — conversation transport (recipient data) — the draft and the proposal are indexed, not the wire log |
+| text | Sent SMS / message transport log | `messages` (live · writer) | yes | no — HOLDS (re-examined 155D): the wire log of a conversation (inbound + outbound bodies, recipient data) is transport, not an artifact — the draft (ai_message_drafts) and the proposal (agent_client_messages) that rode it ARE indexed |
 | text | Live / AI voice and video scripts | `video_scripts_library` (live · writer) | yes | `video_scripts_library` |
-| text | Agent coaching messages | `buyer_stage_coaching` (live · writer)<br>`seller_stage_coaching` (live · writer)<br>`call_coaching_insights` (live · writer) | yes | no — coaching addressed to the agent, not tenant-facing content — read on the coaching screens |
+| text | Agent coaching messages | `buyer_stage_coaching` (live · writer)<br>`seller_stage_coaching` (live · writer)<br>`call_coaching_insights` (live · writer) | yes | no — HOLDS (re-examined 155D): coaching is addressed to the agent, never delivered to a client or audience — not marketing (R6 lists no coaching format) |
 | email | Branded email campaigns | `email_campaigns` (live · writer) | yes | `email_campaigns` |
 | email | Newsletters | `newsletter_campaigns` (live · writer) | yes | `newsletter_campaigns` |
 | social | Social posts per platform (incl. YouTube) | `social_posts` (live · writer) | yes | `social_posts` |
-| social | Platform's own product posts | `platform_social_drafts` (live · writer) | yes | no — the platform's own marketing (superadmin), never a tenant's content |
+| social | Platform's own product posts | `platform_social_drafts` (live · writer) | yes | no — HOLDS (re-examined 155D): the platform's own marketing — the table carries no brokerage_id, so no tenant can be scoped to it; it is never a tenant's content |
 | web | Blogs / articles | `blog_posts` (live · writer) | yes | `blog_posts` |
 | web | SEO / AI-searchable listing landing pages | `listing_landing_pages` (live · writer) | yes | `listing_landing_pages` |
-| web | Home-value page configuration | `home_value_page_configs` (live · writer) | yes | no — page configuration, not an artifact |
+| web | Home-value web page (agent's published page) | `home_value_page_configs` (live · writer) | yes | `home_value_page_configs` |
 | web | Lead-magnet deliverables (guides, checklists, reports, books) | `lead_magnet_deliverables` (live · writer) | yes | `lead_magnet_deliverables` |
-| web | Event invitations | `open_house_invitations` (live · writer) | yes | no — PARTIAL — per-recipient rows of an open-house event (lane 154G3 owns events); not yet indexed |
+| web | Event invitations | `open_house_invitations` (live · writer) | yes | `open_house_invitations` |
 | qr | QR destinations | `qr_codes` (live · writer) | yes | `qr_codes` |
 | print | Images, carousels, graphics, mailer designs, generated media | `marketing_assets` (live · writer) | yes | `marketing_assets` |
-| print | Reusable blank templates | `brand_templates` (live · writer)<br>`content_templates` (live · writer) | yes | no — template library (no audience, no delivery) |
+| print | Reusable blank templates | `brand_templates` (live · writer)<br>`content_templates` (live · writer) | yes | no — HOLDS (re-examined 155D): a blank template has no audience, no delivery and no approval state — the flyers / brochures / mail pieces MADE from templates are indexed (remotion ListingFlyer, generated_documents listing_brochure, direct_mail_campaigns) |
 | print | Letters, postcards, greeting / handwritten cards, mail pieces | `direct_mail_campaigns` (live · writer) | yes | `direct_mail_campaigns` |
 | video | D-ID avatar and personalized videos | `ai_video_projects` (live · writer) | yes | `ai_video_projects` |
 | video | Remotion compositions | `remotion_composition_renders` (live · writer) | yes | `remotion_composition_renders` |
+| print | Print flyers (Remotion ListingFlyer still) | `remotion_composition_renders` (live · writer) | yes | `remotion_composition_renders` |
 | video | Snippets / clips (with thumbnail + caption columns) | `video_snippets` (live · writer) | yes | `video_snippets` |
-| video | Persona variant renders | `asset_persona_renders` (live · writer) | yes | no — PARTIAL — per-persona variant of a marketing_assets row; not yet joined onto the asset |
-| video | Newsletter video renders | `newsletter_video_renders` (live · writer) | yes | no — PARTIAL — render of a newsletter; not yet indexed |
+| video | Persona variant renders | `asset_persona_renders` (live · writer) | yes | `asset_persona_renders` |
+| video | Newsletter video renders | `newsletter_video_renders` (live · writer) | yes | `newsletter_video_renders` |
 | video | Webinar / TV / CTV creative | — none — | **no producer — not offered** | no |
 | audio | Podcast episodes / scripts | `podcast_episodes` (live · writer) | yes | `podcast_episodes` |
 | book | Books / chapters | `book_projects` (live · writer) | yes | `book_projects` |
 | report | Market reports (neighborhood market statistics) | `neighborhood_reports` (live · writer) | yes | `neighborhood_reports` |
-| report | Seller weekly reports / CMA reports | `seller_weekly_reports` (live · writer)<br>`cma_reports` (live · writer) | yes | no — a per-client valuation / report (financial, recipient data) — read on the listing / contact |
+| report | Seller weekly reports / CMA reports (link only, no numbers) | `seller_weekly_reports` (live · writer)<br>`cma_reports` (live · writer) | yes | `seller_weekly_reports`, `cma_reports` |
 | document | Client and deal documents (secured, LINK only) | `generated_documents` (live · writer) | yes | `generated_documents` |
+| print | Listing brochures (PDF, link to the listing) | `generated_documents` (live · writer) | yes | `generated_documents` |
 | campaign | Campaign bundles | `campaign_bundles` (live · writer) | yes | `campaign_bundles` |
-| campaign | Bundle dispatch receipts | `campaign_bundle_dispatches` (live · writer) | yes | no — PARTIAL — a bundle's delivery receipts; not yet joined onto the bundle row |
+| campaign | Bundle dispatch receipts | `campaign_bundle_dispatches` (live · writer) | yes | `campaign_bundle_dispatches` |
 | campaign | Omnipresence / Refurbish variants | `repurposed_content_log` (live · writer) | yes | `repurposed_content_log` |
-| campaign | Omnipresence pipeline configuration | `repurpose_pipelines` (live · writer) | yes | no — configuration — its OUTPUTS are indexed (repurposed_content_log) |
-| campaign | Paid ad creative variations | `ad_creative_variations` (live · writer) | yes | no — PARTIAL — the Ad OS tab owns paid creative; not yet indexed |
-| campaign | Listing marketing copy | `listing_marketing_content` (live · writer) | yes | no — PARTIAL — listing description copy; read on the listing |
+| campaign | Omnipresence pipeline configuration | `repurpose_pipelines` (live · writer) | yes | no — HOLDS (re-examined 155D): configuration — its OUTPUTS are indexed (repurposed_content_log) |
+| campaign | Paid ad creative variations | `ad_creative_variations` (live · writer) | yes | `ad_creative_variations` |
+| campaign | Listing marketing copy | `listing_marketing_content` (live · writer) | yes | `listing_marketing_content` |
 | journey | Lifetime / anniversary / Ghost touchpoints | `lifetime_customer_touchpoints` (live · writer) | yes | `lifetime_customer_touchpoints` |
 | journey | Equity report / refinance opportunity | — none — | **no producer — not offered** | no — a manager SIGNAL (equity_milestone), not an artifact — shown as the next action on the linked item |
 | campaign | Zillow campaign | — none — | **no producer — not offered** | no |
 
-Catalog sources: 24. Formats: 42 (39 available, 3 without a producer).
+Catalog sources: 35. Formats: 44 (41 available, 3 without a producer).
+
+## Artifacts (what is made) — the ONE vocabulary
+
+| Artifact | Produced by (catalog source) |
+|---|---|
+| personal_avatar_video | `ai_video_projects` |
+| educational_video | `ai_video_projects`, `lead_magnet_deliverables` |
+| listing_video | `ai_video_projects` |
+| brand_video | `ai_video_projects`, `marketing_assets` |
+| remotion_video | `remotion_composition_renders` |
+| video_clip | `video_snippets`, `marketing_assets` |
+| newsletter_video | `newsletter_video_renders` |
+| persona_variant | `asset_persona_renders` |
+| image | `marketing_assets` |
+| property_card | `marketing_assets` |
+| flyer | `remotion_composition_renders` |
+| brochure | `generated_documents` |
+| carousel | `remotion_composition_renders` |
+| guide | `lead_magnet_deliverables` |
+| checklist | `lead_magnet_deliverables` |
+| book | `lead_magnet_deliverables`, `book_projects` |
+| blog | `blog_posts`, `marketing_assets` |
+| podcast | `podcast_episodes`, `marketing_assets` |
+| audio_clip | **not produced — not advertised** |
+| newsletter | `newsletter_campaigns`, `marketing_assets` |
+| email_campaign | `email_campaigns` |
+| social_post | `social_posts`, `marketing_assets` |
+| qr_print_graphic | `marketing_assets`, `qr_codes` |
+| direct_mail_piece | `direct_mail_campaigns`, `marketing_assets` |
+| landing_page | `listing_landing_pages` |
+| home_value_page | `home_value_page_configs` |
+| event_invitation | `open_house_invitations` |
+| market_report | `lead_magnet_deliverables`, `neighborhood_reports` |
+| cma_report | `cma_reports` |
+| seller_report | `seller_weekly_reports` |
+| script | `video_scripts_library`, `marketing_assets` |
+| topic | `content_topic_bank` |
+| idea | `competitor_content`, `content_ideas` |
+| text_draft | `ai_generated_content` |
+| reply_draft | `ai_message_drafts` |
+| personal_message | `agent_client_messages` |
+| ad_creative | `marketing_assets`, `ad_creative_variations` |
+| listing_copy | `listing_marketing_content` |
+| template | `marketing_assets` |
+| campaign_bundle | `campaign_bundles` |
+| dispatch_receipt | `campaign_bundle_dispatches` |
+| variant | `repurposed_content_log` |
+| journey_touchpoint | `lifetime_customer_touchpoints` |
+| lead_magnet | `lead_magnet_deliverables` |
+| secured_document | `generated_documents` |
+
+Channels (how it reaches a person — video is never one): email, sms, voice_call, portal, website, social, print_mail, push, in_app_task, podcast_feed, paid_ads.
