@@ -411,13 +411,14 @@ export async function endOpenHouseEvent(params: {
   const supabase = await createClient()
   const serviceClient = createServiceClient()
 
-  const { error: updateErr } = await supabase
-    .from("open_house_events")
-    .update({ status: "completed" })
-    .eq("id", params.eventId)
-    .eq("brokerage_id", auth.brokerageId)
-
-  if (updateErr) return { success: false, error: updateErr.message }
+  // WAVE 155 (lane 155C — owner R2 "leave open house count"): THE ONE HELD WRITER. The host ending their own open house is the
+  // hosting evidence. recordOpenHouseHeld moves the row to completed only from scheduled / active / marketing (a cancelled or
+  // draft open house is refused) and emits the held event ONCE — the open-house count is one per listing + date, however many
+  // visitors signed in. A repeated End (already completed) changes nothing and re-sends nothing.
+  const { recordOpenHouseHeld } = await import("@/lib/gamification/lifecycle-awards")
+  const held = await recordOpenHouseHeld(serviceClient as never, { eventId: params.eventId, brokerageId: auth.brokerageId, via: "host_ended", actorUserId: auth.userId })
+  if (!held.ok) return { success: false, error: held.error }
+  if (held.alreadyCompleted) return { success: true }
 
   // THE READER THAT DECIDES WHETHER AN ATTENDEE EXISTS AT ALL — it drives the
   // scoring loop below and the OPEN_HOUSE_ATTENDEE_CAPTURED events after it.

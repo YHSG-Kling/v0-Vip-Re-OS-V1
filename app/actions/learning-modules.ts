@@ -204,11 +204,17 @@ export async function publishLearningModuleAction(
 
   const { data: mod, error: modErr } = await supabase
     .from("learning_modules")
-    .select("id, brokerage_id, authored_by, team_id, title, summary, body, cover_image_url, estimated_minutes, channels, quiz_questions, audience_roles, stage_tags")
+    .select("id, brokerage_id, authored_by, team_id, title, summary, body, cover_image_url, estimated_minutes, channels, quiz_questions, audience_roles, stage_tags, required")
     .eq("id", moduleId)
     .eq("brokerage_id", auth.brokerageId)
     .maybeSingle()
   if (modErr || !mod) return { ok: false, error: modErr?.message ?? "Module not found" }
+  // WAVE 155 (155C — owner R1): a course whose quiz is required but has no valid question can never be completed (never an
+  // automatic pass), so it is not published — the author is told why, in the same words the learner would see.
+  const { courseQuizReadiness, COURSE_NOT_COMPLETABLE_MESSAGE } = await import("@/lib/academy/quiz")
+  if (courseQuizReadiness((mod as { required?: unknown }).required, mod.quiz_questions) === "not_completable") {
+    return { ok: false, error: COURSE_NOT_COMPLETABLE_MESSAGE }
+  }
 
   const results: PublishResult["results"] = []
   const successfulChannels: Channel[] = []

@@ -17,11 +17,22 @@ export async function fetchQuiz(stepId: string): Promise<{
   const agentContext = await getAgentContext()
   if (!agentContext?.agentId) throw new Error("Agent context not found")
 
-  return getQuizForStep({
+  const quiz = await getQuizForStep({
     userId: user.id,
     agentId: agentContext.agentId,
     stepId,
   })
+  if (!quiz) return null
+  // WAVE 155 (lane 155C): the answer key never leaves the server. getQuizForStep returns the stored questions WITH their
+  // correctAnswer; this public endpoint handed them to the browser, so any learner could read the key before answering
+  // (OnboardingQuizClient never reads it — grading is server-side in submitQuizAttempt).
+  return { ...quiz, questions: quiz.questions.map((q) => withoutAnswerKey(q)) }
+}
+
+/** A question with every answer-key spelling removed. Module-internal (not exported from a "use server" file). */
+function withoutAnswerKey(q: Record<string, unknown>): Record<string, unknown> {
+  const { correctAnswer: _a, correct_answer: _b, correct_idx: _c, correctIndex: _d, correct: _e, answer: _f, explanation: _g, ...rest } = q
+  return rest
 }
 
 export async function submitQuiz(

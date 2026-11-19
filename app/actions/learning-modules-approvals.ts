@@ -156,13 +156,19 @@ export async function approveLearningModuleAction(
   const svc = createServiceClient()
   const { data: m } = await svc
     .from("learning_modules")
-    .select("brokerage_id, status")
+    .select("brokerage_id, status, required, quiz_questions")
     .eq("id", moduleId)
     .maybeSingle()
   if (!m) return { ok: false, error: "Module not found" }
   if (m.brokerage_id !== auth.brokerageId) return { ok: false, error: "Forbidden" }
   if (m.status !== "pending_review") {
     return { ok: false, error: `Cannot approve from status '${m.status}'` }
+  }
+  // WAVE 155 (155C — owner R1): the second publish door applies the same rule as publishLearningModuleAction — a required
+  // quiz with no valid question is never published, because it could never be completed.
+  const { courseQuizReadiness, COURSE_NOT_COMPLETABLE_MESSAGE } = await import("@/lib/academy/quiz")
+  if (courseQuizReadiness((m as { required?: unknown }).required, (m as { quiz_questions?: unknown }).quiz_questions) === "not_completable") {
+    return { ok: false, error: COURSE_NOT_COMPLETABLE_MESSAGE }
   }
 
   const now = new Date().toISOString()

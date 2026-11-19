@@ -85,6 +85,10 @@ export const POINT_VALUES = {
    *  `review_received` action key paid (it mapped onto VENDOR_REVIEW_WRITTEN, 25). That key fired when an AI review-REQUEST
    *  draft was generated, not when a client reviewed — the value moves onto the real moment. Owner may re-price. */
   CLIENT_REVIEW_RECEIVED: 25,
+  /** WAVE 155 (155C — owner R3: "appt with a signed agreement"): an appointment that the agent turned into an EXECUTED
+   *  listing / buyer agreement. 50 is not new: it is FIRST_APPOINTMENT's value, which paid on a BOOKING (retired below — a
+   *  booking alone earns nothing). Once per agreement (the canonical executed row). Owner may re-price. */
+  SIGNED_AGREEMENT_APPOINTMENT: 50,
 } as const
 
 export type PointReason = keyof typeof POINT_VALUES
@@ -110,8 +114,10 @@ const EARNING_ACTION_LABELS: ReadonlyArray<{ reason: PointReason; label: string 
   { reason: "COMPETENCY_IMPROVED", label: "Improve a measured skill" },
   { reason: "MENTOR_SESSION_HELD", label: "Hold a mentor session (weekly)" },
   { reason: "LIFETIME_TOUCHPOINT_KEPT", label: "Keep a past-client touch" },
-  { reason: "OPEN_HOUSE_HOSTED", label: "Host an open house" },
-  { reason: "TRAINING_COMPLETED", label: "Complete a training" },
+  // WAVE 155 (155C): the three owner rulings. Each is offered only while its census row says reactor + verified_outcome.
+  { reason: "SIGNED_AGREEMENT_APPOINTMENT", label: "Turn a listing appointment into a signed agreement" },
+  { reason: "OPEN_HOUSE_HOSTED", label: "Hold an open house (one per open house)" },
+  { reason: "TRAINING_COMPLETED", label: "Pass a course quiz" },
   { reason: "VENDOR_REVIEW_WRITTEN", label: "Review a vendor" },
   { reason: "FOLLOWUP_SENT", label: "Send a follow-up" },
 ]
@@ -306,10 +312,12 @@ export interface LifecycleAwardRule {
    *  `referral_agent` = the agent on each WON referral the closed transaction evidences (wave 154). */
   party: "acting" | "mentor_and_mentee" | "referral_agent"
   /** Extra predicate on the resolved context (e.g. the contact was closed with before). */
-  when?: "repeat_client" | "seller_side" | "positive_review" | "referral_closed_deal"
+  when?: "repeat_client" | "seller_side" | "positive_review" | "referral_closed_deal" | "graded_course_pass" | "held_open_house" | "signed_agreement_appointment"
   /** Where the idempotency reference comes from; default = the event's entityId. `evidence.transaction` = the closed
-   *  transaction the server found evidencing a referral (never a client-supplied id). */
-  referenceFrom?: "entity" | "metadata.stepId" | "metadata.referral_id" | "metadata.contact_id" | "metadata.relationship_id" | "evidence.transaction"
+   *  transaction the server found evidencing a referral (never a client-supplied id). WAVE 155 (155C): `evidence.course` = the
+   *  module whose persisted graded pass the server re-read; `evidence.open_house` = the CANONICAL held open house for that
+   *  listing + date; `evidence.agreement` = the canonical executed agreement (the root of a correction chain). */
+  referenceFrom?: "entity" | "metadata.stepId" | "metadata.referral_id" | "metadata.contact_id" | "metadata.relationship_id" | "evidence.transaction" | "evidence.course" | "evidence.open_house" | "evidence.agreement"
   referenceType: string
   /** WAVE 153 (lane 153I): the emitter's entity the rule is keyed on. Another emitter of the SAME event with a different
    *  entity never earns (app/actions/ai-content-generation.tsx emits SOCIAL_POST_PUBLISHED for a generated DRAFT,
@@ -330,7 +338,20 @@ export const LIFECYCLE_AWARD_RULES: readonly LifecycleAwardRule[] = [
   { event: KernelEvent.ONBOARDING_COMPLETED, reason: "ONBOARDING_COMPLETED", scope: "first_ever", party: "acting", referenceType: "agent_onboarding" },
   { event: KernelEvent.CERTIFICATION_AWARDED, reason: "CERTIFICATION_EARNED", scope: "per_reference", party: "acting", referenceType: "agent_certification" },
   { event: KernelEvent.CONTACT_CREATED, reason: "FIRST_CONTACT", scope: "first_ever", party: "acting", referenceType: "contact" },
-  { event: KernelEvent.ISA_APPOINTMENT_SCHEDULED, reason: "FIRST_APPOINTMENT", scope: "first_ever", party: "acting", referenceType: "calendar_event" },
+  // TOMBSTONE (wave 155, lane 155C — owner R3 "appt with a signed agreement"; CLAUDE.md §1): `{ event: ISA_APPOINTMENT_SCHEDULED,
+  // reason: "FIRST_APPOINTMENT", first_ever }` stood here — 50 points on a BOOKING. A booked (or merely held) appointment earns
+  // nothing now. SURVIVOR: the two SIGNED_AGREEMENT_APPOINTMENT rows below, which pay only when the server finds an EXECUTED
+  // listing / buyer agreement AND a genuine prior appointment by that agent with that client, once per agreement.
+  { event: KernelEvent.LISTING_AGREEMENT_SIGNED, reason: "SIGNED_AGREEMENT_APPOINTMENT", scope: "per_reference", party: "acting", when: "signed_agreement_appointment", entityType: "listing_stage_machine", referenceFrom: "evidence.agreement", referenceType: "listing_agreement" },
+  { event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, reason: "SIGNED_AGREEMENT_APPOINTMENT", scope: "per_reference", party: "acting", when: "signed_agreement_appointment", entityType: "buyer_broker_agreement", referenceFrom: "evidence.agreement", referenceType: "buyer_broker_agreement" },
+  // WAVE 155 (155C — owner R1): a course is completed by a PASSED quiz. The event comes from the server grader
+  // (app/actions/academy-learning.ts submitModuleQuiz, entity learning_module); the award re-reads the persisted attempt. The
+  // self-attested video-progress emitter of the same event (entity 'agent', percentWatched) never earns.
+  { event: KernelEvent.TRAINING_COURSE_COMPLETED, reason: "TRAINING_COMPLETED", scope: "per_reference", party: "acting", when: "graded_course_pass", entityType: "learning_module", referenceFrom: "evidence.course", referenceType: "learning_module" },
+  // WAVE 155 (155C — owner R2 "leave open house count"): one award per open house HELD — the canonical event for that listing +
+  // date (lib/gamification/lifecycle-awards.ts recordOpenHouseHeld is the one emitter). A sign-in, an RSVP, a draft, a
+  // cancellation or a duplicate calendar row never adds one. The stage machine's own emit (entity listing_stage_machine) never earns.
+  { event: KernelEvent.LISTING_OPEN_HOUSE_COMPLETED, reason: "OPEN_HOUSE_HOSTED", scope: "per_reference", party: "acting", when: "held_open_house", entityType: "open_house_event", referenceFrom: "evidence.open_house", referenceType: "open_house_event" },
   { event: KernelEvent.SHOWING_COMPLETED, reason: "SHOWING_COMPLETED", scope: "per_reference", party: "acting", referenceType: "showing" },
   { event: KernelEvent.TRANSACTION_CLOSED, reason: "LISTING_CLOSED", scope: "per_reference", party: "acting", referenceType: "transaction" },
   { event: KernelEvent.TRANSACTION_CLOSED, reason: "FIRST_CLOSE", scope: "first_ever", party: "acting", referenceType: "transaction" },
@@ -390,6 +411,19 @@ export const POINT_EARNING_ACTIONS: ReadonlyArray<{ reason: PointReason; label: 
     LIFECYCLE_AWARD_RULES.some((r) => r.reason === a.reason) &&
     AWARD_CENSUS.some((c) => c.reason === a.reason && c.path === "reactor" && c.trust === "verified_outcome"))
 
+/**
+ * WAVE 155 (155C — directive C4: "a listed reward with no trusted event is shown as unavailable"). Can a catalog badge be
+ * earned today? A points-threshold badge (trigger_event null / 'points_threshold') always can; a milestone badge only when a
+ * live award rule — or an audited call site in the census — grants the reason it names. m705's 'First Appointment' badge
+ * (FIRST_APPOINTMENT, retired by owner R3) reads false, so the Motivation page shows it as unavailable instead of earnable.
+ * @proofSeam the proof asserts every m705 seed is either earnable or rendered unavailable
+ */
+export function badgeTriggerEarnable(triggerEvent: string | null | undefined): boolean {
+  const t = triggerEvent ?? "points_threshold"
+  if (t === "points_threshold") return true
+  return LIFECYCLE_AWARD_RULES.some((r) => r.reason === t) || AWARD_CENSUS.some((c) => c.reason === t && c.path === "call_site")
+}
+
 export interface MilestonePlan {
   reason: PointReason
   points: number
@@ -409,6 +443,10 @@ export interface MilestoneContext {
   /** REFERRAL_CONVERTED only (wave 154): the closed/funded transaction the SERVER found evidencing the referral. Absent =
    *  no evidence = no award. Never taken from the event payload. */
   referralEvidenceTransactionId?: string | null
+  /** WAVE 155 (155C): evidence the SERVER found — never the event payload. Absent = no evidence = no award. */
+  courseEvidenceModuleId?: string | null
+  openHouseEvidenceId?: string | null
+  agreementEvidenceId?: string | null
 }
 
 function referenceFor(rule: LifecycleAwardRule, ctx: MilestoneContext): string | null {
@@ -419,6 +457,9 @@ function referenceFor(rule: LifecycleAwardRule, ctx: MilestoneContext): string |
     rule.referenceFrom === "metadata.contact_id" ? meta.contact_id :
     rule.referenceFrom === "metadata.relationship_id" ? meta.relationship_id :
     rule.referenceFrom === "evidence.transaction" ? ctx.referralEvidenceTransactionId :
+    rule.referenceFrom === "evidence.course" ? ctx.courseEvidenceModuleId :
+    rule.referenceFrom === "evidence.open_house" ? ctx.openHouseEvidenceId :
+    rule.referenceFrom === "evidence.agreement" ? ctx.agreementEvidenceId :
     ctx.entityId
   return isUuid(raw) ? raw : null
 }
@@ -451,6 +492,9 @@ export function planLifecycleAwards(event: string, ctx: MilestoneContext): Miles
     if (rule.when === "seller_side" && (ctx.metadata as { side?: unknown } | null | undefined)?.side !== "seller") continue
     if (rule.when === "positive_review" && !isPositiveReview(ctx.metadata)) continue
     if (rule.when === "referral_closed_deal" && !isUuid(ctx.referralEvidenceTransactionId)) continue
+    if (rule.when === "graded_course_pass" && !isUuid(ctx.courseEvidenceModuleId)) continue
+    if (rule.when === "held_open_house" && !isUuid(ctx.openHouseEvidenceId)) continue
+    if (rule.when === "signed_agreement_appointment" && !isUuid(ctx.agreementEvidenceId)) continue
     const ref = referenceFor(rule, ctx)
     let once: OnceKey
     switch (rule.scope) {

@@ -84,6 +84,10 @@ export async function getAgentBadges(agentId: string): Promise<{
     requiredPoints: number
     earned: boolean
     earnedAt: string | null
+    /** Earned on a milestone (trigger_event), not on a points total. */
+    milestone: boolean
+    /** False when no live rule awards this badge's milestone — shown as unavailable, never as earnable. */
+    available: boolean
   }>
   error?: string
 }> {
@@ -98,10 +102,12 @@ export async function getAgentBadges(agentId: string): Promise<{
       .order("awarded_at", { ascending: false }),
     supabase
       .from("gamification_badges")
-      .select("id, badge_name, badge_description, badge_icon, badge_tier, badge_category, required_points")
+      .select("id, badge_name, badge_description, badge_icon, badge_tier, badge_category, required_points, trigger_event")
       .eq("is_active", true)
       .order("required_points", { ascending: true }),
   ])
+  // WAVE 155 (155C): a milestone badge whose reason no live rule awards is shown UNAVAILABLE, never as earnable.
+  const { badgeTriggerEarnable } = await import("@/lib/gamification/award-points")
 
   // A refused read is not an empty catalog — say which read failed.
   if (catalogError) return { ok: false, badges: [], error: `Could not load the badge catalog: ${catalogError.message}` }
@@ -124,6 +130,8 @@ export async function getAgentBadges(agentId: string): Promise<{
       requiredPoints: Number(b.required_points) || 0,
       earned: earnedAtByBadge.has(b.id),
       earnedAt: earnedAtByBadge.get(b.id) ?? null,
+      milestone: (b.trigger_event ?? "points_threshold") !== "points_threshold",
+      available: badgeTriggerEarnable(b.trigger_event ?? null),
     })),
   }
 }

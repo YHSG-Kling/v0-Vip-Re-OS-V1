@@ -23,9 +23,9 @@ import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { z } from "zod"
-import {
-  incrementFeatureUsage,
-} from "@/lib/kernel"
+// The usage counter is imported from its own module, not the kernel barrel: the barrel drags every kernel surface into
+// this action's graph (and through the price-reduction sheet into the heaviest page) for one function.
+import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { mayUseFeature } from "@/lib/billing/billing-access"
 // TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
 // imported here and never called. The wire is real but it is made ONE LAYER

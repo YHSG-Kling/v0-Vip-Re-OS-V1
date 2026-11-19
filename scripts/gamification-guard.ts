@@ -21,11 +21,11 @@ import { stripComments } from "./strip-comments"
 import { KernelEvent } from "../lib/kernel/events"
 import {
   POINT_VALUES, LIFECYCLE_AWARD_RULES, planLifecycleAwards, awardAgentPointsOnce, isUuid, type LedgerCapableClient,
-  POINT_EARNING_ACTIONS,
+  POINT_EARNING_ACTIONS, badgeTriggerEarnable,
 } from "../lib/gamification/award-points"
 import { AWARD_CENSUS } from "../lib/gamification/award-census"
 import { REFERRAL_TERMINAL_WON } from "../lib/referrals/referral-status"
-import { awardLifecycleMilestones, awardBadgeToAgent } from "../lib/gamification/lifecycle-awards"
+import { awardLifecycleMilestones, awardBadgeToAgent, recordOpenHouseHeld, canonicalHeldOpenHouseId, appointmentStage } from "../lib/gamification/lifecycle-awards"
 import { tierDistributionLine, tierForPoints } from "../lib/gamification/tiers"
 import { isUnderStrain, strainedFromRows } from "../lib/gamification/strain"
 import { anniversaryYearsOn, ANNIVERSARY_WINDOW_DAYS, anniversaryStartDate } from "../lib/gamification/work-anniversaries"
@@ -46,9 +46,14 @@ function pureLayer() {
   check("every rule names a real KernelEvent", LIFECYCLE_AWARD_RULES.every((r) => events.has(r.event)))
   check("every rule's reason has a POINT_VALUE > 0", LIFECYCLE_AWARD_RULES.every((r) => (POINT_VALUES as Record<string, number>)[r.reason] > 0))
   const covered = (e: string) => LIFECYCLE_AWARD_RULES.some((r) => r.event === e)
-  check("agent lifecycle covered: onboarding step + completion, certification, first contact, first appointment, close, CE, mentor, anniversary",
+  // RE-ASSERTED (wave 155, lane 155C — owner R3 "appt with a signed agreement"): the appointment moment moved from the
+  // BOOKING (ISA_APPOINTMENT_SCHEDULED, now uncovered on purpose) to the EXECUTED agreement; course completion (R1) and the
+  // held open house (R2) joined the covered list.
+  check("agent lifecycle covered: onboarding step + completion, certification, first contact, signed-agreement appointment, graded course pass, held open house, close, CE, mentor, anniversary — and a bare BOOKING is NOT",
     [KernelEvent.USER_ONBOARDING_STEP_COMPLETED, KernelEvent.USER_ONBOARDING_COMPLETED, KernelEvent.CERTIFICATION_AWARDED, KernelEvent.CONTACT_CREATED,
-     KernelEvent.ISA_APPOINTMENT_SCHEDULED, KernelEvent.TRANSACTION_CLOSED, KernelEvent.CE_COMPLETED, KernelEvent.MENTOR_SESSION_HELD, KernelEvent.AGENT_WORK_ANNIVERSARY].every(covered))
+     KernelEvent.LISTING_AGREEMENT_SIGNED, KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, KernelEvent.TRAINING_COURSE_COMPLETED, KernelEvent.LISTING_OPEN_HOUSE_COMPLETED,
+     KernelEvent.TRANSACTION_CLOSED, KernelEvent.CE_COMPLETED, KernelEvent.MENTOR_SESSION_HELD, KernelEvent.AGENT_WORK_ANNIVERSARY].every(covered) &&
+      !covered(KernelEvent.ISA_APPOINTMENT_SCHEDULED))
   // RE-ASSERTED (wave 154, lane 154E): REFERRAL_RECEIVED left the covered list ON PURPOSE — createReferral is a seat typing
   // its own record (the fabricated-achievement shape). The referral earns on its evidenced OUTCOME; a client review is added.
   check("customer lifecycle covered: kept anniversary touch, referral converted (evidenced), client review, repeat client — and a bare referral entry is NOT",
@@ -148,9 +153,12 @@ function memoryClient(seed: Record<string, Row[]>) {
     let limitN: number | null = null
     let inserted: Row[] | null = null
     let joinSel: string | null = null
+    // WAVE 155 (155C): an UPDATE applies its patch to the matched rows when the query runs and returns them (`.select()`).
+    let patch: Row | null = null
     const run = () => {
       if (refuseRead === table) return { data: null, error: { message: `refused ${table}` } }
       const rows = (inserted ?? t(table)).filter((r) => filters.every((f) => matches(r, f)))
+      if (patch) { for (const r of rows) Object.assign(r, patch); patch = null }
       const out = rows.map((r) => {
         if (joinSel && table === "agent_badges") {
           const b = t("gamification_badges").find((g) => g.id === r.badge_id)
@@ -169,6 +177,7 @@ function memoryClient(seed: Record<string, Row[]>) {
       or(expr: string) { filters.push({ kind: "or", terms: expr.split(",").map((s) => { const [c, op, v] = s.split("."); return [c, op, v] as [string, string, string] }) }); return api },
       order() { return api },
       limit(n: number) { limitN = n; return api },
+      update(p: Row) { patch = { ...p }; return api },
       insert(rows: Row | Row[]) {
         const list = (Array.isArray(rows) ? rows : [rows]).map((r, i) => ({ id: U(900 + t(table).length + i), created_at: new Date().toISOString(), ...r }))
         if (table === "agent_badges") {
@@ -369,7 +378,16 @@ function wiringLayer() {
   const m705 = raw("supabase/migrations/m705-lifecycle-milestone-badges.sql")
   const seeded = Array.from(m705.matchAll(/,\s*0,\s*'([A-Z_]+)',\s*true\)/g)).map((m) => m[1])
   const ruleReasons = new Set(LIFECYCLE_AWARD_RULES.map((r) => r.reason as string))
-  check(`m705 seeds ${seeded.length} milestone badges and every trigger_event is a reason the reactor awards`, seeded.length >= 9 && seeded.every((s) => ruleReasons.has(s) && s in POINT_VALUES))
+  // RE-ASSERTED (wave 155, 155C): a seeded milestone whose reason the owner retired (FIRST_APPOINTMENT — a booking, R3) stays
+  // in the live catalog until the owner retargets it, so the rule is: every seed is EITHER awarded by the reactor OR rendered
+  // unavailable on the Motivation page (badgeTriggerEarnable false → "Not available to earn right now"). Never advertised.
+  const retiredSeeds = seeded.filter((s) => !ruleReasons.has(s))
+  check(`m705 seeds ${seeded.length} milestone badges; every trigger_event is a reason the reactor awards, or is shown unavailable (${retiredSeeds.join(", ") || "none"})`,
+    seeded.length >= 9 && seeded.every((s) => s in POINT_VALUES && (ruleReasons.has(s) ? badgeTriggerEarnable(s) : !badgeTriggerEarnable(s))) &&
+      /available: badgeTriggerEarnable\(b\.trigger_event \?\? null\)/.test(src("app/actions/gamification.ts")) &&
+      /badge\.available === false \?/.test(src("app/dashboard/motivation/motivation-client.tsx")))
+  check("POSITIVE CONTROL: the retired booking badge reads unavailable, a live milestone and a points threshold read earnable",
+    !badgeTriggerEarnable("FIRST_APPOINTMENT") && badgeTriggerEarnable("FIRST_CLOSE") && badgeTriggerEarnable(null) && badgeTriggerEarnable("points_threshold") && badgeTriggerEarnable("CHALLENGE_PRIZE"))
   check("m705 opens with a status header", /^-- ──/.test(m705))
   // WAVE 153 (lane 153I): the threshold awarder moved to lifecycle-awards.ts awardThresholdBadges — the rule follows it.
   check("threshold badges and milestone badges never overlap: the threshold awarder filters to points_threshold", /trigger_event \?\? "points_threshold"\) === "points_threshold"/.test(src("lib/gamification/lifecycle-awards.ts")) && /export async function awardThresholdBadges/.test(src("lib/gamification/lifecycle-awards.ts")))
@@ -458,7 +476,8 @@ async function verifiedOutcomesLayer() {
   const { POINT_EARNING_ACTIONS } = await import("../lib/gamification/award-points")
   const ruleReasons = new Set(LIFECYCLE_AWARD_RULES.map((r) => r.reason as string))
   check(`every action /dashboard/motivation advertises has a live award rule (${POINT_EARNING_ACTIONS.length} advertised)`, POINT_EARNING_ACTIONS.length > 0 && POINT_EARNING_ACTIONS.every((a) => ruleReasons.has(a.reason)))
-  check("POSITIVE CONTROL: the label catalogue still names an unawarded action (training), so the filter is doing work", /reason: "TRAINING_COMPLETED"/.test(src("lib/gamification/award-points.ts")) && !ruleReasons.has("TRAINING_COMPLETED") && !POINT_EARNING_ACTIONS.some((a) => a.reason === "TRAINING_COMPLETED"))
+  // RE-ASSERTED (wave 155, 155C): training became a verified award (R1); the control moves to a still-unawarded action.
+  check("POSITIVE CONTROL: the label catalogue still names an unawarded action (vendor review), so the filter is doing work", /reason: "VENDOR_REVIEW_WRITTEN"/.test(src("lib/gamification/award-points.ts")) && !ruleReasons.has("VENDOR_REVIEW_WRITTEN") && !POINT_EARNING_ACTIONS.some((a) => a.reason === "VENDOR_REVIEW_WRITTEN"))
 }
 
 // ─── WAVE 154 (lane 154E) — THE AWARD PATH, END TO END (all SIMULATED) ────────
@@ -510,16 +529,23 @@ function awardTableLayer() {
   check("no reason is ADVERTISED BUT UNEARNABLE", count(STATE.LIE) === 0)
   check("every advertised reason is a reactor award on a VERIFIED outcome (never a booking, never a seat's own assertion)",
     POINT_EARNING_ACTIONS.every((a) => AWARD_CENSUS.some((c) => c.reason === a.reason && c.path === "reactor" && c.trust === "verified_outcome")))
-  check("every EMITTER NOT WIRED reason is self-attested and carries an owner decision (an event exists, deliberately unrewarded)",
-    Object.entries(states).filter(([, s]) => s === STATE.NOT_WIRED).every(([r]) => { const c = AWARD_CENSUS.find((x) => x.reason === r)!; return c.trust === "self_attested" && !!c.ownerDecision }))
+  // RE-ASSERTED (wave 155, 155C): an event can also be deliberately unrewarded because the owner RETIRED it (FIRST_APPOINTMENT
+  // — a booking, R3). Either way it is never advertised and it says why (an owner decision, or a RETIRED trigger).
+  check("every EMITTER NOT WIRED reason is self-attested or a retired booking, and says why (owner decision or RETIRED) — an event exists, deliberately unrewarded",
+    Object.entries(states).filter(([, s]) => s === STATE.NOT_WIRED).every(([r]) => { const c = AWARD_CENSUS.find((x) => x.reason === r)!
+      return (c.trust === "self_attested" && !!c.ownerDecision) || (c.trust === "booking_only" && /^RETIRED/.test(c.trigger)) }))
   check("the verified showing and the education milestones are advertised with their POINT_VALUES (SHOWING_COMPLETED, CERTIFICATION_EARNED, CE_COMPLETED)",
     ["SHOWING_COMPLETED", "CERTIFICATION_EARNED", "CE_COMPLETED"].every((r) => advertised.has(r)))
-  check("unimplemented / untrusted reasons are NOT advertised: TRAINING_COMPLETED, OPEN_HOUSE_HOSTED, VENDOR_REVIEW_WRITTEN, FOLLOWUP_SENT, REFERRAL_CREATED, FIRST_APPOINTMENT",
-    ["TRAINING_COMPLETED", "OPEN_HOUSE_HOSTED", "VENDOR_REVIEW_WRITTEN", "FOLLOWUP_SENT", "REFERRAL_CREATED", "FIRST_APPOINTMENT"].every((r) => !advertised.has(r)))
-  // POSITIVE CONTROL: those reasons ARE in the label list — the derived filter is what keeps them off the page.
+  // RE-ASSERTED (wave 155, 155C): TRAINING_COMPLETED and OPEN_HOUSE_HOSTED left this list because the owner's rulings gave each a
+  // trusted event (R1 a graded pass, R2 a held open house) — the check stays derived: they are shown ONLY while their census row is
+  // a verified reactor award, and the four with no trusted event stay off the page.
+  check("untrusted reasons are NOT advertised (VENDOR_REVIEW_WRITTEN, FOLLOWUP_SENT, REFERRAL_CREATED, FIRST_APPOINTMENT); the owner-ruled three ARE, as verified reactor awards (TRAINING_COMPLETED, OPEN_HOUSE_HOSTED, SIGNED_AGREEMENT_APPOINTMENT)",
+    ["VENDOR_REVIEW_WRITTEN", "FOLLOWUP_SENT", "REFERRAL_CREATED", "FIRST_APPOINTMENT"].every((r) => !advertised.has(r)) &&
+      ["TRAINING_COMPLETED", "OPEN_HOUSE_HOSTED", "SIGNED_AGREEMENT_APPOINTMENT"].every((r) => advertised.has(r) && states[r] === STATE.WORKING))
+  // POSITIVE CONTROL: the hidden reasons ARE in the label list — the derived filter is what keeps them off the page.
   const awardSrc = src("lib/gamification/award-points.ts")
-  check("POSITIVE CONTROL: TRAINING_COMPLETED / OPEN_HOUSE_HOSTED still carry labels — the census filter, not a missing label, hides them",
-    /reason: "TRAINING_COMPLETED", label:/.test(awardSrc) && /reason: "OPEN_HOUSE_HOSTED", label:/.test(awardSrc))
+  check("POSITIVE CONTROL: VENDOR_REVIEW_WRITTEN / FOLLOWUP_SENT still carry labels — the census filter, not a missing label, hides them",
+    /reason: "VENDOR_REVIEW_WRITTEN", label:/.test(awardSrc) && /reason: "FOLLOWUP_SENT", label:/.test(awardSrc))
   check("POSITIVE CONTROL: the emitter finder reports a token that is not there", !src("lib/gamification/award-points.ts").includes("KernelEvent.NOT_A_REAL_EVENT_154E"))
   check("the Motivation page renders exactly POINT_EARNING_ACTIONS with POINT_VALUES (one list, one number)",
     /POINT_EARNING_ACTIONS\.map\(\(a\) =>/.test(src("app/dashboard/motivation/motivation-client.tsx")) && /POINT_VALUES\[a\.reason\]/.test(src("app/dashboard/motivation/motivation-client.tsx")))
@@ -659,6 +685,149 @@ async function awardPathLayer() {
   check("fatigue-aware protection stands: getAgentPointsAndTier still reads strain and returns underStrain", /isAgentUnderStrain\(supabase, agentId\)/.test(g) && /underStrain,/.test(g))
 }
 
+// ─── WAVE 155 (lane 155C) — THE OWNER'S RULINGS R2 + R3, END TO END (all SIMULATED) ─────────────────────────────────────
+// "leave open house count" · "appt with a signed agreement". Event → evidence → award_agent_points_once → agent_points_log →
+// stored total → milestone + threshold badge → tier → board → the team lead's board, against the in-memory client; the held
+// writer runs for real with its emitter injected as the reactor hook (the production emitter is the kernel's, server-only).
+async function ownerRulingsLayer() {
+  console.log("\n[155C · R2 open house HELD count + R3 signed-agreement appointment + C4 reconciliation — SIMULATED]")
+  const day = 86_400_000, nowMs = Date.now()
+  const iso = (ms: number) => new Date(ms).toISOString()
+  const date = (ms: number) => iso(ms).slice(0, 10)
+  const BRK_B = U(8), T1 = U(70), T2 = U(71)
+  const L1 = U(100), L2 = U(101), L3 = U(102), SELLER = U(110), BUYER = U(111), BUYER2 = U(112)
+  const CAL1 = U(120), CAL_B = U(121), CAL_FUT = U(122), CAL_L3 = U(123)
+  const LA1 = U(130), LA2 = U(131), LA3 = U(132), BBA1 = U(140), BBA2 = U(141), BBA_WET = U(142), BBA_FUT = U(143)
+  const OH1 = U(150), OH1_DUP = U(151), OH_CANCEL = U(152), OH_DRAFT = U(153), OH2 = U(154), OH_SWEEP = U(155), OH_SWEEP2 = U(156), OH_FUTURE = U(157), OH_WEBINAR = U(158)
+  const B_OH = U(160), B_SA = U(161), B_T = U(162)
+  const oh = (id: string, over: Row) => ({ id, brokerage_id: BRK, listing_id: L1, event_date: date(nowMs - 3 * day), event_type: "open_house", status: "scheduled", cancelled_at: null, created_at: iso(nowMs - 20 * day), agent_id: AGENT, ...over })
+  const seed = () => ({
+    agents: [{ id: AGENT, brokerage_id: BRK, user_id: U(5), team_id: T1, gamification_points: 0 }, { id: AGENT2, brokerage_id: BRK, user_id: U(6), team_id: T2, gamification_points: 0 },
+      { id: U(3), brokerage_id: BRK_B, user_id: U(7), team_id: null, gamification_points: 0 }],
+    listings: [{ id: L1, brokerage_id: BRK, agent_id: AGENT, appointment_event_id: CAL1, seller_contact_id: SELLER }, { id: L2, brokerage_id: BRK, agent_id: AGENT, appointment_event_id: null, seller_contact_id: null },
+      { id: L3, brokerage_id: BRK, agent_id: AGENT, appointment_event_id: CAL_L3, seller_contact_id: null }],
+    calendar_events: [
+      { id: CAL1, brokerage_id: BRK, entity_type: "listing", entity_id: L1, status: "completed", start_at: iso(nowMs - 15 * day), agent_user_id: U(5) },
+      { id: CAL_L3, brokerage_id: BRK, entity_type: "listing", entity_id: L3, status: "completed", start_at: iso(nowMs - 15 * day), agent_user_id: U(5) },
+      { id: CAL_B, brokerage_id: BRK, entity_type: "contact", entity_id: BUYER, status: "scheduled", start_at: iso(nowMs - 12 * day), agent_user_id: U(6) },
+      { id: CAL_FUT, brokerage_id: BRK, entity_type: "contact", entity_id: BUYER2, status: "scheduled", start_at: iso(nowMs + 5 * day), agent_user_id: U(6) },
+    ],
+    listing_agreements: [
+      { id: LA1, brokerage_id: BRK, listing_id: L1, esign_status: "fully_signed", seller_signed_at: iso(nowMs - 10 * day), agent_signed_at: iso(nowMs - 10 * day), compliance_passed: true, fully_executed_at: iso(nowMs - 10 * day), created_at: iso(nowMs - 11 * day) },
+      { id: LA2, brokerage_id: BRK, listing_id: L2, esign_status: "fully_signed", seller_signed_at: iso(nowMs - 10 * day), agent_signed_at: iso(nowMs - 10 * day), compliance_passed: true, fully_executed_at: iso(nowMs - 10 * day), created_at: iso(nowMs - 11 * day) },
+      { id: LA3, brokerage_id: BRK, listing_id: L3, esign_status: "sent", seller_signed_at: null, agent_signed_at: null, compliance_passed: null, fully_executed_at: null, created_at: iso(nowMs - 11 * day) },
+    ],
+    buyer_broker_agreements: [
+      { id: BBA1, brokerage_id: BRK, agent_id: AGENT2, buyer_contact_id: BUYER, status: "superseded", signed_at: iso(nowMs - 9 * day), signed_method: "docusign", signed_document_url: null, superseded_by: BBA2 },
+      { id: BBA2, brokerage_id: BRK, agent_id: AGENT2, buyer_contact_id: BUYER, status: "active", signed_at: iso(nowMs - 2 * day), signed_method: "docusign", signed_document_url: null, superseded_by: null },
+      { id: BBA_WET, brokerage_id: BRK, agent_id: AGENT2, buyer_contact_id: BUYER, status: "active", signed_at: iso(nowMs - 1 * day), signed_method: "wet_signature", signed_document_url: null, superseded_by: null },
+      { id: BBA_FUT, brokerage_id: BRK, agent_id: AGENT2, buyer_contact_id: BUYER2, status: "active", signed_at: iso(nowMs - 1 * day), signed_method: "click_through", signed_document_url: null, superseded_by: null },
+    ],
+    open_house_events: [oh(OH1, {}), oh(OH1_DUP, { created_at: iso(nowMs - 19 * day) }), oh(OH_CANCEL, { status: "cancelled", cancelled_at: iso(nowMs - 5 * day), event_date: date(nowMs - 2 * day) }),
+      oh(OH_DRAFT, { status: "draft", event_date: date(nowMs - 4 * day) }), oh(OH2, { event_date: date(nowMs - 1 * day) }), oh(OH_SWEEP, { listing_id: L2 }), oh(OH_SWEEP2, { listing_id: L3 }),
+      oh(OH_FUTURE, { event_date: date(nowMs + 2 * day) }), oh(OH_WEBINAR, { event_type: "webinar", listing_id: null, event_date: date(nowMs - 6 * day) })],
+    open_house_attendees: [{ id: U(170), brokerage_id: BRK, event_id: OH_SWEEP2 }],
+    event_attendance_evidence: [], open_house_rsvp_tracking: [{ id: U(171), brokerage_id: BRK, event_id: OH_SWEEP, rsvp_status: "yes" }],
+    gamification_badges: [
+      { id: B_OH, brokerage_id: BRK, badge_name: "Open House Host", badge_tier: "bronze", trigger_event: "OPEN_HOUSE_HOSTED", is_active: true, required_points: 0 },
+      { id: B_SA, brokerage_id: BRK, badge_name: "Signed From an Appointment", badge_tier: "silver", trigger_event: "SIGNED_AGREEMENT_APPOINTMENT", is_active: true, required_points: 0 },
+      { id: B_T, brokerage_id: null, badge_name: "Seventy-five", badge_tier: "bronze", trigger_event: "points_threshold", is_active: true, required_points: 75 },
+    ],
+  })
+  const m = memoryClient(seed())
+  const ledgerAgrees = () => m.tables.agents.every((a) => (a.gamification_points ?? 0) === (m.tables.agent_points_log ?? []).filter((l) => l.agent_id === a.id).reduce((s, l) => s + Number(l.points), 0))
+  const rows = (reason: string) => (m.tables.agent_points_log ?? []).filter((l) => l.reason === reason)
+  let emits = 0
+  const reactorEmit = async (e: { brokerageId: string; eventId: string; metadata: Record<string, unknown> }) => {
+    emits++
+    await awardLifecycleMilestones(m, { event: KernelEvent.LISTING_OPEN_HOUSE_COMPLETED, brokerageId: e.brokerageId, entityType: "open_house_event", entityId: e.eventId, metadata: e.metadata })
+    return { error: null }
+  }
+  const hold = (eventId: string, via: "host_ended" | "post_event_sweep" = "host_ended", brokerageId: string | null = BRK) => recordOpenHouseHeld(m, { eventId, brokerageId, via, emit: reactorEmit })
+  const status = (id: string) => m.tables.open_house_events.find((r) => r.id === id)?.status
+
+  // R2 — the count.
+  const h1 = await hold(OH1)
+  check(`one held open house (host ended it) increments the open-house count by exactly one: OPEN_HOUSE_HOSTED ${POINT_VALUES.OPEN_HOUSE_HOSTED} to the host, keyed on that open house`,
+    h1.ok && h1.held && h1.emitted && emits === 1 && rows("OPEN_HOUSE_HOSTED").length === 1 && rows("OPEN_HOUSE_HOSTED")[0].agent_id === AGENT && rows("OPEN_HOUSE_HOSTED")[0].reference_id === OH1 && status(OH1) === "completed")
+  m.tables.open_house_attendees.push(...[1, 2, 3, 4, 5].map((i) => ({ id: U(180 + i), brokerage_id: BRK, event_id: OH1 })))
+  const signins = await awardLifecycleMilestones(m, { event: KernelEvent.OPEN_HOUSE_ATTENDEE_CAPTURED, brokerageId: BRK, entityType: "listing", entityId: L1, metadata: { attendee_id: U(181) } })
+  check("five visitor sign-ins on that open house add ZERO to the count (sign-ins stay a separate analytic)", signins.awarded.length === 0 && rows("OPEN_HOUSE_HOSTED").length === 1)
+  const replay = await hold(OH1)
+  check("REWARD-005: ending the same open house again (a replay) emits nothing and awards nothing", replay.ok && replay.alreadyCompleted && !replay.held && emits === 1 && rows("OPEN_HOUSE_HOSTED").length === 1)
+  const dup = await hold(OH1_DUP)
+  check("a DUPLICATE calendar row of the same open house (same listing + date) is held but counts zero — its once-key is the canonical row",
+    dup.ok && dup.held && rows("OPEN_HOUSE_HOSTED").length === 1)
+  const cancelled = await hold(OH_CANCEL), draft = await hold(OH_DRAFT)
+  check("a CANCELLED open house is refused and stays cancelled; a DRAFT is refused; neither emits nor counts",
+    !cancelled.ok && /cancelled/i.test(cancelled.error) && status(OH_CANCEL) === "cancelled" && !draft.ok && status(OH_DRAFT) === "draft" && emits === 2 && rows("OPEN_HOUSE_HOSTED").length === 1)
+  const rsvp = await awardLifecycleMilestones(m, { event: KernelEvent.OPEN_HOUSE_SCHEDULED, brokerageId: BRK, entityType: "listing_stage_machine", entityId: L1 })
+  const sweepNoEvidence = await hold(OH_SWEEP, "post_event_sweep", null)
+  check("an RSVP-only open house never counts: the scheduled event awards nothing, and the post-event sweep closes an RSVP-only event (no sign-in) WITHOUT counting it",
+    rsvp.awarded.length === 0 && sweepNoEvidence.ok && !sweepNoEvidence.held && /no sign-in/.test(sweepNoEvidence.reason ?? "") && rows("OPEN_HOUSE_HOSTED").length === 1)
+  const sweepSignin = await hold(OH_SWEEP2, "post_event_sweep", null)
+  const second = await hold(OH2)
+  check("a sweep-closed open house WITH a sign-in, and a second real open house on another date, each add one (count = 3 distinct listing + date identities)",
+    sweepSignin.ok && sweepSignin.held && second.ok && second.held && rows("OPEN_HOUSE_HOSTED").length === 3)
+  const future = await hold(OH_FUTURE), webinar = await hold(OH_WEBINAR)
+  check("a future-dated open house cannot be held early; a webinar (no listing) is closed but is not an open-house count",
+    !future.ok && status(OH_FUTURE) === "scheduled" && webinar.ok && !webinar.held && rows("OPEN_HOUSE_HOSTED").length === 3)
+  const forgedHeld = await awardLifecycleMilestones(m, { event: KernelEvent.LISTING_OPEN_HOUSE_COMPLETED, brokerageId: BRK, entityType: "open_house_event", entityId: OH_FUTURE, metadata: { agent_id: AGENT2 } })
+  const stageEmit = await awardLifecycleMilestones(m, { event: KernelEvent.LISTING_OPEN_HOUSE_COMPLETED, brokerageId: BRK, entityType: "listing_stage_machine", entityId: L1, metadata: { attendee_count: 40 } })
+  check("a forged held event for an open house that was not held awards nothing; the stage machine's typed-attendee-count emit never earns",
+    forgedHeld.awarded.length === 0 && forgedHeld.refused.some((x) => /OPEN_HOUSE_HOSTED: open house/.test(x)) && stageEmit.awarded.length === 0 && rows("OPEN_HOUSE_HOSTED").length === 3)
+  const crossOh = await hold(OH2, "host_ended", BRK_B)
+  check("tenant B cannot hold (or credit) tenant A's open house", !crossOh.ok && rows("OPEN_HOUSE_HOSTED").length === 3)
+  const pureCanon = canonicalHeldOpenHouseId([oh(U(1), { status: "completed", created_at: "2026-01-02" }), oh(U(2), { status: "completed", created_at: "2026-01-01" }), oh(U(4), { status: "cancelled", created_at: "2025-01-01" })], { listing_id: L1, event_date: date(nowMs - 3 * day) })
+  check("PURE identity rule: the canonical held row is the earliest completed one; a cancelled row is never canonical", pureCanon === U(2))
+
+  // R3 — appointment with a signed agreement.
+  const now = new Date(nowMs)
+  check("PURE: booked (future), held (past, no agreement), agreement_executed (past, same agent, before the signature) are three different stages; a cancelled one is booked-at-best",
+    appointmentStage({ status: "scheduled", start_at: iso(nowMs + day), agent_user_id: U(5) }, { now, agentUserId: U(5), executedAt: iso(nowMs) }) === "booked" &&
+      appointmentStage({ status: "completed", start_at: iso(nowMs - day), agent_user_id: U(5) }, { now, agentUserId: U(5), executedAt: null }) === "held" &&
+      appointmentStage({ status: "completed", start_at: iso(nowMs - 2 * day), agent_user_id: U(5) }, { now, agentUserId: U(5), executedAt: iso(nowMs - day) }) === "agreement_executed" &&
+      appointmentStage({ status: "completed", start_at: iso(nowMs - 2 * day), agent_user_id: U(6) }, { now, agentUserId: U(5), executedAt: iso(nowMs - day) }) === "held" &&
+      appointmentStage({ status: "cancelled", start_at: iso(nowMs - 2 * day), agent_user_id: U(5) }, { now, agentUserId: U(5), executedAt: iso(nowMs - day) }) === "booked")
+  const booked = await awardLifecycleMilestones(m, { event: KernelEvent.ISA_APPOINTMENT_SCHEDULED, brokerageId: BRK, entityType: "contact", entityId: BUYER2, metadata: { agent_id: AGENT } })
+  check("REWARD-003: a BOOKED appointment with no executed agreement earns nothing (the booking rule is retired)", booked.awarded.length === 0 && rows("FIRST_APPOINTMENT").length === 0 && rows("SIGNED_AGREEMENT_APPOINTMENT").length === 0)
+  const la = await awardLifecycleMilestones(m, { event: KernelEvent.LISTING_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "listing_stage_machine", entityId: L1, metadata: { agent_id: AGENT2 } })
+  check(`an EXECUTED listing agreement after the agent's held listing appointment earns SIGNED_AGREEMENT_APPOINTMENT ${POINT_VALUES.SIGNED_AGREEMENT_APPOINTMENT} to the LISTING agent (a payload agent_id is ignored), keyed on the agreement`,
+    la.awarded.length === 1 && la.awarded[0].agentId === AGENT && rows("SIGNED_AGREEMENT_APPOINTMENT")[0]?.reference_id === LA1)
+  const laReplay = await awardLifecycleMilestones(m, { event: KernelEvent.LISTING_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "listing_stage_machine", entityId: L1 })
+  check("REWARD-005: the replayed / renamed agreement event awards nothing more", laReplay.awarded.length === 0 && laReplay.alreadyAwarded === 1 && rows("SIGNED_AGREEMENT_APPOINTMENT").length === 1)
+  const noAppt = await awardLifecycleMilestones(m, { event: KernelEvent.LISTING_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "listing_stage_machine", entityId: L2 })
+  const unsigned = await awardLifecycleMilestones(m, { event: KernelEvent.LISTING_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "listing_stage_machine", entityId: L3 })
+  check("an executed agreement with NO appointment behind it earns nothing; a held appointment whose agreement is only SENT (unsigned) earns nothing",
+    noAppt.awarded.length === 0 && unsigned.awarded.length === 0 && unsigned.refused.some((x) => /a booking alone earns nothing/.test(x)))
+  const bba = await awardLifecycleMilestones(m, { event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "buyer_broker_agreement", entityId: BBA2 })
+  const bbaOld = await awardLifecycleMilestones(m, { event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "buyer_broker_agreement", entityId: BBA1 })
+  check("a buyer agreement re-signed as a CORRECTION pays once: the award is keyed on the ROOT of the supersede chain, so the original and the correction land one row",
+    bba.awarded.length === 1 && bba.awarded[0].agentId === AGENT2 && bbaOld.awarded.length === 0 && rows("SIGNED_AGREEMENT_APPOINTMENT").filter((r) => r.agent_id === AGENT2).length === 1 &&
+      rows("SIGNED_AGREEMENT_APPOINTMENT").some((r) => r.reference_id === BBA1))
+  const wet = await awardLifecycleMilestones(m, { event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "buyer_broker_agreement", entityId: BBA_WET })
+  const fut = await awardLifecycleMilestones(m, { event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "buyer_broker_agreement", entityId: BBA_FUT })
+  check("a wet signature the agent merely RECORDS (no signed document) is not evidence; a signed agreement whose only appointment is still in the future earns nothing",
+    wet.awarded.length === 0 && fut.awarded.length === 0)
+  const crossLa = await awardLifecycleMilestones(memoryClient(seed()), { event: KernelEvent.LISTING_AGREEMENT_SIGNED, brokerageId: BRK_B, entityType: "listing_stage_machine", entityId: L1 })
+  check("tenant B naming tenant A's listing agreement credits nobody", crossLa.awarded.length === 0)
+
+  // C4 — the same outcome, read everywhere.
+  const ag = (id: string) => m.tables.agents.find((a) => a.id === id)!
+  const expectA = POINT_VALUES.OPEN_HOUSE_HOSTED * 3 + POINT_VALUES.SIGNED_AGREEMENT_APPOINTMENT
+  check(`ledger = balance: AGENT ${ag(AGENT).gamification_points} = 3 open houses + 1 signed-agreement appointment (${expectA}); every agent's total = SUM(agent_points_log)`,
+    ag(AGENT).gamification_points === expectA && ag(AGENT2).gamification_points === POINT_VALUES.SIGNED_AGREEMENT_APPOINTMENT && ledgerAgrees())
+  const badgesOf = (id: string) => m.tables.agent_badges.filter((b) => b.agent_id === id).map((b) => b.badge_id).sort()
+  check("milestone badges once each (Open House Host, Signed From an Appointment), the 75-point threshold badge once when the stored total crossed it",
+    JSON.stringify(badgesOf(AGENT)) === JSON.stringify([B_OH, B_SA, B_T].sort()) && JSON.stringify(badgesOf(AGENT2)) === JSON.stringify([B_SA]))
+  check("tier reads the same stored total", tierForPoints(ag(AGENT).gamification_points) === tierForPoints(expectA))
+  // The board readers rank on agents.gamification_points (lifetimePoints — asserted on getLeaderboard's source above); the team
+  // lead's board is the same read narrowed to their team. SIMULATED over the in-memory rows.
+  const board = (team: string | null) => m.tables.agents.filter((a) => a.brokerage_id === BRK && (team === null || a.team_id === team)).sort((x, y) => y.gamification_points - x.gamification_points).map((a) => a.id)
+  check("the brokerage board ranks AGENT over AGENT2 on the stored totals; the T1 team lead's board shows only T1 (AGENT); tenant B's agent is on neither",
+    JSON.stringify(board(null)) === JSON.stringify([AGENT, AGENT2]) && JSON.stringify(board(T1)) === JSON.stringify([AGENT]) && !board(null).includes(U(3)) && ag(U(3)).gamification_points === 0)
+}
+
 async function main() {
   pureLayer()
   await memoryLayer()
@@ -666,6 +835,7 @@ async function main() {
   awardTableLayer()
   await awardPathLayer()
   await verifiedOutcomesLayer()
+  await ownerRulingsLayer()
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ GAMIFICATION_FAIL\n" + fails.map((f) => `   - ${f}`).join("\n")); process.exit(1) }
   console.log(" ✅ GAMIFICATION_OK")

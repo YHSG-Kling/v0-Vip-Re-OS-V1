@@ -142,6 +142,8 @@ interface BadgeView {
   requiredPoints: number
   earned: boolean
   earnedAt: string | null
+  milestone?: boolean
+  available?: boolean
 }
 
 export function MotivationClient({
@@ -508,6 +510,10 @@ export function MotivationClient({
                       <p className="text-xs text-amber-600">
                         Earned {badge.earnedAt ? new Date(badge.earnedAt).toLocaleDateString() : ""}
                       </p>
+                    ) : badge.available === false ? (
+                      <p className="text-xs text-muted-foreground">Not available to earn right now</p>
+                    ) : badge.milestone ? (
+                      <p className="text-xs text-muted-foreground">Earned when the milestone happens</p>
                     ) : (
                       <div>
                         <Progress value={progress} className="h-1.5 mb-1" />

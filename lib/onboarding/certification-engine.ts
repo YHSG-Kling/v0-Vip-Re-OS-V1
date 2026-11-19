@@ -101,12 +101,13 @@ async function checkPlatformFundamentalsEligibility(
       .eq('completed', true)
 
     const completedIds = new Set((completedSteps || []).map(s => s.step_id))
-    
+
     for (const step of platformTourSteps) {
       if (!completedIds.has(step.id)) {
         missingRequirements.push(`Complete step: ${step.step_name || step.step_key}`)
       }
     }
+    await requireAttachedQuizzesPassed(supabase, agentId, platformTourSteps.map(s => s.id), missingRequirements)
   }
 
   // Requirement 2: All required platform_tour training videos watched >= 90%
@@ -140,6 +141,46 @@ async function checkPlatformFundamentalsEligibility(
   }
 }
 
+/**
+ * WAVE 155 (lane 155C — owner R1: "course needs to complete with quiz with acceptable passing %"). A certification whose
+ * steps carry an onboarding quiz is NOT earned by completing steps and watching videos (the watch percentage is self-posted):
+ * every attached quiz must hold a STORED attempt (agent_quiz_attempts, written only by the server grader submitQuizAttempt)
+ * whose score meets the quiz's own passing_score (resolveCoursePassingScore — the canonical 80 when the field is unusable).
+ * The stored `passed` flag is not trusted alone; the score is re-checked against the bar. A quiz with no valid question is
+ * NEVER an automatic pass — the certification says it cannot be completed yet. A refused read fails CLOSED (a missing
+ * requirement), never as "nothing required". A step with no quiz attached keeps its existing evidence rule (owner decision
+ * whether every certification must carry a quiz — lane 155C notes).
+ */
+async function requireAttachedQuizzesPassed(
+  supabase: ReturnType<typeof createServiceClient>,
+  agentId: string,
+  stepIds: string[],
+  missingRequirements: string[],
+): Promise<void> {
+  if (stepIds.length === 0) return
+  const { data: quizzes, error: quizErr } = await supabase
+    .from('onboarding_quizzes')
+    .select('id, quiz_name, passing_score, questions')
+    .in('step_id', stepIds)
+  if (quizErr) { missingRequirements.push(`Quiz requirements could not be checked (${quizErr.message}) — try again`); return }
+  const { resolveCoursePassingScore } = await import('@/lib/academy/quiz')
+  for (const quiz of (quizzes ?? []) as Array<{ id: string; quiz_name: string | null; passing_score: unknown; questions: unknown }>) {
+    const name = quiz.quiz_name || 'onboarding'
+    const valid = Array.isArray(quiz.questions) && quiz.questions.some((q) => !!q && typeof q === 'object' && (q as Record<string, unknown>).id != null && 'correctAnswer' in (q as Record<string, unknown>))
+    if (!valid) { missingRequirements.push(`The ${name} quiz has no valid questions yet, so this certification cannot be completed`); continue }
+    const bar = resolveCoursePassingScore(quiz)
+    const { data: passing, error: attemptErr } = await supabase
+      .from('agent_quiz_attempts')
+      .select('id')
+      .eq('agent_id', agentId)
+      .eq('quiz_id', quiz.id)
+      .gte('score', bar)
+      .limit(1)
+    if (attemptErr) { missingRequirements.push(`Your ${name} quiz attempts could not be read (${attemptErr.message}) — try again`); continue }
+    if ((passing ?? []).length === 0) missingRequirements.push(`Pass the ${name} quiz (${bar}% required)`)
+  }
+}
+
 async function checkComplianceBasicsEligibility(
   agentId: string,
   brokerageId: string,
@@ -170,6 +211,7 @@ async function checkComplianceBasicsEligibility(
         missingRequirements.push(`Complete acknowledgment: ${step.step_name || step.step_key}`)
       }
     }
+    await requireAttachedQuizzesPassed(supabase, agentId, complianceSteps.map(s => s.id), missingRequirements)
   } else {
     // If steps don't exist, still mark as requirements
     missingRequirements.push('Complete Fair Housing acknowledgment')

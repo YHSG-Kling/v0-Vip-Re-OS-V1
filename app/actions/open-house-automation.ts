@@ -938,9 +938,16 @@ export async function processEventFollowups(eventId: string, client?: any) {
   const supabase = client ?? await createClient()
 
   try {
-    // Mark event as completed
-    const { error: eventDoneErr } = await supabase.from("open_house_events").update({ status: "completed" }).eq("id", eventId)
-    if (eventDoneErr) console.error(`[open-house] event NOT marked completed: ${eventDoneErr.message}`)
+    // WAVE 155 (lane 155C — owner R2): mark the event held through THE ONE HELD WRITER. At base this was an unconditional
+    // `update({ status: "completed" })` and the post-event cron selects every event that is not yet completed — so a CANCELLED
+    // or DRAFT open house dated yesterday was flipped to completed. Now cancelled / draft are refused (and get no follow-ups),
+    // and the sweep counts an open house as held only with a sign-in or verified attendance on it.
+    const { recordOpenHouseHeld } = await import("@/lib/gamification/lifecycle-awards")
+    const held = await recordOpenHouseHeld(supabase, { eventId, brokerageId: null, via: "post_event_sweep" })
+    if (!held.ok) {
+      console.error(`[open-house] event ${eventId} not marked held: ${held.error}`)
+      if (/cancelled|draft/i.test(held.error)) return { success: false, error: held.error }
+    }
 
     // C22 (wave 148, lane 148H): an ONLINE event's attendance is settled before anyone is followed up — still-open Zoom sessions
     // closed at the meeting's end, the VERIFIED attendees filed as attendees (so the hand-off below sees them), registrants of a

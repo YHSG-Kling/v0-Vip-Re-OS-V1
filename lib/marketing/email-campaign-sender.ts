@@ -19,7 +19,8 @@
  *   · honest lifecycle: sending → sent with real counts; kernel event
  */
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { KernelEvent, processKernelEvent } from "@/lib/kernel"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 type Svc = any
 

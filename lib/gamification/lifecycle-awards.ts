@@ -11,6 +11,7 @@
 // Client Component.
 
 import { KernelEvent } from "@/lib/kernel/events"
+import { courseQuizReadiness, qualifyingPassedAttempt, readQuizAttempts, resolveCoursePassingScore } from "@/lib/academy/quiz"
 import {
   awardAgentPointsOnce,
   planLifecycleAwards,
@@ -83,6 +84,11 @@ async function resolveMilestoneAgents(
     }
     // WAVE 154 (154E): a client-authored review — the agent the review is OF (agent_reviews.agent_id, an agents.id).
     case "agent_review":        acting = await one("agent_reviews", "agent_id", p.entityId); break
+    // WAVE 155 (155C): the held open house's host (open_house_events.agent_id → agents), the listing's agent for an executed
+    // listing agreement (listings.agent_id → agents), the buyer agreement's agent (buyer_broker_agreements.agent_id → agents).
+    case "open_house_event":       acting = await one("open_house_events", "agent_id", p.entityId); break
+    case "listing_stage_machine":  acting = await one("listings", "agent_id", p.entityId); break
+    case "buyer_broker_agreement": acting = await one("buyer_broker_agreements", "agent_id", p.entityId); break
     case "contact":
       // REFERRAL_RECEIVED is emitted on the CONTACT with referral_id in metadata; the
       // earning agent is the referral's agent_id (who received it), not the contact's.
@@ -156,6 +162,239 @@ async function wonReferralAgentsForClose(db: LedgerCapableClient, brokerageId: s
   return [...new Set(((refs ?? []) as Array<{ agent_id?: string | null }>).map((x) => x.agent_id).filter(isUuid))]
 }
 
+// ─── WAVE 155 (lane 155C) — THE OWNER'S THREE RULINGS, AS EVIDENCE THE SERVER RE-READS ─────────────────────────────────
+// R1 "course needs to complete with quiz with acceptable passing %" · R2 "leave open house count" · R3 "appt with a signed
+// agreement". Each award below is planned only when one of these resolvers finds the evidence in the event's OWN tenant
+// (every read is `.eq("brokerage_id", …)`), so neither an event payload nor another tenant's row can earn.
+
+/** R1 — the persisted, graded pass behind TRAINING_COURSE_COMPLETED (entity learning_module), or null. */
+async function courseEvidence(db: LedgerCapableClient, brokerageId: string, moduleId: string, agentId: string): Promise<string | null> {
+  const { data: agent, error: agentErr } = await db.from("agents").select("id, user_id").eq("id", agentId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (agentErr) { console.error(`[lifecycle-gamification] course evidence: agent read refused: ${agentErr.message}`); return null }
+  const userId = (agent as { user_id?: string | null } | null)?.user_id
+  if (!isUuid(userId)) return null
+  const { data: mod, error: modErr } = await db.from("learning_modules").select("id, brokerage_id, required, quiz_questions").eq("id", moduleId).maybeSingle()
+  if (modErr) { console.error(`[lifecycle-gamification] course evidence: module read refused: ${modErr.message}`); return null }
+  const m = mod as { brokerage_id?: string | null; required?: unknown; quiz_questions?: unknown } | null
+  if (!m || (m.brokerage_id && m.brokerage_id !== brokerageId)) return null
+  if (courseQuizReadiness(m.required, m.quiz_questions) !== "quiz_ready") return null
+  const { data: asg, error: asgErr } = await db.from("learning_assignments").select("status, signal_metadata")
+    .eq("module_id", moduleId).eq("agent_user_id", userId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (asgErr) { console.error(`[lifecycle-gamification] course evidence: assignment read refused: ${asgErr.message}`); return null }
+  const a = asg as { status?: string | null; signal_metadata?: unknown } | null
+  if (a?.status !== "completed") return null
+  return qualifyingPassedAttempt(readQuizAttempts(a.signal_metadata), resolveCoursePassingScore(m as { passing_score?: unknown })) ? moduleId : null
+}
+
+/** R2 — the event types that ARE an open house of a listing (open_house_events.event_type CHECK; webinars, client events and
+ *  education sessions are other events, never this count). */
+export const OPEN_HOUSE_COUNTABLE_TYPES: readonly string[] = ["open_house", "virtual_open_house", "broker_open"]
+/** The states an open house can be HELD from. draft (never published) and cancelled never become held. */
+const OPEN_HOUSE_HELD_FROM: readonly string[] = ["scheduled", "active", "marketing"]
+
+interface OpenHouseRow { id: string; listing_id: string | null; event_date: string | null; event_type: string | null; status: string | null; cancelled_at: string | null; created_at: string | null; agent_id?: string | null }
+
+/**
+ * @proofSeam PURE — the open-house identity rule. Among the HELD rows of one listing on one date, the canonical one (earliest
+ * created, then lowest id). A duplicate calendar row of the same open house resolves to the same id, so it counts once.
+ */
+export function canonicalHeldOpenHouseId(rows: OpenHouseRow[], target: Pick<OpenHouseRow, "listing_id" | "event_date">): string | null {
+  const held = rows.filter((ev) => ev.status === "completed" && !ev.cancelled_at && OPEN_HOUSE_COUNTABLE_TYPES.includes(String(ev.event_type ?? "open_house")) &&
+    !!ev.listing_id && ev.listing_id === target.listing_id && ev.event_date === target.event_date)
+  held.sort((x, y) => String(x.created_at ?? "").localeCompare(String(y.created_at ?? "")) || x.id.localeCompare(y.id))
+  return held[0]?.id ?? null
+}
+
+/** R2 — the canonical held open house behind LISTING_OPEN_HOUSE_COMPLETED (entity open_house_event) + its host, or null. */
+async function openHouseEvidence(db: LedgerCapableClient, brokerageId: string, eventId: string, now: Date): Promise<{ referenceId: string; agentId: string } | null> {
+  const cols = "id, listing_id, event_date, event_type, status, cancelled_at, created_at, agent_id"
+  const { data: ev, error } = await db.from("open_house_events").select(cols).eq("id", eventId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) { console.error(`[lifecycle-gamification] open-house evidence read refused: ${error.message}`); return null }
+  const row = ev as OpenHouseRow | null
+  if (!row || row.status !== "completed" || row.cancelled_at || !row.listing_id || !row.event_date) return null
+  if (row.event_date > now.toISOString().slice(0, 10)) return null // not held before its date
+  const { data: siblings, error: sibErr } = await db.from("open_house_events").select(cols)
+    .eq("brokerage_id", brokerageId).eq("listing_id", row.listing_id).eq("event_date", row.event_date)
+  if (sibErr) { console.error(`[lifecycle-gamification] open-house identity read refused: ${sibErr.message}`); return null }
+  const canonical = canonicalHeldOpenHouseId((siblings ?? []) as OpenHouseRow[], row)
+  if (!canonical) return null
+  const host = ((siblings ?? []) as OpenHouseRow[]).find((r) => r.id === canonical)?.agent_id ?? row.agent_id
+  return isUuid(host) ? { referenceId: canonical, agentId: host } : null
+}
+
+export interface RecordOpenHouseHeldInput {
+  eventId: string
+  /** The session's tenant; null only for the platform sweep, which then uses the row's own tenant. */
+  brokerageId: string | null
+  /** host_ended = the host's End Event action (verified owner); post_event_sweep = the cron after the end time, which needs
+   *  attendance evidence (a sign-in, a verified attendance row or an attended RSVP) before the event counts as held. */
+  via: "host_ended" | "post_event_sweep"
+  actorUserId?: string | null
+  now?: Date
+  /** Emit seam (default: the kernel emitter — row + reactor fan-out). The proof injects a counting emitter. */
+  emit?: (e: { brokerageId: string; eventId: string; metadata: Record<string, unknown>; actorUserId: string | null }) => Promise<{ error: string | null }>
+}
+export type RecordOpenHouseHeldResult =
+  | { ok: true; held: boolean; alreadyCompleted: boolean; emitted: boolean; reason?: string }
+  | { ok: false; error: string }
+
+/**
+ * R2 — THE ONE OPEN-HOUSE HELD WRITER. Moves an open_house_events row to completed ONLY from scheduled / active / marketing
+ * (never from draft or cancelled — the post-event sweep used to flip a cancelled event to completed), and emits
+ * LISTING_OPEN_HOUSE_COMPLETED on entity open_house_event ONCE — on the call that made the transition, for a listing open
+ * house, on or after its date, with hosting evidence. A replay (already completed) emits nothing. Sign-ins stay a separate
+ * analytic: they are evidence the open house happened, never a second count.
+ */
+export async function recordOpenHouseHeld(db: LedgerCapableClient, input: RecordOpenHouseHeldInput): Promise<RecordOpenHouseHeldResult> {
+  const now = input.now ?? new Date()
+  let q = db.from("open_house_events").select("id, brokerage_id, listing_id, event_date, event_type, status, cancelled_at").eq("id", input.eventId)
+  if (input.brokerageId) q = q.eq("brokerage_id", input.brokerageId)
+  const { data: ev, error } = await q.maybeSingle()
+  if (error) return { ok: false, error: `open house read refused: ${error.message}` }
+  const row = ev as (OpenHouseRow & { brokerage_id: string | null }) | null
+  if (!row || !row.brokerage_id) return { ok: false, error: "Open house not found" }
+  if (row.status === "cancelled" || row.cancelled_at) return { ok: false, error: "A cancelled open house is never held" }
+  if (row.status === "draft") return { ok: false, error: "A draft open house was never published, so it cannot be held" }
+  if (row.status === "completed") return { ok: true, held: false, alreadyCompleted: true, emitted: false, reason: "already recorded as held — a replay adds nothing" }
+  if (!row.event_date || row.event_date > now.toISOString().slice(0, 10)) return { ok: false, error: "An open house can only be held on or after its date" }
+
+  const { data: moved, error: moveErr } = await db.from("open_house_events").update({ status: "completed" })
+    .eq("id", row.id).eq("brokerage_id", row.brokerage_id).in("status", OPEN_HOUSE_HELD_FROM as string[]).select("id")
+  if (moveErr) return { ok: false, error: `open house not marked held: ${moveErr.message}` }
+  if ((moved ?? []).length === 0) return { ok: true, held: false, alreadyCompleted: true, emitted: false, reason: "another writer recorded it first" }
+
+  if (!row.listing_id || !OPEN_HOUSE_COUNTABLE_TYPES.includes(String(row.event_type ?? "open_house"))) {
+    return { ok: true, held: false, alreadyCompleted: false, emitted: false, reason: `a ${row.event_type ?? "event"} without a listing is not an open-house count` }
+  }
+  if (input.via === "post_event_sweep") {
+    const evidence = await hostingEvidence(db, row.brokerage_id, row.id)
+    if (evidence === "refused") return { ok: true, held: false, alreadyCompleted: false, emitted: false, reason: "hosting evidence could not be read — not counted (fail closed)" }
+    if (!evidence) return { ok: true, held: false, alreadyCompleted: false, emitted: false, reason: "closed by the sweep with no sign-in or verified attendance — not counted as held" }
+  }
+
+  const metadata = { listing_id: row.listing_id, event_date: row.event_date, via: input.via }
+  const emit = input.emit ?? (async (e) => {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const r = await emitKernelEvent({
+      brokerageId: e.brokerageId, event: KernelEvent.LISTING_OPEN_HOUSE_COMPLETED, entityType: "open_house_event", entityId: e.eventId,
+      actorUserId: e.actorUserId, agentUserId: null, metadata: e.metadata, dedupeKey: `open-house-held-${e.eventId}`, dedupeWindowSec: 7 * 86_400,
+    })
+    return { error: r.error }
+  })
+  const emitted = await emit({ brokerageId: row.brokerage_id, eventId: row.id, metadata, actorUserId: input.actorUserId ?? null })
+  if (emitted.error) console.error(`[open-house-held] ${row.id} held but LISTING_OPEN_HOUSE_COMPLETED not recorded: ${emitted.error}`)
+  return { ok: true, held: true, alreadyCompleted: false, emitted: !emitted.error }
+}
+
+/** Was the open house actually hosted? A sign-in, a verified attendance row, or an attended RSVP. "refused" fails closed. */
+async function hostingEvidence(db: LedgerCapableClient, brokerageId: string, eventId: string): Promise<boolean | "refused"> {
+  const probes: Array<[string, (q: any) => any]> = [
+    ["open_house_attendees", (q) => q],
+    ["event_attendance_evidence", (q) => q],
+    ["open_house_rsvp_tracking", (q) => q.eq("rsvp_status", "attended")],
+  ]
+  for (const [table, narrow] of probes) {
+    const { data, error } = await narrow(db.from(table).select("id").eq("event_id", eventId).eq("brokerage_id", brokerageId)).limit(1)
+    if (error) return "refused"
+    if ((data ?? []).length > 0) return true
+  }
+  return false
+}
+
+/** R3 — calendar states that are not a genuine appointment (the calendar has no CHECK; these are the spellings in use). */
+const NOT_AN_APPOINTMENT = new Set(["cancelled", "canceled", "no_show", "declined"])
+
+export type AppointmentStage = "booked" | "held" | "agreement_executed"
+/**
+ * @proofSeam PURE — the four words of R3, kept apart. booked: on the calendar, not yet happened (or cancelled / no-show).
+ * held: it happened. agreement_executed: it happened, by this agent, before an executed agreement with the same client.
+ * Only agreement_executed earns SIGNED_AGREEMENT_APPOINTMENT.
+ */
+export function appointmentStage(
+  appt: { status?: string | null; start_at?: string | null; agent_user_id?: string | null },
+  ctx: { now: Date; agentUserId: string | null; executedAt: string | null },
+): AppointmentStage {
+  const start = appt.start_at ? Date.parse(appt.start_at) : NaN
+  if (NOT_AN_APPOINTMENT.has(String(appt.status ?? "").toLowerCase()) || !Number.isFinite(start) || start > ctx.now.getTime()) return "booked"
+  if (!ctx.executedAt || !ctx.agentUserId || appt.agent_user_id !== ctx.agentUserId) return "held"
+  return start <= Date.parse(ctx.executedAt) ? "agreement_executed" : "held"
+}
+
+/** A listing agreement is EXECUTED when both parties signed, compliance passed, and its e-sign state is an executed one. */
+const LISTING_EXECUTED_ESIGN = new Set(["fully_signed", "fully_executed", "compliance_approved"])
+/** A buyer agreement is EXECUTED when signed through a provider or the buyer's own click-through; a wet signature the agent
+ *  RECORDS counts only with the signed document attached (otherwise it is the agent's own assertion). */
+const BUYER_EXECUTED_STATUS = new Set(["active", "expired", "superseded"])
+
+async function agentUserIdOf(db: LedgerCapableClient, brokerageId: string, agentId: string): Promise<string | null> {
+  const { data, error } = await db.from("agents").select("user_id").eq("id", agentId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) { console.error(`[lifecycle-gamification] agent user read refused: ${error.message}`); return null }
+  const u = (data as { user_id?: string | null } | null)?.user_id
+  return isUuid(u) ? u : null
+}
+
+async function hasGenuineAppointment(db: LedgerCapableClient, brokerageId: string, probes: Array<{ col: string; val: string; entityType?: string }>, agentUserId: string, executedAt: string, now: Date): Promise<boolean> {
+  for (const p of probes) {
+    let q = db.from("calendar_events").select("id, status, start_at, agent_user_id").eq("brokerage_id", brokerageId).eq(p.col, p.val)
+    if (p.entityType) q = q.eq("entity_type", p.entityType)
+    const { data, error } = await q
+    if (error) { console.error(`[lifecycle-gamification] appointment read refused: ${error.message}`); return false }
+    if (((data ?? []) as Array<{ status?: string | null; start_at?: string | null; agent_user_id?: string | null }>)
+      .some((a) => appointmentStage(a, { now, agentUserId, executedAt }) === "agreement_executed")) return true
+  }
+  return false
+}
+
+/** R3 — LISTING_AGREEMENT_SIGNED (entity listing_stage_machine = the listing): the canonical executed listing agreement + its
+ *  agent, when a genuine appointment by that agent (the listing appointment, or one on the listing / the seller) preceded it. */
+async function listingAgreementEvidence(db: LedgerCapableClient, brokerageId: string, listingId: string, now: Date): Promise<{ referenceId: string; agentId: string } | null> {
+  const { data: listing, error } = await db.from("listings").select("id, agent_id, appointment_event_id, seller_contact_id").eq("id", listingId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) { console.error(`[lifecycle-gamification] listing read refused: ${error.message}`); return null }
+  const l = listing as { agent_id?: string | null; appointment_event_id?: string | null; seller_contact_id?: string | null } | null
+  if (!l || !isUuid(l.agent_id)) return null
+  const { data: agreements, error: agErr } = await db.from("listing_agreements")
+    .select("id, esign_status, seller_signed_at, agent_signed_at, compliance_passed, fully_executed_at, created_at")
+    .eq("listing_id", listingId).eq("brokerage_id", brokerageId)
+  if (agErr) { console.error(`[lifecycle-gamification] listing agreement read refused: ${agErr.message}`); return null }
+  const executed = ((agreements ?? []) as Array<{ id: string; esign_status?: string | null; seller_signed_at?: string | null; agent_signed_at?: string | null; compliance_passed?: boolean | null; fully_executed_at?: string | null; created_at?: string | null }>)
+    .filter((a) => LISTING_EXECUTED_ESIGN.has(String(a.esign_status)) && !!a.seller_signed_at && !!a.agent_signed_at && a.compliance_passed === true)
+    .sort((x, y) => String(x.created_at ?? "").localeCompare(String(y.created_at ?? "")) || x.id.localeCompare(y.id))
+  const root = executed[0]
+  if (!root) return null
+  const agentUserId = await agentUserIdOf(db, brokerageId, l.agent_id)
+  if (!agentUserId) return null
+  const executedAt = root.fully_executed_at ?? root.seller_signed_at!
+  const probes: Array<{ col: string; val: string; entityType?: string }> = []
+  if (isUuid(l.appointment_event_id)) probes.push({ col: "id", val: l.appointment_event_id })
+  probes.push({ col: "entity_id", val: listingId, entityType: "listing" })
+  if (isUuid(l.seller_contact_id)) probes.push({ col: "entity_id", val: l.seller_contact_id, entityType: "contact" })
+  return (await hasGenuineAppointment(db, brokerageId, probes, agentUserId, executedAt, now)) ? { referenceId: root.id, agentId: l.agent_id } : null
+}
+
+/** R3 — BUYER_BROKER_AGREEMENT_SIGNED (entity buyer_broker_agreement): the ROOT of the agreement's correction chain (a
+ *  superseding re-sign never pays again) + its agent, when a genuine appointment with the buyer preceded the signature. */
+async function buyerAgreementEvidence(db: LedgerCapableClient, brokerageId: string, agreementId: string, now: Date): Promise<{ referenceId: string; agentId: string } | null> {
+  const cols = "id, agent_id, buyer_contact_id, status, signed_at, signed_method, signed_document_url, superseded_by"
+  const { data, error } = await db.from("buyer_broker_agreements").select(cols).eq("id", agreementId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (error) { console.error(`[lifecycle-gamification] buyer agreement read refused: ${error.message}`); return null }
+  type Bba = { id: string; agent_id?: string | null; buyer_contact_id?: string | null; status?: string | null; signed_at?: string | null; signed_method?: string | null; signed_document_url?: string | null }
+  const row = data as Bba | null
+  if (!row || !row.signed_at || !BUYER_EXECUTED_STATUS.has(String(row.status)) || !isUuid(row.agent_id) || !isUuid(row.buyer_contact_id)) return null
+  if (!row.signed_method || (row.signed_method === "wet_signature" && !row.signed_document_url)) return null
+  let root = row.id
+  for (let hop = 0; hop < 10; hop++) {
+    const { data: prev, error: prevErr } = await db.from("buyer_broker_agreements").select("id").eq("brokerage_id", brokerageId).eq("superseded_by", root).maybeSingle()
+    if (prevErr) { console.error(`[lifecycle-gamification] agreement chain read refused: ${prevErr.message}`); return null }
+    const prevId = (prev as { id?: string } | null)?.id
+    if (!isUuid(prevId)) break
+    root = prevId
+  }
+  const agentUserId = await agentUserIdOf(db, brokerageId, row.agent_id)
+  if (!agentUserId) return null
+  return (await hasGenuineAppointment(db, brokerageId, [{ col: "entity_id", val: row.buyer_contact_id, entityType: "contact" }], agentUserId, row.signed_at, now))
+    ? { referenceId: root, agentId: row.agent_id } : null
+}
+
 export interface LifecycleAwardOutcome {
   awarded: Array<{ agentId: string; reason: PointReason; points: number; newTotal: number }>
   alreadyAwarded: number
@@ -193,7 +432,30 @@ export async function awardLifecycleMilestones(
     ? await wonReferralAgentsForClose(db, p.brokerageId, p.entityId)
     : []
 
-  const plans = planLifecycleAwards(p.event, { entityId: p.entityId, metadata: p.metadata, now, repeatClient, entityType: p.entityType, referralEvidenceTransactionId })
+  // WAVE 155 (155C): the evidence behind R1 / R2 / R3. For an open house and an agreement the earning agent is the one the
+  // EVIDENCE names (the host, the listing / agreement agent) — a metadata.agent_id on the event never redirects the award.
+  const ruleFor = (entityType: string) => LIFECYCLE_AWARD_RULES.some((r) => r.event === p.event && r.entityType === entityType)
+  let courseEvidenceModuleId: string | null = null
+  let openHouseEvidenceId: string | null = null
+  let agreementEvidenceId: string | null = null
+  if (ruleFor("learning_module") && p.entityType === "learning_module" && isUuid(p.entityId)) {
+    courseEvidenceModuleId = actingId ? await courseEvidence(db, p.brokerageId, p.entityId, actingId) : null
+    if (!courseEvidenceModuleId) out.refused.push(`TRAINING_COMPLETED: no persisted passing attempt for course ${p.entityId} — reading a course never completes it`)
+  }
+  if (ruleFor("open_house_event") && p.entityType === "open_house_event" && isUuid(p.entityId)) {
+    const ev = await openHouseEvidence(db, p.brokerageId, p.entityId, now)
+    if (ev) { openHouseEvidenceId = ev.referenceId; agents.acting = [ev.agentId] }
+    else out.refused.push(`OPEN_HOUSE_HOSTED: open house ${p.entityId} is not a held listing open house in this account`)
+  }
+  if ((ruleFor("listing_stage_machine") && p.entityType === "listing_stage_machine") || (ruleFor("buyer_broker_agreement") && p.entityType === "buyer_broker_agreement")) {
+    const ev = isUuid(p.entityId)
+      ? (p.entityType === "listing_stage_machine" ? await listingAgreementEvidence(db, p.brokerageId, p.entityId, now) : await buyerAgreementEvidence(db, p.brokerageId, p.entityId, now))
+      : null
+    if (ev) { agreementEvidenceId = ev.referenceId; agents.acting = [ev.agentId] }
+    else out.refused.push(`SIGNED_AGREEMENT_APPOINTMENT: no executed agreement preceded by a genuine appointment for ${p.entityType} ${p.entityId} — a booking alone earns nothing`)
+  }
+
+  const plans = planLifecycleAwards(p.event, { entityId: p.entityId, metadata: p.metadata, now, repeatClient, entityType: p.entityType, referralEvidenceTransactionId, courseEvidenceModuleId, openHouseEvidenceId, agreementEvidenceId })
   for (const plan of plans) {
     const recipients = plan.party === "mentor_and_mentee" ? agents.mentorAndMentee
       : plan.party === "referral_agent" ? referralAgents

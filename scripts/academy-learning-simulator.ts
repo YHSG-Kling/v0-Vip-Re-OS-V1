@@ -114,11 +114,11 @@ async function main(): Promise<void> {
     // ── CERTIFY (idempotent guard, just like the action) ──
     async function issueCertOnce(): Promise<void> {
       const { count } = await svc.from("agent_certifications").select("id", { count: "exact", head: true })
-        .eq("agent_id", agentRowId as string).eq("certification_name", title).eq("cert_type", "learning_module")
+        .eq("agent_id", agentRowId as string).eq("certification_name", title).eq("cert_type", "specialty")
       if ((count ?? 0) === 0) {
         await svc.from("agent_certifications").insert({
           agent_id: agentRowId, brokerage_id: brokerageId, certification_name: title,
-          cert_type: "learning_module", issued_at: new Date().toISOString(), issued_by: userId,
+          cert_type: "specialty" /* wave 155 (155C): "learning_module" is not in agent_certifications_cert_type_check */, issued_at: new Date().toISOString(), issued_by: userId,
         })
       }
     }
