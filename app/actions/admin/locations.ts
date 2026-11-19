@@ -126,6 +126,8 @@ export async function createLocationAction(input: {
 }): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const auth = await requireAdmin()
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "office.location.create", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true; id: string } | { ok: false; error: string }> => {
   const name = input.name?.trim()
   if (!name) return { ok: false, error: "Office name is required" }
   const licenseState = trimOr(input.licenseState, 2)?.toUpperCase() ?? null
@@ -156,6 +158,7 @@ export async function createLocationAction(input: {
   if (error || !data) return { ok: false, error: error?.message ?? "Could not create office" }
   revalidatePath("/dashboard/admin/locations")
   return { ok: true, id: data.id as string }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 export async function updateLocationAction(
@@ -173,6 +176,8 @@ export async function updateLocationAction(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const auth = await requireAdmin({ officeId: id })
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "office.location.update", actor: { type: "user", userId: auth.userId }, subject: { type: "location", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(patch ?? {}) } }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const update: Record<string, unknown> = {}
   if (patch.name !== undefined) {
     const n = patch.name.trim()
@@ -236,12 +241,15 @@ export async function updateLocationAction(
   if ((changed ?? []).length !== 1) return { ok: false, error: "Office not found in your workspace" }
   revalidatePath("/dashboard/admin/locations")
   return { ok: true }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 /** Delete an office. Agents assigned to it are first moved to Unassigned (location_id null). */
 export async function deleteLocationAction(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const auth = await requireAdmin()
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "office.location.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "location", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const svc = createServiceClient()
   // Unassign BOTH office columns first so nobody is left pointing at a deleted
   // office. users.location_id is ON DELETE SET NULL at the FK, so the database
@@ -258,6 +266,7 @@ export async function deleteLocationAction(id: string): Promise<{ ok: true } | {
   if (error) return { ok: false, error: error.message }
   revalidatePath("/dashboard/admin/locations")
   return { ok: true }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 export interface BrokerageAgentRow {

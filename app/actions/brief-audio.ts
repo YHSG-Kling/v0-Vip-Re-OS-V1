@@ -50,6 +50,8 @@ export async function generateBriefAudio(params: {
   if (!ctx.userId) {
     return { success: false, error: "No user context" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "brief.audio.generate", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "user", id: ctx.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { lane: "brief_narration" } }, async (): Promise<BriefAudioResult> => {
   const resolved = await resolveSelfVoice(ctx.userId)
 
   // MODEL + PACING through the ONE selector (lane 77C): a morning brief is a
@@ -77,6 +79,7 @@ export async function generateBriefAudio(params: {
     audioDataUrl: audioBufferToDataUrl(result.audioBuffer),
     voiceUsed: resolved.source,
   }
+  })
 }
 
 // ---------------------------------------------------------------------------

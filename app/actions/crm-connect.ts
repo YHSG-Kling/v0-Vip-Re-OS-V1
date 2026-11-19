@@ -89,6 +89,8 @@ export async function connectCrmAction(params: {
   const gate = await requireMember()
   if (!gate.ok) return gate
   const { member } = gate
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: member.brokerageId, action: "platform.crm_connection.connect", actor: { type: "user", userId: member.userId }, subject: { type: "crm_connection", ref: params.provider }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { provider: params.provider, scope: member.agentScoped ? "agent" : "brokerage" } }, async (): Promise<{ ok: true; scope: "agent" | "brokerage" } | { ok: false; error: string }> => {
   const supabase = await createClient()
 
   // A blank box is NOT a secret. Writing "" would make `!!connection.apiSecret`
@@ -175,6 +177,7 @@ export async function connectCrmAction(params: {
 
   revalidatePath("/settings/crm")
   return { ok: true, scope: "brokerage" }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 /** Disconnect a CRM in the caller's scope (deactivate its credential). */
@@ -182,6 +185,8 @@ export async function disconnectCrmAction(provider: CrmProvider): Promise<{ ok: 
   const gate = await requireMember()
   if (!gate.ok) return gate
   const { member } = gate
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: member.brokerageId, action: "platform.crm_connection.disconnect", actor: { type: "user", userId: member.userId }, subject: { type: "crm_connection", ref: provider }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { provider, scope: member.agentScoped ? "agent" : "brokerage" } }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const supabase = await createClient()
 
   // A DISCONNECT that did not land leaves the credential ACTIVE — the sync keeps
@@ -197,6 +202,7 @@ export async function disconnectCrmAction(provider: CrmProvider): Promise<{ ok: 
   }
   revalidatePath("/settings/crm")
   return { ok: true }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 /** Manually sync a single contact OUT to the resolved CRM (the "Sync now" button). */

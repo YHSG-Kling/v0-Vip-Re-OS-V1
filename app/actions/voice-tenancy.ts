@@ -40,12 +40,12 @@ const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
  */
 async function requireBrokerageAdmin(
   mode: "read" | "write",
-): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; brokerageId: string; actorUserId: string } | { ok: false; error: string }> {
   const ctx = mode === "write" ? await resolveWriteContext() : await resolveActingContext()
   if (!ctx.ok) return { ok: false, error: ctx.error ?? "Unauthorized" }
   if (!ctx.brokerageId) return { ok: false, error: "Unauthorized" }
   if (!ADMIN_TYPES.has(ctx.userType ?? "")) return { ok: false, error: "Forbidden — brokerage admin only" }
-  return { ok: true, brokerageId: ctx.brokerageId }
+  return { ok: true, brokerageId: ctx.brokerageId, actorUserId: ctx.actorUserId }
 }
 
 /** This month's voice line: calls, minutes, cost — the meter behind the bill.
@@ -108,6 +108,8 @@ export async function setTwilioByoCredsAction(input: { accountSid: string; authT
   // WRITE — carrier credentials. read_only is refused inside the gate.
   const auth = await requireBrokerageAdmin("write")
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "platform.carrier_credential.set", actor: { type: "user", userId: auth.actorUserId }, subject: { type: "provider_credential", ref: "phone:twilio_byo" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: boolean; error?: string }> => {
   const svc = createServiceClient()
 
   const { data: brk } = await svc.from("brokerages").select("plan_tier").eq("id", auth.brokerageId).maybeSingle()
@@ -127,4 +129,5 @@ export async function setTwilioByoCredsAction(input: { accountSid: string; authT
     ? await svc.from("platform_credentials").update(row).eq("id", (existing as any).id)
     : await svc.from("platform_credentials").insert(row)
   return error ? { ok: false, error: error.message } : { ok: true }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }

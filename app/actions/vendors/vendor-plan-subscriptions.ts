@@ -253,6 +253,8 @@ export async function enrolVendorInPackageAction(params: {
 }): Promise<VendorEnrolmentResult> {
   const ctx = await resolveWriteContext()
   if (!ctx.ok) return { ok: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<VendorEnrolmentResult> => {
   if (!ctx.brokerageId) return { ok: false, error: "Your account is not attached to a brokerage yet." }
   if (!params?.planId) return { ok: false, error: "A package id is required." }
   if (!params?.vendorId) return { ok: false, error: "A vendor is required." }
@@ -370,6 +372,8 @@ export async function enrolVendorInPackageAction(params: {
   revalidatePath("/dashboard/vendors")
   revalidatePath("/vendor/plans")
   return { ok: true, subscriptionId: created.id as string, status: created.status as string }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.package_enrolment.create", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "vendor", id: params.vendorId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { plan_id: params.planId } }, ledgered).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" })) : ledgered()
 }
 
 /**
@@ -387,6 +391,8 @@ export async function endVendorPackageEnrolmentAction(params: {
   if (!ctx.ok) return { ok: false, error: ctx.error }
   if (!ctx.brokerageId) return { ok: false, error: "Your account is not attached to a brokerage yet." }
   if (!params?.subscriptionId) return { ok: false, error: "An enrolment id is required." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.package_enrolment.end", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "vendor_subscription", id: params.subscriptionId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<VendorEnrolmentResult> => {
 
   const { data, error } = await ctx.db
     .from("vendor_subscriptions")
@@ -401,6 +407,7 @@ export async function endVendorPackageEnrolmentAction(params: {
   revalidatePath("/dashboard/vendors")
   revalidatePath("/vendor/plans")
   return { ok: true, subscriptionId: data.id as string, status: data.status as string }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 /**

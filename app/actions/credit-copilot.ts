@@ -54,6 +54,8 @@ export async function updateContactCreditStatus(params: {
 
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: profile.brokerage_id, action: "credit.contact_status.update", actor: { type: "user", userId: user.id }, subject: { type: "contact", id: params.contact_id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // contacts_lender_status_check (verified live) admits only these values, or NULL.
   // A rejected value used to fail the whole update with a raw Postgres error after
@@ -106,6 +108,7 @@ export async function updateContactCreditStatus(params: {
   }
 
   return { success: true, contact: data }
+  }).then((r) => { if ("contact" in r) return r; throw new Error(r.error ?? "Not run") })
 }
 
 // pass 14: logCreditConversation removed — zero callers and it wrote the phantom
@@ -156,6 +159,8 @@ export async function referToCreditPartner(params: {
 
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: profile.brokerage_id, action: "credit.partner_referral.create", actor: { type: "user", userId: user.id }, subject: { type: "contact", id: params.contact_id }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { partner_id: params.partner_id } }, async () => {
 
   // THE BODY MOVED (lane 86F, orphan doctrine §1.1 — the duplicate merged onto
   // this survivor, then ONE core for both doors): lib/credit/credit-event-
@@ -176,6 +181,7 @@ export async function referToCreditPartner(params: {
   const data = r.referral
 
   return { success: true, referral: data }
+  }).then((r) => { if ("referral" in r) return r; throw new Error(r.error ?? "Not run") })
 }
 
 // TOMBSTONE (lane 86F, orphan doctrine §1.1) — the three "EVENT HANDLERS -
@@ -693,6 +699,9 @@ export async function createCreditAccount(params: {
     data: { user },
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
+  const { data: me } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // Authorize the contact BEFORE writing: it must be visible in the caller's
   // tenant. contacts.agent_id is an agents.id, so it is carried through, never
@@ -742,4 +751,6 @@ export async function createCreditAccount(params: {
   }
 
   return { success: true, account: data }
+  }
+  return me?.brokerage_id ? ledgerSessionAction({ brokerageId: me.brokerage_id as string, action: "credit.account.create", actor: { type: "user", userId: user.id }, subject: { type: "contact", id: params.contact_id }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => { if ("account" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }

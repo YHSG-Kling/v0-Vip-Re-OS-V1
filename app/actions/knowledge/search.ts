@@ -311,6 +311,8 @@ export async function createKnowledgeArticle(input: {
 }) {
   const supabase = await createClient()
   const { brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const { data, error } = await supabase
     .from('knowledge_articles')
@@ -344,6 +346,8 @@ export async function createKnowledgeArticle(input: {
 
   revalidatePath('/dashboard/settings/knowledge-base')
   return data
+  }
+  return brokerageId && userId ? ledgerSessionAction({ brokerageId: brokerageId, action: "knowledge.article.create", actor: { type: "user", userId: userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status: input.status ?? null } }, ledgered) : ledgered()
 }
 
 /**
@@ -362,7 +366,9 @@ export async function updateKnowledgeArticle(
   }
 ) {
   const supabase = await createClient()
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // OWNERSHIP IS DECIDED ON THE ROW THAT IS ACTUALLY THERE.
   // The filter used to be `.eq('brokerage_id', brokerageId)`, which can never
@@ -425,6 +431,8 @@ export async function updateKnowledgeArticle(
 
   revalidatePath('/dashboard/settings/knowledge-base')
   return data
+  }
+  return brokerageId && userId ? ledgerSessionAction({ brokerageId: brokerageId, action: "knowledge.article.update", actor: { type: "user", userId: userId }, subject: { type: "knowledge_article", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 /**
@@ -432,7 +440,9 @@ export async function updateKnowledgeArticle(
  */
 export async function deleteKnowledgeArticle(id: string) {
   const supabase = await createClient()
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // Decide on the row that exists — see updateKnowledgeArticle. A delete keyed
   // on brokerage_id reported success while removing nothing for platform rows.
@@ -463,6 +473,8 @@ export async function deleteKnowledgeArticle(id: string) {
 
   revalidatePath('/dashboard/settings/knowledge-base')
   return { success: true }
+  }
+  return brokerageId && userId ? ledgerSessionAction({ brokerageId: brokerageId, action: "knowledge.article.delete", actor: { type: "user", userId: userId }, subject: { type: "knowledge_article", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 /**
@@ -696,6 +708,8 @@ export async function deleteHelpTopic(id: string) {
   const supabase = await createClient()
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { success: false as const, error: 'Not signed in' }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // The old version filtered on `.eq('brokerage_id', brokerageId)`, which can
   // never match a platform row (brokerage_id IS NULL) — so deleting a
@@ -726,6 +740,8 @@ export async function deleteHelpTopic(id: string) {
 
   revalidatePath('/dashboard/settings/knowledge-base')
   return { success: true as const }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "knowledge.help_topic.delete", actor: { type: "user", userId: ctx.userId }, subject: { type: "help_topic", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 // ============================================================================

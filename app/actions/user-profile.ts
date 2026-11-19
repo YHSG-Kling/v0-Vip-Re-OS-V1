@@ -19,6 +19,8 @@ export async function saveAgentEmailSignature(
 ): Promise<{ success: boolean; error?: string }> {
   const ctx = await resolveWriteContext()
   if (!ctx.ok) return { success: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<{ success: boolean; error?: string }> => {
 
   const { data: saved, error } = await ctx.db
     .from("users")
@@ -34,6 +36,8 @@ export async function saveAgentEmailSignature(
   }
 
   return { success: true }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "profile.email_signature.update", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "user", id: ctx.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 /**
@@ -77,6 +81,8 @@ export async function updateMyProfile(input: {
   // ACT-AS WRITE SEAM — read_only refused before the write.
   const ctx = await resolveWriteContext()
   if (!ctx.ok) return { success: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<{ success: boolean; error?: string }> => {
   const userId = ctx.userId
 
   // Normalize empty-string to null so the DB CHECK accepts "clear".
@@ -98,6 +104,8 @@ export async function updateMyProfile(input: {
     return { success: false, error: "The website was not saved — the database refused the change." }
   }
   return { success: true }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "profile.user.update", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "user", id: ctx.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 // ─── AGENT IDENTITY ──────────────────────────────────────────────────────────
@@ -189,6 +197,8 @@ export async function updateMyAgentIdentity(input: {
   // ACT-AS WRITE SEAM — read_only refused before either write.
   const ctx = await resolveWriteContext()
   if (!ctx.ok) return { success: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<{ success: boolean; error?: string }> => {
   const userId = ctx.userId
 
   const bio = trimOrNull(input.bio)
@@ -244,4 +254,6 @@ export async function updateMyAgentIdentity(input: {
   if (aErr) return { success: false, error: aErr.message }
 
   return { success: true }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "profile.agent_identity.update", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "user", id: ctx.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }

@@ -159,6 +159,8 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
   if (callerError) return { error: `Caller lookup failed: ${callerError.message}` }
   const callerBrokerageId = callerRow?.brokerage_id as string | undefined
   if (!callerBrokerageId) return { error: "Unauthorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: callerBrokerageId, action: "prediction.lead_conversion.generate", actor: { type: "user", userId: predictionCaller.id }, subject: { type: "lead", id: leadId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<LeadPrediction | { error: string }> => {
 
   // Try to gather lead data - handle tables that may not exist
   let lead: unknown = null
@@ -415,6 +417,7 @@ Respond with JSON only:
     console.error("[v0] AI prediction failed:", error)
     return { error: "Prediction unavailable" }
   }
+  }).then((r) => ("success" in r ? { error: r.error ?? "Not run" } : r))
 }
 
 /**
@@ -697,6 +700,10 @@ export async function enableAIPilot(data: {
   autopilotLevel: "conservative" | "moderate" | "aggressive"
 }) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // Check agent authorization
   const {
@@ -916,6 +923,8 @@ Respond with JSON matching this structure:
     console.error("[v0] Error in enableAIPilot:", error)
     return { success: false, error: "Failed to generate auto-pilot plan" }
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.autopilot_plan.create", actor: { type: "user", userId: session.userId }, subject: { type: "lead", id: data.leadId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { level: data.autopilotLevel } }, ledgered).then((r) => ("plan" in r ? r : { success: false as const, error: r.error ?? "Not run" })) : ledgered()
 }
 
 // Get active auto-pilot plans for an agent
@@ -940,6 +949,10 @@ export async function getActiveAutoPilotPlans(agentId: string) {
 // Pause/resume auto-pilot for a lead
 export async function toggleAutoPilot(planId: string, pause: boolean) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const { error } = await supabase
     .from("ai_autopilot_plans")
@@ -955,6 +968,8 @@ export async function toggleAutoPilot(planId: string, pause: boolean) {
   }
 
   return { success: true }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.autopilot_plan.toggle", actor: { type: "user", userId: session.userId }, subject: { type: "ai_autopilot_plan", id: planId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { pause } }, ledgered) : ledgered()
 }
 
 // ============================================
@@ -963,6 +978,10 @@ export async function toggleAutoPilot(planId: string, pause: boolean) {
 
 export async function predictDealCloseProbability(transactionId: string) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // Gather comprehensive transaction data.
   //
@@ -1195,6 +1214,8 @@ Respond with JSON:
     console.error("[v0] Error in predictDealCloseProbability:", error)
     throw new Error("Failed to predict deal outcome")
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.deal_close.generate", actor: { type: "user", userId: session.userId }, subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => { if ("prediction" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }
 
 // ============================================
@@ -1209,6 +1230,10 @@ export async function analyzeConversation(data: {
   transcript: string
 }) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // Build comprehensive AI analysis prompt
   const prompt = `You are an AI conversation analyst for real estate. Analyze this ${data.conversationType}:
@@ -1533,6 +1558,8 @@ Provide ACTIONABLE coaching. Respond with JSON:
     console.error("[v0] Error in analyzeConversation:", error)
     throw new Error("Conversation analysis failed")
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.conversation.analyze", actor: { type: "user", userId: session.userId }, subject: { type: "lead", id: data.leadId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { conversation_type: data.conversationType } }, ledgered).then((r) => { if ("analysis" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }
 
 // Get conversation intelligence history for a lead
@@ -1670,6 +1697,10 @@ async function idxForCallerBrokerage(surface: string) {
 //     now constructed after the identity is proven.
 export async function aiPropertyMatchGenius(contactId: string) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // Gather the contact and its contacts-keyed property signal.
   const { data: contact, error: contactError } = await supabase
@@ -1921,6 +1952,8 @@ Generate PERFECT search criteria based on learned behavior:
     console.error("[v0] Error in aiPropertyMatchGenius:", error)
     throw new Error("AI property matching failed")
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.property_match.generate", actor: { type: "user", userId: session.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => { if ("topMatches" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }
 
 // ============================================
@@ -1979,6 +2012,8 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
   if (!brokerageId) {
     throw new Error("Agent brokerage not found")
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "prediction.cma_batch.generate", actor: { type: "user", userId: ctx.userId }, subject: { type: "agent", id: ctx.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const commissionStructure = await getDefaultCommissionStructure(brokerageId)
 
@@ -2169,6 +2204,7 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
         ? ` ${skipped.length} property owner${skipped.length === 1 ? "" : "s"} skipped: a valuation is filed against a contact, and ${skipped.length === 1 ? "that record has" : "those records have"} not been converted yet.`
         : ""),
   }
+  }).then((r) => { if ("totalCMAsGenerated" in r) return r; throw new Error(r.error ?? "Not run") })
 }
 
 // ============================================
@@ -2199,6 +2235,10 @@ export async function predictWinningOffer(data: {
   listPrice: number
 }) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   // TENANT ANCHOR for the ai_predictions row written below. This row keys on the
   // PROPERTY (entity_type "property", entity_id the MLS id), so there is no
   // person-record to resolve a tenant through — the anchor is the SESSION
@@ -2362,6 +2402,8 @@ Predict the winning offer strategy:
     console.error("[v0] Error in predictWinningOffer:", error)
     throw new Error("Offer analysis failed")
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.winning_offer.generate", actor: { type: "user", userId: session.userId }, subject: { type: "user", id: session.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => { if ("strategy" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }
 
 // ============================================
@@ -2376,6 +2418,10 @@ export async function aiNegotiationAdvisor(data: {
   inspectionIssues?: any[]
 }) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // The error is destructured because this row is now the TENANT ANCHOR for the
   // insight written below, and supabase-js RESOLVES a refused read — a refusal
@@ -2494,6 +2540,8 @@ Provide strategic negotiation advice:
     console.error("[v0] Error in aiNegotiationAdvisor:", error)
     throw new Error("Negotiation analysis failed")
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.negotiation.advise", actor: { type: "user", userId: session.userId }, subject: { type: "transaction", id: data.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scenario: data.scenario } }, ledgered).then((r) => { if ("strategy" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }
 
 // ============================================
@@ -2514,6 +2562,10 @@ export async function predictMarketShift(data: {
   propertyType?: string
 }) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   // ONE tenant resolve for the whole function: the same brokerage whose IDX feed is
   // read below is the brokerage the alert row and the affected-contact sweep are
   // filed under. This used to resolve the session a second time, further down, and
@@ -2655,6 +2707,8 @@ Predict for next 90 days:
     console.error("[v0] Error in predictMarketShift:", error)
     throw new Error("Market prediction failed")
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.market_shift.generate", actor: { type: "user", userId: session.userId }, subject: { type: "user", id: session.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => { if ("prediction" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }
 
 // ============================================
@@ -2663,6 +2717,10 @@ Predict for next 90 days:
 
 export async function findMarketArbitrage(data: { city: string; state: string; agentId: string }) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   // TOMBSTONE (wave 81 lane B, CLAUDE.md §1.3): `new BatchDataClient()` stood here with
   // NO call on it — a dead instantiation that kept this file on the direct-BatchData-reach
   // list (scripts/enrichment-one-rail-guard.ts blind spots). The arbitrage sweep reads the
@@ -2923,6 +2981,8 @@ condition or renovation need — nothing above reports it.
     console.error("[v0] Error in findMarketArbitrage:", error)
     throw new Error("Market arbitrage detection failed")
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.market_arbitrage.find", actor: { type: "user", userId: session.userId }, subject: { type: "user", id: session.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: data.agentId } }, ledgered).then((r) => { if ("opportunities" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }
 
 // ============================================
@@ -2931,6 +2991,10 @@ condition or renovation need — nothing above reports it.
 
 export async function detectClientChurn(leadId: string) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // Fetch lead without embedded joins — lead_behavioral_data, chat_sessions,
   // communications, and showings are not FK-registered on leads/contacts in PostgREST.
@@ -3057,6 +3121,8 @@ Detect churn risk and provide save strategy:
     console.error("[v0] Error in detectClientChurn:", error)
     throw new Error("Churn detection failed")
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.client_churn.detect", actor: { type: "user", userId: session.userId }, subject: { type: "lead", id: leadId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => { if ("analysis" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }
 
 // ============================================
@@ -3576,6 +3642,10 @@ Use no protected-class, neighborhood-desirability or steering language.
 
 export async function findHiddenOpportunities(agentId: string) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // The error is destructured because this row is the TENANT ANCHOR for every
   // insight below, and supabase-js RESOLVES a refused read — "refused" and "no
@@ -3719,6 +3789,8 @@ Find opportunities:
     console.error("[v0] Error in findHiddenOpportunities:", error)
     throw new Error("Opportunity detection failed")
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.hidden_opportunity.find", actor: { type: "user", userId: session.userId }, subject: { type: "user", id: session.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: agentId } }, ledgered).then((r) => { if ("opportunities" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }
 
 // ============================================
@@ -3727,6 +3799,10 @@ Find opportunities:
 
 export async function mineSphereOfInfluence(agentId: string) {
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // TENANT ANCHOR — resolved ONCE, from the agent whose sphere is being mined.
   // `agentId` is an agents.id (it is what contacts.agent_id holds); it is never
@@ -3855,6 +3931,8 @@ Output example:{
     console.error("[v0] Error in mineSphereOfInfluence:", error)
     throw new Error("Sphere mining failed")
   }
+  }
+  return session.isAuthenticated && session.brokerageId ? ledgerSessionAction({ brokerageId: session.brokerageId, action: "prediction.sphere.mine", actor: { type: "user", userId: session.userId }, subject: { type: "user", id: session.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: agentId } }, ledgered).then((r) => { if ("opportunities" in r) return r; throw new Error(r.error ?? "Not run") }) : ledgered()
 }
 
 // ============================================

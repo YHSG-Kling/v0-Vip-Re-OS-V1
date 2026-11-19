@@ -155,6 +155,8 @@ export async function createWebhookSubscription(params: {
 }): Promise<{ ok: true; id: string; secret: string } | { ok: false; error: string }> {
   const gate = await principalGate()
   if (!gate) return { ok: false, error: "Only the tenancy principal can manage webhooks" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: gate.brokerageId, action: "webhook.subscription.create", actor: { type: "user", userId: gate.userId }, subject: { type: "brokerage", id: gate.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { event_count: Array.isArray(params.events) ? params.events.length : 0 } }, async (): Promise<{ ok: true; id: string; secret: string } | { ok: false; error: string }> => {
 
   const url = params.url?.trim()
   if (!url) return { ok: false, error: "url is required" }
@@ -181,6 +183,7 @@ export async function createWebhookSubscription(params: {
     .single()
   if (error || !data) return { ok: false, error: error?.message ?? "insert failed" }
   return { ok: true, id: (data as { id: string }).id, secret } // raw secret — shown once
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 export async function updateWebhookSubscription(params: {
@@ -192,6 +195,8 @@ export async function updateWebhookSubscription(params: {
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const gate = await principalGate()
   if (!gate) return { ok: false, error: "Only the tenancy principal can manage webhooks" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: gate.brokerageId, action: "webhook.subscription.update", actor: { type: "user", userId: gate.userId }, subject: { type: "tenant_webhook_subscription", id: params.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { active: params.active ?? null } }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
 
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (params.url !== undefined) {
@@ -236,6 +241,7 @@ export async function updateWebhookSubscription(params: {
     if (stampErr) console.error(`[tenant-webhooks] pause stamp NOT saved (m736 applied?): ${stampErr.message}`)
   }
   return { ok: true }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 /**
@@ -306,6 +312,8 @@ export async function rotateWebhookSecret(id: string): Promise<
 export async function deleteWebhookSubscription(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const gate = await principalGate()
   if (!gate) return { ok: false, error: "Only the tenancy principal can manage webhooks" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: gate.brokerageId, action: "webhook.subscription.delete", actor: { type: "user", userId: gate.userId }, subject: { type: "tenant_webhook_subscription", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const { error } = await gate.svc
     .from("tenant_webhook_subscriptions")
     .delete()
@@ -313,6 +321,7 @@ export async function deleteWebhookSubscription(id: string): Promise<{ ok: true 
     .eq("brokerage_id", gate.brokerageId) // deliveries follow via FK cascade
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 /** Send a REAL signed test ping to the endpoint and report the honest response. */

@@ -49,6 +49,8 @@ export async function subscribePush(
       console.error("[v0] subscribePush: users lookup failed:", userErr.message)
       return { success: false, error: "Failed to resolve user profile" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const ledgered = async (): Promise<{ success: boolean; error?: string }> => {
 
     const now = new Date().toISOString()
     const { error } = await svc
@@ -74,6 +76,8 @@ export async function subscribePush(
     }
 
     return { success: true }
+    }
+    return userRow?.brokerage_id ? ledgerSessionAction({ brokerageId: userRow.brokerage_id as string, action: "platform.push_subscription.subscribe", actor: { type: "user", userId: authUser.id }, subject: { type: "user", id: authUser.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
   } catch (e) {
     console.error("[v0] subscribePush failed:", e)
     return { success: false, error: e instanceof Error ? e.message : "Failed to subscribe" }
@@ -159,6 +163,9 @@ export async function unsubscribePush(
 
     // Soft-disable OWN row only — never delete, never touch another user's row.
     const svc = createServiceClient()
+    const { data: me } = await svc.from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const ledgered = async (): Promise<{ success: boolean; error?: string }> => {
     const { error } = await svc
       .from("push_subscriptions")
       .update({ disabled_at: new Date().toISOString(), disabled_reason: "user_unsubscribed" })
@@ -170,6 +177,8 @@ export async function unsubscribePush(
     }
 
     return { success: true }
+    }
+    return me?.brokerage_id ? ledgerSessionAction({ brokerageId: me.brokerage_id as string, action: "platform.push_subscription.unsubscribe", actor: { type: "user", userId: authUser.id }, subject: { type: "user", id: authUser.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
   } catch (e) {
     console.error("[v0] unsubscribePush failed:", e)
     return { success: false, error: e instanceof Error ? e.message : "Failed to unsubscribe" }

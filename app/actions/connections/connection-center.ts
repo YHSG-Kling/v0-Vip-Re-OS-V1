@@ -240,6 +240,8 @@ export async function connectApiKeyProvider(params: {
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const actor = await resolveActor(params.owner)
   if (!actor) return { ok: false, error: "Not authorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<{ ok: true } | { ok: false; error: string }> => {
 
   const provider = canonicalProvider(params.provider)
   if (!isProviderAllowedForScope(actor.scope, params.domain, provider)) {
@@ -333,6 +335,8 @@ export async function connectApiKeyProvider(params: {
 
   revalidatePath("/settings/connections")
   return { ok: true }
+  }
+  return actor.brokerageId ? ledgerSessionAction({ brokerageId: actor.brokerageId, action: "platform.provider_connection.connect", actor: { type: "user", userId: actor.userId }, subject: { type: "provider_connection", ref: `${params.domain}:${canonicalProvider(params.provider)}` }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { domain: params.domain, provider: canonicalProvider(params.provider), scope: actor.scope } }, ledgered).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" })) : ledgered()
 }
 
 /**
@@ -345,6 +349,8 @@ export async function startStripeConnect(owner?: OwnerHint): Promise<{ ok: true;
   const actor = await resolveActor(owner)
   if (!actor || !actor.ownerId) return { ok: false, error: "Not authorized" }
   if (!actor.brokerageId) return { ok: false, error: "A brokerage is required to store this connection." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "platform.stripe_connect.start", actor: { type: "user", userId: actor.userId }, subject: { type: "provider_connection", ref: "financial:stripe" }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { scope: actor.scope } }, async (): Promise<{ ok: true; url: string } | { ok: false; error: string }> => {
   if (!selfConnectableDomains(actor.userType, actor.scope).includes("financial")) {
     return { ok: false, error: "Your account doesn't manage a Stripe payout connection here." }
   }
@@ -392,6 +398,7 @@ export async function startStripeConnect(owner?: OwnerHint): Promise<{ ok: true;
 
   revalidatePath("/settings/connections")
   return { ok: true, url: created.onboardingUrl }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 export async function disconnectProvider(params: {
@@ -401,6 +408,8 @@ export async function disconnectProvider(params: {
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const actor = await resolveActor(params.owner)
   if (!actor) return { ok: false, error: "Not authorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const provider = canonicalProvider(params.provider)
   const svc = createServiceClient()
   const aliases = aliasesFor(provider)
@@ -422,4 +431,6 @@ export async function disconnectProvider(params: {
 
   revalidatePath("/settings/connections")
   return { ok: true }
+  }
+  return actor.brokerageId ? ledgerSessionAction({ brokerageId: actor.brokerageId, action: "platform.provider_connection.disconnect", actor: { type: "user", userId: actor.userId }, subject: { type: "provider_connection", ref: `${params.domain}:${canonicalProvider(params.provider)}` }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { domain: params.domain, provider: canonicalProvider(params.provider), scope: actor.scope } }, ledgered).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" })) : ledgered()
 }

@@ -238,6 +238,8 @@ export async function upsertProviderOverride(params: {
   if (!ctx.ok) return { success: false, error: ctx.error }
   const supabase = ctx.db
   const { brokerageId } = await getBrokerageId(supabase)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "platform.provider_override.upsert", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "provider_override", ref: `${params.provider_type}:${params.provider_key}` }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { provider_type: params.provider_type, provider_key: params.provider_key, enabled: params.enabled ?? true } }, async (): Promise<{ success: boolean; error?: string }> => {
 
   const { error } = await supabase
     .from("provider_overrides")
@@ -257,6 +259,7 @@ export async function upsertProviderOverride(params: {
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/settings/integrations")
   return { success: true }
+  })
 }
 
 export async function upsertPlatformCredential(params: {
@@ -366,6 +369,8 @@ export async function togglePlatformCredential(
   if (!ctx.ok) return { success: false, error: ctx.error }
   const supabase = ctx.db
   const { brokerageId } = await getBrokerageId(supabase)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "platform.provider_credential.toggle", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "platform_credential", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { is_active: isActive } }, async (): Promise<{ success: boolean; error?: string }> => {
 
   // Zero rows toggled is a refusal (wrong id / other tenant), not success.
   const { data: toggled, error } = await supabase
@@ -382,4 +387,5 @@ export async function togglePlatformCredential(
   }
   revalidatePath("/dashboard/settings/integrations")
   return { success: true }
+  })
 }

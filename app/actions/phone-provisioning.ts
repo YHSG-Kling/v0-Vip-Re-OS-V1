@@ -57,6 +57,8 @@ export async function updateBrokeragePhoneSettings(params: {
   if (!isBrokerRole(ctx.userType)) {
     return { success: false, error: "Only broker / admin / superadmin can change phone settings" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "platform.phone_settings.update", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { auto_provision: params.autoProvisionPhoneNumbers ?? null, voice_changed: params.defaultIsaVoiceId !== undefined } }, async (): Promise<{ success: boolean; error?: string }> => {
 
   const svc = createServiceClient()
   const updates: Record<string, any> = {}
@@ -73,6 +75,7 @@ export async function updateBrokeragePhoneSettings(params: {
     .eq("id", ctx.brokerageId)
 
   return error ? { success: false, error: error.message } : { success: true }
+  })
 }
 
 // ─── Number provisioning ─────────────────────────────────────────────────────

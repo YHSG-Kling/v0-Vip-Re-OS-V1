@@ -209,6 +209,8 @@ export async function saveBrandColors(
     if (!auth.ok) return { success: false, error: auth.error }
     if (auth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const brokerageId = auth.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "brand.colors.update", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
 
     const supabase = auth.db
 
@@ -255,6 +257,7 @@ export async function saveBrandColors(
     }
 
     return { success: true }
+    })
   } catch (error) {
     console.error("[L11-Brand] saveBrandColors error:", error)
     return { success: false, error: "Failed to save brand colors" }
@@ -272,6 +275,8 @@ export async function saveBrandTypography(
     if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const supabase = adminAuth.db
     const brokerageId = adminAuth.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "brand.typography.update", actor: { type: "user", userId: adminAuth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
 
     // Update global_settings font
     const { error: settingsError } = await supabase
@@ -308,6 +313,7 @@ export async function saveBrandTypography(
     }
 
     return { success: true }
+    })
   } catch (error) {
     console.error("[L11-Brand] saveBrandTypography error:", error)
     return { success: false, error: "Failed to save typography" }
@@ -325,6 +331,8 @@ export async function saveBrandVoice(
     if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const supabase = adminAuth.db
     const brokerageId = adminAuth.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "brand.voice.update", actor: { type: "user", userId: adminAuth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
 
     // ONE formality vocabulary (lib/branding/formality.ts). The wizard used to send "semi-formal",
     // which the live CHECK refuses (23514) — every default save failed. Normalize; refuse unknown.
@@ -404,6 +412,7 @@ export async function saveBrandVoice(
     }
 
     return { success: true }
+    })
   } catch (error) {
     console.error("[L11-Brand] saveBrandVoice error:", error)
     return { success: false, error: "Failed to save brand voice" }
@@ -421,6 +430,8 @@ export async function saveTemplate(
     if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const supabase = adminAuth.db
     const brokerageId = adminAuth.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "brand.template.save", actor: { type: "user", userId: adminAuth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; templateId?: string; error?: string }> => {
 
     // Deactivate existing templates of the same type
     const { error: templatesDeactivateErr } = await supabase
@@ -476,6 +487,7 @@ export async function saveTemplate(
     }
 
     return { success: true, templateId: template.id }
+    })
   } catch (error) {
     console.error("[L11-Brand] saveTemplate error:", error)
     return { success: false, error: "Failed to save template" }
@@ -592,6 +604,8 @@ export async function uploadLogo(
     if (adminAuth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
     const supabase = adminAuth.db
     const brokerageId = adminAuth.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "brand.logo.upload", actor: { type: "user", userId: adminAuth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; logoUrl?: string; error?: string }> => {
 
     const file = formData.get("file") as File
     if (!file) {
@@ -650,6 +664,7 @@ export async function uploadLogo(
     if (logoSaveErr) return { success: false, error: `Logo uploaded, but it was not saved to your brand settings: ${logoSaveErr.message}` }
 
     return { success: true, logoUrl: urlData.publicUrl }
+    })
   } catch (error) {
     console.error("[L11-Brand] uploadLogo error:", error)
     return { success: false, error: "Failed to upload logo" }

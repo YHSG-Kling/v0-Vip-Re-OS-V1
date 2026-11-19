@@ -143,8 +143,10 @@ export async function createAIAgentTemplate(params: {
   capabilities: string[]
 }) {
   const supabase = await createClient()
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
   if (!brokerageId) return { success: false as const, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "services.ai_agent_template.create", actor: { type: "user", userId: userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // Flat config fields go into the template_config jsonb; identity into template_name/is_active.
   const { data, error } = await supabase
@@ -169,6 +171,7 @@ export async function createAIAgentTemplate(params: {
 
   revalidatePath("/settings/services")
   return { success: true as const, agent: mapTemplateRow(data) }
+  }).then((r) => ("agent" in r ? r : { success: false as const, error: r.error ?? "Not run" }))
 }
 
 /**
@@ -183,8 +186,10 @@ export async function createAIAgentTemplate(params: {
  */
 export async function toggleAIAgentTemplate(agentId: string, active: boolean) {
   const supabase = await createClient()
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
   if (!brokerageId) return { success: false as const, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "services.ai_agent_template.toggle", actor: { type: "user", userId: userId }, subject: { type: "ai_agent_template", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { is_active: active } }, async () => {
 
   // Brokerage-scoped so a user can only toggle their own templates (global templates stay read-only here).
   const { data, error } = await supabase
@@ -199,6 +204,7 @@ export async function toggleAIAgentTemplate(agentId: string, active: boolean) {
 
   revalidatePath("/settings/services")
   return { success: true as const, template: data ?? null }
+  }).then((r) => ("template" in r ? r : { success: false as const, error: r.error ?? "Not run" }))
 }
 
 // ============================================================================
@@ -239,9 +245,11 @@ export async function createPlaybook(params: {
   target_persona_ids: string[]
 }) {
   const supabase = await createClient()
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
   // Refuse rather than write untenanted — a NULL stamp publishes the playbook platform-wide.
   if (!brokerageId) return { success: false as const, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "services.playbook.create", actor: { type: "user", userId: userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const { data, error } = await supabase
     .from("plan_tasks")
@@ -269,6 +277,7 @@ export async function createPlaybook(params: {
 
   revalidatePath("/settings/services")
   return { success: true, playbook: data }
+  }).then((r) => ("playbook" in r ? r : { success: false as const, error: r.error ?? "Not run" }))
 }
 
 /**
@@ -298,8 +307,10 @@ export async function createPlaybook(params: {
  */
 export async function togglePlaybook(playbookId: string, active: boolean) {
   const supabase = await createClient()
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
   if (!brokerageId) return { success: false as const, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "services.playbook.toggle", actor: { type: "user", userId: userId }, subject: { type: "plan_task", id: playbookId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { active } }, async () => {
 
   const { data, error } = await supabase
     .from("plan_tasks")
@@ -312,6 +323,7 @@ export async function togglePlaybook(playbookId: string, active: boolean) {
 
   revalidatePath("/settings/services")
   return { success: true as const, playbook: data ?? null }
+  }).then((r) => ("playbook" in r ? r : { success: false as const, error: r.error ?? "Not run" }))
 }
 
 // ============================================================================
@@ -340,6 +352,9 @@ export async function createStageRule(params: {
   actions_on_transition: any[]
 }) {
   const supabase = await createClient()
+  const { brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const { data, error } = await supabase.from("compliance_rules").insert(params).select().single()
 
@@ -347,10 +362,15 @@ export async function createStageRule(params: {
 
   revalidatePath("/settings/services")
   return { success: true, rule: data }
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "services.stage_rule.create", actor: { type: "user", userId: userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { rule_type: params.rule_type } }, ledgered) : ledgered()
 }
 
 export async function deleteStageRule(ruleId: string) {
   const supabase = await createClient()
+  const { brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const { error } = await supabase.from("compliance_rules").delete().eq("id", ruleId)
 
@@ -358,6 +378,8 @@ export async function deleteStageRule(ruleId: string) {
 
   revalidatePath("/settings/services")
   return { success: true }
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "services.stage_rule.delete", actor: { type: "user", userId: userId }, subject: { type: "compliance_rule", id: ruleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 // toggleAIAgentTemplateStatus and togglePlaybookStatus were REMOVED here, AFTER

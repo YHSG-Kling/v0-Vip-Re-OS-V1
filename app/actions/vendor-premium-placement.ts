@@ -25,7 +25,7 @@ import {
 import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 
 async function requirePlacementAdmin(): Promise<
-  | { ok: true; brokerageId: string }
+  | { ok: true; brokerageId: string; userId: string }
   | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
@@ -35,7 +35,7 @@ async function requirePlacementAdmin(): Promise<
   if (!isTenantCommerceAdmin({ user_type: ctx.role })) {
     return { ok: false, error: "Forbidden: broker, admin, or team lead only" }
   }
-  return { ok: true, brokerageId: ctx.brokerageId }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
 }
 
 export async function offerPremiumPlacementAction(params: {
@@ -56,6 +56,8 @@ export async function offerPremiumPlacementAction(params: {
   if (!params.vendorId) {
     return { success: false, error: "Pick the vendor this placement is for" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: gate.brokerageId, action: "vendor.premium_placement.offer", actor: { type: "user", userId: gate.userId }, subject: { type: "vendor", id: params.vendorId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { months: params.months, price_cents: params.priceCents } }, async (): Promise<{ success: boolean; invoiceId?: string; invoiceNumber?: string; error?: string }> => {
 
   const result = await offerPremiumPlacement({
     brokerageId: gate.brokerageId,
@@ -72,6 +74,7 @@ export async function offerPremiumPlacementAction(params: {
     invoiceId: result.invoiceId ?? undefined,
     invoiceNumber: result.invoiceNumber ?? undefined,
   }
+  })
 }
 
 export async function markPlacementPaidAction(params: {
@@ -80,6 +83,8 @@ export async function markPlacementPaidAction(params: {
 }): Promise<{ success: boolean; placementUntil?: string; error?: string }> {
   const gate = await requirePlacementAdmin()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: gate.brokerageId, action: "vendor.premium_placement.mark_paid", actor: { type: "user", userId: gate.userId }, subject: { type: "vendor_invoice", id: params.invoiceId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; placementUntil?: string; error?: string }> => {
 
   const result = await markPlacementPaid({
     brokerageId: gate.brokerageId,
@@ -90,4 +95,5 @@ export async function markPlacementPaidAction(params: {
 
   revalidatePath("/dashboard/vendors")
   return { success: true, placementUntil: result.placementUntil ?? undefined }
+  })
 }

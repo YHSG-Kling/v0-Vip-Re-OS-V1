@@ -219,6 +219,8 @@ export async function listVendorPlansAction(): Promise<VendorPlanListResult> {
 export async function createVendorPlanAction(input: VendorPlanInput): Promise<VendorPlanResult> {
   const actor = await actingSeller("write")
   if (!actor.ok) return { ok: false, error: actor.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "vendor.plan.create", actor: { type: "user", userId: actor.userId }, subject: { type: "brokerage", id: actor.brokerageId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<VendorPlanResult> => {
 
   const fieldErrors = validateVendorPlan(input)
   if (fieldErrors.length > 0) {
@@ -235,6 +237,7 @@ export async function createVendorPlanAction(input: VendorPlanInput): Promise<Ve
   revalidatePath("/dashboard/vendors")
   revalidatePath("/vendor/plans")
   return { ok: true, plan: data as VendorPlan }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 /** Edit one of the acting brokerage's own packages. */
@@ -245,6 +248,8 @@ export async function updateVendorPlanAction(params: {
   const actor = await actingSeller("write")
   if (!actor.ok) return { ok: false, error: actor.error }
   if (!params?.planId) return { ok: false, error: "A package id is required." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "vendor.plan.update", actor: { type: "user", userId: actor.userId }, subject: { type: "vendor_plan", id: params.planId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<VendorPlanResult> => {
 
   const fieldErrors = validateVendorPlan(params.input)
   if (fieldErrors.length > 0) {
@@ -266,6 +271,7 @@ export async function updateVendorPlanAction(params: {
   revalidatePath("/dashboard/vendors")
   revalidatePath("/vendor/plans")
   return { ok: true, plan: data as VendorPlan }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 /**
@@ -285,6 +291,8 @@ export async function setVendorPlanStatusAction(params: {
   const actor = await actingSeller("write")
   if (!actor.ok) return { ok: false, error: actor.error }
   if (!params?.planId) return { ok: false, error: "A package id is required." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "vendor.plan.set_status", actor: { type: "user", userId: actor.userId }, subject: { type: "vendor_plan", id: params.planId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status: params.status } }, async (): Promise<VendorPlanResult> => {
   if (!VENDOR_PLAN_STATUSES.includes(params.status)) {
     return { ok: false, error: `Status must be one of: ${VENDOR_PLAN_STATUSES.join(", ")}` }
   }
@@ -306,6 +314,7 @@ export async function setVendorPlanStatusAction(params: {
   revalidatePath("/dashboard/vendors")
   revalidatePath("/vendor/plans")
   return { ok: true, plan: data as VendorPlan }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 /**
@@ -320,6 +329,8 @@ export async function setDefaultVendorPlanAction(params: { planId: string }): Pr
   const actor = await actingSeller("write")
   if (!actor.ok) return { ok: false, error: actor.error }
   if (!params?.planId) return { ok: false, error: "A package id is required." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "vendor.plan.set_default", actor: { type: "user", userId: actor.userId }, subject: { type: "vendor_plan", id: params.planId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<VendorPlanResult> => {
 
   const { data: target, error: targetError } = await actor.db
     .from("vendor_plans")
@@ -358,6 +369,7 @@ export async function setDefaultVendorPlanAction(params: { planId: string }): Pr
   revalidatePath("/dashboard/vendors")
   revalidatePath("/vendor/plans")
   return { ok: true, plan: data as VendorPlan }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 /**
@@ -373,6 +385,8 @@ export async function deleteVendorPlanAction(params: { planId: string }): Promis
   const actor = await actingSeller("write")
   if (!actor.ok) return { ok: false, error: actor.error }
   if (!params?.planId) return { ok: false, error: "A package id is required." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "vendor.plan.delete", actor: { type: "user", userId: actor.userId }, subject: { type: "vendor_plan", id: params.planId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true; deletedId: string } | { ok: false; error: string }> => {
 
   const { count, error: countError } = await actor.db
     .from("vendor_subscriptions")
@@ -405,4 +419,5 @@ export async function deleteVendorPlanAction(params: { planId: string }): Promis
   revalidatePath("/dashboard/vendors")
   revalidatePath("/vendor/plans")
   return { ok: true, deletedId: data.id as string }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }

@@ -24,7 +24,9 @@ async function requireAdmin(): Promise<{ userId: string; brokerageId: string }> 
  * Called when a vendor is created/invited. Never sets active — only an admin can (approveVendor).
  */
 export async function submitVendorForVerification(vendorId: string): Promise<{ score: number; recommendation: string; status: "pending" }> {
-  const { brokerageId } = await requireAdmin()
+  const { brokerageId, userId: actorUserId } = await requireAdmin()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "vendor.verification.submit", actor: { type: "user", userId: actorUserId }, subject: { type: "vendor", id: vendorId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ score: number; recommendation: string; status: "pending" }> => {
   const svc = createServiceClient()
 
   const { data: v, error: vErr } = await svc.from("vendors").select("id, name, category, email, phone, website, estimated_turnaround_days").eq("id", vendorId).eq("brokerage_id", brokerageId).maybeSingle()
@@ -41,6 +43,7 @@ export async function submitVendorForVerification(vendorId: string): Promise<{ s
   const { error: scoreErr } = await svc.from("vendors").update({ ai_verification_score: result.score, verification_flags: result.flags, status: "pending", updated_at: new Date().toISOString() }).eq("id", vendorId)
   if (scoreErr) throw new Error(`Failed to stage the vendor for approval: ${scoreErr.message}`)
   return { score: result.score, recommendation: result.recommendation, status: "pending" }
+  }).then((r) => { if ("score" in r) return r; throw new Error(r.error ?? "Not run") })
 }
 
 async function transitionVendor(vendorId: string, to: VendorStatus, extra: Record<string, unknown> = {}): Promise<void> {
@@ -61,18 +64,26 @@ async function transitionVendor(vendorId: string, to: VendorStatus, extra: Recor
 
 /** Admin approves a vendor → active (surfaceable). No vendor can self-activate; this is the only path. */
 export async function approveVendor(vendorId: string): Promise<{ ok: true }> {
+  const gate = await requireAdmin()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: gate.brokerageId, action: "vendor.verification.approve", actor: { type: "user", userId: gate.userId }, subject: { type: "vendor", id: vendorId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true }> => {
   await transitionVendor(vendorId, "active")
   return { ok: true }
+  }).then((r) => { if ("ok" in r) return r; throw new Error(r.error ?? "Not run") })
 }
 
 /** Admin rejects a vendor → inactive, with a reason recorded on the verification flags. */
 export async function rejectVendor(vendorId: string, reason: string): Promise<{ ok: true }> {
+  const gate = await requireAdmin()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: gate.brokerageId, action: "vendor.verification.reject", actor: { type: "user", userId: gate.userId }, subject: { type: "vendor", id: vendorId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true }> => {
   const svc = createServiceClient()
   const { data: v, error: readErr } = await svc.from("vendors").select("verification_flags").eq("id", vendorId).maybeSingle()
   if (readErr) throw new Error(`Could not read the vendor: ${readErr.message}`)
   const flags = Array.isArray((v as any)?.verification_flags) ? (v as any).verification_flags : []
   await transitionVendor(vendorId, "inactive", { verification_flags: [...flags, `rejected:${reason}`] })
   return { ok: true }
+  }).then((r) => { if ("ok" in r) return r; throw new Error(r.error ?? "Not run") })
 }
 
 /**
@@ -86,7 +97,9 @@ export async function setVendorComplianceCredential(
   expiry: string,
   url?: string,
 ): Promise<{ ok: true }> {
-  const { brokerageId } = await requireAdmin()
+  const { brokerageId, userId: actorUserId } = await requireAdmin()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "vendor.compliance_credential.set", actor: { type: "user", userId: actorUserId }, subject: { type: "vendor", id: vendorId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { credential_type: credentialType } }, async (): Promise<{ ok: true }> => {
   const svc = createServiceClient()
   const { data: v } = await svc.from("vendors").select("compliance_credentials").eq("id", vendorId).eq("brokerage_id", brokerageId).maybeSingle()
   if (!v) throw new Error("Vendor not found in your brokerage")
@@ -98,6 +111,7 @@ export async function setVendorComplianceCredential(
   const { error: credErr } = await svc.from("vendors").update({ compliance_credentials: bag, updated_at: new Date().toISOString() }).eq("id", vendorId)
   if (credErr) throw new Error(`Failed to record ${credentialType} expiry: ${credErr.message}`)
   return { ok: true }
+  }).then((r) => { if ("ok" in r) return r; throw new Error(r.error ?? "Not run") })
 }
 
 /** m376 — the shape vendors_compliance_credentials_shape will accept for a date field. */
@@ -176,6 +190,8 @@ export async function recordVendorInsuranceAction(input: RecordVendorInsuranceIn
     const certificateUrl = String(input.certificateUrl ?? "").trim()
 
     const { userId, brokerageId } = await requireAdmin()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "vendor.compliance_credential.record_insurance", actor: { type: "user", userId: userId }, subject: { type: "vendor", id: vendorId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<RecordVendorInsuranceResult> => {
     const svc = createServiceClient()
 
     const { data: vendor, error: readErr } = await svc
@@ -219,6 +235,7 @@ export async function recordVendorInsuranceAction(input: RecordVendorInsuranceIn
     // THE VERDICT COMES FROM THE ROW, not from the input above.
     const status = readVendorInsurance((saved as any).compliance_credentials, new Date())
     return { success: true, status }
+    }).then((r) => ("status" in r ? r : { success: false as const, error: r.error ?? "Not run" }))
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : "Failed to record insurance." }
   }
@@ -250,7 +267,9 @@ export async function setVendorTierPricing(
 
 /** Admin asks the vendor for more info — keeps them pending, records the requested items on the flags. */
 export async function requestVendorInfo(vendorId: string, items: string[]): Promise<{ ok: true }> {
-  const { brokerageId } = await requireAdmin()
+  const { brokerageId, userId: actorUserId } = await requireAdmin()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "vendor.verification.request_info", actor: { type: "user", userId: actorUserId }, subject: { type: "vendor", id: vendorId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { item_count: items.length } }, async (): Promise<{ ok: true }> => {
   const svc = createServiceClient()
   const { data: v, error: readErr } = await svc.from("vendors").select("verification_flags").eq("id", vendorId).eq("brokerage_id", brokerageId).maybeSingle()
   if (readErr) throw new Error(`Could not read the vendor: ${readErr.message}`)
@@ -259,4 +278,5 @@ export async function requestVendorInfo(vendorId: string, items: string[]): Prom
   const { error: flagErr } = await svc.from("vendors").update({ verification_flags: [...flags, ...items.map((i) => `info_requested:${i}`)], updated_at: new Date().toISOString() }).eq("id", vendorId)
   if (flagErr) throw new Error(`Failed to record the request: ${flagErr.message}`)
   return { ok: true }
+  }).then((r) => { if ("ok" in r) return r; throw new Error(r.error ?? "Not run") })
 }

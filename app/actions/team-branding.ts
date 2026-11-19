@@ -895,6 +895,8 @@ export async function saveTeamBranding(input: TeamBrandingInput): Promise<SaveTe
 
   const target = await resolveWritableTeamId(g, input.teamId, "set the brand for")
   if (!target.ok) return { success: false, error: target.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: g.brokerageId, action: "team.branding.update", actor: { type: "user", userId: g.userId }, subject: { type: "team", id: target.teamId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<SaveTeamBrandingResult> => {
   const targetTeamId = target.teamId
 
   // ── Validate every field before a single column is written. ───────────────
@@ -934,6 +936,7 @@ export async function saveTeamBranding(input: TeamBrandingInput): Promise<SaveTe
 
   const snapshot = await loadTeamBranding()
   return { success: true, snapshot }
+  })
 }
 
 // ── Write: THE TEAM SPLIT ────────────────────────────────────────────────────
@@ -1019,6 +1022,8 @@ export async function saveTeamSplits(input: TeamSplitsInput): Promise<SaveTeamSp
 
   const target = await resolveWritableTeamId(g, input.teamId, "set the splits for")
   if (!target.ok) return { success: false, error: target.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: g.brokerageId, action: "team.splits.update", actor: { type: "user", userId: g.userId }, subject: { type: "team", id: target.teamId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<SaveTeamSplitsResult> => {
 
   if (input.splitType !== "percent" && input.splitType !== "flat") {
     // Also the live CHECK constraint (teams_team_split_type_check), enforced here
@@ -1128,6 +1133,7 @@ export async function saveTeamSplits(input: TeamSplitsInput): Promise<SaveTeamSp
 
   const snapshot = await loadTeamBranding()
   return { success: true, snapshot, capLedger }
+  })
 }
 
 // ── Write: THE TEAM EMAIL SIGNATURE ──────────────────────────────────────────
@@ -1169,6 +1175,8 @@ export async function saveTeamSignature(input: TeamSignatureInput): Promise<Save
 
   const target = await resolveWritableTeamId(g, input.teamId, "set the email signature for")
   if (!target.ok) return { success: false, error: target.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: g.brokerageId, action: "team.signature.update", actor: { type: "user", userId: g.userId }, subject: { type: "team", id: target.teamId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<SaveTeamSignatureResult> => {
 
   const value = normalizeSignatureHtml(input.signature ?? "")
   if (!value.ok) return { success: false, error: value.error }
@@ -1218,6 +1226,7 @@ export async function saveTeamSignature(input: TeamSignatureInput): Promise<Save
 
   const snapshot = await loadTeamBranding()
   return { success: true, snapshot }
+  })
 }
 
 // ── TEAM REVENUE GOAL ────────────────────────────────────────────────────────
@@ -1287,6 +1296,8 @@ export async function saveTeamRevenueGoal(
 
   const target = await resolveWritableTeamId(g, input.teamId, "set the revenue goal for")
   if (!target.ok) return { success: false, error: target.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: g.brokerageId, action: "team.revenue_goal.update", actor: { type: "user", userId: g.userId }, subject: { type: "team", id: target.teamId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<SaveTeamRevenueGoalResult> => {
 
   const { monthLabel } = await import("@/lib/finance/team-pl")
   const period = (input.periodLabel ?? "").trim() || monthLabel(new Date())
@@ -1357,6 +1368,7 @@ export async function saveTeamRevenueGoal(
   revalidatePath("/dashboard/settings/teams")
 
   return { success: true, periodLabel: period, goalAmount: amount }
+  })
 }
 
 /**

@@ -458,6 +458,8 @@ export async function startVoiceSession(_agentId?: string, context?: any) {
   if (!caller.agentId) {
     return { success: false, error: "No agent profile for current user" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const supabase = await createClient()
 
@@ -478,6 +480,8 @@ export async function startVoiceSession(_agentId?: string, context?: any) {
   }
 
   return { success: true, sessionId: data.id }
+  }
+  return caller.brokerageId ? ledgerSessionAction({ brokerageId: caller.brokerageId, action: "voice.assistant_session.start", actor: { type: "user", userId: caller.userId }, subject: { type: "agent", id: caller.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => ("sessionId" in r ? r : { success: false as const, error: r.error ?? "Not run" })) : ledgered()
 }
 
 // End voice assistant session
@@ -504,6 +508,8 @@ export async function endVoiceSession(sessionId: string) {
   if (!session || session.agent_id !== caller.agentId) {
     return { success: false, error: "Forbidden" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const supabase = await createClient()
 
@@ -518,6 +524,8 @@ export async function endVoiceSession(sessionId: string) {
   }
 
   return { success: true }
+  }
+  return caller.brokerageId ? ledgerSessionAction({ brokerageId: caller.brokerageId, action: "voice.assistant_session.end", actor: { type: "user", userId: caller.userId }, subject: { type: "voice_assistant_session", id: sessionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 // Get or create voice assistant config for agent
@@ -574,6 +582,8 @@ export async function updateVoiceConfig(_agentId: string | undefined, updates: a
     return { success: false, error: "No agent profile for current user" }
   }
   const agentId = caller.agentId
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const supabase = await createClient()
 
@@ -598,6 +608,8 @@ export async function updateVoiceConfig(_agentId: string | undefined, updates: a
   }
 
   return { success: true, config: data }
+  }
+  return caller.brokerageId ? ledgerSessionAction({ brokerageId: caller.brokerageId, action: "voice.assistant_config.update", actor: { type: "user", userId: caller.userId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => ("config" in r ? r : { success: false as const, error: r.error ?? "Not run" })) : ledgered()
 }
 
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getVoiceCommandHistory`

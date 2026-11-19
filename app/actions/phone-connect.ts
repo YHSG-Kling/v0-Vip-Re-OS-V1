@@ -44,6 +44,8 @@ export async function connectPhoneAction(params: {
   const gate = await requireMember()
   if (!gate.ok) return gate
   const { member } = gate
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: member.brokerageId, action: "platform.phone_connection.connect", actor: { type: "user", userId: member.userId }, subject: { type: "phone_connection", ref: platform }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform, scope: member.agentScoped ? "agent" : "brokerage" } }, async (): Promise<{ ok: true; scope: "agent" | "brokerage" } | { ok: false; error: string }> => {
   const svc = createServiceClient()
 
   // Unified ownership scope (m102): agent line → agent owner, broker line → brokerage owner.
@@ -89,12 +91,15 @@ export async function connectPhoneAction(params: {
 
   revalidatePath("/settings/phone")
   return { ok: true, scope: member.agentScoped ? "agent" : "brokerage" }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 export async function disconnectPhoneAction(platform: PhonePlatform = "twilio"): Promise<{ ok: true } | { ok: false; error: string }> {
   const gate = await requireMember()
   if (!gate.ok) return gate
   const { member } = gate
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: member.brokerageId, action: "platform.phone_connection.disconnect", actor: { type: "user", userId: member.userId }, subject: { type: "phone_connection", ref: platform }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform, scope: member.agentScoped ? "agent" : "brokerage" } }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const svc = createServiceClient()
   let q = svc.from("platform_credentials").update({ is_active: false }).eq("brokerage_id", member.brokerageId).eq("platform", platform)
   q = member.agentScoped ? q.eq("agent_user_id", member.userId) : q.is("agent_user_id", null)
@@ -102,6 +107,7 @@ export async function disconnectPhoneAction(platform: PhonePlatform = "twilio"):
   if (error) return { ok: false, error: error.message }
   revalidatePath("/settings/phone")
   return { ok: true }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 export async function getPhoneStatusAction(): Promise<

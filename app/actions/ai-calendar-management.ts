@@ -486,6 +486,9 @@ export async function scheduleSmartFollowUps(params: {
 }) {
   try {
     const supabase = await createClient()
+    const { userId, brokerageId } = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const ledgered = async () => {
     const daysAhead = params.daysAhead || 7
 
     // Get contacts needing follow-up.
@@ -606,6 +609,8 @@ Create a balanced follow-up schedule that:
     // messages that will go out on their own. They will not; a human sends
     // them from the calendar.
     return { success: true, followUpPlan, drafted: followUpPlan.scheduledFollowUps.length }
+    }
+    return brokerageId && userId ? ledgerSessionAction({ brokerageId: brokerageId, action: "calendar.follow_up_plan.generate", actor: { type: "user", userId: userId }, subject: { type: "user", id: userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: params.agentId } }, ledgered).then((r) => ("scheduled" in r || "followUpPlan" in r ? r : { success: false as const, error: r.error ?? "Not run" })) : ledgered()
   } catch (error) {
     return handleError(error, "scheduleSmartFollowUps")
   }
@@ -669,6 +674,9 @@ export async function blockCalendarTime(params: {
 }) {
   try {
     const supabase = await createClient()
+    const { userId, brokerageId } = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const ledgered = async () => {
 
     const { data, error } = await supabase
       .from("calendar_blocks")
@@ -686,6 +694,8 @@ export async function blockCalendarTime(params: {
 
     revalidatePath("/calendar")
     return { success: true, block: data }
+    }
+    return brokerageId && userId ? ledgerSessionAction({ brokerageId: brokerageId, action: "calendar.block.create", actor: { type: "user", userId: userId }, subject: { type: "user", id: userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: params.agentId, block_type: params.type } }, ledgered).then((r) => ("block" in r ? r : { success: false as const, error: r.error ?? "Not run" })) : ledgered()
   } catch (error) {
     return handleError(error, "blockCalendarTime")
   }
@@ -757,6 +767,9 @@ export async function prepareMeetingBrief(params: {
 }) {
   try {
     const supabase = await createClient()
+    const { userId, brokerageId } = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const ledgered = async () => {
 
     // Cache-first: return the persisted brief for this appointment+agent unless
     // the caller explicitly asks to regenerate (mirrors the upsert key below).
@@ -869,6 +882,8 @@ Create a brief including:
     }, { onConflict: "appointment_id,agent_id" }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return { success: true, meetingBrief }
+    }
+    return brokerageId && userId ? ledgerSessionAction({ brokerageId: brokerageId, action: "calendar.meeting_brief.generate", actor: { type: "user", userId: userId }, subject: { type: "user", id: userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: params.agentId, appointment_id: params.appointmentId } }, ledgered).then((r) => ("meetingBrief" in r ? r : { success: false as const, error: r.error ?? "Not run" })) : ledgered()
   } catch (error) {
     return handleError(error, "prepareMeetingBrief")
   }
@@ -884,6 +899,9 @@ export async function generateWeeklyPlan(params: {
 }) {
   try {
     const supabase = await createClient()
+    const { userId, brokerageId } = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const ledgered = async () => {
 
     // Cache-first: return the persisted plan for this agent+week unless the
     // caller explicitly asks to regenerate (mirrors the upsert key below).
@@ -1000,6 +1018,8 @@ Create a balanced weekly plan that:
     }, { onConflict: "agent_id,week_start" }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
     return { success: true, weeklyPlan }
+    }
+    return brokerageId && userId ? ledgerSessionAction({ brokerageId: brokerageId, action: "calendar.weekly_plan.generate", actor: { type: "user", userId: userId }, subject: { type: "user", id: userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: params.agentId } }, ledgered).then((r) => ("weeklyPlan" in r ? r : { success: false as const, error: r.error ?? "Not run" })) : ledgered()
   } catch (error) {
     return handleError(error, "generateWeeklyPlan")
   }

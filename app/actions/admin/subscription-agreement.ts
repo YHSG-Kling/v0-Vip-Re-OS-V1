@@ -238,6 +238,8 @@ export async function signSubscriptionAgreementAction(input: {
   // FLOOR; the corporate signatory rule sits on top of it (wave 151, below).
   const adminResult = await resolveTenantAdmin(supabase, user.id, caller)
   if (!adminResult.ok) return { ok: false, error: adminResult.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: caller.brokerage_id as string, action: "subscription.agreement.sign", actor: { type: "user", userId: user.id }, subject: { type: "subscription_contract_template", id: input.templateId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true; signatureId: string } | { ok: false; error: string }> => {
   if (!adminResult.isTenantAdmin) {
     return { ok: false, error: "Only your brokerage's admins can sign the subscription agreement" }
   }
@@ -334,6 +336,7 @@ export async function signSubscriptionAgreementAction(input: {
   if (!inserted) return { ok: false, error: "Signature was not recorded — you may not have permission to sign for this brokerage" }
 
   return { ok: true, signatureId: (inserted as { id: string }).id }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 // ─── The accepted copy, retrievable (wave 151) ──────────────────────────────

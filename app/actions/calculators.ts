@@ -1041,6 +1041,8 @@ export async function calculateHomeValue(
       visitorId: vid,
     }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   // The IDX client is built from the brokerage RESOLVED just above — the same one
   // runAiCma's paid comp sourcing is billed to — and not a second time from
@@ -1177,6 +1179,8 @@ export async function calculateHomeValue(
       error: "Unable to calculate home value. Please verify the address and try again.",
     }
   }
+  }
+  return session.isAuthenticated && session.userId ? ledgerSessionAction({ brokerageId: brokerageId, action: "calculator.home_value.run", actor: { type: "user", userId: session.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool: "home_value" } }, ledgered) : ledgered()
 }
 
 // ============================================
@@ -1578,6 +1582,10 @@ export async function saveCalculation(data: {
   }
 
   const supabase = await createClient()
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const me = await sessionOf()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "calculator.saved_calculation.create", actor: { type: "user", userId: me.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool: boundPublicText(data.toolName) ?? "unknown" } }, async () => {
 
   try {
     const { data: saved, error } = await supabase
@@ -1612,6 +1620,7 @@ export async function saveCalculation(data: {
     console.error("[v0] Error in saveCalculation:", error)
     return { success: false, error: "Failed to save calculation" }
   }
+  }).then((r): { success: boolean; error?: string; savedId?: string; message?: string } => r)
 }
 
 // shareCalculation and getSharedCalculation were REMOVED here.

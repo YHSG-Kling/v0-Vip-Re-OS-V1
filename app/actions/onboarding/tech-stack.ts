@@ -168,6 +168,8 @@ export async function saveCredentials(
     // Verify session
     const gate = await requireBrokerageAdmin(supabase, brokerageId)
     if (!gate.ok) return { success: false, error: gate.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "platform.provider_credential.save", actor: { type: "user", userId: gate.userId }, subject: { type: "provider_credential", ref: provider }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { provider } }, async (): Promise<{ success: boolean; error?: string }> => {
 
     const metadata = PROVIDER_METADATA[provider]
     if (!metadata) {
@@ -233,6 +235,7 @@ export async function saveCredentials(
 
     console.log(`[L11-TechStack] Credentials saved for ${provider}`)
     return { success: true }
+    })
   } catch (error) {
     console.error("[L11-TechStack] saveCredentials error:", error)
     return { success: false, error: "Failed to save credentials" }
@@ -251,6 +254,8 @@ export async function deleteCredentials(
     // Verify session
     const gate = await requireBrokerageAdmin(supabase, brokerageId)
     if (!gate.ok) return { success: false, error: gate.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return ledgerSessionAction({ brokerageId: brokerageId, action: "platform.provider_credential.delete", actor: { type: "user", userId: gate.userId }, subject: { type: "provider_credential", ref: provider }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { provider } }, async (): Promise<{ success: boolean; error?: string }> => {
 
     // Delete platform_credentials
     const { error: credError } = await supabase
@@ -278,6 +283,7 @@ export async function deleteCredentials(
 
     console.log(`[L11-TechStack] Credentials deleted for ${provider}`)
     return { success: true }
+    })
   } catch (error) {
     console.error("[L11-TechStack] deleteCredentials error:", error)
     return { success: false, error: "Failed to delete credentials" }

@@ -194,6 +194,8 @@ export async function createVendorInvoice(
   if (!await verifyVendorInCallerBrokerage(params.vendorId, ctx.brokerageId)) {
     return { success: false, error: "Forbidden: vendor not in your brokerage" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.invoice.create", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "vendor", id: params.vendorId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { billed_to: params.billedTo } }, async (): Promise<InvoiceResult> => {
 
   const svc = createServiceClient()
 
@@ -288,6 +290,7 @@ export async function createVendorInvoice(
   }
 
   return { success: true, invoiceId: data.id }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -370,6 +373,8 @@ export async function markInvoicePaid(params: {
   // and pair it with initiateVendorPayout to wire funds out.
   const verify = await verifyInvoiceInCallerBrokerage(params.invoiceId, ctx.brokerageId)
   if (!verify.ok) return { success: false, error: "Forbidden" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.invoice.mark_paid", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "vendor_invoice", id: params.invoiceId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<InvoiceResult> => {
 
   // 🐛 NOT IDEMPOTENT — this minted a fresh PAYOUT CLAIM on every call.
   //
@@ -487,6 +492,7 @@ export async function markInvoicePaid(params: {
   }
 
   return { success: true, invoiceId: params.invoiceId }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -508,6 +514,8 @@ export async function initiateStripeConnectOnboarding(vendorId: string): Promise
   } catch {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "vendor.stripe_connect.start", actor: { type: "user", userId: actor.userId }, subject: { type: "vendor", id: vendorId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const svc = createServiceClient()
 
@@ -548,6 +556,7 @@ export async function initiateStripeConnectOnboarding(vendorId: string): Promise
   })
 
   return { success: true, url: link.url }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -878,6 +887,8 @@ export async function completeStripeConnectOnboarding(vendorId: string): Promise
   } catch {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "vendor.stripe_connect.complete", actor: { type: "user", userId: actor.userId }, subject: { type: "vendor", id: vendorId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const svc = createServiceClient()
 
@@ -896,6 +907,7 @@ export async function completeStripeConnectOnboarding(vendorId: string): Promise
   await setVendorStripeOnboarding(svc, vendorId, complete)
 
   return { success: complete, error: complete ? undefined : "Onboarding not yet complete in Stripe" }
+  })
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1624,6 +1636,8 @@ export async function markVendorChargePaid(params: {
 
   const verify = await verifyInvoiceInCallerBrokerage(params.invoiceId, ctx.brokerageId)
   if (!verify.ok) return { success: false, error: "Forbidden" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.charge.mark_paid", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "vendor_invoice", id: params.invoiceId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<InvoiceResult> => {
   if (verify.billed_to !== "vendor") return { success: false, error: "Not a vendor charge" }
   if (verify.status === "paid") return { success: false, error: "Invoice already marked paid" }
   if (verify.status === "cancelled") return { success: false, error: "Invoice was cancelled" }
@@ -1660,4 +1674,5 @@ export async function markVendorChargePaid(params: {
 
   if (error) return { success: false, error: error.message }
   return { success: true, invoiceId: params.invoiceId }
+  })
 }
