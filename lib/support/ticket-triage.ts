@@ -157,7 +157,9 @@ export function tenantFacingGate(text: string | null | undefined): { ok: true } 
 
 // ── 3. The help base: candidates the ANSWER must be grounded in ───────────────────────────────
 
-export interface HelpCandidate { id: string; source: "article" | "kb"; title: string; excerpt: string; score: number }
+/** `version` (wave 155, lane 155F): the row's updated_at — the portal answer records WHICH version of the article it answered
+ *  from (directive F1.3, HALLUC-004). */
+export interface HelpCandidate { id: string; source: "article" | "kb"; title: string; excerpt: string; score: number; version?: string | null }
 
 const STOP = new Set(["the", "and", "for", "with", "that", "this", "from", "have", "what", "when", "where", "does", "doesn", "into", "your", "about", "there", "their", "they", "them", "then", "than", "will", "would", "could", "should", "cant", "cannot", "wont", "dont", "didnt", "isnt", "please", "help", "need", "want", "trying", "tried", "still", "just", "very", "some", "more", "also"])
 function tokens(text: string): string[] {
@@ -166,7 +168,7 @@ function tokens(text: string): string[] {
 
 /** PURE: rank help rows by keyword overlap with the ticket text (title ×2, body ×1); only positive scores. */
 /** @proofSeam the proof ranks a fixture directly (an overlapping row kept, an unrelated row dropped) */
-export function rankHelpCandidates(text: string, rows: Array<{ id: string; source: "article" | "kb"; title: string; body: string }>, limit = 5): HelpCandidate[] {
+export function rankHelpCandidates(text: string, rows: Array<{ id: string; source: "article" | "kb"; title: string; body: string; version?: string | null }>, limit = 5): HelpCandidate[] {
   const q = tokens(text)
   if (q.length === 0) return []
   const out: HelpCandidate[] = []
@@ -174,23 +176,25 @@ export function rankHelpCandidates(text: string, rows: Array<{ id: string; sourc
     const title = (r.title ?? "").toLowerCase(), body = (r.body ?? "").toLowerCase()
     let score = 0
     for (const w of q) { if (title.includes(w)) score += 2; else if (body.includes(w)) score += 1 }
-    if (score > 0) out.push({ id: r.id, source: r.source, title: r.title, excerpt: (r.body ?? "").slice(0, 240), score })
+    if (score > 0) out.push({ id: r.id, source: r.source, title: r.title, excerpt: (r.body ?? "").slice(0, 240), score, version: r.version ?? null })
   }
   return out.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title)).slice(0, limit)
 }
 
-/** The help rows this tenant may read (platform-wide OR its own) — the same visibility rule as searchHelp. */
-async function findHelpCandidates(svc: Svc, brokerageId: string, text: string, limit = 5): Promise<HelpCandidate[]> {
+/** The help rows this tenant may read (platform-wide OR its own) — the same visibility rule as searchHelp. Exported (wave 155,
+ *  lane 155F): the portal answer decision (lib/portal/question-answer-decision.ts) answers general questions from this ONE
+ *  help base, never a second retrieval. */
+export async function findHelpCandidates(svc: Svc, brokerageId: string, text: string, limit = 5): Promise<HelpCandidate[]> {
   const scope = `brokerage_id.is.null,brokerage_id.eq.${brokerageId}`
   const [{ data: articles, error: aErr }, { data: topics, error: tErr }] = await Promise.all([
-    svc.from("knowledge_articles").select("id, title, excerpt, content, brokerage_id").eq("status", "published").or(scope).limit(200),
-    svc.from("help_topics_kb").select("id, title, content, brokerage_id").eq("is_active", true).or(scope).limit(200),
+    svc.from("knowledge_articles").select("id, title, excerpt, content, brokerage_id, updated_at").eq("status", "published").or(scope).limit(200),
+    svc.from("help_topics_kb").select("id, title, content, brokerage_id, updated_at").eq("is_active", true).or(scope).limit(200),
   ])
   if (aErr) console.error("[ticket-triage] knowledge_articles read refused:", aErr.message)
   if (tErr) console.error("[ticket-triage] help_topics_kb read refused:", tErr.message)
   const rows = [
-    ...((articles ?? []) as Array<Record<string, unknown>>).map((a) => ({ id: String(a.id), source: "article" as const, title: String(a.title ?? ""), body: String(a.excerpt ?? a.content ?? "") })),
-    ...((topics ?? []) as Array<Record<string, unknown>>).map((t) => ({ id: String(t.id), source: "kb" as const, title: String(t.title ?? ""), body: String(t.content ?? "") })),
+    ...((articles ?? []) as Array<Record<string, unknown>>).map((a) => ({ id: String(a.id), source: "article" as const, title: String(a.title ?? ""), body: String(a.excerpt ?? a.content ?? ""), version: (a.updated_at as string | null) ?? null })),
+    ...((topics ?? []) as Array<Record<string, unknown>>).map((t) => ({ id: String(t.id), source: "kb" as const, title: String(t.title ?? ""), body: String(t.content ?? ""), version: (t.updated_at as string | null) ?? null })),
   ]
   return rankHelpCandidates(text, rows, limit)
 }

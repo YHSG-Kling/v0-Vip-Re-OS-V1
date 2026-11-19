@@ -79,11 +79,18 @@ export interface TutorAnswer {
   answer: string
   relatedModules: Array<{ id: string; title: string | null }>
   held: boolean
+  /** Wave 155 (155F): how the answer was reached — sourced from the record / knowledge, unresolved, uncertain, deferred … */
+  answered?: import("@/lib/portal/question-answer-decision").AnswerState
+  /** Wave 155 (155F): where each stated fact came from (table:row.column) and its version. */
+  sources?: Array<{ source: string; version: string | null }>
+  /** Wave 155 (155F): whether the agent was told / a task opened (one per unresolved question). */
+  ding?: { filed: boolean; deduped: boolean; notified: number }
 }
 
-/** Resolve the client's tutor context (role, stage, agent) — best-effort. */
-async function resolveTutorContext(svc: Svc, contactId: string): Promise<{ ctx: TutorContext; brokerageId: string | null }> {
-  const { data: c } = await svc.from("contacts").select("first_name, contact_type, contact_persona, buyer_stage, brokerage_id, agent_id").eq("id", contactId).maybeSingle()
+/** Resolve the client's tutor context (role, stage, agent) — best-effort, ALWAYS inside the session's tenant (wave 155: a missing
+ *  tenant reads nothing — it never decays into "any tenant"). */
+async function resolveTutorContext(svc: Svc, contactId: string, brokerageId: string): Promise<{ ctx: TutorContext; brokerageId: string | null; agentId: string | null }> {
+  const { data: c } = await svc.from("contacts").select("first_name, contact_type, contact_persona, buyer_stage, brokerage_id, agent_id").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
   const cc = c as any
   const role: TutorContext["role"] = cc?.contact_type === "seller" ? "seller" : isLifetimeCustomerType(cc?.contact_type) ? "homeowner" : cc?.contact_type === "buyer" ? "buyer" : "client"
   let agentName: string | null = null
@@ -99,6 +106,7 @@ async function resolveTutorContext(svc: Svc, contactId: string): Promise<{ ctx: 
   return {
     ctx: { firstName: cc?.first_name ?? null, role, persona: cc?.contact_persona ?? null, stageLabel: cc?.buyer_stage ? String(cc.buyer_stage).replace(/_/g, " ") : null, agentName },
     brokerageId: cc?.brokerage_id ?? null,
+    agentId: cc?.agent_id ?? null,
   }
 }
 
@@ -109,12 +117,20 @@ async function resolveTutorContext(svc: Svc, contactId: string): Promise<{ ctx: 
  */
 export async function answerTutorQuestion(
   svc: Svc,
-  input: { contactId: string; question: string; generate?: TutorGenerator },
+  input: {
+    contactId: string; question: string; generate?: TutorGenerator
+    /** Wave 155 (155F): the SESSION's tenant (requireContactAccess) — REQUIRED; the contact is read inside it, never outside. */
+    brokerageId: string
+    now?: Date
+  },
 ): Promise<TutorAnswer> {
   const question = (input.question ?? "").trim()
   if (!question) return { answer: TUTOR_SAFE_FALLBACK, relatedModules: [], held: false }
+  if (!input.brokerageId) return { answer: TUTOR_SAFE_FALLBACK, relatedModules: [], held: false, answered: "refused", sources: [] }
 
-  const { ctx, brokerageId } = await resolveTutorContext(svc, input.contactId)
+  const { ctx, brokerageId, agentId } = await resolveTutorContext(svc, input.contactId, input.brokerageId)
+  // A contact the session's tenant does not hold is indistinguishable from no contact (PRIV-001): nothing is read or said.
+  if (!brokerageId) return { answer: TUTOR_SAFE_FALLBACK, relatedModules: [], held: false, answered: "refused", sources: [] }
 
   // Related published lessons for this client (reuses the canonical matcher).
   let relatedModules: Array<{ id: string; title: string | null }> = []
@@ -131,25 +147,82 @@ export async function answerTutorQuestion(
     return text
   })
 
-  let answer = ""
-  try { answer = (await generate({ system, prompt: question })).trim() } catch { answer = TUTOR_SAFE_FALLBACK }
+  // WAVE 155 (lane 155F, directive F1 / owner R10): THE ANSWER DECISION. A deal / lender / title / vendor fact is answered from
+  // the RECORD (deterministic, sourced — the model is never asked for a closing date or a loan decision); a guard question
+  // (injection, steering, forecast) gets its fixed answer; a general question is answered at once from the tenant's verified
+  // help base, phrased by this tutor's own model and screened so it cannot add a figure the sources do not carry.
+  const qad = await import("@/lib/portal/question-answer-decision")
+  const decision = brokerageId
+    ? await qad.decidePortalAnswer(svc, {
+        brokerageId, contactId: input.contactId, question, agentName: ctx.agentName,
+        generalAnswer: async ({ sources }) => (await generate({
+          system: sources.length > 0 ? `${system}\nVERIFIED SOURCES — answer ONLY from these; never add a figure, date or deadline they do not contain:\n${sources.map((s) => `- ${s.title}: ${s.excerpt}`).join("\n")}` : system,
+          prompt: question,
+        })).trim(),
+      })
+    : null
+  let answer = decision?.text ?? TUTOR_SAFE_FALLBACK
   let held = false
   if (tutorAnswerRisky(answer)) { answer = TUTOR_SAFE_FALLBACK; held = true }
 
-  // Log the turn (feeds the question→curriculum loop). Best-effort; never blocks the answer.
+  // Log the turn (feeds the question→curriculum loop and the repeated-question topic). Best-effort; never blocks the answer.
+  let sid: string | null = null
   try {
     const { data: session, error: tutorSessionErr } = await svc.from("chat_sessions").insert({
       brokerage_id: brokerageId, contact_id: input.contactId, session_type: "portal_widget", source: "education_tutor", status: "active",
     }).select("id").single()
     if (tutorSessionErr) console.error(`[client-tutor] tutor session NOT created (the turn will not be logged): ${tutorSessionErr.message}`)
-    const sid = (session as any)?.id
+    sid = (session as any)?.id ?? null
     if (sid) {
       await sentinelWrite(svc, svc.from("chat_messages").insert([
         { session_id: sid, role: "user", content: question },
-        { session_id: sid, role: "assistant", content: answer },
+        { session_id: sid, role: "assistant", content: answer, metadata: decision ? { portal_answer: { kind: decision.cls.kind, fact: decision.cls.fact, guard: decision.cls.guard, answered: held ? "held" : decision.answered, sources: decision.sources.slice(0, 6), stripped_sentences: decision.stripped.length } } : {} },
       ]), { table: "chat_messages", flow: "chat_messages_write", reason: "turn log for the curriculum loop; the answer is returned regardless" })
     }
   } catch { /* logging best-effort */ }
 
-  return { answer, relatedModules, held }
+  if (!decision || !brokerageId) return { answer, relatedModules, held }
+  // The follow-through, AFTER the answer is composed: the ding (one per unresolved question), knowledge repair (F3), the topic (F2).
+  const ding = await qad.fileQuestionDing(svc, { brokerageId, contactId: input.contactId, sessionId: sid, agentId, question, decision, surface: "portal_tutor", now: input.now })
+  if (!ding.filed && !ding.deduped && ding.notified === 0 && decision.plan.notify) console.error(`[client-tutor] question ding not filed: ${ding.reason}`)
+  await followThroughKnowledge(svc, { brokerageId, contactId: input.contactId, agentId, question, decision: { ...decision, answered: held ? "held" : decision.answered }, sessionId: sid, now: input.now })
+  return { answer, relatedModules, held, answered: held ? "held" : decision.answered, sources: decision.sources.map((s) => ({ source: s.source, version: s.version })), ding: { filed: ding.filed, deduped: ding.deduped, notified: ding.notified } }
+}
+
+/**
+ * F3 + F2 for a portal question: a shaky answer (uncertain, held, or the same person asking the same theme again within the
+ * re-ask window) opens ONE knowledge-verification task first; an eligible general question is offered to the ONE repeated-
+ * question feeder (lib/customer-intelligence/website-question-topics.ts — distinct askers, first-party floor, held while a
+ * repair is open). Never throws; nothing here blocks the answer.
+ */
+async function followThroughKnowledge(svc: Svc, a: { brokerageId: string; contactId: string; agentId: string | null; question: string; decision: import("@/lib/portal/question-answer-decision").PortalAnswerDecision; sessionId: string | null; now?: Date }): Promise<void> {
+  try {
+    const { classifyQuestion } = await import("@/lib/education/question-gap")
+    const theme = classifyQuestion(a.question)?.topic ?? null
+    const qad = await import("@/lib/portal/question-answer-decision")
+    if (!(a.decision.cls.kind === "general_education" || a.decision.cls.kind === "tenant_procedure") || a.decision.cls.guard) return
+    let reasked = false
+    if (theme) {
+      const now = a.now ?? new Date()
+      const since = new Date(now.getTime() - qad.REASK_WINDOW_MINUTES * 60_000).toISOString()
+      const { data: sess, error: sErr } = await svc.from("chat_sessions").select("id").eq("brokerage_id", a.brokerageId).eq("contact_id", a.contactId).eq("session_type", "portal_widget").gte("created_at", since).limit(20)
+      const prior = ((sess ?? []) as Array<{ id: string }>).map((s) => s.id).filter((id) => id !== a.sessionId)
+      if (!sErr && prior.length > 0) {
+        const { data: msgs } = await svc.from("chat_messages").select("content").in("session_id", prior).eq("role", "user").limit(50)
+        reasked = ((msgs ?? []) as Array<{ content: string | null }>).some((m) => classifyQuestion(m.content)?.topic === theme)
+      }
+    }
+    const why = qad.needsKnowledgeRepair({ answered: a.decision.answered, reaskedAfterAnswer: reasked })
+    if (why && theme) {
+      const r = await qad.markKnowledgeForRepair(svc, { brokerageId: a.brokerageId, agentId: a.agentId, theme, reason: why, sources: a.decision.sources.map((s) => s.source), now: a.now })
+      if (r.error) console.error(`[client-tutor] knowledge repair not filed: ${r.error}`)
+    }
+    if (a.decision.cls.topicEligible) {
+      const { considerCustomerQuestion } = await import("@/lib/customer-intelligence/website-question-topics")
+      const t = await considerCustomerQuestion(svc, { brokerageId: a.brokerageId, text: a.question, now: a.now })
+      if (t.status === "refused") console.error(`[client-tutor] question topic not recorded: ${t.reason}`)
+    }
+  } catch (e) {
+    console.error("[client-tutor] knowledge follow-through failed (non-blocking):", e instanceof Error ? e.message : e)
+  }
 }

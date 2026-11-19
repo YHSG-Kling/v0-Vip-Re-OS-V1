@@ -167,11 +167,45 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
     // topic in the canonical pool — never a visitor's words, never a person, never a persona field. An unclassifiable
     // question costs nothing; a refusal is said and never blocks the answer. Dynamic import: off this route's hot graph.
     try {
-      const { considerWebsiteQuestion } = await import('@/lib/customer-intelligence/website-question-topics')
-      const topic = await considerWebsiteQuestion(supabase, { brokerageId: session.brokerage_id ?? null, text: userText })
+      const { considerCustomerQuestion } = await import('@/lib/customer-intelligence/website-question-topics')
+      const topic = await considerCustomerQuestion(supabase, { brokerageId: session.brokerage_id ?? null, text: userText })
       if (topic.status === 'refused') console.error('[widget/message] website question topic not recorded:', topic.reason)
     } catch (e) {
       console.error('[widget/message] website question topic step failed (non-blocking):', e instanceof Error ? e.message : e)
+    }
+
+    // ── THE ANSWER DECISION (wave 155, lane 155F — directive F1, owner R10) ──
+    // A guarded question (an instruction to the assistant, a neighborhood-character question, a rate / price forecast) or one
+    // about a specific deal, lender, title, insurance, a legal / financial judgment or a request for a human is answered
+    // DETERMINISTICALLY here — no model, no tools. The visitor token is never a portal sign-in, so no deal fact is read or
+    // stated on this door (contactId null); the session's assigned agent gets ONE task / bell for it (deduplicated), and the
+    // tenant stays the session row's (INJECT-001 — nothing in the message or the body can name another). General questions
+    // stream from the model below as before.
+    try {
+      const qad = await import('@/lib/portal/question-answer-decision')
+      const cls = qad.classifyPortalQuestion(userText)
+      if (cls.guard || cls.urgency === 'critical' || !(cls.kind === 'general_education' || cls.kind === 'tenant_procedure')) {
+        const decision = await qad.decidePortalAnswer(supabase, { brokerageId: session.brokerage_id, contactId: null, question: userText, agentName: null })
+        const text = decision.text.replace(/your agent/g, 'someone from the team')
+        await sentinelWrite(supabase, supabase.from('chat_messages').insert({
+          session_id: session.id, role: 'assistant', content: text,
+          metadata: { widget: true, assistant_name: brand.assistantName, portal_answer: { kind: cls.kind, fact: cls.fact, guard: cls.guard, answered: decision.answered, model_calls: 0 } },
+        }), { table: "chat_messages", flow: "chat_messages_write", reason: "chat history persistence; never blocks the answer" })
+        const ding = await qad.fileQuestionDing(supabase, { brokerageId: session.brokerage_id, contactId: session.contact_id ?? null, sessionId: session.id, agentId: session.agent_id ?? null, question: userText, decision, surface: 'website_widget' })
+        if (decision.plan.notify && !ding.filed && !ding.deduped && ding.notified === 0) console.error('[widget/message] question ding not filed:', ding.reason)
+        const { createUIMessageStream, createUIMessageStreamResponse } = await import('ai')
+        return createUIMessageStreamResponse({
+          stream: createUIMessageStream({
+            execute: ({ writer }) => {
+              writer.write({ type: 'text-start', id: 'answer' })
+              writer.write({ type: 'text-delta', id: 'answer', delta: text })
+              writer.write({ type: 'text-end', id: 'answer' })
+            },
+          }),
+        })
+      }
+    } catch (e) {
+      console.error('[widget/message] answer decision failed — the model answers under its own rails (non-blocking):', e instanceof Error ? e.message : e)
     }
 
     // ── Stream response ───────────────────────────────────────────────────

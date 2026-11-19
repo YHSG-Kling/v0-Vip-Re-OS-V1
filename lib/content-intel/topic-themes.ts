@@ -262,10 +262,14 @@ export function customerQuestionThemes(rows: readonly QuestionRow[], now: Date):
     if (r.channel !== "support" && !isQuestion(text)) continue
     const why = excludedTopicReason(text)
     if (why) { dropped[`excluded_topic:${why}`] = (dropped[`excluded_topic:${why}`] ?? 0) + 1; continue }
+    // Wave 155 (lane 155F, PRIV-003 — "minimum distinct askers enforced"): a row with NO asker key cannot be proven a DIFFERENT
+    // person. It used to count as a fresh asker each time (`anon:${set.size}`), so three anonymous rows — possibly one person —
+    // cleared the floor and one private question could become public content. It is now not counted, and said.
+    if (!r.contact_key) { if (themesOf(text).length > 0) dropped.unidentified_asker = (dropped.unidentified_asker ?? 0) + 1; continue }
     for (const t of themesOf(text)) {
       if (r.channel === "support") supportThemes.add(t.key)
       const set = askers.get(t.key) ?? new Set<string>()
-      set.add(r.contact_key ?? `anon:${set.size}`)
+      set.add(r.contact_key)
       askers.set(t.key, set)
       newest.set(t.key, [newest.get(t.key) ?? "", r.at ?? ""].sort().pop() ?? "")
     }

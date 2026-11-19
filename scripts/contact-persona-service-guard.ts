@@ -196,18 +196,20 @@ async function main() {
   check("(1) never a phantom seller lead: no lead, raw lead or contact row is written by the sweep", [hAgent, hNote].every((d) => d.writes.every((w) => !["leads", "raw_scraped_leads", "contacts"].includes(w.table) || w.op !== "insert")) && (hNote.tables.leads ?? []).length === 0)
 
   // (2) Three consented website questions on builder warranties → ONE anonymized local FAQ topic, never three identities.
-  const { considerWebsiteQuestion } = await import("../lib/customer-intelligence/website-question-topics")
+  // Wave 155 (lane 155F, F2): the feeder is considerCustomerQuestion (website chat + portal assistant askers, one count); a row
+  // carries its ASKER key (`s:` session for an anonymous visitor, `c:` contact for a signed-in portal asker).
+  const { considerCustomerQuestion: considerWebsiteQuestion } = await import("../lib/customer-intelligence/website-question-topics")
   const qRows = (b: string): Array<{ sessionId: string; content: string; createdAt: string; brokerageId: string }> => [
     { brokerageId: b, sessionId: "s-1", content: "Does the builder warranty cover the roof on a new build in Pace? my email is pat@example.com", createdAt: DAY(-3).toISOString() },
     { brokerageId: b, sessionId: "s-2", content: "how long is a typical new construction warranty?", createdAt: DAY(-2).toISOString() },
     { brokerageId: b, sessionId: "s-3", content: "What does the builder's warranty not cover?", createdAt: DAY(-1).toISOString() },
   ]
   const allQs = [...qRows(B1), { brokerageId: B2, sessionId: "x-9", content: "is there a builder warranty on new homes in Boise?", createdAt: DAY(-1).toISOString() }]
-  const reader2 = (rows: typeof allQs) => async (_db: unknown, a: { brokerageId: string }) => ({ rows: rows.filter((r) => r.brokerageId === a.brokerageId).map(({ sessionId, content, createdAt }) => ({ sessionId, content, createdAt })) })
+  const reader2 = (rows: typeof allQs) => async (_db: unknown, a: { brokerageId: string }) => ({ rows: rows.filter((r) => r.brokerageId === a.brokerageId).map(({ sessionId, content, createdAt }) => ({ askerKey: `s:${sessionId}`, content, createdAt })) })
   const intakeCalls: Array<Row> = []
   const intake = async (_db: unknown, a: Row) => { intakeCalls.push(a); return { ok: true, inserted: 1, merged: 0, excluded: [] } }
-  const w3 = await considerWebsiteQuestion({ from: () => { throw new Error("no direct read expected") } }, { brokerageId: B1, text: "What does the builder's warranty not cover?", now: NOW }, { readQuestions: reader2(allQs) as never, intake: intake as never })
-  const idea = (intakeCalls[0]?.ideas ?? [])[0] as Row | undefined
+  const w3 = await considerWebsiteQuestion({ from: () => { throw new Error("no direct read expected") } }, { brokerageId: B1, text: "What does the builder's warranty not cover?", now: NOW }, { readQuestions: reader2(allQs) as never, intake: intake as never, openRepair: async () => null })
+  const idea =(intakeCalls[0]?.ideas ?? [])[0] as Row | undefined
   check("SIMULATED (2): three DISTINCT website askers → ONE topic submitted to the canonical intake (one call, one idea)", w3.status === "submitted" && intakeCalls.length === 1 && intakeCalls[0].ideas.length === 1 && intakeCalls[0].brokerageId === B1, JSON.stringify(w3))
   check("(2) the idea is a REWORDED local FAQ + education brief — first_party rights, measured distinct-asker count, no visitor words, no email, no session id",
     !!idea && idea.rights === "first_party" && idea.evidence?.kind === "measured" && idea.evidence?.value === 3 && /builder warranty cover/i.test(idea.title) && !/pat@example\.com|s-1|s-2|s-3|roof on a new build/i.test(JSON.stringify(idea)) && (idea.brief?.suggested_original_formats ?? []).includes("education_magnet"), JSON.stringify(idea))
@@ -224,9 +226,9 @@ async function main() {
   const bankRow = (realDb.tables.content_topic_bank ?? [])[0] ?? {}
   check("(2) the stored topic row carries no visitor wording or contact point", !/pat@example\.com|roof on a new build|s-1\b/.test(JSON.stringify(bankRow)))
   const widget = code("app/api/widget/message/route.ts")
-  check("(2) the website widget calls the feeder after it stores the visitor's question (dynamic import, non-blocking, refusal said)", /chat_messages['"]\)\.insert\([\s\S]{0,1200}considerWebsiteQuestion\(/.test(widget) && /await import\(['"]@\/lib\/customer-intelligence\/website-question-topics['"]\)/.test(widget))
+  check("(2) the website widget calls the feeder after it stores the visitor's question (dynamic import, non-blocking, refusal said)", /chat_messages['"]\)\.insert\([\s\S]{0,1200}considerCustomerQuestion\(/.test(widget) && /await import\(['"]@\/lib\/customer-intelligence\/website-question-topics['"]\)/.test(widget))
   const feeder = code("lib/customer-intelligence/website-question-topics.ts")
-  check("(2) the feeder's own read is tenant-bound and website-widget-only (unconditional predicates)", /\.eq\(\s*["']chat_sessions\.brokerage_id["'],\s*a\.brokerageId\s*\)/.test(feeder) && /\.eq\(\s*["']chat_sessions\.session_type["'],\s*["']website_widget["']\s*\)/.test(feeder))
+  check("(2) the feeder's own read is tenant-bound and customer-question sessions only — website widget + portal assistant (unconditional predicates)", /\.eq\(\s*["']chat_sessions\.brokerage_id["'],\s*a\.brokerageId\s*\)/.test(feeder) && /\.in\(\s*["']chat_sessions\.session_type["'],\s*\[\.\.\.CUSTOMER_QUESTION_SESSION_TYPES\]\s*\)/.test(feeder) && /CUSTOMER_QUESTION_SESSION_TYPES\s*=\s*\[\s*["']website_widget["'],\s*["']portal_widget["']\s*\]\s*as const/.test(feeder))
 
   // (3) A current seller asks about closing costs and insurance → a comparison from SUPPLIED facts; title / lender → those vendors.
   const { computeNetSheetScenario } = await import("../lib/cma/net-sheet-math")

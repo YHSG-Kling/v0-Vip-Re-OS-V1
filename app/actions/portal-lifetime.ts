@@ -14,6 +14,7 @@ import { isNextMoveIntent, nextStepForIntent, type NextMoveIntent } from "@/lib/
 import {
   validateHomeQuestion,
   buildHomeAssistantSystemPrompt,
+  buildHomeFactsBlock,
   fallbackHomeAnswer,
   classifyHomeFollowUp,
   vendorCategoryFor,
@@ -334,6 +335,20 @@ export async function askHomeAssistant(params: {
       .filter((c): c is string => !!c),
   }
 
+  // WAVE 155 (lane 155F — directive F1, owner R10): a guarded question (instruction to the assistant, neighborhood character,
+  // a forecast), a wire / funds alarm, or a question about THIS person's deal / lender / title / insurance is answered from the
+  // RECORD, deterministically (no model), with the agent told — one task per unresolved question, the off-platform party asked
+  // through the assigned human. The session's tenant (access.brokerageId) scopes every read.
+  const qad = await import("@/lib/portal/question-answer-decision")
+  const cls = qad.classifyPortalQuestion(question)
+  if (cls.guard || cls.urgency === "critical" || cls.kind === "own_transaction" || cls.kind === "vendor_fact") {
+    const svc = createServiceClient()
+    const decision = await qad.decidePortalAnswer(svc, { brokerageId: access.brokerageId, contactId: params.contactId, question, agentName: facts.agentName ?? null })
+    const ding = await qad.fileQuestionDing(svc, { brokerageId: access.brokerageId, contactId: params.contactId, sessionId: null, agentId: ctx.contact?.agent_id ?? null, question, decision, surface: "home_assistant" })
+    if (decision.plan.notify && !ding.filed && !ding.deduped && ding.notified === 0) console.error(`[portal-lifetime] question ding not filed: ${ding.reason}`)
+    return { ok: true, answer: decision.text }
+  }
+
   let answer: string
   try {
     const { generateTextRouted } = await import("@/lib/ai/models")
@@ -348,8 +363,10 @@ export async function askHomeAssistant(params: {
       agentId: ctx.contact?.agent_id ?? undefined,
     })
     const generated = (text ?? "").trim()
-    // Empty / gateway-unconfigured → deterministic floor, never an error to the client.
-    answer = generated.length > 0 ? generated : fallbackHomeAnswer(facts)
+    // HALLUC-006 (wave 155, 155F): a figure, date or deal status the facts block does not carry is stripped; a draft that loses
+    // everything is held and the deterministic floor answers. Empty / gateway-unconfigured → the floor, never an error.
+    const screened = qad.screenDraftAgainstSources(generated, [buildHomeFactsBlock(facts)])
+    answer = generated.length > 0 && !screened.held ? screened.text : fallbackHomeAnswer(facts)
   } catch {
     answer = fallbackHomeAnswer(facts)
   }
