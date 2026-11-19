@@ -300,6 +300,27 @@ export interface ActionContext {
    */
   policyKey?: string | null
   policyVersion?: number | null
+  /**
+   * WAVE 155 (lane 155B3, directive §B3) — the decision contract's facts, OPTIONAL and additive. Set by the BOUNDARY that knows
+   * them, never by a model. Present facts are normalized onto `detail.governance` (decisionContractFacts) on the SAME insert — no
+   * extra round trip. An unmapped spelling reads null and is named in `contract_findings`.
+   */
+  trustClass?: string | null
+  /** The facts / versions the decision READ (dependency fingerprint is a digest over this set). */
+  dependencies?: Array<{ type: string; id?: string | null; version?: string | number | null }> | null
+  approvalBasis?: string | null
+  /** When the DECISION stops being valid (an expired decision does not execute — sinkRule). */
+  expiresAt?: string | null
+  nextTrigger?: NextTriggerInput | null
+  /** Sink-rule inputs only the boundary may supply (ledgerToolCall / ledgerToolExecutions read them; never persisted verbatim). */
+  sink?: {
+    verification?: VerificationInput | null
+    /** A target manager the MODEL named (data) — checked against `allowedManagers`, never trusted. */
+    proposedTargetManager?: string | null
+    allowedManagers?: readonly string[] | null
+    /** The model's own fields (e.g. "approved: true") — recorded for audit, NEVER read by the rule. */
+    modelClaims?: Record<string, unknown> | null
+  } | null
 }
 
 export interface LedgerEntry {
@@ -327,6 +348,9 @@ export interface Settlement {
   providerRef?: string | null
   costUsd?: number | null
   error?: string | null
+  /** WAVE 155 (155B3): a settle that learns the verdict (a spend envelope, a gate) may write the row's FULL detail on the SAME update
+   *  (no extra round trip). The caller passes the whole detail — it replaces, never merges. Absent = detail untouched. */
+  detail?: Record<string, unknown> | null
 }
 
 const ENTRY_COLS = "id, status, attempts, outcome, provider, provider_ref, idempotency_key"
@@ -380,7 +404,8 @@ async function insertLedgerRow(
     // Before m700 the column is absent (PGRST204 / 42703): the row is re-written WITHOUT it and the
     // ref rides detail.policy_ref — the action stays ledgered, the evidence stays.
     // Audit sink: a secret by name or shape never lands in the ledger detail (wave 139E).
-    detail: redactSecretValues(withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef }),
+    // WAVE 155 (155B3): the context's decision-contract facts ride detail.governance on this same insert (decisionContractFacts).
+    detail: redactSecretValues(withContractFacts(ctx, withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef })),
     ...(withPolicyColumn ? { policy_ref: policyRef } : {}),
     ...extra,
     }).select("id").single()
@@ -464,6 +489,8 @@ async function settleAction(id: string, s: Settlement, opts?: { client?: LedgerC
   try {
     const svc = opts?.client ?? createServiceClient()
     const now = new Date().toISOString()
+    // Audit sink (wave 139E) on the settle path too: a secret never lands in the detail a settle writes.
+    const settledDetail = s.detail ? redactSecretValues(s.detail) : null
     const { data, error } = await svc
       .from("agent_action_ledger")
       .update({
@@ -473,6 +500,7 @@ async function settleAction(id: string, s: Settlement, opts?: { client?: LedgerC
         provider_ref: s.providerRef ?? null,
         cost_usd: s.costUsd ?? null,
         error: s.error ?? null,
+        ...(settledDetail ? { detail: settledDetail } : {}),
         settled_at: now,
         updated_at: now,
       })
@@ -631,8 +659,76 @@ function toolReplay(claim: NonActingClaim): { success: boolean; error?: string }
  * SAME settle / replay rules as ledgerToolExecutions below. The caller's `cycle` is its unit of once (the released hold id), so a
  * replayed or racing confirm of one read-back executes at most once.
  */
-export function ledgerToolCall<T>(ctx: ActionContext, run: () => Promise<T>, opts?: { client?: LedgerClient }): Promise<T | { success: boolean; error?: string }> {
+export function ledgerToolCall<T>(ctx: ActionContext, run: () => Promise<T>, opts?: { client?: LedgerClient; now?: Date }): Promise<T | SinkRefusal | { success: boolean; error?: string }> {
+  // WAVE 155 (155B3, directive §B3 / D 152): the sink rule decides BEFORE the claim — pure, no model, no I/O. A permitted call
+  // takes exactly the round trips it took before (claim + settle); a refusal writes ONE decision row and returns typed feedback.
+  const verdict = sinkVerdictFor(ctx, opts?.now)
+  if (verdict.decision !== "ALLOW") return refuseAtSink(ctx, verdict, opts)
   return withActionLedger<T | { success: boolean; error?: string }>(ctx, run, { settle: settleToolResult, replay: toolReplay }, opts)
+}
+
+/**
+ * WAVE 155 (lane 155B3 — integrator addendum, for the batch-2 repair lanes): ONE wrapper for a USER-INITIATED write (a server
+ * action / a session route) — claim → run → settle on agent_action_ledger with the SAME result-reading rule the tool wrapper uses
+ * (settleToolResult) and a typed refusal on replay (toolReplay — the run is never called twice). It sets nothing the caller did not
+ * pass, except the trust class: `authorized_human` ONLY when the actor is a user with a userId (a session write is not model output).
+ * The tenant is `ctx.brokerageId` exactly as passed — the caller resolves it from the session (CLAUDE.md §4). A two-segment action
+ * name is REFUSED by the claim (ACTION_NAME_PATTERN) and comes back as the typed refusal. Round trips: claim + settle, nothing more;
+ * an absent ledger degrades exactly as withActionLedger does. Not a model door: the sink rule stays on ledgerToolCall /
+ * ledgerToolExecutions, where a model proposes.
+ * @proofSeam scripts/arbiter-decision-contract-guard.ts §G drives it; the batch-2 repair lanes are its callers.
+ */
+export function ledgerSessionAction<T>(ctx: ActionContext, run: () => Promise<T>, opts?: { client?: LedgerClient }): Promise<T | { success: boolean; error?: string }> {
+  const sessionUser = ctx.actor.type === "user" && !!ctx.actor.userId
+  const call: ActionContext = ctx.trustClass || !sessionUser ? ctx : { ...ctx, trustClass: "authorized_human" }
+  return withActionLedger<T | { success: boolean; error?: string }>(call, run, { settle: settleToolResult, replay: toolReplay }, opts)
+}
+
+/** The typed feedback a refused tool call returns to its caller (the model / the speaker): never a silent drop, never a 500. */
+export interface SinkRefusal {
+  success: false
+  error: string
+  governance: { decision: "DENY" | "HOLD"; reason: SinkReason; next_trigger: NextTrigger | null; recorded: boolean }
+}
+
+/** PURE. The sink verdict for a ledgered tool context — the boundary's facts only (the model's claims are never read). */
+function sinkVerdictFor(ctx: ActionContext, now?: Date): SinkVerdict {
+  return sinkRule({
+    riskClass: ctx.riskClass ?? null, trustClass: ctx.trustClass ?? null, verification: ctx.sink?.verification ?? null,
+    approvalBasis: ctx.approvalBasis ?? null, expiresAt: ctx.expiresAt ?? null, now: now ?? new Date(),
+    proposedTargetManager: ctx.sink?.proposedTargetManager ?? null, allowedManagers: ctx.sink?.allowedManagers ?? null,
+    modelClaims: ctx.sink?.modelClaims ?? null,
+  })
+}
+
+/**
+ * A refusal at the sink is a DECISION: ONE `<domain>.decision.wait` (HOLD) / `.do_nothing` (DENY) row with the typed reason, the
+ * next trigger and the contract facts on detail.governance. Keyed by the call's cycle, so a replay of the same refused call adds
+ * no row (23505 → already recorded). The tool never runs.
+ */
+async function refuseAtSink(ctx: ActionContext, v: SinkVerdict, opts?: { client?: LedgerClient }): Promise<SinkRefusal> {
+  const domain = ctx.action.split(".")[0] || "ai"
+  const key = ctx.cycle && ctx.cycle.trim()
+    ? actionIdempotencyKey({ brokerageId: ctx.brokerageId, subjectType: ctx.subject.type, subjectId: ctx.subject.id ?? "-", action: `${domain}.decision.sink`, cycle: `${ctx.action}:${ctx.cycle.trim()}` })
+    : null
+  const governance = governanceRecord({
+    plane: "tool_boundary", verdict: v.decision === "HOLD" ? "hold" : "deny",
+    scope: { brokerageId: ctx.brokerageId, userId: ctx.actor.userId ?? null }, actor: { type: ctx.actor.type, id: ctx.actor.managerKey ?? ctx.actor.userId ?? ctx.actor.agentId ?? null },
+    causationId: ctx.causationId ?? null, correlationId: ctx.correlationId ?? null,
+    entity: { type: ctx.subject.type, id: ctx.subject.id ?? null, version: null },
+    objective: ctx.action, policyConstraints: [`sink rule: ${v.reason}`, `risk class ${ctx.riskClass ?? "unknown"}`], rationale: v.detail,
+    trustClass: ctx.trustClass ?? null, dependencies: ctx.dependencies ?? null, approvalBasis: null, expiresAt: ctx.expiresAt ?? null, nextTrigger: v.nextTrigger,
+  })
+  const r = await recordNonAction({
+    ...ctx, domain, decision: v.decision === "HOLD" ? "wait" : "do_nothing", idempotencyKey: key, cycle: null,
+    reasonDetail: `sink ${v.decision}: ${v.reason} — ${v.detail}`.slice(0, 1000),
+    detail: { ...(ctx.detail ?? {}), proposed_action: ctx.action, ...(ctx.sink?.modelClaims ? { model_claims_ignored: Object.keys(ctx.sink.modelClaims).slice(0, 20) } : {}), governance },
+  }, opts)
+  return {
+    success: false,
+    error: `Not done — ${v.decision === "HOLD" ? "held for verification" : "refused"}: ${v.detail}`,
+    governance: { decision: v.decision as "DENY" | "HOLD", reason: v.reason, next_trigger: v.nextTrigger, recorded: r.recorded },
+  }
 }
 
 /**
@@ -660,8 +756,14 @@ export function ledgerToolExecutions<T extends Record<string, unknown>>(
     if (!LEDGERED_TOOL_RISK.has(risk) || typeof exec !== "function" || !/^[a-z][a-z0-9_]*$/.test(name)) { out[name] = t; continue }
     out[name] = {
       ...(t as object),
-      execute: (args: unknown, options?: { toolCallId?: string }) => withActionLedger<unknown>(
-        {
+      execute: async (args: unknown, options?: { toolCallId?: string }) => {
+        // WAVE 155 (155B3, D 152): the call IS a model proposal — the trust class is set HERE, by the wrapper, never read from the
+        // model's arguments. Its recorded verification is the tool's NAMED deterministic gate (persona-tool-policy.ts
+        // TOOL_APPROVAL_GATE — the dispatch policy chain / the approval queue the tool hands to); a consequential tool with no named
+        // gate is HELD at the sink. Already loaded by the mount (customer-context-tools.ts) — a module lookup, not a round trip.
+        const { TOOL_APPROVAL_GATE } = await import("@/lib/ai-isa/persona-tool-policy")
+        const gate = TOOL_APPROVAL_GATE[name]
+        const call: ActionContext = {
           brokerageId: ctx.brokerageId,
           action: `ai.tool.${name}`,
           channel: "ai_tool",
@@ -672,14 +774,26 @@ export function ledgerToolExecutions<T extends Record<string, unknown>>(
           cycle: options?.toolCallId ?? null,
           detail: { tool: name },
           policyKey: ctx.policyKey ?? null,
-        },
-        () => Promise.resolve((exec as (a: unknown, o?: unknown) => unknown)(args, options)),
-        {
-          settle: settleToolResult,
-          replay: toolReplay,
-        },
-        opts,
-      ),
+          trustClass: "model_output",
+          dependencies: [{ type: ctx.subject.type, id: ctx.subject.id ?? null, version: null }],
+          approvalBasis: gate ? "policy_permitted" : null,
+          sink: { verification: gate ? { kind: "deterministic", check: `TOOL_APPROVAL_GATE.${name}` } : null, modelClaims: args && typeof args === "object" ? args as Record<string, unknown> : null },
+        }
+        const verdict = sinkVerdictFor(call)
+        if (verdict.decision !== "ALLOW") return refuseAtSink(call, verdict, opts)
+        call.detail = { tool: name, governance: governanceRecord({
+          plane: "tool_boundary", verdict: "allow", scope: { brokerageId: ctx.brokerageId }, actor: { type: call.actor.type, id: call.actor.managerKey ?? call.actor.userId ?? null },
+          entity: { type: ctx.subject.type, id: ctx.subject.id ?? null, version: null }, objective: call.action,
+          policyConstraints: [`sink rule: ${verdict.reason}`, ...(ctx.policyKey ? [ctx.policyKey] : [])], rationale: verdict.detail,
+          trustClass: call.trustClass, dependencies: call.dependencies, approvalBasis: verdict.approvalBasis, verification: call.sink?.verification ?? null,
+        }) }
+        return withActionLedger<unknown>(
+          call,
+          () => Promise.resolve((exec as (a: unknown, o?: unknown) => unknown)(args, options)),
+          { settle: settleToolResult, replay: toolReplay },
+          opts,
+        )
+      },
     }
   }
   return out as T
@@ -751,6 +865,20 @@ interface GovernanceRecordInput {
   evidenceRefs?: string[]
   /** A hold names who can release it and when it is reassessed. */
   approver?: { required: boolean; userIds?: string[]; expiresAt?: string | null } | null
+  // ── WAVE 155 (lane 155B3, directive §B3): the facts the record did not carry. All OPTIONAL; unknown stays null. ──
+  /** What the decision RESTS ON (DECISION_TRUST_CLASSES, or an existing spelling TRUST_CLASS_MAP reads). */
+  trustClass?: string | null
+  /** Every fact / version the decision READ — digested into `dependency_fingerprint` (with `entity`). */
+  dependencies?: Array<{ type: string; id?: string | null; version?: string | number | null }> | null
+  /** WHY it may execute (APPROVAL_BASES, or an existing spelling APPROVAL_BASIS_MAP reads). Never a model's field. */
+  approvalBasis?: string | null
+  /** When the DECISION stops being valid. */
+  expiresAt?: string | null
+  nextTrigger?: NextTriggerInput | null
+  /** The recorded verification that cleared an untrusted origin (a named deterministic check, or an authorized human). */
+  verification?: VerificationInput | null
+  /** One accountable decider for a conflict: the winner, and the loser's typed outcome + next trigger. */
+  arbitration?: ArbitrationInput | null
 }
 
 /**
@@ -780,7 +908,260 @@ export function governanceRecord(i: GovernanceRecordInput): Record<string, unkno
     rationale: i.rationale.slice(0, 600),
     evidence_refs: list(i.evidenceRefs),
     approver: i.approver ? { required: i.approver.required, user_ids: list(i.approver.userIds), expires_at: i.approver.expiresAt ?? null } : null,
+    ...decisionContractFacts({ ...i, dependencies: [...(i.entity ? [i.entity] : []), ...(i.dependencies ?? [])] }),
   }
+}
+
+// ─── WAVE 155 (lane 155B3, directive §B3 / D 148–152) — THE CONTRACT'S MISSING FACTS + THE SINK RULE ──────────────────────────
+// NOT a new arbiter, table or kernel: the facts §B3 lists that `detail.governance` did not carry (trust class, dependency
+// fingerprint, approval basis, decision expiry, next trigger, the recorded verification, the conflict's accountable decider), each a
+// CLOSED vocabulary defined HERE once, read from existing spellings through ONE mapping table each (an unmapped spelling reads
+// null and is named in `contract_findings` — a finding, never a guess, exactly like GOVERNANCE_VERB_MAP). Research taken as RULES
+// (Arbiter-K, arXiv 2604.18652): the model is a non-privileged proposal generator; taint is tagged at ingress; nothing tainted
+// reaches a consequential sink without an explicit verification; a refusal is feedback, not an abort.
+
+/** What a decision rests on. The first three are TRUSTED (established by the platform / a person with authority); the rest are
+ *  UNTRUSTED (a model's output, a person's inbound words, public text, a document's text, a vendor claim with no seat). */
+export const DECISION_TRUST_CLASSES = ["verified_first_party", "authorized_human", "tenant_policy", "model_output", "inbound_message", "public_web_text", "uploaded_document_text", "unseated_vendor_claim"] as const
+export type DecisionTrustClass = (typeof DECISION_TRUST_CLASSES)[number]
+const TRUSTED_CLASSES: ReadonlySet<DecisionTrustClass> = new Set(["verified_first_party", "authorized_human", "tenant_policy"])
+
+/** THE ONE TRUST MAPPING: an existing spelling → its class. Canonical spellings map to themselves. */
+const TRUST_CLASS_MAP: Readonly<Record<string, DecisionTrustClass>> = {
+  ...Object.fromEntries(DECISION_TRUST_CLASSES.map((c) => [c, c])),
+  // app/api/agent-assistant/tool-call/route.ts TOOL_INPUT_TRUST (wave 153O): the verified rows / the registry are first-party; a
+  // typed parameter is still the model's proposal (the identity gates check it — they do not make it the platform's).
+  verified_session_row: "verified_first_party", verified_users_row: "verified_first_party", tool_registry: "verified_first_party",
+  typed_parameter_behind_declared_identity_gates: "model_output",
+  // The two text fences (they do different jobs — not merged): lib/content-intel/public-chatter-topics.ts fenceUntrusted (a typed
+  // wrapper over a public post / page) and lib/repurpose/refurbish-idea.ts fenceUntrustedSource (a prompt fence over fetched text).
+  fenceUntrusted: "public_web_text", fenceUntrustedSource: "public_web_text",
+}
+
+/** WHY a decision may execute. Reuses the existing spellings where they exist (APPROVAL_BASIS_MAP). */
+export const APPROVAL_BASES = ["policy_permitted", "human_approval", "tenant_override", "standing_authority"] as const
+export type ApprovalBasis = (typeof APPROVAL_BASES)[number]
+const APPROVAL_BASIS_MAP: Readonly<Record<string, ApprovalBasis>> = {
+  ...Object.fromEntries(APPROVAL_BASES.map((b) => [b, b])),
+  // the approval plane's `approved`; lib/managers/autonomy-gate.ts HUMAN_APPROVED_SYSTEM_SOURCE; video-render-hold `releasedBy`
+  approved: "human_approval", agent_client_message: "human_approval",
+  // lib/kernel/strategy-library.ts change source `tenant_policy` (a tenant's own override of the default)
+  tenant_policy: "tenant_override",
+  // an autonomy posture the tenant granted (lib/managers/eval-scoring.ts AutonomyPosture) is a standing authority
+  autonomous: "standing_authority", review_recommended: "standing_authority",
+  // the tool boundary's `allow` and the resource plane's `allowed`: the policy permitted it
+  allow: "policy_permitted", allowed: "policy_permitted",
+}
+
+/** What happens next for a decision that did not (yet) execute. `none` is a RECORDED fact (nothing re-triggers it), not a gap. */
+export const NEXT_TRIGGER_KINDS = ["time", "event", "human", "re_evaluate", "none"] as const
+export type NextTriggerKind = (typeof NEXT_TRIGGER_KINDS)[number]
+export interface NextTriggerInput { kind: string; at?: string | null; event?: string | null; detail?: string | null }
+export interface NextTrigger { kind: NextTriggerKind; at: string | null; event: string | null; detail: string | null }
+
+export type VerificationInput =
+  | { kind: "deterministic"; check: string }
+  | { kind: "authorized_human"; userId: string; authority: string; at?: string | null }
+export type DecisionVerification =
+  | { kind: "deterministic"; check: string }
+  | { kind: "authorized_human"; user_id: string; authority: string; at: string | null }
+
+/** The four conflict classes directive §B3 names, each resolved by its EXISTING survivor (the record names the decider). */
+export const CONFLICT_CLASSES = ["same_contact", "same_campaign", "same_transaction_terms", "competing_provider_spend"] as const
+export type ConflictClass = (typeof CONFLICT_CLASSES)[number]
+const LOSER_OUTCOMES = ["HOLD", "RESCHEDULE", "DENY"] as const
+export interface ArbitrationInput {
+  conflictClass: string
+  /** The accountable REGISTERED manager whose survivor decided. */
+  decider: string | null
+  /** Which survivor decided (file:function), so the record names its own authority. */
+  survivor: string
+  winner: { manager?: string | null; ref?: string | null } | null
+  loser?: { manager?: string | null; ref?: string | null; outcome: string; nextTrigger?: NextTriggerInput | null } | null
+  /** Does a SECOND writer compete for this subject today? null = not measured. */
+  secondWriter?: boolean | null
+}
+
+/** PURE. A spelling's trust class (null = unmapped or absent — never a default of "trusted"). */
+function decisionTrustClass(spelling: string | null | undefined): DecisionTrustClass | null {
+  if (!spelling || typeof spelling !== "string") return null
+  return TRUST_CLASS_MAP[spelling] ?? TRUST_CLASS_MAP[spelling.trim().toLowerCase()] ?? null
+}
+/** PURE. A spelling's approval basis (null = unmapped or absent). */
+function decisionApprovalBasis(spelling: string | null | undefined): ApprovalBasis | null {
+  if (!spelling || typeof spelling !== "string") return null
+  return APPROVAL_BASIS_MAP[spelling] ?? APPROVAL_BASIS_MAP[spelling.trim().toLowerCase()] ?? null
+}
+const isoOrNull = (s: string | null | undefined): string | null => (typeof s === "string" && Number.isFinite(Date.parse(s)) ? new Date(Date.parse(s)).toISOString() : null)
+/** PURE. A next trigger in the closed vocabulary (null = absent / unmapped kind / a `time` trigger with no readable time). */
+function decisionNextTrigger(t: NextTriggerInput | null | undefined): NextTrigger | null {
+  if (!t || typeof t.kind !== "string" || !(NEXT_TRIGGER_KINDS as readonly string[]).includes(t.kind)) return null
+  const at = isoOrNull(t.at ?? null)
+  if (t.kind === "time" && !at) return null
+  return { kind: t.kind as NextTriggerKind, at, event: t.event ? String(t.event).slice(0, 120) : null, detail: t.detail ? String(t.detail).slice(0, 300) : null }
+}
+/** PURE. A verification that names itself (a check name / an authorized user AND the authority they acted under), else null. */
+function decisionVerification(v: VerificationInput | null | undefined): DecisionVerification | null {
+  if (!v || typeof v !== "object") return null
+  if (v.kind === "deterministic") return typeof v.check === "string" && v.check.trim() ? { kind: "deterministic", check: v.check.trim().slice(0, 200) } : null
+  if (v.kind === "authorized_human") {
+    return typeof v.userId === "string" && v.userId.trim() && typeof v.authority === "string" && v.authority.trim()
+      ? { kind: "authorized_human", user_id: v.userId.trim(), authority: v.authority.trim().slice(0, 200), at: isoOrNull(v.at ?? null) } : null
+  }
+  return null
+}
+
+/** PURE. A stable digest over the SET of facts a decision read (order-free, duplicate-free; the version is part of each fact) —
+ *  a later decision that read a different version of any of them has a different fingerprint. FNV-1a over two lanes (no
+ *  node:crypto — the module stays runtime-neutral). null = nothing was named (an unknown read set is not an empty one). */
+function dependencyFingerprint(deps: ReadonlyArray<{ type: string; id?: string | null; version?: string | number | null }> | null | undefined): string | null {
+  const facts = [...new Set((deps ?? []).filter((d) => d && typeof d.type === "string" && d.type.trim()).map((d) => `${d.type.trim()}:${d.id ?? ""}@${d.version ?? ""}`))].sort()
+  if (facts.length === 0) return null
+  const s = facts.join("|")
+  let h1 = 0x811c9dc5, h2 = 0x01000193 ^ s.length
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0
+    h2 = Math.imul(h2 ^ c, 0x5bd1e995) >>> 0
+  }
+  return `fnv1a:${h1.toString(16).padStart(8, "0")}${h2.toString(16).padStart(8, "0")}`
+}
+
+/** PURE. The conflict block (one accountable decider; the loser's typed outcome and next trigger). Unmapped spellings → null. */
+export function governanceArbitration(a: ArbitrationInput | null | undefined): Record<string, unknown> | null {
+  if (!a) return null
+  const cls = (CONFLICT_CLASSES as readonly string[]).includes(a.conflictClass) ? a.conflictClass : null
+  const loser = a.loser ? {
+    manager: a.loser.manager ?? null, ref: a.loser.ref ? String(a.loser.ref).slice(0, 200) : null,
+    outcome: (LOSER_OUTCOMES as readonly string[]).includes(a.loser.outcome) ? a.loser.outcome : null,
+    next_trigger: decisionNextTrigger(a.loser.nextTrigger ?? null),
+  } : null
+  return {
+    conflict_class: cls, decider: a.decider ?? null, survivor: String(a.survivor ?? "").slice(0, 200) || null,
+    winner: a.winner ? { manager: a.winner.manager ?? null, ref: a.winner.ref ? String(a.winner.ref).slice(0, 200) : null } : null,
+    loser, second_writer: typeof a.secondWriter === "boolean" ? a.secondWriter : null,
+  }
+}
+
+/** PURE. The contract facts as persisted (snake_case), with every unmapped spelling named in `contract_findings`. */
+function decisionContractFacts(i: {
+  trustClass?: string | null; dependencies?: ReadonlyArray<{ type: string; id?: string | null; version?: string | number | null }> | null
+  approvalBasis?: string | null; expiresAt?: string | null; nextTrigger?: NextTriggerInput | null; verification?: VerificationInput | null; arbitration?: ArbitrationInput | null
+}): Record<string, unknown> {
+  const trust = decisionTrustClass(i.trustClass)
+  const basis = decisionApprovalBasis(i.approvalBasis)
+  const next = decisionNextTrigger(i.nextTrigger)
+  const arbitration = governanceArbitration(i.arbitration)
+  const findings: string[] = []
+  if (i.trustClass && !trust) findings.push(`trust_class unmapped: ${String(i.trustClass).slice(0, 60)}`)
+  if (i.approvalBasis && !basis) findings.push(`approval_basis unmapped: ${String(i.approvalBasis).slice(0, 60)}`)
+  if (i.nextTrigger && !next) findings.push(`next_trigger unmapped: ${String(i.nextTrigger.kind).slice(0, 60)}`)
+  if (i.expiresAt && !isoOrNull(i.expiresAt)) findings.push("expires_at unreadable")
+  if (i.verification && !decisionVerification(i.verification)) findings.push("verification does not name itself")
+  if (arbitration && (!arbitration.conflict_class || (arbitration.loser && !(arbitration.loser as { outcome: unknown }).outcome))) findings.push("arbitration spelling unmapped")
+  return {
+    trust_class: trust, dependency_fingerprint: dependencyFingerprint(i.dependencies), approval_basis: basis,
+    expires_at: isoOrNull(i.expiresAt ?? null), next_trigger: next, verification: decisionVerification(i.verification), arbitration,
+    ...(findings.length ? { contract_findings: findings } : {}),
+  }
+}
+
+/** The facts a context carries, merged onto its detail.governance on the SAME insert (fills only what the block left null). */
+function withContractFacts(ctx: ActionContext, detail: Record<string, unknown>): Record<string, unknown> {
+  const has = ctx.trustClass || ctx.dependencies?.length || ctx.approvalBasis || ctx.expiresAt || ctx.nextTrigger
+  if (!has) return detail
+  const facts = decisionContractFacts({ trustClass: ctx.trustClass, dependencies: ctx.dependencies, approvalBasis: ctx.approvalBasis, expiresAt: ctx.expiresAt, nextTrigger: ctx.nextTrigger, verification: ctx.sink?.verification ?? null })
+  const prior = (detail.governance && typeof detail.governance === "object" ? detail.governance : {}) as Record<string, unknown>
+  const merged: Record<string, unknown> = { ...prior }
+  for (const [k, v] of Object.entries(facts)) if (merged[k] === undefined || merged[k] === null) merged[k] = v
+  return { ...detail, governance: merged }
+}
+
+/** ToolRiskClass (lib/ai-isa/persona-tool-policy.ts) values that are NOT consequential. Any other value — including an unknown or
+ *  absent one — is treated as consequential (fail closed, CLAUDE.md §4). */
+const NON_CONSEQUENTIAL_RISK: ReadonlySet<string> = new Set(["READ", "LOW_RISK_WRITE"])
+function isConsequentialRisk(riskClass: string | null | undefined): boolean { return !NON_CONSEQUENTIAL_RISK.has(String(riskClass ?? "")) }
+
+/**
+ * PURE. Which contract facts a persisted `detail.governance` block is MISSING for its risk class (empty = contract-complete).
+ * The coverage ledger and the guards read this; it never fills a gap. Rules (derived, not pinned):
+ *   every decision    — decision verb, scope tenant, actor, subject, rationale;
+ *   consequential     — + trust class, dependency fingerprint, approval basis (an ALLOW resting on an untrusted origin + verification);
+ *   a waiting verb    — HOLD / RESCHEDULE / ESCALATE / DELEGATE + expiry;
+ *   anything not ALLOW — + next trigger (`none` is a recorded answer).
+ */
+function governanceContractGaps(governance: unknown, riskClass: string | null | undefined): string[] {
+  if (!governance || typeof governance !== "object") return ["governance"]
+  const g = governance as Record<string, any>
+  const gaps: string[] = []
+  const decision = typeof g.decision === "string" && (GOVERNANCE_DECISIONS as readonly string[]).includes(g.decision) ? g.decision as GovernanceDecision : null
+  if (!decision) gaps.push("decision")
+  if (!g.scope?.brokerage_id) gaps.push("scope")
+  if (!g.actor?.type) gaps.push("actor")
+  if (!g.entity?.type) gaps.push("subject")
+  if (!(typeof g.rationale === "string" && g.rationale.trim())) gaps.push("rationale")
+  const trust = decisionTrustClass(g.trust_class)
+  if (isConsequentialRisk(riskClass)) {
+    if (!trust) gaps.push("trust_class")
+    if (!g.dependency_fingerprint) gaps.push("dependency_fingerprint")
+    if (!decisionApprovalBasis(g.approval_basis)) gaps.push("approval_basis")
+    if (decision === "ALLOW" && trust && !TRUSTED_CLASSES.has(trust) && !g.verification) gaps.push("verification")
+  }
+  if (decision && ["HOLD", "RESCHEDULE", "ESCALATE", "DELEGATE"].includes(decision) && !isoOrNull(g.expires_at)) gaps.push("expires_at")
+  if (decision && decision !== "ALLOW" && !decisionNextTrigger(g.next_trigger)) gaps.push("next_trigger")
+  return gaps
+}
+
+/** The typed reasons the sink rule gives (one spelling — the refusal row and the caller's feedback carry it). */
+export const SINK_REASONS = ["non_consequential", "trusted_origin", "verified_deterministic", "verified_by_authorized_human", "decision_expired", "unverified_untrusted_origin", "trust_class_unknown", "target_outside_capability_set", "capability_set_unknown"] as const
+export type SinkReason = (typeof SINK_REASONS)[number]
+export interface SinkVerdict { decision: "ALLOW" | "DENY" | "HOLD"; reason: SinkReason; detail: string; trustClass: DecisionTrustClass | null; approvalBasis: ApprovalBasis | null; nextTrigger: NextTrigger | null }
+export interface SinkRuleInput {
+  riskClass: string | null
+  /** Established by the BOUNDARY (the wrapper / the route), never by the model. */
+  trustClass: string | null
+  verification?: VerificationInput | null
+  approvalBasis?: string | null
+  expiresAt?: string | null
+  now: Date
+  /** A target manager the MODEL named (data). Refused when outside `allowedManagers`; unverifiable when that set is unknown. */
+  proposedTargetManager?: string | null
+  allowedManagers?: readonly string[] | null
+  /** The model's own fields — accepted so the caller can record them; this function NEVER reads them (INJECT-005, SCOPE-003). */
+  modelClaims?: Record<string, unknown> | null
+}
+
+/**
+ * PURE — no model, no I/O (directive D 152). The deterministic sink rule, in order:
+ *   1. an expired (or unreadable) expiry → DENY decision_expired (next: re-evaluate fresh);
+ *   2. a model-named target manager outside the caller's capability set (or an unknown set) → DENY;
+ *   3. READ / LOW_RISK_WRITE → ALLOW (not a consequential sink);
+ *   4. a TRUSTED origin → ALLOW;
+ *   5. an untrusted origin with a recorded verification — a deterministic check that names itself → ALLOW (policy_permitted), an
+ *      authorized human under a named authority → ALLOW (human_approval);
+ *   6. otherwise HOLD — unverified_untrusted_origin, or trust_class_unknown (never a default of "trusted") — next: a person verifies.
+ * `modelClaims` is never read: a model's "approved", "trusted" or "basis" changes nothing.
+ */
+function sinkRule(i: SinkRuleInput): SinkVerdict {
+  const trust = decisionTrustClass(i.trustClass)
+  const basisIn = decisionApprovalBasis(i.approvalBasis)
+  const v = (decision: SinkVerdict["decision"], reason: SinkReason, detail: string, approvalBasis: ApprovalBasis | null, next: NextTriggerInput | null): SinkVerdict =>
+    ({ decision, reason, detail, trustClass: trust, approvalBasis, nextTrigger: decisionNextTrigger(next) })
+  if (i.expiresAt !== null && i.expiresAt !== undefined) {
+    const at = Date.parse(i.expiresAt)
+    if (!Number.isFinite(at) || at <= i.now.getTime()) return v("DENY", "decision_expired", Number.isFinite(at) ? `the decision expired at ${new Date(at).toISOString()} — it never executes late` : "the decision's expiry cannot be read — it does not execute", null, { kind: "re_evaluate", detail: "a fresh decision on the current facts" })
+  }
+  if (i.proposedTargetManager) {
+    if (!i.allowedManagers) return v("DENY", "capability_set_unknown", `a target manager (${i.proposedTargetManager}) was named but the caller's capability set is unknown`, null, { kind: "none" })
+    if (!i.allowedManagers.includes(i.proposedTargetManager)) return v("DENY", "target_outside_capability_set", `${i.proposedTargetManager} is outside the caller's capability set — a model cannot pick the target`, null, { kind: "none" })
+  }
+  if (!isConsequentialRisk(i.riskClass)) return v("ALLOW", "non_consequential", `${i.riskClass} is not a consequential sink`, basisIn ?? "policy_permitted", null)
+  if (trust && TRUSTED_CLASSES.has(trust)) return v("ALLOW", "trusted_origin", `rests on ${trust}`, basisIn ?? "policy_permitted", null)
+  const ver = decisionVerification(i.verification)
+  if (ver?.kind === "deterministic") return v("ALLOW", "verified_deterministic", `${trust ?? "unknown origin"} cleared by the deterministic check ${ver.check}`, "policy_permitted", null)
+  if (ver?.kind === "authorized_human") return v("ALLOW", "verified_by_authorized_human", `${trust ?? "unknown origin"} cleared by an authorized person (${ver.authority})`, "human_approval", null)
+  if (!trust) return v("HOLD", "trust_class_unknown", `what this ${i.riskClass ?? "unclassified"} action rests on is unknown — it waits for a person`, null, { kind: "human", detail: "a person with authority verifies the origin" })
+  return v("HOLD", "unverified_untrusted_origin", `a ${i.riskClass} action resting on ${trust} has no recorded verification — it waits for a person`, null, { kind: "human", detail: "a person with authority verifies, or a named deterministic check clears it" })
 }
 
 /**
@@ -884,6 +1265,9 @@ export interface ChainLink {
   phase?: ActionPhase
   /** WAVE 153 (153H): the governance verb (ALLOW / DENY / REWRITE / HOLD / DELEGATE / RESCHEDULE / ESCALATE / CANCEL) the row reads as. */
   decision?: GovernanceDecision | null
+  /** WAVE 155 (155B3, directive §B3): the contract facts this row's detail.governance is MISSING for its risk class ([] = complete;
+   *  null = the row carries no governance block — the reach gap the coverage ledger counts). */
+  contractGaps?: string[] | null
   /** For an action: the event chain that caused it, ROOT first ("why did the AI send this?"). */
   because?: string[]
 }
@@ -922,6 +1306,7 @@ export function assembleCausalChain(events: ChainEvent[], actions: ChainAction[]
       source: a.system_source ?? null, subjectRef: a.subject_ref ?? null, detail: a.detail ?? null,
       policyRef: a.policy_ref ?? (typeof a.detail?.policy_ref === "string" ? (a.detail.policy_ref as string) : null),
       phase: actionPhase(a), decision: rowGovernanceDecision(a),
+      contractGaps: a.detail?.governance ? governanceContractGaps(a.detail.governance, a.risk_class ?? null) : null,
       because: ancestry(a.causation_id),
     })),
   ]

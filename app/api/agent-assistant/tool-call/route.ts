@@ -220,10 +220,21 @@ export async function POST(request: NextRequest) {
       // the hold — a racing or replayed confirm of the same read-back can never execute twice (the claim replays instead).
       const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
       const contactRef = String(params.contact_id ?? params.buyer_id ?? "").trim()
+      // WAVE 155 (155B3, directive §B3 / D 152): the boundary's own facts — the tool call is the MODEL's proposal (TOOL_INPUT_TRUST
+      // tool_name), and what clears it at this FINANCIAL sink is the speaker's confirm of the hold THIS session persisted (the
+      // authorized human, by the existing authority: the registry role gate + the compare-and-set release). ledgerToolCall's sink rule
+      // reads only these — never a parameter the model sent.
+      const subjectDep = contactRef ? { type: "contact", id: contactRef, version: null } : { type: "agent_assistant_session", id: session.id, version: null }
+      const sinkFacts = {
+        trustClass: TOOL_INPUT_TRUST.tool_name, approvalBasis: "human_approval",
+        dependencies: [subjectDep, { type: "agent_assistant_tool_calls", id: String(governance.released_hold), version: "hold_released" }],
+        verification: { kind: "authorized_human" as const, userId: String(session.user_id ?? ""), authority: `spoken_confirm_hold:${governance.released_hold}` },
+      }
       // WAVE 153 (153H, directive H3): the released change carries the decision contract on its ledger row — the boundary's
       // `allow` (read as ALLOW), who approved (the speaker who confirmed the persisted read-back), the hold it released, the
       // instruction's manager as the candidate, and the authority / identity gates it passed as policy constraints.
       const decision = governanceRecord({
+        trustClass: sinkFacts.trustClass, approvalBasis: sinkFacts.approvalBasis, dependencies: sinkFacts.dependencies, verification: sinkFacts.verification,
         plane: "tool_boundary", verdict: "allow", scope: { brokerageId: session.brokerage_id, userId: session.user_id }, actor: { type: "user", id: session.user_id },
         entity: contactRef ? { type: "contact", id: contactRef, version: null } : { type: "agent_assistant_session", id: session.id, version: null },
         objective: `spoken ${toolName.replace(/_/g, " ")}`, candidates: [String(instruction.manager ?? "")],
@@ -242,6 +253,8 @@ export async function POST(request: NextRequest) {
         cycle: `voice_hold:${governance.released_hold}`,
         reasonDetail: "spoken confirm of a read-back held at the tool boundary",
         detail: { tool: toolName, hold_id: governance.released_hold, session_id: session.id, governance: decision },
+        trustClass: sinkFacts.trustClass, approvalBasis: sinkFacts.approvalBasis, dependencies: sinkFacts.dependencies,
+        sink: { verification: sinkFacts.verification, modelClaims: params },
       }, () => runTool(toolName, dispatchParams, session, supabase), { client: supabase })
     } else {
       result = await runTool(toolName, dispatchParams, session, supabase)

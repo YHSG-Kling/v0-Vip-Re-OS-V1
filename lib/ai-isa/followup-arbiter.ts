@@ -85,6 +85,7 @@
 
 import type { ExperienceKind, NextBestExperienceInput, NextBestExperiencePlan, RankedExperience } from "./lead-action-plan"
 import type { FollowupPolicy } from "./followup-policy"
+import type { NextTrigger } from "@/lib/kernel/action-ledger"
 import { channelCarriesVideo, type CampaignChannelKey } from "@/lib/campaigns/channels"
 import { routeMailFormat } from "@/lib/direct-mail/piece-type"
 import { CHANNEL_PROVIDER_MATRIX } from "@/lib/providers/channel-provider-matrix"
@@ -1492,8 +1493,11 @@ async function arbitrateExperiencePlan(
 }
 
 /** The ledger detail every arbitrated decision carries (LAW 5: who/what, why, which evidence, which policy). */
-export function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | null, extra: { checks?: ChannelCheck[] | null; signals?: readonly LifeChangeSignal[]; blindSpots?: readonly string[]; helpfulActions?: HelpfulActionFrame | null } = {}): Record<string, unknown> {
+export function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | null, extra: { checks?: ChannelCheck[] | null; signals?: readonly LifeChangeSignal[]; blindSpots?: readonly string[]; helpfulActions?: HelpfulActionFrame | null; now?: Date | null } = {}): Record<string, unknown> {
+  const contract = arbitrationContractFacts(d, extra.now ?? null)
   return {
+    // WAVE 155 (lane 155B3, directive §B3): what happens next and when this decision stops being valid (arbitrationContractFacts).
+    next_trigger: contract.nextTrigger, expires_at: contract.expiresAt,
     source: d.source, option: d.optionId, channel: d.channel, format: d.format ?? null, stance: d.stance ?? null, wait_hours: d.waitHours, rationale: d.rationale, evidence: d.evidence, confidence: d.confidence, fallback_reason: d.fallbackReason, menu: d.menu, policy_ref: policyRef,
     // WAVE 153 (153F, LAW 5): which path decided and how long the judgment took — measured, so "the arbiter did not delay the person" is evidence.
     ...(d.path ? { path: d.path } : {}), ...(typeof d.latencyMs === "number" ? { latency_ms: d.latencyMs } : {}),
@@ -1512,6 +1516,23 @@ export function arbitrationLedgerDetail(d: ArbiterDecision, policyRef: string | 
     ...(d.writerBrief ? { writer_brief: { mode: d.writerBrief.mode, play: d.writerBrief.play } } : {}),
     ...(d.lifeEvent ? { life_event: { mode: d.lifeEvent.mode, canonical: d.lifeEvent.canonical, sensitivity: d.lifeEvent.sensitivity, automated_help_offered: d.lifeEvent.automatedHelpOffered, never_mention: d.lifeEvent.neverMention, tone: d.lifeEvent.tone } } : {}),
   }
+}
+
+/**
+ * PURE. WAVE 155 (lane 155B3, directive §B3): the decision's NEXT TRIGGER and EXPIRY, in lib/kernel/action-ledger.ts's closed
+ * vocabulary (NEXT_TRIGGER_KINDS). A timed-out judgment waits on its late-result settlement (inbound.late_result.settle) and expires
+ * with the obligation (LATE_OBLIGATION_TTL_MINUTES); a wait fires at its hour; a hand-off waits on a person; an act is re-evaluated by
+ * the person's reply or the next planned touch. `now` unknown → no clock time is invented (a time trigger / expiry reads null).
+ */
+function arbitrationContractFacts(d: Pick<ArbiterDecision, "kind" | "stance" | "waitHours" | "timedOut" | "optionId">, now: Date | null): { nextTrigger: NextTrigger | null; expiresAt: string | null } {
+  const at = (ms: number) => (now ? new Date(now.getTime() + ms).toISOString() : null)
+  if (d.timedOut) return { nextTrigger: { kind: "event", at: null, event: "inbound.late_result.settle", detail: "the late answer is judged against the newest transcript; otherwise the completion net redrives" }, expiresAt: at(LATE_OBLIGATION_TTL_MINUTES * 60_000) }
+  if (d.kind === "wait") {
+    if (d.waitHours !== null && now) return { nextTrigger: { kind: "time", at: at(d.waitHours * 3_600_000), event: null, detail: "the wait ends; re-evaluated then" }, expiresAt: at(d.waitHours * 3_600_000) }
+    return { nextTrigger: { kind: "re_evaluate", at: null, event: null, detail: "the next sweep or their next message re-evaluates" }, expiresAt: null }
+  }
+  if (d.kind === "agent_intervention" || d.stance === "notify_human" || d.optionId === "halt_no_lawful_channel") return { nextTrigger: { kind: "human", at: null, event: null, detail: "a person on the team takes it" }, expiresAt: null }
+  return { nextTrigger: { kind: "re_evaluate", at: null, event: null, detail: "their reply or the next planned touch re-evaluates" }, expiresAt: null }
 }
 
 /** A HIGH-PRIORITY REQUIREMENT the arbiter decides under (owner ruling 16, wave 145): `speed_to_lead` = answer now — the model
@@ -2091,8 +2112,21 @@ export async function recordArbitration(
   },
 ): Promise<{ recorded: boolean; error?: string }> {
   try {
-    const { recordNonAction } = await import("@/lib/kernel/action-ledger")
+    const { recordNonAction, governanceRecord } = await import("@/lib/kernel/action-ledger")
     const wait = a.decision.kind === "wait"
+    // WAVE 155 (lane 155B3, directive §B3): the arbiter's decision row carries the decision contract — a model's choice is a model
+    // proposal (trust model_output) cleared by the closed-menu validator; the planner's own verdict is first-party; the follow-up
+    // policy permitted it; the facts it read are its fingerprint; next trigger / expiry from arbitrationContractFacts.
+    const contract = arbitrationContractFacts(a.decision, a.now)
+    const governance = governanceRecord({
+      plane: "contact_engagement", verdict: a.decision.optionId === "halt_no_lawful_channel" ? "halt_no_lawful_channel" : a.decision.kind,
+      scope: { brokerageId: a.brokerageId }, actor: { type: "manager", id: "ai_isa" }, entity: { type: a.subject.type, id: a.subject.id, version: null },
+      objective: `follow-up for ${a.subject.type}`, candidates: a.decision.menu, policyConstraints: [a.policyRef ?? "followup_policy"], rationale: a.decision.rationale,
+      trustClass: a.decision.source === "ai" ? "model_output" : "verified_first_party", approvalBasis: "policy_permitted",
+      verification: a.decision.source === "ai" ? { kind: "deterministic", check: "followup-arbiter.ts validateArbiterReply (closed menu)" } : null,
+      dependencies: a.decision.evidence.map((k) => ({ type: "fact", id: k, version: null })),
+      expiresAt: contract.expiresAt, nextTrigger: contract.nextTrigger,
+    })
     const r = await recordNonAction({
       brokerageId: a.brokerageId, domain: "followup", decision: wait ? "wait" : "send_touch",
       actor: { type: "manager", managerKey: "ai_isa" }, subject: a.subject,
@@ -2100,7 +2134,7 @@ export async function recordArbitration(
       cycle: `arb:${a.cycleScope ? `${a.cycleScope}:` : ""}${a.subject.type}:${a.subject.id}:${a.now.toISOString().slice(0, 10)}`,
       systemSource: a.systemSource, policyKey: "followup_policy",
       until: wait && a.decision.waitHours !== null ? new Date(a.now.getTime() + a.decision.waitHours * 3_600_000).toISOString() : null,
-      detail: { ...arbitrationLedgerDetail(a.decision, a.policyRef), ...(a.extraDetail ?? {}) },
+      detail: { ...arbitrationLedgerDetail(a.decision, a.policyRef, { now: a.now }), ...(a.extraDetail ?? {}), governance },
     }, { client: svc as never })
     // (wave 154, lane 154H2 — lane 154G2 request 2) WHY THIS PIECE: when the chosen action rides an EXISTING artifact (table + id),
     // the decision is also recorded with the ARTIFACT as its subject, so the Command Center catalog (lib/marketing/content-catalog.ts

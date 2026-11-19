@@ -221,6 +221,8 @@ export interface ConsumeEnvelopeInput {
   subject: { type: string; id?: string | null; ref?: string | null }
   idempotencyKey?: string | null
   now?: Date
+  /** WAVE 155 (155B3): the registered manager whose spend this is (the conflict record names it when the envelope refuses it). */
+  requestingManager?: string | null
 }
 
 export type EnvelopeVerdict =
@@ -275,6 +277,35 @@ export async function consumeAutonomyEnvelope(svc: Svc, input: ConsumeEnvelopeIn
     const { withActionLedger } = await import("@/lib/kernel/action-ledger")
     return withActionLedger<T>(ctx as any, fn, hooks as any, { client: client as any })
   })
+  // WAVE 155 (lane 155B3, directive §B3 — competing provider spend, one accountable decider): the atomic consume above IS the
+  // survivor that picks one winner when two spenders draw on one envelope; the verdict is only known at settle, so the settle writes
+  // the row's detail WITH the decision contract (same update — no extra round trip). The envelope's owner manager decides; an
+  // over-envelope proposal is HELD until the period resets (monthly) or a person widens the envelope (lifetime / closed → DENY).
+  const { governanceRecord } = await import("@/lib/kernel/action-ledger")
+  const envelopeDetail = { envelope: { key: input.envelope, amount: input.amount, unit: spec.unit, period_key: periodKey, scope_key: scopeKey, period_cap: limits.periodCap, scope_cap: limits.scopeCap, value_tier: input.valueTier ?? null, why: limits.why } }
+  const nextPeriod = spec.period === "lifetime" ? null : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString()
+  const decided = (v: EnvelopeVerdict): Record<string, unknown> => {
+    const over = !v.allowed && /^over the envelope/.test(v.reason)
+    const verdictSpelling = v.allowed ? "allowed" : over && nextPeriod ? "over_budget" : "refused"
+    const next = v.allowed ? null : over && nextPeriod ? { kind: "time", at: nextPeriod, detail: "the envelope's period resets" } : { kind: "human", detail: "a person with the tenant's budget authority opens or widens the envelope" }
+    return {
+      ...envelopeDetail,
+      governance: governanceRecord({
+        plane: "resource", verdict: verdictSpelling, scope: { brokerageId: input.brokerageId }, actor: { type: "manager", id: input.requestingManager ?? spec.manager },
+        entity: { type: input.subject.type, id: input.subject.id ?? null, version: null }, objective: `${input.amount} ${spec.unit} from ${input.envelope}`,
+        candidates: [spec.manager, ...(input.requestingManager ? [input.requestingManager] : [])], resourceConstraints: [limits.why, `period ${periodKey}`, `scope ${scopeKey}`],
+        rationale: v.reason, trustClass: "tenant_policy", approvalBasis: v.allowed ? "policy_permitted" : null,
+        dependencies: [{ type: "autonomy_budget_period", id: `${input.envelope}:${periodKey}:${scopeKey}`, version: null }, { type: "tenant_policy", id: AUTONOMY_BUDGETS_POLICY_KEY, version: policyRef }],
+        expiresAt: !v.allowed && next?.kind === "time" ? next.at ?? null : null, nextTrigger: next,
+        arbitration: over ? {
+          conflictClass: "competing_provider_spend", decider: spec.manager, survivor: "lib/kernel/autonomy-budgets.ts consumeAutonomyEnvelope (consume_autonomy_budget, atomic)",
+          winner: { manager: null, ref: `earlier consumptions this period (${periodKey})` },
+          loser: { manager: input.requestingManager ?? null, ref: input.subject.id ?? null, outcome: nextPeriod ? "HOLD" : "DENY", nextTrigger: next },
+          secondWriter: true,
+        } : null,
+      }),
+    }
+  }
   try {
     const verdict = await ledger<EnvelopeVerdict>(
       {
@@ -284,11 +315,11 @@ export async function consumeAutonomyEnvelope(svc: Svc, input: ConsumeEnvelopeIn
         idempotencyKey: input.idempotencyKey ?? null, riskClass: "FINANCIAL", systemSource: "autonomy_budgets",
         policyKey: AUTONOMY_BUDGETS_POLICY_KEY,
         // The amount rides detail, NOT cost_usd: the spend's own row books what it cost (no double count).
-        detail: { envelope: { key: input.envelope, amount: input.amount, unit: spec.unit, period_key: periodKey, scope_key: scopeKey, period_cap: limits.periodCap, scope_cap: limits.scopeCap, value_tier: input.valueTier ?? null, why: limits.why } },
+        detail: envelopeDetail,
       },
       run,
       {
-        settle: (v) => v.allowed ? { status: "executed", outcome: "envelope_consumed", provider: "autonomy_budget_consumptions", providerRef: v.consumptionId } : { status: "skipped", outcome: "envelope_refused", error: v.reason.slice(0, 500) },
+        settle: (v) => v.allowed ? { status: "executed", outcome: "envelope_consumed", provider: "autonomy_budget_consumptions", providerRef: v.consumptionId, detail: decided(v) } : { status: "skipped", outcome: "envelope_refused", error: v.reason.slice(0, 500), detail: decided(v) },
         replay: (claim) => ({ allowed: false, reason: claim.kind === "replay" ? "already decided for this key (ledger replay) — not consumed twice" : `ledger refused: ${claim.kind}`, limits, policyRef }),
       },
       svc,

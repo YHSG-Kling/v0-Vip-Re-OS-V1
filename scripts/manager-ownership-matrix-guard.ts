@@ -826,7 +826,7 @@ async function main() {
 
     const { ledgerToolCall } = await import("../lib/kernel/action-ledger")
     let runs = 0
-    const ctx = { brokerageId: B1, action: "ai.tool.confirm_buyer_financials", channel: "ai_tool", actor: { type: "user" as const, userId: UA }, subject: { type: "contact", id: C1 }, riskClass: "FINANCIAL", cycle: "voice_hold:race-1" }
+    const ctx = { brokerageId: B1, action: "ai.tool.confirm_buyer_financials", channel: "ai_tool", actor: { type: "user" as const, userId: UA }, subject: { type: "contact", id: C1 }, riskClass: "FINANCIAL", cycle: "voice_hold:race-1", trustClass: "model_output", sink: { verification: { kind: "authorized_human" as const, userId: UA, authority: "spoken_confirm_hold:race-1" } } }
     await ledgerToolCall(ctx, async () => { runs++; return { success: true } }, { client: world as never })
     const second = await ledgerToolCall(ctx, async () => { runs++; return { success: true } }, { client: world as never }) as Row
     check("ADVERSE · race: two releases of one hold reach the ledger with one cycle — the second claim replays and never runs", runs === 1 && second.success === true)

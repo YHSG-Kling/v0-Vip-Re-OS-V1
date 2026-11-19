@@ -424,7 +424,10 @@ async function main() {
   // ── I ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   section("I — HOT TOPIC → REFURBISH / OMNIPRESENCE: the sessionless starter on the ONE published mapping (154F D2)")
   const rr = await import("../lib/repurpose/refurbish-run")
-  const exp = new Date(NOW.getTime() + 3 * 86_400_000).toISOString()
+  // The topic's freshness window is read by the publisher path against the REAL clock, so it is set relative to the real clock
+  // (never before the pinned NOW): pinned to NOW + 3 days it expired on 2026-11-19T15:00Z and the guard went red for the
+  // calendar, not for the code (CLAUDE.md §2 — do not pin an assertion to a waypoint).
+  const exp = new Date(Math.max(NOW.getTime(), Date.now()) + 3 * 86_400_000).toISOString()
   const topic = (id: string, kind: string, extra: Row = {}, raw: Row = {}): Row => ({ id, brokerage_id: B, topic_title: "Why are homeowners insurance costs rising around Pace?", value_angle: "Explain what drives renewals and what a homeowner can ask their carrier.", categories: ["insurance", "homeownership"], geo_relevance: { cities: ["Pace"] }, expires_at: exp, status: "fresh", scraped_at: ago(30), raw_data: { intake: { source_kind: kind }, popularity_evidence_type: "proxy", evidence: { kind: "proxy", metric: "relative_index" }, creative_brief: { source_rights: "public_read_reworded", consumer_question: "Why are homeowners insurance costs rising around Pace?" }, ...raw }, ...extra })
   const LEDGER_UNIQUE = { unique: { orchestrator_tasks: [["payload->>idempotency_key"]], agent_action_ledger: [["idempotency_key"]] } }
   {

@@ -49,6 +49,7 @@ import {
   type TouchSourceTable,
 } from "./lead-channel"
 import { computeLearnedCadence, getEngagementSignals } from "./cadence-policy"
+import type { ConflictClass } from "@/lib/kernel/action-ledger"
 
 // Re-exported so existing importers of "@/lib/kernel/deconflict" keep working.
 export { leadLogChannel }
@@ -84,6 +85,11 @@ export interface DeconflictInput {
    *  engagement (within hard safety bounds — never below the floor, never above the ceiling; the
    *  legal gates are separate and always apply). Best-effort, fails open to the base policy. */
   learn?: boolean
+  /** WAVE 155 (155B3): the registered manager proposing this send (the conflict record names it as the loser when refused). */
+  requestingManager?: string | null
+  /** WAVE 155 (155B3): an injected client (proofs); default the service client. */
+  client?: Svc
+  now?: Date
 }
 
 export interface DeconflictDecision {
@@ -96,6 +102,9 @@ export interface DeconflictDecision {
   fatigueRisk?:    string | null
   /** How many tightening steps fatigue applied to the policy (0 = base). */
   fatigueSteps?:   number
+  /** WAVE 155 (155B3, directive §B3 — one accountable decider): on a refusal, the conflict record (lib/kernel/action-ledger.ts
+   *  governanceArbitration): the decider, the touches that won, and THIS proposal's typed outcome + next trigger. */
+  arbitration?:    Record<string, unknown> | null
 }
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -210,6 +219,10 @@ export interface BroadcastDeconflictInput {
   systemSource?: string
   policyOverride?: Partial<BroadcastPolicy>
   skipLog?:     boolean
+  /** WAVE 155 (155B3): the registered manager proposing this broadcast; an injected client (proofs). */
+  requestingManager?: string | null
+  client?: Svc
+  now?: Date
 }
 
 export interface BroadcastDeconflictDecision {
@@ -218,12 +231,34 @@ export interface BroadcastDeconflictDecision {
   sendsInWindow: number
   policyMax:   number
   windowDays:  number
+  /** WAVE 155 (155B3): on a refusal, the conflict record (same_campaign). */
+  arbitration?: Record<string, unknown> | null
+}
+
+/**
+ * WAVE 155 (lane 155B3, directive §B3 — "one accountable decider"). The conflict record a refusal by THIS survivor carries: the
+ * decider is the registered manager accountable for the plane (same Contact → ai_isa, MAINTENANCE_DOMAINS lead_overtouch_governance;
+ * same broadcast slot → campaign_orchestrator, deconflict_defer_retry), the winner is the touches already in the window, and the
+ * loser — this proposal — is RESCHEDULED, next trigger the window's upper bound (by then every counted touch has aged out). Built
+ * only on the refusal path (a dynamic import; the allowed path is unchanged). Not a second resolver: the cap above decided.
+ */
+const DECONFLICT_SURVIVOR = { same_contact: "evaluateDeconflict", same_campaign: "evaluateBroadcastDeconflict" } as const
+async function deconflictArbitration(a: { cls: Extract<ConflictClass, "same_contact" | "same_campaign">; decider: string; inWindow: number; windowDays: number; requestingManager?: string | null; source?: string | null; now: Date }): Promise<Record<string, unknown> | null> {
+  try {
+    const { governanceArbitration } = await import("@/lib/kernel/action-ledger")
+    return governanceArbitration({
+      conflictClass: a.cls, decider: a.decider, survivor: `lib/kernel/deconflict/index.ts ${DECONFLICT_SURVIVOR[a.cls]}`,
+      winner: { manager: null, ref: `${a.inWindow} prior touch(es) in the ${a.windowDays}-day window` },
+      loser: { manager: a.requestingManager ?? null, ref: a.source ?? null, outcome: "RESCHEDULE", nextTrigger: { kind: "time", at: new Date(a.now.getTime() + a.windowDays * 86_400_000).toISOString(), detail: "upper bound: every counted touch has left the window; re-evaluated then" } },
+      secondWriter: true,
+    })
+  } catch { return null }
 }
 
 export async function evaluateBroadcastDeconflict(
   input: BroadcastDeconflictInput,
 ): Promise<BroadcastDeconflictDecision> {
-  const svc    = createServiceClient()
+  const svc    = input.client ?? createServiceClient()
   const policy = { ...BROADCAST_POLICY[input.channel], ...(input.policyOverride ?? {}) }
   const since  = new Date(Date.now() - policy.windowDays * 86_400_000).toISOString()
 
@@ -274,6 +309,7 @@ export async function evaluateBroadcastDeconflict(
     sendsInWindow: sends,
     policyMax:     policy.maxSends,
     windowDays:    policy.windowDays,
+    arbitration:   allowed ? null : await deconflictArbitration({ cls: "same_campaign", decider: "campaign_orchestrator", inWindow: sends, windowDays: policy.windowDays, requestingManager: input.requestingManager, source: input.systemSource ?? null, now: input.now ?? new Date() }),
   }
 
   if (!input.skipLog) {
@@ -288,7 +324,7 @@ export async function evaluateBroadcastDeconflict(
         touches_in_window: sends,
         window_days:       policy.windowDays,
         policy_max:        policy.maxSends,
-        metadata:          { broadcast_channel: input.channel, segment: input.segment ?? null },
+        metadata:          { broadcast_channel: input.channel, segment: input.segment ?? null, ...(decision.arbitration ? { arbitration: decision.arbitration } : {}) },
       }), { table: "deconflict_suppression_log", flow: "deconflict_log", reason: "decision log; the allow/suppress decision is returned regardless" })
     } catch { /* never fail a send because audit hiccuped */ }
   }
@@ -329,7 +365,7 @@ async function countLeadTouchesByChannel(
  * before calling here, so this path is uncommon.
  */
 export async function evaluateDeconflict(input: DeconflictInput): Promise<DeconflictDecision> {
-  const svc    = createServiceClient()
+  const svc    = input.client ?? createServiceClient()
   let   policy = { ...DEFAULT_POLICY[input.channel], ...(input.policyOverride ?? {}) }
 
   // Self-tuning cadence (opt-in, best-effort, bounded). Adjusts ONLY the over-touch count from
@@ -383,6 +419,7 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
     windowDays:      policy.windowDays,
     fatigueRisk,
     fatigueSteps,
+    arbitration:     allowed ? null : await deconflictArbitration({ cls: "same_contact", decider: "ai_isa", inWindow: touches, windowDays: policy.windowDays, requestingManager: input.requestingManager, source: input.systemSource ?? null, now: input.now ?? new Date() }),
   }
 
   if (!input.skipLog) {
@@ -404,6 +441,8 @@ export async function evaluateDeconflict(input: DeconflictInput): Promise<Deconf
         // null overrides the default — every non-fatigued decision (nearly all of them) was refused
         // 23502, so the cockpit's de-conflict log held 0 rows live.
         metadata:          fatigueSteps > 0 ? { fatigue_risk: fatigueRisk, fatigue_steps: fatigueSteps } : {},
+        // WAVE 155 (155B3): a refusal also carries its conflict record (the decider, the winner, this proposal's outcome + next trigger).
+        ...(decision.arbitration ? { metadata: { ...(fatigueSteps > 0 ? { fatigue_risk: fatigueRisk, fatigue_steps: fatigueSteps } : {}), arbitration: decision.arbitration } } : {}),
       }), { table: "deconflict_suppression_log", flow: "deconflict_log", reason: "decision log; the allow/suppress decision is returned regardless" })
     } catch { /* never fail a send because the audit write hiccuped */ }
   }

@@ -168,7 +168,7 @@ export interface DelegationDeps {
   mission?: MissionDeps
 }
 interface LedgerCtx {
-  brokerageId: string; action: string; actor: DelegationActor; delegation: Pick<DelegationRow, "id" | "mission_id" | "requested_capability" | "requesting_manager" | "assigned_manager"> & { input_entities?: Record<string, unknown> | null }; from: DelegationStatus | null; to: DelegationStatus; reason: string; causationId: string | null; correlationId: string | null; costUsd?: number | null
+  brokerageId: string; action: string; actor: DelegationActor; delegation: Pick<DelegationRow, "id" | "mission_id" | "requested_capability" | "requesting_manager" | "assigned_manager"> & { input_entities?: Record<string, unknown> | null; deadline?: string | null }; from: DelegationStatus | null; to: DelegationStatus; reason: string; causationId: string | null; correlationId: string | null; costUsd?: number | null
   /** WAVE 153 (153H, directive H3): the decision facts this transition persists on detail.governance (lib/kernel/action-ledger.ts governanceRecord). */
   governance?: { objective?: string | null; deadline?: string | null; deadlineSource?: DeadlineSource | null; conflicts?: string[]; evidenceRefs?: string[]; resourceConstraints?: string[]; policyConstraints?: string[] }
 }
@@ -200,6 +200,15 @@ const defaultDeps: Required<Omit<DelegationDeps, "mission">> & { mission: Missio
       deadline: ctx.governance?.deadline ?? null, deadlineSource: ctx.governance?.deadlineSource ?? null,
       policyConstraints: ctx.governance?.policyConstraints, resourceConstraints: ctx.governance?.resourceConstraints,
       conflicts: ctx.governance?.conflicts, rationale: ctx.reason, evidenceRefs: [...(ctx.governance?.evidenceRefs ?? []), ...(about ? [`${about.type}:${about.id}`] : [])],
+      // WAVE 155 (155B3, directive §B3): the contract's facts — a manager / the system acting is first-party, a person at the
+      // Missions door an authorized human; the review (reviewDelegation) permitted it; the delegation's deadline is the decision's
+      // expiry; what happens next follows the status (the assignee acts · a person decides · nothing).
+      trustClass: ctx.actor.type === "user" ? "authorized_human" : "verified_first_party", approvalBasis: "policy_permitted",
+      dependencies: about ? [{ type: about.type, id: about.id, version: null }] : null,
+      expiresAt: ctx.delegation.deadline ?? null,
+      nextTrigger: ctx.to === "DISSENTED" || ctx.to === "ESCALATED" ? { kind: "human", detail: "the mission's owner or a person decides" }
+        : ctx.to === "REJECTED" || ctx.to === "CANCELLED" ? { kind: "none" }
+        : ctx.to === "RETURNED" ? null : { kind: "event", event: "manager_delegation.state_changed", detail: "the assignee accepts, works or returns" },
     })
     await withActionLedger(
       {
@@ -544,7 +553,24 @@ async function transitionDelegation(input: TransitionInput, svc: Client, d: type
   if (DELEGATION_TERMINAL_STATUSES.has(input.to)) patch.completed_at = now
   const { data: updated, error } = await svc.from("manager_delegations").update(patch).eq("brokerage_id", input.brokerageId).eq("id", row.id).eq("status", from).select(DELEGATION_COLS)
   if (error) return { ok: false, reason: `update_refused:${error.message}`, delegation: row }
-  if (!Array.isArray(updated) || updated.length !== 1) return { ok: false, reason: "raced:status_moved_under_us", delegation: row }
+  if (!Array.isArray(updated) || updated.length !== 1) {
+    // WAVE 155 (lane 155B3, directive §B3 — "a later write on a changed entity is a conflict"): the compare-and-set on the version
+    // this transition READ (status `from`) picked ONE writer. The loser used to return `raced` and leave nothing; its refusal is now
+    // a typed record on the delegation's evidence — the accountable decider (the assigned manager, the subject's owner for this
+    // capability), the winning version, and this proposal HELD with a fresh re-evaluation as its next trigger. No second resolver.
+    const about = delegationSubjectOf(row.input_entities ?? null)
+    const { governanceArbitration } = await import("@/lib/kernel/action-ledger")
+    const arbitration = governanceArbitration({
+      // A listing / unanchored ask is a version conflict outside the four named classes: its class reads null (said, never guessed).
+      conflictClass: about?.type === "transaction" ? "same_transaction_terms" : about?.type === "contact" || about?.type === "lead" ? "same_contact" : "entity_version",
+      decider: row.assigned_manager, survivor: "lib/kernel/manager-delegation.ts transitionDelegation (compare-and-set on the status read)",
+      winner: { manager: null, ref: `a concurrent transition moved ${from} first` },
+      loser: { manager: actor.type === "manager" ? actor.id ?? null : null, ref: `${from}→${input.to}`, outcome: "HOLD", nextTrigger: { kind: "re_evaluate", detail: "re-read the delegation and decide on its current version" } },
+      secondWriter: true,
+    })
+    await appendEvent(svc, row, { kind: "refused", from, to: input.to, reason: `refused: the delegation moved from ${from} under this transition (${input.reason})`, actor, evidence: { ...(input.evidence ?? {}), arbitration, ...(about ? { subject_type: about.type, subject_id: about.id } : {}) } })
+    return { ok: false, reason: "raced:status_moved_under_us", delegation: row }
+  }
   const next = updated[0] as DelegationRow
 
   const c = currentCausation()
