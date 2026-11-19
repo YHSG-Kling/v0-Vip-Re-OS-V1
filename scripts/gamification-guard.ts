@@ -762,13 +762,16 @@ async function ownerRulingsLayer() {
   check("a CANCELLED open house is refused and stays cancelled; a DRAFT is refused; neither emits nor counts",
     !cancelled.ok && /cancelled/i.test(cancelled.error) && status(OH_CANCEL) === "cancelled" && !draft.ok && status(OH_DRAFT) === "draft" && emits === 2 && rows("OPEN_HOUSE_HOSTED").length === 1)
   const rsvp = await awardLifecycleMilestones(m, { event: KernelEvent.OPEN_HOUSE_SCHEDULED, brokerageId: BRK, entityType: "listing_stage_machine", entityId: L1 })
-  const sweepNoEvidence = await hold(OH_SWEEP, "post_event_sweep", null)
+  const sweepNoEvidence = await hold(OH_SWEEP, "post_event_sweep")
   check("an RSVP-only open house never counts: the scheduled event awards nothing, and the post-event sweep closes an RSVP-only event (no sign-in) WITHOUT counting it",
     rsvp.awarded.length === 0 && sweepNoEvidence.ok && !sweepNoEvidence.held && /no sign-in/.test(sweepNoEvidence.reason ?? "") && rows("OPEN_HOUSE_HOSTED").length === 1)
-  const sweepSignin = await hold(OH_SWEEP2, "post_event_sweep", null)
+  const sweepSignin = await hold(OH_SWEEP2, "post_event_sweep")
   const second = await hold(OH2)
   check("a sweep-closed open house WITH a sign-in, and a second real open house on another date, each add one (count = 3 distinct listing + date identities)",
     sweepSignin.ok && sweepSignin.held && second.ok && second.held && rows("OPEN_HOUSE_HOSTED").length === 3)
+  const noTenant = await hold(OH2, "host_ended", null)
+  check("a held-writer call with NO tenant is refused (it never widens to every tenant) and changes nothing",
+    !noTenant.ok && /not found/i.test(noTenant.error) && rows("OPEN_HOUSE_HOSTED").length === 3)
   const future = await hold(OH_FUTURE), webinar = await hold(OH_WEBINAR)
   check("a future-dated open house cannot be held early; a webinar (no listing) is closed but is not an open-house count",
     !future.ok && status(OH_FUTURE) === "scheduled" && webinar.ok && !webinar.held && rows("OPEN_HOUSE_HOSTED").length === 3)

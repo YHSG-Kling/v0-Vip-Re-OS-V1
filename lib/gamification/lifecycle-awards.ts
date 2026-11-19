@@ -224,7 +224,8 @@ async function openHouseEvidence(db: LedgerCapableClient, brokerageId: string, e
 
 export interface RecordOpenHouseHeldInput {
   eventId: string
-  /** The session's tenant; null only for the platform sweep, which then uses the row's own tenant. */
+  /** The tenant the caller already established: the session's, or — for the post-event sweep — the brokerage_id of the event
+   *  row the sweep itself read. REQUIRED: a missing tenant refuses, it never widens the read to every tenant (CLAUDE.md §4). */
   brokerageId: string | null
   /** host_ended = the host's End Event action (verified owner); post_event_sweep = the cron after the end time, which needs
    *  attendance evidence (a sign-in, a verified attendance row or an attended RSVP) before the event counts as held. */
@@ -247,9 +248,9 @@ export type RecordOpenHouseHeldResult =
  */
 export async function recordOpenHouseHeld(db: LedgerCapableClient, input: RecordOpenHouseHeldInput): Promise<RecordOpenHouseHeldResult> {
   const now = input.now ?? new Date()
-  let q = db.from("open_house_events").select("id, brokerage_id, listing_id, event_date, event_type, status, cancelled_at").eq("id", input.eventId)
-  if (input.brokerageId) q = q.eq("brokerage_id", input.brokerageId)
-  const { data: ev, error } = await q.maybeSingle()
+  if (!input.brokerageId) return { ok: false, error: "Open house not found" }
+  const { data: ev, error } = await db.from("open_house_events").select("id, brokerage_id, listing_id, event_date, event_type, status, cancelled_at")
+    .eq("id", input.eventId).eq("brokerage_id", input.brokerageId).maybeSingle()
   if (error) return { ok: false, error: `open house read refused: ${error.message}` }
   const row = ev as (OpenHouseRow & { brokerage_id: string | null }) | null
   if (!row || !row.brokerage_id) return { ok: false, error: "Open house not found" }

@@ -943,7 +943,11 @@ export async function processEventFollowups(eventId: string, client?: any) {
     // or DRAFT open house dated yesterday was flipped to completed. Now cancelled / draft are refused (and get no follow-ups),
     // and the sweep counts an open house as held only with a sign-in or verified attendance on it.
     const { recordOpenHouseHeld } = await import("@/lib/gamification/lifecycle-awards")
-    const held = await recordOpenHouseHeld(supabase, { eventId, brokerageId: null, via: "post_event_sweep" })
+    // The tenant is the EVENT ROW's, read through the client this call already holds: the session client is bound by row
+    // security to the caller's tenant; the post-event cron passes the service client. It is never a parameter.
+    const { data: heldTenant, error: heldTenantErr } = await supabase.from("open_house_events").select("brokerage_id").eq("id", eventId).maybeSingle()
+    if (heldTenantErr) console.error(`[open-house] event ${eventId} tenant read refused: ${heldTenantErr.message}`)
+    const held = await recordOpenHouseHeld(supabase, { eventId, brokerageId: (heldTenant as { brokerage_id?: string | null } | null)?.brokerage_id ?? null, via: "post_event_sweep" })
     if (!held.ok) {
       console.error(`[open-house] event ${eventId} not marked held: ${held.error}`)
       if (/cancelled|draft/i.test(held.error)) return { success: false, error: held.error }
