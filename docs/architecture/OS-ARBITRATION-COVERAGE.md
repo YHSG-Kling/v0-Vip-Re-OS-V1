@@ -5,7 +5,7 @@
 
 ## 1. Totals (numerator / denominator)
 
-Rows: **3190** — working **1595** · partial **1303** · missing **291** · owner-held **1**. Consequential rows: 2711.
+Rows: **3190** — working **1757** · partial **1158** · missing **274** · owner-held **1**. Consequential rows: 2711.
 
 | population | rows / scanned |
 |---|---|
@@ -28,24 +28,24 @@ Rows: **3190** — working **1595** · partial **1303** · missing **291** · ow
 |---|---|---|---|---|
 | assistant_tool | 59 | 45 | 14 | 0 |
 | capability | 11 | 11 | 0 | 0 |
-| cron | 220 | 109 | 111 | 0 |
-| http | 123 | 80 | 38 | 5 |
-| kernel_event | 456 | 94 | 169 | 192 |
+| cron | 220 | 110 | 110 | 0 |
+| http | 123 | 82 | 36 | 5 |
+| kernel_event | 456 | 245 | 18 | 192 |
 | manager_signal | 326 | 326 | 0 | 0 |
 | orchestrator_event | 24 | 4 | 4 | 16 |
 | provider_egress | 6 | 6 | 0 | 0 |
-| server_action | 1937 | 895 | 964 | 78 |
+| server_action | 1937 | 903 | 973 | 61 |
 | webhook | 28 | 25 | 3 | 0 |
 
-Missing links across all rows: evidence 1158 · decision 327 · trigger 207 · worker 192 · owner 129 · readback 12.
+Missing links across all rows: evidence 999 · worker 192 · trigger 190 · decision 159 · owner 129 · readback 12.
 
 ## 2. Kernel-to-customer map (existing components, by contract step)
 
 | contract step (A1) | existing component (live code) |
 |---|---|
 | OBSERVE (triggers) | `dispatchDueCrons` @ lib/kernel/cron-dispatch.ts:427 · `emitKernelEvent` @ lib/kernel/emit.ts:155 · `publishManagerSignal` @ lib/kernel/manager-signals.ts:71 · `runIngressReconciliation` @ lib/kernel/ingress-reconciliation.ts:288 |
-| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3452 · `authorityAllows` @ lib/voice/tool-registry.ts:870 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:62 |
-| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3437 · `requestDelegation` @ lib/kernel/manager-delegation.ts:399 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
+| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3454 · `authorityAllows` @ lib/voice/tool-registry.ts:870 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:62 |
+| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3439 · `requestDelegation` @ lib/kernel/manager-delegation.ts:399 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
 | CHECK AUTHORITY / POLICY / BUDGET | `isToolAllowedAtAuthority` @ lib/ai-isa/persona-tool-policy.ts:616 · `autonomyDecision` @ lib/managers/autonomy-gate.ts:91 · `approverFor` @ lib/kernel/approval-authority.ts:117 |
 | COORDINATE OR HOLD | `arbitratePlannedTouch` @ lib/ai-isa/followup-arbiter.ts:1857 · `evaluateApprovalSla` @ lib/kernel/approval-sla.ts:17 |
 | EXECUTE THROUGH ONE WRITER / EGRESS | `dispatchEmail` @ lib/providers/dispatch.ts:331 · `dispatchSms` @ lib/providers/dispatch.ts:332 · `callConnector` @ lib/agentic-os/connector-gateway.ts:246 |
@@ -56,16 +56,16 @@ Missing links across all rows: evidence 1158 · decision 327 · trigger 207 · w
 
 | plane | rows | working | partial | missing |
 |---|---|---|---|---|
-| P1 platform · billing · metering | 682 | 442 | 221 | 19 |
-| P2 tenant provisioning · seats · offices · websites | 358 | 223 | 115 | 20 |
-| P3 command center · NL / voice · tasks · approvals | 674 | 446 | 182 | 46 |
-| P4 raw acquisition · RawData · Raw Lead · Lead | 477 | 350 | 83 | 44 |
-| P5 prospects · contacts · portal · conversation | 915 | 570 | 285 | 60 |
-| P6 marketing · content · channels · ads | 956 | 540 | 379 | 37 |
-| P7 listings · shopping agent · MLS / IDX | 514 | 327 | 166 | 21 |
-| P8 offers · transactions · documents · closing | 901 | 547 | 276 | 78 |
-| P9 commission · settlement · brokerage finance | 475 | 362 | 90 | 22 |
-| P10 recruiting · gamification · support · ops | 951 | 680 | 234 | 36 |
+| P1 platform · billing · metering | 691 | 457 | 221 | 13 |
+| P2 tenant provisioning · seats · offices · websites | 358 | 226 | 112 | 20 |
+| P3 command center · NL / voice · tasks · approvals | 674 | 461 | 174 | 39 |
+| P4 raw acquisition · RawData · Raw Lead · Lead | 497 | 386 | 73 | 38 |
+| P5 prospects · contacts · portal · conversation | 940 | 607 | 278 | 55 |
+| P6 marketing · content · channels · ads | 977 | 596 | 352 | 29 |
+| P7 listings · shopping agent · MLS / IDX | 538 | 357 | 164 | 17 |
+| P8 offers · transactions · documents · closing | 923 | 582 | 273 | 68 |
+| P9 commission · settlement · brokerage finance | 475 | 366 | 88 | 20 |
+| P10 recruiting · gamification · support · ops | 956 | 702 | 222 | 31 |
 
 Unclassified rows (no plane matcher): 255.
 
@@ -73,46 +73,46 @@ Unclassified rows (no plane matcher): 255.
 
 | surface | rows | working | partial | missing | example working row / exact missing link |
 |---|---|---|---|---|---|
-| SaaS subscriber lifecycle | 300 | 149 | 141 | 10 | `kernel_event:subscription_downgraded` @ lib/kernel/event-reactor.ts:1053 |
-| Organization and membership | 120 | 84 | 24 | 12 | `server_action:app/dashboard/settings/offices/actions.ts#revokeOfficeMembershipAction` @ app/dashboard/settings/offices/actions.ts:85 |
-| Tenant website / landing / IDX | 265 | 190 | 64 | 11 | `http:/api/form-wizard/intake-notes` @ app/api/form-wizard/intake-notes/route.ts:20 |
-| Platform provider fabric | 228 | 183 | 37 | 8 | `server_action:app/actions/ai-calendar-management.ts#syncCalendar` @ app/actions/ai-calendar-management.ts:697 |
-| Platform security | 315 | 257 | 54 | 4 | `server_action:app/actions/admin/manager-evals.ts#vetoLearnedAdjustment` @ app/actions/admin/manager-evals.ts:668 |
-| Kernel supervisor / mission board | 147 | 118 | 18 | 11 | `server_action:app/actions/ai-agent-goals.ts#upsertAgentGoal` @ app/actions/ai-agent-goals.ts:71 |
-| Manager-to-manager bus | 840 | 601 | 219 | 19 | `manager_signal:agent_escalated_to_human` @ lib/kernel/signal-registry.ts:312 |
-| Cron / scheduling / watchers | 292 | 150 | 134 | 8 | `cron:/api/cron/marketing-agent-weekly` @ app/api/cron/marketing-agent-weekly/route.ts:32 |
-| Natural-language and voice command | 307 | 189 | 99 | 19 | `assistant_tool:broadcast_announcement` @ app/api/agent-assistant/tool-call/route.ts:740 |
+| SaaS subscriber lifecycle | 302 | 154 | 140 | 8 | `kernel_event:subscription_downgraded` @ lib/kernel/event-reactor.ts:1053 |
+| Organization and membership | 120 | 85 | 23 | 12 | `server_action:app/dashboard/settings/offices/actions.ts#revokeOfficeMembershipAction` @ app/dashboard/settings/offices/actions.ts:85 |
+| Tenant website / landing / IDX | 265 | 191 | 63 | 11 | `http:/api/form-wizard/intake-notes` @ app/api/form-wizard/intake-notes/route.ts:20 |
+| Platform provider fabric | 231 | 187 | 37 | 7 | `server_action:app/actions/ai-calendar-management.ts#syncCalendar` @ app/actions/ai-calendar-management.ts:697 |
+| Platform security | 339 | 273 | 64 | 2 | `server_action:app/actions/admin/manager-evals.ts#vetoLearnedAdjustment` @ app/actions/admin/manager-evals.ts:668 |
+| Kernel supervisor / mission board | 168 | 131 | 26 | 11 | `server_action:app/actions/ai-agent-goals.ts#upsertAgentGoal` @ app/actions/ai-agent-goals.ts:71 |
+| Manager-to-manager bus | 865 | 772 | 76 | 16 | `kernel_event:agent_escalated_to_human` @ lib/kernel/event-reactor.ts:2328 |
+| Cron / scheduling / watchers | 292 | 157 | 127 | 8 | `cron:/api/cron/marketing-agent-weekly` @ app/api/cron/marketing-agent-weekly/route.ts:32 |
+| Natural-language and voice command | 307 | 197 | 92 | 18 | `assistant_tool:get_income_truth` @ app/api/agent-assistant/tool-call/route.ts:793 |
 | Raw external research | 46 | 21 | 17 | 8 | `capability:vendor:web_research` @ vendor manifest (buildFullActionManifest) |
-| RawData and identity | 81 | 61 | 15 | 5 | `capability:vendor:lead_skip_trace` @ vendor manifest (buildFullActionManifest) |
-| Raw Lead to Lead | 95 | 80 | 10 | 5 | `manager_signal:copy_variant_promoted` @ lib/kernel/signal-registry.ts:163 |
-| Lead to Contact | 195 | 145 | 39 | 11 | `capability:app:agent_coaching_assign` @ lib/agentic-os/app-capability-registry.ts:229 |
-| Existing Contact / Customer 360 | 503 | 381 | 96 | 26 | `kernel_event:contact_dnc_set` @ lib/kernel/event-reactor.ts:1194 |
-| Conversation / AI ISA | 174 | 138 | 31 | 5 | `assistant_tool:voice_followup` @ app/api/agent-assistant/tool-call/route.ts:709 |
-| Consumer portals / stage education, collaboration | 274 | 198 | 64 | 12 | `server_action:app/actions/collaborative-search.ts#setFamilyFeedbackUseAction` @ app/actions/collaborative-search.ts:703 |
-| Shopping Agent / property search | 26 | 16 | 9 | 1 | `server_action:app/actions/buyer-search/conversational-search.ts#explainHomeForBuyerAction` @ app/actions/buyer-search/conversational-search.ts:575 |
-| Market Twin / intelligence graph | 56 | 23 | 31 | 2 | `http:/api/intelligence/coaching` @ app/api/intelligence/coaching/route.ts:7 |
-| Content-topic pool | 82 | 54 | 28 | 0 | `server_action:app/actions/content-intel/sources.ts#saveTopicObservationAction` @ app/actions/content-intel/sources.ts:164 |
-| Brand / asset studio | 320 | 199 | 114 | 7 | `http:/api/did/consent` @ app/api/did/consent/route.ts:33 |
-| Paid advertising | 145 | 123 | 16 | 6 | `capability:app:ad_campaign_launch` @ lib/agentic-os/app-capability-registry.ts:222 |
-| Outbound channels | 1045 | 758 | 253 | 33 | `http:/api/admin/qr-codes` @ app/api/admin/qr-codes/route.ts:41 |
-| Campaign bundles / Refurbish / Omnipresence | 71 | 44 | 27 | 0 | `manager_signal:omnipresence_pipeline_completed` @ lib/kernel/signal-registry.ts:335 |
-| Events and community intelligence | 66 | 41 | 21 | 4 | `manager_signal:open_house_attendee_captured` @ lib/kernel/signal-registry.ts:377 |
+| RawData and identity | 81 | 63 | 13 | 5 | `capability:vendor:lead_skip_trace` @ vendor manifest (buildFullActionManifest) |
+| Raw Lead to Lead | 95 | 83 | 9 | 3 | `kernel_event:lead_scored` @ lib/kernel/event-reactor.ts:1646 |
+| Lead to Contact | 195 | 154 | 35 | 6 | `capability:app:agent_coaching_assign` @ lib/agentic-os/app-capability-registry.ts:229 |
+| Existing Contact / Customer 360 | 515 | 401 | 93 | 21 | `kernel_event:contact_dnc_set` @ lib/kernel/event-reactor.ts:1194 |
+| Conversation / AI ISA | 174 | 146 | 23 | 5 | `kernel_event:ai_isa_handoff_to_agent` @ lib/kernel/event-reactor.ts:2292 |
+| Consumer portals / stage education, collaboration | 296 | 214 | 74 | 8 | `server_action:app/actions/collaborative-search.ts#setFamilyFeedbackUseAction` @ app/actions/collaborative-search.ts:703 |
+| Shopping Agent / property search | 26 | 17 | 8 | 1 | `server_action:app/actions/buyer-search/conversational-search.ts#explainHomeForBuyerAction` @ app/actions/buyer-search/conversational-search.ts:575 |
+| Market Twin / intelligence graph | 56 | 24 | 30 | 2 | `http:/api/intelligence/coaching` @ app/api/intelligence/coaching/route.ts:7 |
+| Content-topic pool | 83 | 56 | 27 | 0 | `server_action:app/actions/content-intel/sources.ts#saveTopicObservationAction` @ app/actions/content-intel/sources.ts:164 |
+| Brand / asset studio | 323 | 208 | 108 | 7 | `http:/api/did/consent` @ app/api/did/consent/route.ts:33 |
+| Paid advertising | 145 | 125 | 16 | 4 | `capability:app:ad_campaign_launch` @ lib/agentic-os/app-capability-registry.ts:222 |
+| Outbound channels | 1071 | 792 | 251 | 27 | `http:/api/errors/escalate` @ app/api/errors/escalate/route.ts:10 |
+| Campaign bundles / Refurbish / Omnipresence | 71 | 49 | 22 | 0 | `kernel_event:omnipresence_pipeline_completed` @ lib/kernel/event-reactor.ts:2466 |
+| Events and community intelligence | 66 | 42 | 20 | 4 | `kernel_event:open_house_marketing_started` @ lib/kernel/event-reactor.ts:2804 |
 | Circle learning and top producers | 11 | 9 | 2 | 0 | `server_action:app/actions/events-and-circles.ts#revokeCircleTacticAction` @ app/actions/events-and-circles.ts:146 |
-| Listing lifecycle | 344 | 227 | 104 | 13 | `kernel_event:listing_created` @ lib/kernel/event-fanout.ts:226 |
-| Offers / counters | 315 | 167 | 131 | 17 | `http:/api/approvals/counter` @ app/api/approvals/counter/route.ts:21 |
-| Transaction / deal coordination | 362 | 228 | 87 | 47 | `server_action:app/actions/transactions.ts#recordClosingDateChange` @ app/actions/transactions.ts:314 |
-| Addenda / document intelligence | 159 | 115 | 38 | 6 | `kernel_event:document_requested` @ lib/kernel/event-fanout.ts:605 |
-| Compliance and CDA | 374 | 299 | 55 | 20 | `server_action:app/actions/video.ts#generateVideoScriptAction` @ app/actions/video.ts:177 |
-| Lender / title / insurance | 102 | 66 | 28 | 8 | `kernel_event:appraisal_gap_detected` @ lib/kernel/event-fanout.ts:458 |
+| Listing lifecycle | 368 | 255 | 104 | 9 | `kernel_event:listing_created` @ lib/kernel/event-fanout.ts:226 |
+| Offers / counters | 334 | 189 | 129 | 16 | `http:/api/approvals/counter` @ app/api/approvals/counter/route.ts:21 |
+| Transaction / deal coordination | 384 | 250 | 92 | 42 | `server_action:app/actions/transactions.ts#recordClosingDateChange` @ app/actions/transactions.ts:314 |
+| Addenda / document intelligence | 163 | 119 | 40 | 4 | `kernel_event:document_requested` @ lib/kernel/event-fanout.ts:605 |
+| Compliance and CDA | 398 | 320 | 65 | 13 | `server_action:app/actions/video.ts#generateVideoScriptAction` @ app/actions/video.ts:177 |
+| Lender / title / insurance | 102 | 67 | 29 | 6 | `kernel_event:appraisal_gap_detected` @ lib/kernel/event-fanout.ts:458 |
 | Commission and settlement | 103 | 76 | 20 | 7 | `manager_signal:agent_crushed_cap` @ lib/kernel/signal-registry.ts:112 |
-| Brokerage finance | 106 | 57 | 41 | 8 | `http:/api/accounting/sync` @ app/api/accounting/sync/route.ts:26 |
-| ROI and budgets | 27 | 12 | 12 | 3 | `manager_signal:autonomy_budget_escalated` @ lib/kernel/signal-registry.ts:50 |
-| Gamification / Academy | 152 | 114 | 29 | 8 | `server_action:app/actions/gamification.ts#correctAgentPoints` @ app/actions/gamification.ts:214 |
-| Recruitment / onboarding | 83 | 43 | 34 | 6 | `capability:app:recruit_outreach` @ lib/agentic-os/app-capability-registry.ts:216 |
-| Sphere / lifetime / reviews | 132 | 69 | 53 | 10 | `kernel_event:anniversary_triggered` @ lib/kernel/event-fanout.ts:678 |
+| Brokerage finance | 106 | 59 | 40 | 7 | `http:/api/accounting/sync` @ app/api/accounting/sync/route.ts:26 |
+| ROI and budgets | 27 | 13 | 11 | 3 | `kernel_event:campaign_roi_updated` @ lib/kernel/event-reactor.ts:1001 |
+| Gamification / Academy | 152 | 124 | 21 | 6 | `server_action:app/actions/gamification.ts#correctAgentPoints` @ app/actions/gamification.ts:214 |
+| Recruitment / onboarding | 83 | 45 | 32 | 6 | `capability:app:recruit_outreach` @ lib/agentic-os/app-capability-registry.ts:216 |
+| Sphere / lifetime / reviews | 132 | 75 | 48 | 9 | `kernel_event:anniversary_triggered` @ lib/kernel/event-fanout.ts:678 |
 | Support / education | 25 | 19 | 6 | 0 | `manager_signal:support_ticket_triaged` @ lib/kernel/signal-registry.ts:69 |
-| Operations and incidents | 606 | 519 | 77 | 10 | `http:/api/errors/retry` @ app/api/errors/retry/route.ts:10 |
-| Audit / security / production | 20 | 12 | 8 | 0 | `manager_signal:certification_awarded` @ lib/kernel/signal-registry.ts:462 |
+| Operations and incidents | 611 | 528 | 76 | 7 | `http:/api/errors/retry` @ app/api/errors/retry/route.ts:10 |
+| Audit / security / production | 20 | 13 | 7 | 0 | `kernel_event:certification_awarded` @ lib/kernel/event-reactor.ts:4001 |
 
 ## 5. Human-versus-autonomy decision matrix (driven through the real deciders, SIMULATED inputs)
 
@@ -153,7 +153,7 @@ Approval SLA (lib/kernel/approval-sla.ts evaluateApprovalSla, default windows): 
 
 Deterministic outbound chain (never an LLM): `autonomyGate` @ lib/providers/dispatch.ts:354 → `deconflictGate` @ lib/providers/dispatch.ts:562 → `checkSuppression` @ lib/providers/dispatch.ts:660 → `evaluateOutboundCompliance` @ lib/providers/dispatch.ts:683 → `contentSafetyBackstop` @ lib/providers/dispatch.ts:778 → `channelRefusalForRecipient` @ lib/providers/dispatch.ts:937 → `requireConsentForVideoAvatarSource` @ lib/providers/dispatch.ts:1772.
 
-Per row: 1054 rows start without a person (cron / event / signal / webhook), of which 520 carry no decision gate on their path; 74 rows hold for a human approver on the path; 2005 rows are decided by the signed-in person.
+Per row: 1054 rows start without a person (cron / event / signal / webhook), of which 360 carry no decision gate on their path; 74 rows hold for a human approver on the path; 2005 rows are decided by the signed-in person.
 
 ## 6. Gap list (ranked by consequence; top 60 — the full set is the JSON)
 
@@ -161,68 +161,68 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 |---|---|---|---|---|
 | 1 | `http:/api/voice/relay/plan` | trigger | app/api/voice/relay/plan/route.ts:23 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
 | 2 | `orchestrator_event:credit.partner_referred` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:227 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 3 | `server_action:app/actions/ai-content-generation.tsx#bulkGenerateContent` | trigger | app/actions/ai-content-generation.tsx:2708 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 4 | `server_action:app/actions/communications.ts#addContactNote` | trigger | app/actions/communications.ts:391 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 5 | `server_action:app/actions/email-campaigns.ts#sendEmailCampaign` | trigger | app/actions/email-campaigns.ts:440 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 6 | `server_action:app/actions/orchestrator.ts#emitEvent` | trigger | app/actions/orchestrator.ts:28 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 7 | `server_action:app/actions/vendor-marketplace.ts#assignVendorToTransaction` | trigger | app/actions/vendor-marketplace.ts:1245 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 8 | `server_action:app/actions/workflows.ts#executeAITool` | trigger | app/actions/workflows.ts:32 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 9 | `orchestrator_event:listing.offer_received` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:209 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 10 | `orchestrator_event:transaction.close_approaching` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:218 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 11 | `cron:/api/cron/health-check` | decision | app/api/cron/health-check/route.ts:196 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 12 | `server_action:app/actions/ai-auto-response.ts#generateAIResponse` | trigger, evidence | app/actions/ai-auto-response.ts:82 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 13 | `server_action:app/actions/cda-portal.ts#uploadCdaCheckCopyAction` | trigger, evidence | app/actions/cda-portal.ts:2075 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 14 | `server_action:app/actions/link-to-video.ts#checkCompliance` | trigger, evidence | app/actions/link-to-video.ts:251 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 15 | `server_action:app/actions/listing-lifecycle.ts#scheduleListingAppointment` | trigger | app/actions/listing-lifecycle.ts:40 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 16 | `server_action:app/actions/onboarding/tech-stack.ts#getMaskedCredentials` | owner, evidence | app/actions/onboarding/tech-stack.ts:384 | add the registry row (CRON_MANAGER / TABLE_MANAGER / CAPABILITY_MANAGER / VOICE_TOOL_MANAGER) — integrator |
-| 17 | `cron:/api/cron/bundle-attribution-rollup` | decision, evidence | app/api/cron/bundle-attribution-rollup/route.ts:106 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 18 | `http:/api/open-house/register` | decision | app/api/open-house/register/route.ts:20 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 19 | `kernel_event:ai_feedback_received` | decision, evidence | lib/kernel/event-reactor.ts:4303 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 20 | `kernel_event:referral_received` | decision, evidence | lib/kernel/event-reactor.ts:1984 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 21 | `kernel_event:refinance_opportunity` | decision, evidence | lib/kernel/event-reactor.ts:4394 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 22 | `kernel_event:subscription_created` | decision, evidence | lib/kernel/event-reactor.ts:1748 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 23 | `orchestrator_event:credit.target_reached` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:226 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 24 | `orchestrator_event:listing.live` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:207 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 25 | `orchestrator_event:listing.price_reduction` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:208 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 26 | `orchestrator_event:listing.signed` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:206 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 27 | `orchestrator_event:video.high_engagement` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:234 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 28 | `orchestrator_event:video.published` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:233 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 29 | `server_action:app/actions/ai-content-generation.tsx#generateSocialPost` | trigger | app/actions/ai-content-generation.tsx:1149 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 30 | `server_action:app/actions/onboarding/tech-stack.ts#saveCredentials` | evidence | app/actions/onboarding/tech-stack.ts:160 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 31 | `server_action:app/actions/transactions.ts#recalculateCommissionState` | trigger | app/actions/transactions.ts:390 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 32 | `server_action:app/actions/video-repurposing.ts#logRepurposedContent` | trigger | app/actions/video-repurposing.ts:766 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 33 | `http:/api/admin/billing/entitlements/[brokerageId]` | evidence | app/api/admin/billing/entitlements/[brokerageId]/route.ts:9 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 34 | `http:/api/admin/transaction-forms` | evidence | app/api/admin/transaction-forms/route.ts:71 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 35 | `http:/api/chat/stream` | evidence | app/api/chat/stream/route.ts:62 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 36 | `http:/api/embed/session` | decision | app/api/embed/session/route.ts:57 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 37 | `http:/api/onboarding/brand/generate-sample` | evidence | app/api/onboarding/brand/generate-sample/route.ts:17 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 38 | `kernel_event:buyer_offer_draft_started` | decision, evidence | lib/kernel/event-reactor.ts:3020 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 39 | `kernel_event:buyer_offer_submit_requested` | decision, evidence | lib/kernel/event-reactor.ts:3057 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 40 | `kernel_event:deal_at_risk_detected` | decision, evidence | lib/kernel/event-reactor.ts:877 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 41 | `kernel_event:deal_health_changed` | decision, evidence | lib/kernel/event-reactor.ts:1865 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 42 | `kernel_event:deal_health_score_updated` | decision, evidence | lib/kernel/event-reactor.ts:860 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 43 | `kernel_event:esign_envelope_requested` | decision, evidence | lib/kernel/event-reactor.ts:2225 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 44 | `kernel_event:offer_accepted` | decision, evidence | lib/kernel/event-fanout.ts:210 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 45 | `kernel_event:offer_ai_extracted` | decision, evidence | lib/kernel/event-reactor.ts:3864 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 46 | `kernel_event:offer_comparison_generated` | decision, evidence | lib/kernel/event-reactor.ts:3840 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 47 | `kernel_event:offer_os_ai_analyzed` | decision, evidence | lib/kernel/event-reactor.ts:4715 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 48 | `kernel_event:offer_os_counter_responded` | decision, evidence | lib/kernel/event-reactor.ts:4759 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 49 | `kernel_event:offer_os_countered` | decision, evidence | lib/kernel/event-reactor.ts:4746 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 50 | `kernel_event:offer_os_rejected` | decision, evidence | lib/kernel/event-reactor.ts:4772 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 51 | `kernel_event:offer_os_withdrawn` | decision, evidence | lib/kernel/event-reactor.ts:4785 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 52 | `kernel_event:system_sync_completed` | trigger, decision, evidence | lib/kernel/event-reactor.ts:2264 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
-| 53 | `kernel_event:vendor_assigned_to_transaction` | decision, evidence | lib/kernel/event-reactor.ts:2032 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
-| 54 | `orchestrator_event:agent.delegated_to_ai` | owner, evidence | lib/orchestrator/internal.ts:242 | add the registry row (CRON_MANAGER / TABLE_MANAGER / CAPABILITY_MANAGER / VOICE_TOOL_MANAGER) — integrator |
-| 55 | `server_action:app/actions/ai-agent-onboarding.ts#generateWelcomeMessage` | evidence | app/actions/ai-agent-onboarding.ts:201 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 56 | `server_action:app/actions/ai-chat.ts#sendChatMessage` | evidence | app/actions/ai-chat.ts:235 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 57 | `server_action:app/actions/ai-cma.ts#getAIPriceAdjustmentRecommendation` | evidence | app/actions/ai-cma.ts:191 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 58 | `server_action:app/actions/ai-communication-hub.ts#generateCommunicationSummary` | evidence | app/actions/ai-communication-hub.ts:750 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 59 | `server_action:app/actions/ai-contract-review.ts#compareContractVersions` | evidence | app/actions/ai-contract-review.ts:334 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
-| 60 | `server_action:app/actions/ai-direct-mail.ts#aiAnalyzeCampaignPerformance` | evidence | app/actions/ai-direct-mail.ts:956 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 3 | `server_action:app/actions/communications.ts#addContactNote` | trigger | app/actions/communications.ts:391 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 4 | `server_action:app/actions/email-campaigns.ts#sendEmailCampaign` | trigger | app/actions/email-campaigns.ts:440 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 5 | `server_action:app/actions/orchestrator.ts#emitEvent` | trigger | app/actions/orchestrator.ts:28 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 6 | `server_action:app/actions/vendor-marketplace.ts#assignVendorToTransaction` | trigger | app/actions/vendor-marketplace.ts:1245 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 7 | `orchestrator_event:listing.offer_received` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:209 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 8 | `orchestrator_event:transaction.close_approaching` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:218 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 9 | `cron:/api/cron/health-check` | decision | app/api/cron/health-check/route.ts:196 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 10 | `server_action:app/actions/ai-auto-response.ts#generateAIResponse` | trigger, evidence | app/actions/ai-auto-response.ts:82 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 11 | `server_action:app/actions/listing-lifecycle.ts#scheduleListingAppointment` | trigger | app/actions/listing-lifecycle.ts:40 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 12 | `server_action:app/actions/onboarding/tech-stack.ts#getMaskedCredentials` | owner, evidence | app/actions/onboarding/tech-stack.ts:384 | add the registry row (CRON_MANAGER / TABLE_MANAGER / CAPABILITY_MANAGER / VOICE_TOOL_MANAGER) — integrator |
+| 13 | `cron:/api/cron/bundle-attribution-rollup` | decision, evidence | app/api/cron/bundle-attribution-rollup/route.ts:106 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 14 | `http:/api/open-house/register` | decision | app/api/open-house/register/route.ts:20 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 15 | `orchestrator_event:credit.target_reached` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:226 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 16 | `orchestrator_event:listing.live` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:207 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 17 | `orchestrator_event:listing.price_reduction` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:208 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 18 | `orchestrator_event:listing.signed` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:206 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 19 | `orchestrator_event:video.high_engagement` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:234 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 20 | `orchestrator_event:video.published` | trigger, owner, decision, evidence | lib/orchestrator/internal.ts:233 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 21 | `server_action:app/actions/onboarding/tech-stack.ts#saveCredentials` | evidence | app/actions/onboarding/tech-stack.ts:160 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 22 | `server_action:app/actions/transactions.ts#recalculateCommissionState` | trigger | app/actions/transactions.ts:390 | register the trigger (CRON_REGISTRY row / emitter / publisher / caller) or tombstone the worker naming its survivor |
+| 23 | `http:/api/admin/billing/entitlements/[brokerageId]` | evidence | app/api/admin/billing/entitlements/[brokerageId]/route.ts:9 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 24 | `http:/api/admin/transaction-forms` | evidence | app/api/admin/transaction-forms/route.ts:71 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 25 | `http:/api/chat/stream` | evidence | app/api/chat/stream/route.ts:62 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 26 | `http:/api/onboarding/brand/generate-sample` | evidence | app/api/onboarding/brand/generate-sample/route.ts:17 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 27 | `kernel_event:offer_accepted` | decision, evidence | lib/kernel/event-fanout.ts:210 | call the existing gate on the path (authority / approval / spend / compliance) before the write |
+| 28 | `orchestrator_event:agent.delegated_to_ai` | owner, evidence | lib/orchestrator/internal.ts:242 | add the registry row (CRON_MANAGER / TABLE_MANAGER / CAPABILITY_MANAGER / VOICE_TOOL_MANAGER) — integrator |
+| 29 | `server_action:app/actions/ai-agent-onboarding.ts#generateWelcomeMessage` | evidence | app/actions/ai-agent-onboarding.ts:201 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 30 | `server_action:app/actions/ai-chat.ts#sendChatMessage` | evidence | app/actions/ai-chat.ts:235 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 31 | `server_action:app/actions/ai-cma.ts#getAIPriceAdjustmentRecommendation` | evidence | app/actions/ai-cma.ts:191 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 32 | `server_action:app/actions/ai-communication-hub.ts#generateCommunicationSummary` | evidence | app/actions/ai-communication-hub.ts:750 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 33 | `server_action:app/actions/ai-contract-review.ts#compareContractVersions` | evidence | app/actions/ai-contract-review.ts:334 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 34 | `server_action:app/actions/ai-direct-mail.ts#aiAnalyzeCampaignPerformance` | evidence | app/actions/ai-direct-mail.ts:956 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 35 | `server_action:app/actions/ai-direct-mail.ts#aiPredictCampaignROI` | evidence | app/actions/ai-direct-mail.ts:398 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 36 | `server_action:app/actions/ai-direct-mail.ts#aiSelectTargetAudience` | evidence | app/actions/ai-direct-mail.ts:310 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 37 | `server_action:app/actions/ai-direct-mail.ts#aiSuggestDesign` | evidence | app/actions/ai-direct-mail.ts:246 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 38 | `server_action:app/actions/ai-direct-mail.ts#aiWritePostcardCopy` | evidence | app/actions/ai-direct-mail.ts:122 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 39 | `server_action:app/actions/ai-document-intelligence.ts#aiGenerateDocument` | evidence | app/actions/ai-document-intelligence.ts:425 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 40 | `server_action:app/actions/ai-document-intelligence.ts#aiGenerateDocumentReminders` | evidence | app/actions/ai-document-intelligence.ts:642 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 41 | `server_action:app/actions/ai-document-intelligence.ts#aiVerifySignatures` | evidence | app/actions/ai-document-intelligence.ts:304 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 42 | `server_action:app/actions/ai-financial-management.ts#aiCategorizeExpense` | evidence | app/actions/ai-financial-management.ts:76 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 43 | `server_action:app/actions/ai-financial-management.ts#aiCreateBudget` | evidence | app/actions/ai-financial-management.ts:630 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 44 | `server_action:app/actions/ai-financial-management.ts#aiGenerateProfitLossReport` | evidence | app/actions/ai-financial-management.ts:408 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 45 | `server_action:app/actions/ai-financial-management.ts#trackDeposit` | evidence | app/actions/ai-financial-management.ts:837 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 46 | `server_action:app/actions/ai-identity.ts#generateIdentityPreview` | evidence | app/actions/ai-identity.ts:260 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 47 | `server_action:app/actions/ai-insights.ts#draftSmartEmail` | evidence | app/actions/ai-insights.ts:150 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 48 | `server_action:app/actions/ai-insights.ts#generateContactInsights` | evidence | app/actions/ai-insights.ts:54 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 49 | `server_action:app/actions/ai-listing-intake.ts#aiCheckListingCompliance` | evidence | app/actions/ai-listing-intake.ts:346 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 50 | `server_action:app/actions/ai-listing-intake.ts#aiSuggestListPrice` | evidence | app/actions/ai-listing-intake.ts:203 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 51 | `server_action:app/actions/ai-listing-intake.ts#generateListingLandingPage` | evidence | app/actions/ai-listing-intake.ts:1112 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 52 | `server_action:app/actions/ai-listing-packet.ts#aiPacketQualityCheck` | evidence | app/actions/ai-listing-packet.ts:752 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 53 | `server_action:app/actions/ai-listing-presentation.ts#generateListingPresentation` | evidence | app/actions/ai-listing-presentation.ts:40 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 54 | `server_action:app/actions/ai-marketing-automation.ts#generateAIDirectMail` | evidence | app/actions/ai-marketing-automation.ts:396 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 55 | `server_action:app/actions/ai-marketing-automation.ts#generateAINewsletter` | evidence | app/actions/ai-marketing-automation.ts:96 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 56 | `server_action:app/actions/ai-marketing-automation.ts#generateNewsletterSubjectVariants` | evidence | app/actions/ai-marketing-automation.ts:300 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 57 | `server_action:app/actions/ai-offer-creation.ts#aiCalculateEscalation` | evidence | app/actions/ai-offer-creation.ts:104 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 58 | `server_action:app/actions/ai-offer-creation.ts#aiCounterOfferStrategy` | evidence | app/actions/ai-offer-creation.ts:460 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 59 | `server_action:app/actions/ai-offer-creation.ts#aiGenerateBuyerLetter` | evidence | app/actions/ai-offer-creation.ts:221 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
+| 60 | `server_action:app/actions/ai-offer-creation.ts#aiOfferStrategyAdvisor` | evidence | app/actions/ai-offer-creation.ts:60 | wrap the consequential write in withActionLedger (lib/kernel/action-ledger.ts) |
 
 ## 7. Per-plane rows (state ≠ working; working rows are in the JSON)
 
-### P1 platform · billing · metering — 78 not working
+### P1 platform · billing · metering — 77 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
@@ -237,7 +237,6 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `http:/api/embed/session/end` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/embed/session/end/route.ts:30 |
 | `http:/api/v1/[resource]` | missing | trigger | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ lib/kerne | app/api/v1/[resource]/route.ts:11 |
 | `kernel_event:billing_invoice_generated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:subscription_created` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1748 |
 | `kernel_event:subscription_reminder_sent` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:usage_threshold_reached` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:webhook_subscription_auto_disabled` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -292,7 +291,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/tenant-webhooks.ts#updateWebhookSubscription` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/tenant-webhooks.ts:46) | app/actions/tenant-webhooks.ts:186 |
 | `server_action:app/actions/vendor-invite.ts#inviteVendorToPlatformAction` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/vendor-invite.ts:113) | app/actions/vendor-invite.ts:109 |
 | `server_action:app/actions/vendor-payments.ts#completeStripeConnectOnboarding` | partial | evidence | data_steward | session actor (auth.getUser @ lib/kernel/portal-auth.ts:160) | app/actions/vendor-payments.ts:870 |
-| `server_action:app/actions/vendor-payments.ts#createVendorInvoice` | missing | trigger, evidence | data_steward | session actor (getAgentContext @ lib/platform/acting-context.ts:214) | app/actions/vendor-payments.ts:185 |
+| `server_action:app/actions/vendor-payments.ts#createVendorInvoice` | partial | evidence | data_steward | session actor (getAgentContext @ lib/platform/acting-context.ts:214) | app/actions/vendor-payments.ts:185 |
 | `server_action:app/actions/vendor-payments.ts#initiateStripeConnectOnboarding` | partial | evidence | data_steward | session actor (auth.getUser @ lib/kernel/portal-auth.ts:160) | app/actions/vendor-payments.ts:496 |
 | `server_action:app/actions/vendor-payments.ts#markInvoicePaid` | partial | evidence | data_steward | session actor (getAgentContext @ lib/platform/acting-context.ts:214) | app/actions/vendor-payments.ts:346 |
 | `server_action:app/actions/vendor-payments.ts#markVendorChargePaid` | partial | evidence | data_steward | session actor (getAgentContext @ lib/platform/acting-context.ts:214) | app/actions/vendor-payments.ts:1615 |
@@ -305,12 +304,10 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:lib/repurpose/actions.ts#createRepurposePipeline` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ lib/repur | lib/repurpose/actions.ts:320 |
 | `server_action:lib/vendor-tracking.ts#trackVendorUsage` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ lib/vendo | lib/vendor-tracking.ts:5 |
 
-### P2 tenant provisioning · seats · offices · websites — 71 not working
+### P2 tenant provisioning · seats · offices · websites — 66 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
-| `assistant_tool:run_team_command` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:485 |
-| `assistant_tool:team_query` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:705 |
 | `cron:/api/cron/manager-learning` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/manager-learning/route.ts:20 |
 | `cron:/api/cron/office-hours` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/office-hours/route.ts:18 |
 | `cron:/api/cron/revenue-protection-rollup` | partial | decision | finance_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/revenue-protection-rollup/route.ts:25 |
@@ -321,8 +318,6 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:custom_domain_connected` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:custom_domain_error` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:custom_domain_verified` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:onboarding_completed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1382 |
-| `kernel_event:onboarding_stalled` | partial | decision, evidence | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2758 |
 | `kernel_event:team_heatmap_snapshot_taken` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:team_rollup_completed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:user_domain_records_created` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -334,7 +329,6 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:user_onboarding_started` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:user_onboarding_step_completed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:user_provisioned` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:website_visitor_identified` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1577 |
 | `server_action:app/actions/admin/agent-360.ts#setAgentOnboardingStatusAction` | partial | evidence | recruiting_manager | session actor (auth.getUser @ app/actions/admin/agent-360.ts:481) | app/actions/admin/agent-360.ts:549 |
 | `server_action:app/actions/admin/invitations.ts#revokeInvitationAction` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/admin/invitations.ts:26) | app/actions/admin/invitations.ts:138 |
 | `server_action:app/actions/admin/locations.ts#createLocationAction` | partial | evidence | data_steward | session actor (requireAdmin @ app/actions/admin/locations.ts:127) | app/actions/admin/locations.ts:115 |
@@ -381,37 +375,24 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/user-profile.ts#updateMyProfile` | partial | evidence | data_steward | session actor (getAgentContext @ lib/platform/acting-context.ts:214) | app/actions/user-profile.ts:74 |
 | `server_action:app/actions/vendor-invite.ts#revokeVendorInviteAction` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/vendor-invite.ts:538) | app/actions/vendor-invite.ts:534 |
 
-### P3 command center · NL / voice · tasks · approvals — 61 not working
+### P3 command center · NL / voice · tasks · approvals — 48 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
-| `assistant_tool:broker_objective` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:745 |
-| `assistant_tool:fill_form_field` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:694 |
 | `assistant_tool:next_unfilled_field` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:697 |
 | `assistant_tool:read_form_status` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:691 |
-| `assistant_tool:run_skill` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:746 |
-| `assistant_tool:standup_action` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:708 |
 | `http:/api/voice/end-call` | partial | owner | unresolved: it writes only carriers / unstewarded tables (vo | session actor (createClient() from "@/lib/supabase/server" @ app/api/v | app/api/voice/end-call/route.ts:13 |
-| `http:/api/voice/twilio/recording` | partial | owner, decision | unresolved: it writes only carriers / unstewarded tables (vo | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/voice/twilio/recording/route.ts:38 |
-| `kernel_event:agent_task_dispatched` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4087 |
+| `http:/api/voice/twilio/recording` | partial | owner | unresolved: it writes only carriers / unstewarded tables (vo | provider of record (signature verified: validateTwilioSignature @ app/ | app/api/voice/twilio/recording/route.ts:38 |
 | `kernel_event:manager_delegation_requested` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:manager_delegation_state_changed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:mission_created` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:mission_state_changed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:setup_assistant_escalated` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2735 |
-| `kernel_event:setup_assistant_query_made` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3982 |
-| `kernel_event:task_completed` | partial | decision, evidence | finance_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1596 |
-| `kernel_event:task_due` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1474 |
 | `kernel_event:voice_call_completed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_call_initiated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_call_missed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:voice_clone_default_set` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2602 |
-| `kernel_event:voice_clone_profile_created` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2568 |
-| `kernel_event:voice_clone_ready` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2403 |
 | `kernel_event:voice_clone_sample_uploaded` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_clone_training_completed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_clone_training_failed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:voice_clone_training_started` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2585 |
 | `kernel_event:voice_command_executed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_command_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:voice_command_received` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -427,7 +408,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/credit-copilot.ts#createCreditAccount` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/credit-copilot.ts:694) | app/actions/credit-copilot.ts:684 |
 | `server_action:app/actions/forms-kernel.ts#saveFormDraftAction` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/forms-kernel.ts:35) | app/actions/forms-kernel.ts:93 |
 | `server_action:app/actions/gift-studio.ts#orderGiftSelectionAction` | partial | evidence | deal_coordinator | session actor (auth.getUser @ app/actions/gift-studio.ts:21) | app/actions/gift-studio.ts:113 |
-| `server_action:app/actions/journey-tasks.ts#updateStageProgress` | missing | trigger, evidence | data_steward | session actor (auth.getUser @ lib/portal/require-contact-access.ts:119 | app/actions/journey-tasks.ts:355 |
+| `server_action:app/actions/journey-tasks.ts#updateStageProgress` | partial | evidence | data_steward | session actor (auth.getUser @ lib/portal/require-contact-access.ts:119 | app/actions/journey-tasks.ts:355 |
 | `server_action:app/actions/knowledge/search.ts#createKnowledgeArticle` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/knowledge/search.ts:303 |
 | `server_action:app/actions/knowledge/search.ts#deleteKnowledgeArticle` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/knowledge/search.ts:433 |
 | `server_action:app/actions/knowledge/search.ts#updateKnowledgeArticle` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/knowledge/search.ts:352 |
@@ -447,7 +428,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:lib/approval-workflow/approval-logger.ts#logBatchApprovalDecisions` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ lib/appro | lib/approval-workflow/approval-logger.ts:79 |
 | `webhook:/api/twiml/whisper-bridge` | partial | owner | unresolved: it writes only carriers / unstewarded tables (ca | provider of record (signature verified: validateTwilioSignature @ app/ | app/api/twiml/whisper-bridge/route.ts:57 |
 
-### P4 raw acquisition · RawData · Raw Lead · Lead — 103 not working
+### P4 raw acquisition · RawData · Raw Lead · Lead — 83 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
@@ -456,33 +437,15 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `cron:/api/cron/platform-lead-distribution` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/platform-lead-distribution/route.ts:47 |
 | `http:/api/leads/raw` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/api/l | app/api/leads/raw/route.ts:47 |
 | `kernel_event:ai_isa_call_completed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:ai_isa_handoff_to_agent` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2292 |
 | `kernel_event:contact_captured` | partial | decision | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/campaign-sequences/first-touch-coordination.ts:80 |
 | `kernel_event:contact_dedup_match_found` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:contact_dedup_merged` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1711 |
 | `kernel_event:contact_enriched` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_enrichment_completed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:contact_enrichment_failed` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2894 |
-| `kernel_event:contact_enrichment_queued` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3171 |
 | `kernel_event:contact_suppression_applied` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_suppression_cleared` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:enrichment_completed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:enrichment_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:ghost_lead_detected` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3930 |
-| `kernel_event:isa_appointment_scheduled` | partial | decision, evidence | shopping_agent | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1333 |
-| `kernel_event:isa_max_touches_reached` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3278 |
-| `kernel_event:isa_outreach_paused` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2916 |
-| `kernel_event:isa_outreach_sent` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3204 |
-| `kernel_event:isa_qualification_started` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3187 |
-| `kernel_event:isa_qualified_lead` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3246 |
-| `kernel_event:lead_assigned` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2015 |
-| `kernel_event:lead_assignment_failed` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1677 |
 | `kernel_event:lead_captured` | partial | evidence | ai_isa | ai_isa under resource/spend:checkVendorBudget @ lib/enrichment/lead-en | lib/kernel/event-reactor.ts:473 |
-| `kernel_event:lead_converted_to_contact` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3912 |
-| `kernel_event:lead_import_completed` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1694 |
-| `kernel_event:lead_ready_for_assignment` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2081 |
-| `kernel_event:lead_scored` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1646 |
-| `kernel_event:lead_sla_breached` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:928 |
 | `kernel_event:lead_tagged_hot` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:raw_lead_viability_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:raw_lead_viability_passed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -503,7 +466,6 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:scraping_cron_completed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:scraping_cron_failed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:scraping_cron_started` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:stale_lead_alert` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2135 |
 | `kernel_event:unknown_sender_identified_as_lead` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `orchestrator_event:lead.created` | missing | trigger | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:199 |
 | `orchestrator_event:lead.engaged` | missing | trigger, worker | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:202 |
@@ -516,8 +478,8 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/ai-isa.ts#updateISACampaign` | partial | evidence | ai_isa | session actor (requireCaller @ app/actions/ai-isa.ts:548) | app/actions/ai-isa.ts:534 |
 | `server_action:app/actions/ai-lead-nurturing.ts#aiGenerateDripCampaign` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-lead-nurturing.ts:123 |
 | `server_action:app/actions/ai-lead-nurturing.ts#aiPredictConversion` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-lead-nurturing.ts:499 |
-| `server_action:app/actions/ai-predictions.ts#batchPredictLeadConversions` | missing | trigger, evidence | data_steward | session actor (auth.getUser @ app/actions/ai-predictions.ts:152) | app/actions/ai-predictions.ts:632 |
-| `server_action:app/actions/ai-predictions.ts#predictLeadConversion` | missing | trigger, evidence | data_steward | session actor (auth.getUser @ app/actions/ai-predictions.ts:152) | app/actions/ai-predictions.ts:147 |
+| `server_action:app/actions/ai-predictions.ts#batchPredictLeadConversions` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/ai-predictions.ts:152) | app/actions/ai-predictions.ts:632 |
+| `server_action:app/actions/ai-predictions.ts#predictLeadConversion` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/ai-predictions.ts:152) | app/actions/ai-predictions.ts:147 |
 | `server_action:app/actions/ai-predictions.ts#refreshStalePredictions` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-predictions.ts:668 |
 | `server_action:app/actions/analytics.ts#trackLeadValueJourney` | partial | evidence | ai_isa | session actor (getAgentContext @ lib/platform/acting-context.ts:214) | app/actions/analytics.ts:385 |
 | `server_action:app/actions/contact-enrichment.ts#markLifeChangeNotified` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/contact-enrichment.ts:423 |
@@ -531,9 +493,28 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/lead-import/import-actions.ts#createImportRecord` | partial | evidence | ai_isa | session actor (auth.getUser @ app/actions/lead-import/import-actions.t | app/actions/lead-import/import-actions.ts:227 |
 | `server_action:app/actions/lead-intelligence.ts#deliverIntelligentValue` | partial | owner | unresolved: it writes only carriers / unstewarded tables (in | session actor (requireCaller @ app/actions/lead-intelligence.ts:2518) | app/actions/lead-intelligence.ts:2516 |
 | `server_action:app/actions/lead-intelligence.ts#resolveIdentity` | missing | trigger | data_steward | session actor (requireCaller @ app/actions/lead-intelligence.ts:2494) | app/actions/lead-intelligence.ts:2492 |
-| … 23 more in the JSON | | | | | |
+| `server_action:app/actions/lead-intelligence.ts#updateLeadProfile` | partial | evidence | ai_isa | session actor (requireCaller @ app/actions/lead-intelligence.ts:1936) | app/actions/lead-intelligence.ts:1935 |
+| `server_action:app/actions/lead-magnets-actions.ts#attestPromiseDeliveredAction` | partial | evidence | campaign_orchestrator | session actor (getAgentContext @ app/actions/lead-magnets-actions.ts:8 | app/actions/lead-magnets-actions.ts:868 |
+| `server_action:app/actions/lead-magnets-actions.ts#generateQRCodeAction` | partial | evidence | data_steward | session actor (getAgentContext @ app/actions/lead-magnets-actions.ts:7 | app/actions/lead-magnets-actions.ts:762 |
+| `server_action:app/actions/lead-magnets-actions.ts#saveMagnetLandingContentAction` | partial | evidence | ai_isa | session actor (getAgentContext @ app/actions/lead-magnets-actions.ts:3 | app/actions/lead-magnets-actions.ts:341 |
+| `server_action:app/actions/lead-management.ts#enrichLead` | partial | evidence | ai_isa | session actor (getAgentContext @ app/actions/lead-management.ts:184) | app/actions/lead-management.ts:177 |
+| `server_action:app/actions/lead-management.ts#rejectLead` | partial | evidence | ai_isa | session actor (getAgentContext @ app/actions/lead-management.ts:200) | app/actions/lead-management.ts:193 |
+| `server_action:app/actions/lead-quick-actions.ts#verifyLeadAddressAction` | partial | evidence | ai_isa | session actor (auth.getUser @ app/actions/lead-quick-actions.ts:69) | app/actions/lead-quick-actions.ts:121 |
+| `server_action:app/actions/lead-scraping-config.ts#createMotivatedParams` | partial | evidence, readback | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/lead-scraping-config.ts:511 |
+| `server_action:app/actions/lead-scraping-config.ts#createScrapingKeyword` | partial | evidence | ai_isa | session actor (auth.getUser @ app/actions/lead-scraping-config.ts:342) | app/actions/lead-scraping-config.ts:329 |
+| `server_action:app/actions/lead-scraping-config.ts#createScrapingMarket` | partial | evidence | ai_isa | session actor (auth.getUser @ app/actions/lead-scraping-config.ts:170) | app/actions/lead-scraping-config.ts:154 |
+| `server_action:app/actions/lead-scraping-config.ts#deleteScrapingKeyword` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/lead-scraping-config.ts:396 |
+| `server_action:app/actions/lead-scraping-config.ts#deleteScrapingMarket` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/lead-scraping-config.ts:241 |
+| `server_action:app/actions/lead-scraping-config.ts#updateMotivatedParams` | partial | evidence, readback | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/lead-scraping-config.ts:546 |
+| `server_action:app/actions/lead-scraping-config.ts#updateScrapingKeyword` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/lead-scraping-config.ts:370 |
+| `server_action:app/actions/lead-scraping-config.ts#updateScrapingMarket` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/lead-scraping-config.ts:202 |
+| `server_action:app/actions/leads.ts#handOffToHumanAgent` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/leads.ts:462 |
+| `server_action:app/actions/leads.ts#pauseAIISA` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/leads.ts:384 |
+| `server_action:app/actions/leads.ts#qualifyLead` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/leads.ts:215 |
+| `server_action:app/actions/leads.ts#resumeAIISA` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/leads.ts:423 |
+| … 3 more in the JSON | | | | | |
 
-### P5 prospects · contacts · portal · conversation — 137 not working
+### P5 prospects · contacts · portal · conversation — 129 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
@@ -550,39 +531,31 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `http:/api/contacts/[contactId]/voice-note` | partial | evidence | ai_isa | session actor (createClient() from "@/lib/supabase/server" @ app/api/c | app/api/contacts/[contactId]/voice-note/route.ts:19 |
 | `http:/api/external-portal/actions/complete` | partial | owner | unresolved: it writes only carriers / unstewarded tables (au | session actor (createClient() from "@/lib/supabase/server" @ app/api/e | app/api/external-portal/actions/complete/route.ts:51 |
 | `http:/api/recruiting/advance-stage` | partial | evidence | ai_isa | session actor (auth.getUser @ app/api/recruiting/advance-stage/route.t | app/api/recruiting/advance-stage/route.ts:10 |
-| `http:/api/widget/session` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/widget/session/route.ts:22 |
+| `http:/api/widget/session` | partial | evidence | data_steward | data_steward under policy:resolveWidgetTenant @ app/api/widget/session | app/api/widget/session/route.ts:22 |
 | `http:/api/workflow/buyer-intake/create` | partial | evidence | shopping_agent | session actor (auth.getUser @ app/api/workflow/buyer-intake/create/rou | app/api/workflow/buyer-intake/create/route.ts:14 |
 | `kernel_event:buyer_broker_agreement_signed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:buyer_disengaged` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:buyer_fatigue_alert` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:buyer_fatigue_detected` | partial | decision, evidence | shopping_agent | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:946 |
 | `kernel_event:buyer_search_configured` | partial | evidence | data_steward | data_steward under authority:selectToolsForPersona @ lib/kernel/missio | lib/kernel/event-reactor.ts:234 |
 | `kernel_event:buyer_search_executed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:buyer_state_changed` | partial | evidence | data_steward | data_steward under authority:selectToolsForPersona @ lib/kernel/missio | lib/kernel/event-reactor.ts:232 |
-| `kernel_event:buyer_under_contract` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1909 |
-| `kernel_event:client_portal_message_sent` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4482 |
+| `kernel_event:client_portal_message_sent` | partial | owner | unresolved: it writes only carriers / unstewarded tables (ma | routed to human on the Command Center feed (signal "client_portal_mess | lib/kernel/event-reactor.ts:4482 |
 | `kernel_event:contact_agent_notified` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_archived` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_channel_opt_out` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_consented_intake` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_followup_draft_generated` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_merged` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:contact_scored` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1661 |
 | `kernel_event:contact_source_attribution_set` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:contact_updated` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:form_draft_saved` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:home_value_contact_created` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2052 |
-| `kernel_event:message_created` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4697 |
-| `kernel_event:message_needs_response` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1360 |
-| `kernel_event:portal_accessed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4424 |
-| `kernel_event:portal_education_viewed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4533 |
-| `kernel_event:portal_module_viewed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4458 |
+| `kernel_event:portal_accessed` | partial | owner | unresolved: it writes only carriers / unstewarded tables (ma | routed to human on the Command Center feed (signal "portal_accessed")  | lib/kernel/event-reactor.ts:4424 |
+| `kernel_event:portal_education_viewed` | partial | owner | unresolved: it writes only carriers / unstewarded tables (ma | routed to human on the Command Center feed (signal "portal_education_v | lib/kernel/event-reactor.ts:4533 |
+| `kernel_event:portal_module_viewed` | partial | owner | unresolved: it writes only carriers / unstewarded tables (ma | routed to human on the Command Center feed (signal "portal_module_view | lib/kernel/event-reactor.ts:4458 |
 | `kernel_event:portal_view_determined` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:price_alert_triggered` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2153 |
 | `kernel_event:search_alert_triggered` | missing | trigger | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-fanout.ts:528 |
 | `kernel_event:seller_declined` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:showing_request_sent` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:showing_requested` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2206 |
 | `kernel_event:sms_send_requested` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:territory_alert_triggered` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:tour_completed` | partial | evidence | campaign_orchestrator | campaign_orchestrator under resource/spend:logAIUsage @ lib/ai/models. | lib/kernel/event-fanout.ts:553 |
@@ -617,9 +590,17 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/buyer-lifecycle-core.ts#executeBuyerStateTransition` | partial | owner | unresolved: it writes only carriers / unstewarded tables (li | session actor (createClient() from "@/lib/supabase/server" @ lib/kerne | app/actions/buyer-lifecycle-core.ts:98 |
 | `server_action:app/actions/buyer-move.ts#ensureBuyerMoveCaseAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/buyer-move.ts:60 |
 | `server_action:app/actions/buyer-move.ts#setServiceModeAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/buyer-move.ts:106 |
-| … 57 more in the JSON | | | | | |
+| `server_action:app/actions/buyer-move.ts#updateMoveTaskAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/buyer-move.ts:89 |
+| `server_action:app/actions/calculators.ts#saveCalculation` | partial | evidence | shopping_agent | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/calculators.ts:1552 |
+| `server_action:app/actions/collaborative-search.ts#trackPortalActivity` | partial | evidence | data_steward | session actor (auth.getUser @ lib/portal/require-contact-access.ts:119 | app/actions/collaborative-search.ts:510 |
+| `server_action:app/actions/contact-details.ts#getContactCopilotSuggestions` | partial | evidence | cron_manager | session actor (getAgentContext @ app/actions/contact-details.ts:326) | app/actions/contact-details.ts:322 |
+| `server_action:app/actions/contact-persona.ts#readContactResearchAttributes` | partial | owner | unresolved: it writes only carriers / unstewarded tables (ag | session actor (auth.getUser @ lib/auth/require-caller.ts:122) | app/actions/contact-persona.ts:46 |
+| `server_action:app/actions/contact-quick-actions.ts#verifyContactAddressAction` | partial | evidence | data_steward | session actor (getAgentContext @ lib/auth/contact-access.ts:84) | app/actions/contact-quick-actions.ts:94 |
+| `server_action:app/actions/contacts.ts#addContactNote` | partial | evidence | data_steward | session actor (getAgentContext @ lib/platform/acting-context.ts:214) | app/actions/contacts.ts:559 |
+| `server_action:app/actions/contacts/accessibility-preferences.ts#saveContactAccessibilityPreferences` | partial | evidence | data_steward | session actor (getAgentContext @ lib/auth/contact-access.ts:84) | app/actions/contacts/accessibility-preferences.ts:41 |
+| … 49 more in the JSON | | | | | |
 
-### P6 marketing · content · channels · ads — 297 not working
+### P6 marketing · content · channels · ads — 262 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
@@ -664,48 +645,48 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:ad_campaign_created` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:ad_campaign_launched` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:agent_work_anniversary` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:blog_post_generated` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3488 |
-| `kernel_event:blog_post_published` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3700 |
-| `kernel_event:campaign_roi_updated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1001 |
-| `kernel_event:competitor_content_alerted` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3471 |
-| `kernel_event:content_performance_predicted` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3685 |
-| `kernel_event:content_repurposed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2445 |
-| `kernel_event:direct_mail_campaign_created` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3733 |
-| `kernel_event:direct_mail_sent` | partial | decision, evidence | finance_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3560 |
-| `kernel_event:email_campaign_created` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3543 |
-| `kernel_event:email_campaign_sent` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3716 |
 | `kernel_event:lifetime_customer` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:lifetime_customer_touchpoint_sent` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:lifetime_education_delivered` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:market_data_refreshed` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4162 |
-| `kernel_event:market_insight_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4144 |
 | `kernel_event:marketing_campaign_approved` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:marketing_campaign_created` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3391 |
-| `kernel_event:marketing_campaign_ended` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2248 |
-| `kernel_event:marketing_campaign_launched` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3409 |
-| `kernel_event:newsletter_scheduled` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2699 |
-| `kernel_event:newsletter_send_deferred` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3510 |
-| `kernel_event:newsletter_sent` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1732 |
-| `kernel_event:omnipresence_pipeline_completed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2466 |
-| `kernel_event:omnipresence_pipeline_started` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3749 |
-| `kernel_event:podcast_episode_distributed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2677 |
-| `kernel_event:podcast_episode_failed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2509 |
-| `kernel_event:podcast_episode_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2489 |
 | `kernel_event:portal_lifetime_section_viewed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:qr_attached_to_asset` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3765 |
-| `kernel_event:qr_scan_received` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3295 |
 | `kernel_event:recruiting_roi_calculated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:social_post_failed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1084 |
-| `kernel_event:social_post_published` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3669 |
-| `kernel_event:social_post_scheduled` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3653 |
-| `kernel_event:social_post_shared_by_agent` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3453 |
-| `kernel_event:training_video_completed` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3799 |
-| `kernel_event:training_video_started` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3782 |
 | `kernel_event:video_generation_completed` | partial | owner, decision, evidence | unresolved: it writes only carriers / unstewarded tables (ma | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3382 |
 | `kernel_event:video_generation_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| … 217 more in the JSON | | | | | |
+| `kernel_event:video_generation_requested` | partial | owner | unresolved: it writes only carriers / unstewarded tables (ma | routed to human on the Command Center feed (signal "video_generation_r | lib/kernel/event-reactor.ts:3324 |
+| `kernel_event:video_preview_ready` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
+| `kernel_event:video_published` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
+| `orchestrator_event:video.high_engagement` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:234 |
+| `orchestrator_event:video.published` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:233 |
+| `orchestrator_event:video.script_approved` | partial | owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:232 |
+| `server_action:app/actions/academy.ts#cloneTemplate` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/academy.ts:177 |
+| `server_action:app/actions/ai-content-generation.tsx#addSEOKeyword` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:483 |
+| `server_action:app/actions/ai-content-generation.tsx#analyzeABTest` | partial | evidence, readback | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:2539 |
+| `server_action:app/actions/ai-content-generation.tsx#createABTest` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:2355 |
+| `server_action:app/actions/ai-content-generation.tsx#createGeneratedContent` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:346 |
+| `server_action:app/actions/ai-content-generation.tsx#generateContentPlan` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:2102 |
+| `server_action:app/actions/ai-content-generation.tsx#learnFromEdits` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:1693 |
+| `server_action:app/actions/ai-content-generation.tsx#logGenerationCost` | partial | owner | unresolved: it writes only carriers / unstewarded tables (co | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:3324 |
+| `server_action:app/actions/ai-content-generation.tsx#recordContentTemplateUse` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:222 |
+| `server_action:app/actions/ai-content-generation.tsx#saveContentTemplate` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:259 |
+| `server_action:app/actions/ai-content-generation.tsx#scheduleContent` | missing | trigger, evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:2297 |
+| `server_action:app/actions/ai-content-generation.tsx#trackContentPerformance` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:544 |
+| `server_action:app/actions/ai-content-generation.tsx#trackContentUsage` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:3752 |
+| `server_action:app/actions/ai-content-generation.tsx#trackHashtagUsage` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:748 |
+| `server_action:app/actions/ai-content-generation.tsx#updateABTestResults` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:872 |
+| `server_action:app/actions/ai-content-generation.tsx#updateBrandVoiceProfile` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:117 |
+| `server_action:app/actions/ai-content-generation.tsx#updateContentStatus` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:396 |
+| `server_action:app/actions/ai-direct-mail.ts#createDirectMailCampaign` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-direct-mail.ts:542 |
+| `server_action:app/actions/ai-direct-mail.ts#validateMailingList` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-direct-mail.ts:628 |
+| `server_action:app/actions/ai-newsletter.ts#createNewsletterCampaign` | partial | evidence | campaign_orchestrator | session actor (getAgentContext @ app/actions/ai-newsletter.ts:472) | app/actions/ai-newsletter.ts:447 |
+| `server_action:app/actions/ai-newsletter.ts#deleteNewsletterCampaign` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-newsletter.ts:1059 |
+| `server_action:app/actions/ai-newsletter.ts#manageSubscriberBatch` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-newsletter.ts:1263 |
+| `server_action:app/actions/ai-newsletter.ts#manageSubscribers` | partial | evidence | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-newsletter.ts:929 |
+| `server_action:app/actions/ai-predictions.ts#findMarketArbitrage` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-predictions.ts:2664 |
+| `server_action:app/actions/ai-predictions.ts#predictMarketShift` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-predictions.ts:2510 |
+| … 182 more in the JSON | | | | | |
 
-### P7 listings · shopping agent · MLS / IDX — 153 not working
+### P7 listings · shopping agent · MLS / IDX — 142 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
@@ -724,22 +705,11 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `http:/api/internal/remotion/render-composition` | partial | decision | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/internal/remotion/render-composition/route.ts:80 |
 | `http:/api/open-house/register` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/open-house/register/route.ts:20 |
 | `kernel_event:buyer_property_action_recorded` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:cma_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1965 |
-| `kernel_event:listing_agreement_initiated` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2171 |
-| `kernel_event:listing_archived` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1615 |
-| `kernel_event:listing_at_risk_detected` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:911 |
-| `kernel_event:listing_health_score_updated` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:894 |
-| `kernel_event:listing_mls_live_date_changed` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-fanout.ts:244 |
-| `kernel_event:listing_stage_transition_failed` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1143 |
-| `kernel_event:listing_tier_assigned` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3577 |
-| `kernel_event:listing_unarchived` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1628 |
 | `kernel_event:open_house_attendee_created` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:open_house_follow_up_queued` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:open_house_marketing_started` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2804 |
 | `kernel_event:property_alert_created` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:property_alert_paused` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:property_recommended` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:vendor_assigned_to_listing` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4629 |
 | `orchestrator_event:listing.live` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:207 |
 | `orchestrator_event:listing.price_reduction` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:208 |
 | `orchestrator_event:listing.signed` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:206 |
@@ -789,12 +759,33 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/listing-media.ts#setPrimaryMedia` | partial | evidence | listing_concierge | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/listing-media.ts:230 |
 | `server_action:app/actions/listings-kernel.ts#generateListingDescriptionAction` | partial | evidence | data_steward | human approver (approval:"approval_items" @ lib/content-guardian/index | app/actions/listings-kernel.ts:782 |
 | `server_action:app/actions/listings-kernel.ts#saveListingDraftAction` | partial | evidence | listing_concierge | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/listings-kernel.ts:439 |
-| … 73 more in the JSON | | | | | |
+| `server_action:app/actions/listings.ts#createListing` | missing | trigger, evidence | listing_concierge | session actor (getAgentContext @ app/actions/listings.ts:186) | app/actions/listings.ts:167 |
+| `server_action:app/actions/marketing-package-automation.ts#activateMarketingPackage` | partial | evidence | listing_concierge | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/marketing-package-automation.ts:85 |
+| `server_action:app/actions/marketing-package-automation.ts#bookMarketingService` | partial | evidence | listing_concierge | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/marketing-package-automation.ts:159 |
+| `server_action:app/actions/marketing-package-automation.ts#completeMarketingService` | partial | evidence | listing_concierge | session actor (getAgentContext @ app/actions/marketing-package-automat | app/actions/marketing-package-automation.ts:865 |
+| `server_action:app/actions/marketing-package-automation.ts#recordMarketingServiceQuote` | partial | evidence | listing_concierge | session actor (getAgentContext @ app/actions/marketing-package-automat | app/actions/marketing-package-automation.ts:927 |
+| `server_action:app/actions/multi-persona.ts#saveClientJourneyPreferences` | partial | evidence | shopping_agent | session actor (auth.getUser @ lib/portal/require-contact-access.ts:119 | app/actions/multi-persona.ts:1191 |
+| `server_action:app/actions/open-house-automation.ts#handleRSVP` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | app/actions/open-house-automation.ts:729 |
+| `server_action:app/actions/open-house-automation.ts#monitorCompetingEvents` | partial | owner | unresolved: it writes only carriers / unstewarded tables (op | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/open-house-automation.ts:1556 |
+| `server_action:app/actions/open-house-automation.ts#scheduleOpenHouse` | missing | trigger | data_steward | session actor (getAgentContext @ app/actions/open-house.ts:136) | app/actions/open-house-automation.ts:27 |
+| `server_action:app/actions/open-house-kernel.ts#attachOpenHouseSourceAttributionAction` | partial | owner | unresolved: it writes only carriers / unstewarded tables (li | session actor (getAgentContext @ app/actions/open-house-kernel.ts:67) | app/actions/open-house-kernel.ts:162 |
+| `server_action:app/actions/open-house-kernel.ts#createOpenHouseAttendeeFromContactAction` | partial | evidence | data_steward | session actor (getAgentContext @ app/actions/open-house-kernel.ts:67) | app/actions/open-house-kernel.ts:130 |
+| … 62 more in the JSON | | | | | |
 
-### P8 offers · transactions · documents · closing — 315 not working
+### P8 offers · transactions · documents · closing — 303 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
+| `assistant_tool:area_query` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:706 |
+| `assistant_tool:ask_guidance` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:714 |
+| `assistant_tool:broker_objective` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:745 |
+| `assistant_tool:fill_form_field` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:694 |
+| `assistant_tool:manager_status` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:744 |
+| `assistant_tool:morning_standup` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:707 |
+| `assistant_tool:run_skill` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:746 |
+| `assistant_tool:run_team_command` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:485 |
+| `assistant_tool:standup_action` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:708 |
+| `assistant_tool:team_query` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:705 |
 | `cron:/api/cron/capacity-guardian` | partial | decision | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/capacity-guardian/route.ts:55 |
 | `cron:/api/cron/closing-orchestration` | partial | decision | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/closing-orchestration/route.ts:22 |
 | `cron:/api/cron/closing-watchtower` | partial | decision | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/closing-watchtower/route.ts:22 |
@@ -806,53 +797,36 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `cron:/api/cron/dual-transaction-timing` | partial | decision | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/dual-transaction-timing/route.ts:47 |
 | `cron:/api/cron/esign-doc-sync` | partial | decision | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/esign-doc-sync/route.ts:37 |
 | `cron:/api/cron/offer-expiry` | partial | decision | shopping_agent | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/offer-expiry/route.ts:35 |
-| `cron:/api/cron/refresh-market-rates` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/refresh-market-rates/route.ts:27 |
 | `cron:/api/deal-health/cron` | partial | decision | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/deal-health/cron/route.ts:19 |
 | `http:/api/admin/billing/entitlements/[brokerageId]` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/api/a | app/api/admin/billing/entitlements/[brokerageId]/route.ts:9 |
 | `http:/api/admin/transaction-forms` | partial | evidence | data_steward | session actor (auth.getUser @ app/api/admin/transaction-forms/route.ts | app/api/admin/transaction-forms/route.ts:71 |
 | `http:/api/chat/stream` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/api/c | app/api/chat/stream/route.ts:62 |
 | `http:/api/compliance/flags` | partial | evidence | compliance_officer | session actor (createClient() from "@/lib/supabase/server" @ app/api/c | app/api/compliance/flags/route.ts:30 |
-| `http:/api/embed/session` | partial | decision | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/embed/session/route.ts:57 |
 | `http:/api/onboarding/brand/generate-sample` | partial | evidence | compliance_officer | session actor (auth.getUser @ app/api/onboarding/brand/generate-sample | app/api/onboarding/brand/generate-sample/route.ts:17 |
-| `http:/api/track/visitor` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/track/visitor/route.ts:36 |
 | `http:/api/voice/initiate-call` | partial | owner | unresolved: it writes only carriers / unstewarded tables (vo | session actor (createClient() from "@/lib/supabase/server" @ app/api/v | app/api/voice/initiate-call/route.ts:22 |
 | `http:/api/voice/twilio/intelligence` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/voice/twilio/intelligence/route.ts:23 |
 | `http:/api/workflow/buyer-intake/submit` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/workflow/buyer-intake/submit/route.ts:27 |
 | `http:/api/workflow/buyer-intake/upload` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/workflow/buyer-intake/upload/route.ts:37 |
 | `kernel_event:brand_compliance_failed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:brand_compliance_passed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:buyer_offer_draft_started` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3020 |
 | `kernel_event:buyer_offer_eligible` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:buyer_offer_submit_requested` | partial | decision, evidence | shopping_agent | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3057 |
 | `kernel_event:buyer_offer_submitted` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:deal_at_risk_detected` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:877 |
-| `kernel_event:deal_health_changed` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1865 |
-| `kernel_event:deal_health_score_updated` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:860 |
 | `kernel_event:deal_on_hold` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:document_received` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:document_uploaded` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:esign_envelope_requested` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2225 |
 | `kernel_event:esign_signed_completed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:lender_portal_user_invited` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:offer_accepted` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-fanout.ts:210 |
-| `kernel_event:offer_ai_extracted` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3864 |
-| `kernel_event:offer_comparison_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:3840 |
 | `kernel_event:offer_eligible` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:offer_os_ai_analyzed` | partial | decision, evidence | listing_concierge | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4715 |
-| `kernel_event:offer_os_counter_responded` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4759 |
-| `kernel_event:offer_os_countered` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4746 |
 | `kernel_event:offer_os_created` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:offer_os_draft_started` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:offer_os_outcome_recorded` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:offer_os_rejected` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4772 |
 | `kernel_event:offer_os_sent_for_esign` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:offer_os_withdrawn` | partial | decision, evidence | compliance_officer | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4785 |
 | `kernel_event:post_closing_plan_generated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:title_portal_user_invited` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:transaction_closed` | partial | decision | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/gamification/lifecycle-awards.ts:182 |
 | `kernel_event:transaction_compliance_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:transaction_compliance_passed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:vendor_assigned_to_transaction` | partial | decision, evidence | deal_coordinator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2032 |
 | `orchestrator_event:listing.offer_received` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:209 |
 | `orchestrator_event:transaction.close_approaching` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:218 |
 | `orchestrator_event:transaction.closed` | missing | trigger | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:222 |
@@ -866,18 +840,25 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/ai-closing-workflow.ts#completeChecklistItem` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-closing-workflow.ts:235 |
 | `server_action:app/actions/ai-cma.ts#getAIPriceAdjustmentRecommendation` | partial | evidence | cron_manager | session actor (getAgentContext @ app/actions/ai-cma.ts:203) | app/actions/ai-cma.ts:191 |
 | `server_action:app/actions/ai-communication-hub.ts#generateCommunicationSummary` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-communication-hub.ts:750 |
-| `server_action:app/actions/ai-content-generation.tsx#bulkGenerateContent` | missing | trigger | data_steward | human approver (approval:"approval_items" @ lib/content-guardian/index | app/actions/ai-content-generation.tsx:2708 |
 | `server_action:app/actions/ai-content-generation.tsx#checkCompliance` | missing | trigger, evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:1952 |
-| `server_action:app/actions/ai-content-generation.tsx#generateSocialPost` | missing | trigger | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-content-generation.tsx:1149 |
 | `server_action:app/actions/ai-contract-review.ts#applyContractExtraction` | partial | evidence | deal_coordinator | session actor (getAgentContext @ app/actions/ai-contract-review.ts:558 | app/actions/ai-contract-review.ts:536 |
 | `server_action:app/actions/ai-contract-review.ts#compareContractVersions` | partial | evidence | cron_manager | session actor (getAgentContext @ app/actions/ai-contract-review.ts:343 | app/actions/ai-contract-review.ts:334 |
-| `server_action:app/actions/ai-contract-review.ts#reviewContract` | missing | trigger | deal_coordinator | session actor (getAgentContext @ app/actions/ai-contract-review.ts:80) | app/actions/ai-contract-review.ts:69 |
 | `server_action:app/actions/ai-direct-mail.ts#aiAnalyzeCampaignPerformance` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-direct-mail.ts:956 |
 | `server_action:app/actions/ai-direct-mail.ts#aiPredictCampaignROI` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ lib/kerne | app/actions/ai-direct-mail.ts:398 |
 | `server_action:app/actions/ai-direct-mail.ts#aiSelectTargetAudience` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-direct-mail.ts:310 |
-| … 235 more in the JSON | | | | | |
+| `server_action:app/actions/ai-direct-mail.ts#aiSuggestDesign` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ lib/kerne | app/actions/ai-direct-mail.ts:246 |
+| `server_action:app/actions/ai-direct-mail.ts#aiWritePostcardCopy` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-direct-mail.ts:122 |
+| `server_action:app/actions/ai-document-intelligence.ts#aiAnalyzeContract` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-document-intelligence.ts:187 |
+| `server_action:app/actions/ai-document-intelligence.ts#aiClassifyDocument` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-document-intelligence.ts:100 |
+| `server_action:app/actions/ai-document-intelligence.ts#aiGenerateDocument` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-document-intelligence.ts:425 |
+| `server_action:app/actions/ai-document-intelligence.ts#aiGenerateDocumentReminders` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-document-intelligence.ts:642 |
+| `server_action:app/actions/ai-document-intelligence.ts#aiVerifySignatures` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/ai-document-intelligence.ts:304 |
+| `server_action:app/actions/ai-generate.ts#generateAIJSON` | partial | evidence | compliance_officer | session actor (auth.getUser @ lib/ai/pipeline.ts:299) | app/actions/ai-generate.ts:35 |
+| `server_action:app/actions/ai-generate.ts#generateAIText` | missing | trigger, evidence | compliance_officer | session actor (auth.getUser @ lib/ai/pipeline.ts:299) | app/actions/ai-generate.ts:28 |
+| `server_action:app/actions/ai-generate.ts#generateChatResponse` | missing | trigger, evidence | compliance_officer | session actor (auth.getUser @ lib/ai/pipeline.ts:299) | app/actions/ai-generate.ts:50 |
+| … 223 more in the JSON | | | | | |
 
-### P9 commission · settlement · brokerage finance — 113 not working
+### P9 commission · settlement · brokerage finance — 109 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
@@ -891,7 +872,6 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:accounting_push_completed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:accounting_push_requested` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:accounting_sync_failed` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:ai_feedback_received` | partial | decision, evidence | cron_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4303 |
 | `kernel_event:brokerage_pl_updated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:buyer_financially_verified` | partial | evidence | data_steward | data_steward under authority:selectToolsForPersona @ lib/kernel/missio | lib/kernel/event-reactor.ts:233 |
 | `kernel_event:cda_generated` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -906,8 +886,6 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `kernel_event:referral_converted` | owner-held | decision | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/gamification/lifecycle-awards.ts:186 |
 | `kernel_event:referral_created` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:referral_partner_created` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:referral_received` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1984 |
-| `kernel_event:refinance_opportunity` | partial | decision, evidence | sphere_of_influence | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4394 |
 | `orchestrator_event:credit.partner_referred` | missing | trigger, owner, decision, evidence | unresolved: no registry names an owner | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/orchestrator/internal.ts:227 |
 | `server_action:app/actions/academy.ts#addTemplateFeedback` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/academy.ts:241) | app/actions/academy.ts:234 |
 | `server_action:app/actions/accounting-sync.ts#clearResolvedErrors` | partial | evidence | data_steward | session actor (auth.getUser @ app/actions/accounting-sync.ts:593) | app/actions/accounting-sync.ts:590 |
@@ -946,7 +924,7 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/cda-portal.ts#requestCdaChangesAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-portal.ts:1205 |
 | `server_action:app/actions/cda-portal.ts#returnExternallySignedCdaAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-portal.ts:2449 |
 | `server_action:app/actions/cda-portal.ts#runSignatureCheckForCdaAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-portal.ts:1429 |
-| `server_action:app/actions/cda-portal.ts#uploadCdaCheckCopyAction` | missing | trigger, evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-portal.ts:2075 |
+| `server_action:app/actions/cda-portal.ts#uploadCdaCheckCopyAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-portal.ts:2075 |
 | `server_action:app/actions/cda-template-field-actions.ts#generateFilledCdaPdfAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-template-field-actions.ts:236 |
 | `server_action:app/actions/cda-template-field-actions.ts#saveCdaFieldInputsAction` | partial | evidence | deal_coordinator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-template-field-actions.ts:82 |
 | `server_action:app/actions/cda-template-field-actions.ts#saveCdaTemplateFieldDefsAction` | partial | evidence | finance_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/cda-template-field-actions.ts:189 |
@@ -961,17 +939,16 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/financial-kernel.ts#reconcileCommissionPaymentAction` | partial | evidence | finance_manager | session actor (auth.getUser @ app/actions/financial-kernel.ts:62) | app/actions/financial-kernel.ts:453 |
 | `server_action:app/actions/financial-kernel.ts#recordCommissionDepositReceivedAction` | partial | evidence | finance_manager | session actor (auth.getUser @ app/actions/financial-kernel.ts:62) | app/actions/financial-kernel.ts:534 |
 | `server_action:app/actions/financials.ts#attachExpenseReceipt` | partial | evidence | finance_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/financials.ts:711 |
-| … 33 more in the JSON | | | | | |
+| `server_action:app/actions/financials.ts#deleteExpense` | partial | evidence | finance_manager | session actor (auth.getUser @ app/actions/financials.ts:642) | app/actions/financials.ts:640 |
+| `server_action:app/actions/financials.ts#generateAIForecast` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/financials.ts:40 |
+| `server_action:app/actions/financials.ts#generatePLReport` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/financials.ts:208 |
+| … 29 more in the JSON | | | | | |
 
-### P10 recruiting · gamification · support · ops — 86 not working
+### P10 recruiting · gamification · support · ops — 77 not working
 
 | row | state | missing | manager | decision owner | entrypoint |
 |---|---|---|---|---|---|
-| `assistant_tool:area_query` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:706 |
-| `assistant_tool:ask_guidance` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:714 |
 | `assistant_tool:explain_touches` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:790 |
-| `assistant_tool:manager_status` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:744 |
-| `assistant_tool:morning_standup` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:707 |
 | `assistant_tool:whos_slipping` | partial | owner | unresolved: neither VOICE_TOOL_MANAGER nor TEAM_COMMAND_MANA | session seat under authorityAllows + declared gates [none] (app/api/ag | app/api/agent-assistant/tool-call/route.ts:787 |
 | `cron:/api/cron/agent-health-check` | partial | decision | cron_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/agent-health-check/route.ts:40 |
 | `cron:/api/cron/appointment-whisper` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/cron/appointment-whisper/route.ts:18 |
@@ -1004,17 +981,12 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `http:/api/embed/session/heartbeat` | partial | decision, evidence | asset_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/embed/session/heartbeat/route.ts:23 |
 | `http:/api/errors/collect` | missing | trigger | cron_manager | session actor (auth.getUser @ app/api/errors/collect/route.ts:24) | app/api/errors/collect/route.ts:11 |
 | `http:/api/intelligence/coordinate` | partial | decision | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/intelligence/coordinate/route.ts:16 |
-| `http:/api/voice/twilio/whisper` | partial | owner, decision | unresolved: it writes only carriers / unstewarded tables (vo | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/voice/twilio/whisper/route.ts:23 |
-| `http:/api/workflow/trigger` | missing | trigger, decision | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | app/api/workflow/trigger/route.ts:71 |
-| `kernel_event:appointment_no_show` | partial | decision, evidence | ai_isa | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1121 |
+| `http:/api/voice/twilio/whisper` | partial | owner | unresolved: it writes only carriers / unstewarded tables (vo | provider of record (signature verified: timingSafeEqual @ app/api/voic | app/api/voice/twilio/whisper/route.ts:23 |
+| `http:/api/workflow/trigger` | missing | trigger | campaign_orchestrator | provider of record (signature verified: timingSafeEqual @ app/api/work | app/api/workflow/trigger/route.ts:71 |
 | `kernel_event:client_education_delivered` | partial | decision, evidence | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4564 |
 | `kernel_event:coaching_report_generated` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:competency_improved` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:cron_completed_success` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4356 |
-| `kernel_event:cron_failed` | partial | decision, evidence | data_steward | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:1791 |
 | `kernel_event:cron_started` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
-| `kernel_event:gamification_badge_awarded` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:4234 |
-| `kernel_event:neighborhood_report_generated` | partial | decision, evidence | campaign_orchestrator | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/event-reactor.ts:2346 |
 | `kernel_event:recruiting_territory_scored` | missing | trigger, worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:report_emailed` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
 | `kernel_event:report_exported_csv` | missing | worker | unresolved: it writes no table, and no registry names an own | unresolved: no authority / approval / spend / compliance / arbiter cal | lib/kernel/events.ts |
@@ -1047,7 +1019,12 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 | `server_action:app/actions/exception-center.ts#dismissException` | partial | owner | unresolved: it writes only carriers / unstewarded tables (se | session actor (auth.getUser @ app/actions/exception-center.ts:34) | app/actions/exception-center.ts:213 |
 | `server_action:app/actions/exception-center.ts#flagRepairWrong` | partial | owner | unresolved: it writes only carriers / unstewarded tables (se | session actor (auth.getUser @ app/actions/exception-center.ts:34) | app/actions/exception-center.ts:234 |
 | `server_action:app/actions/exception-center.ts#getExceptionCenter` | partial | owner | unresolved: it writes only carriers / unstewarded tables (se | session actor (auth.getUser @ app/actions/exception-center.ts:34) | app/actions/exception-center.ts:98 |
-| … 6 more in the JSON | | | | | |
+| `server_action:app/actions/exception-center.ts#resolveException` | partial | owner | unresolved: it writes only carriers / unstewarded tables (se | session actor (auth.getUser @ app/actions/exception-center.ts:34) | app/actions/exception-center.ts:209 |
+| `server_action:app/actions/reporting-kernel.ts#exportReportCsvAction` | partial | owner | unresolved: it writes only carriers / unstewarded tables (li | session actor (auth.getUser @ app/actions/reporting-kernel.ts:51) | app/actions/reporting-kernel.ts:168 |
+| `server_action:app/actions/source-analytics.ts#emailSourceReport` | partial | evidence | data_steward | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/source-analytics.ts:974 |
+| `server_action:app/actions/support.ts#rateMyTicket` | partial | evidence | data_steward | session actor (getAgentContext @ app/actions/support.ts:319) | app/actions/support.ts:314 |
+| `server_action:app/actions/workflows.ts#retryFailedWorkflow` | partial | evidence | cron_manager | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/workflows.ts:895 |
+| `server_action:app/recruiting/[brokerageSlug]/actions.ts#submitRecruitInquiry` | partial | decision | recruiting_manager | unresolved: no authority / approval / spend / compliance / arbiter cal | app/recruiting/[brokerageSlug]/actions.ts:47 |
 
 ## 8. Blind spots (published beside the numbers, CLAUDE.md §2)
 
@@ -1058,4 +1035,52 @@ Per row: 1054 rows start without a person (cron / event / signal / webhook), of 
 - planes and A7.1 surfaces are a LEXICAL lens over the entry path, action name and written tables (a row may sit on several planes; an unmatched row is '(unclassified)')
 - readback = a reader of a written table in ANOTHER file via `.from(t).select` (an RPC, a view or a trigger-maintained reader is invisible); evidence = a ledger door (OUTCOME_RE / DOOR_TOKENS) or a write to a ledger-shaped table on the path
 - decision owner = the first authority / arbiter / approval / spend / compliance token (PLANE_RES) or outbound gate on the path, a session read for a human-initiated action, or a verified provider signature for a webhook; a gate two hops away is invisible
+
+## 9. What kind of work each open row is (wave 155, lane 155B1 — directive B1 / B4)
+
+An ADDITIONAL column: it never changes a verdict above and never widens the baseline. Rules: `classify()` and `GROUPS` in the generator; the checked-in summary is `docs/architecture/os-arbitration-gap-groups.json`.
+
+Open rows: EXECUTABLE_GAP **1240** · LEGACY_ORPHAN **96** · UNKNOWN **80** · DECLARATIVE_READ_ONLY **16** · OWNER_HELD **1**.
+
+| domain (directive B2) | EXECUTABLE_GAP | DECLARATIVE_READ_ONLY | LEGACY_ORPHAN | SIMULATED_ONLY | OWNER_HELD | UNKNOWN |
+|---|---|---|---|---|---|---|
+| acquisition | 55 | 3 | 13 | 0 | 0 | 12 |
+| customer-facing | 247 | 2 | 13 | 0 | 0 | 9 |
+| education | 24 | 0 | 3 | 0 | 0 | 1 |
+| finance | 92 | 4 | 8 | 0 | 1 | 4 |
+| marketing | 247 | 2 | 5 | 0 | 0 | 8 |
+| platform | 286 | 5 | 40 | 0 | 0 | 5 |
+| recovery | 39 | 0 | 1 | 0 | 0 | 1 |
+| transaction | 250 | 0 | 13 | 0 | 0 | 40 |
+
+| root-cause group | rows | risk | leverage point | fix |
+|---|---|---|---|---|
+| `G01-event-no-consumer` kernel events emitted and fanned out, but the reactor has no case — the event dies at the bus | 72 | P2 64 · P0 8 | lib/kernel/event-reactor.ts:95 dispatchKernelEvent; lib/kernel/emit.ts:155 emitKernelEvent | per event: a reactor case that publishes the owning manager's registered signal (the 151 routed events are the pattern), OR — where the owner has ruled it a record — `auditOnly: true` at the emit site (an owner decision, |
+| `G02-consumer-no-emitter` a handler waits for an event no code emits (reads with no writer) | 14 | P1 6 · P2 6 · P0 2 | lib/kernel/emit.ts:155 emitKernelEvent; lib/orchestrator/internal.ts:198 EVENT_HANDLERS | emit at the canonical writer of the domain fact (the table write that IS the event), or tombstone the handler naming its survivor (CLAUDE.md §1) |
+| `G03-orchestrator-unowned` orchestrator EVENT_HANDLERS carry no owning manager (the census has no owner registry to read for them) | 4 | P1 4 | lib/orchestrator/internal.ts:198 EVENT_HANDLERS | give each handler its registered manager through the existing registries (integrator: a row per handler in manager-registry, read by the census) — lane 155B2 owns these handlers now |
+| `G04-reactor-ungated` reactor blocks that WRITE a domain table with no gate and no ledger receipt | 11 | P1 8 · P0 2 · P2 1 | lib/kernel/event-reactor.ts:95 dispatchKernelEvent; lib/kernel/action-ledger.ts:538 withActionLedger | route the block through the owning manager's signal (decision moves to the consumer), or wrap its write in withActionLedger under the manager's gate |
+| `G05-cron-no-decision` crons whose path asks no gate — no halt, authority, spend or approval decides the run | 104 | P1 52 · P2 27 · P0 25 | lib/kernel/cron-logging.ts:125 createCronRunContext; lib/managers/autonomy-gate.ts:91 autonomyDecision; lib/kernel/manager-registry.ts:3439 resolveCronManager | ONE cron decision at the shared run-context door: resolveCronManager(path) + autonomyDecision over the platform halt (god switch) and the tenant halt, recorded on the run row; a held run records `held` and does no work.  |
+| `G06-cron-no-evidence` crons that never open a cron run context, so no run row evidences what they did | 6 | P1 4 · P2 2 | lib/kernel/cron-logging.ts:346 recordCronSuccess | open createCronRunContext / recordCronSuccess / recordCronFailure like the other 200 crons |
+| `G07-tool-unowned` assistant tools that act but name no owning manager | 10 | P0 10 | lib/voice/tool-registry.ts:806 VOICE_TOOL_MANAGER | a VOICE_TOOL_MANAGER row per tool (integrator — shared registry); a tool that only reads is DECLARATIVE_READ_ONLY instead and needs its risk class set to READ |
+| `G08b-stewarded-table-read-as-log` the path writes a STEWARDED domain table whose name merely looks like a log (calendar_events, voice_calls, open_house_events…) — EVIDENCE_TABLE_RE skips it for ownership | 21 | P1 13 · P2 7 · P0 1 | scripts/os-coverage-ledger.ts:284 EVIDENCE_TABLE_RE; lib/kernel/manager-registry.ts:2144 TABLE_MANAGER | ONE analyzer change, both directions together: narrow EVIDENCE_TABLE_RE to true logs (TRUE_LOG_RE) for ownership AND for evidence. It closes these owner gaps but also withdraws the false evidence credit on the rows count |
+| `G09-log-only-owner` paths whose only writes are carriers or evidence tables (self_heal_events, audit_log, notifications…) — no steward is derivable | 78 | P2 33 · P1 26 · P0 19 | lib/kernel/manager-registry.ts:3454 resolveTableManager | name the owner where the action is (the module's manager) or route the record through the owner's signal; never steward a log table to move a number |
+| `G10-public-no-decision` public / internal endpoints with no session and no decision on the path (tracking beacons, embeds, intake uploads) | 35 | P1 20 · P0 8 · P2 7 | lib/widget/resolve-widget-tenant.ts:67 resolveWidgetTenant; lib/usage/check-cap.ts:49 checkUsageCap | resolve the tenant fail-closed from the tenant's own opt-in (resolveWidgetTenant pattern) and cap spend (checkUsageCap) before the write; a rate limit alone is not a decision |
+| `G11-ai-spend-unledgered` AI generate-and-return actions whose only persisted effect is the cost ledger row (a model call with no action receipt) | 7 | P1 3 · P0 2 · P2 2 | lib/kernel/action-ledger.ts:634 ledgerToolCall | wrap the model call in ledgerToolCall (tool, cost, actor, tenant) — ai_tool_usage keeps metering, the ledger carries why and under which policy |
+| `G12-session-write-unledgered-P0` P0 user-initiated writes decided by the signed-in session that leave no action-ledger receipt | 177 | P0 177 | lib/kernel/action-ledger.ts:538 withActionLedger | per MODULE (not per export): resolve the ActionContext once where the module already resolves its session, and wrap each mutating export's write in withActionLedger (three-segment action name) — the module list with rows |
+| `G12-session-write-unledgered-P1` P1 user-initiated writes decided by the signed-in session that leave no action-ledger receipt | 545 | P1 545 | lib/kernel/action-ledger.ts:538 withActionLedger | per MODULE (not per export): resolve the ActionContext once where the module already resolves its session, and wrap each mutating export's write in withActionLedger (three-segment action name) — the module list with rows |
+| `G12-session-write-unledgered-P2` P2 user-initiated writes decided by the signed-in session that leave no action-ledger receipt | 152 | P2 152 | lib/kernel/action-ledger.ts:538 withActionLedger | per MODULE (not per export): resolve the ActionContext once where the module already resolves its session, and wrap each mutating export's write in withActionLedger (three-segment action name) — the module list with rows |
+| `G13-webhook-no-evidence` provider callbacks that write without a ledger receipt | 2 | P0 2 | lib/kernel/action-ledger.ts:538 withActionLedger | record the callback's effect in withActionLedger (actor = provider of record) |
+| `G99-http-evidence` unclustered: one kind + one missing-link signature (no shared door found) | 1 | P1 1 | — | per row |
+| `G99-server_action-evidence` unclustered: one kind + one missing-link signature (no shared door found) | 1 | P1 1 | — | per row |
+
+| residue | rows | evidence class |
+|---|---|---|
+| DECLARATIVE_READ_ONLY | 16 | 12× every emission site passes `auditOnly: true` (lib/kernel/emit.ts shouldFanOut skips the reactor): the lifecycle_events row IS the record; no · 4× the tool's own case writes no table, calls no egress door and passes no spend gate; it is consequential only because its risk class is not R |
+| LEGACY_ORPHAN | 96 | 94× vocabulary entry with no emitter, no consumer, and its value in no other runtime file and no SQL migration · 2× no importer, no same-module caller, the export name in no other runtime file; a server action has no cron, webhook, self-call or provider-co |
+| SIMULATED_ONLY | 0 | — |
+| OWNER_HELD | 1 | 1× OWNER_HELD entry: owner-held pending owner decision 2 (does a registered manager's deterministic evidence rule count as the decision owner?) |
+| UNKNOWN | 80 | 59× no importer and no same-module caller, but the name … · 16× no emitter the census can read, but the value is … · 5× http: the caller may be outside the repo (provider console, external client, another scheduler) — unreferenced is not dead (CLAUDE.md §1) |
+
+- **evidenceCreditedByAnEventsDomainTable**: 114 rows — EVIDENCE_TABLE_RE counts any `*_events` table written on the path as ledger evidence; a domain table so named (calendar_events …) is not a ledger. Correcting it ADDS gaps the frozen baseline does not hold — a batch-2 decision, not silently done here
+- **autonomousConsequentialWithoutRecovery**: 318 rows — recovery is REPORTED per row but is not a judged link (ECC agent-architecture-audit layer 12 cross-check): a failed autonomous run with no retry / sweep / escalation on its path
 

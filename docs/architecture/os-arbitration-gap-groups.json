@@ -232,7 +232,7 @@
    "leverage": [
     "lib/kernel/cron-logging.ts:125 createCronRunContext",
     "lib/managers/autonomy-gate.ts:91 autonomyDecision",
-    "lib/kernel/manager-registry.ts:3437 resolveCronManager"
+    "lib/kernel/manager-registry.ts:3439 resolveCronManager"
    ],
    "fix": "ONE cron decision at the shared run-context door: resolveCronManager(path) + autonomyDecision over the platform halt (god switch) and the tenant halt, recorded on the run row; a held run records `held` and does no work. Alternative is OWNER decision 2 (does a registered manager's deterministic rule count as the decision owner?) — that would be an analyzer change, not code",
    "proof": "planted platform halt: every manager cron returns `held` with zero domain writes; red at the base (they run)",
@@ -340,7 +340,7 @@
    },
    "leverage": [
     "scripts/os-coverage-ledger.ts:284 EVIDENCE_TABLE_RE",
-    "lib/kernel/manager-registry.ts:2142 TABLE_MANAGER"
+    "lib/kernel/manager-registry.ts:2144 TABLE_MANAGER"
    ],
    "fix": "ONE analyzer change, both directions together: narrow EVIDENCE_TABLE_RE to true logs (TRUE_LOG_RE) for ownership AND for evidence. It closes these owner gaps but also withdraws the false evidence credit on the rows counted under blindSpots.evidenceCreditedByAnEventsDomainTable — those must be ledgered in the same change (never one direction alone: that would only move a number)",
    "proof": "a planted write to calendar_events resolves its owner from TABLE_MANAGER and earns NO evidence; red at the base for both halves",
@@ -379,7 +379,7 @@
     "owner,readback": 1
    },
    "leverage": [
-    "lib/kernel/manager-registry.ts:3452 resolveTableManager"
+    "lib/kernel/manager-registry.ts:3454 resolveTableManager"
    ],
    "fix": "name the owner where the action is (the module's manager) or route the record through the owner's signal; never steward a log table to move a number",
    "proof": "census: owner resolves for each; planted log-only write stays red",
