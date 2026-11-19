@@ -456,6 +456,117 @@ console.log("\n[G6 · the fatigue doors — every dispatched path answers GET; n
     !readsSecret(page) && !/DEMO_BROKERAGE_ID/.test(pageCode) && !/fetch\(/.test(pageCode))
 }
 
+// ───────────────────────────────────────────────────────────────────────────────
+console.log("\n[G7 · no cron handler without a gate — the manual-rescan POSTs (wave 155)]")
+{
+  // WHY THIS SECTION EXISTS. G4 finds a BADLY written credential check. A handler with no check at all has nothing for it to
+  // find: app/api/cron/deal-health-scan and app/api/cron/listing-health-scan each carried a POST "manual rescan" with no
+  // credential and no session, and this guard reported zero findings beside them (a census that cannot see the defect reads
+  // as a clean bill of health — CLAUDE.md §2). G7 counts HANDLERS, not compares.
+  type Handler = { method: string; body: string }
+  /** The handlers a route module declares, each with the code up to the next top-level export (comments AND strings blanked —
+   *  a tombstone or a quoted specimen is not a gate). An alias (`export const POST = GET`) is its target's gate. */
+  const handlersOf = (src: string): Handler[] => {
+    const code = blankStrings(blankComments(src))
+    const marks = [...code.matchAll(/export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE)\s*\(/g)].map((m) => ({ method: m[1], at: m.index ?? 0 }))
+    return marks.map((mk) => {
+      const rest = code.slice(mk.at + 1)
+      const next = rest.search(/\nexport\s/)
+      return { method: mk.method, body: next < 0 ? rest : rest.slice(0, next) }
+    })
+  }
+  /** A gate the handler ITSELF runs: the cron credential, the cron-or-session gate, or a hand-off to a sibling handler. */
+  const GATE = /\b(?:verifyCronAuth|requireCronOrSessionCaller)\s*\(|\breturn\s+(?:await\s+)?(?:GET|POST)\s*\(/
+  const ungatedHandlers = (src: string): string[] => handlersOf(src).filter((h) => !GATE.test(h.body)).map((h) => h.method)
+
+  // POSITIVE CONTROLS — the finder must still see the defect it was written for.
+  const OLD_LISTING_POST = "export async function GET(request: NextRequest) {\n  const unauth = verifyCronAuth(request)\n  if (unauth) return unauth\n  return NextResponse.json({})\n}\n\nexport async function POST(request: NextRequest) {\n  try {\n    const { listing_id } = await request.json()\n    const result = await calculateListingHealth({ listingId: listing_id })\n    return NextResponse.json({ success: true, overallScore: result.overallScore })\n  } catch (e) { return NextResponse.json({ error: 'x' }, { status: 500 }) }\n}\n"
+  check("POSITIVE CONTROL: the POST as it stood before wave 155 (a gated GET, an ungated POST) is flagged — and only the POST",
+    ungatedHandlers(OLD_LISTING_POST).join() === "POST", ungatedHandlers(OLD_LISTING_POST).join())
+  check("POSITIVE CONTROL: a gate named only in a comment or a string is not a gate",
+    ungatedHandlers("export async function POST(r: Request) {\n  // verifyCronAuth(r) would go here\n  const note = 'requireCronOrSessionCaller(r)'\n  return new Response(note)\n}\n").join() === "POST")
+  check("NEGATIVE CONTROL: a handler that runs either gate, or hands off to its gated sibling, is not flagged",
+    ungatedHandlers("export async function GET(r: Request) {\n  const u = verifyCronAuth(r)\n  if (u) return u\n  return new Response()\n}\nexport async function POST(r: Request) {\n  return GET(r)\n}\nexport async function PUT(r: Request) {\n  const g = await requireCronOrSessionCaller(r)\n  if (!g.ok) return g.response\n  return new Response()\n}\n").length === 0)
+
+  // THE CENSUS — every handler of every route under app/api/cron.
+  const cronRoutes = walk("app/api/cron").filter((f) => /\/route\.tsx?$/.test(f))
+  let handlerCount = 0
+  const open: string[] = []
+  for (const f of cronRoutes) {
+    const src = read(f)
+    handlerCount += handlersOf(src).length
+    for (const m of ungatedHandlers(src)) open.push(`${f} ${m}`)
+  }
+  console.log(`  · ${cronRoutes.length} cron route files, ${handlerCount} declared handlers (aliases ride their target); blind spot: a gate reached only through a helper in another module is not followed — such a handler would be FLAGGED, never passed`)
+  check("the population is real (the walk found the cron routes)", cronRoutes.length > 150 && handlerCount >= cronRoutes.length, `${cronRoutes.length} files / ${handlerCount} handlers`)
+  check("EVERY handler of every cron route runs a gate (0 ungated)", open.length === 0, open.slice(0, 8).join(" | "))
+
+  // THE SHARED GATE, executed. Authorization present → the cron gate alone decides; absent → the session alone decides.
+  const { requireCronOrSessionCaller } = cronAuth
+  let sessionReads = 0
+  const session = (answer: unknown) => ({ requireCaller: async () => { sessionReads++; if (answer instanceof Error) throw answer; return answer as never } })
+  const SEAT = { ok: true as const, userId: "u-1", brokerageId: "b-1", userType: "agent", supabase: {} }
+  const status = (r: { ok: boolean; response?: Response }) => (r.ok ? 0 : (r.response as Response).status)
+
+  const s1 = await withEnv(SECRET, () => requireCronOrSessionCaller(req({ authorization: `Bearer ${SECRET}` }), session(SEAT)))
+  check("right Bearer → the scheduler, and the session is never consulted", s1.ok && s1.caller.kind === "scheduler" && sessionReads === 0)
+  const s2 = await withEnv(SECRET, () => requireCronOrSessionCaller(req({ authorization: "Bearer wrong" }), session(SEAT)))
+  check("wrong Bearer → 401 EVEN WITH a valid session riding along (a bad credential is never rescued by a cookie)", status(s2) === 401 && sessionReads === 0)
+  const s3 = await withEnv(undefined, () => requireCronOrSessionCaller(req({ authorization: "Bearer undefined" }), session(SEAT)))
+  check("CRON_SECRET unset + 'Bearer undefined' → 500 not-configured (fail closed)", status(s3) === 500 && sessionReads === 0)
+  const s4 = await withEnv(SECRET, () => requireCronOrSessionCaller(req({ [CRON_SECRET_HEADER]: SECRET }), session({ ok: false, reason: "unauthenticated", error: "x" })))
+  check("x-cron-secret alone is not a credential here: the session decides, and no session → 401", status(s4) === 401 && sessionReads === 1)
+  const s5 = await withEnv(SECRET, () => requireCronOrSessionCaller(req({}), session(SEAT)))
+  check("no credential + a signed-in seat → that session's user and tenant (never a body field)",
+    s5.ok && s5.caller.kind === "session" && s5.caller.userId === "u-1" && s5.caller.brokerageId === "b-1" && s5.caller.userType === "agent")
+  const s6 = await withEnv(SECRET, () => requireCronOrSessionCaller(req({}), session({ ok: false, reason: "unreadable", error: "rls" })))
+  check("a profile that cannot be read → 503 (the gate could not run, so it refuses)", status(s6) === 503)
+  const s7 = await withEnv(SECRET, () => requireCronOrSessionCaller(req({}), session({ ok: false, reason: "no_brokerage", error: "x" })))
+  check("a seat with no workspace → 403", status(s7) === 403)
+  const s8 = await withEnv(SECRET, () => requireCronOrSessionCaller(req({}), session(new Error("cookies() outside a request"))))
+  check("a session read that THROWS → 401, never a pass", status(s8) === 401)
+
+  // THE TWO ROUTES, invoked for real (un-networked by G3 above: past the gate each one fails on its own).
+  const ID = "00000000-0000-4000-8000-000000000001"
+  for (const rt of [
+    { file: "app/api/cron/deal-health-scan/route.ts", key: "transaction_id", scorer: "calculateDealHealth(", rule: "loadDealWorkAccess(" },
+    { file: "app/api/cron/listing-health-scan/route.ts", key: "listing_id", scorer: "calculateListingHealth(", rule: "resolveUserIdToAgentRecord(" },
+  ]) {
+    const name = rt.file.replace(/^app\/api\//, "").replace(/\/route\.ts$/, "")
+    const POST = (await import("../" + rt.file)).POST as (r: unknown) => Promise<Response>
+    const call = async (headers: Record<string, string>, secret: string | undefined, body = JSON.stringify({ [rt.key]: ID })) =>
+      withEnv(secret, async () => {
+        try { const res = await POST(req(headers, { method: "POST", body })); let error = ""; try { error = String(((await res.clone().json()) as { error?: string })?.error ?? "") } catch { /* non-JSON */ } return { status: res.status, error } }
+        catch (e) { return { status: -1, error: String((e as Error)?.message ?? e) } }
+      })
+    const none = await call({}, SECRET)
+    check(`${name} POST: no credential, no session → 401 (it answered ANYONE before wave 155)`, none.status === 401, JSON.stringify(none))
+    const noneUnset = await call({}, undefined)
+    check(`${name} POST: no credential, CRON_SECRET unset → still refused (401)`, noneUnset.status === 401, JSON.stringify(noneUnset))
+    const wrong = await call({ authorization: "Bearer wrong" }, SECRET)
+    check(`${name} POST: wrong Bearer → 401`, wrong.status === 401, JSON.stringify(wrong))
+    const unset = await call({ authorization: "Bearer undefined" }, undefined)
+    check(`${name} POST: CRON_SECRET unset + 'Bearer undefined' → 500 not-configured`, unset.status === 500 && unset.error === "Cron secret not configured", JSON.stringify(unset))
+    const xOnly = await call({ [CRON_SECRET_HEADER]: SECRET }, SECRET)
+    check(`${name} POST: x-cron-secret alone (not opted in) → 401 even when right`, xOnly.status === 401, JSON.stringify(xOnly))
+    const right = await call({ authorization: `Bearer ${SECRET}` }, SECRET)
+    check(`${name} POST: right Bearer → past the gate`, right.status !== 401 && !(right.status === 500 && right.error === "Cron secret not configured"), JSON.stringify(right))
+    const badId = await call({ authorization: `Bearer ${SECRET}` }, SECRET, JSON.stringify({ [rt.key]: "not-a-uuid' or 1=1" }))
+    check(`${name} POST: a malformed id is refused (400) before any read`, badId.status === 400, JSON.stringify(badId))
+    const badBody = await call({ authorization: `Bearer ${SECRET}` }, SECRET, "{not json")
+    check(`${name} POST: a body that is not JSON is a 400, not a 500`, badBody.status === 400, JSON.stringify(badBody))
+
+    // ORDER (comments blanked, strings kept): the gate, then the per-record rule, then the scorer.
+    const code = blankComments(read(rt.file))
+    const post = code.slice(code.indexOf("export async function POST("))
+    const at = (needle: string) => post.indexOf(needle)
+    check(`${name} POST: the caller gate runs FIRST, the per-record rule (${rt.rule.replace("(", "")}) before the scorer, and the session's tenant pins the read`,
+      at("requireCronOrSessionCaller(") > 0 && at("requireCronOrSessionCaller(") < at(rt.rule) && at(rt.rule) < at(rt.scorer) && at("caller.brokerageId") > 0 && at("caller.brokerageId") < at(rt.scorer),
+      JSON.stringify({ gate: at("requireCronOrSessionCaller("), rule: at(rt.rule), scorer: at(rt.scorer), tenant: at("caller.brokerageId") }))
+    check(`${name} POST: no tenant or user id is read from the request body`, !/body\??\.(brokerage_id|brokerageId|user_id|userId|agent_id)/.test(post))
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed) {
   console.log("FAILURES:\n  " + failures.join("\n  "))

@@ -11,7 +11,10 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
-import { verifyCronAuth } from "@/lib/cron-auth"
+import { verifyCronAuth, requireCronOrSessionCaller } from "@/lib/cron-auth"
+import { loadDealWorkAccess } from "@/lib/auth/deal-work-ownership"
+import { isValidUUID } from "@/lib/validations"
+import { tenantScope, platformScope } from "@/lib/kernel/tenant-scope"
 
 export const dynamic = "force-dynamic"
 
@@ -19,7 +22,8 @@ export const dynamic = "force-dynamic"
  * Deal Health Scan Cron
  * 
  * GET: Scheduled scan of all active transactions (6-hour interval)
- * POST: Single transaction rescan (triggered from UI)
+ * POST: Single transaction rescan (triggered from UI) — GATED (wave 155): the scheduler's credential, or a signed-in
+ *       person who may work THAT deal (lib/auth/deal-work-ownership.ts). It had no gate at all before.
  * 
  * Emits kernel events:
  *   - DEAL_HEALTH_SCORE_UPDATED for every scored transaction
@@ -218,28 +222,68 @@ export async function GET(request: NextRequest) {
 }
 
 /**
- * POST: Single transaction rescan (triggered from health page UI)
+ * POST: Single transaction rescan (triggered from health page UI — app/dashboard/transactions/[id]/health/page.tsx).
+ *
+ * GATE FIRST, THEN THE SERVICE CLIENT (CLAUDE.md §4). Until wave 155 this handler had no gate: anyone could POST any
+ * tenant's transaction id, have it re-scored, read the score back, and raise DEAL_AT_RISK_DETECTED plus an intervention row
+ * for that tenant. Now:
+ *   · the scheduler's credential, or a signed-in person (requireCronOrSessionCaller);
+ *   · a signed-in person must be able to WORK this deal — the owning agent, the assigned coordinator, the team lead of the
+ *     deal's agent, a tenant admin or the compliance reviewer (loadDealWorkAccess, the one deal-work rule). A lender, title
+ *     company, vendor or Contact on the deal is NOT a worker of it: the live row policy lets a vendor party READ the
+ *     transaction row, so a row-security read alone would have admitted them;
+ *   · the transaction is read pinned to the SESSION's tenant. Another tenant's deal, an unknown id and a deal the caller may
+ *     not work all answer the same 404;
+ *   · a gate that cannot run refuses (503), never passes.
  */
 export async function POST(request: NextRequest) {
+  const gate = await requireCronOrSessionCaller(request)
+  if (!gate.ok) return gate.response
+  const caller = gate.caller
+
   try {
-    const { transaction_id } = await request.json()
+    let body: { transaction_id?: unknown } | null = null
+    try { body = await request.json() } catch { return NextResponse.json({ error: "Invalid request body" }, { status: 400 }) }
+    const transaction_id = body?.transaction_id
 
     if (!transaction_id) {
       return NextResponse.json({ error: "transaction_id required" }, { status: 400 })
     }
+    if (typeof transaction_id !== "string" || !isValidUUID(transaction_id)) {
+      return NextResponse.json({ error: "transaction_id must be a valid id" }, { status: 400 })
+    }
 
     const supabase = createServiceClient()
 
-    // Get transaction details
-    const { data: tx, error: txError } = await supabase
-      .from("transactions")
-      .select("id, brokerage_id")
-      .eq("id", transaction_id)
-      .single()
+    if (caller.kind === "session") {
+      const work = await loadDealWorkAccess(supabase, { userId: caller.userId, brokerageId: caller.brokerageId, userType: caller.userType, transactionId: transaction_id })
+      if (!work.ok) {
+        console.error("[deal-health-scan] POST gate could not run:", work.error)
+        return NextResponse.json({ error: "Your access to this deal could not be confirmed. Try again in a moment." }, { status: 503 })
+      }
+      if (!work.access.capabilities.read) {
+        return NextResponse.json({ error: "Transaction not found" }, { status: 404 })
+      }
+    }
 
-    if (txError || !tx) {
+    // Get transaction details. The scope is WRITTEN DOWN, never inferred from a missing id (lib/kernel/tenant-scope.ts): a
+    // person reads inside the session's tenant (tenantScope refuses a blank id); the scheduler, having proven the cron
+    // credential, names its own rows. Two explicit reads — the typed query builder is too deep for applyTenantScope's generic.
+    const scope = caller.kind === "session"
+      ? tenantScope(caller.brokerageId, "deal-health-scan manual rescan")
+      : platformScope("manual rescan by the scheduler — the cron credential was verified")
+    const { data: tx, error: txError } = scope.kind === "tenant"
+      ? await supabase.from("transactions").select("id, brokerage_id").eq("id", transaction_id).eq("brokerage_id", scope.brokerageId).maybeSingle()
+      : await supabase.from("transactions").select("id, brokerage_id").eq("id", transaction_id).maybeSingle()
+
+    if (txError) {
+      console.error("[deal-health-scan] POST transaction read refused:", txError.message)
+      return NextResponse.json({ error: "The transaction could not be read. Try again in a moment." }, { status: 503 })
+    }
+    if (!tx) {
       return NextResponse.json({ error: "Transaction not found" }, { status: 404 })
     }
+    const actorUserId = caller.kind === "session" ? caller.userId : null
 
     // Calculate health score
     const result = await calculateDealHealth({ transactionId: tx.id, brokerageId: tx.brokerage_id })
@@ -251,6 +295,7 @@ export async function POST(request: NextRequest) {
       entityId: tx.id,
       brokerageId: tx.brokerage_id,
       transactionId: tx.id,
+      actorUserId,
       metadata: {
         overall_score: result.overallScore,
         risk_level: result.riskLevel,
@@ -268,6 +313,7 @@ export async function POST(request: NextRequest) {
         entityId: tx.id,
         brokerageId: tx.brokerage_id,
         transactionId: tx.id,
+        actorUserId,
         metadata: {
           overall_score: result.overallScore,
           risk_level: result.riskLevel,
