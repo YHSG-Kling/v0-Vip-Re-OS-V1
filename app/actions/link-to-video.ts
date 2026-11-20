@@ -254,6 +254,7 @@ export async function checkCompliance(videoQueueId: string) {
 
   const access = await verifyVideoAccess(videoQueueId, auth.brokerageId)
   if (!access.ok) return { success: false, error: "Forbidden" }
+  return ledgered(auth, { action: "marketing.video_script.compliance_check", subject: { type: "video_generation_queue", id: videoQueueId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const supabase = createServiceClient()
 
@@ -314,6 +315,7 @@ Return JSON: {
     console.error("[link-to-video] Check compliance error:", error)
     return { success: false, error: "Failed to check compliance" }
   }
+  })
 }
 
 // Update script
@@ -323,6 +325,7 @@ export async function updateVideoScript(videoQueueId: string, editedScript: stri
 
   const access = await verifyVideoAccess(videoQueueId, auth.brokerageId)
   if (!access.ok) return { success: false, error: "Forbidden" }
+  return ledgered(auth, { action: "marketing.video_script.update", subject: { type: "video_generation_queue", id: videoQueueId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const supabase = createServiceClient()
 
@@ -346,6 +349,7 @@ export async function updateVideoScript(videoQueueId: string, editedScript: stri
     console.error("[link-to-video] Update video script error:", error)
     return { success: false, error: "Failed to update script" }
   }
+  })
 }
 
 // Start video generation
@@ -610,6 +614,7 @@ export async function generateSocialCaption(videoQueueId: string) {
 
   const access = await verifyVideoAccess(videoQueueId, auth.brokerageId)
   if (!access.ok) return { success: false, error: "Forbidden" }
+  return ledgered(auth, { action: "marketing.video_caption.generate", subject: { type: "video_generation_queue", id: videoQueueId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const supabase = createServiceClient()
 
@@ -646,6 +651,7 @@ Return only the caption text.`,
     console.error("[link-to-video] Generate social caption error:", error)
     return { success: false, error: "Failed to generate caption" }
   }
+  })
 }
 
 // Delete video
@@ -655,6 +661,7 @@ export async function deleteVideo(videoQueueId: string) {
 
   const access = await verifyVideoAccess(videoQueueId, auth.brokerageId)
   if (!access.ok) return { success: false, error: "Forbidden" }
+  return ledgered(auth, { action: "marketing.video.delete", subject: { type: "video_generation_queue", id: videoQueueId }, riskClass: "IRREVERSIBLE" }, async () => {
 
   const supabase = createServiceClient()
 
@@ -669,6 +676,7 @@ export async function deleteVideo(videoQueueId: string) {
     console.error("[link-to-video] Delete video error:", error)
     return { success: false, error: "Failed to delete video" }
   }
+  })
 }
 
 // Get user organizations — derives from session, not from caller param
@@ -719,4 +727,29 @@ export async function getUserOrganizations(_userId?: string) {
     console.error("[link-to-video] Get user organizations error:", error)
     return []
   }
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

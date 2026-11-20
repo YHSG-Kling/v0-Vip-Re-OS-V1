@@ -87,6 +87,35 @@ async function resumeEnrollments(svc: Svc, brokerageId: string, mark: string, no
   return { resumed, truncated: rows.length === QUEUE_PAGE }
 }
 
+/**
+ * WAVE 155 (lane 155J3 — directive J3): a seat that left the tenant CANCELS the campaign-bundle pieces still queued in its name
+ * (orchestrator_tasks 'bundle_follow_on', written by lib/direct-mail/orchestrate-bundle-send.ts — the same direct, status-guarded
+ * queue write lib/ai-isa/followup-arbiter.ts supersedeFollowOnsForPerson makes; kept HERE, not imported from the bundle module, so the
+ * reactor's graph does not grow by that module's tree — measured +9 on app/crm/page.tsx). PENDING rows of ONE tenant whose sender
+ * (user_id or agent_user_id) is the seat → 'cancelled', counted; the chain stops (outcome.chain 'stopped'). A row a drain already
+ * claimed is not touched — its executor re-reads the sender seat (orchestrate-bundle-send.ts step 3b) before it sends.
+ */
+async function cancelSeatBundleFollowOns(svc: Svc, brokerageId: string, userId: string, reason: string, now: Date): Promise<{ cancelled: number; truncated: boolean }> {
+  const { data, error } = await svc.from("orchestrator_tasks").select("id, payload")
+    .eq("brokerage_id", brokerageId).eq("task_type", "bundle_follow_on").eq("status", "pending").limit(QUEUE_PAGE)
+  if (error) throw new Error(`the queued bundle pieces could not be read: ${error.message}`)
+  const rows = (data ?? []) as Array<{ id: string; payload: Record<string, any> | null }>
+  const nowIso = now.toISOString()
+  let cancelled = 0
+  for (const r of rows) {
+    const sender = r.payload?.sender as { user_id?: string | null; agent_user_id?: string | null } | undefined
+    if (!sender || (sender.user_id !== userId && sender.agent_user_id !== userId)) continue
+    const why = `cancelled: ${reason}`.slice(0, 500)
+    const { data: moved, error: mErr } = await svc.from("orchestrator_tasks").update({
+      status: "cancelled", last_error: why, executed_at: nowIso, updated_at: nowIso,
+      payload: { ...r.payload, outcome: { ...(r.payload?.outcome ?? {}), status: "cancelled", error: why, chain: "stopped", trigger: "membership_changed", decided_at: nowIso } },
+    }).eq("id", r.id).eq("brokerage_id", brokerageId).eq("status", "pending").select("id")
+    if (mErr) throw new Error(`bundle piece ${r.id} could not be cancelled: ${mErr.message}`)
+    cancelled += (moved ?? []).length
+  }
+  return { cancelled, truncated: rows.length === QUEUE_PAGE }
+}
+
 // ══ 1. SUBSCRIPTION AUTHORITY (gap rows 1–2) ═════════════════════════════════════════════════════════════════════════════
 
 export interface SubscriptionAuthorityOutcome {
@@ -167,6 +196,8 @@ export interface MembershipRecheckOutcome {
   basis: string
   postsHeld: number
   enrollmentsPaused: number
+  /** WAVE 155 (155J3): queued campaign-bundle pieces sent in this seat's name, cancelled (orchestrator_tasks bundle_follow_on). */
+  followOnsCancelled?: number
   recorded: boolean
   claim?: string
   error?: string | null
@@ -218,12 +249,17 @@ export async function reactToMembershipChange(svc: Svc, p: AuthorityReactionEven
         .eq("brokerage_id", p.brokerageId).eq("user_id", userId).eq("status", "scheduled").select("id")
       if (hErr) throw new Error(`the scheduled posts could not be held: ${hErr.message}`)
       const e = await pauseEnrollments(svc, p.brokerageId, { enrolledBy: userId }, MEMBERSHIP_MARK, `${p.event}: ${basis}`, now)
-      return { decision, basis, postsHeld: (held ?? []).length, enrollmentsPaused: e.paused, recorded: true }
+      // WAVE 155 (lane 155J3 — directive J3): the campaign-bundle pieces still QUEUED in this seat's name are cancelled too (they would
+      // go out under a sender who no longer sits here). Next-action follow-ons are NOT cancelled here: their executor
+      // (lib/sphere/lifetime-touch-arbitration.ts executeLifetimeFollowOn) re-reads the responsible seat and SUSPENDS until a person
+      // reassigns the relationship — a recheck, by design, not a cancel.
+      const f = await cancelSeatBundleFollowOns(svc, p.brokerageId, userId, `the sender's seat changed (${p.event}: ${basis})`, now)
+      return { decision, basis, postsHeld: (held ?? []).length, enrollmentsPaused: e.paused, followOnsCancelled: f.cancelled, recorded: true }
     },
     {
       settle: (r) => r.decision === "unreadable"
         ? { status: "skipped", outcome: "seat_unreadable", error: r.basis }
-        : { status: "executed", outcome: r.decision === "gone" ? `queue_held:posts=${r.postsHeld},enrollments=${r.enrollmentsPaused}` : "seat_live_no_change" },
+        : { status: "executed", outcome: r.decision === "gone" ? `queue_held:posts=${r.postsHeld},enrollments=${r.enrollmentsPaused}${r.followOnsCancelled ? `,follow_ons=${r.followOnsCancelled}` : ""}` : "seat_live_no_change" },
       replay: (claim) => ({ decision, basis, postsHeld: 0, enrollmentsPaused: 0, ...notActed(claim) }),
     },
     { client: svc as never },

@@ -111,7 +111,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (ct.includes("application/json")) {
     const body = await req.json().catch(() => ({})) as { action?: string; platform_packet_id?: string; team_id?: string | null; state?: string | null }
     if (body.action !== "add_from_catalogue" || !body.platform_packet_id) return NextResponse.json({ error: "action add_from_catalogue with platform_packet_id required" }, { status: 400 })
-    const added = await addPlatformPacketToLibrary(auth.svc as never, auth.actor, { packetId: body.platform_packet_id, teamId: body.team_id ?? null, state: body.state ?? null })
+    const added = await ledgered(auth, { action: "document.form_packet.add_from_catalogue", subject: { type: "platform_form_packet", id: body.platform_packet_id }, riskClass: "LOW_RISK_WRITE", detail: { team_id: body.team_id ?? null } }, () => addPlatformPacketToLibrary(auth.svc as never, auth.actor, { packetId: body.platform_packet_id!, teamId: body.team_id ?? null, state: body.state ?? null }))
     if (!added.ok) return NextResponse.json({ error: added.error }, { status: 422 })
     return NextResponse.json({ form: added.packet, existing: added.existing })
   }
@@ -169,10 +169,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     } catch { /* invalid JSON — leave as null */ }
   }
 
-  const registered = await registerTenantFormPacket(auth.svc as never, auth.actor, {
+  const registered = await ledgered(auth, { action: "document.form_packet.register", subject: { type: "brokerage_form_library", ref: "new" }, riskClass: "LOW_RISK_WRITE", detail: { team_id: teamId, state, packet_type: packetType, has_file: hasFile } }, async () => registerTenantFormPacket(auth.svc as never, auth.actor, {
     teamId, name, description, state, packetType, formCode, licenseNote, licenseExpiresAt, fieldSchema,
     fileName: hasFile ? file!.name : null, bytes: hasFile ? new Uint8Array(await file!.arrayBuffer()) : null,
-  })
+  }))
   if (!registered.ok) return NextResponse.json({ error: registered.error }, { status: 422 })
 
   // NO LINK IS PERSISTED (wave 145, lane 145A). This used to write a 10-YEAR signed URL (issueBucketObjectUrl's default TTL) into
@@ -203,7 +203,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
   }
   if (!body.id) return NextResponse.json({ error: "id required" }, { status: 400 })
   const { id, ...patch } = body
-  const updated = await updateTenantFormPacket(auth.svc as never, auth.actor, id, patch)
+  const updated = await ledgered(auth, { action: "document.form_packet.update", subject: { type: "brokerage_form_library", id }, riskClass: "LOW_RISK_WRITE", detail: { fields: Object.keys(patch) } }, () => updateTenantFormPacket(auth.svc as never, auth.actor, id, patch))
   if (!updated.ok) return NextResponse.json({ error: updated.error }, { status: 403 })
   return NextResponse.json({ success: true })
 }
@@ -218,7 +218,32 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
   const id = url.searchParams.get("id")
   if (!id) return NextResponse.json({ error: "id query param required" }, { status: 400 })
 
-  const retired = await retireTenantFormPacket(auth.svc as never, auth.actor, id)
+  const retired = await ledgered(auth, { action: "document.form_packet.retire", subject: { type: "brokerage_form_library", id }, riskClass: "LOW_RISK_WRITE" }, () => retireTenantFormPacket(auth.svc as never, auth.actor, id))
   if (!retired.ok) return NextResponse.json({ error: retired.error }, { status: 403 })
   return NextResponse.json({ success: true })
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

@@ -831,6 +831,7 @@ export async function generateSourceAIInsights(
   sources: SourceMetrics[],
   summaryContext?: string
 ): Promise<{ success: boolean; insights: string; error?: string }> {
+  return ledgered("session", { action: "analytics.source_insights.generate", subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", detail: { claimed_brokerage_id: brokerageId, sources: sources.length } }, async () => {
   try {
     const topRoi = sources.filter(s => s.roi_multiple > 0).sort((a, b) => b.roi_multiple - a.roi_multiple).slice(0, 3)
     const topVolume = [...sources].sort((a, b) => b.contact_count - a.contact_count).slice(0, 3)
@@ -877,6 +878,7 @@ Keep the tone analytical and actionable. Reference specific source names and num
       error: err instanceof Error ? err.message : "AI insights generation failed",
     }
   }
+  })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -889,6 +891,7 @@ export async function generateSourceAISummaryForSource(
   timeline: Array<{ month: string; contacts: number; leads: number; transactions: number; revenue: number }>,
   agents: Array<{ agent_id: string; agent_name: string; contact_count: number; transaction_count: number; revenue: number }>
 ): Promise<{ success: boolean; summary: string; error?: string }> {
+  return ledgered("session", { action: "analytics.source_summary.generate", subject: { type: "lead_source", ref: source.source }, riskClass: "LOW_RISK_WRITE", detail: { claimed_brokerage_id: brokerageId, source_family: source.source_family } }, async () => {
   try {
     const prompt = `Analyze this single real estate acquisition source and provide a 2-3 paragraph performance summary.
 
@@ -931,6 +934,7 @@ Explain what's working, where breakdown is happening, and what action should be 
       error: err instanceof Error ? err.message : "Failed to generate source summary",
     }
   }
+  })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -978,6 +982,7 @@ export async function emailSourceReport(
   reportType: "brokerage" | "agent" | "team",
   filter: SourceAnalyticsFilter
 ): Promise<{ success: boolean; error?: string }> {
+  return ledgered("session", { action: "analytics.source_report.email", subject: { type: "email_queue", ref: "source_report" }, riskClass: "COMMUNICATION", detail: { claimed_brokerage_id: brokerageId, report_type: reportType } }, async () => {
   try {
     const supabase = await createClient()
     const result = await getSourcePerformance(filter)
@@ -1029,6 +1034,7 @@ export async function emailSourceReport(
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Email failed" }
   }
+  })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1062,3 +1068,28 @@ export async function emailSourceReport(
 // resolved — and scripts/wired-surface-guard.ts caught it by name. A dead
 // import whose target is a server action is never just a dead import: it is one
 // half of an unwired pair, and it has to be decided, not swept.)
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
+}

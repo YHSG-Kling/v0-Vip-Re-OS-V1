@@ -321,6 +321,8 @@ interface FollowOnPayload {
   /** WAVE 154 (154H): the marketing campaign the send belongs to (ids only), threaded to the SMS piece's attribution. */
   marketing_campaign_id?: string | null
   sender: { user_id: string | null; agent_id: string | null; agent_user_id: string | null; team_id: string | null }
+  /** WAVE 155 (155J3, directive J3 "who owns execution"): the registered manager that executes this follow-on. */
+  manager?: string
   qr_scan_url: string | null
   system_source: string | null
   timing: { policy: "arbiter"; planner: "bundle_follow_on"; person_facing: boolean; arbiter_waits: number }
@@ -360,6 +362,7 @@ function payloadFor(ctx: ChainContext, item: BundleItem, originItemId: string | 
     audience: ctx.audience,
     marketing_campaign_id: ctx.marketingCampaignId ?? null,
     sender: ctx.sender,
+    manager: "campaign_orchestrator",
     qr_scan_url: ctx.qrScanUrl,
     system_source: ctx.systemSource,
     timing: { policy: "arbiter", planner: "bundle_follow_on", person_facing: arbiterChannel !== null, arbiter_waits: 0 },
@@ -658,6 +661,32 @@ export async function executeBundleFollowOnTask(svc: Svc, task: { id: string }, 
     const li = liveItem as BundleItem
     if (li.channel !== p.item.channel || (li.preset_id ?? null) !== (p.item.preset_id ?? null)) return await skipItem("this step's piece changed after the send began — the changed piece is not sent to a person it was never planned for")
 
+    // 3b. WAVE 155 (lane 155J3 — directive J3 "a refused sender or changed membership cancels or rechecks queued work"). The piece
+    // goes out in the SENDER's name: a seat that no longer sits in this tenant (removed, suspended, moved) stops the chain — the
+    // reactor's membership branch cancels at once (lib/kernel/authority-reactions.ts reactToMembershipChange,
+    // its private cancelSeatBundleFollowOns); this re-read covers a seat change that emitted no event. Unreadable → hold (fail closed).
+    const { seatStanding, followOnExpired } = await import("@/lib/outcomes/follow-on-contract")
+    const senderUserId = isId(p.sender?.user_id) ? p.sender.user_id : isId(p.sender?.agent_user_id) ? p.sender.agent_user_id : null
+    if (senderUserId) {
+      const { data: su, error: suErr } = await svc.from("users").select("brokerage_id, status, deleted_at").eq("id", senderUserId).maybeSingle()
+      const seat = seatStanding({ row: su as { brokerage_id?: string | null; status?: string | null; deleted_at?: string | null } | null, error: suErr }, B)
+      if (seat.standing === "unreadable") return await hold(seat.why)
+      if (seat.standing === "gone") return await stopChain(`${seat.why} — this piece is not sent in their name and no later piece follows`)
+    }
+    // 3c. EXPIRY (directive J3 "expiry"): the carrying campaign's own end, read LIVE (an edited end date is honoured). A campaign that
+    // ended (scheduled_end_at passed, completed_at set, or status ended / archived / failed) ends its queued pieces — none run late.
+    // No campaign, or one with no end recorded → no expiry (none is invented). Unreadable → hold.
+    let expiresAt: string | null = null
+    if (ctx.marketingCampaignId) {
+      const { data: mc, error: mcErr } = await svc.from("marketing_campaigns").select("status, scheduled_end_at, completed_at").eq("id", ctx.marketingCampaignId).eq("brokerage_id", B).maybeSingle()
+      if (mcErr) return await hold(`the campaign could not be read (${mcErr.message})`)
+      const camp = mc as { status?: string | null; scheduled_end_at?: string | null; completed_at?: string | null } | null
+      expiresAt = camp?.completed_at ?? camp?.scheduled_end_at ?? null
+      if (camp && (["ended", "archived", "failed"].includes(String(camp.status)) || followOnExpired(expiresAt, now))) {
+        return await stopChain(`expired: the campaign ${camp.status && ["ended", "archived", "failed"].includes(camp.status) ? `is ${camp.status}` : `ended at ${expiresAt}`} — this queued piece does not run late`)
+      }
+    }
+
     // 4. THE AUDIENCE — still this tenant's, still reachable as planned.
     const contactId = isId(p.audience?.contact_id) ? p.audience.contact_id : null
     const leadId = isId(p.audience?.lead_id) ? p.audience.lead_id : null
@@ -778,7 +807,7 @@ export async function executeBundleFollowOnTask(svc: Svc, task: { id: string }, 
 
     // 8. SETTLE on the orchestrator's truth.
     if (outcome.success) {
-      await settle("completed", { countAttempt: true, payload: withOutcome({ status: "completed", message_id: outcome.messageId ?? null, decision: decisionNote }) })
+      await settle("completed", { countAttempt: true, payload: withOutcome({ status: "completed", message_id: outcome.messageId ?? null, decision: decisionNote, expires_at: expiresAt }) })
       await recordItemOutcome(svc, B, p.bundle_dispatch_id, p.bundle_item_id, { ...outcome, status: "completed" })
       const next = await persistNextFollowOn(svc, ctx, origin, now)
       return { verdict: "sent", reason: `sent (${outcome.messageId ?? "no provider reference"})`, next }

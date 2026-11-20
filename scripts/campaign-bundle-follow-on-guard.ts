@@ -132,6 +132,8 @@ const P = { email: randomUUID(), sms: randomUUID(), mail: randomUUID(), email2: 
 function freshDb(extra: Record<string, Row[]> = {}): MemClient {
   return memSupabase({
     brokerages: [{ id: B }, { id: B2 }],
+    // WAVE 155 (155J3): the executor re-reads the SENDER's seat before each piece (step 3b) — the sender sits in the tenant here.
+    users: [{ id: AGENT_USER, brokerage_id: B, status: "active", deleted_at: null }],
     contacts: [
       { id: C1, brokerage_id: B, first_name: "Dana", last_name: "Rivera", email: "dana.rivera@example.test", phone: "+18505550101", deleted_at: null, agent_id: AGENT },
       { id: C2, brokerage_id: B, first_name: "Sam", last_name: "Lee", email: "sam.lee@example.test", phone: "+18505550102", deleted_at: null, agent_id: AGENT },

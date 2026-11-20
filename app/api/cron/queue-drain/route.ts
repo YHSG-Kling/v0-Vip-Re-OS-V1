@@ -422,7 +422,7 @@ async function drainOrchestratorTasks(supabase: Svc): Promise<QueueCounts> {
   counts.errors.push(...staleNext.errors.map((e) => `next-action follow-on recovery: ${e}`))
   const { data: tasks, error } = await supabase
     .from("orchestrator_tasks")
-    .select("id, task_type, payload, attempts, scheduled_for")
+    .select("id, brokerage_id, task_type, payload, attempts, scheduled_for")
     .eq("status", "pending")
     .or(`scheduled_for.is.null,scheduled_for.lte.${nowIso}`)
     .order("created_at", { ascending: true })
@@ -449,6 +449,15 @@ async function drainOrchestratorTasks(supabase: Svc): Promise<QueueCounts> {
         if (updErr) counts.errors.push(`task ${task.id}: close failed: ${updErr.message}`)
         else if (status === "completed") counts.sent++
         else counts.failed++
+      }
+
+      // WAVE 155 (lane 155J3 — directive J3): a follow-on is executed only when its record can be replayed at-most-once — it names
+      // its tenant and carries its replay once-key (lib/outcomes/follow-on-contract.ts followOnContract). Otherwise it is failed with
+      // the reason, never run. Every other judgment (reply, seat, consent, expiry, unknown outcome) stays with its executor.
+      if (task.task_type === bundleFollowOns.BUNDLE_FOLLOW_ON_TASK || task.task_type === nextAction.NEXT_ACTION_FOLLOW_ON_TASK) {
+        const { followOnContract } = await import("@/lib/outcomes/follow-on-contract")
+        const contract = followOnContract(task as never)
+        if (!contract.runnable) { await close("failed", contract.refusal); continue }
       }
 
       if (task.task_type === bundleFollowOns.BUNDLE_FOLLOW_ON_TASK) {
