@@ -642,6 +642,8 @@ export interface LocalIntelResult {
   providersNone: number
   searchCostUsd: number
   searchesBooked: number
+  /** Searches NOT made because a verified, unexpired fact of that kind for that territory is already held (cheapest truthful source first). */
+  searchesSkippedHeld: number
   newsCalls: number
   feeds: { considered: number; fetched: number; robotsDenied: number; robotsUnreadable: number; outsideTerritory: number; failed: number }
   captured: number
@@ -715,7 +717,7 @@ export async function runLocalIntelPass(brokerageId: string, deps: LocalIntelDep
   const dayIndex = Math.floor(now.getTime() / DAY_MS)
   const out: LocalIntelResult = {
     brokerageId, ran: false, skipped: null, territories: [], kindsSearched: [], searches: 0, providersNone: 0, searchCostUsd: 0,
-    searchesBooked: 0, newsCalls: 0, feeds: { considered: 0, fetched: 0, robotsDenied: 0, robotsUnreadable: 0, outsideTerritory: 0, failed: 0 },
+    searchesBooked: 0, searchesSkippedHeld: 0, newsCalls: 0, feeds: { considered: 0, fetched: 0, robotsDenied: 0, robotsUnreadable: 0, outsideTerritory: 0, failed: 0 },
     captured: 0, dropped: {}, merged: 0, promoted: 0, inserted: 0, updated: 0, staleMarked: 0, topicIds: [], blindSpots: [], errors: [],
   }
   const drop = (reason: string) => { out.dropped[reason] = (out.dropped[reason] ?? 0) + 1 }
@@ -780,8 +782,18 @@ export async function runLocalIntelPass(brokerageId: string, deps: LocalIntelDep
       territories.forEach((t, ti) => {
         for (const kind of rotate(LOCAL_FACT_KINDS, KINDS_PER_TERRITORY, dayIndex + ti)) out.kindsSearched.push(`${placeLabel(t)}:${kind}`)
       })
+      // CHEAPEST TRUTHFUL SOURCE FIRST (wave 155, lane 155R25b — merged here from the retired intelligence ladder's first rung,
+      // "a verified record already held — no call at all"; tombstone at lib/lead-pipeline/source-discovery-planner.ts): a paid
+      // search for a (territory, kind) whose verified, unexpired fact this tenant already holds is NOT made. Matched on the
+      // fact's own kind + city + state (a ZIP-only territory never matches — it is searched as before). An unreadable store
+      // skips nothing: the search runs exactly as before and the blind spot is said (never a shut path, never an opened one).
+      const held = await loadLocalFacts(db, brokerageId, { now, limit: 50 })
+      if (held.error) out.blindSpots.push(`held local facts not read (${held.error}) — every search ran as before`)
+      const heldKey = (kind: string, city: string | null, state: string | null) => `${kind}|${clean(city).toLowerCase()}|${clean(state).toLowerCase()}`
+      const heldNow = new Set(held.facts.filter((f) => f.temporal !== "expired" && clean(f.city)).map((f) => heldKey(f.kind, f.city, f.state)))
       for (const [ti, t] of territories.entries()) {
         for (const kind of rotate(LOCAL_FACT_KINDS, KINDS_PER_TERRITORY, dayIndex + ti)) {
+          if (clean(t.city) && heldNow.has(heldKey(kind, t.city, t.state))) { out.searchesSkippedHeld++; continue }
           if (budget-- <= 0) break
           const spec = KIND_SPECS[kind]
           const res = await search({

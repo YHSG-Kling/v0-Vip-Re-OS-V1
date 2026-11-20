@@ -393,7 +393,12 @@ async function main() {
   libRow.status = "used"
   const rNext = await runLocalIntelPass(A, deps({ now: new Date(NOW.getTime() + 6 * 3_600_000) }))
   const after = db.tables.content_topic_bank.filter((r) => r.brokerage_id === A).length
-  check("H1 the same facts seen again: 0 inserted, all 8 updated, row count unchanged", rNext.inserted === 0 && rNext.updated === 8 && after === before, `inserted=${rNext.inserted} updated=${rNext.updated} rows ${before}→${after}`)
+  // Wave 155, lane 155R25b: the RULE, not the count. The second pass no longer re-BUYS a search whose verified fact is already held
+  // (cheapest truthful source first, lib/content-intel/local-intel.ts), so fewer facts are re-observed by search than the 8 the
+  // first pass filed; what IS seen again (the feeds, any search still made) updates and never duplicates.
+  check("H1 the same facts seen again: 0 inserted, row count unchanged, what was re-observed is UPDATED; the held kinds were not re-searched",
+    rNext.inserted === 0 && after === before && rNext.updated > 0 && rNext.searchesSkippedHeld > 0 && rNext.searches < r1.searches,
+    `inserted=${rNext.inserted} updated=${rNext.updated} rows ${before}→${after} searches ${r1.searches}→${rNext.searches} skippedHeld=${rNext.searchesSkippedHeld}`)
   check("H2 observed_count increments on re-observation", (db.tables.content_topic_bank.find((r) => r.topic_title === "Alderbrook Library Book Fair")?.raw_data.local_fact.observed_count ?? 0) >= 2)
   check("H3 a fact a writer already USED is not resurrected to fresh", libRow.status === "used")
   const merged = mergeLocalFacts([

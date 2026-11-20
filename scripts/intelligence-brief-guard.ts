@@ -4,7 +4,8 @@
  * search API, no model, no network.
  *
  *   A  SOURCE CLASSES — ideas-only routes (Facebook Group, recommend-a-realtor, Nextdoor) are never planned, never opened by any
- *      door; the ladder refuses an idea source for RawData; the idea path writes only the topic pool; path B files a grounded
+ *      door; the RawData door refuses an idea source (the retired ladder's rule, now proven on the door — lane 155R25b); the
+ *      idea path writes only the topic pool; path B files a grounded
  *      first-person request as a person and a forum question as an anonymous question.
  *   B  FRESHNESS — one fresh sourced question → one topic with a freshness record; a re-observation merges; a new-agent
  *      announcement is filtered; a real local trend → a newsletter candidate; a stale trend is refused; an unmeasured "trending"
@@ -12,8 +13,9 @@
  *   C  INJECT-002 — an instruction inside a public post is not stored and nothing obeys it; the factual question survives.
  *   D  PRIV / REWARD — personal data never reaches a topic; unknown engagement shows no number; a proxy is labeled, never the
  *      tenant's own.
- *   E  PRIVATE GROUP / PAID SEAMS — a private group is refused before any fetch (0 fetch-seam calls); every paid seam is
- *      counted at 0 without license + approval, and an approved one at exactly 1.
+ *   E  PRIVATE GROUP / PAID SEAMS — a private group is refused before any fetch (0 fetch-seam calls); no license = zero charged
+ *      calls (the Datafiniti territory door, the dataset selection, resolveSourceDoor); an unknown cost is needs_quote; a stale
+ *      need is held; a near-copy is refused; a held local fact replaces the paid search (local-intel, merged lane 155R25b).
  *   F  THE BRIEF — per territory, tenant-pinned, routes named, cost measured or unknown (never estimated).
  *   G  STATIC — the brief's reader takes the tenant from the session; vocabularies agree; every route names a real executor.
  */
@@ -62,6 +64,9 @@ function memDb(seed: Record<string, Row[]> = {}) {
       in(c: string, vs: any[]) { filters.push((r) => vs.includes(get(r, c))); return q },
       gt(c: string, v: any) { filters.push((r) => String(get(r, c) ?? "") > String(v)); return q },
       gte(c: string, v: any) { filters.push((r) => String(get(r, c) ?? "") >= String(v)); return q },
+      lt(c: string, v: any) { filters.push((r) => String(get(r, c) ?? "") < String(v)); return q },
+      lte(c: string, v: any) { filters.push((r) => String(get(r, c) ?? "") <= String(v)); return q },
+      neq(c: string, v: any) { filters.push((r) => get(r, c) !== v); return q },
       contains(c: string, v: any) { filters.push((r) => contains(r[c], v)); return q },
       or() { return q }, overlaps() { return q }, order() { return q },
       limit(n: number) { limitN = n; return q }, single() { single = true; return q }, maybeSingle() { single = true; return q },
@@ -115,13 +120,14 @@ async function main() {
   const cwDoor = planner.resolveSourceDoor({ source: "craigslist_wanted", brokerageId: A, plans: approved("craigslist_wanted"), now: NOW })
   check("POSITIVE CONTROL · the same approved plan shape opens a non-ideas source (approved_plan)", cwDoor.allowed && cwDoor.door === "approved_plan", cwDoor.reason)
 
-  const chatter = { key: "facebook_group", rung: "public_chatter", sourceClass: "idea", status: "available", rights: "public_read_reworded", fieldsAvailable: null, territoryCovered: true, eventAgeDays: 1, maxAgeDays: 60, estimatedCostUsd: 0, paid: false, rateLimitRemaining: null, dedupOverlapRatio: null } as planner.IntelligenceSourceCandidate
-  const asLead = planner.chooseIntelligenceSource({ outcome: "raw_data", budgetUsd: 10, paidApproved: true }, [chatter, { ...chatter, sourceClass: "acquisition" }])
-  const asTopic = planner.chooseIntelligenceSource({ outcome: "topic_pool", budgetUsd: 0, paidApproved: false }, [chatter])
-  check("the ladder refuses an idea source for RawData — as an idea AND when mislabeled acquisition (the rung forbids it)", asLead.chosen === null && asLead.trail.length === 2 && asLead.trail.every((t) => t.verdict === "refused"), JSON.stringify(asLead.trail))
-  check("POSITIVE CONTROL · the same chatter source is chosen for the topic pool", asTopic.chosen?.key === "facebook_group")
-  const groundedPersonAsTopic = planner.chooseIntelligenceSource({ outcome: "topic_pool", budgetUsd: 0, paidApproved: false }, [{ ...chatter, key: "exa_public_request", rung: "grounded_person", sourceClass: "acquisition" }])
-  check("an acquisition (grounded person) source never feeds the topic pool as a lead surrogate", groundedPersonAsTopic.chosen === null)
+  // 155R25b — the retired ladder's class → outcome checks, MOVED onto the code that runs (tombstone at the end of
+  // lib/lead-pipeline/source-discovery-planner.ts): the RawData door's first check refuses every ideas-only key and alias, and the
+  // topic pool's own vocabulary has no acquisition-class kind (an anonymous trend is never a named lead). The "chatter is chosen
+  // for the topic pool" positive control is the idea path just below (the Facebook-group question is stored as a topic).
+  check("an ideas-only source is refused for RawData by key AND alias (ideasOnlySourceProblem — resolveSourceDoor's first check); POSITIVE CONTROL craigslist_wanted passes",
+    ["facebook_group", "facebook_recommend_realtor", "nextdoor_intent", "nextdoor"].every((k) => !!planner.ideasOnlySourceProblem(k)) && planner.ideasOnlySourceProblem("craigslist_wanted") === null)
+  check("an acquisition-class source never feeds the topic pool: every topic kind is idea or market evidence, none on a person / paid rung",
+    Object.values(TOPIC_KIND_LADDER).every((v) => v.sourceClass !== "acquisition" && !["grounded_person", "licensed_dataset", "costly_scrape"].includes(v.rung)))
 
   // The idea path: a first-person Facebook-group post with a phone → topic only; zero writes outside the topic pool.
   const ideaDb = memDb({ content_topic_bank: [] })
@@ -208,46 +214,58 @@ async function main() {
   const priv = await researchCommunityPostTopics(memDb() as never, { brokerageId: A, urls: ["https://nextdoor.com/neighborhood_feed/", "https://nextdoor.com/login/?next=/g/pace-moms"], now: NOW }, { snapshot: snapshot as never })
   check("private / sign-in community URLs are refused BEFORE any request — 0 fetch-seam calls", fetches === 0 && priv.fetched === 0 && priv.held.length === 2, JSON.stringify(priv.held))
   check("a Facebook group not recorded PUBLIC is refused before the actor runs", /never read/.test(apifyIdeaSourceProblem({ actor: "apify/facebook-groups-scraper", visibility: "private", rights: "public_read_reworded" }) ?? ""))
-  const privCand = planner.chooseIntelligenceSource({ outcome: "topic_pool", budgetUsd: 0, paidApproved: false }, [{ ...chatter, privateSource: true }])
-  check("the ladder never chooses a private source under any class", privCand.chosen === null && /private/.test(privCand.trail[0]?.why ?? ""))
+  // 155R25b: "the ladder never chooses a private source" is DROPPED as a duplicate — the two checks above prove the same rule on
+  // the code that runs (scrape-checkpoint.ts:171 refuses the URL before a request; apifyIdeaSourceProblem before the actor).
 
-  let paidCalls = 0
-  const paidSeam = async () => { paidCalls++; return [] }
-  const runLadder = async (need: planner.IntelligenceNeed, cands: planner.IntelligenceSourceCandidate[]) => { const c = planner.chooseIntelligenceSource(need, cands); for (let i = 0; i < c.paidCallsAuthorized; i++) await paidSeam(); return c }
-  const dfPeople = planner.licensedDatasetCandidate({ provider: "datafiniti", dataset: "people", sourceClass: "acquisition", activation: "dormant_pending_rights", rightsRecorded: false, fields: ["email", "phone"], unitUsd: 0.05, records: 100, territoryCovered: true, eventAgeDays: 5, maxAgeDays: 90 })
-  const dfProperty = planner.licensedDatasetCandidate({ provider: "datafiniti", dataset: "property", sourceClass: "market_evidence", activation: "active", rightsRecorded: true, fields: ["sold_price"], unitUsd: 0.02, records: 50, territoryCovered: true })
-  const firstParty = { ...chatter, key: "website_question", rung: "first_party", sourceClass: "market_evidence", rights: "first_party" } as planner.IntelligenceSourceCandidate
-  const r1 = await runLadder({ outcome: "raw_data", budgetUsd: 50, paidApproved: false }, [dfPeople])
-  const r2 = await runLadder({ outcome: "education_search", budgetUsd: 50, paidApproved: false }, [dfProperty])
-  const r3 = await runLadder({ outcome: "education_search", budgetUsd: 50, paidApproved: true }, [dfProperty, firstParty])
-  check("without license + approval every paid seam is COUNTED at 0 (dormant-pending-rights people; unapproved property)", paidCalls === 0 && r1.chosen === null && /LICENSE-HELD/.test(r1.trail[0].why) && r2.chosen === null && /0 paid calls/.test(r2.trail[0].why))
-  check("the free first-party rung beats an approved licensed dataset — still 0 paid calls", r3.chosen?.key === "website_question" && paidCalls === 0)
-  const r4 = await runLadder({ outcome: "education_search", budgetUsd: 50, paidApproved: true }, [dfProperty])
-  const r5 = await runLadder({ outcome: "education_search", budgetUsd: 50, paidApproved: true }, [{ ...dfProperty, estimatedCostUsd: null }])
-  check("POSITIVE CONTROL · an approved, licensed, in-budget dataset is chosen and its seam runs EXACTLY once; an unknown cost is refused", r4.chosen?.key === "datafiniti:property" && paidCalls === 1 && r5.chosen === null && /unknown cost is not zero/.test(r5.trail[0].why), String(paidCalls))
-  // 155I carry-in: the Datafiniti rows reach the paid rung only through the typed seam; license-held rows get no spend.
-  const fourHeld: planner.DatafinitiDatasetSeam = () => ["people", "property", "business", "product"].map((d) => ({ dataset: d, role: d === "product" ? "not_needed" : "conditional_gap_fill", licenseHeld: true }))
-  const dfCands = planner.datafinitiLadderCandidates(fourHeld)
-  const before = paidCalls
-  const r6 = await runLadder({ outcome: "education_search", budgetUsd: 50, paidApproved: true }, dfCands)
-  const r7 = await runLadder({ outcome: "raw_data", budgetUsd: 50, paidApproved: true }, dfCands)
-  check("155I seam: four LICENSE-held Datafiniti rows → 0 spendable rows, every candidate license_held, 0 paid calls (approval or not)",
-    planner.spendableDatafinitiRows(fourHeld).length === 0 && dfCands.length === 4 && dfCands.every((c) => c.status === "license_held") && r6.chosen === null && r7.chosen === null && paidCalls === before)
-  {
-    // The RULE on whatever the production binding returns (null today → nothing; bound → no license-held row is ever spendable).
-    const prodRows = planner.PRODUCTION_DATAFINITI_DATASET_SEAM ? planner.PRODUCTION_DATAFINITI_DATASET_SEAM() : []
-    const prodCands = planner.datafinitiLadderCandidates()
-    check("155I production seam: no license-held row is spendable or available (null binding → no candidate)",
-      prodCands.length === prodRows.length && planner.spendableDatafinitiRows().every((d) => prodRows.some((r) => r.dataset === d && !r.licenseHeld))
-        && prodCands.every((c, i) => !prodRows[i].licenseHeld || c.status === "license_held"))
-  }
-  const unheld: planner.DatafinitiDatasetSeam = () => [{ dataset: "property", role: "conditional_gap_fill", licenseHeld: false }]
-  const r8 = planner.chooseIntelligenceSource({ outcome: "education_search", budgetUsd: 50, paidApproved: true }, planner.datafinitiLadderCandidates(unheld))
-  check("POSITIVE CONTROL · an unheld conditional row is spendable in principle, but is never bought without 155I's count and quote (unknown cost)", planner.spendableDatafinitiRows(unheld).join() === "property" && r8.chosen === null && /unknown cost is not zero/.test(r8.trail[0]?.why ?? ""))
-  const overlap = planner.chooseIntelligenceSource({ outcome: "education_search", budgetUsd: 50, paidApproved: true }, [{ ...dfProperty, dedupOverlapRatio: 0.95 }])
-  const staleC = planner.chooseIntelligenceSource({ outcome: "education_search", budgetUsd: 50, paidApproved: true }, [{ ...dfProperty, eventAgeDays: 400, maxAgeDays: 180 }])
-  const rate = planner.chooseIntelligenceSource({ outcome: "education_search", budgetUsd: 50, paidApproved: true }, [{ ...dfProperty, rateLimitRemaining: 0 }])
-  check("overlap ≥ 90% held, a stale record and an exhausted rate limit each keep the paid source unchosen (refused / refused / deferred)", overlap.chosen === null && staleC.chosen === null && rate.chosen === null && rate.trail[0].verdict === "deferred")
+  // ── 155R25b — the retired ladder's paid-rung, freshness and cheapest-first checks, MOVED onto the code that RUNS ──────────
+  // Directive row: "source freshness, value and rights determine action; an anonymous trend is not a named lead; a competitor
+  // idea is not copied; no license = zero charged calls". Each check below drives the survivor that makes that decision.
+  // DROPPED with the ladder (each named, never silently): the 155I production-seam binding check (the seam is retired — its rule
+  // lives in datafinitiDatasetSelection, checked below); "an unheld conditional row is never bought without count + quote"
+  // (the dataset door's count → quote gate is test:datafiniti-connector's, 143 checks); overlap ≥ 90 % (pre-pull dedup is
+  // test:acquisition-door's); an exhausted rate limit defers (the pooled lane's provider stop, lib/lead-pipeline/pooled-pull.ts:574).
+  const { runDatafinitiTerritoryCycle } = await import("../lib/lead-pipeline/datafiniti-territory-door")
+  const { PROVIDER_ACTIVATION } = await import("../lib/ai-isa/property-lookup-rail")
+  const { datafinitiDatasetSelection } = await import("../lib/lead-pipeline/datafiniti-dataset-door")
+  let dfRuns = 0
+  const dfRun = (async () => { dfRuns++; return { ok: false, stage: "count", refused: "stub — the producer's own gates are test:datafiniti-connector's" } }) as never
+  const dfMarket = { id: "m-pace", name: "Pace", city: "Pace", state: "FL", zip_codes: ["32571"] }
+  const dfHeld = await runDatafinitiTerritoryCycle({ brokerageId: A, market: dfMarket, now: NOW }, { client: memDb() as never, pull: {} as never, run: dfRun })
+  check("no license = zero charged calls: the LICENSE-HELD Datafiniti territory door refuses at rights — 0 producer runs", dfHeld.stage === "rights" && /LICENSE-HELD/.test(dfHeld.refused ?? "") && dfRuns === 0, JSON.stringify(dfHeld))
+  const dfActive = await runDatafinitiTerritoryCycle({ brokerageId: A, market: dfMarket, now: NOW }, { activation: { ...PROVIDER_ACTIVATION.datafiniti, state: "active" } as never, client: memDb() as never, pull: {} as never, run: dfRun })
+  check("POSITIVE CONTROL · the same territory under an ACTIVE license passes rights and reaches the producer's own gates (1 run)", dfActive.stage !== "rights" && dfRuns === 1, JSON.stringify({ stage: dfActive.stage, dfRuns }))
+  const dfSel = datafinitiDatasetSelection()
+  check("the four-dataset selection (the survivor of the retired seam) holds every dataset LICENSE-HELD today — none spendable", dfSel.length === 4 && dfSel.every((r) => r.licenseHeld), JSON.stringify(dfSel.map((r) => [r.dataType, r.licenseHeld])))
+  const dfDoor = planner.resolveSourceDoor({ source: "datafiniti_people", brokerageId: A, plans: approved("datafiniti_people"), platform: { vendor: "datafiniti", activation: "dormant_pending_rights" } as never, now: NOW })
+  check("an APPROVED plan line cannot open a LICENSE-HELD paid source (resolveSourceDoor)", !dfDoor.allowed && /LICENSE-HELD/.test(dfDoor.reason), dfDoor.reason)
+  const paidLine = (withQuote: boolean) => planner.planSourceDiscovery({ territory, budgetUsd: 100, enabledSources: ["zenrows_zillow"] as never, history: {}, previews: { zenrows_zillow: { count: 40, at: NOW.toISOString(), via: "fixture" } } as never, quotes: (withQuote ? { zenrows_zillow: { unitUsd: 0.01, basis: "catalogue" } } : {}) as never, now: NOW }).lines.find((l) => l.source === "zenrows_zillow")?.status
+  check("an unknown cost is not zero: a paid line with no quote is needs_quote, never proposed (POSITIVE CONTROL · with a quote it moves on)", paidLine(false) === "needs_quote" && paidLine(true) !== "needs_quote", `${paidLine(false)} / ${paidLine(true)}`)
+  const { evaluateFreshness } = await import("../lib/lead-pipeline/freshness")
+  const oldNeed = evaluateFreshness({ source: "craigslist_wanted", signalAt: daysAgo(400), now: NOW } as never)
+  const newNeed = evaluateFreshness({ source: "craigslist_wanted", signalAt: daysAgo(1), now: NOW } as never)
+  check("freshness determines action: a 400-day-old stated need is HELD before any spend; POSITIVE CONTROL · a 1-day-old one is not", oldNeed.hold && !newNeed.hold, `${oldNeed.verdict} / ${newNeed.verdict}`)
+  const { rewordedNearCopyProblem } = await import("../lib/content-intel/topic-intake")
+  const competitorText = "Five mistakes first time buyers make when they skip the home inspection in a hot market"
+  check("a competitor idea is not copied: a near-verbatim rewording is refused; POSITIVE CONTROL · an original angle passes",
+    !!rewordedNearCopyProblem("Five mistakes first time buyers make when they skip the home inspection", competitorText) && rewordedNearCopyProblem("Why a local inspector matters before you sign in Pace", competitorText) === null)
+
+  // CHEAPEST TRUTHFUL SOURCE FIRST — merged onto local-intel (the rung that had no survivor). RED at the 155R25 part-1 commit:
+  // local-intel paid for the search whatever the topic bank already held.
+  const { runLocalIntelPass, LOCAL_FACT_KINDS } = await import("../lib/content-intel/local-intel")
+  const liSearches: string[] = []
+  const liSearch = async (p: { query: string }) => { liSearches.push(p.query); return { hits: [], provider: "tavily", cost: 0.008, booked: true } }
+  const liGate = { resolution: { territories: [{ brokerage_id: A, city: "Pace", state: "FL", zip_codes: ["32571"], counties: [] }] }, check: () => ({ allowed: true, reason: "test" }) }
+  const liFact = (kind: string, city: string) => ({ id: `lf-${kind}-${city}`, brokerage_id: A, source_id: "sys-li", topic_title: `${kind} in ${city}`, source_url: `https://example.test/${kind}/${city}`, categories: ["neighborhood", "local_intel"], status: "fresh", expires_at: new Date(NOW.getTime() + 5 * 86_400_000).toISOString(), raw_data: { local_fact: { kind, territory: { city, state: "FL" } } } })
+  const liSeed = (city: string) => ({ content_topic_sources: [{ id: "sys-li", brokerage_id: A, source_type: "manual", is_active: true, label: "local intel", source_config: { system_writer: "local_intel" } }], content_topic_bank: LOCAL_FACT_KINDS.map((k) => liFact(k, city)) })
+  const liRun = async (db: unknown) => { liSearches.length = 0; return runLocalIntelPass(A, { db: db as never, now: NOW, pullGate: liGate as never, search: liSearch as never, news: async () => null, gate: async () => ({ allowed: true, reason: "test" }), ledger: async (_b, _d, run) => run() }) }
+  const liHeld = await liRun(memDb(liSeed("Pace")))
+  const heldSearches = liSearches.length
+  check("a verified, unexpired fact of that kind for that territory is already held → the paid search is NOT made (0 searches)", heldSearches === 0 && (liHeld as any).searchesSkippedHeld === 2, JSON.stringify({ searches: heldSearches, skipped: (liHeld as any).searchesSkippedHeld }))
+  await liRun(memDb(liSeed("Milton")))
+  check("POSITIVE CONTROL · facts held for ANOTHER city do not stand in — the territory is searched as before (2 searches)", liSearches.length === 2, String(liSearches.length))
+  const refusingBank = (() => { const m = memDb(liSeed("Pace")); const refuse: any = new Proxy({}, { get: (_t, p) => (p === "then" ? (res: any) => res({ data: null, error: { message: "permission denied" } }) : () => refuse) }); return { ...m, from: (t: string) => (t === "content_topic_bank" ? refuse : m.from(t)) } })()
+  const liRefused = await liRun(refusingBank)
+  check("an UNREADABLE fact store skips nothing — every search runs as before and the blind spot is said (never a shut path)", liSearches.length === 2 && liRefused.blindSpots.some((b) => /held local facts not read/.test(b)), JSON.stringify(liRefused.blindSpots))
 
   // ═══ F · THE BRIEF ═══════════════════════════════════════════════════════════════════════════════════════════════
   section("F · the daily intelligence brief")
@@ -305,8 +323,13 @@ async function main() {
   const fn = actions.slice(actions.indexOf("export async function getIntelligenceBriefAction"))
   check("getIntelligenceBriefAction takes NO parameter and reads the tenant from getAgentContext (the session)", /getIntelligenceBriefAction\(\)\s*[:{]/.test(fn) && /await getAgentContext\(\)/.test(fn.slice(0, 600)) && /ctx\.brokerageId/.test(fn.slice(0, 900)))
   check("POSITIVE CONTROL · the parameter check would see a body-supplied tenant", !/getIntelligenceBriefAction\(\)\s*[:{]/.test("export async function getIntelligenceBriefAction(input: { brokerageId: string }) {"))
-  const ladder = new Set<string>(planner.INTELLIGENCE_LADDER)
-  check("every topic kind's rung is a planner ladder rung and its class is one the rung may serve", Object.values(TOPIC_KIND_LADDER).every((v) => ladder.has(v.rung)) && Object.entries(TOPIC_KIND_LADDER).every(([, v]) => planner.chooseIntelligenceSource({ outcome: "topic_pool", budgetUsd: 0, paidApproved: false }, [{ ...chatter, key: "k", rung: v.rung as never, sourceClass: v.sourceClass as never }]).chosen !== null))
+  // 155R25b: the planner's ladder is retired — the rule it held over the vocabulary (which classes a rung may serve) is asserted on
+  // the vocabulary that runs, TOPIC_KIND_LADDER: public chatter is idea only; a public fact is market evidence; first-party and
+  // search demand are idea or market evidence. NEGATIVE CONTROL: the same rule refuses public chatter labeled market evidence.
+  const RUNG_SERVES: Record<string, string[]> = { first_party: ["idea", "market_evidence"], public_fact: ["market_evidence"], search_demand: ["idea", "market_evidence"], public_chatter: ["idea"] }
+  const serves = (v: { rung: string; sourceClass: string }) => (RUNG_SERVES[v.rung] ?? []).includes(v.sourceClass)
+  check("every topic kind's rung is one the brief allows and its class is one that rung may serve", Object.values(TOPIC_KIND_LADDER).every(serves) && !serves({ rung: "public_chatter", sourceClass: "market_evidence" }))
+  check("the planner no longer carries a second chooser (chooseIntelligenceSource / INTELLIGENCE_LADDER retired)", !("chooseIntelligenceSource" in planner) && !("INTELLIGENCE_LADDER" in planner))
   const execOk = Object.values(TOPIC_ROUTE_EXECUTORS).every((e) => {
     const [file, name] = e.split(" ")
     const p = join(ROOT, file)

@@ -337,8 +337,9 @@ export async function readTopicApproval(db: Db, brokerageId: string, topicId: st
 // ladder rung of every topic and MEASURED cost per topic-linked asset — assisted conversations and qualified Contacts stay
 // UNKNOWN (no attribution link from a topic to a conversation or a Contact exists in the schema) rather than estimated.
 
-/** Mirrors lib/lead-pipeline/source-discovery-planner.ts INTELLIGENCE_LADDER (kept local so this module adds no import edge;
- *  scripts/intelligence-brief-guard.ts asserts the two vocabularies agree). */
+/** THE rung vocabulary the brief shows (cheapest truthful source first). It mirrored the planner's INTELLIGENCE_LADDER until
+ *  wave 155 lane 155R25b retired that unused chooser (tombstone at the end of lib/lead-pipeline/source-discovery-planner.ts);
+ *  this list is now the one spelling, and scripts/intelligence-brief-guard.ts holds its order. */
 type BriefRung = "cached_verified" | "first_party" | "public_fact" | "search_demand" | "public_chatter" | "grounded_person" | "licensed_dataset" | "costly_scrape"
 type BriefClass = "idea" | "acquisition" | "market_evidence"
 

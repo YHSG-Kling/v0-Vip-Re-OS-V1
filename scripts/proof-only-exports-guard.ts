@@ -8,8 +8,8 @@
  *   · RETIRED  — gone from stripped source, its tombstone (raw source — a tombstone IS a comment) names a survivor at a
  *                file:line that really declares it, and no product file calls it;
  *   · TAGGED   — the tag matches test:orphan-exports' OWN regex (copied below and asserted identical to the guard's text);
- *   · OPEN     — not wired, not tagged (an open item may not be hidden behind a tag nobody ruled), still referenced by its
- *                proof; printed with its owner question. An open item does not fail this guard; a silent disappearance does.
+ *   (lane 155R25b, integrator ruling: the intelligence ladder and its three Datafiniti adapters are RETIRED onto their survivors —
+ *    the tombstone's every cited file:line is checked live; no tag survives on a retired adapter.)
  * Every driven check is SIMULATED (in-memory client, no network, no provider, no model; every seam counted).
  * `--base <rev>` re-runs the STATIC judges on that commit's text (git show) and prints each verdict — the red-at-base controls.
  */
@@ -81,18 +81,34 @@ console.log("\n[0 · the instrument — controls able to fail]")
 }
 
 // ── 1–4 · the intelligence ladder and its licensed-dataset seam ─────────────────────────────────────────────────────
-console.log("\n[1 · chooseIntelligenceSource — OPEN (owner question); 2–4 · the Datafiniti seam — TAGGED @ownerRuled R11]")
+console.log("\n[1–4 · the intelligence ladder and its Datafiniti seam — MERGED ONTO THEIR SURVIVORS AND RETIRED (lane 155R25b)]")
 {
-  const p = raw(F.planner)
-  check("1 · chooseIntelligenceSource still EXPORTED (an open item never silently disappears)", /export function chooseIntelligenceSource\b/.test(code(F.planner)))
-  check("1 · chooseIntelligenceSource carries NO tag (no owner ruling keeps it unwired — it stays on the wire list, honestly)", tagOf(p, "chooseIntelligenceSource") === null)
-  check("1 · its proof still drives it (scripts/intelligence-brief-guard.ts)", /\bchooseIntelligenceSource\s*\(/.test(blankStrings(stripComments(readFileSync("scripts/intelligence-brief-guard.ts", "utf8")))))
-  console.log(`    OPEN · product referrers: ${productReferrers("chooseIntelligenceSource", F.planner).join(", ") || "none"} — owner question in lane 155R25's notes`)
-  for (const n of ["datafinitiLadderCandidates", "spendableDatafinitiRows", "licensedDatasetCandidate"]) {
-    const i = p.search(new RegExp(`^export function ${n}\\b`, "m"))
-    const above = i < 0 ? "" : p.slice(Math.max(0, i - 600), i)
-    check(`${n} · TAGGED @ownerRuled by the guard's own rule, citing owner R11 and LICENSE-HELD`, tagOf(p, n) === "ownerRuled" && /@ownerRuled 2026-11-19 owner R11[^\n]*LICENSE-HELD/.test(above))
+  // Integrator ruling (architectural laws 1 / 2): the ladder was a fifth chooser; its rules live where the decision is made.
+  const p = code(F.planner)
+  for (const n of ["chooseIntelligenceSource", "datafinitiLadderCandidates", "spendableDatafinitiRows", "licensedDatasetCandidate", "PRODUCTION_DATAFINITI_DATASET_SEAM", "INTELLIGENCE_LADDER"]) {
+    check(`${n} · gone from stripped source, and no product or proof file calls it`, raw(F.planner).length > 0 && !new RegExp(`export\\s+(?:const|function)\\s+${n}\\b`).test(p)
+      && !BASE && ![...PRODUCT, "scripts/intelligence-brief-guard.ts"].some((f) => f !== F.planner && new RegExp(`\\b${n}\\b`).test(calls(f))))
   }
+  check("no @ownerRuled tag survives on a retired adapter (a tag on an adapter to a retired chooser is not a ruling)", !/@ownerRuled 2026-11-19 owner R11/.test(raw(F.planner)))
+  // The tombstone names each survivor at file:line — every cited line must still carry the token it names.
+  const tomb = raw(F.planner).slice(raw(F.planner).indexOf("TOMBSTONE (wave 155, lane 155R25b"))
+  const LINES: Array<[string, RegExp]> = [
+    ["app/api/cron/lead-scraping/route.ts:384", /FREE RUNGS FIRST/], ["lib/content-intel/local-intel.ts:796", /heldNow\.has\(/],
+    ["lib/content-intel/topic-intelligence.ts:347", /export const TOPIC_KIND_LADDER\b/], ["lib/content-intel/topic-intake.ts:412", /rights_unknown/],
+    ["lib/content-intel/topic-intake.ts:417", /stale_source/], ["lib/content-intel/topic-intake.ts:204", /export function rewordedNearCopyProblem\b/],
+    ["lib/providers/scrape-checkpoint.ts:171", /not a public post page/], ["lib/lead-pipeline/freshness.ts:209", /export function evaluateFreshness\b/],
+    ["lib/lead-pipeline/pipeline-processor.ts:258", /evaluateFreshness\(/], ["lib/vendor-governance/budget-eval.ts:159", /export function decideSpendBackpressure\b/],
+    ["lib/lead-pipeline/datafiniti-dataset-door.ts:141", /export function datafinitiDatasetSelection\b/], ["lib/lead-pipeline/datafiniti-territory-door.ts:246", /activation\.state !== "active"/],
+    [`${F.planner}:145`, /export const IDEAS_ONLY_SOURCES\b/], [`${F.planner}:514`, /export function resolveSourceDoor\b/], [`${F.planner}:557`, /LICENSE-HELD/],
+    [`${F.planner}:608`, /export function paidPullApproval\b/], [`${F.planner}:329`, /needs_quote/],
+  ]
+  const bad = LINES.filter(([ref, re]) => {
+    const [file, n] = [ref.slice(0, ref.lastIndexOf(":")), Number(ref.slice(ref.lastIndexOf(":") + 1))]
+    // A self-reference is written "(this file :145)"; any other survivor is named by its own file name.
+    const cited = (file === F.planner || tomb.includes(file.replace(/^.*\//, ""))) && (tomb.includes(ref) || tomb.includes(`:${n}`))
+    return !cited || !re.test(raw(file).split("\n")[n - 1] ?? "")
+  }).map(([r]) => r)
+  check(`the tombstone names each survivor at a LIVE file:line (${LINES.length} cited lines checked)`, tomb.length > 0 && bad.length === 0, bad)
 }
 
 // ── 5 · the stated-origin credential door ──────────────────────────────────────────────────────────────────────────
@@ -229,7 +245,7 @@ if (!BASE) {
 
 console.log("\n BLIND SPOTS: the static judges read the files named here only — a NEW caller of a retired name elsewhere is caught by the")
 console.log(" product-wide scan in §8, a new caller of a wired one is not needed; the driven checks run the real modules on an in-memory")
-console.log(" client, never a live database; chooseIntelligenceSource stays OPEN (owner question) and is reported, not failed.")
+console.log(" client, never a live database; the ladder's moved rules are driven by test:intelligence-brief, not here.")
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
 if (BASE) process.exit(0)
 if (fail > 0) { console.log(` failed: ${failures.join(" | ")}`); process.exit(1) }
