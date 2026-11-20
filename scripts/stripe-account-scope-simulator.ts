@@ -711,8 +711,15 @@ console.log("\n═══ C9 · the two repointed sites resolve the TENANT from t
   // FAIL CLOSED, and legibly: the refusal is returned as `error`, which both
   // client components render verbatim. `platform_credentials` holds 0 rows live, so
   // this is the branch that actually runs today.
-  check("a refused payout returns the resolver's sentence and writes NO vendor_payouts row",
-    /if \(!transfer\.success \|\| !transfer\.transferId\) \{[\s\S]{0,400}?return \{ success: false, error: transfer\.error/.test(pay))
+  // RULE, restated (wave 155 — the payout row is now written BEFORE the transfer, because the payout claims its earnings first
+  // and a claim needs an owning record while the money is in flight). What must hold when the transfer is refused: the
+  // resolver's sentence comes back as `error`, the row is marked 'failed' (never left reading pending or processing), its
+  // earnings are released, and nothing falls through to another account.
+  const refusedTransfer = /if \(!transfer\.success \|\| !transfer\.transferId\) \{([\s\S]{0,2600}?)return \{ success: false, error: transfer\.error/.exec(pay)?.[1] ?? null
+  check("a refused payout returns the resolver's sentence, marks its payout row 'failed' and releases the earnings it claimed",
+    refusedTransfer !== null && /\.update\(\{\s*status:\s*"failed"\s*\}\)/.test(refusedTransfer) && /releaseEarningsOfFailedPayout\(/.test(refusedTransfer) && !/createTransfer\(|transfers\.create/.test(refusedTransfer))
+  check("POSITIVE CONTROL: a refusal branch that leaves the payout row untouched is not accepted",
+    !/\.update\(\{\s*status:\s*"failed"\s*\}\)/.test(`console.error(transfer.error)`))
   check("a refused checkout returns the resolver's sentence rather than a redirect",
     /if \(!checkout\.success \|\| !checkout\.url\) \{[\s\S]{0,200}?return \{ success: false, error: checkout\.error/.test(pay))
   check("a refused session read is reported, not read past (an unreadable session must not settle an invoice)",

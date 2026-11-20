@@ -20,7 +20,9 @@
  *      route's own door calls the lib writer (stripped source, positive controls; driven end to end by
  *      test:manager-ownership-matrix §E). updateTrainingJobStatus — no longer a "use server" export; another tenant's /
  *      another profile's job refused with 0 writes. POSITIVE: own job completes.
- *   6  initiateVendorPayout — an agent, the vendor seat and a compliance officer are refused before any vendor read
+ *   6  initiateVendorPayout — an agent and a compliance officer are refused before any vendor read; the vendor's OWN seat is
+ *      admitted for its own vendor only; the amount is the vendor's available earnings, each paid once; a refused transfer
+ *      and a reversed payout give the earnings back (owner task, wave 155: bound to the vendor seat and earnings)
  *      (TENANT_COMMERCE_ADMIN_USER_TYPES); transfer seam 0. POSITIVE: a broker records a manual payout.
  *   7  services-config stage rules (compliance_rules — a platform catalogue) — a tenant broker and no session refused with 0
  *      writes; a delete that matched nothing is not a success. POSITIVE: platform superadmin creates and deletes.
@@ -79,7 +81,7 @@ const STUB_BY_SPEC: Record<string, string> = {
   "@/lib/external": "export class BatchDataClient { async getMotivatedSellerData() { globalThis.__S1.calls.batchdata++; return [] } }",
   "@/lib/lead-pipeline/social-sourcer": "export const sourceGoogle = async () => { globalThis.__S1.calls.google++; return { cost: 0, records: [] } }",
   "@/lib/providers/payment": [
-    "export const createTransfer = async () => { globalThis.__S1.calls.transfer++; return { success: true, transferId: 'tr_seam' } }",
+    "export const createTransfer = async (a) => { globalThis.__S1.calls.transfer++; globalThis.__S1.lastTransfer = a; return globalThis.__S1.transferFails ? { success: false, error: 'the transfer seam refused' } : { success: true, transferId: 'tr_seam' } }",
     "export const createCheckoutSession = async () => ({ success: false }); export const retrieveCheckoutSession = async () => ({ success: false })",
   ].join("\n"),
   "@/lib/stripe": "export const stripe = new Proxy({}, { get() { throw new Error('stripe is a seam in this proof — never called') } })",
@@ -181,6 +183,7 @@ function fresh(extra: Record<string, Row[]> = {}, who: string | null = null) {
   G.__S1.svc = world(extra)
   G.__S1.reads = []
   for (const k of Object.keys(G.__S1.calls)) G.__S1.calls[k] = 0
+  G.__S1.transferFails = false; G.__S1.lastTransfer = null
   signIn(who)
 }
 const svc = () => G.__S1.svc as MemClient
@@ -375,18 +378,103 @@ async function main() {
   })
 
   // ══ 6 ══
-  section("6 · initiateVendorPayout — who may obligate the brokerage to pay is TENANT_COMMERCE_ADMIN_USER_TYPES")
+  section("6 · initiateVendorPayout — the vendor's own seat or a commerce admin asks; the amount is the vendor's AVAILABLE earnings, each paid once")
   await guarded("6", async () => {
     const vp = await import("../app/actions/vendor-payments")
-    const ex = () => ({ vendors: [{ id: V_A, brokerage_id: BRK_A }], vendor_payouts: [], vendor_earnings: [], vendor_w9: [], vendor_tax_documents: [] })
-    for (const [who, label] of [[U_AGENT_A, "an agent"], [U_VENDOR_A, "the vendor seat itself"], [U_COMPLIANCE_A, "a compliance officer (reads the books, never keeps them)"]] as const) {
+    const { releaseEarningsOfFailedPayout } = await import("../lib/vendors/vendor-payout-events")
+    const V_A2 = "a0000000-0000-4000-8000-000000000202"
+    const E1 = "a0000000-0000-4000-8000-000000000211", E2 = "a0000000-0000-4000-8000-000000000212", E_PENDING = "a0000000-0000-4000-8000-000000000213", E_OTHER = "a0000000-0000-4000-8000-000000000214"
+    const P_FAILED = "a0000000-0000-4000-8000-000000000221", P_LIVE = "a0000000-0000-4000-8000-000000000222"
+    const ex = (over: Record<string, Row[]> = {}) => ({
+      vendors: [{ id: V_A, brokerage_id: BRK_A }, { id: V_A2, brokerage_id: BRK_A }],
+      user_role_assignments: [{ user_id: U_VENDOR_A, vendor_id: V_A, brokerage_id: BRK_A, role: "vendor" }],
+      vendor_earnings: [
+        { id: E1, vendor_id: V_A, brokerage_id: BRK_A, net_amount: 1500, gross_amount: 1500, status: "available" },
+        { id: E2, vendor_id: V_A, brokerage_id: BRK_A, net_amount: 1000, gross_amount: 1000, status: "available" },
+        { id: E_PENDING, vendor_id: V_A, brokerage_id: BRK_A, net_amount: 700, gross_amount: 700, status: "pending" },
+        { id: E_OTHER, vendor_id: V_A2, brokerage_id: BRK_A, net_amount: 900, gross_amount: 900, status: "available" },
+      ],
+      vendor_payouts: [], vendor_w9: [], vendor_tax_documents: [],
+      platform_credentials: [{ id: "a0000000-0000-4000-8000-000000000231", owner_type: "vendor", owner_id: V_A, platform: "stripe", account_id: "acct_seam", config: { stripe_onboarding_complete: true } }],
+      ...over,
+    })
+    const earning = (id: string) => (svc().tables.vendor_earnings ?? []).find((r: Row) => r.id === id)?.status
+    const payouts = (): Row[] => svc().tables.vendor_payouts ?? []
+    const untouched = () => earning(E1) === "available" && earning(E2) === "available" && earning(E_PENDING) === "pending" && earning(E_OTHER) === "available" && payouts().length === 0 && G.__S1.calls.transfer === 0
+
+    // WHO
+    for (const [who, label] of [[U_AGENT_A, "an agent"], [U_COMPLIANCE_A, "a compliance officer (reads the books, never keeps them)"]] as const) {
       fresh(ex(), who)
       const r = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 2500, method: "manual" }))
-      ok(`NEGATIVE · ${label}: refused BEFORE any vendor read; 0 payout rows; the transfer seam 0 calls`, r.success === false && !G.__S1.reads.includes("vendors") && writesTo("vendor_payouts", "insert") === 0 && G.__S1.calls.transfer === 0, JSON.stringify(r))
+      ok(`NEGATIVE · ${label}: refused BEFORE any vendor read; nothing claimed, 0 payout rows, the transfer seam 0 calls`, r.success === false && !G.__S1.reads.includes("vendors") && untouched(), JSON.stringify(r))
     }
-    fresh(ex(), U_BROKER_A)
+    fresh(ex(), U_VENDOR_A)
+    const o1 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A2, amount: 900, method: "manual" }))
+    ok("NEGATIVE · a vendor seat asking for ANOTHER vendor's earnings (no grant for that vendor): refused; nothing claimed", o1.success === false && !G.__S1.reads.includes("vendors") && untouched(), JSON.stringify(o1))
+    fresh(ex({ user_role_assignments: [{ user_id: U_VENDOR_A, vendor_id: V_A, brokerage_id: BRK_B, role: "vendor" }] }), U_VENDOR_A)
+    const o2 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 2500, method: "manual" }))
+    ok("NEGATIVE · a vendor grant that belongs to ANOTHER tenant does not admit the seat here: refused; nothing claimed", o2.success === false && untouched(), JSON.stringify(o2))
+
+    // THE AMOUNT IS THE AVAILABLE EARNINGS — never the caller's number
+    fresh(ex(), U_VENDOR_A)
+    const m1 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 9999, method: "manual" }))
+    ok("NEGATIVE · the vendor's own seat asking for MORE than its available earnings (9,999 vs 2,500): refused; nothing claimed", m1.success === false && /must equal the available earnings/.test(String(m1.error)) && untouched(), JSON.stringify(m1))
+    fresh(ex(), U_VENDOR_A)
+    const m2 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 2400, earningIds: [E1, E_OTHER], method: "manual" }))
+    ok("NEGATIVE · naming ANOTHER vendor's earning id: refused; nothing claimed", m2.success === false && untouched(), JSON.stringify(m2))
+    fresh(ex(), U_VENDOR_A)
+    const m3 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 2200, earningIds: [E1, E_PENDING], method: "manual" }))
+    ok("NEGATIVE · naming an earning that is not yet available (pending): refused; nothing claimed", m3.success === false && untouched(), JSON.stringify(m3))
+
+    // THE VENDOR'S OWN SEAT IS ADMITTED — and each earning is paid once
+    fresh(ex(), U_VENDOR_A)
     const p1 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 2500, method: "manual" }))
-    ok("POSITIVE · a broker (commerce admin) records a manual payout to its own vendor", p1.success === true && writesTo("vendor_payouts", "insert") === 1, JSON.stringify(p1))
+    const row1 = payouts()[0]
+    ok("POSITIVE · the vendor's own seat requests its available earnings: ONE payout row for 2,500 carrying both earnings, 'pending'; both earnings read paid out; the others untouched; no transfer for a manual request",
+      p1.success === true && payouts().length === 1 && Number(row1?.amount) === 2500 && row1?.status === "pending" && row1?.brokerage_id === BRK_A && JSON.stringify([...(row1?.earnings_ids ?? [])].sort()) === JSON.stringify([E1, E2])
+      && earning(E1) === "paid_out" && earning(E2) === "paid_out" && earning(E_PENDING) === "pending" && earning(E_OTHER) === "available" && G.__S1.calls.transfer === 0, `${JSON.stringify(p1)} ${JSON.stringify(row1)}`)
+    const p1again = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 2500, method: "manual" }))
+    ok("NEGATIVE · THE SAME REQUEST AGAIN (the double-pay shape: the button used to pay the same balance every click): refused — nothing is left to claim; still ONE payout row",
+      p1again.success === false && /no available earnings/i.test(String(p1again.error)) && payouts().length === 1, JSON.stringify(p1again))
+
+    // STRIPE: the transfer carries the BOUND amount; a refused transfer gives the earnings back
+    fresh(ex(), U_VENDOR_A)
+    const s1 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 1500, earningIds: [E1], method: "stripe" }))
+    const rowS = payouts()[0]
+    ok("POSITIVE · Stripe, one selected earning: the transfer seam is called ONCE for 1,500 (the earning's amount), the payout row reads 'processing' with the transfer id, the earning reads paid out, the other stays available",
+      s1.success === true && G.__S1.calls.transfer === 1 && Number(G.__S1.lastTransfer?.amount) === 1500 && rowS?.status === "processing" && rowS?.stripe_transfer_id === "tr_seam" && earning(E1) === "paid_out" && earning(E2) === "available", `${JSON.stringify(s1)} ${JSON.stringify(rowS)}`)
+    ok("…and the transfer left ONE decision record on the payout sink", ledger("vendor.payout.transfer").length === 1 && ledger("vendor.payout.transfer")[0].brokerage_id === BRK_A, JSON.stringify(ledger("vendor.payout.transfer").map((r: Row) => r.status)))
+    fresh(ex(), U_VENDOR_A)
+    G.__S1.transferFails = true
+    const s2 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 2500, method: "stripe" }))
+    ok("NEGATIVE · the transfer is refused: the call fails, the payout row reads 'failed' (never a pending payout nobody will make), and BOTH earnings are available again",
+      s2.success === false && G.__S1.calls.transfer === 1 && payouts().length === 1 && payouts()[0].status === "failed" && earning(E1) === "available" && earning(E2) === "available" && !s2.earningsWarning, `${JSON.stringify(s2)} ${JSON.stringify(payouts()[0])}`)
+    fresh(ex({ platform_credentials: [] }), U_VENDOR_A)
+    const s3 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 2500, method: "stripe" }))
+    ok("NEGATIVE · Stripe not set up: refused BEFORE anything is claimed", s3.success === false && untouched(), JSON.stringify(s3))
+
+    // A COMMERCE ADMIN IS BOUND TO THE SAME RULE
+    fresh(ex(), U_BROKER_A)
+    const b0 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 100, method: "manual" }))
+    ok("NEGATIVE · a broker (commerce admin) naming an amount that is not the available earnings: refused; nothing claimed", b0.success === false && untouched(), JSON.stringify(b0))
+    fresh(ex(), U_BROKER_A)
+    const b1 = await quiet(() => vp.initiateVendorPayout({ vendorId: V_A, amount: 2500, method: "manual" }))
+    ok("POSITIVE · a broker (commerce admin) records a manual payout of the vendor's available earnings", b1.success === true && writesTo("vendor_payouts", "insert") === 1 && earning(E1) === "paid_out" && earning(E2) === "paid_out", JSON.stringify(b1))
+
+    // THE RELEASE RULE (a reversed payout gives its earnings back — never one a later live payout carries)
+    const paidOut = (): Row[] => [
+      { id: E1, vendor_id: V_A, brokerage_id: BRK_A, net_amount: 1500, status: "paid_out" },
+      { id: E2, vendor_id: V_A, brokerage_id: BRK_A, net_amount: 1000, status: "paid_out" },
+    ]
+    fresh(ex({ vendor_earnings: paidOut(), vendor_payouts: [{ id: P_FAILED, vendor_id: V_A, brokerage_id: BRK_A, status: "failed", earnings_ids: [E1, E2] }] }), null)
+    const r1 = await releaseEarningsOfFailedPayout(svc(), P_FAILED)
+    const r1b = await releaseEarningsOfFailedPayout(svc(), P_FAILED)
+    ok("RELEASE · a failed payout gives both earnings back; running it again releases nothing more", r1.ok && r1.released === 2 && earning(E1) === "available" && earning(E2) === "available" && r1b.ok && r1b.released === 0, `${JSON.stringify(r1)} ${JSON.stringify(r1b)}`)
+    fresh(ex({ vendor_earnings: paidOut(), vendor_payouts: [{ id: P_FAILED, vendor_id: V_A, brokerage_id: BRK_A, status: "failed", earnings_ids: [E1, E2] }, { id: P_LIVE, vendor_id: V_A, brokerage_id: BRK_A, status: "processing", earnings_ids: [E2] }] }), null)
+    const r2 = await releaseEarningsOfFailedPayout(svc(), P_FAILED)
+    ok("RELEASE · NEGATIVE · an earning a LATER live payout carries is not released (a late redelivery cannot free money in flight)", r2.ok && r2.released === 1 && r2.heldByLivePayout === 1 && earning(E1) === "available" && earning(E2) === "paid_out", JSON.stringify(r2))
+    const r3 = await releaseEarningsOfFailedPayout(svc(), P_LIVE)
+    ok("RELEASE · NEGATIVE · a payout that is not failed or cancelled releases nothing", r3.ok === false && earning(E2) === "paid_out", JSON.stringify(r3))
   })
 
   // ══ 7 ══

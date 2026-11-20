@@ -74,16 +74,17 @@ const ROWS: Record<string, string[]> = {
   "app/actions/voice-assistant.ts": ["endVoiceSession", "getVoiceConfig", "startVoiceSession", "updateVoiceConfig"],
   "app/actions/admin/locations.ts": ["createLocationAction", "deleteLocationAction", "updateLocationAction"],
 }
-/** Rows deliberately NOT wrapped — each with the evidence-backed reason (re-classification proposals for the integrator). */
+/** Rows deliberately NOT wrapped — each with the evidence-backed reason (re-classification proposals for the integrator).
+ *  FOUR ROWS LEFT THIS LIST (wave 155, lane 155R15 — held as wrapped rows in scripts/ledger-receipts-late-guard.ts, and as wrapped
+ *  rows here now): the three carrier lookups (searchBrokerageNumbersAction, checkPortabilityAction, searchNumbersForTenant — a
+ *  lookup can provision a carrier subaccount, so it is receipted) and the platform-staff subscriptions route (receipted against the
+ *  brokerage it changes, after the staff gate). Their entries here asserted "does not reach the helper" — true only until the
+ *  work finished (CLAUDE.md §2: an assertion pinned to a waypoint). */
 const OPEN: Record<string, string> = {
   "app/actions/connections/connection-center.ts#getConnectionCenter": "READ-ONLY: only selects (isProviderConnected reads platform_credentials / agent_api_credentials / social_media_accounts)",
   "app/actions/calculators.ts#calculateAffordability": "TELEMETRY: pure math; its only write is trackToolUsage (calculator usage analytics), callable anonymously",
   "app/actions/calculators.ts#calculateRentVsBuy": "TELEMETRY: pure math; its only write is trackToolUsage (calculator usage analytics), callable anonymously",
-  "app/actions/phone-provisioning.ts#searchBrokerageNumbersAction": "READ-ONLY: asks the carrier what is purchasable (searchAvailableNumbers writes no row)",
-  "app/actions/phone-port-in.ts#checkPortabilityAction": "READ-ONLY: portability lookup (checkNumbersPortable writes no row)",
-  "app/actions/superadmin/number-provisioning.ts#searchNumbersForTenant": "READ-ONLY + platform staff: carrier inventory for a staff-chosen tenant, no row written",
   "app/actions/superadmin/subscription-contracts.ts#listSubscriptionContractTemplatesAction": "READ-ONLY + platform staff: lists templates and signature counts",
-  "app/api/admin/billing/subscriptions/[brokerageId]/route.ts#POST": "NO TENANT TO RECORD AGAINST: a superadmin (platform_role) acting on a route-param tenant has no session tenant — never invented",
   "app/actions/voice-assistant.ts#getVoiceConfig": "READ with a lazy default-row insert on first view — a receipt per settings view is not a user decision",
   "app/actions/ai-predictions.ts#batchPredictLeadConversions": "FAN-OUT: no write of its own; each lead runs through predictLeadConversion, which leaves the receipt",
   "app/actions/ai-predictions.ts#refreshStalePredictions": "FAN-OUT: no write of its own; re-runs predictLeadConversion per stale lead, which leaves the receipt",
@@ -176,9 +177,32 @@ const R: { db: MemClient; fail: boolean; calls: Record<string, number> } = { db:
 const count = (k: string) => { R.calls[k] = (R.calls[k] ?? 0) + 1 }
 const acting = () => ({ ok: true, userId: U, actorUserId: U, agentId: A, brokerageId: B, userType: "broker", isImpersonating: false, impersonatorUserId: null, readOnly: false, db: R.db })
 const agentCtx = () => ({ isAuthenticated: true, userId: U, brokerageId: B, agentId: A, userType: "broker", role: "broker" })
+function realDecideClaimedTenant(input: { actingBrokerageId: string | null | undefined; claimedBrokerageId?: string | null }) {
+  const actingTenant = input.actingBrokerageId
+  if (!actingTenant) return { ok: false as const, reason: "no_session_tenant" as const }
+  if (input.claimedBrokerageId && input.claimedBrokerageId !== actingTenant) return { ok: false as const, reason: "tenant_mismatch" as const }
+  return { ok: true as const, brokerageId: actingTenant }
+}
+/** The session's own agents.id is A; any other target must be an agents row of the session tenant, and the seat a roster seat. */
+async function realAuthorizeForAgent(targetAgentId?: string | null) {
+  const s = agentCtx()
+  const target = targetAgentId || s.agentId
+  if (!target) return { ok: false as const, error: "No agent profile for this user yet — finish account setup." }
+  const base = { userId: s.userId, brokerageId: s.brokerageId, userType: s.userType }
+  if (target === s.agentId) return { ok: true as const, agentId: target, isSelf: true, ...base }
+  if (!["broker", "broker_admin", "broker_owner", "team_lead", "admin", "compliance_officer"].includes(s.userType)) return { ok: false as const, error: "Forbidden: that agent is not you" }
+  const { data: row, error } = await R.db.from("agents").select("id").eq("id", target).eq("brokerage_id", s.brokerageId).maybeSingle()
+  if (error) return { ok: false as const, error: "Could not verify that agent" }
+  if (!row) return { ok: false as const, error: "Forbidden: that agent is not in your brokerage" }
+  return { ok: true as const, agentId: target, isSelf: false, ...base }
+}
 /** Stubs shared by every module that imports the specifier (the session is ALWAYS the session's — never a body). */
 const COMMON: Record<string, Record<string, unknown>> = {
-  "@/lib/platform/acting-context": { resolveWriteContext: async () => acting(), resolveWriteContextForTenant: async () => acting(), resolveActingContext: async () => acting(), READ_ONLY_ACTING_ERROR: "read only", decideClaimedTenant: () => ({ ok: true, brokerageId: B }) },
+  "@/lib/platform/acting-context": { resolveWriteContext: async () => acting(), resolveWriteContextForTenant: async () => acting(), resolveActingContext: async () => acting(), READ_ONLY_ACTING_ERROR: "read only", decideClaimedTenant: realDecideClaimedTenant },
+  // THE REAL RULES, not always-yes stubs (a stub of a decision function that answers "ok" makes a negative pass for the wrong
+  // reason). Both mirror their source line for line: lib/platform/acting-context.ts decideClaimedTenant, and
+  // lib/auth/require-caller.ts authorizeForAgent (own agent, or a roster seat naming an agent of the SESSION's tenant).
+  "@/lib/auth/require-caller": { authorizeForAgent: async (target?: string | null) => realAuthorizeForAgent(target) },
   "@/lib/identity": { getAgentContext: async () => agentCtx() },
   "@/lib/identity/get-agent-context": { getAgentContext: async () => agentCtx() },
   "@/lib/kernel/portal-auth": { requireVendorActor: async (v: string) => ({ userId: U, vendorId: v, brokerageId: B }) },
@@ -247,7 +271,8 @@ const CASES: ModuleCase[] = [
   { file: "app/actions/voice-tenancy.ts", fn: "setTwilioByoCredsAction", args: () => [{ accountSid: `AC${"a".repeat(32)}`, authToken: "t".repeat(32) }], action: "platform.carrier_credential.set", subject: ["provider_credential", null], risk: "LOW_RISK_WRITE",
     seed: () => ({ brokerages: [{ id: B, plan_tier: "multi_location" }], platform_credentials: [] }), refuse: "platform_credentials" },
   { file: "app/actions/ai-predictions.ts", fn: "toggleAutoPilot", args: () => [X, true], action: "prediction.autopilot_plan.toggle", subject: ["ai_autopilot_plan", X], risk: "LOW_RISK_WRITE",
-    seed: () => ({ ai_autopilot_plans: [{ id: X, is_active: true }] }), refuse: "ai_autopilot_plans" },
+    // The toggle now reads the session's tenant and carries it on the update (wave 155, lane 155S2): the fixture row is the tenant's.
+    seed: () => ({ ai_autopilot_plans: [{ id: X, is_active: true, brokerage_id: B, agent_id: A }] }), refuse: "ai_autopilot_plans" },
   { file: "app/actions/services-config.ts", fn: "togglePlaybook", args: () => [X, false], action: "services.playbook.toggle", subject: ["plan_task", X], risk: "LOW_RISK_WRITE", throws: true,
     seed: () => ({ plan_tasks: [{ id: X, brokerage_id: B, active: true }] }), refuse: "plan_tasks" },
   { file: "app/actions/onboarding/brand.ts", fn: "saveBrandColors", args: () => [{ primaryColor: "#112233", secondaryColor: "#445566" }], action: "brand.colors.update", subject: ["brokerage", B], risk: "LOW_RISK_WRITE",

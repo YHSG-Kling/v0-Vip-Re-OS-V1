@@ -3,7 +3,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
-import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
+import { decideClaimedTenant, resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { requireVendorActor } from "@/lib/kernel/portal-auth"
 import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 // ── WHICH STRIPE ACCOUNT THIS FILE USES, AND WHY IT IS TWO IMPORTS ──────────
@@ -577,16 +577,28 @@ export async function initiateVendorPayout(params: {
     return { success: false, error: "Unauthorized" }
   }
 
-  // WAVE 155 (lane 155S1, P0) — WHO MAY OBLIGATE THE BROKERAGE TO PAY IS ALREADY RULED (CLAUDE.md §4):
-  // TENANT_COMMERCE_ADMIN_USER_TYPES (lib/auth/resolve-user-role.ts isTenantCommerceAdmin — the operational admin roster
-  // minus compliance_officer, derived, never retyped). This export had no role test at all: ANY seat of the tenant —
-  // an agent, a contact, the vendor seat itself — could move the brokerage's money to any of its vendors. Checked FIRST,
-  // before any vendor, W-9 or Stripe read, so a refused seat reaches nothing. Under an act-as grant the EFFECTIVE identity
-  // is judged (the grant never exceeds the account it walks, §5).
-  // NOT CHANGED HERE (owner question — $S/lane155S1-notes.md): binding `amount` to the vendor's available earnings; the
-  // amount is still the caller's number.
-  if (!isTenantCommerceAdmin({ user_type: ctx.userType })) {
-    return { success: false, error: "Only a brokerage admin who may commit the brokerage's money can release a vendor payout." }
+  // ── WHO MAY ASK (owner task, wave 155: "bind vendor payout to the vendor seat and earnings") ─────────────────────────
+  // Two seats, and nobody else:
+  //   · a TENANT COMMERCE ADMIN (CLAUDE.md §4 — TENANT_COMMERCE_ADMIN_USER_TYPES, lib/auth/resolve-user-role.ts: may
+  //     obligate the brokerage to pay; the operational roster minus compliance_officer, derived, never retyped). Under an
+  //     act-as grant the EFFECTIVE identity is judged (the grant never exceeds the account it walks, §5);
+  //   · THE VENDOR'S OWN SEAT — the session user holds a role row for THIS vendor (requireVendorActor: the one vendor
+  //     gate) and that grant is in the session's tenant (decideClaimedTenant — never a hand-written comparison).
+  // Lane 155S1 closed the first hole (any seat of the tenant could move the brokerage's money) by admitting admins only,
+  // which also refused the vendor's own "Request payout" button. The vendor is admitted again — for its OWN vendor only —
+  // because what a payout may cover is now bound below: it is never a number the caller sends.
+  // Checked FIRST, before any vendor, W-9, earnings or Stripe read, so a refused seat reaches nothing.
+  let requester: "commerce_admin" | "vendor_seat" | null = isTenantCommerceAdmin({ user_type: ctx.userType }) ? "commerce_admin" : null
+  if (!requester) {
+    try {
+      const self = await requireVendorActor(params.vendorId)
+      if (decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: self.brokerageId }).ok) requester = "vendor_seat"
+    } catch {
+      requester = null // not this vendor's seat (or the grant could not be verified) — fail closed
+    }
+  }
+  if (!requester) {
+    return { success: false, error: "Only this vendor's own account, or a brokerage admin who may commit the brokerage's money, can request this payout." }
   }
 
   // CRITICAL: caller-supplied vendorId fed straight into stripe.transfers
@@ -612,36 +624,60 @@ export async function initiateVendorPayout(params: {
     w9Warning = w9SoftGateWarning(w9.status) ?? undefined
   } catch { /* soft gate stays silent on read failure */ }
 
-  // Verify caller-supplied earningIds also belong to caller's brokerage —
-  // otherwise an attacker could "settle" another tenant's earnings rows
-  // through this payout.
-  if (params.earningIds?.length) {
-    const { data: earningsRows } = await svc
-      .from("vendor_earnings")
-      .select("id, brokerage_id, vendor_id")
-      .in("id", params.earningIds)
-    const allOk =
-      !!earningsRows &&
-      earningsRows.length === params.earningIds.length &&
-      earningsRows.every(
-        (e) => e.brokerage_id === ctx.brokerageId && e.vendor_id === params.vendorId,
-      )
-    if (!allOk) {
-      return { success: false, error: "Forbidden: earnings not in your brokerage / vendor" }
-    }
+  // Stripe: the Connect account is read BEFORE anything is claimed, so "not set up" changes nothing.
+  // Vendor Connect account on the unified owner model — tenant scope was
+  // already enforced by verifyVendorInCallerBrokerage above.
+  const connect = method === "stripe" ? await readVendorStripeConnect(svc, params.vendorId) : null
+  if (method === "stripe" && (!connect?.accountId || !connect.onboardingComplete)) {
+    return { success: false, error: "Vendor Stripe account not set up", w9Warning }
   }
 
-  let stripeTransferId: string | undefined
+  // ── WHAT A PAYOUT MAY COVER: THE VENDOR'S AVAILABLE EARNINGS, EACH ONCE ─────────────────────────────────────────────
+  // The amount used to be the caller's number, and the vendor button sent no earningIds — so nothing was ever marked
+  // paid out and the same "available" balance could be requested again and again. claimAvailableEarnings reads this
+  // vendor's 'available' earnings in THIS brokerage (the selected ones when earningIds are given), refuses an amount that
+  // is not their sum, and CLAIMS them ('available' → 'paid_out', counted). A second request finds nothing left to claim.
+  const bound = await claimAvailableEarnings(svc, { vendorId: params.vendorId, brokerageId: ctx.brokerageId, earningIds: params.earningIds, requestedAmount: params.amount })
+  if (!bound.ok) return { success: false, error: bound.error, w9Warning }
 
-  if (method === "stripe") {
-    // Vendor Connect account on the unified owner model — tenant scope was
-    // already enforced by verifyVendorInCallerBrokerage above.
-    const connect = await readVendorStripeConnect(svc, params.vendorId)
+  // The payout row is written BEFORE the transfer (status 'pending'): every claim has an owning record while its money is
+  // in flight, and a crash between here and the transfer leaves a visible pending payout — not earnings that silently
+  // read "paid out". (It used to be written after the transfer, so a failed insert left money moved with no record.)
+  const { data: payout, error } = await svc
+    .from("vendor_payouts")
+    .insert({
+      vendor_id: params.vendorId,
+      brokerage_id: ctx.brokerageId,
+      amount: bound.amount,
+      payout_method: method,
+      // `stripe_transfer_id` IS NOT WRITE-ONLY — its reader is the webhook
+      // matcher at lib/vendors/vendor-payout-events.ts:130, which finds this
+      // row by `.eq(mapping.column, …)` where `mapping.column` comes from
+      // VENDOR_PAYOUT_COMPLETION_EVENTS (:77-78). Because the column name is a
+      // VARIABLE, no static scanner can resolve the term — the opposite-missing
+      // census counts it under "unresolvable filter terms" and reports the
+      // column as read by nobody. It is the id transfer.created / transfer.reversed
+      // arrive quoting, so deleting it would strand every Stripe payout in
+      // 'processing' forever. Nothing to build and nothing to delete (§1).
+      // Set by the update below once the transfer exists.
+      stripe_transfer_id: null,
+      cash_app_reference: params.cashAppReference ?? null,
+      status: "pending",
+      earnings_ids: bound.ids,
+      note: params.note ?? null,
+    })
+    .select("id")
+    .single()
 
-    if (!connect.accountId || !connect.onboardingComplete) {
-      return { success: false, error: "Vendor Stripe account not set up" }
-    }
+  if (error || !payout) {
+    // Nothing moved. Give the claim back, and say so if that could not be done.
+    const undo = await releaseClaimedEarnings(svc, { vendorId: params.vendorId, brokerageId: ctx.brokerageId, ids: bound.ids })
+    return { success: false, error: error?.message ?? "The payout could not be recorded — nothing was paid.", w9Warning, earningsWarning: undo.warning }
+  }
 
+  let earningsWarning: string | undefined
+
+  if (method === "stripe" && connect) {
     // ── THE BROKERAGE'S MONEY LEAVES THE BROKERAGE'S ACCOUNT ─────────────────
     //
     // `vendor_job_bill` (lib/billing/stripe-account-scope.ts): the payer is the
@@ -664,80 +700,62 @@ export async function initiateVendorPayout(params: {
     // not apply), so it writes its OWN decision record: the transfer runs inside ledgerToolCall (session human → authorized_human;
     // claim → transfer → settle on ONE row, its detail.governance naming the gates above). Secrets never enter the detail.
     const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
-    const gates = ["resolveWriteContextForTenant (session tenant)", "isTenantCommerceAdmin (TENANT_COMMERCE_ADMIN_USER_TYPES)", "verifyVendorInCallerBrokerage", "earnings in brokerage + vendor", "Stripe Connect onboarding complete"]
+    const gates = ["resolveWriteContextForTenant (session tenant)", requester === "vendor_seat" ? "the vendor's own seat (requireVendorActor + decideClaimedTenant)" : "isTenantCommerceAdmin (TENANT_COMMERCE_ADMIN_USER_TYPES)", "verifyVendorInCallerBrokerage", "amount = the vendor's AVAILABLE earnings, claimed once (available → paid_out)", "payout row written before the transfer", "Stripe Connect onboarding complete"]
     const transfer = (await ledgerToolCall({
       brokerageId: ctx.brokerageId, action: "vendor.payout.transfer", channel: "payout_sink", actor: { type: "user", userId: ctx.actorUserId },
       subject: { type: "vendor", id: params.vendorId }, riskClass: "IRREVERSIBLE", systemSource: "vendor_payout", reasonCode: "HUMAN_REQUESTED",
-      trustClass: "authorized_human", approvalBasis: "policy_permitted", dependencies: [{ type: "vendor", id: params.vendorId, version: null }, ...(params.earningIds ?? []).slice(0, 20).map((id) => ({ type: "vendor_earning", id, version: null }))],
-      detail: { amount: params.amount, earnings: params.earningIds?.length ?? 0, governance: governanceRecord({
+      trustClass: "authorized_human", approvalBasis: "policy_permitted", dependencies: [{ type: "vendor", id: params.vendorId, version: null }, { type: "vendor_payout", id: payout.id, version: null }, ...bound.ids.slice(0, 20).map((id) => ({ type: "vendor_earning", id, version: null }))],
+      detail: { amount: bound.amount, earnings: bound.ids.length, requested_by: requester, payout_id: payout.id, governance: governanceRecord({
         plane: "tool_boundary", verdict: "allow", scope: { brokerageId: ctx.brokerageId, userId: ctx.actorUserId }, actor: { type: "user", id: ctx.actorUserId },
         entity: { type: "vendor", id: params.vendorId, version: null }, objective: "vendor.payout.transfer", policyConstraints: ["sink rule (D 152): irreversible payout — second door", ...gates],
         rationale: "a vendor payout from the brokerage's own Stripe account", trustClass: "authorized_human", approvalBasis: "policy_permitted",
       }) },
     }, () => createTransfer(
       {
-        amount: params.amount,
+        amount: bound.amount,
         destinationAccountId: connect.accountId!,
         description: `Vendor payout — ${params.vendorId}`,
-        metadata: { vendorId: params.vendorId, brokerageId: ctx.brokerageId },
+        metadata: { vendorId: params.vendorId, brokerageId: ctx.brokerageId, payoutId: payout.id },
       },
       { side: "tenant", brokerageId: ctx.brokerageId },
     ))) as Awaited<ReturnType<typeof createTransfer>>
     if (!transfer.success || !transfer.transferId) {
-      // No payout row is written. A `vendor_payouts` row with no transfer would
-      // read as a pending payout nobody is going to make, and the earnings it
-      // covers would be marked paid_out against money that never moved.
-      return { success: false, error: transfer.error ?? "The payout could not be sent.", w9Warning }
+      // The transfer was refused and no money moved. The payout row says so ('failed' — an honest record of the attempt,
+      // never a pending payout nobody is going to make) and its earnings go back to 'available' through the ONE release
+      // rule (lib/vendors/vendor-payout-events.ts), the same one a later reversal uses.
+      const { data: marked, error: markErr } = await svc
+        .from("vendor_payouts")
+        .update({ status: "failed" })
+        .eq("id", payout.id)
+        .eq("brokerage_id", ctx.brokerageId)
+        .select("id")
+      if (markErr || (marked ?? []).length !== 1) {
+        earningsWarning = `Payout ${payout.id} did not send, but its record could not be marked failed (${markErr?.message ?? "no row matched"}) — its earnings stay reserved until that is corrected.`
+      } else {
+        const { releaseEarningsOfFailedPayout } = await import("@/lib/vendors/vendor-payout-events")
+        const release = await releaseEarningsOfFailedPayout(svc, payout.id)
+        if (!release.ok || release.released !== bound.ids.length) {
+          earningsWarning = `Payout ${payout.id} did not send, but only ${release.released} of ${bound.ids.length} earnings were made available again${release.error ? ` (${release.error})` : ""}.`
+        }
+      }
+      if (earningsWarning) console.error(`[initiateVendorPayout] ${earningsWarning}`)
+      return { success: false, error: transfer.error ?? "The payout could not be sent.", w9Warning, earningsWarning }
     }
-    stripeTransferId = transfer.transferId
-  }
 
-  const { data: payout, error } = await svc
-    .from("vendor_payouts")
-    .insert({
-      vendor_id: params.vendorId,
-      brokerage_id: ctx.brokerageId,
-      amount: params.amount,
-      payout_method: method,
-      // `stripe_transfer_id` IS NOT WRITE-ONLY — its reader is the webhook
-      // matcher at lib/vendors/vendor-payout-events.ts:130, which finds this
-      // row by `.eq(mapping.column, …)` where `mapping.column` comes from
-      // VENDOR_PAYOUT_COMPLETION_EVENTS (:77-78). Because the column name is a
-      // VARIABLE, no static scanner can resolve the term — the opposite-missing
-      // census counts it under "unresolvable filter terms" and reports the
-      // column as read by nobody. It is the id transfer.created / transfer.reversed
-      // arrive quoting, so deleting it would strand every Stripe payout in
-      // 'processing' forever. Nothing to build and nothing to delete (§1).
-      stripe_transfer_id: stripeTransferId ?? null,
-      cash_app_reference: params.cashAppReference ?? null,
-      status: stripeTransferId ? "processing" : "pending",
-      earnings_ids: params.earningIds ?? [],
-      note: params.note ?? null,
-    })
-    .select("id")
-    .single()
-
-  if (error || !payout) return { success: false, error: error?.message ?? "Failed" }
-
-  // Mark covered earnings as paid_out — scoped
-  // A refused (or partially matched) stamp leaves earnings the payout just covered
-  // still reading 'pending' — the next payout run offers them again (a double pay).
-  // The payout row exists, so report it, but never as a clean success.
-  let earningsWarning: string | undefined
-  if (params.earningIds?.length) {
-    const { data: stamped, error: stampErr } = await svc
-      .from("vendor_earnings")
-      .update({ status: "paid_out" })
-      .in("id", params.earningIds)
+    // The money moved. The row now carries the transfer id the provider's completion event will quote, and reads
+    // 'processing' until that event closes it (the writer never marks a payout paid itself).
+    const { data: sent, error: sentErr } = await svc
+      .from("vendor_payouts")
+      .update({ stripe_transfer_id: transfer.transferId, status: "processing" })
+      .eq("id", payout.id)
       .eq("brokerage_id", ctx.brokerageId)
-      .eq("vendor_id", params.vendorId)
       .select("id")
-    if (stampErr) {
-      earningsWarning = `Payout ${payout.id} recorded, but its earnings were NOT marked paid out (${stampErr.message}) — they may be offered for payout again.`
-    } else if ((stamped ?? []).length !== params.earningIds.length) {
-      earningsWarning = `Payout ${payout.id} recorded, but only ${(stamped ?? []).length} of ${params.earningIds.length} earnings were marked paid out — the rest are not this vendor's in this brokerage, or were already gone.`
+    if (sentErr || (sent ?? []).length !== 1) {
+      // success stays true — the transfer EXISTS, and a caller retrying on success:false would be refused anyway (the
+      // earnings are claimed). The record that could not be updated rides beside it, loudly.
+      earningsWarning = `Transfer ${transfer.transferId} was sent, but payout ${payout.id} still reads pending (${sentErr?.message ?? "no row matched"}) — the provider's completion event will not find it until that is corrected.`
+      console.error(`[initiateVendorPayout] ${earningsWarning}`)
     }
-    if (earningsWarning) console.error(`[initiateVendorPayout] ${earningsWarning}`)
   }
 
   // THE CHASE: payout activity with no W-9 on file → governed b2b transactional
@@ -757,9 +775,82 @@ export async function initiateVendorPayout(params: {
     }
   }
 
-  // success stays true — the payout row EXISTS, and a caller retrying on
-  // success:false would record a second payout. The stamp failure rides beside it.
   return { success: true, payoutId: payout.id, w9Warning, earningsWarning }
+}
+
+// ── the binding's two halves (module-private: a "use server" file exports only its actions) ──────────────────────────
+
+type PayoutDb = ReturnType<typeof createServiceClient>
+
+/**
+ * Read this vendor's AVAILABLE earnings in this brokerage, refuse an amount that is not their sum, and CLAIM them.
+ * The claim is one conditional update ('available' → 'paid_out', pinned to vendor + brokerage, `.select()`ed and
+ * COUNTED — CLAUDE.md §3): two requests racing for the same earnings cannot both match them, so the loser gets fewer
+ * rows than it read, gives back what it took, and is refused. The amount returned is the sum of what was claimed.
+ */
+async function claimAvailableEarnings(
+  svc: PayoutDb,
+  a: { vendorId: string; brokerageId: string; earningIds?: string[]; requestedAmount: number },
+): Promise<{ ok: true; ids: string[]; amount: number } | { ok: false; error: string }> {
+  const wanted = a.earningIds?.length ? [...new Set(a.earningIds)] : null
+  let q = svc
+    .from("vendor_earnings")
+    .select("id, net_amount")
+    .eq("vendor_id", a.vendorId)
+    .eq("brokerage_id", a.brokerageId)
+    .eq("status", "available")
+  if (wanted) q = q.in("id", wanted)
+  const { data: availableRows, error: readErr } = await q
+  if (readErr) return { ok: false, error: "The available earnings could not be read — nothing was paid." }
+  const rows = (availableRows ?? []) as Array<{ id: string; net_amount: number | string | null }>
+  if (wanted && rows.length !== wanted.length) {
+    return { ok: false, error: "Some of the selected earnings are not available for payout — they are already paid out, on hold, or not this vendor's." }
+  }
+  const cents = rows.reduce((sum, r) => sum + Math.round(Number(r.net_amount ?? 0) * 100), 0)
+  if (rows.length === 0 || !(cents > 0)) return { ok: false, error: "There are no available earnings to pay out." }
+  const due = cents / 100
+  if (!Number.isFinite(Number(a.requestedAmount)) || Math.abs(Number(a.requestedAmount) - due) > 0.005) {
+    return { ok: false, error: `A payout must equal the available earnings (${due.toFixed(2)}). Refresh the page and try again.` }
+  }
+  const ids = rows.map((r) => r.id)
+  const { data: claimedRows, error: claimErr } = await svc
+    .from("vendor_earnings")
+    .update({ status: "paid_out" })
+    .in("id", ids)
+    .eq("vendor_id", a.vendorId)
+    .eq("brokerage_id", a.brokerageId)
+    .eq("status", "available")
+    .select("id")
+  if (claimErr) return { ok: false, error: "The available earnings could not be reserved — nothing was paid." }
+  const claimed = ((claimedRows ?? []) as Array<{ id: string }>).map((r) => r.id)
+  if (claimed.length !== ids.length) {
+    // Another request took some of them between the read and the claim. Give back what this one took.
+    const undo = await releaseClaimedEarnings(svc, { vendorId: a.vendorId, brokerageId: a.brokerageId, ids: claimed })
+    if (undo.warning) console.error(`[initiateVendorPayout] ${undo.warning}`)
+    return { ok: false, error: "These earnings were just claimed by another payout request. Refresh the page and try again." }
+  }
+  return { ok: true, ids: claimed, amount: due }
+}
+
+/** Give a claim back when NO payout row holds it yet ('paid_out' → 'available', pinned and counted). */
+async function releaseClaimedEarnings(
+  svc: PayoutDb,
+  a: { vendorId: string; brokerageId: string; ids: string[] },
+): Promise<{ released: number; warning?: string }> {
+  if (a.ids.length === 0) return { released: 0 }
+  const { data, error } = await svc
+    .from("vendor_earnings")
+    .update({ status: "available" })
+    .in("id", a.ids)
+    .eq("vendor_id", a.vendorId)
+    .eq("brokerage_id", a.brokerageId)
+    .eq("status", "paid_out")
+    .select("id")
+  const released = (data ?? []).length
+  if (error || released !== a.ids.length) {
+    return { released, warning: `Only ${released} of ${a.ids.length} reserved earnings were made available again${error ? ` (${error.message})` : ""} — the rest still read paid out with no payout behind them.` }
+  }
+  return { released }
 }
 
 // ---------------------------------------------------------------------------

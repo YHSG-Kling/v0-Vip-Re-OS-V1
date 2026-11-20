@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import {
   Sheet,
@@ -28,6 +29,7 @@ export function VendorPayoutButton({ vendorId, availableAmount, stripeReady }: P
   const [method, setMethod] = useState<"stripe" | "cash_app" | "check" | "manual">("stripe")
   const [cashAppRef, setCashAppRef] = useState("")
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const router = useRouter()
 
   async function handlePayout() {
     setLoading(true)
@@ -40,7 +42,13 @@ export function VendorPayoutButton({ vendorId, availableAmount, stripeReady }: P
         cashAppReference: method === "cash_app" ? cashAppRef : undefined,
       })
       if (res.success) {
-        setResult({ ok: true, msg: "Payout initiated! Funds will arrive within 1–3 business days." })
+        // The server decides the amount (your available earnings) and marks those earnings paid out, so the page is
+        // re-read: the balance shown must be what is left, not what was there before the click.
+        const sent = method === "stripe"
+          ? "Payout sent to your Stripe account. Funds usually arrive within 1–3 business days."
+          : "Payout requested. Your brokerage has been asked to send it by the method you chose."
+        setResult({ ok: true, msg: [sent, res.earningsWarning, res.w9Warning].filter(Boolean).join(" ") })
+        router.refresh()
       } else {
         setResult({ ok: false, msg: res.error ?? "Payout failed" })
       }

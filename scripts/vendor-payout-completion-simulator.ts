@@ -217,8 +217,18 @@ function layer3() {
     /FINDING[\s\S]{0,200}applied:\s*false/.test(route))
 
   const payments = stripComments(src("app/actions/vendor-payments.ts"))
-  check("the writer still opens payout rows at 'processing' (the provider event closes them)",
-    /status:\s*stripeTransferId\s*\?\s*"processing"\s*:\s*"pending"/.test(payments))
+  // RULE, not the expression it was once written as: the writer opens the row 'pending' BEFORE the transfer (wave 155 — the
+  // payout claims its earnings first, and a claim needs an owning record while the money is in flight), moves it to
+  // 'processing' ONLY together with the transfer id the provider's event will quote, and never writes 'paid' itself.
+  const payoutFn = payments.slice(payments.indexOf("export async function initiateVendorPayout"), payments.indexOf("async function claimAvailableEarnings"))
+  check("the writer opens the payout row 'pending' before the transfer, with the earnings it covers",
+    /\.from\("vendor_payouts"\)\s*\.insert\(\{[\s\S]{0,1600}?status:\s*"pending",\s*earnings_ids:\s*bound\.ids/.test(payoutFn) && payoutFn.indexOf('.insert({') < payoutFn.indexOf("createTransfer("))
+  check("…moves it to 'processing' only WITH the transfer id (the provider event closes it)",
+    /\.update\(\{\s*stripe_transfer_id:\s*transfer\.transferId,\s*status:\s*"processing"\s*\}\)/.test(payoutFn))
+  check("…and never marks a payout paid itself", !/status:\s*"paid"/.test(payoutFn))
+  check("POSITIVE CONTROL: the finder sees a writer that marks its own payout paid", /status:\s*"paid"/.test(`await svc.from("vendor_payouts").update({ status: "paid" }).eq("id", id)`))
+  check("a failed transfer and a reversed payout release earnings through ONE rule (releaseEarningsOfFailedPayout): the writer and the webhook route both call it",
+    /releaseEarningsOfFailedPayout\(/.test(payoutFn) && /releaseEarningsOfFailedPayout\(/.test(route))
   check("the writer does NOT set completed_at itself (completion comes from the provider)",
     !/completed_at/.test(payments.slice(payments.indexOf('.from("vendor_payouts")'), payments.indexOf('.from("vendor_payouts")') + 800)))
 

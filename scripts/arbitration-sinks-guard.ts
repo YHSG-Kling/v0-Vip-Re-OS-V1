@@ -192,7 +192,7 @@ const CLASSES: SinkClass[] = [
     seam: /\bcreateTransfer\s*\(|\bpayment_initiated_at\s*:(?!\s*(?:string\b|\(|null\b))/, seamView: "calls",
     allowed: (f) => f === "lib/kernel/financial.ts" || f === "lib/providers/payment/index.ts",
     known: {
-      "app/actions/vendor-payments.ts": door("SECOND DOOR (155R8): initiateVendorPayout → createTransfer — session tenant, vendor-in-brokerage, earnings-in-brokerage and Connect onboarding before the transfer, which runs inside its OWN decision record (ledgerToolCall). FINDING: the calling seat is not bound to the vendor and the amount is not bound to earnings (owner decision)", /\bverifyVendorInCallerBrokerage\s*\(/),
+      "app/actions/vendor-payments.ts": door("SECOND DOOR (155R8): initiateVendorPayout → createTransfer — session tenant, vendor-in-brokerage, earnings-in-brokerage and Connect onboarding before the transfer, which runs inside its OWN decision record (ledgerToolCall). BOUND (owner task, wave 155): the caller is the vendor's OWN seat or a tenant commerce admin, and the amount is the vendor's available earnings, claimed once before the transfer (claimAvailableEarnings) — never the caller's number", /\bverifyVendorInCallerBrokerage\s*\([\s\S]*?\bclaimAvailableEarnings\s*\(/),
     },
   },
 ]

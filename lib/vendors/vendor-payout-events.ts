@@ -191,3 +191,93 @@ export async function applyVendorPayoutProviderEvent(
   }
   return { outcome: "applied", payoutId: row.id, status: mapping.outcome, completedAt, updatedCount }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A PAYOUT THAT DID NOT PAY GIVES ITS EARNINGS BACK (owner task, wave 155:
+// "bind vendor payout to the vendor seat and earnings").
+//
+// initiateVendorPayout (app/actions/vendor-payments.ts) now CLAIMS the earnings a
+// payout covers before any money moves: vendor_earnings.status 'available' →
+// 'paid_out', recorded on the payout row's earnings_ids. That is what stops a second
+// request paying the same earnings twice. Its other half is here: when the payout
+// does not pay — the transfer is refused at creation, or Stripe later reverses it
+// (transfer.reversed / payout.failed → status 'failed') — the vendor is still owed
+// the money, so the claim is released ('paid_out' → 'available').
+//
+// SAFE TO RUN TWICE, AND SAFE TO RUN LATE. Stripe redelivers, and a release can be
+// retried after a refused write, so three conditions hold on every run:
+//   · only a payout that reads 'failed' or 'cancelled' releases anything;
+//   · an earning that ANOTHER live payout ('pending' / 'processing' / 'paid') of
+//     the same vendor already carries is not this payout's to release — without
+//     that, a late redelivery for payout 1 would free earnings payout 2 is paying;
+//   · the update matches only rows still 'paid_out', pinned to the payout's own
+//     vendor and brokerage, and is COUNTED (§3 — an update that matched nothing
+//     resolves like one that worked).
+// The payout row is written BEFORE its transfer for exactly this reason: a live
+// payout is always visible to this check while its money is in flight.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Statuses of a payout that still holds its earnings (money promised, in flight, or landed). */
+export const LIVE_VENDOR_PAYOUT_STATUSES = ["pending", "processing", "paid"] as const
+
+export interface FailedPayoutEarningsRelease {
+  ok: boolean
+  /** Earnings set back to 'available' by THIS run. */
+  released: number
+  /** Earnings of this payout left alone because another live payout carries them. */
+  heldByLivePayout: number
+  error?: string
+}
+
+/** The client is the service client (or a stub with the same builders); typed loosely so the simulator can inject one. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ReleaseDbClient = { from(table: string): any }
+
+export async function releaseEarningsOfFailedPayout(svc: ReleaseDbClient, payoutId: string): Promise<FailedPayoutEarningsRelease> {
+  const none = (error: string): FailedPayoutEarningsRelease => ({ ok: false, released: 0, heldByLivePayout: 0, error })
+  if (!payoutId) return none("no payout id")
+
+  const { data: payoutRow, error: payoutErr } = await svc
+    .from("vendor_payouts")
+    .select("id, vendor_id, brokerage_id, status, earnings_ids")
+    .eq("id", payoutId)
+    .maybeSingle()
+  if (payoutErr) return none(`vendor_payouts read refused: ${payoutErr.message}`)
+  const payout = payoutRow as { id: string; vendor_id: string | null; brokerage_id: string | null; status: string; earnings_ids: unknown } | null
+  if (!payout) return none(`payout ${payoutId} not found`)
+  if (payout.status !== "failed" && payout.status !== "cancelled") {
+    return none(`payout ${payout.id} is '${payout.status}' — only a failed or cancelled payout releases its earnings`)
+  }
+
+  const ids = Array.isArray(payout.earnings_ids) ? (payout.earnings_ids as unknown[]).filter((x): x is string => typeof x === "string" && x.length > 0) : []
+  if (ids.length === 0) return { ok: true, released: 0, heldByLivePayout: 0 }
+  if (!payout.vendor_id || !payout.brokerage_id) return none(`payout ${payout.id} names no vendor or brokerage — its earnings cannot be pinned`)
+
+  // Which of these earnings does another live payout of the same vendor carry? (Compared here rather than with an array
+  // operator: a vendor has few live payouts, and the comparison stays the same on every client.)
+  const { data: liveRows, error: liveErr } = await svc
+    .from("vendor_payouts")
+    .select("id, earnings_ids")
+    .eq("vendor_id", payout.vendor_id)
+    .eq("brokerage_id", payout.brokerage_id)
+    .in("status", [...LIVE_VENDOR_PAYOUT_STATUSES])
+  if (liveErr) return none(`vendor_payouts (live) read refused: ${liveErr.message}`)
+  const held = new Set<string>()
+  for (const r of (liveRows ?? []) as Array<{ id: string; earnings_ids: unknown }>) {
+    if (r.id === payout.id || !Array.isArray(r.earnings_ids)) continue
+    for (const id of r.earnings_ids as unknown[]) if (typeof id === "string") held.add(id)
+  }
+  const free = ids.filter((id) => !held.has(id))
+  if (free.length === 0) return { ok: true, released: 0, heldByLivePayout: ids.length }
+
+  const { data: releasedRows, error: releaseErr } = await svc
+    .from("vendor_earnings")
+    .update({ status: "available" })
+    .in("id", free)
+    .eq("vendor_id", payout.vendor_id)
+    .eq("brokerage_id", payout.brokerage_id)
+    .eq("status", "paid_out")
+    .select("id")
+  if (releaseErr) return none(`vendor_earnings release refused: ${releaseErr.message}`)
+  return { ok: true, released: (releasedRows ?? []).length, heldByLivePayout: ids.length - free.length }
+}

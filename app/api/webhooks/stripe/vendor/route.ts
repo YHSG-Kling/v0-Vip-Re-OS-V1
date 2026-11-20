@@ -5,6 +5,7 @@ import { mapStripeEventToStatus, normalizeTier } from "@/lib/kernel/vendor-subsc
 import { withActionLedger } from "@/lib/kernel/action-ledger"
 import {
   applyVendorPayoutProviderEvent,
+  releaseEarningsOfFailedPayout,
   VENDOR_PAYOUT_COMPLETION_EVENTS,
 } from "@/lib/vendors/vendor-payout-events"
 
@@ -98,11 +99,24 @@ export async function POST(req: NextRequest) {
       eventCreatedAtIso: new Date(event.created * 1000).toISOString(),
       signer: { ownerType: verification.ownerType, ownerId: verification.ownerId },
     })
+    // A PAYOUT THAT FAILED GIVES ITS EARNINGS BACK (wave 155). The payout claimed its earnings before the money moved; a reversal
+    // means the vendor is still owed them. Run on the first delivery AND on a redelivery (the release is safe to repeat and never
+    // frees an earning a later live payout carries — lib/vendors/vendor-payout-events.ts). A refused release answers 500 so
+    // Stripe redelivers and it is tried again; it is never reported as recorded.
+    let earningsReleased: number | undefined
+    if ((result.outcome === "applied" || result.outcome === "replay") && result.status === "failed") {
+      const release = await releaseEarningsOfFailedPayout(svc, result.payoutId)
+      if (!release.ok) {
+        console.error("[Vendor Webhook] payout", result.payoutId, "failed but its earnings were NOT released —", release.error)
+        return NextResponse.json({ ok: false, error: `payout ${result.payoutId} recorded as failed, but its earnings were not released: ${release.error}` }, { status: 500 })
+      }
+      earningsReleased = release.released
+    }
     switch (result.outcome) {
       case "applied":
-        return NextResponse.json({ ok: true, applied: true, payoutId: result.payoutId, status: result.status, completedAt: result.completedAt })
+        return NextResponse.json({ ok: true, applied: true, payoutId: result.payoutId, status: result.status, completedAt: result.completedAt, ...(earningsReleased === undefined ? {} : { earningsReleased }) })
       case "replay":
-        return NextResponse.json({ ok: true, applied: false, replay: true, payoutId: result.payoutId, status: result.status })
+        return NextResponse.json({ ok: true, applied: false, replay: true, payoutId: result.payoutId, status: result.status, ...(earningsReleased === undefined ? {} : { earningsReleased }) })
       case "stale_transition":
         console.warn("[Vendor Webhook] payout event out of order —", result.message)
         return NextResponse.json({ ok: true, applied: false, reason: result.message })
