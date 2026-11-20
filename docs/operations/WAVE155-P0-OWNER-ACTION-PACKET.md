@@ -1,4 +1,4 @@
-# Wave 155 — P0 owner action packet (lane 155A, 2026-11-19)
+# Wave 155 — P0 owner action packet (lane 155A, 2026-11-19; merged state, lane 155L, 2026-11-20)
 
 **Verdict today: RELEASE BLOCKED.** Production audit (local evidence only, ECC `production-audit` lens): Blocked, capped below
 50 because authorization is missing on sensitive data at the storage layer (five private document buckets are open to every
@@ -133,60 +133,74 @@ re-run**); m855 and m875 read WRITTEN, NOT APPLIED. These two are yours.
 - **Rollback / stop:** never delete the key once a credential is sealed. If it leaked, rotate (new value, old one to
   `_PREVIOUS`), then let the sentinel re-seal.
 
-## 6. Optional for launch — §P.1 the old global competitor-ads index
+## 6. P0-6 — Legal texts reviewed and published (LEGAL) — BLOCKS live subscription activation
 
-- **Not a P0, not a redesign.** Launch is safe without it. It is REQUIRED before two tenants can each store the same outside
-  ad: until then the second tenant's run reports "held — another tenant already stores this ad", and nothing is overwritten.
-- **Before:** §P.1 read-back (l.1227-1231) = `1 · 1` today (old global present, tenant index present).
-- **Do (owner, SQL editor):** `DROP INDEX public.uq_competitor_ads_source_provider_id;` (§P.1 l.1221-1223).
-- **After:** the same read-back = `0 · 1`.
-- **Two-tenant verification (writes nothing, it ends in ROLLBACK):** OWNER-SQL §Q.3. Two brokerages insert the same
-  `('facebook', <same provider_ad_id>)`. Expect 2 rows before the ROLLBACK; before the drop it raises 23505 on the second row.
-- **Rollback:** recreate the index only if you want the global rule back (§Q.3 gives the statement).
+- **What / why:** the sign-up agreement, privacy policy, AI disclosure, third-party data terms and marketing / consent terms must be
+  attorney-reviewed and published before any live subscription is activated. Code records acceptance; it cannot certify the words.
+- **Who:** the owner with counsel. No lane edits or publishes legal text.
+- **Before (today):** `/legal` and `/privacy` serve the current drafts; no counsel sign-off is recorded anywhere.
+- **Do:** counsel reviews; you publish the reviewed versions; then write the status line with the date and the review reference.
+- **After:** `- LEGAL status: RESOLVED <YYYY-MM-DD> — counsel sign-off <reference>, versions published` (read by `test:production-readiness` L).
+- **Rollback / stop:** restore the previous text; never activate live billing on an unreviewed text.
+- LEGAL status: HELD — no counsel sign-off recorded
+
+## 7. P0-7 — Provider credentials, licenses and cost ceilings (LICENSES) — BLOCKS each paid provider it names
+
+- **What / why:** for each provider you enable: the credential (by variable name, never a value), the license where the data is
+  licensed (Datafiniti's four datasets, licensed listing / IDX photos, Remotion hosted render and its terms) and a cost ceiling.
+  A connection that reads READY does not make a simulated fixture provider-live.
+- **Who:** the owner. A paid smoke call happens only after your explicit approval, one call per provider.
+- **Before (today):** `test:production-readiness` prints WAITING_EXTERNAL per variable name (O5); Datafiniti reads LICENSE-HELD,
+  `dormant_pending_rights` (`test:datafiniti-connector` N1: 12 of 12 refused at rights, zero charged calls).
+- **After:** `- LICENSES status: RESOLVED <YYYY-MM-DD> — license <providers> recorded, ceilings set` (list only what you enabled).
+- **Rollback / stop:** unset the variable; the connection fails closed and the paid door refuses with its reason.
+- LICENSES status: HELD — no provider license recorded
+
+## 8. P0-8 — Live probes on a deployment (LIVE-PROBES) — the only route to CONTROLLED PRODUCTION VERIFIED
+
+- **What / why:** green CI and the SIMULATED canaries (`test:wave155-e2e-canaries`) never verify production. After P0-1…P0-5 on a
+  preview: the storage JWT tests (P0-1, P0-2), one seed sign-in (P0-3), `/api/health` + admin health (P0-4), the share link 302
+  and tampered 404 (P0-5), one portal question, one printed QR scanned through `/api/qr/scan`, one cron tick.
+- **Who:** the owner, signed in, on a preview (the demo script: `docs/operations/WAVE155-DEMO-SCRIPT.md`).
+- **Before (today):** nothing observed; no deployment exists.
+- **After:** `- LIVE-PROBES status: RESOLVED <YYYY-MM-DD> — dpl_<id> storage / seed / health / share / QR / cron observed`.
+- **Rollback / stop:** a preview is never live; stop at the first failed probe and record it.
+- LIVE-PROBES status: HELD — no deployment exists
+
+## 9. Optional for launch — §P.1 the old global competitor-ads index
+
+- Not a P0. Required only before two tenants can each store the same outside ad (until then the second run reports "held").
+  Before: §P.1 read-back (l.1227-1231) = `1 · 1`. Do: `DROP INDEX public.uq_competitor_ads_source_provider_id;` (§P.1 l.1221-1223).
+  After: `0 · 1`. Two-tenant check that writes nothing: OWNER-SQL §Q.3. Rollback statement: §Q.3.
 - P.1 status: HELD — old global index present (live 2026-11-19)
 
-## 7. What lifts RELEASE BLOCKED (each a read-back, never CI)
+## 10. What lifts RELEASE BLOCKED (each a read-back, never CI)
 
-1. §J step 1: six verdicts as expected, step 2 = 0, step 3 = 11 → stamps flipped → `test:release-blockers` O1 discharged.
-2. §N.1c three RESTRICTIVE rows → §M.1 status RESOLVED → O1-LM discharged.
-3. §I census 0 → status RESOLVED → O2 discharged.
-4. Ledger R5 / R6 / M1 / M2 OBSERVED with ids → O3 discharged.
-5. Section 5 status RESOLVED with the date, the `dpl_` id and the 302 → SEK discharged.
-`test:release-blockers` prints PRODUCTION-LIVE: YES only with zero obligations AND every R row observed. Green CI never does.
+1. §J steps 1-3 as expected → m855 / m875 stamps flipped → O1. 2. §N.1c three RESTRICTIVE rows → §M.1 RESOLVED → O1-LM.
+3. §I census 0 → RESOLVED → O2. 4. Ledger R5 / R6 / M1 / M2 observed with ids → O3. 5. SEK line RESOLVED (date, `dpl_`, 302).
+6-8. LEGAL, LICENSES, LIVE-PROBES lines RESOLVED as written above. `test:release-blockers` prints PRODUCTION-LIVE: YES only with zero obligations. `test:production-readiness` block L reads all eight
+as launch gates: each stays EXTERNAL until its evidence exists, and a green simulation alone never unlocks launch (check L2).
+Verdict vocabulary (directive §L3): ENGINEERING BLOCKED — CODE GAPS REMAIN while a P0 / P1 code gap is listed;
+ENGINEERING READY — OWNER ACTIONS REMAIN once none is; CONTROLLED PRODUCTION VERIFIED only after 1-8 are evidenced.
 
-## 8. Engineering found and fixed this wave (no owner action; recorded so the release picture is complete)
+## 11. Owner SQL named by the final lanes (OWNER-SQL §R) — not release-blocking, written, never run
 
-- **FIXED — the document door was wider than the database.** `lib/storage/signed-doc-url.ts` let a title / lender / vendor
-  party with any lane onto a deal open EVERY deal document by reference. The live row rule (m888
-  `transaction_documents_party_select`, read 2026-11-19) admits only the party's own upload or the CDA delivered to it. The door
-  now mirrors it. The old guard row asserted the wider rule and was corrected.
-- **FIXED — a revoked seat kept opening documents** for the life of its session. The door now re-reads the seat on every click
-  (`users.status` active, `deleted_at` null, not a deactivated agent), as `brokerage_forms_seat_active()` does.
-- **Correction:** WAVE154 action sheet item 16 says ten-year stored signed URLs remain. They were removed in 154M (tombstone
-  `lib/storage/signed-doc-url.ts:25`). Signed links now live at most one hour and a view link 5 minutes.
+- **R.1** rename `campaign_sequence_steps.channel` → `step_kind` (§R l.1389-1406). HELD: 28 runtime files read the old name; the
+  integrator lands that code first, then you run it in the same window.
+- **R.2** restate the `notification_rules.trigger_event` CHECK without the three retired events (§R l.1407-1427). Read-back: 0 rules
+  name them; then regenerate the CHECK vocabulary cache.
+- **R.3** re-key live `website_question:` topic rows onto `ti:customer_question:<theme>` (§R l.1428-1445), collisions first.
+- **R.4** retarget the m705 "First Appointment" badge to `SIGNED_AGREEMENT_APPOINTMENT` (§R l.1446-1460); default: shown unavailable.
 
-## 9. Added by lane 155K (batch 2) — what the four P0 areas above did not yet say
+## 12. Engineering record (no owner action)
 
-Nothing here is new SQL, a new secret name or a destructive step; each line names what an existing P0 now also unblocks.
-
-- **P0-5 also unblocks the appraiser packet send (NEW, lane 155K).** The transaction's agent can now send the composed packet to
-  the appraiser they name (transaction page → appraisal-ordered milestone → "Send packet to appraiser"). It goes only as a
-  7-day share-grant link (purpose `appraiser_packet`) through the governed email egress. Without `SECRETS_ENCRYPTION_KEY` the
-  send is refused with "a secure link could not be created — nothing was sent". **Preview check (after P0-4 + P0-5):** send a
-  packet to your own address marked as the appraiser; the link opens the PDF with no session; one changed character → 404.
-- **The email egress is a second dependency of every outside send** (appraiser, outside listing agent, lead magnet). P0-4
-  leaves the email provider key unset "until you decide to send" — until then each of those sends is refused by the egress
-  with its reason, never queued as sent. Deciding to send is yours; no lane sets it.
-- **A packet with AI-web-search comparables is refused on purpose** (CLAUDE.md §5). On a preview with no RentCast / IDX key,
-  every comparable may come from the labelled web search, so the send says so. That is the rule working, not a defect: the
-  fix is a licensed comparable source (LICENSE-HELD), or handing the appraiser your own verified comparables.
-- **P0-4 first cron tick: one more line to read.** `/api/cron/local-intel` now also visits live tenants WITHOUT an acquisition
-  territory (first-party topics only; no pull, no spend before the draft's own entitlement gate). The cron run's metadata
-  carries `firstParty: { tenants, withoutTerritory, visited, started, held }`. Expected on the showcase tenant: a number,
-  not an error; `started` stays 0 until a tenant has a connected text channel and an approver.
-- **Integrator, not owner:** `supabase/migrations/m984-circle-tactic-shares-office-circle.sql` (office circles) is WRITTEN, NOT
-  APPLIED — it widens a CHECK and adds a nullable column; it needs no owner role. Listed here only so it is not mistaken
-  for an owner step.
+- FIXED this wave: the document door mirrors the live row rule (a laned title / lender / vendor opens only its own upload or the CDA
+  delivered to it) and re-reads the seat on every click; stored long-lived signed URLs were removed in 154M (one hour max, view 5 min).
+- Lane 155K: the appraiser packet send exists (7-day `appraiser_packet` share grant through the governed email egress) and needs
+  P0-5; every outside send also needs the email provider key you have not set ("refused with its reason", never queued as sent);
+  a packet with AI-web-search comparables is refused on purpose (CLAUDE.md §5). `/api/cron/local-intel` also visits tenants
+  without a territory (first-party topics only) — expect `firstParty` counts on the first cron tick. m984 is integrator-applied.
+- Lane 155L: six SIMULATED end-to-end scenarios run in `test:wave155-e2e-canaries`; nothing there is LIVE-VERIFIED.
 
 ## Decisions · owners · next steps
 
@@ -196,6 +210,9 @@ Nothing here is new SQL, a new secret name or a destructive step; each line name
 | 2 | Apply §M.1 | Owner | SQL editor as storage admin | §N.1c = 3 RESTRICTIVE |
 | 3 | Seeds: LINK (A) or ARCHIVE (B) | Owner decides; A recommended | §K Q8, then §I A | census 0 |
 | 4 | Preview deploy, machine, domain | Owner | Vercel, preview first | R5 / R6 / M1 / M2 |
-| 5 | Generate + set the encryption key | Owner | `openssl rand -hex 32` → Sensitive var | section 5 status line |
-| 6 | §P.1 drop (optional) | Owner, when a second tenant needs it | §P.1 + §Q.3 | `0 · 1`, 2 rows then ROLLBACK |
-| 7 | Flip stamps, re-run guards | Integrator | after each owner step | `test:release-blockers` |
+| 5 | Generate + set the encryption key | Owner | `openssl rand -hex 32` → Sensitive var | SEK status line |
+| 6 | Counsel review + publish legal texts | Owner + counsel | before any live subscription | LEGAL status line |
+| 7 | Licenses, keys, ceilings per provider | Owner | only providers you enable | LICENSES status line |
+| 8 | Live probes on the preview | Owner | after 1-5 | LIVE-PROBES status line |
+| 9 | §P.1 drop (optional); §R.1-R.4 | Owner | when needed | §P.1 `0 · 1`; §R read-backs |
+| 10 | Flip stamps, re-run guards | Integrator | after each owner step | `test:release-blockers`, `test:production-readiness` |

@@ -2572,6 +2572,71 @@ for (const w of WAITING_EXTERNAL_147H) console.log(`    WAITING_EXTERNAL ${w.env
 check(`O5 every WAITING_EXTERNAL configuration is named by a variable the runtime reads (${WAITING_EXTERNAL_147H.length}; never a value)`, WAITING_EXTERNAL_147H.every((w) => runtimeEnv.has(w.env)), WAITING_EXTERNAL_147H.filter((w) => !runtimeEnv.has(w.env)).map((w) => w.env).join(", "))
 const ownerBlocking = OWNER_OBLIGATIONS.filter((o) => o.blocking)
 
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 155 (lane 155L) — L · THE LAUNCH GATES (directive §L1) AND THE VERDICT VOCABULARY (§L3, 507–511). One gate per
+// release-blocking external requirement. A gate reads EXTERNAL until its EVIDENCE exists: the O-obligations above (stamps
+// and OWNER-SQL status lines, the SAME rules), or a status line in docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md that
+// the owner writes RESOLVED with a date and the read-back (a deployment id where the evidence is a live probe). Nothing a
+// lane or CI does writes one. The simulation (test:wave155-e2e-canaries) feeds ONLY the code-gap count; it can never move
+// a gate, so a green simulation alone never unlocks launch (check L2, with its control). The code gaps are the ids of
+// that canary's shrink-only CODE_GAPS list, read from its stripped source (P0 / P1 block; P2 is reported, never blocking).
+// ═════════════════════════════════════════════════════════════════════════════
+console.log("\n[L · wave 155 launch gates — each EXTERNAL until its evidence exists; a green simulation alone never unlocks launch]")
+const PACKET_155 = "docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md"
+const packet155 = existsSync(join(ROOT, PACKET_155)) ? read(PACKET_155) : ""
+/** PURE — a packet status line `- <ID> status: RESOLVED <YYYY-MM-DD> — <read-back>`; HELD / OPEN / undated / no read-back stay EXTERNAL. */
+const statusResolved155 = (doc: string, id: string, evidence: RegExp): boolean => {
+  const m = new RegExp(`^- ${id} status:\\s*RESOLVED\\b([^\\n]*)$`, "m").exec(doc)
+  return !!m && /\d{4}-\d{2}-\d{2}/.test(m[1]) && evidence.test(m[1])
+}
+interface LaunchGate155 { id: string; what: string; evidence: boolean; where: string }
+const obligationOf = (id: string) => OWNER_OBLIGATIONS.find((o) => o.id === id)
+const PACKET_STATUS_IDS_155 = ["SEK", "LEGAL", "LICENSES", "LIVE-PROBES"]
+const LAUNCH_GATES_155: LaunchGate155[] = [
+  { id: "L-BUCKETS", what: "five private document-bucket storage.objects policies (offer bucket service-only)", evidence: !!obligationOf("O1") && !obligationOf("O1")!.blocking, where: "OWNER-SQL §F / §G → m855 / m875 stamps (O1); packet P0-1" },
+  { id: "L-LISTING-MEDIA", what: "listing-media RESTRICTIVE folder policies", evidence: !!obligationOf("O1-LM") && !obligationOf("O1-LM")!.blocking, where: "OWNER-SQL §M.1 status line (O1-LM); packet P0-2" },
+  { id: "L-SEEDS", what: "four orphan portal seed accounts linked or archived", evidence: !!obligationOf("O2") && !obligationOf("O2")!.blocking, where: "OWNER-SQL §I status line (O2); packet P0-3" },
+  { id: "L-DEPLOY", what: "the first deployment (Node, build machine, domain) observed", evidence: !!obligationOf("O3") && !obligationOf("O3")!.blocking, where: "release-rules deriveO3 + ledger M1 / M2 (O3); packet P0-4" },
+  { id: "L-SEK", what: "SECRETS_ENCRYPTION_KEY really configured on a deployment", evidence: statusResolved155(packet155, "SEK", /\bdpl_[A-Za-z0-9]+[^\n]*\b302\b/), where: "packet P0-5 SEK status line (same rule as test:release-blockers G3)" },
+  { id: "L-LEGAL", what: "attorney-reviewed agreements, privacy, AI, third-party data and marketing terms published / accepted", evidence: statusResolved155(packet155, "LEGAL", /\b(attorney|counsel)\b/i), where: "packet P0-6 LEGAL status line" },
+  { id: "L-LICENSES", what: "provider credentials, tenant-connected licenses and cost ceilings for the providers being enabled", evidence: statusResolved155(packet155, "LICENSES", /\blicense/i), where: "packet P0-7 LICENSES status line" },
+  { id: "L-LIVE-PROBES", what: "owner-authorized live security / storage / deployment / customer-journey probes", evidence: statusResolved155(packet155, "LIVE-PROBES", /\bdpl_[A-Za-z0-9]+/), where: "packet P0-8 LIVE-PROBES status line" },
+]
+for (const g of LAUNCH_GATES_155) console.log(`    ${g.evidence ? "EVIDENCED" : "EXTERNAL "} ${g.id} — ${g.what} — ${g.where}`)
+const external155 = LAUNCH_GATES_155.filter((g) => !g.evidence).map((g) => ({ gate: g.id, state: "EXTERNAL" as const }))
+const missingStatus155 = PACKET_STATUS_IDS_155.filter((id) => !new RegExp(`^- ${id} status:`, "m").test(packet155))
+check(`L1 every wave-155 launch gate without its evidence reads EXTERNAL (${external155.length}/${LAUNCH_GATES_155.length} external; derived, never pinned) and the packet carries a status line for each packet-held gate`,
+  packet155.length > 0 && missingStatus155.length === 0 && LAUNCH_GATES_155.every((g) => external155.some((e) => e.gate === g.id) === !g.evidence), missingStatus155.join(", "))
+check("L1 POSITIVE CONTROL — HELD stays external; RESOLVED with a date and the read-back lifts; RESOLVED without a date, or without the read-back, does not",
+  !statusResolved155("- LEGAL status: HELD — no counsel review", "LEGAL", /counsel/i) && statusResolved155("- LEGAL status: RESOLVED 2026-12-01 — counsel sign-off recorded", "LEGAL", /counsel/i)
+  && !statusResolved155("- LEGAL status: RESOLVED — counsel sign-off", "LEGAL", /counsel/i) && !statusResolved155("- LIVE-PROBES status: RESOLVED 2026-12-01 — CI green", "LIVE-PROBES", /\bdpl_[A-Za-z0-9]+/))
+type Verdict155 = "ENGINEERING BLOCKED — CODE GAPS REMAIN" | "ENGINEERING READY — OWNER ACTIONS REMAIN" | "CONTROLLED PRODUCTION VERIFIED"
+/** PURE — directive §L3. The simulation's only input is the code-gap count; `simulationGreen` is accepted and deliberately unread. */
+function launchVerdict155(input: { simulationGreen: boolean; codeGapsP0P1: number; gates: ReadonlyArray<{ evidence: boolean }> }): Verdict155 {
+  if (input.codeGapsP0P1 > 0) return "ENGINEERING BLOCKED — CODE GAPS REMAIN"
+  if (input.gates.length === 0 || input.gates.some((g) => !g.evidence)) return "ENGINEERING READY — OWNER ACTIONS REMAIN"
+  return "CONTROLLED PRODUCTION VERIFIED"
+}
+const allExternal155 = LAUNCH_GATES_155.map(() => ({ evidence: false })), allEvidenced155 = LAUNCH_GATES_155.map(() => ({ evidence: true }))
+check("L2 a green simulation alone never unlocks launch — every canary green and zero code gaps, with the launch gates EXTERNAL, reads ENGINEERING READY (never VERIFIED)",
+  launchVerdict155({ simulationGreen: true, codeGapsP0P1: 0, gates: allExternal155 }) === "ENGINEERING READY — OWNER ACTIONS REMAIN"
+  && launchVerdict155({ simulationGreen: true, codeGapsP0P1: 0, gates: [] }) !== "CONTROLLED PRODUCTION VERIFIED")
+check("L2 CONTROL — the verdict can reach VERIFIED (only with every gate evidenced), a P0/P1 code gap blocks it, and toggling simulationGreen changes nothing",
+  launchVerdict155({ simulationGreen: false, codeGapsP0P1: 0, gates: allEvidenced155 }) === "CONTROLLED PRODUCTION VERIFIED"
+  && launchVerdict155({ simulationGreen: true, codeGapsP0P1: 1, gates: allEvidenced155 }) === "ENGINEERING BLOCKED — CODE GAPS REMAIN"
+  && launchVerdict155({ simulationGreen: true, codeGapsP0P1: 0, gates: allEvidenced155 }) === launchVerdict155({ simulationGreen: false, codeGapsP0P1: 0, gates: allEvidenced155 }))
+const E2E_155 = "scripts/wave155-e2e-canaries.ts"
+/** PURE — the P0 / P1 code-gap ids of the e2e canary's CODE_GAPS list (stripped source: a gap named in a comment is not a gap). */
+const codeGapIds155 = (src: string): string[] => [...stripComments(src).matchAll(/\bid:\s*"(GAP-[A-Z0-9-]+)",\s*priority:\s*"(P0|P1)"/g)].map((m) => m[1])
+const e2eSrc155 = existsSync(join(ROOT, E2E_155)) ? read(E2E_155) : ""
+const gaps155 = codeGapIds155(e2eSrc155)
+check(`L3 the simulation exists, is registered and chained (test:wave155-e2e-canaries), and its P0/P1 code gaps are read (${gaps155.length}: ${gaps155.join(", ") || "none"})`,
+  e2eSrc155.length > 0 && !!pkg.scripts["test:wave155-e2e-canaries"] && /npm run test:wave155-e2e-canaries(\s|$)/.test(pkg.scripts.guard ?? "") && /CODE_GAPS/.test(stripComments(e2eSrc155)))
+check("L3 POSITIVE CONTROL — the gap reader counts a P0 and a P1 entry, skips a P2 entry and an entry inside a comment",
+  JSON.stringify(codeGapIds155(`const G = [{ id: "GAP-A", priority: "P0" }, { id: "GAP-B", priority: "P1" }, { id: "GAP-C", priority: "P2" }]\n// { id: "GAP-D", priority: "P0" }\n`)) === JSON.stringify(["GAP-A", "GAP-B"]))
+const verdict155 = launchVerdict155({ simulationGreen: true, codeGapsP0P1: gaps155.length, gates: LAUNCH_GATES_155 })
+console.log(`    WAVE 155 VERDICT (directive §L3): ${verdict155} — ${gaps155.length} P0/P1 code gap(s), ${external155.length} launch gate(s) EXTERNAL`)
+
 console.log(`\nRELEASE GATE: ${certified.length}/${RELEASE_GATES.length} certified, ${external.length} external-verdict, ${notCertified.length} not certified${notCertified.length ? ` — ${notCertified.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 142 GATE: ${certified142.length}/${WAVE142_GATES.length} certified, ${notCertified142.length} not certified${notCertified142.length ? ` — ${notCertified142.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 145 GATE: ${certified145.length}/${WAVE145_GATES.length} certified, ${external145.length} external-verdict, ${notCertified145.length} not certified${notCertified145.length ? ` — ${notCertified145.map((v) => v.gate).join(", ")}` : ""}`)
@@ -2582,11 +2647,12 @@ console.log(`WAVE 149 GATE: ${certified149.length}/${WAVE149_GATES.length} certi
 console.log(`WAVE 150 GATE: ${certified150.length}/${WAVE150_GATES.length} certified, ${external150.length} external-verdict, ${notCertified150.length} not certified${notCertified150.length ? ` — ${notCertified150.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 151 GATE: ${certified151.length}/${WAVE151_GATES.length} certified, ${external151.length} external-verdict, ${notCertified151.length} not certified${notCertified151.length ? ` — ${notCertified151.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 152 GATE: ${certified152.length}/${WAVE152_GATES.length} certified, ${external152.length} external-verdict, ${notCertified152.length} not certified${notCertified152.length ? ` — ${notCertified152.map((v) => v.gate).join(", ")}` : ""}`)
+console.log(`WAVE 155 LAUNCH GATES: ${LAUNCH_GATES_155.length - external155.length}/${LAUNCH_GATES_155.length} evidenced, ${external155.length} external — ${verdict155}`)
 console.log(`WAVE 153 GATE: ${certified153.length}/${WAVE153_GATES.length} certified, ${external153.length} external-verdict, ${notCertified153.length} not certified${notCertified153.length ? ` — ${notCertified153.map((v) => v.gate).join(", ")}` : ""}`)
 // Wave 149 (lane 149K finding, fixed by 149I2): the RELEASE verdict had summed waves 141/142/145/146/147 only and silently
 // ignored the wave-148 gates; it now sums every wave's gates, 148, 149, 150, 151, 152 and 153 included.
 const openGates = notCertified.length + notCertified142.length + notCertified145.length + notCertified146.length + notCertified147.length + notCertified148.length + notCertified149.length + notCertified150.length + notCertified151.length + notCertified152.length + notCertified153.length
-const externalAll = [...external, ...external145, ...external146, ...external147, ...external148, ...external149, ...external150, ...external151, ...external152, ...external153]
+const externalAll = [...external, ...external145, ...external146, ...external147, ...external148, ...external149, ...external150, ...external151, ...external152, ...external153, ...external155]
 console.log(`OWNER OBLIGATIONS: ${ownerBlocking.length}/${OWNER_OBLIGATIONS.length} RELEASE-BLOCKING${ownerBlocking.length ? ` — ${ownerBlocking.map((o) => o.id).join(", ")}` : ""}`)
 // The owner obligations (lane 147H) join the verdict: a release with an undischarged obligation is NOT READY even when
 // every gate certifies in-repo.

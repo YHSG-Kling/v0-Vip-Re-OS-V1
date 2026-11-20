@@ -230,15 +230,20 @@ export async function gatherSectionCandidates(db: Db, a: {
   }
 
   // 4 · something of community value — a sourced guide / tip / financing explainer / neighborhood resource.
+  // … OR a question this tenant's OWN customers keep asking (wave 155, at merge of lanes 155F / 155G2 / 155L; owner note: a
+  // question asked consistently becomes a topic, and a newsletter carries something of value). Such a topic is first-party
+  // and de-identified, so it has no source link — and this filter required one, so it could drive a video and a refurbish
+  // but never a newsletter section. It is admitted ONLY when it is the tenant's own row (is_brokerage_local): another
+  // tenant's question, or a platform-wide row with no source, is not this tenant's evidence.
   const community = a.topics
-    .filter((t) => !!t.source_url && (t.categories ?? []).some((c) => COMMUNITY_CATEGORIES.includes(c)) && !(t.categories ?? []).includes("local_intel"))
+    .filter((t) => ((!!t.source_url && (t.categories ?? []).some((c) => COMMUNITY_CATEGORIES.includes(c))) || (!t.source_url && !!t.is_brokerage_local && (t.categories ?? []).includes("faq"))) && !(t.categories ?? []).includes("local_intel"))
   const ct = community[0]
   if (ct) {
     const finance = (ct.categories ?? []).includes("finance")
     candidates.push({
       module: "community_value", sectionType: finance ? "mortgage_rates" : (ct.categories ?? []).includes("neighborhood") ? "neighborhood_spotlight" : "tips",
-      quality: ct.is_brokerage_local ? 0.7 : 0.6, local: !!ct.is_brokerage_local, assetReady: true, label: finance ? "Financing explainer" : "Community guide",
-      facts: [`${clean(ct.topic_title)}${ct.value_angle ? ` — ${clean(ct.value_angle)}` : ""}`, `Source: <${ct.source_url}> — explain it in the agent's own words${finance ? "; no rate, payment or approval promise" : ""}.`],
+      quality: ct.is_brokerage_local ? 0.7 : 0.6, local: !!ct.is_brokerage_local, assetReady: true, label: finance ? "Financing explainer" : ct.source_url ? "Community guide" : "A question your clients ask",
+      facts: [`${clean(ct.topic_title)}${ct.value_angle ? ` — ${clean(ct.value_angle)}` : ""}`, ct.source_url ? `Source: <${ct.source_url}> — explain it in the agent's own words${finance ? "; no rate, payment or approval promise" : ""}.` : "A question your own clients keep asking (first-party, de-identified) — answer it in the agent's own words; state no figure, date or rate."],
       provenance: { kind: "topic", topicId: ct.id, sourceUrl: ct.source_url },
     })
   }

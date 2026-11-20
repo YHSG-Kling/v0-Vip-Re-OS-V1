@@ -1378,3 +1378,83 @@ reads and writes nothing:
 -- expect 6 rows: circle_kind CHECK incl. 'office', status, evidence_quality, team_iff, mentorship_iff, office_iff
 select conname, pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.circle_tactic_shares'::regclass and contype = 'c' order by 1;
 ```
+
+## R. Wave 155 — owner SQL named by the final lanes (lane 155L, 2026-11-20)
+
+Written, never run by a lane. None of these blocks release; each closes a one-vocabulary residue (CLAUDE.md §6) a lane could
+not close in code. Run the **Before** read first; stop if it does not read as stated. After R.2, regenerate the CHECK
+vocabulary cache (`scripts/generate-check-vocabularies.ts`, SQL in its header) so `test:check-vocabulary` holds code and
+database together. Packet: `docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md` §11.
+
+### R.1 `campaign_sequence_steps.channel` holds STEP KINDS, not channels (lanes 155D request 4, 155J) — HELD, needs code first
+
+- Why: the column's CHECK admits `wait`, `condition`, `assign_task`, `video` … beside real channels; video is an artifact, not a
+  channel (owner R9). A rename alone BREAKS the 28 runtime files that read `campaign_sequence_steps.channel` (measured
+  2026-11-20 by grep over app/ and lib/). Order: the integrator lands the code that reads `step_kind`, then you run this in the
+  same deployment window. Until then, do nothing.
+- Status: HELD — waiting for the code change (no lane may rename a live column)
+
+```sql
+-- Before: the column and its CHECK (expect channel present, step_kind absent; one CHECK naming 'wait' and 'video')
+select column_name from information_schema.columns where table_schema = 'public' and table_name = 'campaign_sequence_steps' and column_name in ('channel', 'step_kind');
+select conname, pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.campaign_sequence_steps'::regclass and contype = 'c' and pg_get_constraintdef(oid) ilike '%channel%';
+-- Do (one statement; the CHECK follows the column automatically):
+ALTER TABLE public.campaign_sequence_steps RENAME COLUMN channel TO step_kind;
+-- After: the first query lists step_kind only; the CHECK definition now names step_kind.
+-- Rollback: ALTER TABLE public.campaign_sequence_steps RENAME COLUMN step_kind TO channel;
+```
+
+### R.2 `notification_rules.trigger_event` CHECK still admits three events nothing emits (lane 155R6)
+
+- Why: `enrichment_failed`, `raw_lead_viability_passed`, `raw_lead_viability_failed` were retired from the kernel with
+  tombstones (lib/kernel/events.ts, "RETIRED (wave 155, lane 155R6"); a rule saved on one can never fire. The live CHECK
+  (scripts/check-vocabularies.ts `notification_rules.trigger_event`, 73 values) is restated with the other 70.
+- Status: OPEN — not run
+
+```sql
+-- Before (1): rules that name a retired event (expect 0 rows; if any, decide per row: repoint or delete — never silently)
+select id, brokerage_id, trigger_event from public.notification_rules where trigger_event in ('enrichment_failed', 'raw_lead_viability_passed', 'raw_lead_viability_failed');
+-- Before (2): the constraint's name (expect ONE row whose definition names trigger_event)
+select conname from pg_constraint where conrelid = 'public.notification_rules'::regclass and contype = 'c' and pg_get_constraintdef(oid) ilike '%trigger_event%';
+-- Do (replace <conname> with the name read above; one transaction):
+BEGIN;
+ALTER TABLE public.notification_rules DROP CONSTRAINT <conname>;
+ALTER TABLE public.notification_rules ADD CONSTRAINT <conname> CHECK (trigger_event IN ('appraisal_due', 'authority_blocked', 'business_card_approved', 'business_card_uploaded', 'buyer_disengaged', 'buyer_verified', 'cd_due', 'cd_received', 'closing_scheduled', 'compliance_violation', 'consent_received', 'contact_captured', 'contact_created', 'contact_dedup_merged', 'contact_enrichment_completed', 'contact_enrichment_failed', 'contact_enrichment_queued', 'contact_scored', 'contract_signed', 'deal_closed', 'deal_on_hold', 'decision_pending', 'document_received', 'document_requested', 'enrichment_completed', 'financing_due', 'form_submission_received', 'ghost_lead_detected', 'inspection_due', 'isa_appointment_scheduled', 'isa_max_touches_reached', 'isa_outreach_paused', 'isa_outreach_sent', 'isa_qualification_started', 'isa_qualified_lead', 'isa_reply_received', 'lead_assigned', 'lead_assignment_failed', 'lead_captured', 'lead_claimed', 'lead_converted_to_contact', 'lead_import_completed', 'lead_ready_for_assignment', 'lead_scored', 'lead_sla_breached', 'lifetime_customer', 'listing_published', 'message_from_contact', 'message_needs_response', 'new_lead', 'offer_eligible', 'offer_received', 'offer_submitted', 'price_determined', 'qr_scan_received', 'ready_to_close', 'reengagement_completed', 'reengagement_started', 'referral_received', 'showing_completed', 'showing_scheduled', 'stale_lead_alert', 'task_assigned', 'task_completed', 'task_due', 'task_overdue', 'tour_eligible', 'tour_scheduled', 'walkthrough_due', 'website_visitor_identified'));
+COMMIT;
+-- After: Before (1) still 0 rows; inserting a rule with trigger_event 'enrichment_failed' raises 23514.
+-- Rollback: the same two statements with the three values added back to the list.
+```
+
+### R.3 Re-key live `website_question:` topic rows onto the one customer-question key (lane 155F2)
+
+- Why: the topic feeder now keys `ti:customer_question:<theme>`; a live row under the retired `website_question:<topic>` key is
+  ADOPTED by the code (merged into, never duplicated), so this is tidy-up, not a fix. Two retired rows can map to one theme:
+  list collisions FIRST and merge those by hand. The re-key touches only tenants with no row under the new key.
+- Status: OPEN — not run
+
+```sql
+-- Before: the retired keys still live (any number; 0 means nothing to do)
+SELECT brokerage_id, raw_data->>'dedup_key' k FROM content_topic_bank WHERE raw_data->>'dedup_key' LIKE 'website_question:%';
+-- Do: earliest retired row per tenant + theme, only where the tenant has no row under the new key
+WITH m(lex,theme) AS (VALUES ('new_construction_warranty','new_construction'),('closing_costs','closing_costs'),('title_insurance','escrow_title'),('insurance','insurance'),('escrow','escrow_title'),('earnest_money','escrow_title'),('appraisal','appraisal'),('inspection','home_inspection'),('contingency','offers_negotiation'),('pre_approval','pre_approval'),('hoa','hoa'),('property_tax','property_taxes'),('wire_fraud','escrow_title'),('clear_to_close','buying_process')),
+c AS (SELECT DISTINCT ON (b.brokerage_id, m.theme) b.id, m.theme FROM content_topic_bank b JOIN m ON b.raw_data->>'dedup_key' = 'website_question:'||m.lex WHERE NOT EXISTS (SELECT 1 FROM content_topic_bank o WHERE o.brokerage_id = b.brokerage_id AND o.raw_data->>'dedup_key' = 'ti:customer_question:'||m.theme) ORDER BY b.brokerage_id, m.theme, b.created_at)
+UPDATE content_topic_bank b SET raw_data = jsonb_set(b.raw_data, '{dedup_key}', to_jsonb('ti:customer_question:'||c.theme)) FROM c WHERE b.id = c.id;
+-- After: the Before query lists only the collision rows you chose to merge by hand.
+-- Rollback: none needed for correctness (the code adopts either key); record the ids from Before if you want to reverse it.
+```
+
+### R.4 Retarget the m705 "First Appointment" badge to the signed-agreement milestone (lane 155C)
+
+- Why: owner R3 retired the booking award; the platform badge keyed on `FIRST_APPOINTMENT` is shown "Not available to earn right
+  now". This makes it the badge of `SIGNED_AGREEMENT_APPOINTMENT` (an appointment that became an executed agreement). Default
+  if you do nothing: it stays shown unavailable.
+- Status: OPEN — your choice (not run)
+
+```sql
+-- Before: expect 1 row (the platform badge, brokerage_id null)
+SELECT id, badge_name, trigger_event FROM public.gamification_badges WHERE brokerage_id IS NULL AND trigger_event = 'FIRST_APPOINTMENT';
+-- Do:
+UPDATE gamification_badges SET trigger_event='SIGNED_AGREEMENT_APPOINTMENT', badge_name='Signed From an Appointment', badge_description='An appointment that became a signed agreement.' WHERE brokerage_id IS NULL AND trigger_event='FIRST_APPOINTMENT';
+-- After: the Before query returns 0 rows; the same id now reads trigger_event SIGNED_AGREEMENT_APPOINTMENT.
+-- Rollback: UPDATE gamification_badges SET trigger_event='FIRST_APPOINTMENT' WHERE id = '<id from Before>';
+```
