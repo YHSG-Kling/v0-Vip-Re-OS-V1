@@ -438,16 +438,16 @@ Assess:
     // disjoint id spaces, so that stamped a meaningless actor on every row.
     // ctx.userId is the resolved authenticated user — the right space, resolved
     // rather than substituted.
-    const { error: timelineErr } = await supabase
-      .from("transaction_timeline")
-      .insert({
-        transaction_id: params.transactionId,
-        brokerage_id:   brokerageId,
-        activity_type:  "ai_closing_analysis",
-        description:    analysis.summary,
-        performed_by:   actorUserId,
-        metadata:       { riskLevel: analysis.riskLevel, onTrack: analysis.onTrack },
-      })
+    // The line goes through the ONE timeline writer: the deal desk decides, then the service client writes it in the session's
+    // tenant (lib/application/transactions.ts addTimelineEntry). It was an insert on the caller's row-security client.
+    const { addTimelineEntry } = await import("@/lib/application/transactions")
+    const line = await addTimelineEntry(
+      params.transactionId,
+      "ai_closing_analysis",
+      analysis.summary,
+      actorUserId,
+      { riskLevel: analysis.riskLevel, onTrack: analysis.onTrack },
+    ); const timelineErr = line.ok ? null : { message: line.error }
 
     // The analysis is still returned — the model call already happened and the
     // caller should get what it paid for — but a dropped audit line is logged

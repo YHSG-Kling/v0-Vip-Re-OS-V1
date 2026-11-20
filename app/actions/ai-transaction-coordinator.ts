@@ -81,7 +81,7 @@ interface CoordinatorScope {
   error?: string
   userId?: string
   agentId?: string | null
-  brokerageId?: string
+  brokerageId?: string; /** The session's seat — what the deal desk decides on. */ userType?: string
 }
 
 /**
@@ -116,7 +116,7 @@ async function scopeTransaction(transactionId: string): Promise<CoordinatorScope
     return { ok: false, error: "Forbidden: transaction not in your brokerage" }
   }
 
-  return { ok: true, userId: ctx.userId, agentId: ctx.agentId, brokerageId: ctx.brokerageId }
+  return { ok: true, userId: ctx.userId, agentId: ctx.agentId, brokerageId: ctx.brokerageId, userType: ctx.userType }
 }
 
 // TOMBSTONE (§1.1, 2026-09-08): normalizeZip lived here (unused in this file,
@@ -321,9 +321,9 @@ export async function predictAndManageDeadlines(params: {
     if (!scope.ok) return { success: false, error: scope.error }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
     return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "transaction.deadlines.predict", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
-
-    const supabase = await createClient()
-
+    const desk = await (await import("@/lib/transactions/role-guard")).decideDealDesk({ userId: scope.userId ?? "", role: scope.userType ?? "", brokerageId: scope.brokerageId ?? "", transactionId: params.transactionId })
+    if (!desk.allowed) return { success: false, error: desk.reason } // THE DEAL DESK, before the model is reached and before any deadline is written
+    const supabase = await createClient(); const svc = (await import("@/lib/supabase/service")).createServiceClient() // supabase READS as the caller; svc WRITES the deadlines, after the desk
     const { data: transaction, error: txnError } = await supabase
       .from("transactions")
       .select(`
@@ -430,8 +430,8 @@ Based on typical ${(transaction.property_state || 'Florida')} real estate timeli
         continue
       }
 
-      const { error: insertError } = await supabase.from("transaction_deadlines").insert({
-        transaction_id: params.transactionId,
+      const { error: insertError } = await svc.from("transaction_deadlines").insert({
+        transaction_id: params.transactionId, // the deal the desk just read in the session's tenant — the write is on the service client
         brokerage_id: scope.brokerageId,
         deadline_type: deadline.task,
         deadline_date: deadlineDate,

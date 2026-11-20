@@ -509,10 +509,10 @@ export async function updateEarnestMoneyAction(params: {
 }) {
   const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
+  // THE DEAL DESK (lib/transactions/role-guard.ts decideDealDesk) — it reads the deal in the SESSION's tenant and decides the seat.
+  const desk = await (await import("@/lib/transactions/role-guard")).decideDealDesk({ userId: auth.userId, role: auth.userType ?? "", brokerageId: auth.brokerageId, transactionId: String(params.transactionId ?? "") })
+  if (!desk.allowed) return { success: false, error: desk.reason }
 
-  if (!(await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId))) {
-    return { success: false, error: "Transaction not found in your brokerage" }
-  }
 
   // If updating an existing escrow row, verify it belongs to caller's brokerage
   // and to this transaction before touching it.
@@ -532,7 +532,7 @@ export async function updateEarnestMoneyAction(params: {
     }
   }
 
-  const supabase = await createClient()
+  const supabase = createServiceClient() // after the desk (CLAUDE.md §4): the two live policies name fewer seats than the desk admits
 
   const updates: Record<string, unknown> = {}
   if (params.earnestMoneyAmount !== undefined) {
@@ -547,20 +547,20 @@ export async function updateEarnestMoneyAction(params: {
 
   if (params.titleEscrowId) {
     // Update existing record
-    const { error } = await supabase
+    const { data: saved, error } = await supabase
       .from("transaction_title_escrow")
       .update(updates)
-      .eq("id", params.titleEscrowId)
+      .eq("id", params.titleEscrowId).eq("transaction_id", params.transactionId).eq("brokerage_id", auth.brokerageId).select("id")
 
-    if (error) {
-      return { success: false, error: error.message }
+    if (error || (saved ?? []).length !== 1) { // COUNTED: an update that matches nothing also resolves (CLAUDE.md §3)
+      return { success: false, error: error?.message ?? "Earnest money not saved (no row matched)" }
     }
   } else {
     // Create new record
     const { error } = await supabase.from("transaction_title_escrow").insert({
+      ...updates,
       transaction_id: params.transactionId,
       brokerage_id:   auth.brokerageId,
-      ...updates,
     })
 
     if (error) {

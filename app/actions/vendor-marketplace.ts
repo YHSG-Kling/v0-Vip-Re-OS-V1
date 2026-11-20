@@ -1,7 +1,7 @@
 "use server"
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { bestEffort } from "@/lib/db/best-effort"
+// (the bestEffort import left with the inline timeline insert it wrapped — the line goes through addTimelineEntry now)
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
@@ -400,14 +400,14 @@ export async function createVendorBooking(data: {
   if (error) throw error
 
   // Add timeline entry (a transaction's timeline only — a listing-stage booking has none yet)
-  if (transactionId) await bestEffort(supabase.from("transaction_timeline").insert({
-    transaction_id: transactionId,
-    brokerage_id: profile?.brokerage_id,
-    activity_type: "vendor_booked",
-    description: `Vendor booked for ${data.serviceType}`,
-    performed_by: user.id,
-    metadata: { vendor_id: data.vendorId, service_type: data.serviceType }
-  }), "timeline echo of a vendor booking already written (checked above)")
+  // Through the ONE timeline writer (lib/application/transactions.ts addTimelineEntry): the deal desk decides for THIS deal in the
+  // session's tenant, then the service client writes. It was an insert on the caller's client with an unverified deal id.
+  if (transactionId) await (await import("@/lib/application/transactions")).addTimelineEntry(
+    transactionId,
+    "vendor_booked",
+    `Vendor booked for ${data.serviceType}`,
+    user.id,
+    { vendor_id: data.vendorId, service_type: data.serviceType }) // best-effort: the booking above is the record
 
   const { revalidatePath } = await import("next/cache")
   if (transactionId) revalidatePath(`/dashboard/transactions/${transactionId}`)

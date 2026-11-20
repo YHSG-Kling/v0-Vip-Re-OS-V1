@@ -1085,14 +1085,14 @@ export async function addTimelineEntry(
   // its existing insert-error branch already uses. BRACED deliberately: the
   // unbraced form makes the `return` unconditional and silently turns the whole
   // function into a no-op for every caller, tenant seats included.
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ transactionId })
   if (!gate.ok) {
     console.error("[addTimelineEntry] refused:", gate.error)
-    return
+    return { ok: false as const, error: gate.error }
   }
   const supabase = gate.db
-  await writeTimelineLine(supabase, gate.brokerageId, {
-    transaction_id: transactionId,
+  return writeTimelineLine(supabase, gate.brokerageId, {
+    transaction_id: gate.transactionId,
     activity_type: activityType,
     description,
     performed_by: performedBy,
@@ -3623,16 +3623,16 @@ function withoutRowIdentity(patch: Record<string, unknown> | null | undefined): 
 }
 
 /**
- * THE ONE insert of a deal's timeline line (transaction_timeline). The tenant is stamped HERE, after the row, from the write
- * context that holds the client: the seam's for addTimelineEntry, the desk's for the deal-detail writers (so their line rides
- * the same client as the edit it records, not a second resolution of the session). Best-effort by contract — the act is the
- * record — so a refusal is read and logged (CLAUDE.md §3), never thrown.
+ * THE ONE insert of a deal's timeline line (transaction_timeline). The tenant is stamped HERE, after the row, from the desk
+ * context that holds the client: addTimelineEntry resolves it for the deal it is handed (every other caller's door), the
+ * deal-detail writers hand over the one they already hold. Best-effort by contract — the act is the record — so a refusal is
+ * read, logged and RETURNED (CLAUDE.md §3), never thrown: a caller that wants to say "the line did not land" can.
  */
 async function writeTimelineLine(
   db: any,
   brokerageId: string | null,
   row: { transaction_id: string; activity_type: string; description: string; performed_by?: string; metadata?: Record<string, unknown> },
-): Promise<void> {
+): Promise<{ ok: true } | { ok: false; error: string }> {
   const { error } = await db.from("transaction_timeline").insert({ ...row, brokerage_id: brokerageId ?? undefined })
-  if (error) console.error("Error adding timeline entry:", error)
+  if (error) { console.error("Error adding timeline entry:", error); return { ok: false, error: String(error.message ?? error) } } return { ok: true }
 }

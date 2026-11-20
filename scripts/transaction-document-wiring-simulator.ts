@@ -487,8 +487,8 @@ ASSERTIONS.push({
   breaks: [
     {
       file: F.coordinator,
-      find: "const { error: insertError } = await supabase.from(\"transaction_deadlines\").insert({",
-      replace: "await supabase.from(\"transaction_deadlines\").insert({",
+      find: "const { error: insertError } = await svc.from(\"transaction_deadlines\").insert({",
+      replace: "await svc.from(\"transaction_deadlines\").insert({",
     },
   ],
 })

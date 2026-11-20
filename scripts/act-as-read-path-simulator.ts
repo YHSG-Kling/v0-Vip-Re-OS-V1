@@ -629,10 +629,15 @@ async function main() {
     // event also causes an agent_action_ledger write on the SERVICE client — the ledger's own contract (lib/kernel/action-ledger.ts
     // claimAction), not the action's write. Only that carrier is set aside; any other service write still fails this check.
     const ledgerCarrier = (c: any) => c.table === "agent_action_ledger" && c.channel === "service"
+    // RESTATED (deal desk, 2026-11-20): a SECOND named carrier. The deal's timeline line is written by the ONE timeline writer
+    // (addTimelineEntry), which asks the deal desk for that deal and then writes on the SERVICE client — the row-security CHECK
+    // on transaction_timeline is the hole docs/operations/OWNER-SQL.md §R.6 closes, so nothing may depend on it. The action's
+    // OWN table write still rides the seat's cookie client, and anything else on the service client still fails this check.
+    const timelineCarrier = (c: any) => c.table === "transaction_timeline" && c.channel === "service"
     for (const [fn, args] of WRITERS) {
       if (isDeskWriter(fn)) continue // restated just below — the desk decides for these
       const a = await underSession(session(), () => after[fn](...args))
-      const own = a.calls.filter((c: any) => !ledgerCarrier(c))
+      const own = a.calls.filter((c: any) => !ledgerCarrier(c) && !timelineCarrier(c))
       check(`transactions · a normal tenant user still writes on their OWN RLS client — ${fn}`,
         own.length > 0 && own.every((c: any) => c.channel === "cookie"), JSON.stringify(a.calls))
     }
@@ -651,8 +656,9 @@ async function main() {
     }
     check("transactions · the sample still holds BOTH kinds of writer (the split above is not vacuous on either side)",
       deskSampled.length > 0 && deskSampled.length < WRITERS.length, `${deskSampled.length} of ${WRITERS.length}`)
-    check("transactions · CONTROL: only the ledger carrier is set aside — a domain write on the service client is still caught",
-      ledgerCarrier({ table: "agent_action_ledger", channel: "service" }) && !ledgerCarrier({ table: "transactions", channel: "service" }) && !ledgerCarrier({ table: "agent_action_ledger", channel: "cookie" }))
+    check("transactions · CONTROL: only the two named carriers are set aside — a domain write on the service client is still caught, and a timeline line on the COOKIE client is not a carrier",
+      ledgerCarrier({ table: "agent_action_ledger", channel: "service" }) && !ledgerCarrier({ table: "transactions", channel: "service" }) && !ledgerCarrier({ table: "agent_action_ledger", channel: "cookie" })
+      && timelineCarrier({ table: "transaction_timeline", channel: "service" }) && !timelineCarrier({ table: "transaction_timeline", channel: "cookie" }) && !timelineCarrier({ table: "transactions", channel: "service" }))
 
     // READERS ARE DELIBERATELY NOT CONVERTED — that is what keeps a read_only
     // grant able to SEE the tenant. Negative control in the other direction.
@@ -661,17 +667,20 @@ async function main() {
       check(`transactions · reader ${fn} still answers a read_only grant`, !refusedReadOnly(a.result))
     }
 
-    // addTimelineEntry returns void: its refusal has no field to inspect, so the
-    // assertion is the only observable there is — no write was attempted. This
-    // is the function whose unbraced `if` would have made it a no-op for
-    // EVERYONE; the tenant case below is what catches that.
+    // addTimelineEntry is the ONE timeline writer. RESTATED (deal desk, 2026-11-20): it used to return void and ride the seat's
+    // RLS client; it now resolves through the deal desk for the deal it is handed (the seam FIRST, so a read_only grant still
+    // attempts nothing), writes on the service client, and RETURNS whether the line landed. This is the function whose unbraced
+    // `if` would have made it a no-op for EVERYONE; the admitted-tenant case below is what catches that.
     const voidRo = await underSession(READ_ONLY_GRANT, () => after.addTimelineEntry("t1", "x", "y"))
-    check("transactions · addTimelineEntry (void) attempts no write under a read_only grant",
-      voidRo.calls.length === 0)
-    const voidTenant = await underSession(session(), () => after.addTimelineEntry("t1", "x", "y"))
-    check("transactions · …and STILL inserts for an ordinary tenant user (not silently disabled)",
-      voidTenant.calls.length === 1 && voidTenant.calls[0].channel === "cookie" &&
-      voidTenant.calls[0].table === "transaction_timeline")
+    check("transactions · addTimelineEntry attempts no write under a read_only grant, and says so",
+      voidRo.calls.length === 0 && voidRo.result?.ok === false)
+    const voidTenant = await withDesk(undefined, session(), () => after.addTimelineEntry("t1", "x", "y"))
+    check("transactions · …and STILL inserts for an ordinary tenant user the deal desk admits (not silently disabled) — on the service client, after the gate",
+      voidTenant.calls.length === 1 && voidTenant.calls[0].channel === "service" &&
+      voidTenant.calls[0].table === "transaction_timeline" && voidTenant.result?.ok === true)
+    const voidRefused = await withDesk(DESK_REFUSES, session(), () => after.addTimelineEntry("t1", "x", "y"))
+    check("transactions · …and writes NOTHING for a tenant user the deal desk refuses (ok: false, zero attempts)",
+      voidRefused.calls.length === 0 && voidRefused.result?.ok === false)
   }
 
   // ── 3. COVERAGE, DERIVED — no writer left on a bare cookie client ─────────

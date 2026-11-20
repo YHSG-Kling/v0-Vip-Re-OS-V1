@@ -42,6 +42,21 @@
  *         its own, every update / delete pinned to the desk's deal, every insert stamped after any spread), with controls;
  *       · THE MODEL BITES: the policy model itself is shown refusing what the live policies refuse (positive control).
  *     With DEAL_DESK_ROOT=<the tree before this change> the "saves" checks are RED for exactly those seats and inserts.
+ * §F  THE INSERT SIDE OF THOSE POLICIES, AND THE CHANGE THAT CLOSES IT (follow-on, 2026-11-20). The agent policy's WITH CHECK
+ *     names only the tenant, so any signed-in seat of a tenant — a vendor or a client seat included — can INSERT into the five
+ *     tables through the data API on any deal id, another tenant's included. docs/operations/OWNER-SQL.md §R.6 holds the
+ *     ALTER POLICY block that closes it (the owner runs it; nothing here applies SQL). §F is what makes it safe to run:
+ *       · PG_MEASURED — the verbatim live policy text and that exact block, run on a real PostgreSQL 16 by
+ *         scripts/deal-table-policy-measure.py: 16 seats × 8 operations, before and after. The block's fingerprint is pinned,
+ *         so editing the SQL without measuring again goes red;
+ *       · THE MODEL IS THAT ENGINE ON THOSE CASES — policySession (both modes) reproduces every measured cell, so the driven
+ *         checks here and in §E stand on a model that agrees with Postgres, not on my reading of the documentation;
+ *       · THE CENSUS (derived, comment-stripped) — every write statement on the five tables in app/ and lib/, with the client
+ *         its receiver is bound to: none rides a session client (a file nothing imports is named, with the proof); a function
+ *         that is HANDED its client is traced to every caller, each of which must hand it the service client;
+ *       · the doors that DID ride a session client are driven or source-ruled: the earnest-money door and the one timeline
+ *         writer under BOTH policy modes, the AI deadline door and the two former inline timeline inserts by source rule.
+ *     With DEAL_DESK_ROOT=<the tree before this change> the census finds the session sites and the driven doors go red.
  *
  * BLIND SPOTS (published). The in-memory client has no row security, CHECKs or foreign keys — which is exactly why a gate
  * that leaned on row security shows up here. lib/teams/team-scope.ts leadsAgentsTeam is a counted fixture (it calls a
@@ -53,10 +68,17 @@
  * on the service client), no CHECK constraint and no embed (`transactions(id)` projects nothing here). Two service writers of
  * the four tables have NO door (they are printed by §E) — the source rules hold them; nothing drives them. Other files' doors
  * onto these tables keep their own gates and are not driven here: the title vendor's status (app/actions/title-portal.ts),
- * the earnest-money editor (app/actions/transaction-inspections.ts) and the repair doors of §B.
+ * the repair doors of §B. §F's census matches a LITERAL table name: a write through a computed name
+ * (lib/kernel/brokerage-transfer.ts `svc.from(table)`, the service client) is not seen. Its classifier binds a receiver to the
+ * NEAREST PRECEDING declaration of that name in the file — lexical scope by position, not a parser; "unknown" fails the guard
+ * rather than passing. A declaration `x = handed ?? createServiceClient()` counts as the service client; its handed half is not
+ * followed (one site: lib/voice/team-commands.ts). PG_MEASURED was measured with NO row security on public.transactions / public.agents (the policies'
+ * subqueries read them as the caller); live, those tables have their own policies, which can only refuse more. §F does not
+ * drive the AI deadline door (it reaches a model) — its rule is read from source.
  */
 import { registerHooks } from "node:module"
-import { readFileSync, existsSync, statSync } from "node:fs"
+import { readFileSync, existsSync, statSync, readdirSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { pathToFileURL } from "node:url"
 import { join } from "node:path"
 import { memSupabase, type MemClient, type Row } from "./in-memory-supabase"
@@ -86,7 +108,7 @@ const AG_A = u("e", 4), AG_B = u("e", 5), AG_BUY = u("e", 6), AG_LEAD = u("e", 7
 const TX1 = u("d", 1), TX_NOAGENT = u("d", 2), TX_X = u("d", 9)
 const R1 = u("c", 1), VENDOR_ROW = u("f", 1), XVENDOR_ROW = u("f", 2)
 // §E: two more brokerage seats, a second deal of the same agents (it has no title / escrow record yet), and the deal-detail rows.
-const U_OWNER = u("a", 13), U_BADMIN = u("a", 14), TX2 = u("d", 3)
+const U_OWNER = u("a", 13), U_BADMIN = u("a", 14), U_ADMIN = u("a", 15), TX2 = u("d", 3)
 const P1 = u("c", 2), P_OLD = u("c", 3), P_X = u("c", 4), E1 = u("c", 5), E_X = u("c", 6), D1 = u("c", 7), D_X = u("c", 8), R_X = u("c", 9)
 /** The team fixture the counted team-scope seam answers from: who LEADS which agents' team. */
 const LEADS: Record<string, string[]> = { [U_LEAD]: [AG_A], [U_LEAD2]: [AG_B] }
@@ -103,6 +125,7 @@ function world(): MemClient {
       { id: U_ISA, brokerage_id: B1, user_type: "isa" }, { id: U_NOTYPE, brokerage_id: B1, user_type: null },
       { id: U_X, brokerage_id: B2, user_type: "broker" }, { id: U_XVENDOR, brokerage_id: B2, user_type: "vendor" },
       { id: U_OWNER, brokerage_id: B1, user_type: "broker_owner" }, { id: U_BADMIN, brokerage_id: B1, user_type: "broker_admin" },
+      { id: U_ADMIN, brokerage_id: B1, user_type: "admin" },
     ],
     agents: [
       { id: AG_A, user_id: U_AGENT, brokerage_id: B1 }, { id: AG_B, user_id: U_AGENT2, brokerage_id: B1 }, { id: AG_BUY, user_id: U_BUYSIDE, brokerage_id: B1 },
@@ -130,7 +153,7 @@ function world(): MemClient {
 // ═══ seams (installed BEFORE any app module loads) ═════════════════════════════════════════════════════════════════════
 const G = globalThis as any
 G.__DD = {
-  mem: world() as MemClient, seat: null as string | null, refuseTransactions: false, leads: LEADS, rls: false,
+  mem: world() as MemClient, seat: null as string | null, refuseTransactions: false, leads: LEADS, rls: false, policy: "live" as "live" | "proposed",
   calls: { milestones: [] as any[], events: [] as any[], lender: [] as any[], other: 0 },
   /** The caller's client. §E turns `rls` on: it is then the model of the live policies; the service client never is. */
   sess: () => (G.__DD.rls ? policySession(G.__DD.base(), G.__DD.seat) : G.__DD.base()),
@@ -194,7 +217,7 @@ registerHooks({
 
 const load = (p: string) => import(pathToFileURL(join(ROOT, p)).href)
 function as(seat: string | null): MemClient {
-  G.__DD.mem = world(); G.__DD.seat = seat; G.__DD.refuseTransactions = false; G.__DD.rls = false
+  G.__DD.mem = world(); G.__DD.seat = seat; G.__DD.refuseTransactions = false; G.__DD.rls = false; G.__DD.policy = "live"
   G.__DD.calls = { milestones: [], events: [], lender: [], other: 0 }
   return G.__DD.mem
 }
@@ -378,6 +401,8 @@ const DETAIL_TABLES = ["transaction_participants", "transaction_deadlines", "tra
 const POLICY_TABLES = new Set<string>([...DETAIL_TABLES, "transaction_timeline"])
 /** trx_broker_<table>: the seats the policy names. `super_admin` is in the live policy and is not a storable users.user_type. */
 const POLICY_SEATS = ["broker", "admin", "super_admin", "tc"]
+/** docs/operations/OWNER-SQL.md §R.6 trx_broker_<table>: the deal desk's brokerage tier (the dead name is gone). */
+const PROPOSED_SEATS = ["broker", "broker_owner", "broker_admin", "admin", "compliance_officer", "tc"]
 /**
  * pg_policies, project hrvaqgvukzxfskkcrwbt, read 2026-11-20 — the same two policies on each of the five tables:
  *   trx_agent_<t>   ALL  USING  the caller is agent_id / buyer_agent_id / seller_agent_id of the row's deal (agents.user_id = auth.uid())
@@ -393,8 +418,13 @@ function policySession(client: any, seat: string | null): any {
   const myAgents = new Set(T(mem, "agents").filter((a) => a.user_id === seat).map((a) => a.id))
   const sameTenant = (row: Row) => tenant !== null && row.brokerage_id === tenant
   const onMyDeal = (row: Row) => { const d = T(mem, "transactions").find((t) => t.id === row.transaction_id); return !!d && [d.agent_id, d.buyer_agent_id, d.seller_agent_id].some((a) => a && myAgents.has(a)) }
-  const using = (row: Row) => !!seat && (onMyDeal(row) || (sameTenant(row) && POLICY_SEATS.includes(type)))
-  const withCheck = (row: Row) => !!seat && sameTenant(row)
+  // PROPOSED (§R.6): the agent CHECK also names the deal (in the caller's tenant); the broker policy names the six desk seats
+  // and its CHECK also requires the DEAL to be in the caller's tenant. USING is not narrowed.
+  const proposed = G.__DD.policy === "proposed"
+  const dealInTenant = (row: Row) => { const d = T(mem, "transactions").find((t) => t.id === row.transaction_id); return !!d && tenant !== null && d.brokerage_id === tenant }
+  const seats = proposed ? PROPOSED_SEATS : POLICY_SEATS
+  const using = (row: Row) => !!seat && (onMyDeal(row) || (sameTenant(row) && seats.includes(type)))
+  const withCheck = (row: Row) => !!seat && sameTenant(row) && (!proposed || (dealInTenant(row) && (onMyDeal(row) || seats.includes(type))))
   const denied = (table: string) => ({ data: null, error: { code: "42501", message: `new row violates row-level security policy for table "${table}"` } })
   const from = (table: string) => {
     const real: any = client.from(table)
@@ -433,7 +463,7 @@ function policySession(client: any, seat: string | null): any {
   return new Proxy(client, { get: (t: any, k) => (k === "from" ? from : t[k]) })
 }
 /** A fresh world, signed in as `seat`, with the SESSION client under the policy model. */
-function underPolicies(seat: string | null): MemClient { const m = as(seat); G.__DD.rls = true; return m }
+function underPolicies(seat: string | null, mode: "live" | "proposed" = "live"): MemClient { const m = as(seat); G.__DD.rls = true; G.__DD.policy = mode; return m }
 const detailState = (m: MemClient) => JSON.stringify([...POLICY_TABLES].map((t) => T(m, t)))
 
 /** The driven deal-detail doors: how each is called and what "it landed" means — on the right deal, in the SESSION's tenant. */
@@ -497,10 +527,32 @@ function writerProblems(body: string): string[] {
   return [...new Set(out)]
 }
 
+/** Every deal-detail door × every desk seat saves, × every off-desk seat writes nothing — under one policy mode. */
+async function driveDetailDoors(act: any, mode: "live" | "proposed") {
+  const tag = mode === "live" ? "" : " [PROPOSED policies]"
+  for (const door of Object.keys(DETAIL_DOORS).filter((d) => typeof act[d] === "function")) {
+    const notSaved: string[] = []
+    for (const [seat, label] of DESK_SEATS) {
+      const m = underPolicies(seat, mode)
+      const x = await drive(() => DETAIL_DOORS[door].call(act))
+      if (!((x.r as any)?.success === true && DETAIL_DOORS[door].landed(m))) notSaved.push(`${label}: ${x.threw ?? (x.r as any)?.error ?? "resolved, but the row is not as asked"}`)
+    }
+    check(`${door}${tag}: each of the ${DESK_SEATS.length} seats the desk admits saves — on the deal, with the session's tenant`, notSaved.length === 0, notSaved)
+    const wrote: string[] = []
+    for (const [seat, label] of OFF_DESK_SEATS) {
+      const m = underPolicies(seat, mode)
+      const was = detailState(m)
+      const x = await drive(() => DETAIL_DOORS[door].call(act))
+      if (!refused(x) || detailState(m) !== was) wrote.push(`${label}: ${detailState(m) !== was ? "ROWS CHANGED" : "rows unchanged"}, answered ${JSON.stringify(x.r ?? x.threw)?.slice(0, 140)}`)
+    }
+    check(`NEG ${door}${tag}: each of the ${OFF_DESK_SEATS.length} seats the desk refuses is refused and the five tables are unchanged`, wrote.length === 0, wrote)
+  }
+}
+
 async function sectionE() {
   section("§E · every desk seat's deal-detail edit lands (the session client models the two live policies)")
   // ── THE MODEL BITES (positive control for the store itself) ──
-  let m = underPolicies(U_CO)
+  let m: MemClient = underPolicies(U_CO)
   const coUpd = await G.__DD.sess().from("transaction_participants").update({ name: "x" }).eq("id", P1).select().single()
   const coIns = await G.__DD.sess().from("transaction_title_escrow").insert({ transaction_id: TX2, brokerage_id: B1, title_company_name: "t" }).select().single()
   m = underPolicies(U_AGENT)
@@ -530,23 +582,7 @@ async function sectionE() {
 
   // ── DRIVEN: every seat the desk admits saves; every seat it refuses writes nothing ──
   const act = await load(DEAL_ACTIONS)
-  for (const door of Object.keys(DETAIL_DOORS).filter((d) => typeof act[d] === "function")) {
-    const notSaved: string[] = []
-    for (const [seat, label] of DESK_SEATS) {
-      m = underPolicies(seat)
-      const x = await drive(() => DETAIL_DOORS[door].call(act))
-      if (!((x.r as any)?.success === true && DETAIL_DOORS[door].landed(m))) notSaved.push(`${label}: ${x.threw ?? (x.r as any)?.error ?? "resolved, but the row is not as asked"}`)
-    }
-    check(`${door}: each of the ${DESK_SEATS.length} seats the desk admits saves — on the deal, with the session's tenant`, notSaved.length === 0, notSaved)
-    const wrote: string[] = []
-    for (const [seat, label] of OFF_DESK_SEATS) {
-      m = underPolicies(seat)
-      const was = detailState(m)
-      const x = await drive(() => DETAIL_DOORS[door].call(act))
-      if (!refused(x) || detailState(m) !== was) wrote.push(`${label}: ${detailState(m) !== was ? "ROWS CHANGED" : "rows unchanged"}, answered ${JSON.stringify(x.r ?? x.threw)?.slice(0, 140)}`)
-    }
-    check(`NEG ${door}: each of the ${OFF_DESK_SEATS.length} seats the desk refuses is refused and the five tables are unchanged`, wrote.length === 0, wrote)
-  }
+  await driveDetailDoors(act, "live")
   check("every driven door exists on the module", Object.keys(DETAIL_DOORS).every((d) => typeof act[d] === "function"), Object.keys(DETAIL_DOORS).filter((d) => typeof act[d] !== "function"))
 
   // ── another tenant's rows ──
@@ -610,9 +646,303 @@ async function sectionE() {
   const timelineWrites = [...svcSrc.matchAll(/\.from\("transaction_timeline"\)\s*\.(?:insert|update|upsert|delete)\s*\(/g)].length
   const line = fnWhole(svcSrc, "writeTimelineLine")
   const stampAt = line.indexOf("brokerage_id: brokerageId"), spreadAt = line.indexOf("...row")
-  check("ONE timeline insert in the service module (writeTimelineLine), and it stamps the tenant of the write context that holds the client — after the row, so the row cannot overwrite it; addTimelineEntry hands it the seam's client and tenant",
+  check("ONE timeline insert in the service module (writeTimelineLine), and it stamps the tenant of the write context that holds the client — after the row, so the row cannot overwrite it; addTimelineEntry asks the desk for the deal it is handed and passes that client and tenant",
     timelineWrites === 1 && /\.from\("transaction_timeline"\)\.insert\(/.test(line) && spreadAt >= 0 && stampAt > spreadAt && !/^export\s+async\s+function\s+writeTimelineLine\b/m.test(svcSrc)
-    && /writeTimelineLine\(\s*supabase\s*,\s*gate\.brokerageId\s*,/.test(fnWhole(svcSrc, "addTimelineEntry")), { timelineWrites, line: line.slice(0, 200) })
+    && /writeTimelineLine\(\s*supabase\s*,\s*gate\.brokerageId\s*,/.test(fnWhole(svcSrc, "addTimelineEntry")) && /const gate = await dealDeskWriteContext\(\s*\{\s*transactionId\s*\}\s*\)/.test(fnWhole(svcSrc, "addTimelineEntry")), { timelineWrites, line: line.slice(0, 200) })
+}
+
+// ═══ §F — the insert side of the policies, measured on PostgreSQL, and the census that makes the fix safe to run ═══════
+/**
+ * MEASURED, NOT MODELLED: scripts/deal-table-policy-measure.py loaded the verbatim live policy and helper-function text (pg_policies /
+ * pg_proc, project hrvaqgvukzxfskkcrwbt, read 2026-11-20) into a local PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1), ran every seat × operation, applied the
+ * ALTER POLICY block of docs/operations/OWNER-SQL.md §R.6 UNCHANGED, and ran them again. All five tables answered identically.
+ * A cell is the rows affected / visible, or the SQLSTATE (42501 = refused by row security). Operations, in order:
+ *   insert_b1_deal · insert_b1_deal_returning · insert_b1_deal_no_tenant · insert_b2_deal · update_row · update_never_stamped_row · delete_row · rows_visible_on_b1_deal
+ * (TX1 is a deal of tenant B1; "b2 deal" is another tenant's deal; the seat always stamps ITS OWN tenant unless "no_tenant".)
+ */
+const PG_MEASURED = {
+  engine: "PostgreSQL 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)",
+  proposedSqlSha256: "41350c1715b02ece98c084a0deda6248420a4311e7b7b39a399fa521c99c47ad",
+  cases: ["insert_b1_deal", "insert_b1_deal_returning", "insert_b1_deal_no_tenant", "insert_b2_deal", "update_row", "update_never_stamped_row", "delete_row", "rows_visible_on_b1_deal"],
+  live: {
+    broker: "1 1 42501 1 1 0 1 1",
+    broker_owner: "1 42501 42501 1 0 0 0 0",
+    broker_admin: "1 42501 42501 1 0 0 0 0",
+    admin: "1 1 42501 1 1 0 1 1",
+    compliance_officer: "1 42501 42501 1 0 0 0 0",
+    tc: "1 1 42501 1 1 0 1 1",
+    agent_on_deal: "1 1 42501 1 1 42501 1 2",
+    buyer_side_agent: "1 1 42501 1 1 42501 1 2",
+    team_lead_not_on_deal: "1 42501 42501 1 0 0 0 0",
+    agent_off_deal: "1 42501 42501 1 0 0 0 0",
+    vendor: "1 42501 42501 1 0 0 0 0",
+    contact: "1 42501 42501 1 0 0 0 0",
+    isa: "1 42501 42501 1 0 0 0 0",
+    no_user_type: "1 42501 42501 1 0 0 0 0",
+    other_tenant_broker: "1 1 42501 1 0 0 0 0",
+    anon: "42501 42501 42501 42501 0 0 0 0",
+  } as Record<string, string>,
+  proposed: {
+    broker: "1 1 42501 42501 1 0 1 1",
+    broker_owner: "1 1 42501 42501 1 0 1 1",
+    broker_admin: "1 1 42501 42501 1 0 1 1",
+    admin: "1 1 42501 42501 1 0 1 1",
+    compliance_officer: "1 1 42501 42501 1 0 1 1",
+    tc: "1 1 42501 42501 1 0 1 1",
+    agent_on_deal: "1 1 42501 42501 1 42501 1 2",
+    buyer_side_agent: "1 1 42501 42501 1 42501 1 2",
+    team_lead_not_on_deal: "42501 42501 42501 42501 0 0 0 0",
+    agent_off_deal: "42501 42501 42501 42501 0 0 0 0",
+    vendor: "42501 42501 42501 42501 0 0 0 0",
+    contact: "42501 42501 42501 42501 0 0 0 0",
+    isa: "42501 42501 42501 42501 0 0 0 0",
+    no_user_type: "42501 42501 42501 42501 0 0 0 0",
+    other_tenant_broker: "42501 42501 42501 1 0 0 0 0",
+    anon: "42501 42501 42501 42501 0 0 0 0",
+  } as Record<string, string>,
+}
+/** The measured seat names → this guard's fixture users (null = no session). */
+const PG_SEAT: Record<string, string | null> = { broker: U_BROKER, broker_owner: U_OWNER, broker_admin: U_BADMIN, admin: U_ADMIN, compliance_officer: U_CO, tc: U_TC, agent_on_deal: U_AGENT, buyer_side_agent: U_BUYSIDE, team_lead_not_on_deal: U_LEAD, agent_off_deal: U_AGENT2, vendor: U_VENDOR, contact: U_CONTACT, isa: U_ISA, no_user_type: U_NOTYPE, other_tenant_broker: U_X, anon: null }
+
+/** The same eight operations through the MODEL, on transaction_participants (P1 = stamped row, P_OLD = never stamped, TX_X = B2's deal). */
+async function modelOutcomes(seat: string | null, mode: "live" | "proposed"): Promise<string> {
+  const t = "transaction_participants"
+  const run = async (fn: (sess: any, tenant: string | null) => PromiseLike<any>, kind: "insert" | "count"): Promise<string> => {
+    const m = underPolicies(seat, mode)
+    const r = await fn(G.__DD.sess(), T(m, "users").find((x) => x.id === seat)?.brokerage_id ?? null)
+    return r.error ? String(r.error.code) : kind === "insert" ? "1" : String((r.data ?? []).length)
+  }
+  return [
+    await run((s, ten) => s.from(t).insert({ transaction_id: TX1, brokerage_id: ten }), "insert"),
+    await run((s, ten) => s.from(t).insert({ transaction_id: TX1, brokerage_id: ten }).select().single(), "insert"),
+    await run((s) => s.from(t).insert({ transaction_id: TX1, brokerage_id: null }), "insert"),
+    await run((s, ten) => s.from(t).insert({ transaction_id: TX_X, brokerage_id: ten }), "insert"),
+    await run((s) => s.from(t).update({ note: "u" }).eq("id", P1).select("id"), "count"),
+    await run((s) => s.from(t).update({ note: "u" }).eq("id", P_OLD).select("id"), "count"),
+    await run((s) => s.from(t).delete().eq("id", P1).select("id"), "count"),
+    await run((s) => s.from(t).select("id").eq("transaction_id", TX1), "count"),
+  ].join(" ")
+}
+
+// ── the census: every write statement on the five tables, and the client its receiver is bound to ──
+type SiteClass = { cls: "service" | "desk" | "session" | "handed" | "unknown"; how: string; fn?: string }
+const lastMatch = (text: string, re: RegExp): RegExpExecArray | null => { let m: RegExpExecArray | null, last: RegExpExecArray | null = null; while ((m = re.exec(text))) last = m; return last }
+/** PURE — the client a receiver name is bound to at one position: the NEAREST PRECEDING declaration or parameter of that name. */
+function classifyReceiver(src: string, at: number, recv: string, depth = 0): SiteClass {
+  if (/createServiceClient\(\)$/.test(recv)) return { cls: "service", how: "createServiceClient() inline" }
+  const base = recv.split(".")[0]
+  const before = src.slice(0, at)
+  const bind = lastMatch(before, new RegExp(`(?:const|let|var)\\s+(?:\\{[^}=]*\\b${base}\\b[^}=]*\\}|${base})\\s*(?::[^=\\n]+)?=\\s*([^\\n]+)`, "g"))
+  const param = lastMatch(before, new RegExp(`function\\s+(\\w+)\\s*\\(([^)]*?\\b${base}\\b\\s*[:,)=?][^)]*|[^)]*?\\b${base}\\b)\\)`, "g"))
+  if (param && (!bind || param.index > bind.index)) return { cls: "handed", how: `parameter of ${param[1]}`, fn: param[1] }
+  if (!bind) return { cls: "unknown", how: `no declaration of ${base}` }
+  const rhs = bind[1]
+  if (/createServiceClient\(/.test(rhs)) return { cls: "service", how: "createServiceClient()" }
+  if (/dealDeskWriteContext\(|dealDeskFor\(/.test(rhs)) return { cls: "desk", how: "the deal desk's client" }
+  if (/createClient\(|createServerClient\(/.test(rhs)) return { cls: "session", how: "createClient()" }
+  if (/actingWriteContext\(|resolveWriteContext(?:ForTenant)?\(/.test(rhs)) return { cls: "session", how: "the write seam (the session client unless a full grant)" }
+  const via = /^\s*(?:await\s+)?([A-Za-z_$][\w$]*)\.(?:db|supabase|client)\b/.exec(rhs)
+  if (via && depth < 3) return classifyReceiver(src, bind.index, via[1], depth + 1)
+  return { cls: "unknown", how: `bound to: ${rhs.slice(0, 60)}` }
+}
+function tsFiles(dir: string, out: string[] = []): string[] {
+  if (!existsSync(join(ROOT, dir))) return out
+  for (const e of readdirSync(join(ROOT, dir))) {
+    if (e === "node_modules" || e.startsWith(".")) continue
+    const p = `${dir}/${e}`
+    if (statSync(join(ROOT, p)).isDirectory()) tsFiles(p, out); else if (/\.(ts|tsx)$/.test(e)) out.push(p)
+  }
+  return out
+}
+type WriteSite = { file: string; line: number; table: string; verb: string; recv: string } & SiteClass
+/** PURE over one file's comment-stripped source. */
+function writeSitesOf(file: string, src: string): WriteSite[] {
+  const out: WriteSite[] = []
+  const re = new RegExp(`((?:[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*|\\)))\\s*\\.from\\(\\s*["'\`](${[...POLICY_TABLES].join("|")})["'\`]\\s*\\)`, "g")
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src))) {
+    const end = src.indexOf("\n\n", m.index)
+    const verb = /\.(insert|update|upsert|delete)\s*\(/.exec(src.slice(m.index, end < 0 ? m.index + 600 : Math.min(end, m.index + 900)))
+    if (!verb) continue
+    let recv = m[1]
+    if (recv === ")") recv = (/([\w$.()"'@\/\s-]{0,80}\))$/.exec(src.slice(0, m.index + 1))?.[1] ?? ")").replace(/\s+/g, "")
+    out.push({ file, line: src.slice(0, m.index).split("\n").length, table: m[2], verb: verb[1], recv, ...classifyReceiver(src, m.index, recv) })
+  }
+  return out
+}
+/** Split on top-level commas. `generics` also treats `<…>` as a bracket (a parameter list: `Record<string, unknown>`), never `=>`. */
+function splitTopLevel(text: string, generics = false): string[] {
+  const out: string[] = []; let depth = 0, cur = ""
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if ("([{".includes(ch) || (generics && ch === "<")) depth++
+    if (")]}".includes(ch) || (generics && ch === ">" && text[i - 1] !== "=")) depth--
+    if (ch === "," && depth === 0) { out.push(cur.trim()); cur = "" } else cur += ch
+  }
+  if (cur.trim()) out.push(cur.trim())
+  return out
+}
+function parenBody(src: string, open: number): string { let depth = 0; for (let i = open; i < src.length; i++) { if (src[i] === "(") depth++; else if (src[i] === ")") { depth--; if (depth === 0) return src.slice(open + 1, i) } } return "" }
+
+async function sectionF() {
+  section("§F · the insert side of the policies (measured on PostgreSQL) and the census that makes the fix safe to run")
+  // ── THE MODEL IS THAT ENGINE ON THOSE CASES ──
+  for (const mode of ["live", "proposed"] as const) {
+    const diff: string[] = []
+    for (const [name, seat] of Object.entries(PG_SEAT)) { const got = await modelOutcomes(seat, mode); if (got !== PG_MEASURED[mode][name]) diff.push(`${name}: model "${got}" ≠ ${PG_MEASURED.engine} "${PG_MEASURED[mode][name]}"`) }
+    check(`the policy model reproduces every cell measured on ${PG_MEASURED.engine} — ${mode.toUpperCase()} policies, ${Object.keys(PG_SEAT).length} seats × ${PG_MEASURED.cases.length} operations`, diff.length === 0 && Object.keys(PG_MEASURED[mode]).length === Object.keys(PG_SEAT).length, diff)
+  }
+  const crossed = Object.entries(PG_SEAT).length > 0 ? (await Promise.all(Object.entries(PG_SEAT).map(async ([name, seat]) => (await modelOutcomes(seat, "live")) !== PG_MEASURED.proposed[name]))).filter(Boolean).length : 0
+  check("control · the comparison is not vacuous: the LIVE model does NOT reproduce the PROPOSED table", crossed > 0, crossed)
+  const cell = (mode: "live" | "proposed", seat: string, op: string) => PG_MEASURED[mode][seat].split(" ")[PG_MEASURED.cases.indexOf(op)]
+  const outsiders = ["team_lead_not_on_deal", "agent_off_deal", "vendor", "contact", "isa", "no_user_type"]
+  // The six desk seats come from the ONE list the proposed policy names (PROPOSED_SEATS) — they are users.user_type values, and
+  // the measured rows carry the same names. The two on-deal rows are measurement LABELS, kept apart so no array reads as a roster.
+  const onDealLabels = ["agent_on_deal", "buyer_side_agent"]
+  const insiders = [...PROPOSED_SEATS, ...onDealLabels]
+  check("THE HOLE, as measured: under the LIVE policies a vendor, a contact, an ISA, an agent off the deal, a team lead and a seat with no type each INSERT on their tenant's deal AND on another tenant's deal",
+    outsiders.every((s) => cell("live", s, "insert_b1_deal") === "1" && cell("live", s, "insert_b2_deal") === "1"), outsiders.map((s) => `${s}:${cell("live", s, "insert_b1_deal")}/${cell("live", s, "insert_b2_deal")}`))
+  check("…CLOSED, as measured: under the PROPOSED policies each of them is refused (42501) on both; an anonymous caller too; another tenant's broker cannot insert on this tenant's deal",
+    [...outsiders, "anon"].every((s) => cell("proposed", s, "insert_b1_deal") === "42501" && cell("proposed", s, "insert_b2_deal") === "42501") && cell("proposed", "other_tenant_broker", "insert_b1_deal") === "42501")
+  check("…and nothing a deal's own seats do is refused: an agent on the deal and the six desk seats insert, update and delete on their tenant's deal — and NONE of them can insert on another tenant's deal",
+    insiders.every((s) => cell("proposed", s, "insert_b1_deal") === "1" && cell("proposed", s, "insert_b1_deal_returning") === "1" && cell("proposed", s, "update_row") === "1" && cell("proposed", s, "delete_row") === "1" && cell("proposed", s, "insert_b2_deal") === "42501"),
+    insiders.map((s) => `${s}:${PG_MEASURED.proposed[s]}`))
+  check("…and no row a seat reads today disappears (USING is not narrowed): every seat sees at least as many rows after as before",
+    Object.keys(PG_SEAT).every((s) => Number(cell("proposed", s, "rows_visible_on_b1_deal")) >= Number(cell("live", s, "rows_visible_on_b1_deal"))))
+  if (ROOT === WT) {
+    const doc = raw("docs/operations/OWNER-SQL.md", WT)
+    const sec = doc.includes("### R.6 ") ? doc.slice(doc.indexOf("### R.6 ")) : ""
+    const blockAt = sec.indexOf("```sql"), block = blockAt < 0 ? "" : sec.slice(blockAt + 6, sec.indexOf("```", blockAt + 6))
+    const measured = block.includes("begin;") && block.includes("commit;") ? block.slice(block.indexOf("begin;"), block.indexOf("commit;") + "commit;".length) : ""
+    const sha = createHash("sha256").update(measured.replace(/\s+/g, " ").trim()).digest("hex")
+    check("THE MEASURED TEXT IS THE PUBLISHED TEXT: the ALTER POLICY block of OWNER-SQL.md §R.6 has the fingerprint PG_MEASURED was measured with (edit the SQL → measure again with scripts/deal-table-policy-measure.py)",
+      measured.length > 0 && sha === PG_MEASURED.proposedSqlSha256, { sha: sha.slice(0, 16), expected: PG_MEASURED.proposedSqlSha256.slice(0, 16) })
+    check("…the block alters exactly the two policies of each of the five tables, and nothing in it is destructive", [...POLICY_TABLES].every((t) => new RegExp(`alter policy trx_agent_${t} on public\\.${t}\\b`).test(measured) && new RegExp(`alter policy trx_broker_${t} on public\\.${t}\\b`).test(measured))
+      && (measured.match(/alter policy /g) ?? []).length === POLICY_TABLES.size * 2 && !/\b(drop|delete|truncate|grant|revoke|create)\b/i.test(measured), (measured.match(/alter policy /g) ?? []).length)
+  }
+
+  // ── THE CENSUS ──
+  const sources = [...tsFiles("app"), ...tsFiles("lib")].map((f) => [f, stripComments(raw(f))] as const)
+  const sites = sources.flatMap(([f, src]) => writeSitesOf(f, src))
+  const byClass = (c: SiteClass["cls"]) => sites.filter((s) => s.cls === c)
+  console.log(`    (published) ${sites.length} write statements on the five tables in ${new Set(sites.map((s) => s.file)).size} files of app/ and lib/: ${byClass("service").length} service client · ${byClass("desk").length} the deal desk's client · ${byClass("handed").length} handed their client · ${byClass("session").length} session client · ${byClass("unknown").length} unresolved`)
+  check("the census is not empty and every receiver resolved (an unresolved client fails here rather than passing as fine)", sites.length > 0 && byClass("unknown").length === 0, byClass("unknown").map((s) => `${s.file}:${s.line} ${s.recv} — ${s.how}`))
+  // A session-client site is allowed only in a module NOTHING imports — derived, and named.
+  const importersOf = (file: string): string[] => {
+    const noExt = file.replace(/\.(ts|tsx)$/, ""), base = noExt.split("/").pop()!, dir = noExt.split("/").slice(0, -1).join("/")
+    return sources.filter(([f, src]) => f !== file && (src.includes(`"@/${noExt}"`) || src.includes(`'@/${noExt}'`) || (f.startsWith(dir + "/") && !f.slice(dir.length + 1).includes("/") && new RegExp(`["']\\./${base.replace(/[.]/g, "\\.")}["']`).test(src)))).map(([f]) => f)
+  }
+  const reachable = (file: string): boolean => importersOf(file).some((imp) => {
+    if (!/\/index\.tsx?$/.test(imp)) return true
+    const dir = imp.replace(/\/index\.tsx?$/, "")
+    return sources.some(([f, src]) => f !== imp && (src.includes(`"@/${dir}"`) || src.includes(`'@/${dir}'`)))
+  })
+  const sessionLive = byClass("session").filter((s) => reachable(s.file))
+  const sessionDead = byClass("session").filter((s) => !reachable(s.file))
+  check("NO write on the five tables rides a session client from code anything can reach — so the policy change can refuse none of the application's own writes", sessionLive.length === 0, sessionLive.map((s) => `${s.file}:${s.line} ${s.table} ${s.verb} via ${s.how}`))
+  if (sessionDead.length) console.log(`    (published) session-client sites in a module nothing imports — unreachable, and their insert carries no tenant, so both policy sets refuse it: ${sessionDead.map((s) => `${s.file}:${s.line}`).join(", ")}`)
+  // A handed client is traced to every caller — and a caller that is itself handed it, to ITS callers (two levels up at most;
+  // deeper, or a call with nothing at the client's position, fails rather than passes).
+  const handsOf = (fn: string, paramName: string, depth = 0): { bad: string[]; calls: number } => {
+    const decl = sources.map(([f, src]) => ({ f, src, m: new RegExp(`function\\s+${fn}\\s*\\(`).exec(src) })).find((x) => x.m)
+    if (!decl) return { bad: [`${fn}: declaration not found`], calls: 0 }
+    const idx = splitTopLevel(parenBody(decl.src, decl.m!.index + decl.m![0].length - 1), true).findIndex((p) => new RegExp(`^${paramName}\\b`).test(p))
+    if (idx < 0) return { bad: [`${fn}: no parameter named ${paramName}`], calls: 0 }
+    const bad: string[] = []; let calls = 0
+    for (const [f, src] of sources) {
+      const re = new RegExp(`\\b${fn}\\s*\\(`, "g"); let m: RegExpExecArray | null
+      while ((m = re.exec(src))) {
+        if (/function\s+$/.test(src.slice(Math.max(0, m.index - 12), m.index))) continue
+        calls++
+        const arg = (splitTopLevel(parenBody(src, m.index + m[0].length - 1))[idx] ?? "").replace(/\s+as\s+\w+$/, "").trim()
+        const c: SiteClass = arg ? classifyReceiver(src, m.index, arg) : { cls: "unknown", how: "nothing at the client's position" }
+        if (c.cls === "service" || c.cls === "desk") continue
+        if (c.cls === "handed" && depth < 2) { bad.push(...handsOf(c.fn!, arg.split(".")[0], depth + 1).bad); continue }
+        bad.push(`${fn} ← ${f}:${src.slice(0, m.index).split("\n").length} hands it "${arg}" (${c.cls}: ${c.how})`)
+      }
+    }
+    return { bad, calls }
+  }
+  const handedFns = [...new Set(byClass("handed").map((s) => s.fn!))]
+  const badHands: string[] = [], hands: string[] = []
+  for (const fn of handedFns) {
+    const r = handsOf(fn, byClass("handed").find((s) => s.fn === fn)!.recv.split(".")[0])
+    badHands.push(...r.bad); hands.push(`${fn} ← ${r.calls} call(s)`)
+  }
+  console.log(`    (published) handed sinks: ${hands.join(" · ") || "none"}`)
+  check("every function that is HANDED its client for one of these writes is handed the service client (or the deal desk's) at every call site", badHands.length === 0, badHands)
+  check("control · the handed trace is not vacuous: there is at least one handed sink, every one has a caller, and a caller's session client would be named",
+    handedFns.length > 0 && hands.every((h) => !/← 0 call/.test(h)) && splitTopLevel("a: Record<string, unknown>, cb: (x: number) => void, svc: Svc", true).length === 3 && classifyReceiver(`const supabase = await createClient()\n  await planted(supabase, 1)`, 45, "supabase").cls === "session", hands)
+  // CONTROLS for the census.
+  const spec = (decl: string) => writeSitesOf("planted.ts", `${decl}\n  await supabase.from("transaction_timeline").insert({ a: 1 })\n\n`)[0]
+  check("CENSUS CONTROLS — a session client, the write seam, the service client, the desk's client and a parameter are each recognised; a write named only in a comment is not a site; a read is not a site",
+    spec("const supabase = await createClient()")?.cls === "session" && spec("const gate = await actingWriteContext()\n  const supabase = gate.db")?.cls === "session"
+    && spec("const supabase = createServiceClient()")?.cls === "service" && spec("const gate = await dealDeskWriteContext({ transactionId })\n  const supabase = gate.db")?.cls === "desk"
+    && spec("async function planted(supabase: any) {")?.cls === "handed" && spec("const other = 1")?.cls === "unknown"
+    && writeSitesOf("planted.ts", stripComments(`// await supabase.from("transaction_timeline").insert({ a: 1 })\n\n`)).length === 0
+    && writeSitesOf("planted.ts", `const supabase = await createClient()\n  await supabase.from("transaction_timeline").select("*")\n\n`).length === 0)
+
+  // ── THE DOORS THAT RODE A SESSION CLIENT — source rules ──
+  const insp = stripComments(raw("app/actions/transaction-inspections.ts")), em = fnWhole(insp, "updateEarnestMoneyAction")
+  const firstWrite = em.search(/\.(?:insert|update|upsert|delete)\s*\(/)
+  check("updateEarnestMoneyAction asks the deal desk before any write and returns its refusal; its update is pinned to the deal and the session's tenant and COUNTED; its insert stamps both after the patch",
+    em.indexOf("decideDealDesk(") >= 0 && em.indexOf("decideDealDesk(") < firstWrite && /if\s*\(\s*!\s*desk\.allowed\s*\)\s*return/.test(em) && !/await createClient\(/.test(em)
+    && /\.update\(updates\)\s*\.eq\("id", params\.titleEscrowId\)\.eq\("transaction_id", params\.transactionId\)\.eq\("brokerage_id", auth\.brokerageId\)\.select\("id"\)/.test(em) && /\(saved \?\? \[\]\)\.length !== 1/.test(em)
+    && em.indexOf("...updates") >= 0 && em.indexOf("...updates") < em.indexOf("brokerage_id:   auth.brokerageId"), em.slice(0, 160))
+  const coord = stripComments(raw("app/actions/ai-transaction-coordinator.ts")), pd = coord.slice(Math.max(0, coord.indexOf("export async function predictAndManageDeadlines(")), coord.indexOf("\nexport async function ", coord.indexOf("export async function predictAndManageDeadlines(") + 10))
+  const deskAt = pd.indexOf("decideDealDesk("), modelAt = pd.search(/\b(?:bookedGenerateObject|generateText|generateObject)\s*\(/), insertAt = pd.indexOf('.from("transaction_deadlines").insert(')
+  check("predictAndManageDeadlines asks the deal desk BEFORE the model is reached and before any deadline is written, returns its refusal, and inserts on the service client with the deal and the session's tenant",
+    deskAt >= 0 && modelAt > deskAt && insertAt > deskAt && /if\s*\(\s*!\s*desk\.allowed\s*\)\s*return/.test(pd) && pd.indexOf("if (!desk.allowed) return") < modelAt
+    && /await svc\.from\("transaction_deadlines"\)\.insert\(/.test(pd) && /const svc = \(await import\("@\/lib\/supabase\/service"\)\)\.createServiceClient\(\)/.test(pd) && pd.indexOf("const svc = ") > pd.indexOf("if (!desk.allowed) return") && /brokerage_id:\s*scope\.brokerageId/.test(pd), { deskAt, modelAt, insertAt })
+  const closing = stripComments(raw("app/actions/ai-closing-workflow.ts")), vm = stripComments(raw("app/actions/vendor-marketplace.ts"))
+  check("the AI closing analysis and the vendor booking write no timeline row themselves any more — both hand the line to the ONE timeline writer, which asks the deal desk for that deal",
+    !/\.from\(\s*"transaction_timeline"\s*\)/.test(closing) && /\baddTimelineEntry\s*\(/.test(closing) && !/\.from\(\s*"transaction_timeline"\s*\)/.test(vm) && /\baddTimelineEntry\s*\(/.test(vm))
+
+  // ── DRIVEN under BOTH policy modes: the deal-detail doors, the earnest-money door, the one timeline writer ──
+  const act = await load(DEAL_ACTIONS)
+  await driveDetailDoors(act, "proposed")
+  const svc = await load(SERVICE)
+  let inspections: any = null
+  try { inspections = await quiet(() => load("app/actions/transaction-inspections.ts")) } catch (e) { check("app/actions/transaction-inspections.ts loads in the harness", false, (e as Error)?.message?.slice(0, 300)) }
+  for (const mode of ["live", "proposed"] as const) {
+    const lineBad: string[] = [], lineLeak: string[] = []
+    for (const [seat, label] of DESK_SEATS) {
+      const m = underPolicies(seat, mode)
+      const x = await drive(() => svc.addTimelineEntry(TX1, "note", "a line", seat, { k: 1 }))
+      const rows = T(m, "transaction_timeline")
+      if (!((x.r as any)?.ok === true && rows.length === 1 && rows[0].transaction_id === TX1 && rows[0].brokerage_id === B1 && rows[0].performed_by === seat)) lineBad.push(`${label}: ${JSON.stringify(x.r ?? x.threw)?.slice(0, 120)}`)
+    }
+    for (const [seat, label] of [...OFF_DESK_SEATS, [U_BROKER, "this tenant's broker, on ANOTHER tenant's deal"] as [string, string]]) {
+      const m = underPolicies(seat, mode)
+      const x = await drive(() => svc.addTimelineEntry(label.includes("ANOTHER") ? TX_X : TX1, "note", "a planted line"))
+      if ((x.r as any)?.ok !== false || T(m, "transaction_timeline").length !== 0) lineLeak.push(label)
+    }
+    check(`addTimelineEntry [${mode.toUpperCase()} policies]: each of the ${DESK_SEATS.length} desk seats' line lands on the deal with the session's tenant and the actor it was given`, lineBad.length === 0, lineBad)
+    check(`NEG addTimelineEntry [${mode.toUpperCase()} policies]: a seat the desk refuses, and a deal of another tenant, get NO line — and the caller is told (ok: false)`, lineLeak.length === 0, lineLeak)
+    if (!inspections || typeof inspections.updateEarnestMoneyAction !== "function") continue
+    const emBad: string[] = [], emLeak: string[] = []
+    for (const [seat, label] of DESK_SEATS) {
+      let m = underPolicies(seat, mode)
+      const upd = await drive(() => inspections.updateEarnestMoneyAction({ transactionId: TX1, brokerageId: B1, titleEscrowId: E1, earnestMoneyAmount: 5000 }))
+      const okUpd = (upd.r as any)?.success === true && T(m, "transaction_title_escrow").find((r) => r.id === E1)?.earnest_money_amount === 5000
+      m = underPolicies(seat, mode)
+      const ins = await drive(() => inspections.updateEarnestMoneyAction({ transactionId: TX2, earnestMoneyAmount: 7000, earnestMoneyHeldBy: "First Title" }))
+      const made = T(m, "transaction_title_escrow").filter((r) => r.transaction_id === TX2)
+      const okIns = (ins.r as any)?.success === true && made.length === 1 && made[0].brokerage_id === B1 && made[0].earnest_money_amount === 7000
+      if (!okUpd || !okIns) emBad.push(`${label}: update ${okUpd ? "ok" : JSON.stringify(upd.r ?? upd.threw)?.slice(0, 90)} · insert ${okIns ? "ok" : JSON.stringify(ins.r ?? ins.threw)?.slice(0, 90)}`)
+    }
+    for (const [seat, label] of OFF_DESK_SEATS) {
+      const m = underPolicies(seat, mode), was = detailState(m)
+      const upd = await drive(() => inspections.updateEarnestMoneyAction({ transactionId: TX1, titleEscrowId: E1, earnestMoneyAmount: 1 }))
+      const ins = await drive(() => inspections.updateEarnestMoneyAction({ transactionId: TX2, earnestMoneyAmount: 1 }))
+      if (!refused(upd) || !refused(ins) || detailState(m) !== was) emLeak.push(`${label}: ${detailState(m) !== was ? "ROWS CHANGED" : "rows unchanged"} ${JSON.stringify(upd.r ?? upd.threw)?.slice(0, 80)}`)
+    }
+    const m = underPolicies(U_BROKER, mode), was = detailState(m)
+    const cross = await drive(() => inspections.updateEarnestMoneyAction({ transactionId: TX1, titleEscrowId: E_X, earnestMoneyAmount: 1 }))
+    const crossDeal = await drive(() => inspections.updateEarnestMoneyAction({ transactionId: TX_X, earnestMoneyAmount: 1 }))
+    check(`updateEarnestMoneyAction [${mode.toUpperCase()} policies]: each of the ${DESK_SEATS.length} desk seats saves the amount on the existing record and creates the record on a deal that has none — in the session's tenant`, emBad.length === 0, emBad)
+    check(`NEG updateEarnestMoneyAction [${mode.toUpperCase()} policies]: each of the ${OFF_DESK_SEATS.length} seats the desk refuses is refused with the tables unchanged; a broker cannot reach another tenant's record or deal`, emLeak.length === 0 && refused(cross) && refused(crossDeal) && detailState(m) === was, { emLeak, cross: cross.r, crossDeal: crossDeal.r })
+  }
 }
 
 // ═══ §D ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
@@ -629,10 +959,11 @@ async function main() {
   await sectionB()
   sectionC()
   await sectionE()
+  await sectionF()
   if (ROOT === WT) sectionD()
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   if (failed) { console.log(`❌ DEAL_DESK_FAIL — ${fails.slice(0, 12).join(" | ")}`); process.exit(1) }
-  console.log("✅ DEAL_DESK_PASS — one decision says who may work a deal; every milestone door and every deal-detail edit asks it; every seat it admits saves the edit, and a seat that does not work the deal writes nothing")
+  console.log("✅ DEAL_DESK_PASS — one decision says who may work a deal; every milestone door and every deal-detail edit asks it; every seat it admits saves the edit, a seat that does not work the deal writes nothing, and no write on the five deal tables rides a session client")
   process.exit(0)
 }
 main().catch((e) => { console.error(e); process.exit(1) })
