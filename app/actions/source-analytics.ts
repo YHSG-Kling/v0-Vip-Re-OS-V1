@@ -187,6 +187,13 @@ async function resolveScopeAgentIds(
   supabase: { from: (t: string) => any },
   f: Pick<SourceAnalyticsFilter, "brokerageId" | "agentId" | "agentIds" | "teamId">,
 ): Promise<string[] | null> {
+  return capToSessionScope(f.brokerageId, await requestedScopeAgentIds(supabase, f))
+}
+/** What the CALLER asked to see — a request, never the answer (capToSessionScope decides). */
+async function requestedScopeAgentIds(
+  supabase: { from: (t: string) => any },
+  f: Pick<SourceAnalyticsFilter, "brokerageId" | "agentId" | "agentIds" | "teamId">,
+): Promise<string[] | null> {
   if (f.agentIds !== undefined) return f.agentIds
   if (f.agentId) return [f.agentId]
   if (f.teamId) {
@@ -199,6 +206,37 @@ async function resolveScopeAgentIds(
     return (data ?? []).map((a: { id: string }) => a.id)
   }
   return null
+}
+
+/**
+ * WAVE 155 (integrator; the finding lane 155S2 left open) — THE CALLER DOES NOT CHOOSE ITS OWN REPORT SCOPE.
+ *
+ * `agentIds` arrives from the client: the page resolves the seat's scope (resolveReportScope) and hands it to the browser,
+ * which hands it back on every refresh. A server action is a public endpoint (CLAUDE.md §4), so an agent could post
+ * `agentIds: null` and read the whole brokerage's source volumes, spend and attributed revenue — and, through the drilldown,
+ * its recent Leads by name. The scope is now resolved HERE, from the session, by the same resolver the page uses, and the
+ * request is only ever NARROWED by it:
+ *   · a brokerage-wide seat (ceiling null) may ask for anything inside the tenant;
+ *   · any other seat asking for "everything" (null) gets its own ceiling;
+ *   · asking for specific agents returns only those inside the ceiling (none → a legitimately empty report).
+ * The page and its client pass the scope this same resolver produced, so what a legitimate caller sees does not change.
+ * No session, or a scope that cannot be resolved → nobody ([]), never everybody.
+ * @proofSeam scripts/wave155-ungated-deal-guard.ts
+ */
+async function capToSessionScope(brokerageId: string, requested: string[] | null): Promise<string[] | null> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return []
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { resolveReportScope } = await import("@/lib/kernel/reporting-scope")
+  // The scope reader takes the service client with the SESSION's ids (as the page does): the office hierarchy it reads is
+  // not visible to every seat, and a hidden row must not narrow or widen the answer.
+  const scope = await resolveReportScope(createServiceClient(), { userType: ctx.userType, userId: ctx.userId, agentId: ctx.agentId ?? "", brokerageId, teamId: ctx.teamId })
+  const ceiling = scope.agentIds ? scope.agentIds.filter(Boolean) : null
+  if (ceiling === null) return requested
+  if (requested === null) return ceiling
+  const allowed = new Set(ceiling)
+  return requested.filter((id) => allowed.has(id))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -659,7 +697,8 @@ export async function getSourceDrilldown(
     const [sourceName, sourceFamily] = sourceKey.split("::")
     const fromDate = dateFrom ?? new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
     const toDate = dateTo ?? new Date().toISOString()
-    const scopeIds: string[] | null = scopeAgentIds ?? null
+    // The request is capped to the session's own report scope (capToSessionScope) before ANY read below uses it.
+    const scopeIds: string[] | null = await capToSessionScope(brokerageId, scopeAgentIds ?? null)
 
     // Build base metrics via getSourcePerformance filtered to this source
     const perfResult = await getSourcePerformance({
@@ -686,8 +725,13 @@ export async function getSourceDrilldown(
     const { data: recentContacts } = await contactsQuery
 
     // Recent leads (for raw/lead families)
+    // LEADS BELONG TO THE BROKERAGE (CLAUDE.md §5): an agent sees Contacts, never the Lead queue. Named recent Leads are read
+    // only for a seat the one lead-visibility resolver admits (the lead desk); everyone else gets the source's counts above
+    // and an empty list here.
     let recentLeadsData: SourceDrilldownResult["recent_leads"] = []
-    if (sourceFamily !== "contact_direct") {
+    const { resolveLeadVisibilityForSession } = await import("@/lib/auth/lead-visibility")
+    const leadDesk = await resolveLeadVisibilityForSession(supabase as never)
+    if (sourceFamily !== "contact_direct" && leadDesk.allowed) {
       let leadsQuery = supabase
         .from("leads")
         .select("id, first_name, last_name, lead_stage, created_at")

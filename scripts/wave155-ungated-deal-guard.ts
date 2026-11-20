@@ -51,7 +51,7 @@ const B1 = u("b", 1), B2 = u("b", 2)
 const U_BROKER = u("a", 1), U_AGENT = u("a", 2), U_AGENT2 = u("a", 3), U_X = u("a", 9)
 const AG_A = u("e", 2), AG_B = u("e", 3), AG_X = u("e", 9)
 const TC1 = u("f", 1), TC_X = u("f", 9), TX1 = u("d", 1), TX_X = u("d", 9), ITEM1 = u("c", 1), ITEM_X = u("c", 9)
-const L_A = u("1", 1), L_X = u("1", 9), C_A = u("2", 1), C_X = u("2", 9), C_SELLER_USER = u("a", 5)
+const L_A = u("1", 1), L_X = u("1", 9), C_A = u("2", 1), C_B = u("2", 2), C_X = u("2", 9), C_SELLER_USER = u("a", 5)
 const PLAN1 = u("3", 1), PLAN_X = u("3", 9), ACT1 = u("4", 1), CA_X = u("5", 9), CONV1 = u("6", 1), EV1 = u("7", 1), EV_X = u("7", 9)
 
 function world(): MemClient {
@@ -65,6 +65,10 @@ function world(): MemClient {
 }
 function seedWorld(): MemClient {
   return memSupabase({
+    // The report-scope resolver reads the workspace row and its offices; without one it fails closed to "own work" (which is
+    // what the fixture produced before these rows existed — a broker saw an empty report). Single-office workspaces.
+    brokerages: [{ id: B1, plan_tier: "brokerage" }, { id: B2, plan_tier: "brokerage" }],
+    locations: [],
     users: [
       { id: U_BROKER, brokerage_id: B1, user_type: "broker", first_name: "Bea", last_name: "Broker", email: "bea@example.test" },
       { id: U_AGENT, brokerage_id: B1, user_type: "agent", first_name: "Ann", last_name: "Agent", email: "ann@example.test" },
@@ -89,7 +93,8 @@ function seedWorld(): MemClient {
       { id: ITEM_X, brokerage_id: B2, transaction_id: TX_X, item_name: "Other", completed: false, completed_by: null },
     ],
     contacts: [
-      { id: C_A, brokerage_id: B1, agent_id: AG_A, first_name: "Sam", last_name: "Seller", contact_user_id: C_SELLER_USER },
+      { id: C_A, brokerage_id: B1, agent_id: AG_A, first_name: "Sam", last_name: "Seller", contact_user_id: C_SELLER_USER, source: "zillow", source_family: "lead", created_at: new Date().toISOString(), deleted_at: null },
+      { id: C_B, brokerage_id: B1, agent_id: AG_B, first_name: "Col", last_name: "League", source: "zillow", source_family: "lead", created_at: new Date().toISOString(), deleted_at: null },
       { id: C_X, brokerage_id: B2, agent_id: AG_X, first_name: "Other", last_name: "Client" },
     ],
     listings: [
@@ -254,6 +259,18 @@ async function main() {
     check("NEG no session: per-source summary refused, 0 model calls", refused(x) && G.__S2.model === 0, { x, model: G.__S2.model })
     as(U_BROKER); x = await drive(() => sa.generateSourceAIInsights(B1, []))
     check("POS the tenant's own insights reach the (counted) model", (x.r as any)?.success === true && G.__S2.model === 1, { x, model: G.__S2.model })
+    // THE CALLER DOES NOT CHOOSE ITS OWN REPORT SCOPE (capToSessionScope). Two contacts from the same source, one per agent.
+    const contactsSeen = (r: any) => ((r?.sources ?? []) as Array<{ source: string; contact_count: number }>).filter((s0) => s0.source === "zillow").reduce((n, s0) => n + (s0.contact_count ?? 0), 0)
+    as(U_BROKER); x = await drive(() => sa.getSourcePerformance({ brokerageId: B1, agentIds: null }))
+    check("POS a brokerage-wide seat asking for everything sees both agents' contacts", (x.r as any)?.success === true && contactsSeen(x.r) === 2, { r: (x.r as any)?.sources, threw: x.threw, error: (x.r as any)?.error })
+    as(U_AGENT); x = await drive(() => sa.getSourcePerformance({ brokerageId: B1, agentIds: null }))
+    check("NEG an agent posting `agentIds: null` (everything) gets ONLY their own work — not the brokerage's", (x.r as any)?.success === true && contactsSeen(x.r) === 1, { r: (x.r as any)?.sources, threw: x.threw, error: (x.r as any)?.error })
+    as(U_AGENT); x = await drive(() => sa.getSourcePerformance({ brokerageId: B1, agentIds: [AG_B] }))
+    check("NEG an agent naming a COLLEAGUE's agent id gets an empty report, never the colleague's figures", (x.r as any)?.success === true && contactsSeen(x.r) === 0, { r: (x.r as any)?.sources, threw: x.threw })
+    as(U_BROKER); x = await drive(() => sa.getSourcePerformance({ brokerageId: B1, agentIds: [AG_B] }))
+    check("POS a brokerage-wide seat may narrow to one agent", (x.r as any)?.success === true && contactsSeen(x.r) === 1, { r: (x.r as any)?.sources, threw: x.threw })
+    as(null); x = await drive(() => sa.getSourcePerformance({ brokerageId: B1, agentIds: null }))
+    check("NEG no session: refused", refused(x), x.r)
   }
 
   // ═══ ai-generate ══════════════════════════════════════════════════════════════════════════════════════════════════
