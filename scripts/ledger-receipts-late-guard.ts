@@ -28,7 +28,7 @@
  *   the carrier doors (number search / portability) are proven STATICALLY only — their creds path can reach the carrier SDK,
  *   which this guard never calls.
  */
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { blankComments, blankStrings } from "./strip-comments"
 import { stubModule, setSvc, canaryClient, setSessionUser } from "./canaries/_harness"
@@ -105,7 +105,7 @@ const WRAPPED: Record<string, string> = {
 }
 /** Internal writers that were PUBLIC endpoints (actor / tenant from the request): the door is closed, not receipted. */
 const CLOSED_DOOR: Record<string, string> = {
-  "lib/vendor-tracking.ts#trackVendorUsage": "a meter writer; only caller app/actions/scrape-social-media.ts (server)",
+  "lib/vendor-tracking.ts#trackVendorUsage": "a meter writer; RETIRED after the door was closed — see RETIRED_DOOR",
   "lib/content-generation/generation-logger.ts#logContentGeneration": "activity-log writer; callers: app/actions/content-generation-engine.ts (server)",
   "lib/content-generation/generation-logger.ts#logBatchContentGeneration": "activity-log writer; same callers",
   "lib/content-generation/generation-logger.ts#logOmnipresentGeneration": "activity-log writer; same callers",
@@ -125,6 +125,10 @@ const READ_ONLY: Record<string, string> = {
 }
 const SKIPPED: Record<string, string> = {
   "app/actions/push-listing-to-seller-portal.ts#pushListingToSellerPortal": "on lane 155S2's FILES line",
+}
+/** A closed door whose module was then retired outright (§1): the survivor's file carries the tombstone that names it. */
+const RETIRED_DOOR: Record<string, string> = {
+  "lib/vendor-tracking.ts#trackVendorUsage": "lib/vendor-governance/meter-vendor.ts",
 }
 const ROW_COUNT = 72
 
@@ -179,6 +183,12 @@ async function main(): Promise<void> {
   }
   for (const [row, why] of Object.entries(CLOSED_DOOR)) {
     const [file, name] = row.split("#")
+    const survivor = RETIRED_DOOR[row]
+    if (survivor) {
+      // The strongest way to close a door: the endpoint no longer exists. The survivor names what it replaced.
+      check(`${row} — retired: the module is gone and ${survivor} carries the tombstone naming it`, !existsSync(join(ROOT, file)) && readFileSync(join(ROOT, survivor), "utf8").includes(`${file} \`${name}\` DELETED`))
+      continue
+    }
     const src = readFileSync(join(ROOT, file), "utf8")
     check(`${row} — the module is no longer a "use server" endpoint (${why})`, !hasUseServer(src) && spanOf(blankComments(src), name) !== null)
   }

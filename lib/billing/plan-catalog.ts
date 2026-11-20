@@ -26,7 +26,7 @@
 //     computed by lib/billing/ai-overage.ts. The deleted `calculateMonthlyBilling`
 //     re-derived overage against a caller-passed per-credit price and added a
 //     flat 8% "tax" that no invoice in this system charges.
-//   · usage → `vendor_usage_tracking` (lib/vendor-tracking.ts) and
+//   · usage → `vendor_usage_tracking` (lib/vendor-governance/meter-vendor.ts) and
 //     `usage_events` (lib/finance/usage-metering.ts), which record what was
 //     ACTUALLY spent. The deleted CREDIT_COSTS table asserted invented per-
 //     operation credit prices for operations that meter their real vendor cost.

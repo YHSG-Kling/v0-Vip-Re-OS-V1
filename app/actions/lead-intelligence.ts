@@ -2892,7 +2892,7 @@ export async function trackExternalActivity(
 //        this function CONSUMED via BatchDataClient.getMotivatedSellers
 //        (lib/external/batchdata-client.ts:9). Untouched, four live consumers.
 //   2. SOCIAL SCRAPE → motivated-seller record
-//      → app/actions/scrape-social-media.ts:43 `scrapeSocialMedia`, surfaced at
+//      → app/actions/scrape-social-media.ts:67 `scrapeSocialMedia`, surfaced at
 //        app/dashboard/admin/lead-intake/social-scrape-trigger.tsx:11. That one
 //        is admin-gated, meters its scraper calls into billing_usage, and files
 //        through lib/lead-pipeline `processRawRecord`, which carries the dedupe

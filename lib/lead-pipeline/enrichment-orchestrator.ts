@@ -1,7 +1,8 @@
 // lib/lead-pipeline/enrichment-orchestrator.ts
 // Processes BOTH lead_id rows (Track A) and contact_id rows (Track B).
 // DO NOT TOUCH: pipeline-processor.ts, peopledata-client.ts,
-//               vendor-tracking.ts, /api/cron/contact-enrichment
+//               /api/cron/contact-enrichment
+// (lib/vendor-tracking.ts, once on that list, is retired — survivor: lib/vendor-governance/meter-vendor.ts meterVendorSpend.)
 
 import { createServiceClient } from '@/lib/supabase/service'
 import type { SupabaseClient } from '@supabase/supabase-js'

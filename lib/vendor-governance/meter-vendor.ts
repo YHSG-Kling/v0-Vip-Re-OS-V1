@@ -92,6 +92,13 @@ export async function meterVendorSpend(
   }
 }
 
+// TOMBSTONE (§1, wave 155): lib/vendor-tracking.ts `trackVendorUsage` DELETED — a second writer of vendor_usage_tracking that
+// took its price from the caller and wrote none of this gateway's price state, cost basis, replay fingerprint or person
+// attribution. Its one caller, app/actions/scrape-social-media.ts (bookScrapeShare / bookScrapeRemainder), books through
+// meterVendorSpend above. Nothing to merge onto this file: `usageType`, the lead and the metadata were already inputs here.
+// What the move FIXED is the amount — the duplicate booked a share only for a banked post, so the rest of a billed scrape
+// run never reached the ledger; the caller now books the remainder too.
+
 // TOMBSTONE (§1.1 + §6, lane 83E, 2026-09-26): scraperTypeToVendor DELETED — a second
 // scraper→vendor vocabulary with no runtime reader (orphan-export category A: only
 // scripts/scraper-simulator.ts named it). Its one distinctive entry was the RETIRED composite

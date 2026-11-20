@@ -207,8 +207,8 @@ export default async function NeighborhoodReportPage({
     //
     // WHAT WAS BROKEN. This read asked for seven `property_*` columns and
     // filtered on `.eq("property_zip", zip)`. The only writer of this table is
-    // the social-signal scanner at app/actions/scrape-social-media.ts:121 and
-    // :192, and it writes NONE of them — it stamps `residential_city`,
+    // the social-signal scanner in app/actions/scrape-social-media.ts (its two
+    // bankSocialPost calls), and it writes NONE of them — it stamps `residential_city`,
     // `residential_state`, `motivation_type`, `motivation_confidence` and
     // `raw_json`. So the zip filter matched zero rows on every render, forever,
     // and the amber "N distress/ownership signals in this zip" card could never

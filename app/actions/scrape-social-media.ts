@@ -2,12 +2,36 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { scrapeFacebookGroupPosts, scrapeRedditPosts } from '@/lib/external'
-import { trackVendorUsage } from '@/lib/vendor-tracking'
+import { meterVendorSpend } from '@/lib/vendor-governance/meter-vendor'
 import { analyzeLead } from '@/lib/ai'
 import { processRawRecord } from '@/lib/lead-pipeline'
 import { ingestRawSourceBatch } from '@/lib/kernel/scraping'
 import type { NormalizedScrapedRecord } from '@/lib/lead-pipeline/raw-record-types'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE SCRAPE'S COST GOES THROUGH THE ONE VENDOR GATEWAY — meterVendorSpend (lib/vendor-governance/meter-vendor.ts).
+//
+// TOMBSTONE (CLAUDE.md §1, wave 155): lib/vendor-tracking.ts `trackVendorUsage` is DELETED. It was a second writer of
+// vendor_usage_tracking with a caller-typed price and none of the survivor's price state, cost basis, replay fingerprint or
+// person attribution — and it booked a share ONLY for a post that was banked, so the rest of a billed run (every post under
+// the 0.70 confidence floor) never reached the ledger. SURVIVOR: lib/vendor-governance/meter-vendor.ts meterVendorSpend.
+// What the duplicate had that the survivor lacked was nothing: `usageType`, the lead and the metadata are all survivor
+// fields. What changes here is the amount — the run's whole cost is booked: a share per banked post, and the remainder once.
+// The actor's cost is the client's flat per-run figure (lib/external/apify-client.ts), so it is booked as an ESTIMATE of a
+// variable price; the invoice reconciles. meterVendorSpend never throws and answers false when nothing was booked — a false
+// here is reported in results.errors, never read as booked.
+// ─────────────────────────────────────────────────────────────────────────────
+async function bookScrapeShare(a: { usageType: string; share: number; brokerageId: string; leadId?: string | null; rawRecordId?: string | null; metadata: Record<string, unknown> }): Promise<boolean> {
+  if (!(a.share > 0)) return false
+  return meterVendorSpend({ vendorName: 'apify', usageType: a.usageType, cost: a.share, unitCount: 1, brokerageId: a.brokerageId, priceState: 'variable', costBasis: 'estimated', systemSource: 'lead_scraping', attribution: { leadId: a.leadId ?? null, rawRecordId: a.rawRecordId ?? null }, metadata: a.metadata })
+}
+/** The part of a billed run no banked post carried. True when there was nothing left to book, or it was booked. */
+async function bookScrapeRemainder(a: { usageType: string; runCost: number; booked: number; brokerageId: string; metadata: Record<string, unknown> }): Promise<boolean> {
+  const remainder = Math.round((a.runCost - a.booked) * 1e6) / 1e6
+  if (!(remainder > 0)) return true
+  return meterVendorSpend({ vendorName: 'apify', usageType: a.usageType, cost: remainder, unitCount: 1, brokerageId: a.brokerageId, priceState: 'variable', costBasis: 'estimated', systemSource: 'lead_scraping', metadata: { ...a.metadata, unattributed_remainder: true } })
+}
 
 const FACEBOOK_GROUP_TEMPLATES = [
   '{city} Homeowners',
@@ -98,6 +122,11 @@ export async function scrapeSocialMedia(params: {
 
       results.totalCost += fbResult.cost
       results.facebookPosts += fbResult.posts.length
+      // THE RUN IS BILLED WHETHER OR NOT A POST QUALIFIES. Each banked post books its share against the person it became
+      // (cost-per-lead reads vendor_usage_tracking by lead_id); what is left — the posts that did not qualify — is booked
+      // once after the loop, so the ledger sums to the run's cost. See bookScrapeRemainder below.
+      const fbShare = fbResult.posts.length > 0 ? fbResult.cost / fbResult.posts.length : 0
+      let fbBooked = 0
 
       for (const post of fbResult.posts) {
         const analysis = await analyzeLead({
@@ -139,17 +168,12 @@ export async function scrapeSocialMedia(params: {
             results.leadsCreated++
           }
 
-          await trackVendorUsage({
-            vendorName: 'apify',
-            usageType: 'facebook_group_scrape',
-            unitsUsed: 1,
-            costPerUnit: fbResult.cost / fbResult.posts.length,
-            totalCost: fbResult.cost / fbResult.posts.length,
-            leadId: pipelineResult.leadId,
-            brokerageId,
-            requestMetadata: { groupName }
-          })
+          if (await bookScrapeShare({ usageType: 'facebook_group_scrape', share: fbShare, brokerageId, leadId: pipelineResult.leadId, rawRecordId: banked.rawLeadId, metadata: { groupName } })) fbBooked += fbShare
+          else if (fbShare > 0) results.errors.push(`Facebook-${groupName}: a post's share of the scrape cost was not booked`)
         }
+      }
+      if (!(await bookScrapeRemainder({ usageType: 'facebook_group_scrape', runCost: fbResult.cost, booked: fbBooked, brokerageId, metadata: { groupName, posts: fbResult.posts.length } }))) {
+        results.errors.push(`Facebook-${groupName}: the unattributed part of the scrape cost was not booked`)
       }
 
     } catch (error) {
@@ -174,6 +198,8 @@ export async function scrapeSocialMedia(params: {
 
     results.totalCost += redditResult.cost
     results.redditPosts += redditResult.posts.length
+    const redditShare = redditResult.posts.length > 0 ? redditResult.cost / redditResult.posts.length : 0
+    let redditBooked = 0
 
     for (const post of redditResult.posts) {
       const analysis = await analyzeLead({
@@ -207,17 +233,12 @@ export async function scrapeSocialMedia(params: {
           results.leadsCreated++
         }
 
-        await trackVendorUsage({
-          vendorName: 'apify',
-          usageType: 'reddit_scrape',
-          unitsUsed: 1,
-          costPerUnit: redditResult.cost / redditResult.posts.length,
-          totalCost: redditResult.cost / redditResult.posts.length,
-          leadId: pipelineResult.leadId,
-          brokerageId,
-          requestMetadata: { subreddit: post.subreddit }
-        })
+        if (await bookScrapeShare({ usageType: 'reddit_scrape', share: redditShare, brokerageId, leadId: pipelineResult.leadId, rawRecordId: banked.rawLeadId, metadata: { subreddit: post.subreddit } })) redditBooked += redditShare
+        else if (redditShare > 0) results.errors.push(`Reddit: a post's share of the scrape cost was not booked`)
       }
+    }
+    if (!(await bookScrapeRemainder({ usageType: 'reddit_scrape', runCost: redditResult.cost, booked: redditBooked, brokerageId, metadata: { posts: redditResult.posts.length } }))) {
+      results.errors.push('Reddit: the unattributed part of the scrape cost was not booked')
     }
 
   } catch (error) {

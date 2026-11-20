@@ -44,7 +44,7 @@
  *             carrying its ruling); routeCapability skips a `failing` provider and changes nothing
  *             when all are healthy; no caller under app/ lib/ asks the RentCast AVM vendor directly.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments, blankStrings } from "./strip-comments"
 
@@ -421,13 +421,13 @@ check("POSITIVE CONTROL: a fixture reaching BatchData without the gate IS flagge
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 5 · PLATFORM-PAID — provider + scraper spend lands on vendor_usage_tracking, never a tenant meter]")
-// A BOOKING names the vendor in the `vendorName:` shape (meterVendorSpend / logVendorUsage /
-// lib/vendor-tracking.ts::trackVendorUsage) or as `vendor:` inside a trackVendorUsageService
-// call. A registry row `{ vendor: "peopledata", tier: … }` (lib/agentic-os/vendor-capability-
+// A BOOKING names the vendor in the `vendorName:` shape (meterVendorSpend / logVendorUsage) or as `vendor:` inside a
+// trackVendorUsageService call. (A fourth booker, lib/vendor-tracking.ts trackVendorUsage, is retired — wave 155; its one
+// caller books through meterVendorSpend.) A registry row `{ vendor: "peopledata", tier: … }` (lib/agentic-os/vendor-capability-
 // registry.ts) is DATA, not spend — the first run counted it as an unbooked booking.
 const VENDORS = "peopledata|batchdata|zenrows|apify|apify_social|osint|osint_free|tavily|exa|zyte"
 const PROVIDER_VENDOR = new RegExp(`vendorName:\\s*["'](?:${VENDORS})["']|trackVendorUsageService\\(\\{[\\s\\S]{0,120}?vendor:\\s*["'](?:${VENDORS})["']`)
-const BOOKER = /meterVendorSpend\(|trackVendorUsageService\(|logVendorUsage\(|trackVendorUsage\(/
+const BOOKER = /meterVendorSpend\(|trackVendorUsageService\(|logVendorUsage\(/
 // TABLE NAMES ARE STRING LITERALS — this predicate runs on comment-STRIPPED source, never on
 // blanked strings (the first run blanked them and the tenant-meter check reported zero blind).
 const TENANT_METER_WRITE = /\.from\(["'](?:usage_events|usage_logs|usage_counters|meter_readings)["']\)\s*\.(?:insert|upsert|update)\(|increment_ai_usage_monthly/
@@ -435,14 +435,22 @@ const bookers = CORPUS.filter((p) => PROVIDER_VENDOR.test(stripped(p)))
 const unbooked = bookers.filter((p) => !BOOKER.test(code(p)) && p !== "lib/vendor-governance/cost-normalizer.ts" && p !== "lib/vendor-governance/meter-vendor.ts")
 const tenantMetered = bookers.filter((p) => TENANT_METER_WRITE.test(stripped(p)))
 console.log(`  denominator: ${CORPUS.length} files under app/ lib/ · ${bookers.length} name a provider/scraper vendor in a booking`)
-check(`every file that names a provider/scraper vendor books through the platform ledger (meterVendorSpend / trackVendorUsageService / logVendorUsage / trackVendorUsage) — ${bookers.length - unbooked.length}/${bookers.length}`,
+check(`every file that names a provider/scraper vendor books through the platform ledger (meterVendorSpend / trackVendorUsageService / logVendorUsage) — ${bookers.length - unbooked.length}/${bookers.length}`,
   unbooked.length === 0, unbooked.join(", "))
 check("NO file that books provider/scraper spend writes a TENANT meter (usage_events / usage_logs / usage_counters / meter_readings / increment_ai_usage_monthly)",
   tenantMetered.length === 0, tenantMetered.join(", "))
-check("the four bookers all land on vendor_usage_tracking: usage-logger.ts (meterVendorSpend / trackVendorUsageService / logVendorUsage) and lib/vendor-tracking.ts (trackVendorUsage) write it and nothing tenant-metered",
+check("the three bookers all land on vendor_usage_tracking through ONE writer: usage-logger.ts writes it and nothing tenant-metered; meterVendorSpend and trackVendorUsageService call logVendorUsage",
   /\.from\(['"]vendor_usage_tracking['"]\)/.test(stripped("lib/vendor-governance/usage-logger.ts")) && !TENANT_METER_WRITE.test(stripped("lib/vendor-governance/usage-logger.ts"))
-  && /\.from\(['"]vendor_usage_tracking['"]\)/.test(stripped("lib/vendor-tracking.ts")) && !TENANT_METER_WRITE.test(stripped("lib/vendor-tracking.ts"))
   && /\blogVendorUsage\b/.test(code("lib/vendor-governance/meter-vendor.ts")) && /logVendorUsage\(/.test(code("lib/vendor-governance/track-vendor-usage.ts")))
+// The retired fourth booker stays retired: the module is gone, nobody imports it, and no file under app/ or lib/ inserts into
+// vendor_usage_tracking outside the one writer (a caller-priced row would carry no price state and no replay fingerprint).
+const SECOND_LEDGER_WRITER = /\.from\(['"]vendor_usage_tracking['"]\)\s*\.(?:insert|upsert)\(/
+const secondWriters = CORPUS.filter((p) => p !== "lib/vendor-governance/usage-logger.ts" && SECOND_LEDGER_WRITER.test(stripped(p)))
+check("lib/vendor-tracking.ts is retired: the file is gone and nothing imports it", !existsSync(join(process.cwd(), "lib/vendor-tracking.ts")) && !CORPUS.some((p) => /from\s+['"]@\/lib\/vendor-tracking['"]/.test(stripped(p))))
+check(`no second writer of vendor_usage_tracking under app/ lib/ (${secondWriters.length} found)`, secondWriters.length === 0, secondWriters.join(", "))
+check("POSITIVE CONTROL: the finder sees a caller-priced insert into vendor_usage_tracking", SECOND_LEDGER_WRITER.test(`await supabase.from('vendor_usage_tracking').insert({ vendor_name: 'apify', total_cost: 1 })`))
+check("the social scrape books the whole run: a share per banked post AND the remainder, both through meterVendorSpend",
+  /\bbookScrapeShare\(/.test(code("app/actions/scrape-social-media.ts")) && (code("app/actions/scrape-social-media.ts").match(/\bbookScrapeRemainder\(/g) ?? []).length >= 3 && (code("app/actions/scrape-social-media.ts").match(/\bmeterVendorSpend\(/g) ?? []).length === 2)
 const metering = stripped("lib/finance/usage-metering.ts")
 check("the tenant usage rollup (lib/finance/usage-metering.ts) folds usage_events + usage_logs + ai_tool_usage into meter_readings and NEVER reads vendor_usage_tracking",
   /from\("usage_events"\)/.test(metering) && /from\("usage_logs"\)/.test(metering) && /from\("ai_tool_usage"\)/.test(metering) && /from\("meter_readings"\)/.test(metering) && !/vendor_usage_tracking/.test(metering))
