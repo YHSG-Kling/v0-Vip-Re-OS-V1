@@ -116,6 +116,8 @@ export async function aiClassifyDocument(params: {
 }> {
   const scope = await scopeDocument(params.documentId)
   if (!scope.ok) return { success: false, error: scope.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "document.classification.generate", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "client_document", id: params.documentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -178,6 +180,7 @@ Classify the document type, extract key data points (dates, amounts, parties, ad
   } catch (error) {
     return handleError(error, "aiClassifyDocument")
   }
+  })
 }
 
 /**
@@ -205,6 +208,11 @@ export async function aiAnalyzeContract(params: {
   if (!isValidUUID(params.documentId)) {
     return { success: false, error: "Invalid document ID" }
   }
+  // WAVE 155 (155R3): the siblings' gate (scopeDocument — session + the document in the caller's brokerage); this export had none.
+  const scope = await scopeDocument(params.documentId)
+  if (!scope.ok) return { success: false, error: scope.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "document.contract_analysis.generate", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "client_document", id: params.documentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { contract_type: params.contractType } }, async () => {
 
   const supabase = await createClient()
 
@@ -281,6 +289,7 @@ Provide a comprehensive analysis including:
   } catch (error) {
     return handleError(error, "aiAnalyzeContract")
   }
+  })
 }
 
 // TOMBSTONE (§1, wave 46 lane EC) — `aiCheckDisclosures` deleted. SURVIVOR:
@@ -322,6 +331,8 @@ export async function aiVerifySignatures(params: {
 }> {
   const scope = await scopeDocument(params.documentId)
   if (!scope.ok) return { success: false, error: scope.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "document.signature_check.generate", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "client_document", id: params.documentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -416,6 +427,7 @@ Determine what signatures are required and their current status. Return as JSON:
   } catch (error) {
     return handleError(error, "aiVerifySignatures")
   }
+  })
 }
 
 /**
@@ -450,6 +462,8 @@ export async function aiGenerateDocument(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "document.draft.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "ai_tool_usage", ref: params.documentType }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { transaction_id: params.transactionId ?? null } }, async () => {
 
   const supabase = await createClient()
 
@@ -554,6 +568,7 @@ Generate the document content:`,
   } catch (error) {
     return handleError(error, "aiGenerateDocument")
   }
+  })
 }
 
 /**
@@ -663,6 +678,8 @@ export async function aiGenerateDocumentReminders(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "document.reminders.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -733,4 +750,5 @@ Return as JSON array:
   } catch (error) {
     return handleError(error, "aiGenerateDocumentReminders")
   }
+  })
 }

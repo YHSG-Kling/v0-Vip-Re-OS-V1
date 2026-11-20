@@ -529,6 +529,8 @@ async function emitMultiOfferEvent(
     // this module uses, shared with checkDuplicateOffer.
     const tenant = await requireContactTenant(contactId)
     if (!tenant.ok) return { success: false, error: tenant.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: tenant.brokerageId, action: "offer.multi_offer_signal.record", actor: { type: "user", userId: tenant.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { event_type: eventType } }, async () => {
 
     const supabase = createServiceClient();
 
@@ -547,6 +549,7 @@ async function emitMultiOfferEvent(
     if (error) throw error;
 
     return { success: true };
+    })
   } catch (error: any) {
     console.error("[System 7.1A] Error emitting multi-offer event:", error);
     return { success: false, error: error.message };

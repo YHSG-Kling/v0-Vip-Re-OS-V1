@@ -81,6 +81,8 @@ export async function prefillStorageFormAction(input: PrefillStorageFormInput): 
   const actor = { brokerageId: seat.actor.brokerageId, teamId: seat.actor.teamId, userId: user.id }
   const scope = await checkFormPathsInScope(svc, [input.formPath], actor)
   if (!scope.ok) return { success: false, error: scope.error ?? "that form is not in your library" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "offer.form.prefill", actor: { type: "user", userId: user.id }, subject: { type: "brokerage_form_library", ref: input.formPath.slice(0, 200) }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   try {
     // 1. Download the source form PDF.
@@ -170,4 +172,5 @@ export async function prefillStorageFormAction(input: PrefillStorageFormInput): 
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "prefill failed" }
   }
+  })
 }

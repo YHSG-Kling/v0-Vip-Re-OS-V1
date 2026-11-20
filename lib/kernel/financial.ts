@@ -61,7 +61,7 @@ import {
   planDistributionVoid,
   planResidualApproval, planResidualReversal, type ResidualReversalRow,
 } from "@/lib/commission/distribution-correction"
-import { withActionLedger } from "@/lib/kernel/action-ledger"
+import { withActionLedger, ledgerToolCall, governanceRecord, type ActionContext } from "@/lib/kernel/action-ledger"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -1307,6 +1307,9 @@ export interface InitiateCommissionPayoutInput {
   initiatedAt?: string
   /** Initiate AHEAD of the recorded funds (wave 143): the reason a finance admin states; kept as evidence. See payoutFundsGate. */
   advanceReason?: string | null
+  /** WAVE 155 (155R8): who stated this decision when it is NOT the session user's own click (a model / inbound proposal states
+   *  `trustClass`; the sink rule then holds it unless a named verification cleared it). Absent = the finance admin's session. */
+  origin?: Pick<ActionContext, "trustClass" | "sink" | "cycle"> | null
 }
 
 /**
@@ -1319,6 +1322,25 @@ export async function initiateCommissionPayout(
 ): Promise<KernelFinancialResult<{ commissionId: string; initiatedAt: string; alreadyInitiated: boolean }>> {
   const { ctx, commissionId, brokerageId } = input
   const supabase = createServiceClient()
+  // WAVE 155 (lane 155R8, directive D 152) — THE ONE DECISION RECORD AT THE PAYOUT SINK: the pure sink rule decides before the
+  // finance roster, the release gate and the stamp (an untrusted origin with no recorded verification is HELD — one
+  // `commission.decision.wait` row, nothing read, nothing stamped); an allowed call is claimed → run → settled on ONE row whose
+  // detail.governance names trust class, risk class, approval basis and the release gate. Round trips: claim + settle (refusal: 1).
+  const trustClass = input.origin?.trustClass ?? "authorized_human"
+  const approvalBasis = input.origin?.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted"
+  return ledgerToolCall<KernelFinancialResult<{ commissionId: string; initiatedAt: string; alreadyInitiated: boolean }>>({
+    brokerageId, action: "commission.payout.initiate", channel: "payout_sink", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId },
+    subject: { type: "agent_commission", id: commissionId }, riskClass: "IRREVERSIBLE", systemSource: "commission_payout", reasonCode: "HUMAN_REQUESTED",
+    policyKey: "commission_payout_policy", cycle: input.origin?.cycle ?? null, trustClass, approvalBasis,
+    dependencies: [{ type: "agent_commission", id: commissionId, version: null }],
+    sink: input.origin?.sink ?? null,
+    detail: { method: input.method, advance: !!input.advanceReason, governance: governanceRecord({
+      plane: "tool_boundary", verdict: "allow", scope: { brokerageId, userId: ctx.userId }, actor: { type: "user", id: ctx.userId },
+      entity: { type: "agent_commission", id: commissionId, version: null }, objective: "commission.payout.initiate",
+      policyConstraints: ["sink rule (D 152): irreversible payout", "isBrokerageFinanceAdmin", "payoutReleaseGate (funds received / closing-time CDA)"],
+      rationale: `payout instruction at the sink; origin ${trustClass}`, trustClass, approvalBasis, verification: input.origin?.sink?.verification ?? null,
+    }) },
+  }, async () => {
   try {
     if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to initiate a payout" }
@@ -1364,6 +1386,7 @@ export async function initiateCommissionPayout(
   } catch (e) {
     return { success: false, error: String(e) }
   }
+  })
 }
 
 export interface AttestCommissionReceivedInput {

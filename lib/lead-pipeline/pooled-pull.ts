@@ -40,6 +40,7 @@ import { paidPullApproval, type StoredPlanRow, type PlatformProviderDoor } from 
 import { providerTenancy } from "@/lib/providers/tenancy-matrix"
 import { decideSpendBackpressure } from "@/lib/vendor-governance/budget-eval"
 import { splitPullCost } from "@/lib/vendor-governance/budget-eval"
+import type { ActionContext, LedgerClient } from "@/lib/kernel/action-ledger"
 
 /** The slice of a lead_scraping_markets row the pooled pull needs. */
 export interface PoolTerritory {
@@ -264,6 +265,9 @@ export interface PooledWant {
   triggers: readonly string[]
   /** lead_scraping_motivated_params.lookback_days (null = window-less). */
   lookbackDays: number | null
+  /** WAVE 155 (155R8): who proposed this want when it is NOT the tenant's own approved plan (a model / inbound proposal states
+   *  `trustClass`; the sink rule then holds it unless a named verification cleared it). Absent = the sweep over approved plans. */
+  origin?: Pick<ActionContext, "trustClass" | "sink" | "cycle"> | null
 }
 
 /** One territory's share of a pooled lane. */
@@ -335,6 +339,47 @@ export interface PooledBatchDataDeps {
   providerFailing?: boolean
   /** The same-cycle escalation to a manager (production: publishManagerSignal → finance_manager). Never throws. */
   escalate?: (e: { brokerageId: string; territoryId: string; lane: string; action: string; reason: string }) => Promise<void> | void
+  /** WAVE 155 (155R8): the ledger client the admission record writes through (absent = the service client; proofs inject one). */
+  decisionClient?: LedgerClient
+}
+
+/**
+ * WAVE 155 (lane 155R8, directive D 152) — the paid-acquisition sink's decision record. One lib/kernel/action-ledger.ts
+ * ledgerToolCall per (tenant, origin) group of APPROVED wants, before pooling: the pure sink rule ALLOWs the tenant's own approved
+ * plan (`tenant_policy`, approval basis policy_permitted) and HOLDs an untrusted proposal with no recorded verification (one
+ * `acquisition.decision.wait` row; its wants never join a pool, so zero paid calls). A replay of a keyed proposal (`origin.cycle`)
+ * is NOT admitted again. Platform-pool wants (no brokerage) have no tenant to record against — they pass as before (said in the
+ * notes). Order is preserved (pooling is unchanged). Round trips: claim + settle per admitted group (refusal: 1 insert); no model.
+ */
+async function admitAtSink(lane: string, wants: readonly PooledWant[], deps: PooledBatchDataDeps): Promise<{ wants: PooledWant[]; refused: number; errors: string[] }> {
+  if (wants.length === 0) return { wants: [], refused: 0, errors: [] }
+  const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
+  const groupOf = (w: PooledWant) => `${w.territory.brokerage_id}|${w.origin?.trustClass ?? ""}|${w.origin?.cycle ?? ""}`
+  const groups = new Map<string, PooledWant[]>()
+  for (const w of wants) if (w.territory.brokerage_id) groups.set(groupOf(w), [...(groups.get(groupOf(w)) ?? []), w])
+  const admitted = new Set<string>()
+  let refused = 0
+  const errors: string[] = []
+  for (const [key, mine] of groups) {
+    const brokerageId = mine[0].territory.brokerage_id as string
+    const origin = mine[0].origin ?? null
+    const trustClass = origin?.trustClass ?? "tenant_policy"
+    const approvalBasis = origin?.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted"
+    const r = await ledgerToolCall<{ success: true; admitted: number }>({
+      brokerageId, action: "acquisition.pull.admit", channel: "paid_acquisition_sink", actor: { type: "system" }, subject: { type: "brokerage", id: brokerageId, ref: lane },
+      riskClass: "FINANCIAL", systemSource: `pooled_${lane}`, cycle: origin?.cycle ?? null, trustClass, approvalBasis,
+      dependencies: mine.slice(0, 20).map((w) => ({ type: "lead_territory", id: w.territory.id, version: null })),
+      sink: origin?.sink ?? null,
+      detail: { lane, territories: mine.length, governance: governanceRecord({
+        plane: "resource", verdict: "allowed", scope: { brokerageId }, actor: { type: "system", id: null }, entity: { type: "brokerage", id: brokerageId, version: null },
+        objective: `acquisition.pull.admit:${lane}`, policyConstraints: ["sink rule (D 152): mass paid acquisition", "deps.approval (approved acquisition plan / budgeted platform door)", "decideSpendBackpressure (approved ceiling, territory budget, platform cap)"],
+        rationale: `paid pull admission at the sink; origin ${trustClass}`, trustClass, approvalBasis, verification: origin?.sink?.verification ?? null,
+      }) },
+    }, async () => ({ success: true as const, admitted: mine.length }), deps.decisionClient ? { client: deps.decisionClient } : undefined)
+    if ("admitted" in r) admitted.add(key)
+    else { refused += mine.length; errors.push(`${lane}: ${mine.length} want(s) of tenant ${brokerageId} not pulled — ${r.error ?? "already admitted once (replay)"}`) }
+  }
+  return { wants: wants.filter((w) => !w.territory.brokerage_id || admitted.has(groupOf(w))), refused, errors }
 }
 
 /** I/O defaults — the ONE BatchData client. */
@@ -489,7 +534,13 @@ export async function runPooledBatchDataLane(
     }
     approvedWants.push(w)
   }
-  const wants: readonly PooledWant[] = approvedWants
+  // WAVE 155 (lane 155R8, D 152) — THE ONE DECISION RECORD AT THE PAID-ACQUISITION SINK: after the approval + spend gates and
+  // BEFORE any request, each tenant's admitted wants pass the pure sink rule on ONE row (admitAtSink); a held tenant's wants are
+  // dropped here and reach no paid call.
+  const admission = await admitAtSink(lane, approvedWants, deps)
+  unapproved += admission.refused
+  errors.push(...admission.errors)
+  const wants: readonly PooledWant[] = admission.wants
   const ledger: PooledLaneLedger = {
     lane, vendor: "batchdata", territories: new Set(wants.map((w) => w.territory.id)).size, requests: 0, chunks: 0,
     chargeUsd: 0, allocatedUsd: 0, unattributedRecords: 0, unallocatedUsd: 0, unapprovedTerritories: unapproved,

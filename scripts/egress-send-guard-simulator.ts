@@ -31,9 +31,11 @@ const SENDERS = /\b(sendEmail|sendSMS|sendViaTwilio|sendViaTelnyx|sendViaBandwid
 type Class = "gate" | "gated-inline" | "non-client" | "b2b-transactional" | "known-gap"
 /** The reviewed surface — every file allowed to touch the low-level senders, with WHY. */
 const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
+  // wave 155, lane 155R8 — REMOVED (routed through the gate, lib/providers/dispatch.ts): lib/kernel/vendors.ts (two vendor notices),
+  // lib/transactions/deal-vendor-notify.ts (lender/title status request + approved CDA to title), app/actions/instant-property-alerts.ts
+  // (first-look SMS). Each raw call had been handed a field its sender never read, so two of the three left empty.
   "lib/providers/dispatch.ts":                  { cls: "gate", why: "THE GATE — consent / opt-out / DNC / quiet-hours / de-confliction enforced here" },
   "lib/services/communication.service.tsx":     { cls: "b2b-transactional", why: "shared comms service — callers supply the gate context" },
-  "app/actions/instant-property-alerts.ts":     { cls: "gated-inline", why: "buyer alerts check opt-out / consent inline before send" },
   "app/api/agent-assistant/tool-call/route.ts": { cls: "gated-inline", why: "voice admin tool-call checks consent/opt-out inline before any send" },
   "app/api/cron/weekly-income-digest/route.ts": { cls: "non-client", why: "agent-facing weekly digest (to the user themselves, not a client)" },
   // showing-lifecycle.ts fell OFF this list in round 27 — its reminder now
@@ -47,8 +49,6 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
   // 78D): it now sends through dispatchEmail/dispatchSms (the ONE governed
   // egress) while persisting the ask on document_requests; the entry left
   // would have sat here reading as a live importer (§2).
-  "lib/transactions/deal-vendor-notify.ts":     { cls: "b2b-transactional", why: "Deal-Save Huddle B2B leg — notifies the loan officer / title-escrow officer of a deal issue (business counterparty on the file; deduped + audited)" },
-  "lib/kernel/vendors.ts":                      { cls: "b2b-transactional", why: "vendor-facing email (B2B service coordination)" },
   "lib/showings/dispatchers.ts":                { cls: "b2b-transactional", why: "agent-to-agent showing coordination (listing agent's phone, no consumer contact) via the connector-gateway adapter" },
   "app/actions/superadmin/platform-sentinel.ts": { cls: "b2b-transactional", why: "PLATFORM SENTINEL approve&send (round 21) — a human staff member with sentinel WRITE capability approves an AI-drafted email to a TENANT admin (the platform's own B2B customer, retention/ops outreach — never a consumer); platform suppression list checked before send; canonical sendEmail; 'sent' only on provider acceptance; every approve/send audited to superadmin_audit_log" },
   // Client sends below were CLOSED this PR — they now route through lib/providers/dispatch.ts

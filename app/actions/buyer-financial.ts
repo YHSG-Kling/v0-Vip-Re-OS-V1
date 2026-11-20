@@ -90,6 +90,7 @@ export async function upsertFinancialProfile(params: {
 }): Promise<{ success: boolean; profileId?: string; error?: string }> {
   const access = await requireContactAccess(params.contactId)
   if (!access.ok) return { success: false, error: access.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof upsertFinancialProfile> => {
 
   const supabase = createServiceClient()
 
@@ -120,6 +121,7 @@ export async function upsertFinancialProfile(params: {
 
   if (error) return { success: false, error: error.message }
   return { success: true, profileId: data.id }
+  }; return (await ledgerSessionAction({ brokerageId: access.brokerageId, action: "buyer.financial_profile.upsert", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 // ─── RECORD DOCUMENT UPLOAD ───────────────────────────────────────────────────
@@ -394,6 +396,7 @@ export async function connectBuyerToLender(params: {
 }): Promise<{ success: boolean; error?: string }> {
   const access = await requireContactAccess(params.contactId)
   if (!access.ok) return { success: false, error: access.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof connectBuyerToLender> => {
   // Contacts can connect themselves to lenders too (portal flow) so we
   // don't restrict to agent-only here.
 
@@ -444,6 +447,7 @@ export async function connectBuyerToLender(params: {
   if (!recorded.ok) return { success: false, error: recorded.error }
 
   return { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: access.brokerageId, action: "buyer.lender_referral.connect", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 // ─── LOAD FINANCIAL PROFILE ───────────────────────────────────────────────────

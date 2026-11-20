@@ -235,6 +235,8 @@ export async function resendDocumentForSignature(params: {
     .maybeSingle()
   if (!sig) return { success: false, error: "Signature not found" }
   if (sig.brokerage_id !== callerRow.brokerage_id) return { success: false, error: "Forbidden" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: callerRow.brokerage_id, action: "esign.signature_request.resend", actor: { type: "user", userId: authUser.id }, subject: { type: "contract_signature", id: signatureId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { transaction_id: transactionId } }, async () => {
 
   const { data: sigSentRows, error: sigSentErr } = await supabase
     .from("contract_signatures")
@@ -246,6 +248,7 @@ export async function resendDocumentForSignature(params: {
 
   revalidatePath(`/dashboard/transactions/${transactionId}`)
   return { success: true }
+  })
 }
 
 // ─── GET SIGNATURE STATUS FOR TRANSACTION ────────────────────────────────────

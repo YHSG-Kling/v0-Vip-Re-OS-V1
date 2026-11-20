@@ -47,6 +47,7 @@ import {
 } from "@/lib/integrations/connection-manager"
 import { scopeCascade, type ScopeContext, type ConnectionScope } from "./scope"
 import { decryptSecret } from "@/lib/security/secret-crypto"
+import type { ActionContext } from "@/lib/kernel/action-ledger"
 
 export interface ScopedConnection extends ResolvedConnection {
   ownerType: ConnectionScope
@@ -190,7 +191,10 @@ async function readOwnerCredential(
 export async function resolveScopedConnectionResult(
   provider: string,
   ctx: ScopeContext & { agentId?: string | null },
+  /** WAVE 155 (155R8): who asked for this credential when it is not the caller's own deterministic code (see credentialAtSink). */
+  origin?: Pick<ActionContext, "trustClass" | "sink" | "cycle"> | null,
 ): Promise<ScopedConnectionResult> {
+  if (origin) return credentialAtSink(provider, ctx, origin, () => resolveScopedConnectionResult(provider, ctx, null))
   // 1. New owner-scope cascade (agent → team → brokerage → platform, or vendor/contact → platform).
   for (const owner of scopeCascade(ctx)) {
     const read = await readOwnerCredential(owner.ownerType, owner.ownerId, provider)
@@ -259,6 +263,41 @@ export async function resolveScopedConnectionResult(
   }
 
   return { status: "not_connected" }
+}
+
+/**
+ * WAVE 155 (lane 155R8, directive D 152) — THE ONE DECISION RECORD AT THE CREDENTIALS SINK. A credential read whose origin is
+ * STATED (a model / inbound proposal names `trustClass`) passes the pure sink rule (lib/kernel/action-ledger.ts ledgerToolCall)
+ * BEFORE any credential row is read or decrypted: HOLD → one `access.decision.wait` row and `unreadable` (every caller already
+ * fails closed on it); ALLOW → claim → cascade → settle on ONE row. The record carries the provider and the owner scope ONLY —
+ * never a key, token or decrypted value (the settle reads `success` / `error`, which a connection does not carry).
+ * An internal read (no origin — every caller today) writes NO row: 0 added round trips on the hottest read in the product; the
+ * operation the credential unlocks is recorded at ITS sink. A stated origin with no tenant has nothing to record against → refused.
+ */
+async function credentialAtSink(
+  provider: string,
+  ctx: ScopeContext & { agentId?: string | null },
+  origin: Pick<ActionContext, "trustClass" | "sink" | "cycle">,
+  run: () => Promise<ScopedConnectionResult>,
+): Promise<ScopedConnectionResult> {
+  if (!ctx.brokerageId) return { status: "unreadable", ownerType: null, ownerId: null, detail: "credential request with a stated origin but no tenant — not read (nothing to record the decision against)" }
+  const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
+  const approvalBasis = origin.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted"
+  const r = await ledgerToolCall<ScopedConnectionResult>({
+    brokerageId: ctx.brokerageId, action: "access.credential.read", channel: "credential_sink",
+    actor: ctx.agentUserId ? { type: "user", userId: ctx.agentUserId } : { type: "system" }, subject: { type: "brokerage", id: ctx.brokerageId, ref: `credential:${provider}` },
+    riskClass: "FINANCIAL", systemSource: "credential_read", cycle: origin.cycle ?? null, trustClass: origin.trustClass ?? null, approvalBasis,
+    dependencies: [{ type: "provider_credential", id: null, version: provider }],
+    sink: origin?.sink ?? null,
+    detail: { provider, governance: governanceRecord({
+      plane: "tool_boundary", verdict: "allow", scope: { brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? null, userId: ctx.agentUserId ?? null },
+      actor: { type: ctx.agentUserId ? "user" : "system", id: ctx.agentUserId ?? null }, entity: { type: "provider_credential", id: null, version: provider },
+      objective: "access.credential.read", policyConstraints: ["sink rule (D 152): access / credentials", "owner_type + owner_id pin (readOwnerCredential)", "cascade stops on an unreadable tier"],
+      rationale: `credential read for ${provider}; origin ${origin.trustClass ?? "unknown"}`, trustClass: origin.trustClass ?? null, approvalBasis, verification: origin.sink?.verification ?? null,
+    }) },
+  }, run)
+  if ("status" in r) return r
+  return { status: "unreadable", ownerType: null, ownerId: null, detail: `held at the credentials sink — ${r.error ?? "already handled"}` }
 }
 
 /**

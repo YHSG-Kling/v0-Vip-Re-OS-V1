@@ -132,6 +132,7 @@ export async function saveTaxAssumptionsAction(input: {
 }): Promise<{ success: true } | { success: false; error: string }> {
   const c = await ctx()
   if (!c) return { success: false, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof saveTaxAssumptionsAction> => {
   const taxYear = input.taxYear ?? currentTaxYear()
   const svc = createServiceClient()
 
@@ -162,6 +163,7 @@ export async function saveTaxAssumptionsAction(input: {
   // agent_tax_profile is read by TaxSetasidePanel, mounted on app/dashboard/financials/agent/agent-financials-client.tsx.
   revalidatePath("/dashboard/financials/agent")
   return { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: c.brokerageId, action: "finance.tax_assumptions.save", actor: { type: "user", userId: c.userId }, subject: { type: "agent", id: c.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 /** Filing status and home state — profile facts shown beside the plan (never used to derive a rate). */
@@ -172,6 +174,7 @@ export async function saveTaxProfileAction(input: {
 }): Promise<{ success: true } | { success: false; error: string }> {
   const c = await ctx()
   if (!c) return { success: false, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof saveTaxProfileAction> => {
   const taxYear = input.taxYear ?? currentTaxYear()
   const svc = createServiceClient()
 
@@ -199,6 +202,7 @@ export async function saveTaxProfileAction(input: {
 
   revalidatePath("/dashboard/financials/agent")
   return { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: c.brokerageId, action: "finance.tax_profile.save", actor: { type: "user", userId: c.userId }, subject: { type: "agent", id: c.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 /**
@@ -214,6 +218,7 @@ export async function recordQuarterlyPaymentAction(input: {
 }): Promise<{ success: true } | { success: false; error: string }> {
   const c = await ctx()
   if (!c) return { success: false, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof recordQuarterlyPaymentAction> => {
   const taxYear = input.taxYear ?? currentTaxYear()
   const svc = createServiceClient()
 
@@ -246,4 +251,5 @@ export async function recordQuarterlyPaymentAction(input: {
 
   revalidatePath("/dashboard/financials/agent")
   return { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: c.brokerageId, action: "finance.tax_payment.record", actor: { type: "user", userId: c.userId }, subject: { type: "agent", id: c.agentId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }

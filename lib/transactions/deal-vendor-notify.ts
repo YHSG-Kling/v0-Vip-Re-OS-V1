@@ -8,7 +8,7 @@
 // lender-status-request, reviewed onto the egress-send-guard allowlist. Deduped per (deal, vendor)
 // within a short window so a flapping deal never spams a vendor; every send is audited on activities.
 
-import { sendEmail } from "@/lib/providers/messaging"
+// TOMBSTONE (wave 155, lane 155R8): the raw messaging sender import lived here — survivor: dispatchVendorNotice (bottom of this file).
 import { createServiceClient } from "@/lib/supabase/service"
 import { vendorTargets, VENDOR_NOTIFY_DEDUPE_DAYS, type DealVendorRole } from "./deal-vendor-targets"
 
@@ -68,7 +68,7 @@ export async function notifyDealVendorsOfIssue(
       `Could you reply with a quick status update? Thank you for partnering with us on this one.`
 
     try {
-      const r = await sendEmail({ to: c.email, subject, body, brokerageId: params.brokerageId } as never)
+      const r = await dispatchVendorNotice({ brokerageId: params.brokerageId, transactionId: params.transactionId, to: c.email, subject, body, systemSource: "vendor_deal_issue_notify" })
       const ok = (r as { success?: boolean } | null)?.success
       if (ok) {
         notified.push(role)
@@ -194,7 +194,7 @@ export async function deliverCdaToClosingAgent(
     `\n\nReply to confirm receipt. Thank you for closing this one with us.`
 
   try {
-    const r = await sendEmail({ to: recipient, subject, body, brokerageId: params.brokerageId } as never)
+    const r = await dispatchVendorNotice({ brokerageId: params.brokerageId, transactionId: params.transactionId, to: recipient, subject, body, systemSource: "vendor_cda_delivery" })
     const ok = (r as { success?: boolean } | null)?.success
     if (ok) {
       // The record that an approved disbursement authorization was DELIVERED —
@@ -213,4 +213,18 @@ export async function deliverCdaToClosingAgent(
     }
   } catch { /* best-effort */ }
   return { delivered: false, recipient }
+}
+
+/**
+ * WAVE 155 (lane 155R8 — the outbound sink, directive D 152): both B2B notices leave through lib/providers/dispatch.ts dispatchEmail
+ * (address-keyed suppression, content safety, vendor budget, the action-ledger row). The raw sender was called with `body` — a field
+ * it never reads (`as never` hid it) — so the status request and the approved CDA reached the officer with an EMPTY body.
+ */
+async function dispatchVendorNotice(p: { brokerageId: string; transactionId: string; to: string; subject: string; body: string; systemSource: string }) {
+  const [{ dispatchEmail }, { escapeHtmlBasic }] = await Promise.all([import("@/lib/providers/dispatch"), import("@/lib/format/html")])
+  return dispatchEmail({
+    brokerageId: p.brokerageId, systemSource: p.systemSource, channelPurpose: "transactional",
+    ledger: { subject: { type: "transaction", id: p.transactionId } },
+    to: p.to, subject: p.subject, html: `<p>${escapeHtmlBasic(p.body).replace(/\n/g, "<br>")}</p>`, text: p.body,
+  })
 }

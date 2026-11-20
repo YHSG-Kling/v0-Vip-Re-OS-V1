@@ -233,6 +233,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
          params.event === KernelEvent.BUYER_FINANCIALLY_VERIFIED ||
          params.event === KernelEvent.BUYER_SEARCH_CONFIGURED)
       ) {
+        // WAVE 155 (lane 155R6, G04): the sweep below writes journey_states and spawns concierges — it now leaves ONE receipt per
+        // run. A REFUSED claim keeps today's behavior (idempotent spawns, no spend, no send): the sweep still runs, unreceipted.
+        const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+        const runSweep = async (): Promise<void> => {
         // Resolve contact_type to route to the right concierge. CONTACT_CREATED doesn't
         // carry contact_type in metadata; read from the row directly.
         const { createServiceClient } = await import("@/lib/supabase/service")
@@ -257,6 +261,8 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           const { spawnListingConciergeForSeller } = await import("@/lib/agents/listing-concierge")
           await spawnListingConciergeForSeller({ brokerageId: params.brokerageId, contactId: params.entityId })
         }
+        }
+        await withActionLedger<void>({ brokerageId: params.brokerageId, action: "agent.concierge.spawn", actor: { type: "manager", managerKey: "data_steward" }, subject: { type: "contact", id: params.entityId }, riskClass: "LOW_RISK_WRITE", systemSource: "event_reactor", detail: { event: params.event } }, runSweep, { settle: () => ({ status: "executed", outcome: "concierge_sweep_ran" }), replay: (claim) => (claim.kind === "refused" ? runSweep() : undefined) }, { client: svc })
       }
       // Listing-side — re-spawn the seller-side concierge when listing stage changes (idempotent;
       // helper resolves the seller_contact_id from the listing).
@@ -478,13 +484,16 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
 
       if (leadId) {
         const { queueLeadEnrichment } = await import("@/lib/enrichment/lead-enrichment-core")
-        await queueLeadEnrichment({
+        const { withActionLedger } = await import("@/lib/kernel/action-ledger") // WAVE 155 (lane 155R6, G04): one receipt per enqueue
+        const enqueue = () => queueLeadEnrichment({
           leadId,
           brokerageId: params.brokerageId,
           triggerType:
             params.event === KernelEvent.LEAD_CAPTURED ? "lead_captured" : "raw_record_promoted",
           supabase: svc,
         })
+        // a REFUSED claim keeps today's behavior: the enqueue still runs (its writer gates spend itself), unreceipted
+        await withActionLedger<Awaited<ReturnType<typeof queueLeadEnrichment>>>({ brokerageId: params.brokerageId, action: "enrichment.lead.enqueue", actor: { type: "manager", managerKey: "ai_isa" }, subject: { type: "lead", id: leadId }, riskClass: "LOW_RISK_WRITE", systemSource: "event_reactor", detail: { event: params.event } }, enqueue, { settle: (r) => r.queued ? { status: "executed", outcome: "queued" } : r.error ? { status: "failed", outcome: r.reason ?? "refused", error: r.error } : { status: "skipped", outcome: r.reason ?? "not_queued" }, replay: (claim) => { if (claim.kind === "refused") void enqueue().catch(() => null); return { queued: false } } }, { client: svc })
       }
     } catch (err) {
       console.error("[event-reactor] lead enrichment enqueue failed:", err)
@@ -3070,7 +3079,10 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
     // entityId is the offer_intents row id (not the contact) so two intents from the same buyer
     // on two different homes never dedupe against each other (publishManagerSignal dedupes per
     // (toManager, signalType, entityId)).
-    if (params.event === KernelEvent.BUYER_OFFER_SUBMIT_REQUESTED) {
+    // WAVE 155 (lane 155R6): the SAME owner-ruled moment through the portal card's "Request offer" (lib/kernel/forms.ts
+    // recordBuyerPropertyAction, interest_level offer_requested → BUYER_OFFER_ELIGIBLE, our listings only, entity = the
+    // buyer contact). It reached only the default bell; now the buyer's own agent gets the prepare-offer task too.
+    if (params.event === KernelEvent.BUYER_OFFER_SUBMIT_REQUESTED || params.event === KernelEvent.BUYER_OFFER_ELIGIBLE) {
       try {
         const intentId = (params.metadata as Record<string, unknown> | undefined)?.offer_intent_id as string | undefined
         const signalEntityId = intentId ?? params.entityId

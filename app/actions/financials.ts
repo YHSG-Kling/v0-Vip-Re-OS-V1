@@ -51,6 +51,7 @@ export async function generateAIForecast(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   const supabase = await createClient()
   const svc = createServiceClient()
@@ -169,6 +170,7 @@ Keep it professional, specific, and data-driven.`,
   } catch (err: any) {
     return { success: false, error: err.message ?? "Forecast generation failed" }
   }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "finance.forecast.generate", actor: { type: "user", userId: ctx.userId }, subject: { type: "agent", id: ctx.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 /**
@@ -215,6 +217,7 @@ export async function generatePLReport(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   const supabase = await createClient()
   const svc = createServiceClient()
@@ -343,6 +346,7 @@ Use professional language. Be direct and actionable.`,
   } catch (err: any) {
     return { success: false, error: err.message ?? "Report generation failed" }
   }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "finance.pl_report.generate", actor: { type: "user", userId: ctx.userId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 // ─── EXPORT COMMISSION HISTORY AS CSV ────────────────────────────────────────
@@ -647,10 +651,11 @@ export async function deleteExpense(expenseId: string) {
   // .eq filter silently matches nothing and the delete is a no-op.
   const { data: agentRow } = await supabase
     .from("agents")
-    .select("id")
+    .select("id, brokerage_id")
     .eq("user_id", user.id)
     .maybeSingle()
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   // WAVE 153 (lane 153A) — PAID / CLOSED ROWS ARE IMMUTABLE. Once an expense has a money trail (it IS a refund, it HAS
   // a refund, it was posted from an approved receipt, or offices carry a share of it) a delete would silently rewrite
@@ -695,6 +700,7 @@ export async function deleteExpense(expenseId: string) {
   revalidatePath("/dashboard/financials/expenses")
   revalidatePath("/dashboard/financials/agent")
   return { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: agentRow.brokerage_id, action: "finance.expense.delete", actor: { type: "user", userId: user.id }, subject: { type: "business_expense", id: expenseId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 // ─── ATTACH A RECEIPT TO AN EXISTING EXPENSE ─────────────────────────────────
@@ -717,6 +723,7 @@ export async function attachExpenseReceipt(input: {
 }): Promise<{ success: boolean; receiptUrl?: string; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof attachExpenseReceipt> => {
   if (!input.expenseId) return { success: false, error: "expense_required" }
   if (!input.base64) return { success: false, error: "file_required" }
 
@@ -803,6 +810,7 @@ export async function attachExpenseReceipt(input: {
   revalidatePath("/dashboard/financials/agent")
   revalidatePath("/dashboard/financials")
   return { success: true, receiptUrl: upload.url }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "finance.expense.receipt_attach", actor: { type: "user", userId: ctx.userId }, subject: { type: "business_expense", id: input.expenseId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 // TOMBSTONE (orphan doctrine §1.3 — duplicates round 7, wave 61C)
@@ -1240,9 +1248,11 @@ export async function approveReceiptExpense(input: {
 export async function rejectReceiptExpense(input: { documentId: string; reason?: string | null }) {
   const actor = await sessionReceiptActor()
   if (!actor) return { ok: false, state: "held", message: SIGN_IN_COPY, reasons: [] as string[] }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   const { rejectReceipt } = await import("@/lib/documents/receipt-intake")
   const outcome = await rejectReceipt(createServiceClient(), { actor, documentId: input.documentId, reason: input.reason ?? null })
   if (outcome.internal) console.error(`[receipt] reject ${input.documentId}:`, outcome.internal)
   revalidatePath("/dashboard/financials/expenses")
   return { ok: outcome.ok, state: outcome.state, message: outcome.message, reasons: outcome.reasons }
+  }; const r = await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "finance.receipt.reject", actor: { type: "user", userId: actor.userId }, subject: { type: "document", id: input.documentId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act); return "ok" in r ? r : { ok: false, state: "held" as const, message: { ...SIGN_IN_COPY, whatHappened: r.error ?? "The reject could not be recorded.", whatItAffects: "Nothing was changed.", whoActs: "You can try again.", action: "Try again" }, reasons: [] as string[] }
 }

@@ -124,6 +124,7 @@ export async function uploadCommissionAgreementFormAction(input: {
   if (!contractType) return { ok: false, error: "Unknown contract type" }
   const auth = await requireAdmin()
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof uploadCommissionAgreementFormAction> => {
 
   const name = (input.formName ?? "").trim()
   if (!name) return { ok: false, error: "Give the form a name" }
@@ -165,6 +166,7 @@ export async function uploadCommissionAgreementFormAction(input: {
     .single()
   if (error) return { ok: false, error: error.message }
   return { ok: true, formId: (data as { id: string }).id }
+  }; const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.commission_agreement_form.upload", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, act); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
 }
 
 // ─── List the brokerage's commission-agreement forms ─────────────────────────

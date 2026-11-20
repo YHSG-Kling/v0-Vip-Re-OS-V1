@@ -443,7 +443,9 @@ export async function initiateCommissionPayoutAction(input: Omit<InitiateCommiss
 export async function attestCommissionReceivedAction(input: Omit<AttestCommissionReceivedInput, "ctx" | "brokerageId"> & { brokerageId?: string }) {
   try {
     const ctx = await getFinancialActorContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
     return await attestCommissionReceived({ ...input, brokerageId: ctx.brokerageId, ctx })
+    }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "finance.commission.attest_received", actor: { type: "user", userId: ctx.userId }, subject: { type: "agent_commission", id: input.commissionId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -453,7 +455,9 @@ export async function attestCommissionReceivedAction(input: Omit<AttestCommissio
 export async function reconcileCommissionPaymentAction(input: Omit<ReconcileCommissionPaymentInput, "ctx" | "brokerageId"> & { brokerageId?: string }) {
   try {
     const ctx = await getFinancialActorContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
     return await reconcileCommissionPayment({ ...input, brokerageId: ctx.brokerageId, ctx })
+    }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "finance.commission.reconcile_payment", actor: { type: "user", userId: ctx.userId }, subject: { type: "agent_commission", id: input.commissionId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -536,6 +540,7 @@ export async function recordCommissionDepositReceivedAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
     if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false as const, error: "Insufficient permissions to record a deposit" }
     }
@@ -548,6 +553,7 @@ export async function recordCommissionDepositReceivedAction(
       actorUserId: ctx.userId,
     })
     return { success: true as const, stamped: res.stamped }
+    }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "finance.commission_deposit.record_received", actor: { type: "user", userId: ctx.userId }, subject: { type: "transaction", id: input.transactionId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
   } catch (error) {
     return { success: false as const, error: String(error) }
   }

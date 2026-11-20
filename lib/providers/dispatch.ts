@@ -63,6 +63,8 @@ import { channelRefusalForRecipient } from "@/lib/ai-isa/lead-channel-policy"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import {
   withActionLedger,
+  ledgerToolCall,
+  governanceRecord,
   isAiIsaSystemSource,
   settleDispatchResult,
   replayDispatchResult,
@@ -134,6 +136,13 @@ interface DispatchActorContext {
   /** A human approved this send (approval queue). Bypasses the autonomy gate. */
   humanApproved?: boolean
   /**
+   * WAVE 155 (lane 155R8, D 152 / eval SCOPE-001): who PROPOSED this send when it is not the caller's own deterministic code — a
+   * model / inbound proposal states `trustClass` (and any recorded verification). The pure sink rule decides FIRST (dispatchEmail /
+   * dispatchSms): an untrusted origin with no verification is HELD on one `comms.decision.wait` row and no gate, provider or
+   * mailbox is reached. Absent = today's behavior exactly (the send's own row carries the decision record).
+   */
+  origin?: Pick<ActionContext, "trustClass" | "sink" | "cycle"> | null
+  /**
    * ACTION LEDGER context (wave 97, lib/kernel/action-ledger.ts). Every send is recorded whether
    * or not this is set; set it to say WHY (reasonCode) and to make the send at-most-once per
    * cycle (`cycle` — e.g. a deadline id + day — or a precomputed idempotencyKey). `subject`
@@ -201,7 +210,60 @@ function baseLedgerContextFor(
     // gate below consults for an unattended manager send (managed_agents.config.autonomy_tier). A
     // human-approved send names no tenant policy — the human did (reason HUMAN_REQUESTED).
     policyKey: params.ledger?.policyKey ?? (managerKey && !params.humanApproved ? managerPolicyKey("autonomy_tier", managerKey) : null),
+    ...sendDecisionFacts(params, actor, subject, action),
   }
+}
+
+/**
+ * WAVE 155 (lane 155R8, D 152) — THE ONE DECISION RECORD AT THE OUTBOUND SINK, on the send's OWN ledger row (the claim this
+ * dispatcher already writes — no added round trip). What the send rests on is derived from facts the boundary holds, never from a
+ * model: a person (userId, or a human-approved draft) → authorized_human; an unattended manager → tenant_policy under the autonomy
+ * posture the gate consults (standing_authority); anything else → tenant_policy (the tenant's configured automation). A gate that
+ * refuses rewrites the verdict at settle (dispatchLedgerHooks) with its typed reason and next trigger.
+ */
+function sendDecisionFacts(params: DispatchActorContext, actor: ActionContext["actor"], subject: ActionContext["subject"], action: string): Pick<ActionContext, "trustClass" | "approvalBasis" | "dependencies" | "detail"> {
+  const human = params.humanApproved === true || actor.type === "user"
+  const trustClass = human ? "authorized_human" : "tenant_policy"
+  const approvalBasis = params.humanApproved === true ? "human_approval" : actor.type === "manager" ? "standing_authority" : "policy_permitted"
+  const governance = governanceRecord({
+    plane: "dispatch", verdict: "accepted", scope: { brokerageId: params.brokerageId, teamId: params.teamId ?? null, userId: params.userId ?? null },
+    actor: { type: actor.type, id: actor.managerKey ?? actor.userId ?? actor.agentId ?? null }, entity: { type: subject.type, id: subject.id ?? null, version: null },
+    objective: action, policyConstraints: ["sink rule (D 152): outbound send", "autonomyGate", "checkSuppression", "evaluateOutboundCompliance", "deconflictGate", "contentSafetyBackstop", "vendorBudgetPreflight"],
+    rationale: `outbound send at the sink; rests on ${trustClass}`, trustClass, approvalBasis,
+  })
+  return { trustClass, approvalBasis, dependencies: [{ type: subject.type, id: subject.id ?? null, version: null }], detail: { ...(params.ledger?.detail ?? {}), governance } }
+}
+
+/** The ledger context each in-flight send was claimed with, keyed by its params object (read once by its own settle). */
+const SEND_LEDGER_CONTEXT = new WeakMap<object, ActionContext>()
+/** The de-confliction verdict (decision.arbitration — ONE accountable decider) of a refused send, keyed by its refusal. */
+const DECONFLICT_ARBITRATION = new WeakMap<object, Record<string, unknown>>()
+
+/** PURE. A refusing gate's next trigger — the refusal says what would change the answer (`none` is a recorded answer). */
+function gateNextTrigger(r: DispatchResult): { kind: string; at?: string | null; event?: string | null; detail?: string | null } {
+  const loser = (DECONFLICT_ARBITRATION.get(r) as { loser?: { next_trigger?: { kind: string; at?: string | null; detail?: string | null } | null } } | undefined)?.loser?.next_trigger
+  if (loser) return loser
+  if (r.providerKey === "compliance_gate" || r.providerKey === "consent_purpose_gate" || r.providerKey === "lead_channel_gate") return { kind: "event", event: "consent_recorded", detail: "a recorded consent / opt-in for this channel" }
+  if (r.providerKey === "content_safety_gate" || r.providerKey === "autonomy_gate") return { kind: "human", detail: "a person revises or approves the message" }
+  return { kind: "re_evaluate", detail: "the next send re-runs every gate on fresh facts" }
+}
+
+/**
+ * A send whose ORIGIN was stated (params.origin): the pure sink rule (lib/kernel/action-ledger.ts ledgerToolCall) decides before
+ * the dispatcher runs. HOLD / DENY → one decision row and a `sink_rule_gate` refusal (nothing else is reached); ALLOW → the dispatch
+ * runs exactly as before, its own send row following. A replay of a keyed proposal never sends twice.
+ */
+async function originAtSink(params: DispatchActorContext, channel: "email" | "sms", run: () => Promise<DispatchResult>): Promise<DispatchResult> {
+  const o = params.origin as NonNullable<DispatchActorContext["origin"]>
+  const subject = params.contactId ? { type: "contact", id: params.contactId } : params.leadId ? { type: "lead", id: params.leadId } : { type: "brokerage", id: params.brokerageId }
+  const r = await ledgerToolCall<DispatchResult>({
+    brokerageId: params.brokerageId, action: `comms.${channel}.propose`, channel, actor: params.userId ? { type: "user", userId: params.userId } : { type: "system" },
+    subject, riskClass: "COMMUNICATION", systemSource: params.systemSource ?? null, cycle: o.cycle ?? null, trustClass: o.trustClass ?? null,
+    approvalBasis: o.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted", dependencies: [{ type: subject.type, id: subject.id, version: null }],
+    sink: o?.sink ?? null,
+  }, run)
+  if ("providerKey" in r) return r
+  return { success: false, providerKey: "governance" in r ? "sink_rule_gate" : "action_ledger_gate", error: r.error ?? "This proposal was already handled — not sent again." }
 }
 
 // ─── THE PERSISTED SEND INTENT (wave 153, lane 153S — owner ruling B10) ─────────────────────────────────────────────────────
@@ -310,6 +372,7 @@ function ledgerContextFor(
   if (!intent) return baseLedgerContextFor(action, channel, params, recipientRef)
   const ctx = intentLedgerContext(action, channel, params as DispatchActorContext & Record<string, unknown>, recipientRef, intent.kind, intent.content)
   if (intent.onKey && ctx.idempotencyKey) intent.onKey(ctx.idempotencyKey)
+  SEND_LEDGER_CONTEXT.set(params, ctx)
   return ctx
 }
 
@@ -340,9 +403,26 @@ export function lobIntentKey(key: string): string {
   return key.length <= 256 ? key : createHash("sha256").update(key).digest("hex")
 }
 
-function dispatchLedgerHooks(costUsd: number | null) {
+function dispatchLedgerHooks(costUsd: number | null, params?: object) {
   return {
-    settle: (r: DispatchResult) => settleDispatchResult(r, costUsd),
+    settle: (r: DispatchResult) => {
+      const s = settleDispatchResult(r, costUsd)
+      // 155R8: a refusing gate turns the claim's ALLOW into its own verdict (dispatch plane `gate` → DENY) with the typed reason and
+      // next trigger — written on the SAME settle update (the claim's own detail, send intent included, is carried whole).
+      const ctx = params ? SEND_LEDGER_CONTEXT.get(params) : undefined
+      if (!ctx || r.success || !/_gate$/.test(r.providerKey)) return s
+      const prior = (ctx.detail?.governance ?? {}) as Record<string, unknown>
+      const arbitration = DECONFLICT_ARBITRATION.get(r) ?? null
+      const refused = governanceRecord({
+        plane: "dispatch", verdict: "gate", scope: { brokerageId: ctx.brokerageId, userId: ctx.actor.userId ?? null },
+        actor: { type: ctx.actor.type, id: ctx.actor.managerKey ?? ctx.actor.userId ?? ctx.actor.agentId ?? null },
+        entity: { type: ctx.subject.type, id: ctx.subject.id ?? null, version: null }, objective: ctx.action,
+        policyConstraints: [`refused by ${r.providerKey}`], rationale: (r.error ?? r.providerKey).slice(0, 600),
+        trustClass: (prior.trust_class as string | null) ?? ctx.trustClass ?? null, approvalBasis: (prior.approval_basis as string | null) ?? ctx.approvalBasis ?? null,
+        dependencies: ctx.dependencies ?? null, nextTrigger: gateNextTrigger(r),
+      })
+      return { ...s, detail: { ...(ctx.detail ?? {}), refused_by: r.providerKey, governance: arbitration ? { ...refused, arbitration } : refused } }
+    },
     replay: (claim: NonActingClaim): DispatchResult => replayDispatchResult(claim),
   }
 }
@@ -569,13 +649,16 @@ async function deconflictGate(args: {
   systemSource?: string
 }): Promise<DispatchResult | null> {
   if (!args.contactId && !args.leadId && !args.recipientEmail && !args.recipientPhone) return null
-  const d = await evaluateDeconflict(args)
+  // 155B3 request 2 (done by 155R8): the requesting manager is named, so the verdict's loser is a manager, not null.
+  const d = await evaluateDeconflict({ ...args, requestingManager: managerForDispatch(null, args.systemSource) })
   if (d.allowed) return null
-  return {
+  const refusal: DispatchResult = {
     success:     false,
     providerKey: DECONFLICT_GATE_KEY,
     error:       `Outbound deferred: ${d.reason}`,
   }
+  if (d.arbitration) DECONFLICT_ARBITRATION.set(refusal, d.arbitration)
+  return refusal
 }
 
 // ─── CHANNEL PURPOSE — one vocabulary for every channel ───────────────────────
@@ -643,6 +726,8 @@ export interface DispatchEmailParams extends DispatchActorContext {
 }
 
 export async function dispatchEmail(params: DispatchEmailParams): Promise<DispatchResult> {
+  // 155R8: a stated origin passes the sink rule first; the dispatcher then re-enters with the SAME params (a forwarder — the WHY is the caller's).
+  if (params.origin) { const forwarded: DispatchEmailParams = { ...params, origin: null }; return originAtSink(params, "email", () => dispatchEmail(forwarded)) }
   // The body below runs inside the action ledger (claim → gates + send → settle). Not re-indented on purpose.
   return withActionLedger(ledgerContextFor("comms.email.send", "email", params, params.to, emailIntent(params)), async () => {
   // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
@@ -888,7 +973,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
   })
 
   return result
-  }, dispatchLedgerHooks(EMAIL_SEND_COST_USD))
+  }, dispatchLedgerHooks(EMAIL_SEND_COST_USD, params))
 }
 
 // ─── SMS ──────────────────────────────────────────────────────────────────────
@@ -927,6 +1012,7 @@ export interface DispatchSmsParams extends DispatchActorContext {
 const CAMPAIGN_SMS_REFUSING_BASES: ReadonlySet<string> = new Set(["purpose_not_covered", "withdrawn", "channel_opt_out", "unreadable"])
 
 export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchResult> {
+  if (params.origin) { const forwarded: DispatchSmsParams = { ...params, origin: null }; return originAtSink(params, "sms", () => dispatchSms(forwarded)) }
   // The body below runs inside the action ledger (claim → gates + send → settle). Not re-indented on purpose.
   return withActionLedger(ledgerContextFor("comms.sms.send", "sms", params, params.to, smsIntent(params)), async () => {
   // ── LEAD-STAGE REFUSAL (wave 91, lane 91B) — owner: "Leads usually are non consenting so no
@@ -1132,7 +1218,7 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
   })
 
   return result
-  }, dispatchLedgerHooks(SMS_SEND_COST_USD))
+  }, dispatchLedgerHooks(SMS_SEND_COST_USD, params))
 }
 
 // ─── PHONE (outbound call) — MERGED AWAY (wave 8) ─────────────────────────────
@@ -1584,7 +1670,7 @@ export async function dispatchDirectMail(
   })().catch(() => {})
 
   return { success: true, providerKey, messageId: data.id, budgetWarning: mailBudget.warning }
-  }, dispatchLedgerHooks(mailCost))
+  }, dispatchLedgerHooks(mailCost, params))
 }
 
 // ─── VIDEO (superadmin-controlled, system-only) ───────────────────────────────

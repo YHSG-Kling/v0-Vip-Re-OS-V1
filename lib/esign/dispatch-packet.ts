@@ -22,6 +22,7 @@
 
 import "server-only"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import type { ActionContext } from "@/lib/kernel/action-ledger"
 import { resolveESignChoice } from "@/lib/integrations/resolve-esign-provider"
 import { supportsEmbeddedSend, providerPortalMode, getCatalogEntry } from "@/lib/integrations/providers/catalog"
 import type { SignatureTag } from "@/lib/integrations/providers/transaction-provider.interface"
@@ -64,6 +65,9 @@ export interface DispatchPacketInput {
   message?: string
   /** Our record id the provider may echo (formsimplicity forwards it) — the offer id, the listing id. */
   recordId?: string
+  /** WAVE 155 (155R8): who stated this send when it is NOT the session user's own click (a model / inbound proposal states
+   *  `trustClass`; the sink rule then holds it unless a named verification cleared it). Absent = the session user's send. */
+  origin?: Pick<ActionContext, "trustClass" | "sink" | "cycle"> | null
 }
 
 export type DispatchHandoff = {
@@ -191,6 +195,27 @@ async function incompletePacketReason(svc: SupabaseClient, docs: DispatchDoc[]):
 }
 
 export async function dispatchEsignPacket(svc: SupabaseClient, input: DispatchPacketInput): Promise<DispatchPacketResult> {
+  // WAVE 155 (lane 155R8, D 152) — THE ONE DECISION RECORD AT THE E-SIGN SINK: the pure sink rule decides before the packet gate,
+  // the provider choice and the envelope (an untrusted origin with no recorded verification is HELD — one `legal.decision.wait`
+  // row, nothing sent); an allowed send is claimed → run → settled on ONE row. Round trips: claim + settle (refusal: 1 insert).
+  const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
+  const trustClass = input.origin?.trustClass ?? "authorized_human"
+  const approvalBasis = input.origin?.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted"
+  const subjectId = input.listingId ?? (input.recordId && /^[0-9a-f-]{36}$/i.test(input.recordId) ? input.recordId : null)
+  // A keyed proposal (origin.cycle) is at-most-once only with a UUID subject — without a record id the brokerage is the subject.
+  const subject = subjectId ? { type: input.listingId ? "listing" : input.transactionType === "listing" ? "listing" : "offer", id: subjectId, ref: null } : { type: "brokerage", id: input.brokerageId, ref: input.propertyAddress.slice(0, 200) }
+  const r = await ledgerToolCall<DispatchPacketResult>({
+    brokerageId: input.brokerageId, action: "legal.esign.dispatch", channel: "esign_sink", actor: { type: "user", userId: input.userId }, subject,
+    riskClass: "LEGAL", systemSource: "esign_packet", reasonCode: "HUMAN_REQUESTED", cycle: input.origin?.cycle ?? null, trustClass, approvalBasis,
+    dependencies: input.documents.slice(0, 20).map((d) => ({ type: "esign_document", id: null, version: d.name })),
+    sink: input.origin?.sink ?? null,
+    detail: { signers: input.signers.length, documents: input.documents.length, governance: governanceRecord({
+      plane: "tool_boundary", verdict: "allow", scope: { brokerageId: input.brokerageId, teamId: input.teamId, userId: input.userId }, actor: { type: "user", id: input.userId },
+      entity: { type: subject.type, id: subject.id, version: null }, objective: "legal.esign.dispatch",
+      policyConstraints: ["sink rule (D 152): legal document / e-sign", "incompletePacketReason (legal description)", "resolveESignChoice (the tenant's provider)"],
+      rationale: `e-sign packet at the sink; origin ${trustClass}`, trustClass, approvalBasis, verification: input.origin?.sink?.verification ?? null,
+    }) },
+  }, async (): Promise<DispatchPacketResult> => {
   if (input.signers.length === 0) return { ok: false, error: "At least one signer with an email is required." }
 
   // INCOMPLETE packets never leave (wave 141) — refused BEFORE the choice, the envelope or the Drive copy.
@@ -327,4 +352,6 @@ export async function dispatchEsignPacket(svc: SupabaseClient, input: DispatchPa
     return { ok: false, kind: "api", providerName: resolved.providerName, envelopeId, attachedCount, error: sent.error ?? `${resolved.providerName} refused the signature request` }
   }
   return { ok: true, kind: "api", providerName: resolved.providerName, envelopeId, attachedCount, ...stamp, status: dispatchStatusFor("api", false) }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This send was already made — not repeated." }
 }

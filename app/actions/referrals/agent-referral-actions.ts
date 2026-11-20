@@ -8,14 +8,14 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { listReferralAgents, createAgentReferral, computeReferralFee, type AgentDirectoryEntry, type OutboundReferral } from "@/lib/referrals/agent-referral"
 import { referralCommissionFor } from "@/lib/agents/referral-closer"
 
-async function resolveAgent(): Promise<{ ok: true; brokerageId: string; agentId: string } | { ok: false; error: string }> {
+async function resolveAgent(): Promise<{ ok: true; brokerageId: string; agentId: string; userId: string } | { ok: false; error: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const svc = createServiceClient()
   const { data: agent } = await svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
   if (!agent?.brokerage_id || !(agent as any).id) return { ok: false, error: "No agent profile" }
-  return { ok: true, brokerageId: (agent as any).brokerage_id, agentId: (agent as any).id }
+  return { ok: true, brokerageId: (agent as any).brokerage_id, agentId: (agent as any).id, userId: user.id }
 }
 
 export async function getReferralNetwork(): Promise<{
@@ -76,9 +76,11 @@ export async function getReferralNetwork(): Promise<{
 export async function createAgentReferralAction(input: { receivingAgentId: string; contactId: string; feePct: number; notes?: string }): Promise<{ ok: boolean; error?: string; referralId?: string }> {
   const ctx = await resolveAgent()
   if (!ctx.ok) return { ok: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof createAgentReferralAction> => {
   const svc = createServiceClient()
   return createAgentReferral(svc, {
     brokerageId: ctx.brokerageId, referringAgentId: ctx.agentId,
     receivingAgentId: input.receivingAgentId, contactId: input.contactId, feePct: input.feePct, notes: input.notes,
   })
+  }; const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "referral.agent_referral.create", actor: { type: "user", userId: ctx.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
 }

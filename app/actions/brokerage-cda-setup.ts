@@ -421,6 +421,7 @@ export async function uploadCdaTemplateAction(input: {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!isCdaSetupAdmin(auth.userType)) {
     return { success: false as const, error: "forbidden" }
   }
@@ -445,6 +446,7 @@ export async function uploadCdaTemplateAction(input: {
   if (error || !data) return { success: false as const, error: error?.message ?? "create_failed" }
   revalidatePath("/dashboard/admin")
   return { success: true as const, template: data }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda_template.upload", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 export async function listCdaTemplatesAction(input?: {
@@ -483,6 +485,7 @@ export async function updateCdaTemplateAction(input: {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!isCdaSetupAdmin(auth.userType)) {
     return { success: false as const, error: "forbidden" }
   }
@@ -511,6 +514,7 @@ export async function updateCdaTemplateAction(input: {
   if (!updated || updated.length === 0) return { success: false as const, error: "template_not_found" }
   revalidatePath("/dashboard/admin")
   return { success: true as const }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda_template.update", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage_cda_template", id: input.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 export async function deactivateCdaTemplateAction(input: { id: string }) {

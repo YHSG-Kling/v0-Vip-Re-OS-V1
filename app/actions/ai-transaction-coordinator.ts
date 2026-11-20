@@ -139,6 +139,11 @@ export async function analyzeTransactionHealth(params: {
     if (!isValidUUID(params.transactionId)) {
       return { success: false, error: "Invalid transaction ID" }
     }
+    // WAVE 155 (155R3): the siblings' gate (scopeTransaction — session + the deal in the caller's brokerage); this export had none.
+    const scope = await scopeTransaction(params.transactionId)
+    if (!scope.ok) return { success: false, error: scope.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "transaction.health.analyze", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -295,6 +300,7 @@ Analyze for:
 
     revalidatePath(`/transactions/${params.transactionId}`)
     return { success: true, analysis }
+    })
   } catch (error) {
     console.error("[AI Transaction Coordinator] Error:", error)
     return handleError(error, "analyzeTransactionHealth")
@@ -312,6 +318,8 @@ export async function predictAndManageDeadlines(params: {
   try {
     const scope = await scopeTransaction(params.transactionId)
     if (!scope.ok) return { success: false, error: scope.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "transaction.deadlines.predict", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -453,6 +461,7 @@ Based on typical ${(transaction.property_state || 'Florida')} real estate timeli
       createdCount,
       skipped,
     }
+    })
   } catch (error) {
     return handleError(error, "predictAndManageDeadlines")
   }
@@ -470,6 +479,8 @@ export async function generateSmartTasks(params: {
   try {
     const scope = await scopeTransaction(params.transactionId)
     if (!scope.ok) return { success: false, error: scope.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "transaction.tasks.generate", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -616,6 +627,7 @@ Priority MUST be one of: ${TRANSACTION_TASK_PRIORITIES.join(", ")}.`,
       createdCount,
       skipped,
     }
+    })
   } catch (error) {
     return handleError(error, "generateSmartTasks")
   }
@@ -635,6 +647,8 @@ export async function draftTransactionCommunication(params: {
   try {
     const scope = await scopeTransaction(params.transactionId)
     if (!scope.ok) return { success: false, error: scope.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "transaction.communication.draft", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -761,6 +775,7 @@ Format as both email and SMS versions.`,
       recipientName: recipient?.name ?? null,
       recipientEmail: recipient?.email ?? null,
     }
+    })
   } catch (error) {
     return handleError(error, "draftTransactionCommunication")
   }
@@ -928,6 +943,11 @@ export async function monitorTransactionRisks(agentId: string) {
     if (!isValidUUID(agentId)) {
       return { success: false, error: "Invalid agent ID" }
     }
+    // WAVE 155 (155R3): no session gate (RLS only) — the module's session test (scopeTransaction's) is applied; a signed-out call read nothing.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "transaction.risks.monitor", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "agents", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -1016,6 +1036,7 @@ Identify:
       scannedCount: transactions.length,
       appliedCount,
     }
+    })
   } catch (error) {
     return handleError(error, "monitorTransactionRisks")
   }
@@ -1184,6 +1205,8 @@ export async function generatePostClosingPlan(params: {
   try {
     const scope = await scopeTransaction(params.transactionId)
     if (!scope.ok) return { success: false, error: scope.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "transaction.post_closing_plan.generate", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -1328,6 +1351,7 @@ Create a comprehensive plan including:
       scheduledCount,
       skipped,
     }
+    })
   } catch (error) {
     return handleError(error, "generatePostClosingPlan")
   }

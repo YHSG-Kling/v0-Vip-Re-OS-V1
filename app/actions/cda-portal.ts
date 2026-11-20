@@ -940,6 +940,10 @@ export async function approveCdaAction(input: { cdaId: string }) {
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
     return { success: false as const, error: "not_found" }
   }
+  // WAVE 155 (lane 155R8, D 152) — THE ONE DECISION RECORD AT THE CDA-RELEASE SINK: the pure sink rule decides before every gate
+  // below; the approval runs inside ledgerToolCall (claim → gates + update → settle on ONE row; detail.governance names the gates).
+  const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger"); const cdaGates = ["canApproveCda (compliance role + submitted + agent e-signed)", "dealCdaMode", "cdaFigureGate", "signature / contract checks (or logged manual override)", "freshClosingFileGate"]
+  return ledgerToolCall({ brokerageId: auth.brokerageId, action: "closing.cda.approve", channel: "cda_sink", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "closing_disclosure_agreement", id: cda.id }, riskClass: "FINANCIAL", systemSource: "cda", reasonCode: "HUMAN_REQUESTED", trustClass: "authorized_human", approvalBasis: "policy_permitted", dependencies: [{ type: "closing_disclosure_agreement", id: cda.id, version: cda.revision_number ?? null }], detail: { governance: governanceRecord({ plane: "closing", verdict: "pass", scope: { brokerageId: auth.brokerageId, userId: auth.userId }, actor: { type: "user", id: auth.userId }, entity: { type: "closing_disclosure_agreement", id: cda.id, version: cda.revision_number ?? null }, objective: "closing.cda.approve", policyConstraints: ["sink rule (D 152): closing / CDA release", ...cdaGates], rationale: "compliance approval of a disbursement authorization (the session's own click)", trustClass: "authorized_human", approvalBasis: "policy_permitted" }) } }, async () => {
   // Platform-membership guard — in-app compliance approval only applies when the brokerage is on the
   // platform. For a solo agent whose brokerage is external, there's no in-app compliance officer; the
   // CDA is approved/signed through their external form platform.
@@ -1081,6 +1085,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   revalidatePath(`/dashboard/compliance`)
   return { success: true as const }
+  })
 }
 
 // ─── 4c. Broker signs the approved CDA (the final authorization) ─────────────
@@ -1206,6 +1211,7 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!COMPLIANCE_ROLES.has(auth.userType)) {
     return { success: false as const, error: "forbidden" }
   }
@@ -1274,6 +1280,7 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   revalidatePath(`/dashboard/compliance`)
   return { success: true as const }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.request_changes", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 /**
@@ -1430,6 +1437,7 @@ export async function runSignatureCheckForCdaAction(input: { cdaId: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
@@ -1498,6 +1506,7 @@ export async function runSignatureCheckForCdaAction(input: { cdaId: string }) {
   if (scanErr) return { success: false as const, error: scanErr.message }
 
   return { success: true as const, passed, missing }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.signature_check", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 // ─── Manual override (compliance manager bypasses sig gate with reason) ────
@@ -1506,6 +1515,7 @@ export async function manualOverrideCdaAction(input: { cdaId: string; reason: st
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!COMPLIANCE_ROLES.has(auth.userType)) {
     return { success: false as const, error: "forbidden" }
   }
@@ -1545,6 +1555,7 @@ export async function manualOverrideCdaAction(input: { cdaId: string; reason: st
   })
 
   return { success: true as const }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.signature_override", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 // ─── Send approved CDA to title / closing attorney ────────────────────────
@@ -1903,6 +1914,7 @@ export async function recordNonCdaPayoutPreferenceAction(input: {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   // WAVE 152 (152H): the payout PREFERENCE belongs to the no-CDA path only. On a deal whose CDA policy is CDA (opened after the
   // brokerage opted in, or switched to a CDA by a finance admin) the agent's payout is authorized on the CDA — recording a preference
@@ -1968,6 +1980,7 @@ export async function recordNonCdaPayoutPreferenceAction(input: {
 
   revalidatePath(`/dashboard/transactions/${saved.transaction_id}`)
   return { success: true as const, cdaId, method: saved.non_cda_payout_method as "direct_deposit" | "check" }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.payout_preference.record", actor: { type: "user", userId: auth.userId }, subject: { type: "transaction", id: input.transactionId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 // ─── Post-close artifact uploads ──────────────────────────────────────────
@@ -2079,6 +2092,7 @@ export async function uploadCdaCheckCopyAction(input: {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   // GATE (wave 155, lane 155B2 — CLAUDE.md §4; wave 154 gap row 20). REACHABLE, not an orphan: app/dashboard/transactions/[id]/
   // cda/cda-workflow-client.tsx → recordCdaClosingArtifactAction (this file) → here, with a document row it has just inserted.
@@ -2121,6 +2135,7 @@ export async function uploadCdaCheckCopyAction(input: {
 
   revalidatePath(`/dashboard/transactions/${row.transaction_id}`)
   return { success: true as const }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.check_copy_attach", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 /**
@@ -2133,6 +2148,7 @@ export async function closeCdaAction(input: { cdaId: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!COMPLIANCE_ROLES.has(auth.userType)) {
     return { success: false as const, error: "forbidden" }
   }
@@ -2168,6 +2184,7 @@ export async function closeCdaAction(input: { cdaId: string }) {
   revalidatePath(`/dashboard/transactions/${row.transaction_id}`)
   revalidatePath(`/dashboard/compliance`)
   return { success: true as const, closedAt: now }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.close", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2400,6 +2417,7 @@ export async function confirmPreliminaryCdReviewAction(input: { cdaId: string; n
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   const { data: cda, error: cdaErr } = await supabase
     .from("closing_disclosure_agreement")
@@ -2461,6 +2479,7 @@ export async function confirmPreliminaryCdReviewAction(input: { cdaId: string; n
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   revalidatePath(`/dashboard/compliance`)
   return { success: true as const, version: review.version }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.preliminary_cd.review_confirm", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 /**
@@ -2475,6 +2494,7 @@ export async function returnExternallySignedCdaAction(input: { cdaId: string; fi
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!input.fileUrl?.trim() || !input.fileName?.trim()) return { success: false as const, error: "signed_document_required" }
 
   const { data: cda, error: cdaErr } = await supabase
@@ -2540,4 +2560,5 @@ export async function returnExternallySignedCdaAction(input: { cdaId: string; fi
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   return { success: true as const, documentId: doc.id }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.external_signature_return", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }

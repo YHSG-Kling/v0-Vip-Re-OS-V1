@@ -77,8 +77,11 @@ export async function emitCompliancePassedAction(params: {
   if (!ownerBrokerage || ownerBrokerage !== caller.brokerageId) {
     return { success: false, error: "Forbidden" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "offer.compliance_gate.override", actor: { type: "user", userId: caller.userId }, subject: { type: "offer", id: params.offerId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { user_type: caller.userType } }, async () => {
 
   return emitCompliancePassed({ offerId: params.offerId, userId: caller.userId })
+  })
 }
 
 export async function loadComplianceBridgeStatusAction(offerId: string) {

@@ -191,6 +191,8 @@ async function transitionIntent(
   if (!isValidUUID(intentId)) return { success: false, error: "Invalid request ID" }
   const scope = await resolveCallerScope()
   if (!scope.ok) return { success: false, error: scope.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: scope.brokerageId, action: "offer.intent.transition", actor: { type: "user", userId: scope.userId, agentId: scope.agentId }, subject: { type: "offer_intent", id: intentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { to_status: toStatus } }, async () => {
 
   const svc = createServiceClient()
   let q = svc
@@ -216,6 +218,7 @@ async function transitionIntent(
     return { success: false, error: "This request was already handled, or you don't have access to it." }
   }
   return { success: true }
+  })
 }
 
 /** acknowledgeOfferIntent — "I saw this, I'm on it." Does not create an offer. */

@@ -462,6 +462,8 @@ export async function updateMilestone(
 ) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.milestone.update", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction_milestone", id: milestoneId }, riskClass: updates.status !== undefined ? "LEGAL" : "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, status: updates.status ?? null } }, async () => {
   const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_milestones")
@@ -476,6 +478,7 @@ export async function updateMilestone(
   }
   revalidatePath("/dashboard/transactions")
   return { success: true, data }
+  })
 }
 
 export async function getClosingChecklist(transactionId: string) {
@@ -528,6 +531,8 @@ export async function addParticipant(participantData: {
 }) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.participant.add", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: participantData.transaction_id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, role: participantData.role } }, async () => {
   const supabase = gate.db
   const { data, error } = await supabase.from("transaction_participants").insert(participantData).select().single()
 
@@ -544,6 +549,7 @@ export async function addParticipant(participantData: {
 
   revalidatePath("/transactions")
   return { success: true, data }
+  })
 }
 
 export async function updateParticipant(
@@ -1034,6 +1040,8 @@ export async function updateDocumentStatus(documentId: string, status: string, s
 export async function setDocumentClientVisibility(documentId: string, visible: boolean) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.document.set_client_visibility", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction_document", id: documentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, visible } }, async () => {
   const supabase = gate.db
   const { data: doc, error: readErr } = await supabase
     .from("transaction_documents")
@@ -1055,6 +1063,7 @@ export async function setDocumentClientVisibility(documentId: string, visible: b
   if (!data || data.length !== 1) return { success: false, error: "Document visibility not saved (no row matched)" }
   revalidatePath(`/dashboard/transactions/${(doc as { transaction_id: string }).transaction_id}`)
   return { success: true, data: data[0] }
+  })
 }
 
 // ============================================
@@ -1115,6 +1124,8 @@ export async function addDeadline(deadlineData: {
 }) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.deadline.add", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: deadlineData.transaction_id }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, deadline_type: deadlineData.deadline_type } }, async () => {
   const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_deadlines")
@@ -1140,6 +1151,7 @@ export async function addDeadline(deadlineData: {
   )
   revalidatePath("/transactions")
   return { success: true, data }
+  })
 }
 
 export async function updateDeadline(
@@ -1167,6 +1179,8 @@ export async function updateDeadline(
 export async function completeDeadline(deadlineId: string) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.deadline.complete", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction_deadline", id: deadlineId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId } }, async () => {
   const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_deadlines")
@@ -1185,6 +1199,7 @@ export async function completeDeadline(deadlineId: string) {
   }
   revalidatePath("/transactions")
   return { success: true, data }
+  })
 }
 
 export async function getUpcomingDeadlines(agentId?: string, days = 7) {
@@ -1227,6 +1242,8 @@ export async function addCommission(commissionData: {
 }) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "commission.line.add", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: commissionData.transaction_id }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, recipient_type: commissionData.recipient_type, commission_type: commissionData.commission_type } }, async () => {
   const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_commissions")
@@ -1240,11 +1257,14 @@ export async function addCommission(commissionData: {
   }
   revalidatePath("/transactions")
   return { success: true, data }
+  })
 }
 
 export async function calculateCommissions(transactionId: string) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "commission.lines.recalculate", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: transactionId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId } }, async () => {
   const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
@@ -1409,11 +1429,14 @@ export async function calculateCommissions(transactionId: string) {
 
   revalidatePath("/transactions")
   return { success: true, data: updatedCommissions }
+  })
 }
 
 export async function markCommissionPaid(commissionId: string, paidDate: string, checkNumber?: string) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "commission.line.mark_paid", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction_commission", id: commissionId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, paid_date: paidDate } }, async () => {
   const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_commissions")
@@ -1441,6 +1464,7 @@ export async function markCommissionPaid(commissionId: string, paidDate: string,
   }
   revalidatePath("/transactions")
   return { success: true, data }
+  })
 }
 
 // ============================================
@@ -1486,6 +1510,8 @@ export async function respondToRepairRequest(
 ) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.repair_request.respond", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction_repair_negotiation", id: requestId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, response } }, async () => {
   const supabase = gate.db
   // Map response → status CHECK (requested|countered|approved|rejected|withdrawn|completed).
   const RESPONSE_STATUS: Record<"accepted" | "rejected" | "counter", string> = {
@@ -1518,6 +1544,7 @@ export async function respondToRepairRequest(
   }
   revalidatePath("/transactions")
   return { success: true, data }
+  })
 }
 
 export async function finalizeRepairNegotiation(
@@ -1884,6 +1911,8 @@ Tone: Honest, reassuring, specific (no vague language)`
 export async function generateSmartChecklist(transactionId: string, stage: string) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.checklist.generate", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, stage } }, async () => {
   const supabase = gate.db
 
   // Tenant anchor: the checklist rows carry brokerage_id, and the honest place
@@ -2015,6 +2044,7 @@ Return JSON array of tasks.`
     createdCount,
     skipped,
   }
+  })
 }
 
 /**
@@ -2098,6 +2128,8 @@ export async function setTaskItemCompleted(
 ): Promise<{ success: true; rollupError?: string } | { success: false; error: string }> {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const receipted = await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.task_item.set_completed", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "task_item", id: taskItemId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, transaction_id: transactionId, completed } }, async (): Promise<{ success: true; rollupError?: string } | { success: false; error: string }> => {
   const supabase = gate.db
 
   // Pin the task to THIS transaction (task → checklist → transaction).
@@ -2166,11 +2198,15 @@ export async function setTaskItemCompleted(
   }
 
   return rollupError ? { success: true, rollupError } : { success: true }
+  })
+  return receipted.success === true ? { success: true, ...("rollupError" in receipted ? { rollupError: receipted.rollupError } : {}) } : { success: false, error: ("error" in receipted && receipted.error) || "Not done" }
 }
 
 export async function detectTransactionIssues(transactionId: string) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.health.detect_issues", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId } }, async () => {
   const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
@@ -2274,6 +2310,7 @@ Return:
   }
 
   return { success: true, analysis: analysis.data }
+  })
 }
 
 // ============================================
@@ -2454,6 +2491,8 @@ Calculate health scores (0-100):
 export async function detectTransactionDelays(transactionId: string) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.timeline.detect_delays", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId } }, async () => {
   const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
@@ -2516,6 +2555,7 @@ Current Delays: ${JSON.stringify(delays)}
   }
 
   return { success: true, delays, impact: impact.data }
+  })
 }
 
 // ============================================
@@ -2599,6 +2639,8 @@ async function stampClientUpdateReceipts(
 ): Promise<{ stamped: number; refusal: string | null }> {
   const gate = await actingWriteContext()
   if (!gate.ok) return { stamped: 0, refusal: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const receipted = await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.client_update.mark_read", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId } }, async (): Promise<{ stamped: number; refusal: string | null }> => {
   // The predicate is the transaction plus "not already read" — never anything
   // the caller supplied about WHICH rows to touch; the contact was proven a
   // party to this transaction by the loader before this is reached. `.select()`
@@ -2612,6 +2654,8 @@ async function stampClientUpdateReceipts(
     .select("id")
   if (error) return { stamped: 0, refusal: error.message }
   return { stamped: (data ?? []).length, refusal: null }
+  })
+  return "stamped" in receipted ? receipted : { stamped: 0, refusal: receipted.error ?? "not recorded" }
 }
 
 export async function loadClientDashboard(transactionId: string, contactId?: string) {

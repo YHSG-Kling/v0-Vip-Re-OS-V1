@@ -8,6 +8,7 @@
  * provider missing a required param (or violating Fair Housing).
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import type { ActionContext } from "@/lib/kernel/action-ledger"
 import type { AdBuildInput, AdObjective } from "./connectors/ad-payload"
 import { getConnector, loadConnectorCredential } from "./connectors/registry"
 import { adCredentialPlatform } from "./connection-status"
@@ -247,6 +248,8 @@ export interface PublishResult { published: number; failed: number }
  */
 export async function publishLaunchingCampaigns(
   brokerageId: string, client?: ReturnType<typeof createServiceClient>,
+  /** WAVE 155 (155R8): who stated this publish when it is not the sweep (a model / inbound proposal states `trustClass`). */
+  origin?: Pick<ActionContext, "trustClass" | "sink" | "cycle"> | null,
 ): Promise<PublishResult> {
   const supabase = client ?? createServiceClient()
   const { data: campaigns } = await supabase
@@ -255,6 +258,25 @@ export async function publishLaunchingCampaigns(
     .eq("brokerage_id", brokerageId).eq("status", "launching")
   const list = (campaigns ?? []) as Array<{ id: string; platform: string; targeting_config: Record<string, any> | null }>
 
+  // WAVE 155 (lane 155R8, D 152) — THE ONE DECISION RECORD AT THE AD-BUDGET SINK: with something to publish, the pure sink rule
+  // decides before any credential or provider call; the batch runs inside ledgerToolCall (claim → publish → settle on ONE row per
+  // run; nothing to publish = no row, as before). The sweep's own trust is the tenant's: each row reached 'launching' through the
+  // human launch gate. Round trips: claim + settle per non-empty run (refusal: 1 insert).
+  if (list.length === 0) return { published: 0, failed: 0 }
+  const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
+  const trustClass = origin?.trustClass ?? "tenant_policy"
+  const approvalBasis = origin?.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted"
+  const run = await ledgerToolCall<PublishResult & { success: boolean }>({
+    brokerageId, action: "ads.campaign.publish", channel: "ad_budget_sink", actor: { type: "system" }, subject: { type: "brokerage", id: brokerageId },
+    riskClass: "FINANCIAL", systemSource: "ads_publish", cycle: origin?.cycle ?? null, trustClass, approvalBasis,
+    dependencies: list.slice(0, 20).map((c) => ({ type: "ad_campaign", id: c.id, version: null })),
+    sink: origin?.sink ?? null,
+    detail: { campaigns: list.length, governance: governanceRecord({
+      plane: "tool_boundary", verdict: "allow", scope: { brokerageId }, actor: { type: "system", id: null }, entity: { type: "brokerage", id: brokerageId, version: null },
+      objective: "ads.campaign.publish", policyConstraints: ["sink rule (D 152): ad budget", "status 'launching' (the human launch gate)", "assembleAdFromCampaign payload", "loadConnectorCredential"],
+      rationale: `paid ad publish at the sink; origin ${trustClass}`, trustClass, approvalBasis, verification: origin?.sink?.verification ?? null,
+    }) },
+  }, async () => {
   let published = 0, failed = 0
   const credCache = new Map<string, Awaited<ReturnType<typeof loadConnectorCredential>>>()
   for (const c of list) {
@@ -307,5 +329,7 @@ export async function publishLaunchingCampaigns(
       failed++
     }
   }
-  return { published, failed }
+  return { published, failed, success: failed === 0 || published > 0 }
+  })
+  return "published" in run ? { published: run.published, failed: run.failed } : { published: 0, failed: list.length }
 }

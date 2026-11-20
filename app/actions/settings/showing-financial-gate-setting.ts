@@ -34,7 +34,7 @@ import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting
 
 async function resolveBrokerAdmin(
   mode: "read" | "write",
-): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; brokerageId: string; userId: string } | { ok: false; error: string }> {
   const acting = mode === "write" ? await resolveWriteContext() : await resolveActingContext()
   if (!acting.ok) return { ok: false, error: acting.error ?? "Unauthenticated" }
   if (!acting.brokerageId) return { ok: false, error: "No brokerage" }
@@ -59,7 +59,7 @@ async function resolveBrokerAdmin(
   if (!isSolo && !isBrokerageFinanceAdmin({ user_type: acting.userType })) {
     return { ok: false, error: "Only a broker or admin can change how showings are gated." }
   }
-  return { ok: true, brokerageId: acting.brokerageId }
+  return { ok: true, brokerageId: acting.brokerageId, userId: acting.actorUserId }
 }
 
 export async function getShowingFinancialGateSetting(): Promise<{
@@ -94,6 +94,7 @@ export async function setShowingFinancialGateRequired(
 ): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveBrokerAdmin("write")
   if (!ctx.ok) return { ok: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof setShowingFinancialGateRequired> => {
 
   const svc = createServiceClient()
   const { error } = await svc
@@ -108,4 +109,5 @@ export async function setShowingFinancialGateRequired(
 
   revalidatePath("/dashboard/settings")
   return { ok: true }
+  }; const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "brokerage.showing_financial_gate.set", actor: { type: "user", userId: ctx.userId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
 }

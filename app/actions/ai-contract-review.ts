@@ -344,6 +344,8 @@ export async function compareContractVersions(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "contract.versions.compare", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "document", id: params.documentId1 }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { compared_with: params.documentId2 } }, async () => {
 
   const supabase = createServiceClient()
 
@@ -388,6 +390,7 @@ Provide:
   } catch (error) {
     return handleError(error, "compareContractVersions")
   }
+  })
 }
 
 // Generate missing document checklist
@@ -555,10 +558,13 @@ export async function applyContractExtraction(params: {
   // CRITICAL auth gate — was previously open. Any caller could update
   // any transaction's purchase_price, close_date, property_address, and
   // create milestone rows on it.
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const sessionCtx = await getAgentContext()
+  if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const ctx = { ...sessionCtx, brokerageId: sessionCtx.brokerageId } // WAVE 155 (155R3): the narrowed tenant, visible inside the receipt closure
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "contract.extraction.apply", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.entries(params.extracted ?? {}).filter(([, v]) => v != null).map(([k]) => k) } }, async () => {
 
   const supabase = createServiceClient()
 
@@ -667,6 +673,7 @@ export async function applyContractExtraction(params: {
     console.error("[applyContractExtraction Error]:", error)
     return { success: false, error: error instanceof Error ? error.message : "Failed to apply contract extraction" }
   }
+  })
 }
 
 // Helper to infer document type from name

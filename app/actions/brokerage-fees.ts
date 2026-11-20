@@ -92,6 +92,7 @@ export async function createFeeType(input: CreateFeeTypeInput): Promise<{
   if (!isBrokerRole(ctx.userType)) {
     return { success: false, error: "Only broker / admin / superadmin can create fees" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof createFeeType> => {
   if (input.amount <= 0) return { success: false, error: "Amount must be positive" }
 
   const svc = createServiceClient()
@@ -136,6 +137,7 @@ export async function createFeeType(input: CreateFeeTypeInput): Promise<{
   }
 
   return { success: true, feeTypeId: feeType.id }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "finance.fee_type.create", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 export async function toggleFeeType(params: {
@@ -146,6 +148,7 @@ export async function toggleFeeType(params: {
   if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof toggleFeeType> => {
   const svc = createServiceClient()
   const { error } = await svc
     .from("brokerage_fee_types")
@@ -153,6 +156,7 @@ export async function toggleFeeType(params: {
     .eq("id", params.feeTypeId)
     .eq("brokerage_id", ctx.brokerageId!)
   return error ? { success: false, error: error.message } : { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId!, action: "finance.fee_type.toggle", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage_fee_type", id: params.feeTypeId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +301,7 @@ export async function markChargePaid(params: {
   if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof markChargePaid> => {
   const svc = createServiceClient()
   const { error } = await svc
     .from("agent_fee_charges")
@@ -308,6 +313,7 @@ export async function markChargePaid(params: {
     .eq("id", params.chargeId)
     .eq("brokerage_id", ctx.brokerageId!)
   return error ? { success: false, error: error.message } : { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId!, action: "finance.fee_charge.mark_paid", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "agent_fee_charge", id: params.chargeId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 export async function waiveCharge(params: {
@@ -318,6 +324,7 @@ export async function waiveCharge(params: {
   if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof waiveCharge> => {
   const svc = createServiceClient()
   const { error } = await svc
     .from("agent_fee_charges")
@@ -328,6 +335,7 @@ export async function waiveCharge(params: {
     .eq("id", params.chargeId)
     .eq("brokerage_id", ctx.brokerageId!)
   return error ? { success: false, error: error.message } : { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId!, action: "finance.fee_charge.waive", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "agent_fee_charge", id: params.chargeId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 // ---------------------------------------------------------------------------

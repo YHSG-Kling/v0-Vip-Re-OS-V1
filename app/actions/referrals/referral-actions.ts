@@ -508,6 +508,7 @@ export async function sendReferralThankYou(referralId: string): Promise<{ succes
   if (!user) throw new Error("Unauthorized")
 
   const { agentId, brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof sendReferralThankYou> => {
   const db = createServiceClient()
 
   const { error } = await db
@@ -523,6 +524,7 @@ export async function sendReferralThankYou(referralId: string): Promise<{ succes
 
   if (error) throw new Error(`Failed to send thank you: ${error.message}`)
   return { success: true }
+  }; const r = await ledgerSessionAction({ brokerageId: brokerageId!, action: "referral.thank_you.mark_sent", actor: { type: "user", userId: user.id }, subject: { type: "referral", id: referralId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act); if (!r.success) throw new Error(r.error ?? "Failed to send thank you: not recorded"); return { success: true as const }
 }
 
 export async function createPartner(params: CreatePartnerParams): Promise<{ id: string }> {
@@ -614,6 +616,7 @@ export async function deletePartner(partnerId: string): Promise<void> {
   if (!user) throw new Error("Unauthorized")
 
   const { agentId, brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof deletePartner> => {
   const db = createServiceClient()
 
   const { data: deleted, error } = await db
@@ -628,6 +631,7 @@ export async function deletePartner(partnerId: string): Promise<void> {
   if (!deleted || deleted.length === 0) {
     console.warn(`[deletePartner] No row deleted for partnerId=${partnerId} — may have already been removed or ownership mismatch`)
   }
+  }; const r = await ledgerSessionAction({ brokerageId: brokerageId!, action: "referral.partner.delete", actor: { type: "user", userId: user.id }, subject: { type: "referral_partner", id: partnerId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act); if (r && !r.success) throw new Error(r.error ?? "Failed to delete partner: not recorded")
 }
 
 export async function listPartnersWithReferrals(): Promise<{

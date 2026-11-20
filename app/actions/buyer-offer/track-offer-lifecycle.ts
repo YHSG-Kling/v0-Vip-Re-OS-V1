@@ -496,6 +496,8 @@ export async function markOfferExpired(
 
     const gate = await requireOfferActor(offerId);
     if (!gate.ok) return { success: false, error: gate.error };
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "offer.lifecycle.expire", actor: { type: "user", userId: gate.userId }, subject: { type: "offer", id: offerId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     // Deadline check, PENDING check, the activity write AND the offers.status
     // sync all live in lib/buyer-offer/expire-offers.ts so that the hourly
@@ -517,6 +519,7 @@ export async function markOfferExpired(
     if (!outcome.expired) return { success: false, error: outcome.reason };
 
     return { success: true };
+    })
   } catch (error: any) {
     console.error("[System 7.1A] Error marking offer expired:", error);
     return { success: false, error: error.message };

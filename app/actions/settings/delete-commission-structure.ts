@@ -15,6 +15,7 @@ export async function deleteCommissionStructure(id: string) {
   if (!ctx.ok) return { error: ctx.error };
   if (!ctx.brokerageId) return { error: 'Unauthorized' };
   if (!DELETE_ROLES.includes(ctx.userType ?? '')) return { error: 'Forbidden' };
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   const svc = createServiceClient();
 
@@ -45,4 +46,5 @@ export async function deleteCommissionStructure(id: string) {
   }
 
   return { success: true };
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "finance.commission_structure.delete", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "commission_structure", id: id }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }

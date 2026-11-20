@@ -148,6 +148,8 @@ export async function assignTransactionCoordinator(data: {
 }) {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "transaction.coordinator.assign", actor: { type: "user", userId: auth.userId }, subject: { type: "transaction", id: data.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { coordinator_id: data.coordinatorId } }, async () => {
 
   const supabase = await createClient()
 
@@ -202,6 +204,7 @@ export async function assignTransactionCoordinator(data: {
   revalidatePath("/dashboard/coordinator")
   revalidatePath("/dashboard/settings/team/tc")
   return { success: true }
+  })
 }
 
 // getCoordinatorDashboard_v2 — DELETED, EXACT DUPLICATE.
@@ -266,6 +269,8 @@ export async function assignLenderToTransaction(data: {
 }): Promise<{ success: boolean; error?: string }> {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "transaction.lender.assign", actor: { type: "user", userId: auth.userId }, subject: { type: "transaction", id: data.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { vendor_id: data.vendorId ?? data.lenderUserId ?? data.lenderId ?? null } }, async () => {
   // SCOPE LADDER (kept inline — admits tc/agent/team_lead): 'superadmin' removed
   // — dead as users.user_type (0 live rows); broker_owner added — storable seat
   // that owns the brokerage. Mirrored by assign-lender-panel.tsx.
@@ -311,6 +316,7 @@ export async function assignLenderToTransaction(data: {
   revalidatePath("/dashboard/transactions")
   revalidatePath(`/dashboard/transactions/${data.transactionId}`)
   return { success: true }
+  })
 }
 
 // updateLoanStatus — DELETED, SUPERSEDED BY THE GATED LENDER ACTION.
@@ -516,6 +522,11 @@ export async function submitComplianceReviewDecision(data: {
   actionRequired?: string
   notes?: string
 }) {
+  // WAVE 155 (155R3): no session gate (RLS only) — the module's own requireCaller() (its siblings' gate) is resolved here.
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "compliance.review.decide", actor: { type: "user", userId: auth.userId }, subject: { type: "compliance_flag", id: data.reviewId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { decision: data.status } }, async () => {
   const supabase = await createClient()
 
   // compliance_reviews does not exist — update compliance_flags instead
@@ -541,6 +552,7 @@ export async function submitComplianceReviewDecision(data: {
 
   revalidatePath("/dashboard/compliance")
   return flag
+  })
 }
 
 // ============================================
@@ -557,6 +569,12 @@ export async function createWorkflowAutomation(data: {
   createdBy: string
   brokerageId?: string
 }) {
+  // WAVE 155 (155R3): no session gate (RLS only) — the module's own requireCaller() (its siblings' gate) is resolved here.
+  const auth = await requireCaller()
+  if (!auth.ok) throw new Error(auth.error)
+  if (data.brokerageId && data.brokerageId !== auth.brokerageId) throw new Error("Forbidden")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "workflow.automation.create", actor: { type: "user", userId: auth.userId }, subject: { type: "workflow_automation", ref: "new" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { workflow_type: data.workflowType, trigger_event: data.triggerEvent } }, async () => {
   const supabase = await createClient()
 
   const { data: workflow, error } = await supabase
@@ -579,6 +597,7 @@ export async function createWorkflowAutomation(data: {
 
   revalidatePath("/dashboard/admin/automations")
   return workflow
+  })
 }
 
 export async function executeWorkflow(workflowId: string, contextData: any) {
@@ -900,6 +919,8 @@ export async function createTeam(data: {
   const name = typeof data.teamName === "string" ? data.teamName.trim() : ""
   if (!name) throw new Error("Team name is required.")
   if (!data.teamLeaderId) throw new Error("Select a team leader.")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: admin.brokerageId, action: "team.record.create", actor: { type: "user", userId: user.id }, subject: { type: "users", id: data.teamLeaderId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // teams.team_lead_id is a FK to users.id (verified against the live schema:
   // teams_team_lead_id_fkey → users(id)), and m457's UPDATE policy compares it
@@ -948,6 +969,7 @@ export async function createTeam(data: {
   // rows is /dashboard/team.
   revalidatePath("/dashboard/team")
   return inserted[0]
+  })
 }
 
 export async function getTeamDashboard(teamId: string) {
@@ -1197,6 +1219,8 @@ export async function saveClientJourneyPreferences(data: {
   if (!data.contactId) return { success: false, error: "contactId required" }
   const access = await requireContactAccess(data.contactId)
   if (!access.ok) return { success: false, error: access.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const saved = await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.journey_preferences.save", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { caller_is_contact: access.isContactSelf } }, async (): Promise<{ success: true; mustHaveFeatures: string[] } | { success: false; error: string }> => {
 
   const clean = (xs: string[] | undefined, max: number) =>
     Array.from(new Set((xs ?? []).map((s) => String(s).trim()).filter(Boolean))).slice(0, max)
@@ -1233,6 +1257,8 @@ export async function saveClientJourneyPreferences(data: {
       ? ((row as { must_have_features: string[] }).must_have_features)
       : mustHave,
   }
+  })
+  return "mustHaveFeatures" in saved ? saved : { success: false, error: saved.error ?? "Preferences were not saved" }
 }
 
 /**
@@ -1561,6 +1587,9 @@ export async function trackConditionClearance(loanId: string, promoteOnFullClear
     clearanceRate === 100 &&
     loan?.underwriting_status !== "clear_to_close"
   ) {
+    const promoter = await requireCaller()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    await ledgerSessionAction({ brokerageId: promoter.ok ? promoter.brokerageId : "", action: "lender.condition_clearance.promote", actor: { type: "user", userId: promoter.ok ? promoter.userId : null }, subject: { type: "transaction_lender", id: loanId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const { error: promoteError } = await supabase
       .from("transaction_lenders")
       .update({ underwriting_status: "clear_to_close" })
@@ -1568,6 +1597,8 @@ export async function trackConditionClearance(loanId: string, promoteOnFullClear
     if (promoteError) {
       console.error("[trackConditionClearance] clear_to_close promotion failed:", promoteError.message)
     }
+    return promoteError ? { success: false, error: promoteError.message } : { success: true }
+    })
   }
 
   return { pendingConditions, clearedConditions, clearanceRate }
@@ -1730,6 +1761,11 @@ export async function calculateComplianceRiskScore(agentId: string) {
 export async function bulkUpdateMilestones(
   updates: Array<{ milestoneId: string; status: string; notes?: string }>
 ) {
+  // WAVE 155 (155R3): no session gate (RLS only) — the module's own requireCaller() (its siblings' gate) is resolved here.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "transaction.milestones.bulk_update", actor: { type: "user", userId: auth.userId }, subject: { type: "transaction_milestone", id: updates[0]?.milestoneId ?? null }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { milestone_ids: updates.slice(0, 50).map((u) => u.milestoneId), count: updates.length } }, async () => {
   const supabase = await createClient()
 
   try {
@@ -1768,6 +1804,7 @@ export async function bulkUpdateMilestones(
   } catch (error: any) {
     return { success: false, error: error.message }
   }
+  })
 }
 
 /**

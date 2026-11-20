@@ -85,12 +85,14 @@ export async function withdrawAgentConcessionAction(input: { concessionId: strin
   if (!UUID.test(String(input?.concessionId ?? ""))) return { success: false, error: "invalid_concession" }
   const s = await sessionActor()
   if (!s.ok) return { success: false, error: s.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof withdrawAgentConcessionAction> => {
   const { createServiceClient } = await import("@/lib/supabase/service")
   const { withdrawAgentConcession } = await import("@/lib/commission/agent-concession")
   const r = await withdrawAgentConcession(createServiceClient() as never, s.actor, { adjustmentId: input.concessionId })
   if (!r.ok) return { success: false, error: r.error }
   revalidatePath(`/dashboard/transactions/${r.record.transactionId}/cda`)
   return { success: true, approvalStatus: r.record.approvalStatus }
+  }; return (await ledgerSessionAction({ brokerageId: s.actor.brokerageId, action: "finance.commission_concession.withdraw", actor: { type: "user", userId: s.actor.userId }, subject: { type: "commission_adjustment", id: input.concessionId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 /**

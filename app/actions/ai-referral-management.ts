@@ -27,10 +27,14 @@ const generateObject = bookedGenerateObject("ai_referral_management")
  * Analyzes contacts to find best referral candidates
  */
 export async function identifyReferralOpportunities(agentId: string) {
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   try {
     if (!isValidUUID(agentId)) {
       return { success: false, error: "Invalid agent ID" }
     }
+    // WAVE 155 (155R2): this public endpoint ran a paid model and stamped contacts with no session check (sibling gate: analyzeReferralProgram).
+    const spendActor = await getAgentContext()
+    if (!spendActor.isAuthenticated || !spendActor.brokerageId) return { success: false, error: "Unauthorized" }
 
     const supabase = await createClient()
 
@@ -156,6 +160,7 @@ Identify:
   } catch (error) {
     return handleError(error, "identifyReferralOpportunities")
   }
+  }; const session = await getAgentContext(); if (!session.isAuthenticated || !session.brokerageId) return act(); return (await ledgerSessionAction({ brokerageId: session.brokerageId, action: "referral.opportunity.ai_identify", actor: { type: "user", userId: session.userId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 /**
@@ -192,6 +197,9 @@ export async function generateReferralRequest(params: {
   try {
     // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
     const spendActor = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
+    // WAVE 155 (155R2): the session was read but never checked — the paid model ran for an unsigned caller.
+    if (!spendActor.isAuthenticated || !spendActor.brokerageId) return { success: false, error: "Unauthorized" }
     const supabase = await createClient()
 
     // BOTH embeds here were ambiguous, so PostgREST refused the WHOLE request with
@@ -290,6 +298,7 @@ ${params.channel === 'voice' ? 'Include talking points and responses to common o
     }
 
     return { success: true, referralRequest }
+    }; if (!spendActor.isAuthenticated || !spendActor.brokerageId) return act(); return (await ledgerSessionAction({ brokerageId: spendActor.brokerageId, action: "referral.request.ai_draft", actor: { type: "user", userId: spendActor.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
   } catch (error) {
     return handleError(error, "generateReferralRequest")
   }

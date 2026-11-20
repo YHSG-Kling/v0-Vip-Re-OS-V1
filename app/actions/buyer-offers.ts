@@ -978,6 +978,8 @@ export async function confirmSigningOrderAction(
 ): Promise<{ success: boolean; error?: string }> {
   const gate = await requireOfferInCallerBrokerage(offerId)
   if (!gate.ok) return { success: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "offer.signing_order.confirm", actor: { type: "user", userId: gate.userId }, subject: { type: "offer", id: offerId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { signer_count: signers.length } }, async () => {
 
   const supabase = createServiceClient()
   const clean = signers.map((x) => x.trim()).filter(Boolean).slice(0, 6)
@@ -990,6 +992,7 @@ export async function confirmSigningOrderAction(
   }).eq("id", offerId).eq("brokerage_id", gate.brokerageId)
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }
 
 //

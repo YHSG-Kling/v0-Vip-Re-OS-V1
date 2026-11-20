@@ -214,6 +214,8 @@ export async function analyzePropertyForBuyer(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "property_match.analysis.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_id: params.propertyId } }, async () => {
 
   if (!isValidUUID(params.contactId) || !isValidUUID(params.propertyId)) {
     return { success: false, error: "Invalid IDs" }
@@ -281,6 +283,7 @@ Provide:
   } catch (error) {
     return handleError(error, "analyzePropertyForBuyer")
   }
+  })
 }
 
 // Smart notification for new matches
@@ -384,6 +387,8 @@ export async function learnFromBuyerFeedback(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "property_match.feedback.record", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_id: params.propertyId } }, async () => {
 
   if (!isValidUUID(params.contactId) || !isValidUUID(params.propertyId)) {
     return { success: false, error: "Invalid IDs" }
@@ -470,4 +475,5 @@ Analyze patterns in what they love vs hate and suggest specific preference field
   } catch (error) {
     return handleError(error, "learnFromBuyerFeedback")
   }
+  })
 }

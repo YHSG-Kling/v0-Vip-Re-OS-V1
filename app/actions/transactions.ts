@@ -473,8 +473,12 @@ export async function withdrawCommissionTermChangeAction(input: { adjustmentId: 
   if (!s.ok) return { success: false as const, error: s.error }
   const { createServiceClient } = await import("@/lib/supabase/service")
   const { withdrawCommissionTermChange } = await import("@/lib/commission/commission-term-change")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const receipted = await ledgerSessionAction({ brokerageId: s.actor.brokerageId, action: "commission.term_change.withdraw", actor: { type: "user", userId: s.actor.userId, agentId: s.actor.agentId ?? null }, subject: { type: "commission_adjustment", id: input.adjustmentId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const r = await withdrawCommissionTermChange(createServiceClient() as never, s.actor, { adjustmentId: input.adjustmentId })
   return r.ok ? { success: true as const, record: r.record } : { success: false as const, error: termSentence(r.error) }
+  })
+  return "record" in receipted ? receipted : { success: false as const, error: receipted.error ?? "Not done" }
 }
 
 /** The finance administrators' queue of changes awaiting a decision. */

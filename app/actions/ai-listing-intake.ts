@@ -214,6 +214,8 @@ export async function aiSuggestListPrice(params: {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "listing.price_suggestion.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "list_price_suggestion" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     // ── Comparables ──────────────────────────────────────────────────────────
     // Caller-supplied comps win. Otherwise fetch them, tenant-anchored: comps
@@ -312,6 +314,7 @@ Provide:
       comparableCount: comparables.length,
       comparableSource,
     }
+    })
   } catch (error) {
     console.error("[AI Listing Intake] Pricing error:", error)
     return handleError(error, "aiSuggestListPrice")
@@ -364,6 +367,8 @@ export async function aiCheckListingCompliance(params: {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "listing.compliance_check.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "listing_compliance_check" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     // A listing-scoped review must be about a listing THIS caller can act on.
     // Resolved before the model call so an out-of-tenant id cannot burn inference.
@@ -476,6 +481,7 @@ Be thorough - missing compliance can result in fines or license issues.`,
     }
 
     return { success: true, compliance, recorded }
+    })
   } catch (error) {
     console.error("[AI Listing Intake] Compliance error:", error)
     return handleError(error, "aiCheckListingCompliance")
@@ -938,6 +944,11 @@ export async function generateListingAgreement(params: {
   listingId?: string | null
 }): Promise<{ success: boolean; documentId?: string; error?: string }> {
   try {
+    // WAVE 155 (155R3): a "use server" export is a public endpoint — the tenant is the SESSION's (CLAUDE.md §4), the body's must match it.
+    const sessionCtx = await getAgentContext()
+    if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId || sessionCtx.brokerageId !== params.brokerageId) return { success: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: sessionCtx.brokerageId, action: "listing.agreement_packet.stage", actor: { type: "user", userId: sessionCtx.userId, agentId: sessionCtx.agentId ?? null }, subject: { type: "document", id: params.documentId && isValidUUID(params.documentId) ? params.documentId : null, ref: params.documentId ? null : "listing_packet" }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { contact_id: params.contactId ?? null } }, async () => {
     const supabase = await createClient()
 
     const { getStateForms } = await import("@/lib/state-forms/registry")
@@ -1096,6 +1107,7 @@ export async function generateListingAgreement(params: {
     }
 
     return { success: true, documentId: params.documentId ?? undefined }
+    })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     return { success: false, error: msg }
@@ -1124,6 +1136,11 @@ export async function generateListingLandingPage(params: {
   error?: string
 }> {
   try {
+    // WAVE 155 (155R3): a "use server" export is a public endpoint — the tenant is the SESSION's (CLAUDE.md §4), the body's must match it.
+    const sessionCtx = await getAgentContext()
+    if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId || sessionCtx.brokerageId !== params.brokerageId) return { success: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: sessionCtx.brokerageId, action: "listing.landing_page.publish", actor: { type: "user", userId: sessionCtx.userId, agentId: sessionCtx.agentId ?? null }, subject: { type: "listing", id: params.listingId && isValidUUID(params.listingId) ? params.listingId : null, ref: params.listingId ? null : "landing_page" }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { contact_id: params.contactId ?? null } }, async () => {
     const supabase = await createClient()
 
     const pageSlug = params.slug ?? `listing-${Math.random().toString(36).slice(2, 9)}`
@@ -1249,6 +1266,7 @@ Them-first: focus on what the buyer gains, not agent promotion.`
     const pageUrl = `${baseUrl}/p/${pageSlug}`
 
     return { success: true, pageId: page?.id, pageUrl, slug: pageSlug }
+    })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     return { success: false, error: msg }

@@ -99,6 +99,7 @@ async function resolveOwnAgentId(svc: any, userId: string): Promise<string | nul
 export async function linkReferrerContactAction(input: { referralId: string; referrerContactId: string }): Promise<{ ok: boolean; error?: string }> {
   const caller = await requireCaller()
   if (!caller) return { ok: false, error: "Unauthenticated or no brokerage" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof linkReferrerContactAction> => {
   const svc = createServiceClient()
 
   const [{ data: ref }, { data: contact }] = await Promise.all([
@@ -115,12 +116,14 @@ export async function linkReferrerContactAction(input: { referralId: string; ref
   if (error) return { ok: false, error: error.message }
   revalidatePath("/referrals/pipeline")
   return { ok: true }
+  }; const r = await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "referral.referrer_contact.link", actor: { type: "user", userId: caller.userId }, subject: { type: "referral", id: input.referralId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
 }
 
 /** A human records the appreciation actually went out — only then gift_sent flips. */
 export async function recordReferralGiftSentAction(referralId: string): Promise<{ ok: boolean; error?: string }> {
   const caller = await requireCaller()
   if (!caller) return { ok: false, error: "Unauthenticated or no brokerage" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof recordReferralGiftSentAction> => {
   const svc = createServiceClient()
   const { error } = await svc.from("referrals")
     .update({ gift_sent: true, gift_sent_at: new Date().toISOString(), updated_at: new Date().toISOString() })
@@ -128,4 +131,5 @@ export async function recordReferralGiftSentAction(referralId: string): Promise<
   if (error) return { ok: false, error: error.message }
   revalidatePath("/referrals/pipeline")
   return { ok: true }
+  }; const r = await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "referral.gift.record_sent", actor: { type: "user", userId: caller.userId }, subject: { type: "referral", id: referralId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
 }

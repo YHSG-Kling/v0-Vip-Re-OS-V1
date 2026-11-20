@@ -138,6 +138,8 @@ export async function generateMarketingInsight(
   if (!userCtx.success || !userCtx.userId || !userCtx.brokerageId) {
     return { success: false, error: "Not authenticated or no brokerage found" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: userCtx.brokerageId, action: "marketing.insight.generate", actor: { type: "user", userId: userCtx.userId }, subject: { type: "ai_tool_usage", ref: "social_content_draft" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   try {
     const { text } = await generateTextRouted({
       feature: "social_content_draft",
@@ -155,6 +157,7 @@ export async function generateMarketingInsight(
       error: err instanceof Error ? err.message : "AI generation failed",
     }
   }
+  })
 }
 
 // ─── runPrelaunchCheck ────────────────────────────────────────────────────────
@@ -196,6 +199,8 @@ export async function runPrelaunchCheck(params: {
   }
 
   const { userId, brokerageId } = userCtx
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.prelaunch_check.run", actor: { type: "user", userId: userId }, subject: { type: "content_performance_prediction", ref: params.contentType }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform: params.platform, source_table: params.sourceTable ?? null, source_id: params.sourceId ?? null } }, async () => {
 
   // 1. Performance prediction
   const predResult = await predictPerformanceAction({
@@ -281,6 +286,7 @@ export async function runPrelaunchCheck(params: {
       requiredApprovers: approval.required_approvers ?? [],
     },
   }
+  })
 }
 
 function isUuid(v: string): boolean {
@@ -595,11 +601,14 @@ export async function launchListingCampaign(params: {
     }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: tenant.brokerageId, action: "marketing.campaign.create", actor: { type: "user", userId: tenant.userId }, subject: { type: "listing", id: params.listingId ?? null, ref: params.listingId ? null : params.campaignType }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { campaign_type: params.campaignType, budget_total: params.budgetTotal } }, async () => {
   return createCampaign({
     campaignName: params.campaignName,
     campaignType: params.campaignType,
     budgetTotal: params.budgetTotal,
     visibilityScope: params.visibilityScope ?? "agent",
+  })
   })
 }
 

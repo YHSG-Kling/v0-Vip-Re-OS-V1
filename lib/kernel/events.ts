@@ -64,8 +64,8 @@ export enum KernelEvent {
   LISTING_PRICE_REDUCED                     = 'listing_price_reduced',
   OPEN_HOUSE_SCHEDULED                      = 'open_house_scheduled',
   OPEN_HOUSE_CONTACT_RESOLVED               = 'open_house_contact_resolved',
-  OPEN_HOUSE_ATTENDEE_CREATED               = 'open_house_attendee_created',
-  OPEN_HOUSE_FOLLOW_UP_QUEUED               = 'open_house_follow_up_queued',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): open_house_attendee_created, open_house_follow_up_queued — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   CMA_GENERATED                             = 'cma_generated',
   PRICE_ALERT_TRIGGERED                     = 'price_alert_triggered',
   BRAND_COMPLIANCE_PASSED                   = 'brand_compliance_passed',
@@ -133,8 +133,10 @@ export enum KernelEvent {
   // ── Lead Acquisition (Track A — Lead-first) ───────────────────────────────
   LEAD_CAPTURED                  = 'lead_captured',
   LEAD_SCORED                    = 'lead_scored',
-  RAW_LEAD_VIABILITY_PASSED      = 'raw_lead_viability_passed',
-  RAW_LEAD_VIABILITY_FAILED      = 'raw_lead_viability_failed',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): raw_lead_viability_passed, raw_lead_viability_failed — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
+  //   raw_lead_viability_passed: notification_rules.trigger_event's live CHECK still ADMITS it; dropping it there is the owner's SQL. The enum entry goes because nothing emits it.
+  //   raw_lead_viability_failed: notification_rules.trigger_event's live CHECK still ADMITS it; dropping it there is the owner's SQL. The enum entry goes because nothing emits it.
 
   // ── Contact Acquisition (Track B — Contact-first) ────────────────────────
   CONTACT_CAPTURED               = 'contact_captured',
@@ -209,7 +211,8 @@ export enum KernelEvent {
   TOUR_PLANNED                  = 'tour_planned',
   TOUR_COMPLETED                 = 'tour_completed',
   BUYER_FATIGUE_DETECTED         = 'buyer_fatigue_detected',
-  BUYER_FATIGUE_ALERT            = 'buyer_fatigue_alert',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): buyer_fatigue_alert — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   OFFER_STRATEGY_RECOMMENDED     = 'offer_strategy_recommended',
   BUYER_OFFER_DRAFT_STARTED      = 'buyer_offer_draft_started',
   // Buyer-initiated (portal "Help me make an offer") -- distinct from
@@ -217,14 +220,17 @@ export enum KernelEvent {
   // INTENT only; see lib/kernel/event-reactor.ts and
   // app/actions/buyer-offer-tools.ts:requestOfferHelp.
   BUYER_OFFER_SUBMIT_REQUESTED   = 'buyer_offer_submit_requested',
-  BUYER_OFFER_SUBMITTED          = 'buyer_offer_submitted',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): buyer_offer_submitted — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   BUYER_UNDER_CONTRACT           = 'buyer_under_contract',
   BUYER_OFFER_ELIGIBLE           = 'buyer_offer_eligible',
 
   // ── PROPERTY ALERTS (Layer 5 - B06) ──────────────────────────────────────
-  PROPERTY_ALERT_CREATED         = 'property_alert_created',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): property_alert_created — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   PROPERTY_ALERT_MATCHED         = 'property_alert_matched',
-  PROPERTY_ALERT_PAUSED          = 'property_alert_paused',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): property_alert_paused — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
 
   // ── Re-engagement ────────────────────────────────────────────────────────
   GHOST_LEAD_DETECTED            = 'ghost_lead_detected',
@@ -254,11 +260,12 @@ export enum KernelEvent {
   CDA_GENERATED                       = 'cda_generated',
   CDA_APPROVED                        = 'cda_approved',
   DEAL_HEALTH_CHANGED                 = 'deal_health_changed',
-  TRANSACTION_COMPLIANCE_FAILED       = 'transaction_compliance_failed',
-  TRANSACTION_COMPLIANCE_PASSED       = 'transaction_compliance_passed',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): transaction_compliance_failed, transaction_compliance_passed — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   MILESTONE_COMPLETED                 = 'milestone_completed',
   MILESTONE_OVERDUE                   = 'milestone_overdue',
-  POST_CLOSING_PLAN_GENERATED         = 'post_closing_plan_generated',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): post_closing_plan_generated — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
 
   // ── SLA ──────────────────────────────────────────────────────────────────
   LEAD_SLA_BREACHED              = 'lead_sla_breached',
@@ -266,7 +273,9 @@ export enum KernelEvent {
 
   // ── Enrichment ───────────────────────────────────────────────────────────
   ENRICHMENT_COMPLETED           = 'enrichment_completed',
-  ENRICHMENT_FAILED              = 'enrichment_failed',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): enrichment_failed — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
+  //   enrichment_failed: notification_rules.trigger_event's live CHECK still ADMITS it; dropping it there is the owner's SQL. The enum entry goes because nothing emits it (live sibling: CONTACT_ENRICHMENT_FAILED).
 
   // ── Layer 8 — Video / Content Generation ────────────────────────────────
   SCRIPT_GENERATED               = 'script_generated',
@@ -277,9 +286,9 @@ export enum KernelEvent {
   // ── Layer 8.2 — Video Generation Engine ────────────────────────────────
   VIDEO_GENERATION_REQUESTED     = 'video_generation_requested',
   VIDEO_GENERATION_COMPLETED     = 'video_generation_completed',
-  VIDEO_PREVIEW_READY            = 'video_preview_ready',
-  VIDEO_PUBLISHED                = 'video_published',
-  VIDEO_GENERATION_FAILED        = 'video_generation_failed',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): video_preview_ready, video_published, video_generation_failed — no emit, no consumer,
+  // no SQL migration, no provider route at ce4200fa, no runtime use AS AN EVENT (note below): never shipped.
+  //   video_published: the string survives only as a notifications.type in lib/video/video-event-reactions.ts; the publish moment is the orchestrator's video.published (owner-held, lane 155B2).
 
   // ── Layer 8.3 — Voice Clone Engine ────────────────────────────────────
   VOICE_CLONE_PROFILE_CREATED    = 'voice_clone_profile_created',
@@ -295,7 +304,8 @@ export enum KernelEvent {
   SNIPPET_APPROVED               = 'snippet_approved',
   SNIPPET_REJECTED               = 'snippet_rejected',
   SNIPPET_SCHEDULED              = 'snippet_scheduled',
-  SNIPPET_PUBLISHED              = 'snippet_published',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): snippet_published — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   CONTENT_REPURPOSED             = 'content_repurposed',
   REPURPOSE_BATCH_COMPLETED      = 'repurpose_batch_completed',
 
@@ -326,8 +336,8 @@ export enum KernelEvent {
   // ── Layer 9.5 — Ads & Audiences ──────────────────────────────────────────
   AD_CAMPAIGN_CREATED                = 'ad_campaign_created',
   AD_CAMPAIGN_LAUNCHED               = 'ad_campaign_launched',
-  RETARGETING_AUDIENCE_CREATED       = 'retargeting_audience_created',
-  RETARGETING_AUDIENCE_SYNCED        = 'retargeting_audience_synced',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): retargeting_audience_created, retargeting_audience_synced — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
 
   // ── Layer 9.6 — SEO & Blog ───────────────────────────────────────────────
   BLOG_POST_GENERATED                = 'blog_post_generated',
@@ -370,23 +380,16 @@ export enum KernelEvent {
   AGENT_LICENSE_VERIFIED             = 'agent_license_verified',
   AGENT_LICENSE_FAILED               = 'agent_license_failed',
   CONTRACT_SENT_FOR_SIGNATURE        = 'contract_sent_for_signature',
-  BRAND_SETUP_STARTED                = 'brand_setup_started',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): brand_setup_started — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   BRAND_SETUP_COMPLETED              = 'brand_setup_completed',
   INTEGRATION_CONNECTED              = 'integration_connected',
   INTEGRATION_FAILED                 = 'integration_failed',
-  INTEGRATION_DISCONNECTED           = 'integration_disconnected',
-  INTEGRATION_TOKEN_REFRESHED        = 'integration_token_refreshed',
-  INTEGRATION_TOKEN_EXPIRED          = 'integration_token_expired',
-  OAUTH_REAUTH_REQUIRED              = 'oauth_reauth_required',
-  CRM_SYNC_PUSHED                    = 'crm_sync_pushed',
-  CRM_SYNC_FAILED                    = 'crm_sync_failed',
-  SMS_SEND_REQUESTED                 = 'sms_send_requested',
-  EMAIL_SEND_REQUESTED               = 'email_send_requested',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): integration_disconnected, integration_token_refreshed, integration_token_expired, oauth_reauth_required, crm_sync_pushed, crm_sync_failed, sms_send_requested, email_send_requested — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   ESIGN_ENVELOPE_REQUESTED           = 'esign_envelope_requested',
-  CALENDAR_EVENT_REQUESTED           = 'calendar_event_requested',
-  ACCOUNTING_PUSH_REQUESTED          = 'accounting_push_requested',
-  PAYMENT_REQUESTED                  = 'payment_requested',
-  SHOWING_REQUEST_SENT               = 'showing_request_sent',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): calendar_event_requested, accounting_push_requested, payment_requested, showing_request_sent — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   TRAINING_VIDEO_STARTED             = 'training_video_started',
   TRAINING_VIDEO_COMPLETED           = 'training_video_completed',
   TRAINING_COURSE_ENROLLED           = 'training_course_enrolled',
@@ -404,8 +407,8 @@ export enum KernelEvent {
   LISTING_HEALTH_SCORE_UPDATED       = 'listing_health_score_updated',
   LISTING_AT_RISK_DETECTED           = 'listing_at_risk_detected',
   INTENT_CLASSIFIED                  = 'intent_classified',
-  COACHING_REPORT_GENERATED          = 'coaching_report_generated',
-  PROACTIVE_INTERVENTION_TRIGGERED   = 'proactive_intervention_triggered',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): coaching_report_generated, proactive_intervention_triggered — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   KB_ARTICLE_EMBEDDED                = 'kb_article_embedded',
   MEMORY_CONTEXT_UPDATED             = 'memory_context_updated',
 
@@ -437,13 +440,10 @@ export enum KernelEvent {
   COMMISSION_PAID                    = 'commission_paid',
   COMMISSION_UPDATED                 = 'commission_updated',
   COMMISSION_DISPUTED                = 'commission_disputed',
-  CAP_HIT                            = 'cap_hit',
-  CAP_RESET                          = 'cap_reset',
-  AGENT_EARNINGS_UPDATED             = 'agent_earnings_updated',
-  TEAM_ROLLUP_COMPLETED              = 'team_rollup_completed',
-  BROKERAGE_PL_UPDATED               = 'brokerage_pl_updated',
-  ACCOUNTING_PUSH_COMPLETED          = 'accounting_push_completed',
-  ACCOUNTING_SYNC_FAILED             = 'accounting_sync_failed',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): cap_hit, cap_reset, agent_earnings_updated, team_rollup_completed, brokerage_pl_updated, accounting_push_completed, accounting_sync_failed — no emit, no consumer,
+  // no SQL migration, no provider route at ce4200fa, no runtime use AS AN EVENT (notes below): never shipped.
+  //   cap_hit: lib/gamification/award-census.ts already records it as having no emitter.
+  //   cap_reset: the string survives only as a question KEY in lib/commission/agreement-onboarding.ts, not an event.
   SUBSCRIPTION_CREATED               = 'subscription_created',
   SUBSCRIPTION_UPGRADED              = 'subscription_upgraded',
   SUBSCRIPTION_DOWNGRADED            = 'subscription_downgraded',
@@ -466,19 +466,20 @@ export enum KernelEvent {
   BROKERAGE_TRANSFER_STALLED         = 'brokerage_transfer_stalled',
   BROKERAGE_TRANSFER_COMPLETED       = 'brokerage_transfer_completed',
   BROKERAGE_ARCHIVED                 = 'brokerage_archived',
-  BILLING_INVOICE_GENERATED          = 'billing_invoice_generated',
-  USAGE_THRESHOLD_REACHED            = 'usage_threshold_reached',
-  RECRUITING_ROI_CALCULATED          = 'recruiting_roi_calculated',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): billing_invoice_generated, usage_threshold_reached, recruiting_roi_calculated — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   GAMIFICATION_BADGE_AWARDED         = 'gamification_badge_awarded',
 
   // ── Financial Kernel Manager (lib/kernel/financial.ts) ────────────────────────
   COMMISSION_APPROVED                = 'commission_approved',
   COMMISSION_STATE_RECALCULATED      = 'commission_state_recalculated',
   EXPENSE_CREATED                    = 'expense_created',
-  EXPENSE_DELETED                    = 'expense_deleted',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): expense_deleted — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
 
   // ── Cron Execution Logging Kernel (lib/kernel/cron-logging.ts) ─────────────────
-  CRON_STARTED                       = 'cron_started',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): cron_started — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   CRON_COMPLETED_SUCCESS             = 'cron_completed_success',
   CRON_FAILED                        = 'cron_failed',
 
@@ -496,15 +497,16 @@ export enum KernelEvent {
    *  Portal alias: wealth.refinance_opportunity (event-translator.ts). */
   REFINANCE_OPPORTUNITY              = 'refinance_opportunity',
   MARKET_UPDATE_SENT                 = 'market_update_sent',
-  REFERRAL_ASK_SENT                  = 'referral_ask_sent',
-  REFERRAL_PARTNER_CREATED           = 'referral_partner_created',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): referral_ask_sent, referral_partner_created — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   REFERRAL_CONVERTED                 = 'referral_converted',
-  SOI_ENGAGEMENT_SCORED              = 'soi_engagement_scored',
-  LIFETIME_EDUCATION_DELIVERED       = 'lifetime_education_delivered',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): soi_engagement_scored, lifetime_education_delivered — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   SELLER_UPDATE_SENT                 = 'seller_update_sent',
 
   // ── Layer 7 — Portals ───────────────────────────────────────────────────────
-  PORTAL_VIEW_DETERMINED             = 'portal_view_determined',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): portal_view_determined — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   PORTAL_ACCESSED                    = 'portal_accessed',
   PORTAL_MODULE_VIEWED               = 'portal_module_viewed',
   CLIENT_PORTAL_MESSAGE_SENT         = 'client_portal_message_sent',
@@ -513,12 +515,8 @@ export enum KernelEvent {
   // WAVE 153 (lane 153R — owner B11): a stage-matched client lesson (a `learning_module` client message) was actually SENT —
   // emitted by approveClientMessage, consumed by the reactor (lib/agents/education-delivery-producer.ts stampEducationDelivered).
   CLIENT_EDUCATION_DELIVERED         = 'client_education_delivered',
-  PORTAL_LIFETIME_SECTION_VIEWED     = 'portal_lifetime_section_viewed',
-  LENDER_PORTAL_USER_INVITED         = 'lender_portal_user_invited',
-  TITLE_PORTAL_USER_INVITED          = 'title_portal_user_invited',
-  VENDOR_PORTAL_ASSIGNMENT_CREATED   = 'vendor_portal_assignment_created',
-  SMART_LANDING_VIEWED               = 'smart_landing_viewed',
-  HOME_VALUE_ESTIMATE_REQUESTED      = 'home_value_estimate_requested',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): portal_lifetime_section_viewed, lender_portal_user_invited, title_portal_user_invited, vendor_portal_assignment_created, smart_landing_viewed, home_value_estimate_requested — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   HOME_VALUE_CONTACT_CREATED         = 'home_value_contact_created',
 
   // ── Reporting OS (lib/kernel/reporting.ts) ──────────────────────────────────
@@ -526,13 +524,15 @@ export enum KernelEvent {
   REPORT_EXPORTED_CSV                = 'report_exported_csv',
   REPORT_EXPORTED_PDF                = 'report_exported_pdf',
   REPORT_EMAILED                     = 'report_emailed',
-  REPORT_VIEWED                      = 'report_viewed',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): report_viewed — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
 
   // ── Reputation / Reviews / Referrals (lib/kernel/reputation.ts) ────────────
   REVIEW_REQUEST_SENT                = 'review_request_sent',
   REVIEW_RECEIVED                    = 'review_received',
   REVIEW_RESPONSE_PUBLISHED          = 'review_response_published',
-  REFERRAL_CREATED                   = 'referral_created',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): referral_created — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   REFERRAL_ADVANCED                  = 'referral_advanced',
 
   // ── Vendor Marketplace ──────────────────────────────────────────────────────
@@ -544,7 +544,8 @@ export enum KernelEvent {
   // (title/body lookups, notification_rules, campaign_sequences) read a decline
   // as a creation. lane CB, 2026-09-08.
   VENDOR_BOOKING_DECLINED            = 'vendor_booking_declined',
-  VENDOR_REVIEW_SUBMITTED            = 'vendor_review_submitted',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): vendor_review_submitted — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   VENDOR_ASSIGNED_TO_TRANSACTION     = 'vendor_assigned_to_transaction',
   // Kernel-owned vendor commands (lib/kernel/vendors.ts)
   VENDOR_RECORD_CREATED              = 'vendor_record_created',
@@ -553,22 +554,14 @@ export enum KernelEvent {
   VENDOR_DELIVERABLE_ATTACHED        = 'vendor_deliverable_attached',
 
   // ── Layer 13 — Voice ────────────────────────────────────────────────────────
-  VOICE_COMMAND_RECEIVED             = 'voice_command_received',
-  VOICE_COMMAND_EXECUTED             = 'voice_command_executed',
-  VOICE_COMMAND_FAILED               = 'voice_command_failed',
-  VOICE_CALL_INITIATED               = 'voice_call_initiated',
-  VOICE_CALL_COMPLETED               = 'voice_call_completed',
-  VOICE_CALL_MISSED                  = 'voice_call_missed',
-  VOICE_TRANSCRIPT_READY             = 'voice_transcript_ready',
-  VOICE_COACHING_INSIGHT_READY       = 'voice_coaching_insight_ready',
-  AI_ISA_CALL_COMPLETED              = 'ai_isa_call_completed',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): voice_command_received, voice_command_executed, voice_command_failed, voice_call_initiated, voice_call_completed, voice_call_missed, voice_transcript_ready, voice_coaching_insight_ready, ai_isa_call_completed — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   AI_ISA_HANDOFF_TO_AGENT            = 'ai_isa_handoff_to_agent',
 
   // ── Neighborhood & Heatmap ──────────────────────────────────────────────────
   NEIGHBORHOOD_REPORT_GENERATED      = 'neighborhood_report_generated',
-  TEAM_HEATMAP_SNAPSHOT_TAKEN        = 'team_heatmap_snapshot_taken',
-  TERRITORY_ALERT_TRIGGERED          = 'territory_alert_triggered',
-  RECRUITING_TERRITORY_SCORED        = 'recruiting_territory_scored',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): team_heatmap_snapshot_taken, territory_alert_triggered, recruiting_territory_scored — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
 
   // ── Vendor / Integration / Sync Events ─────────────────────────────────
   DOCUMENT_UPLOADED                  = 'document_uploaded',
@@ -592,8 +585,8 @@ export enum KernelEvent {
   RAW_RECORD_ENRICHED                = 'raw_record_enriched',
   RAW_RECORD_VIABILITY_GATED         = 'raw_record_viability_gated',
   RAW_RECORD_PROMOTED                = 'raw_record_promoted',
-  RAW_RECORD_FAILED                  = 'raw_record_failed',
-  RAW_RECORD_MERGED                  = 'raw_record_merged',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): raw_record_failed, raw_record_merged — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   SCRAPING_BUDGET_EXHAUSTED          = 'scraping_budget_exhausted',
   SCRAPING_CRON_STARTED              = 'scraping_cron_started',
   SCRAPING_CRON_COMPLETED            = 'scraping_cron_completed',
@@ -619,11 +612,9 @@ export enum KernelEvent {
   CONTACT_UPDATED                    = 'contact_updated',
   CONTACT_ARCHIVED                   = 'contact_archived',
   CONTACT_MERGED                     = 'contact_merged',
-  CONTACT_DEDUP_MATCH_FOUND          = 'contact_dedup_match_found',
-  CONTACT_ENRICHED                   = 'contact_enriched',
-  CONTACT_SUPPRESSION_APPLIED        = 'contact_suppression_applied',
-  CONTACT_SUPPRESSION_CLEARED        = 'contact_suppression_cleared',
-  CONTACT_SOURCE_ATTRIBUTION_SET     = 'contact_source_attribution_set',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): contact_dedup_match_found, contact_enriched, contact_suppression_applied, contact_suppression_cleared, contact_source_attribution_set — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
+  //   contact_suppression_applied: SURVIVOR: the suppression write in lib/kernel/crm.ts selects its row back (its tombstone there records why no event was copied).
   // TOMBSTONE — CONTACT_LEAD_CONVERTED ('contact_lead_converted') lived here.
   // SURVIVOR: LEAD_CONVERTED_TO_CONTACT at lib/kernel/events.ts:147.
   // It was a SECOND NAME FOR ONE FACT: the manual lane
@@ -643,31 +634,31 @@ export enum KernelEvent {
   // These events are emitted by lib/kernel/users.ts and lib/kernel/onboarding.ts.
   // Downstream: dashboard routing, notification rules, automation triggers.
   USER_INVITED                       = 'user_invited',
-  USER_PROVISIONED                   = 'user_provisioned',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): user_provisioned — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   USER_DOMAIN_RECORDS_CREATED        = 'user_domain_records_created',
   USER_DOMAIN_RECORDS_REPAIRED       = 'user_domain_records_repaired',
-  USER_ROLE_ASSIGNED                 = 'user_role_assigned',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): user_role_assigned — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   USER_ROLE_CHANGED                  = 'user_role_changed',
   USER_BROKERAGE_ASSIGNED            = 'user_brokerage_assigned',
   USER_TEAM_ASSIGNED                 = 'user_team_assigned',
   USER_ONBOARDING_STARTED            = 'user_onboarding_started',
   USER_ONBOARDING_STEP_COMPLETED     = 'user_onboarding_step_completed',
   USER_ONBOARDING_COMPLETED          = 'user_onboarding_completed',
-  USER_ONBOARDING_STALLED            = 'user_onboarding_stalled',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): user_onboarding_stalled — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   USER_ACCOUNT_INCOMPLETE            = 'user_account_incomplete',
   USER_ACCOUNT_REPAIRED              = 'user_account_repaired',
-  USER_FIRST_LOGIN                   = 'user_first_login',
-  USER_INVITATION_ACCEPTED           = 'user_invitation_accepted',
-  USER_DEACTIVATED                   = 'user_deactivated',
-  USER_REACTIVATED                   = 'user_reactivated',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): user_first_login, user_invitation_accepted, user_deactivated, user_reactivated — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
 
   // ── Offer OS (lib/kernel/offers.ts) ─────────────────────────────────────────
   // Buyer-side: offer creation, esign, outcome.
   // Seller-side: analysis, comparison, counter, accept/reject.
   // Counter history is stored in offers table via parent_offer_id + offer_type='counter'.
-  OFFER_OS_DRAFT_STARTED             = 'offer_os_draft_started',
-  OFFER_OS_CREATED                   = 'offer_os_created',
-  OFFER_OS_SENT_FOR_ESIGN            = 'offer_os_sent_for_esign',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): offer_os_draft_started, offer_os_created, offer_os_sent_for_esign — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
   OFFER_OS_ESIGN_COMPLETED           = 'offer_os_esign_completed',
   OFFER_OS_SUBMITTED                 = 'offer_os_submitted',
   OFFER_OS_AI_ANALYZED               = 'offer_os_ai_analyzed',
@@ -684,15 +675,15 @@ export enum KernelEvent {
   OFFER_OS_ACCEPTED                  = 'offer_os_accepted',
   OFFER_OS_REJECTED                  = 'offer_os_rejected',
   OFFER_OS_WITHDRAWN                 = 'offer_os_withdrawn',
-  OFFER_OS_OUTCOME_RECORDED          = 'offer_os_outcome_recorded',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): offer_os_outcome_recorded — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
 
   // ── Forms, E-Sign & Smart Property Workflow OS (lib/kernel/forms.ts) ─────────
   // Rule: ESIGN_ENVELOPE_REQUESTED already exists above (Layer 11).
   // These are the additional forms-kernel-specific events.
-  FORM_DRAFT_SAVED                   = 'form_draft_saved',
-  FORM_SUBMITTED                     = 'form_submitted',
-  ESIGN_SIGNED_COMPLETED             = 'esign_signed_completed',
-  BUYER_PROPERTY_ACTION_RECORDED     = 'buyer_property_action_recorded',
+  // RETIRED (wave 155, lane 155R6 — CLAUDE.md §1; test:event-claims): form_draft_saved, form_submitted, esign_signed_completed, buyer_property_action_recorded — no emit, no consumer,
+  // no string use in any runtime file, no SQL migration, no provider route at ce4200fa: never shipped.
+  //   esign_signed_completed: SURVIVOR: ESIGN_PACKET_SIGNED (lib/esign-webhooks/finalize-packet.ts; event-fanout.ts tombstone). notification_rules.trigger_event's CHECK cannot hold this name, so the 2026-09-03 hold is resolved.
 
   // ── Layer 8 — Wave 7 canonicalization (m120) ─────────────────────────────────
   // Replacements for dotted-form lifecycle_events.event_type writes that were

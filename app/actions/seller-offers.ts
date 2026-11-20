@@ -596,6 +596,8 @@ export async function generateSellerPortalLink(params: {
   if (!await verifyListingInCallerBrokerage(listingId, auth.brokerageId)) {
     return { success: false, error: "Forbidden" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "offer.seller_link.issue", actor: { type: "user", userId: auth.userId }, subject: { type: "listing", id: listingId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = createServiceClient()
 
@@ -639,6 +641,7 @@ export async function generateSellerPortalLink(params: {
 
   const url = `${process.env.NEXT_PUBLIC_APP_URL}/seller/offers/${listingId}?token=${token}`
   return { success: true, url, expires_at: expiresAt }
+  })
 }
 
 // ── RECORD SELLER VIEW ────────────────────────────────────────────────────────
@@ -682,6 +685,8 @@ export async function recordSellerView(listingId: string) {
   if (!isAgentInBrokerage && !isSellerSelf) {
     return { success: false, error: "Forbidden" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: listingRow.brokerage_id, action: "offer.seller_view.record", actor: { type: "user", userId: user.id }, subject: { type: "listing", id: listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { path: isSellerSelf ? "seller_self" : "agent_preview" } }, async () => {
 
   const now = new Date().toISOString()
   // `.select()` + `error` are read deliberately. This previously discarded both
@@ -699,6 +704,7 @@ export async function recordSellerView(listingId: string) {
   if (stampErr) return { success: false, error: stampErr.message }
 
   return { success: true, newlyViewed: stamped?.length ?? 0 }
+  })
 }
 
 // ── TRIGGER AI COMPARISON ─────────────────────────────────────────────────────
@@ -958,6 +964,8 @@ export async function analyzeOffer(offerId: string, _userId?: string) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
   const userId = auth.userId
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "offer.analysis.generate", actor: { type: "user", userId: auth.userId }, subject: { type: "offer", id: offerId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = createServiceClient()
 
@@ -1083,6 +1091,7 @@ REASONING: [2-3 sentences]`,
     net_sheet: { net_to_seller: netToSeller, purchase_price: offer.offer_price },
     warning: analysisSaveError ? `The analysis was produced but not saved to the offer: ${analysisSaveError.message}` : undefined,
   }
+  })
 }
 
 // ── analyzeMultipleOffers WAS HERE — SURVIVOR: app/actions/seller-offers.ts:triggerOfferComparison ──

@@ -1209,7 +1209,7 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
         id: `orchestrator_event:${type}`, kind: "orchestrator_event", entry: `${file}:${lineAt(v, at + 1)}`, action: `orchestrator.${type}`, source_event: c ? `EVENT_TYPES.${c}` : type,
         trigger: emitters.length ? `emitted by ${emitters[0]}${emitters.length > 1 ? ` (+${emitters.length - 1})` : ""}` : null,
         worker: stub ? null : `${file}:${lineAt(v, at + 1)} ${handler.trim().slice(0, 60)}`,
-        owner: null, facts: pathFacts(file, at, lineEnd, v), actorHint: "orchestrator event bus",
+        owner: (reg as { ORCHESTRATOR_EVENT_MANAGER?: Record<string, string> }).ORCHESTRATOR_EVENT_MANAGER?.[type] ?? null, facts: pathFacts(file, at, lineEnd, v), actorHint: "orchestrator event bus",
         // a type no door call carries may still be built elsewhere: any other runtime file carrying the literal or EVENT_TYPES.<C>, or SQL
         elsewhere: emitters.length ? [] : [...new Set([...(LIT_FILES.get(type) ?? [])].filter((f) => f !== file && f !== "lib/events/types.ts")
           .concat(c ? FILES.filter((f) => f !== file && new RegExp(`\\bEVENT_TYPES\\.${c}\\b`).test(views(f)?.ids ?? "")) : [])

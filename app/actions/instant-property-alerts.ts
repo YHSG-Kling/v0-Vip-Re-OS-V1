@@ -23,7 +23,7 @@ import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { requireCaller } from "@/lib/auth/require-caller"
 import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
-import { sendSMS } from "@/lib/providers/messaging"
+// TOMBSTONE (wave 155, lane 155R8): the raw messaging sendSMS import lived here — survivor: dispatchSms (lib/providers/dispatch.ts), sendFirstLookText below.
 import { firstLookConsentBlock } from "@/lib/property-alerts/first-look-consent"
 
 /**
@@ -170,13 +170,18 @@ export async function sendFirstLookText(input: {
     input.customMessage ??
     `Hi ${firstName} — saw this just hit and thought of you: ${propertyLine}\n${portalUrl}\nText back if you want me to set up a tour.`
 
-  const sendResult = await sendSMS({
+  // 155R8 (the outbound sink, directive D 152): the raw sender was handed `body`, a field it never reads (`as any` hid it) — the
+  // text left EMPTY. Through the dispatcher it also passes suppression, de-confliction, content safety and the action ledger.
+  const { dispatchSms } = await import("@/lib/providers/dispatch")
+  const sendResult = await dispatchSms({
     to: contact.phone,
-    body,
-    brokerageId: contact.brokerage_id,
+    message: body,
+    brokerageId: auth.brokerageId,
+    userId: auth.userId,
     contactId: contact.id,
+    systemSource: "property_alert",
     metadata: { source: "first_look_text", listingId: input.listingId ?? null },
-  } as any)
+  })
 
   if (!(sendResult as any)?.success) {
     return { success: false, error: (sendResult as any)?.error ?? "send_failed" }

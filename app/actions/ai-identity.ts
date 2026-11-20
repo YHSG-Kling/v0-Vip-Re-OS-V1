@@ -266,6 +266,8 @@ export async function generateIdentityPreview(input: {
   // Auth gate — preview burns paid AI inference
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "assistant.identity_preview.generate", actor: { type: "user", userId: auth.userId }, subject: { type: "ai_tool_usage", ref: "identity_preview" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   try {
     const { generateTextRouted } = await import("@/lib/ai/models")
@@ -281,6 +283,7 @@ export async function generateIdentityPreview(input: {
   } catch (err) {
     return { success: false, error: "Preview generation failed — check AI configuration" }
   }
+  })
 }
 
 /** Generate the assistant HEADSHOT GALLERY (owner rule: real OPTIONS for the
@@ -314,6 +317,8 @@ export async function previewAssistantVoiceAction(voiceId: string): Promise<
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
   if (!voiceId || voiceId.length > 64) return { success: false, error: "Invalid voice" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const voiced = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "assistant.voice_preview.synthesize", actor: { type: "user", userId: auth.userId }, subject: { type: "vendor_usage_tracking", ref: "voice_preview" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { voice_id: voiceId } }, async (): Promise<{ success: true; audioDataUrl: string } | { success: false; error: string }> => {
   try {
     const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
     // The preview is rendered on the SAME model the briefs and narration
@@ -329,4 +334,6 @@ export async function previewAssistantVoiceAction(voiceId: string): Promise<
   } catch (e) {
     return { success: false, error: (e as Error).message }
   }
+  })
+  return "audioDataUrl" in voiced ? voiced : { success: false, error: voiced.error ?? "Synthesis failed" }
 }

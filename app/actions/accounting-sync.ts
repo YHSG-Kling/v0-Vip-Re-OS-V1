@@ -6,7 +6,7 @@ import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
-import { QuickBooksProvider, type AccountingWriteResult } from "@/lib/providers/accounting/quickbooks"
+import type { AccountingWriteResult } from "@/lib/providers/accounting/quickbooks"
 
 // ─── GET PROVIDER CONNECTION STATUS ──────────────────────────────────────────
 export async function getProviderConnectionStatus(claimedBrokerageId: string) {
@@ -337,13 +337,8 @@ export async function retrySyncError(data: {
 // Financial cascade: agent → team → brokerage → platform (most-specific QuickBooks
 // connection wins). The build logic moved to lib/finance/accounting-egress.ts
 // (keep-one) so logScopedExpense and the commission path share ONE egress.
-async function buildQuickBooks(
-  brokerageId: string,
-  actor?: { agentUserId?: string | null; teamId?: string | null },
-): Promise<QuickBooksProvider | null> {
-  const { buildQuickBooksForBrokerage } = await import("@/lib/finance/accounting-egress")
-  return buildQuickBooksForBrokerage(brokerageId, actor)
-}
+// TOMBSTONE (wave 155, lane 155R8 — CLAUDE.md §1.3): the local `buildQuickBooks` delegate lived here; its one caller (the manual
+// push below) now goes through the sink. SURVIVOR: lib/finance/accounting-egress.ts buildQuickBooksForBrokerage.
 
 /**
  * Post a real invoice / journal / expense into the BROKERAGE'S QuickBooks company.
@@ -451,55 +446,13 @@ export async function pushAccountingEntry(
     return { ok: false, error: "Your account is not linked to a brokerage yet." }
   }
 
-  const startedAt = new Date().toISOString()
-  const svc = createServiceClient()
-  const logFailure = async (msg: string) => {
-    const { error: logErr } = await svc.from("accounting_sync_log").insert({
-      brokerage_id: brokerageId, provider: "quickbooks", sync_type: params.kind,
-      status: "failed", records_synced: 0, records_failed: 1,
-      started_at: startedAt, completed_at: new Date().toISOString(), error_summary: msg.slice(0, 500),
-    })
-    // A failure we could not even record is worse than the failure itself — the
-    // error log the UI reads would show nothing went wrong.
-    if (logErr) console.error("[accounting-sync] failure NOT recorded in accounting_sync_log:", logErr.message)
-  }
-
-  let qbo: QuickBooksProvider | null
-  try {
-    // Accounting writes are the BROKERAGE's books — resolve brokerage → platform only. We do NOT
-    // pass the acting broker's agent scope, or a broker who linked a personal QuickBooks would post
-    // brokerage invoices to their own company. (Agent/team financial connections cascade for their
-    // OWN financial ops, not the brokerage ledger.)
-    qbo = await buildQuickBooks(brokerageId, { teamId: null })
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    await logFailure(msg)
-    return { ok: false, error: msg }
-  }
-  if (!qbo) {
-    await logFailure("QuickBooks not connected")
-    return { ok: false, error: "QuickBooks is not connected for this brokerage" }
-  }
-
-  const result =
-    params.kind === "invoice"
-      ? await qbo.createInvoice({ customerRef: params.customerRef, amount: params.amount, description: params.description, currency: params.currency })
-      : params.kind === "expense"
-        ? await qbo.createPurchase({ amount: params.amount, expenseAccountRef: params.expenseAccountRef, paymentAccountRef: params.paymentAccountRef, description: params.description, txnDate: params.txnDate })
-        : await qbo.createJournalEntry({ lines: params.lines, description: params.description })
-
-  const { error: outcomeLogErr } = await svc.from("accounting_sync_log").insert({
-    brokerage_id: brokerageId, provider: "quickbooks", sync_type: params.kind,
-    status: result.success ? "completed" : "failed",
-    records_synced: result.success ? 1 : 0, records_failed: result.success ? 0 : 1,
-    started_at: startedAt, completed_at: new Date().toISOString(),
-    error_summary: result.success ? null : (result.error ?? "unknown error")?.slice(0, 500),
-  })
-  // The push already hit Intuit; an unrecorded outcome means the sync history
-  // the operator reads disagrees with the books. Surfaced, never swallowed.
-  if (outcomeLogErr) {
-    console.error("[accounting-sync] push outcome NOT recorded in accounting_sync_log:", outcomeLogErr.message)
-  }
+  // TOMBSTONE (wave 155, lane 155R8 — 155B2 request 7): the inline QuickBooks build, the three provider calls and two hand-written
+  // accounting_sync_log inserts lived here. SURVIVOR: lib/finance/accounting-egress.ts pushManualAccountingEntry — the books sink's
+  // own connection gate and logSync (sync_errors row on failure, SYSTEM_SYNC_COMPLETED on success) and its decision record.
+  const { pushManualAccountingEntry } = await import("@/lib/finance/accounting-egress")
+  const pushed = await pushManualAccountingEntry(createServiceClient(), brokerageId, params, { actorUserId: user.id })
+  if (!pushed.ok) return { ok: false, error: pushed.error }
+  const result = pushed.result
 
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/settings/accounting")

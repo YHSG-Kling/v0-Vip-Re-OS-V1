@@ -65,6 +65,7 @@ export async function acknowledgeReferralPayoutAction(input: { payoutId: string 
 > {
   const auth = await requireTenantFinanceAdmin()
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof acknowledgeReferralPayoutAction> => {
   if (!input.payoutId) return { ok: false, error: "payoutId required" }
   const svc = createServiceClient()
   const result = await markReferralPayoutReceived(svc, {
@@ -75,4 +76,5 @@ export async function acknowledgeReferralPayoutAction(input: { payoutId: string 
   if (!result.ok) return result
   revalidatePath("/dashboard/admin/billing")
   return { ok: true }
+  }; const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.referral_payout.acknowledge_received", actor: { type: "user", userId: auth.userId }, subject: { type: "referral_payout", id: input.payoutId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
 }

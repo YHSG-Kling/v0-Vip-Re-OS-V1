@@ -647,15 +647,29 @@ export async function initiateVendorPayout(params: {
     // Fail-closed: a brokerage with no Stripe credential gets the resolver's
     // sentence back as `error`, which app/vendor/earnings/payout-button.tsx renders
     // verbatim. It never falls through to the platform's account.
-    const transfer = await createTransfer(
+    // WAVE 155 (lane 155R8, D 152): a SECOND payout door (a vendor invoice is not a commission — the commission release gate does
+    // not apply), so it writes its OWN decision record: the transfer runs inside ledgerToolCall (session human → authorized_human;
+    // claim → transfer → settle on ONE row, its detail.governance naming the gates above). Secrets never enter the detail.
+    const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
+    const gates = ["resolveWriteContextForTenant (session tenant)", "verifyVendorInCallerBrokerage", "earnings in brokerage + vendor", "Stripe Connect onboarding complete"]
+    const transfer = (await ledgerToolCall({
+      brokerageId: ctx.brokerageId, action: "vendor.payout.transfer", channel: "payout_sink", actor: { type: "user", userId: ctx.actorUserId },
+      subject: { type: "vendor", id: params.vendorId }, riskClass: "IRREVERSIBLE", systemSource: "vendor_payout", reasonCode: "HUMAN_REQUESTED",
+      trustClass: "authorized_human", approvalBasis: "policy_permitted", dependencies: [{ type: "vendor", id: params.vendorId, version: null }, ...(params.earningIds ?? []).slice(0, 20).map((id) => ({ type: "vendor_earning", id, version: null }))],
+      detail: { amount: params.amount, earnings: params.earningIds?.length ?? 0, governance: governanceRecord({
+        plane: "tool_boundary", verdict: "allow", scope: { brokerageId: ctx.brokerageId, userId: ctx.actorUserId }, actor: { type: "user", id: ctx.actorUserId },
+        entity: { type: "vendor", id: params.vendorId, version: null }, objective: "vendor.payout.transfer", policyConstraints: ["sink rule (D 152): irreversible payout — second door", ...gates],
+        rationale: "a vendor payout from the brokerage's own Stripe account", trustClass: "authorized_human", approvalBasis: "policy_permitted",
+      }) },
+    }, () => createTransfer(
       {
         amount: params.amount,
-        destinationAccountId: connect.accountId,
+        destinationAccountId: connect.accountId!,
         description: `Vendor payout — ${params.vendorId}`,
         metadata: { vendorId: params.vendorId, brokerageId: ctx.brokerageId },
       },
       { side: "tenant", brokerageId: ctx.brokerageId },
-    )
+    ))) as Awaited<ReturnType<typeof createTransfer>>
     if (!transfer.success || !transfer.transferId) {
       // No payout row is written. A `vendor_payouts` row with no transfer would
       // read as a pending payout nobody is going to make, and the earnings it

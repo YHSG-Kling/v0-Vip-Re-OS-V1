@@ -376,6 +376,8 @@ export async function unpresentOfferFromSeller(params: {
 
   const offerResult = await loadOfferOnListing(offerId, listingId, auth.brokerageId)
   if (!offerResult.ok) return { success: false, error: offerResult.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "offer.seller_presentation.retract", actor: { type: "user", userId: auth.userId }, subject: { type: "offer", id: offerId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { listing_id: listingId } }, async () => {
 
   const svc = createServiceClient()
   const warnings: string[] = []
@@ -420,6 +422,7 @@ export async function unpresentOfferFromSeller(params: {
   if (sellerContactId) revalidatePath(`/portal/${sellerContactId}/offers`)
 
   return { success: true, presentedAt: null, warnings }
+  })
 }
 
 // ─── THE COOPERATING BUYER'S AGENTS ON A LISTING (wave 94, lane 94B) ─────────

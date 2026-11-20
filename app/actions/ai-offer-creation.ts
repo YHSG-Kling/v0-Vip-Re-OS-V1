@@ -114,6 +114,8 @@ export async function aiCalculateEscalation(params: {
   try {
     // Tenant for the AI cost ledger — SESSION (§4).
     const spendActor = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const receipted = await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "offer.escalation.generate", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "offer_analysis" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const { object: escalation } = await generateObjectRouted({
       brokerageId: spendActor.brokerageId,
       userId: spendActor.userId || null,
@@ -146,6 +148,8 @@ Determine:
     })
 
     return { success: true, escalation }
+    })
+    return "escalation" in receipted ? receipted : { success: false as const, error: receipted.error ?? "Not done" }
   } catch (error) {
     console.error("[AI Offer Creation] Escalation error:", error)
     return handleError(error, "aiCalculateEscalation")
@@ -165,6 +169,8 @@ export async function aiRecommendContingencies(params: {
   try {
     // Tenant for the AI cost ledger — SESSION (§4).
     const spendActor = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const receipted = await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "offer.contingencies.recommend", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "offer_contingencies" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const contingencyResult = await generateText({
       brokerageId: spendActor.brokerageId,
       userId: spendActor.userId || null,
@@ -212,6 +218,8 @@ Respond with JSON only: { "recommended": [{ "type": string, "duration": number, 
     }
 
     return { success: true, contingencies }
+    })
+    return "contingencies" in receipted ? receipted : { success: false as const, error: receipted.error ?? "Not done" }
   } catch (error) {
     console.error("[AI Offer Creation] Contingency error:", error)
     return handleError(error, "aiRecommendContingencies")
@@ -234,6 +242,8 @@ export async function aiGenerateBuyerLetter(params: {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const receipted = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "offer.buyer_letter.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "buyer_letter" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const { text: letter } = await generateText({
       brokerageId: ctx.brokerageId,
@@ -258,6 +268,8 @@ Write a compelling letter that connects the buyer to the HOME, not the community
     })
 
     return { success: true, letter }
+    })
+    return "letter" in receipted ? { success: receipted.success, letter: receipted.letter } : { success: false as const, error: receipted.error ?? "Not done" }
   } catch (error) {
     console.error("[AI Offer Creation] Letter error:", error)
     return handleError(error, "aiGenerateBuyerLetter")
@@ -277,6 +289,8 @@ export async function getOfferForms(params: {
   try {
     // Tenant for the AI cost ledger — SESSION (§4).
     const spendActor = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const receipted = await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "offer.forms.recommend", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "offer_forms" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const stateConfig = STATE_OFFER_FORMS[params.state] || STATE_OFFER_FORMS.DEFAULT
 
     const forms = [...stateConfig.required]
@@ -327,6 +341,8 @@ List only form names, one per line. If none needed, respond "NONE".`,
         aiRecommended,
       },
     }
+    })
+    return "forms" in receipted ? receipted : { success: false as const, error: receipted.error ?? "Not done" }
   } catch (error) {
     console.error("[AI Offer Creation] Forms error:", error)
     return handleError(error, "getOfferForms")
@@ -471,6 +487,8 @@ export async function aiCounterOfferStrategy(params: {
   try {
     // Tenant for the AI cost ledger — SESSION (§4).
     const spendActor = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "offer.counter_strategy.generate", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "counter_offer_strategy" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const strategyResult = await generateText({
       brokerageId: spendActor.brokerageId,
       userId: spendActor.userId || null,
@@ -511,6 +529,7 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
     }
 
     return { success: true, strategy }
+    })
   } catch (error) {
     console.error("[AI Offer Creation] Counter strategy error:", error)
     return handleError(error, "aiCounterOfferStrategy")
@@ -569,6 +588,8 @@ export async function runCompleteOfferWorkflow(params: {
     // NOT `?? ctx.userId` (m360) — every consumer below is agents-class.
     const effectiveAgentId = ctx.agentId
     if (!effectiveAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "offer.workflow.run", actor: { type: "user", userId: ctx.userId, agentId: effectiveAgentId }, subject: { type: "contact", id: isValidUUID(params.buyerId) ? params.buyerId : null, ref: isValidUUID(params.buyerId) ? null : "buyer" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_id: isValidUUID(params.listingId) ? params.listingId : null } }, async () => {
 
     const supabase = await createClient()
 
@@ -681,6 +702,7 @@ export async function runCompleteOfferWorkflow(params: {
         },
       },
     }
+    })
   } catch (error) {
     console.error("[AI Offer Creation] Workflow error:", error)
     return handleError(error, "runCompleteOfferWorkflow")
@@ -729,6 +751,11 @@ export async function generateOfferDraft(params: {
   listingId?: string | null
 }): Promise<{ success: boolean; documentId?: string; error?: string }> {
   try {
+    // WAVE 155 (155R3): a "use server" export is a public endpoint — the tenant is the SESSION's (CLAUDE.md §4), the body's must match it.
+    const sessionCtx = await getAgentContext()
+    if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId || sessionCtx.brokerageId !== params.brokerageId) return { success: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: sessionCtx.brokerageId, action: "offer.packet.stage", actor: { type: "user", userId: sessionCtx.userId, agentId: sessionCtx.agentId ?? null }, subject: { type: "document", id: params.documentId && isValidUUID(params.documentId) ? params.documentId : null, ref: params.documentId ? null : "offer_packet" }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { state: params.state, contact_id: params.contactId ?? null, listing_id: params.listingId ?? null } }, async () => {
     const supabase = await createClient()
 
     const { getStateForms } = await import("@/lib/state-forms/registry")
@@ -909,6 +936,7 @@ export async function generateOfferDraft(params: {
     }
 
     return { success: true, documentId: params.documentId ?? undefined }
+    })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     return { success: false, error: msg }

@@ -32,13 +32,13 @@ import { resolveUserTeam, type UserTeamSource } from "@/lib/kernel/resolve-user-
  * 'agent', and a 'team_lead' seat that leads no team row leads nothing.
  */
 async function requireAdmin(targetUserId?: string): Promise<
-  | { ok: true; brokerageId: string; userType: string }
+  | { ok: true; brokerageId: string; userType: string; userId: string }
   | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { ok: false, error: "Unauthorized" }
   if (isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
-    return { ok: true, brokerageId: ctx.brokerageId, userType: ctx.userType }
+    return { ok: true, brokerageId: ctx.brokerageId, userType: ctx.userType, userId: ctx.userId }
   }
   if (targetUserId) {
     const svc = createServiceClient()
@@ -50,7 +50,7 @@ async function requireAdmin(targetUserId?: string): Promise<
     if (agent && agent.brokerage_id === ctx.brokerageId) {
       const lead = await leadsAgentsTeam(svc, ctx.userId, agent.id)
       if (!lead.ok) return { ok: false, error: lead.error }
-      if (lead.leads) return { ok: true, brokerageId: ctx.brokerageId, userType: ctx.userType }
+      if (lead.leads) return { ok: true, brokerageId: ctx.brokerageId, userType: ctx.userType, userId: ctx.userId }
     }
   }
   return { ok: false, error: "Forbidden" }
@@ -312,6 +312,7 @@ export async function updateAgentProfileAction(
 ): Promise<{ ok: true; note?: string } | { ok: false; error: string }> {
   const auth = await requireAdmin(input.targetUserId)
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof updateAgentProfileAction> => {
   const svc = createServiceClient()
 
   // TEAM ASSIGNMENT is a brokerage-level org act — finance-admin roster only.
@@ -582,4 +583,5 @@ export async function updateAgentProfileAction(
 
   revalidatePath(`/dashboard/admin/users/${input.targetUserId}`)
   return { ok: true, note }
+  }; const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.agent_profile.update", actor: { type: "user", userId: auth.userId }, subject: { type: "user", id: input.targetUserId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
 }

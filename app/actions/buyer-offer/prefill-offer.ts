@@ -99,6 +99,8 @@ Buyer preferences:
   // ── 3. Ask AI to fill in property details ──────────────────────────────────
   const addressHint = params.addressFragment?.trim()
   if (!addressHint && !buyerContext) return null
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const filled = await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "offer.property_fill.generate", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "offer_property_fill" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_id: params.listingId ?? null } }, async (): Promise<PropertyFillData | null> => {
 
   try {
     const { text } = await generateText({
@@ -148,6 +150,8 @@ Based on the above context, provide your best estimate of the property details. 
     console.error("[buyer-offer] fillPropertyDataWithAI error:", err)
     return null
   }
+  })
+  return filled && "success" in filled ? null : filled
 }
 
 // ─── REMOVED: prefillOfferWithAI (AI-generated offer TERMS) ────────────────────

@@ -47,7 +47,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
-import { sendEmail } from "@/lib/providers/messaging"
+// TOMBSTONE (wave 155, lane 155R8 — 155B2 request 6): the raw messaging `sendEmail` import lived here; both vendor notices now
+// leave through the governed dispatcher (lib/providers/dispatch.ts dispatchEmail, transactional purpose) — see the two sends below.
 import {
   toVendorCategory,
   VENDOR_CATEGORIES,
@@ -605,7 +606,10 @@ export async function assignVendorToListing(
     const agentName = `${(agentProfile as any)?.first_name ?? ""} ${(agentProfile as any)?.last_name ?? ""}`.trim() || "the agent"
     const agentEmail = (agentProfile as any)?.email ?? ""
     const agentPhone = (agentProfile as any)?.phone ?? ""
-    sendEmail({
+    // 155R8: through the outbound sink (suppression by address, content safety, budget, ledger row) — a B2B service notice.
+    void import("@/lib/providers/dispatch").then(({ dispatchEmail }) => dispatchEmail({
+      brokerageId, userId: agentUserId, systemSource: "vendor_booking", channelPurpose: "transactional",
+      ledger: { subject: { type: "listing", id: listingId } },
       to: vendor.email,
       subject: `New Job Booked: ${serviceType} at ${propertyAddress}`,
       html: `
@@ -624,7 +628,7 @@ export async function assignVendorToListing(
         <p>Please confirm your availability by replying to this email.</p>
         <p style="color:#666;font-size:12px">Booking ID: ${booking.id}</p>
       `,
-    }).catch(() => null)
+    })).catch(() => null)
   }
 
   return { success: true, data: { bookingId: booking.id } }
@@ -770,7 +774,10 @@ export async function assignVendorToTransaction(
     const agentName = `${(agentProfileTxn as any)?.first_name ?? ""} ${(agentProfileTxn as any)?.last_name ?? ""}`.trim() || "the agent"
     const agentEmail = (agentProfileTxn as any)?.email ?? ""
     const agentPhone = (agentProfileTxn as any)?.phone ?? ""
-    sendEmail({
+    // 155R8: through the outbound sink (suppression by address, content safety, budget, ledger row) — a B2B service notice.
+    void import("@/lib/providers/dispatch").then(({ dispatchEmail }) => dispatchEmail({
+      brokerageId, userId: agentUserId, systemSource: "vendor_assignment", channelPurpose: "transactional",
+      ledger: { subject: { type: "transaction", id: transactionId } },
       to: vendor.email,
       subject: `New Job Assignment: ${assignmentType} at ${transaction.property_address}`,
       html: `
@@ -789,7 +796,7 @@ export async function assignVendorToTransaction(
         <p>Please reply to this email to confirm your availability.</p>
         <p style="color:#666;font-size:12px">Assignment ID: ${assignment.id} | Job ID: ${job.id}</p>
       `,
-    }).catch(() => null)
+    })).catch(() => null)
   }
 
   return { success: true, data: { assignmentId: assignment.id, jobId: job.id } }

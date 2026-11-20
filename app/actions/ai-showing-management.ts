@@ -127,6 +127,11 @@ export async function getTours(
 export async function updateTour(tourId: string, updates: any) {
   try {
     const supabase = await createClient()
+    // WAVE 155 (155R3): the receipt needs the SESSION actor; a signed-out caller already wrote nothing (RLS), so refusing it changes no outcome.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "showing.tour.update", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "tour", id: isValidUUID(tourId) ? tourId : null, ref: isValidUUID(tourId) ? null : "tour" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const { data, error } = await supabase
       .from("tours")
       .update({ ...updates, updated_at: new Date().toISOString() })
@@ -137,6 +142,7 @@ export async function updateTour(tourId: string, updates: any) {
     if (error) throw error
     revalidatePath("/dashboard")
     return { success: true, tour: data }
+    })
   } catch (error) {
     return handleError(error, "updateTour")
   }
@@ -281,6 +287,8 @@ export async function aiScheduleShowing(params: ShowingRequest) {
   const supabase = await createClient()
 
   try {
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "showing.appointment.schedule", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "contact", id: isValidUUID(params.contactId) ? params.contactId : null, ref: isValidUUID(params.contactId) ? null : "contact" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { property_ref: params.propertyId, requested_date: params.requestedDate ?? null } }, async () => {
     // Determine if propertyId is a UUID (agent seller listing) or an MLS number (buyer MLS search).
     // For MLS properties, skip the listings table lookup — it will not match.
     const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -421,6 +429,7 @@ Return JSON only:
       showing,
       aiRecommendations,
     }
+    })
   } catch (error) {
     return handleError(error, "aiScheduleShowing")
   }
@@ -657,6 +666,8 @@ export async function aiSendShowingConfirmation(showingId: string) {
   const supabase = await createClient()
 
   try {
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "showing.confirmation.draft", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "showing", id: showingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const { data: showing } = await supabase
       .from("showings")
       .select(`
@@ -753,6 +764,7 @@ Create JSON with both email and SMS versions:
       success: true,
       confirmationMessages,
     }
+    })
   } catch (error) {
     return handleError(error, "aiSendShowingConfirmation")
   }
@@ -807,6 +819,8 @@ export async function aiCollectShowingFeedback(showingId: string) {
   const supabase = await createClient()
 
   try {
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "showing.feedback_request.create", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "showing", id: showingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const { data: showing } = await supabase
       .from("showings")
       .select(`
@@ -885,6 +899,7 @@ JSON response:
       feedbackForm,
       feedbackId: feedback.id,
     }
+    })
   } catch (error) {
     return handleError(error, "aiCollectShowingFeedback")
   }
@@ -904,6 +919,8 @@ export async function aiAnalyzeShowingFeedback(feedbackId: string) {
   const supabase = await createClient()
 
   try {
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "showing.feedback.analyze", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "showing_feedback_request", id: feedbackId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const { data: feedback } = await supabase
       .from("showing_feedback_requests")
       .select(`
@@ -982,6 +999,7 @@ Analyze and provide:
       success: true,
       analysis: analysisResult,
     }
+    })
   } catch (error) {
     return handleError(error, "aiAnalyzeShowingFeedback")
   }
@@ -1001,6 +1019,8 @@ export async function getAIShowingInsights(agentId: string, dateRange?: { start:
   const supabase = await createClient()
 
   try {
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "showing.insights.generate", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "showing_insights" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: agentId } }, async () => {
     let query = supabase
       .from("showings")
       .select(`
@@ -1075,6 +1095,7 @@ Provide brief, actionable insights:
         ...insights,
       },
     }
+    })
   } catch (error) {
     return handleError(error, "getAIShowingInsights")
   }

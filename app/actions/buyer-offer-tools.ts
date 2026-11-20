@@ -240,6 +240,8 @@ export async function signalAffordabilityChecked(input: {
   try {
     const access = await requireContactAccess(input.contactId)
     if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.affordability.signal", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { property_id: input.propertyId, caller_is_contact: access.isContactSelf } }, async () => {
 
     // Authorized above; the service client is used deliberately from here (a portal client's own
     // contacts/notifications rows are not reliably readable/writable under their RLS).
@@ -276,6 +278,7 @@ export async function signalAffordabilityChecked(input: {
       return { success: false, notified: false, recorded, error: notifyRefusal(notified.reason, recorded, "your interest in this home") }
     }
     return { success: true, notified: true, recorded }
+    })
   } catch (e: any) {
     return { success: false, error: e?.message ?? "failed" }
   }
@@ -448,6 +451,8 @@ export async function analyzeAddressForBuyer(input: {
 
     const access = await requireContactAccess(input.contactId)
     if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.address_analysis.request", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { caller_is_contact: access.isContactSelf } }, async () => {
 
     const svc = createServiceClient()
     const resolved = await resolveContactAgent(svc, input.contactId, access.brokerageId)
@@ -495,6 +500,7 @@ export async function analyzeAddressForBuyer(input: {
     })
 
     return { success: true, analysis, recorded }
+    })
   } catch (e: any) {
     return { success: false, error: e?.message ?? "failed" }
   }
@@ -519,6 +525,8 @@ export async function requestComparisonReview(input: {
 
     const access = await requireContactAccess(input.contactId)
     if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.comparison_review.request", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { homes: homes.length, caller_is_contact: access.isContactSelf } }, async () => {
 
     const svc = createServiceClient()
     const resolved = await resolveContactAgent(svc, input.contactId, access.brokerageId)
@@ -546,6 +554,7 @@ export async function requestComparisonReview(input: {
       return { success: false, notified: false, recorded, error: notifyRefusal(notified.reason, recorded, "the homes you're weighing") }
     }
     return { success: true, notified: true, recorded }
+    })
   } catch (e: any) {
     return { success: false, error: e?.message ?? "failed" }
   }
@@ -569,6 +578,8 @@ export async function requestPreApprovalRefresh(input: {
   try {
     const access = await requireContactAccess(input.contactId)
     if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.preapproval_refresh.request", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { property_id: input.propertyId, caller_is_contact: access.isContactSelf } }, async () => {
 
     const svc = createServiceClient()
     const resolved = await resolveContactAgent(svc, input.contactId, access.brokerageId)
@@ -597,6 +608,7 @@ export async function requestPreApprovalRefresh(input: {
       return { success: false, notified: false, recorded, error: notifyRefusal(notified.reason, recorded, "your pre-approval request") }
     }
     return { success: true, notified: true, recorded }
+    })
   } catch (e: any) {
     return { success: false, error: e?.message ?? "failed" }
   }

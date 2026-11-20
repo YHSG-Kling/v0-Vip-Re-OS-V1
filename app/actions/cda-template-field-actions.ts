@@ -85,6 +85,7 @@ export async function saveCdaFieldInputsAction(input: { cdaId: string; agentInpu
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof saveCdaFieldInputsAction> => {
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
@@ -116,6 +117,7 @@ export async function saveCdaFieldInputsAction(input: { cdaId: string; agentInpu
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   return { success: true, resolution }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.field_inputs_save", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 /**
@@ -193,6 +195,7 @@ export async function saveCdaTemplateFieldDefsAction(input: {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof saveCdaTemplateFieldDefsAction> => {
   if (!FIELD_ADMIN_ROLES.has(auth.userType)) return { success: false, error: "forbidden" }
 
   const { data: template } = await supabase
@@ -223,6 +226,7 @@ export async function saveCdaTemplateFieldDefsAction(input: {
     if (error) return { success: false, error: error.message }
   }
   return { success: true, count: rows.length }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda_template.field_defs_save", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage_cda_template", id: input.templateId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 /**
@@ -240,6 +244,7 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof generateFilledCdaPdfAction> => {
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
@@ -319,4 +324,5 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
   // Wave 154 (lane 154M): the row keeps the reference; the page gets the ONE door (deal rule on the CDA's transaction).
   const { documentOpenHref } = await import("@/lib/storage/signed-doc-url")
   return { success: true, url: documentOpenHref(url) ?? url, filled, skipped, unmapped: plan.unmapped }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.pdf_generate", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }

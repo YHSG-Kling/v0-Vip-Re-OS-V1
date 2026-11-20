@@ -56,6 +56,8 @@ export async function respondToCounter(params: RespondToCounterParams) {
   // the two are equal on the only path that gets here, but the rule is that the
   // audit row's tenant is a property of the offer, not of whoever called.
   const brokerageId = offer.brokerage_id as string
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: brokerageId, action: "offer.counter.respond", actor: { type: "user", userId: userId }, subject: { type: "offer", id: offerId }, riskClass: response === "accept" ? "IRREVERSIBLE" : "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { response } }, async () => {
 
   // ── THE ACTOR ──────────────────────────────────────────────────────────────
   // activities.agent_id FKs agents(id); the session gives a users id. Disjoint
@@ -290,4 +292,5 @@ export async function respondToCounter(params: RespondToCounterParams) {
   }
 
   return { success: true, response, status: sync.newStatus }
+  })
 }

@@ -16,6 +16,7 @@ export async function createCommissionStructure(structure: any) {
   if (!ctx.ok) return { error: ctx.error };
   if (!ctx.brokerageId) return { error: 'Unauthorized' };
   if (!CREATE_ROLES.includes(ctx.userType ?? '')) return { error: 'Forbidden' };
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   // Strip any caller-supplied brokerage_id and stamp from session
   const { id: _droppedId, brokerage_id: _droppedBrokerage, ...safeStructure } = structure ?? {};
@@ -37,4 +38,5 @@ export async function createCommissionStructure(structure: any) {
   }
 
   return { data };
+  }; return (await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "finance.commission_structure.create", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }

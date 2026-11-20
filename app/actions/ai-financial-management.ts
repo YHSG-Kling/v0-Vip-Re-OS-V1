@@ -47,7 +47,7 @@ type CommissionEntry = CalculateCommissionInput
  */
 async function resolveAgentTenant(
   agentId: string,
-): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; brokerageId: string; userId: string } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { ok: false, error: "Unauthorized" }
@@ -66,7 +66,7 @@ async function resolveAgentTenant(
   if (error) return { ok: false, error: error.message }
   if (!agent) return { ok: false, error: "Agent not found in your brokerage" }
 
-  return { ok: true, brokerageId: ctx.brokerageId }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
 }
 
 /**
@@ -80,6 +80,7 @@ export async function aiCategorizeExpense(params: {
   vendor?: string
   receiptText?: string
 }) {
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
@@ -90,6 +91,9 @@ export async function aiCategorizeExpense(params: {
   const supabase = await createClient()
 
   try {
+    // WAVE 155 (155R2): the sibling exports' gate — this public endpoint ran a paid model with no session check.
+    const tenant = await resolveAgentTenant(params.agentId)
+    if (!tenant.ok) return { success: false, error: tenant.error }
     // Get agent's expense history for pattern matching
     const { data: recentExpenses } = await supabase
       .from("business_expenses")
@@ -155,6 +159,7 @@ Provide JSON:
   } catch (error) {
     return handleError(error, "aiCategorizeExpense")
   }
+  }; const session = await resolveAgentTenant(params.agentId); if (!session.ok) return act(); return (await ledgerSessionAction({ brokerageId: session.brokerageId, action: "finance.expense.ai_categorize", actor: { type: "user", userId: session.userId }, subject: { type: "agent", id: params.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 // TOMBSTONE (orphan doctrine §1.1 — merge, then delete; wave 152, lane 152D)
@@ -411,6 +416,7 @@ export async function aiGenerateProfitLossReport(params: {
   endDate: string
   includeProjections?: boolean
 }) {
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
@@ -579,6 +585,7 @@ Provide comprehensive analysis:
   } catch (error) {
     return handleError(error, "aiGenerateProfitLossReport")
   }
+  }; const session = await resolveAgentTenant(params.agentId); if (!session.ok) return act(); return (await ledgerSessionAction({ brokerageId: session.brokerageId, action: "finance.pl_report.ai_generate", actor: { type: "user", userId: session.userId }, subject: { type: "agent", id: params.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 /**
@@ -632,6 +639,7 @@ export async function aiCreateBudget(params: {
   year: number
   incomeGoal?: number
 }) {
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
@@ -764,6 +772,7 @@ Create a detailed budget with monthly allocations:
   } catch (error) {
     return handleError(error, "aiCreateBudget")
   }
+  }; const session = await resolveAgentTenant(params.agentId); if (!session.ok) return act(); return (await ledgerSessionAction({ brokerageId: session.brokerageId, action: "finance.budget.ai_create", actor: { type: "user", userId: session.userId }, subject: { type: "agent", id: params.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 /**
@@ -857,6 +866,7 @@ export async function trackDeposit(params: {
     // broker records deposits on a colleague's deal), so the id stays in the
     // signature and is authorized against the session brokerage instead.
     const tenant = await resolveAgentTenant(params.agentId)
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
     if (!tenant.ok) {
       return { success: false, error: tenant.error }
     }
@@ -912,6 +922,7 @@ export async function trackDeposit(params: {
       success: true,
       deposit,
     }
+    }; if (!tenant.ok) return act(); return (await ledgerSessionAction({ brokerageId: tenant.brokerageId, action: "finance.deposit.record", actor: { type: "user", userId: tenant.userId }, subject: { type: "transaction", id: params.transactionId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
   } catch (error) {
     return handleError(error, "trackDeposit")
   }

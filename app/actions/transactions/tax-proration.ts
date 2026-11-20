@@ -71,6 +71,7 @@ export async function saveTaxProrationAction(input: {
   if (!input || typeof input.transactionId !== "string" || !input.transactionId) return { ok: false, error: "transactionId is required" }
   const identity = await getAgentContext()
   if (!identity.isAuthenticated || !identity.brokerageId || !identity.userId) return { ok: false, error: "Not signed in to a brokerage" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const signedIn = { ...identity, brokerageId: identity.brokerageId, userId: identity.userId }; const act = async (identity = signedIn): ReturnType<typeof saveTaxProrationAction> => {
   const supabase = await createClient()
   const read = await readTaxProration(supabase as never, { transactionId: input.transactionId, brokerageId: identity.brokerageId })
   if (!read.ok) return { ok: false, error: read.error }
@@ -87,4 +88,5 @@ export async function saveTaxProrationAction(input: {
 
   const back = await getTaxProrationAction(input.transactionId)
   return back.ok ? back : { ok: false, error: `Saved, but it could not be read back: ${back.error}` }
+  }; const r = await ledgerSessionAction({ brokerageId: identity.brokerageId, action: "transaction.tax_proration.save", actor: { type: "user", userId: identity.userId }, subject: { type: "transaction", id: input.transactionId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
 }

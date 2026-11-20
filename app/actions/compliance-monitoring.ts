@@ -78,7 +78,12 @@ export async function analyzeFairHousingRisk(params: {
 // Monitor TRID compliance
 export async function monitorTRIDCompliance(transactionId: string) {
   if (!isValidUUID(transactionId)) throw new Error("Invalid transaction ID")
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.trid.monitor", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   return monitorTRIDComplianceService(transactionId)
+  })
 }
 
 // TOMBSTONE (§1, lane E2 2026-08-28) — the `applyDocumentRetention` action
@@ -132,7 +137,12 @@ export async function submitContentForApproval(data: {
   if (!data.userId)        throw new Error("userId is required")
   if (!data.contentBody?.trim())  throw new Error("contentBody is required")
   if (!data.contentTitle?.trim()) throw new Error("contentTitle is required")
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.content_approval.submit", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "users", id: session.userId || null, ref: session.userId ? null : "submitter" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: data.contentType, body_user_id: data.userId } }, async () => {
   return submitContentForApprovalService(data)
+  })
 }
 
 // Approve/reject content (compliance admin action)
@@ -146,7 +156,12 @@ export async function reviewContentApproval(data: {
   if (!isValidUUID(data.approvalId))  throw new Error("Invalid approval ID")
   if (!isValidUUID(data.reviewerId))  throw new Error("Invalid reviewer ID")
   if (!data.status)                    throw new Error("status is required")
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.content_approval.review", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "content_approval", id: data.approvalId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { decision: data.status, body_reviewer_id: data.reviewerId } }, async () => {
   return reviewContentApprovalService(data)
+  })
 }
 
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `logCommunicationWithCompliance`
@@ -198,7 +213,12 @@ export async function generateComplianceReport(filters: {
 // Create TRID timeline for transaction
 export async function createTRIDTimeline(transactionId: string) {
   if (!isValidUUID(transactionId)) throw new Error("Invalid transaction ID")
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.trid_timeline.create", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "transaction", id: transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
   return createTRIDTimelineService(transactionId)
+  })
 }
 
 // The four date columns a TRID milestone may write. The service applies
@@ -233,5 +253,10 @@ export async function updateTRIDMilestone(params: {
   }
   if (!TRID_MILESTONES.includes(params.milestone as TridMilestone)) throw new Error("Unknown TRID milestone")
   if (!params.date)                        throw new Error("date is required")
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.trid_milestone.update", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { milestone: params.milestone } }, async () => {
   return updateTRIDMilestoneService(params)
+  })
 }

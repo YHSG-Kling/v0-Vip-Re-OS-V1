@@ -30,6 +30,7 @@
 
 import { BROKERAGE_FINANCE_ADMIN_USER_TYPES, TENANT_ADMIN_USER_TYPES, isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import type { AgreementActor } from "@/lib/agreements/agent-agreements"
+import type { ActionContext } from "@/lib/kernel/action-ledger"
 import { calendarDay } from "@/lib/agreements/agent-agreements"
 import { AGENT_CONCESSION_REASON_MIN, resolveAgentConcessionPolicy } from "./agent-concession"
 import { TRANSACTION_STATUSES_TERMINAL, inPipelineColumn } from "@/lib/transactions/transaction-status"
@@ -317,14 +318,29 @@ async function moveGoverningTerm(db: Db, brokerageId: string, facts: DealFacts, 
 type LedgerResult = { ok: boolean; error?: string; rowId?: string | null }
 
 async function ledger(db: Db, entry: { brokerageId: string; action: string; actor: AgreementActor; subjectId: string | null; ref: string; key: string; reasonDetail: string; detail: Record<string, unknown> }, run: () => Promise<LedgerResult>): Promise<LedgerResult & { replayOf?: string | null }> {
-  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { withActionLedger, governanceRecord } = await import("@/lib/kernel/action-ledger")
+  // WAVE 155 (lane 155R8, D 152): THE ONE DECISION RECORD at the commission-edit sink rides THIS row (no extra round trip): the
+  // attached person's / finance admin's own submission (authorized_human), the authority and approval path that decided it.
+  // The approval plane's own spelling: a finance admin's decision row says approved / rejected; a submission says approved (applied at
+  // once) or pending (requested — a finance admin decides next).
+  const decided = entry.detail.decision === "approved" ? "approved" : entry.detail.decision === "denied" ? "rejected" : null
+  const verdict = decided ?? (entry.detail.approval_status === "not_required" ? "approved" : "pending")
+  const governance = governanceRecord({
+    plane: "approval", verdict,
+    scope: { brokerageId: entry.brokerageId, userId: entry.actor.userId }, actor: { type: "user", id: entry.actor.userId },
+    entity: { type: "commission_adjustment", id: entry.subjectId, version: null }, objective: entry.action,
+    policyConstraints: ["sink rule (D 152): commission edit", "termChangeAuthority (attached or finance admin)", "termChangeApproval (commission_payout_policy)", "executed-agreement evidence"],
+    rationale: entry.reasonDetail, trustClass: "authorized_human", approvalBasis: decided || verdict === "pending" ? "human_approval" : "policy_permitted",
+    ...(verdict === "pending" ? { nextTrigger: { kind: "human", detail: "a finance admin decides the requested change" } } : verdict === "rejected" ? { nextTrigger: { kind: "none" } } : {}),
+  })
   return withActionLedger<LedgerResult & { replayOf?: string | null }>(
     {
+      trustClass: "authorized_human", dependencies: [{ type: "commission_anchor", id: null, version: entry.ref }],
       brokerageId: entry.brokerageId, action: entry.action,
       actor: { type: "user", userId: entry.actor.userId, agentId: entry.actor.agentId },
       subject: { type: "commission_adjustment", id: entry.subjectId, ref: entry.ref },
       idempotencyKey: entry.key, reasonCode: "HUMAN_REQUESTED", reasonDetail: entry.reasonDetail.slice(0, 500),
-      riskClass: "FINANCIAL", systemSource: "commission_term_change", detail: entry.detail,
+      riskClass: "FINANCIAL", systemSource: "commission_term_change", detail: { ...entry.detail, governance },
       // the registered tenant policy whose agent_concession_approval half decided the approval path (lib/kernel/tenant-policy.ts)
       policyKey: "commission_payout_policy",
     },
@@ -357,6 +373,9 @@ async function notifyDealTeam(db: Db, actor: AgreementActor, facts: DealFacts, a
 interface TermChangeDeps {
   /** Re-run the canonical waterfall after a deal's rate moved. Default: lib/kernel/transactions.ts recalculateCommissionStateCommand. */
   recompute?: (input: { brokerageId: string; transactionId: string; actorUserId: string }) => Promise<{ ok: true; gross: number | null; agentNet: number | null; brokerageNet: number | null } | { ok: false; error: string }>
+  /** WAVE 155 (155R8): who proposed this change when it is NOT the attached person's own submission (a model / inbound proposal
+   *  states `trustClass`; the sink rule then holds it unless a named verification cleared it). Absent = the session's submission. */
+  origin?: Pick<ActionContext, "trustClass" | "sink" | "cycle"> | null
 }
 
 async function defaultRecompute(input: { brokerageId: string; transactionId: string; actorUserId: string }) {
@@ -494,6 +513,22 @@ export async function loadCommissionTermsForChange(db: Db, actor: AgreementActor
  */
 export async function requestCommissionTermChange(db: Db, actor: AgreementActor, input: TermChangeInput, deps: TermChangeDeps = {}): Promise<({ ok: true } & TermChangeResult) | { ok: false; error: string }> {
   if (!actor.brokerageId) return { ok: false, error: "no_tenant" }
+  // WAVE 155 (lane 155R8, D 152 / eval SCOPE-003): a change someone OTHER than the session's person proposed (deps.origin) passes the
+  // pure sink rule FIRST — an untrusted origin with no recorded verification is HELD on one `finance.decision.wait` row and nothing
+  // below runs; a verified one continues to the authority + approval gates (its own term-change row follows). A model's text is
+  // recorded as claims and never read.
+  if (deps.origin) {
+    const { ledgerToolCall } = await import("@/lib/kernel/action-ledger")
+    const o = deps.origin
+    const r = await ledgerToolCall({
+      brokerageId: actor.brokerageId, action: "finance.commission_term.propose", channel: "commission_sink", actor: { type: "user", userId: actor.userId, agentId: actor.agentId },
+      subject: { type: "commission_anchor", id: input.transactionId ?? input.offerId ?? input.listingId ?? null }, riskClass: "FINANCIAL", systemSource: "commission_term_change",
+      cycle: o.cycle ?? null, trustClass: o.trustClass ?? null, approvalBasis: o.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted",
+      dependencies: [{ type: "commission_anchor", id: input.transactionId ?? input.offerId ?? input.listingId ?? null, version: null }],
+      sink: o?.sink ?? null,
+    }, () => requestCommissionTermChange(db, actor, input, { ...deps, origin: null }))
+    return "ok" in r ? r : { ok: false, error: r.error ?? "already proposed — not repeated" }
+  }
   const shape = validateRequest(input, null)
   if (shape) return { ok: false, error: shape }
   const anchor: TermChangeAnchor = { transactionId: input.transactionId ?? null, offerId: input.offerId ?? null, listingId: input.listingId ?? null }

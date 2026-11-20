@@ -196,11 +196,12 @@ export async function cloneTemplate(templateId: string) {
   // The tenant comes from the SESSION, not from `templateId`: that argument is
   // caller-supplied into a `"use server"` export, so deriving the tenant from it would
   // let the caller pick which brokerage to write into.
-  const { brokerageId, isAuthenticated } = await getAgentContext()
+  const { brokerageId, isAuthenticated, userId } = await getAgentContext()
   if (!isAuthenticated) return { error: "Not authenticated" }
   // Refuse rather than fall back to NULL. Writing the row untenanted would hand the
   // clone to the whole platform, which is worse than not cloning it.
   if (!brokerageId) return { error: "Your account is not attached to a brokerage" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   // plan_tasks (live, merged playbook table): task_description is NOT NULL; playbook
   // fields are playbook_name/trigger_type/steps/target_persona_ids/active. Clone source
@@ -229,6 +230,7 @@ export async function cloneTemplate(templateId: string) {
 
   revalidatePath("/academy")
   return { success: true, playbook: clonedPlaybook }
+  }; return (await ledgerSessionAction({ brokerageId: brokerageId, action: "academy.template.clone", actor: { type: "user", userId: userId }, subject: { type: "template_marketplace", id: templateId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 export async function addTemplateFeedback(data: {
@@ -240,6 +242,8 @@ export async function addTemplateFeedback(data: {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: "Not authenticated" }
+  const { brokerageId } = await getAgentContext() // WAVE 155 (155R2): the receipt's tenant — the SESSION's
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   // template_feedback has no feedback_type column (nothing reads it). Drop it.
   const { error } = await supabase.from("template_feedback").insert({
@@ -252,6 +256,7 @@ export async function addTemplateFeedback(data: {
 
   revalidatePath("/academy")
   return { success: true }
+  }; return (await ledgerSessionAction({ brokerageId: brokerageId!, action: "academy.template_feedback.add", actor: { type: "user", userId: user.id }, subject: { type: "template_marketplace", id: data.templateId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
 }
 
 /**

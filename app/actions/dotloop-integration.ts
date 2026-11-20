@@ -966,6 +966,8 @@ export async function createDocumentFolder(data: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "document.folder.create", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "transaction", id: data.transactionId ?? null, ref: data.transactionId ? null : "document_folder" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { folder_type: data.folderType, contact_id: data.contactId ?? null } }, async () => {
 
   const folderName = data.folderName?.trim()
   if (!folderName) return { success: false, error: "Give the folder a name." }
@@ -1045,6 +1047,7 @@ export async function createDocumentFolder(data: {
       parentFolderId: folder.parent_folder_id ?? null,
     },
   }
+  })
 }
 
 export async function getDocumentFolders(filters?: {
