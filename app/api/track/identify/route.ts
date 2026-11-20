@@ -193,6 +193,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // path (`leadId` is computed as null whenever a contact matched), and the
   // other is already null on the row — the guard above returns early when
   // either is set, so this never clears an existing link.
+  //
+  // WAVE 155 (lane 155R21, LAW 5): ONE receipt per identification. The tenant is the one the door PROVED (the visitor row's
+  // brokerage — never the body); the actor is not a user (an anonymous visitor's beacon) so it is `system`; the subject is the
+  // visitor row. The receipt names only WHICH kind matched — never the Lead's id (Leads belong to the tenant; CLAUDE.md §5).
+  // No key: the early return above (already linked) is this act's own at-most-once. A refusing ledger changes nothing.
+  const { withActionLedger } = await import('@/lib/kernel/action-ledger')
+  type Stamp = { stamped: true } | { stamped: false; why: string }
+  const stamp = await withActionLedger<Stamp>({
+    brokerageId: door.brokerageId ?? brokerageId, action: 'marketing.website_visitor.identify', actor: { type: 'system', userId: null },
+    subject: { type: 'website_visitor', id: visitor.id }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'CONVERSATION_RESPONSE',
+    channel: 'web', systemSource: 'website_pixel', detail: { matched: contactId ? 'contact' : 'lead', door: door.basis },
+  }, async (): Promise<Stamp> => {
   const { data: stamped, error: updateError } = await supabase
     .from('website_visitors')
     .update({
@@ -205,12 +217,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   if (updateError) {
     console.error('[track/identify] identify update refused:', updateError.message)
-    return NextResponse.json(OPAQUE_OK)
+    return { stamped: false, why: 'update_refused' }
   }
   if (!stamped || stamped.length === 0) {
     console.error('[track/identify] identify update matched 0 rows for visitor', visitor.id)
-    return NextResponse.json(OPAQUE_OK)
+    return { stamped: false, why: 'matched_zero_rows' }
   }
+  return { stamped: true }
+  }, {
+    settle: (r) => r.stamped ? { status: 'executed', outcome: 'identified' } : { status: 'failed', outcome: r.why },
+    replay: () => ({ stamped: false, why: 'ledger_refused' }),
+  })
+  if (!stamp.stamped) return NextResponse.json(OPAQUE_OK)
 
   // ── Step 4: lifecycle event ─────────────────────────────────────────────────
   try {

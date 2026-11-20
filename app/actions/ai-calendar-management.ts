@@ -222,6 +222,10 @@ export async function updateAppointment(appointmentId: string, updates: Record<s
       return { success: false, error: "Nothing to update" }
     }
 
+    // WAVE 155 (lane 155R21): ONE receipt per reschedule — the session's user and tenant (CLAUDE.md §4, LAW 5). No key: a person
+    // may move the same appointment twice. A refusing / absent ledger leaves today's behavior.
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "calendar.appointment.reschedule", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: isValidUUID(appointmentId) ? { type: "calendar_event", id: appointmentId } : { type: "calendar_event", ref: String(appointmentId) }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(calendarUpdates) } }, async (): Promise<{ success: boolean; error?: string; appointment?: Record<string, unknown> }> => {
     const { data, error } = await supabase
       .from("calendar_events")
       .update(calendarUpdates)
@@ -240,6 +244,7 @@ export async function updateAppointment(appointmentId: string, updates: Record<s
     revalidatePath("/calendar")
 
     return { success: true, appointment: data }
+    }))
   } catch (error) {
     return handleError(error, "updateAppointment")
   }
@@ -278,6 +283,9 @@ export async function cancelAppointment(appointmentId: string, reason?: string) 
       cancelledAt: new Date().toISOString(),
     }
 
+    // WAVE 155 (lane 155R21): ONE receipt per cancellation (session user and tenant). The reason text stays on the row, not here.
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "calendar.appointment.cancel", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "calendar_event", id: existing.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { has_reason: !!reason } }, async (): Promise<{ success: boolean; error?: string; appointment?: Record<string, unknown> }> => {
     const { data, error } = await supabase
       .from("calendar_events")
       .update({ metadata: mergedMetadata })
@@ -295,6 +303,7 @@ export async function cancelAppointment(appointmentId: string, reason?: string) 
     revalidatePath("/calendar")
 
     return { success: true, appointment: data }
+    }))
   } catch (error) {
     return handleError(error, "cancelAppointment")
   }
@@ -1098,6 +1107,10 @@ export async function createDeadlineEventsFromMilestones(params: {
       return { success: true, created: 0, message: "No pending milestones with target dates" }
     }
 
+    // WAVE 155 (lane 155R21): ONE receipt per run that writes deadline events (session user and tenant; subject the transaction).
+    // No key: the per-milestone existence probe below is the run's own idempotency, and a second run must still fill new dates.
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId, action: "calendar.deadline_event.create", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { pending_milestones: milestones.length } }, async (): Promise<{ success: boolean; error?: string; created?: number; skipped?: number; failures?: string[]; message?: string }> => {
     let created = 0
     let skipped = 0
     const failures: string[] = []
@@ -1178,6 +1191,7 @@ export async function createDeadlineEventsFromMilestones(params: {
     revalidatePath("/dashboard/calendar")
 
     return { success: true, created, skipped, failures }
+    }))
   } catch (error) {
     return handleError(error, "createDeadlineEventsFromMilestones")
   }

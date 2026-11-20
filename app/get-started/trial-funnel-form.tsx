@@ -121,7 +121,10 @@ export function TrialFunnelForm({ tiers = [], funnelSnapshots = {}, initialTier 
     startTransition(async () => {
       // Durable ToS acceptance record (version from platform settings) BEFORE provisioning.
       const tosV = await getCurrentTosVersionAction()
-      await recordTosAcceptanceAction({ email, version: tosV.ok ? tosV.version : "2026-07-01" })
+      // WAVE 155 (lane 155R21): the result is READ — an acceptance the door refused or the database rejected stops the
+      // signup with the honest reason instead of provisioning an account with no acceptance on record.
+      const tosRecorded = await recordTosAcceptanceAction({ email, version: tosV.ok ? tosV.version : "2026-07-01" })
+      if (!tosRecorded.ok) { setError(tosRecorded.error ?? "Your acceptance of the terms could not be recorded — please try again."); return }
       const r = await signupBrokerageAction({
         brokerageName, adminFirstName: firstName, adminLastName: lastName, adminEmail: email,
         tier, brokerageCity: city || undefined, brokerageState: state || undefined,

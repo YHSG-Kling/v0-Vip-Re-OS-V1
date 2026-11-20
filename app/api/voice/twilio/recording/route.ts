@@ -72,13 +72,33 @@ export async function POST(request: NextRequest) {
   // Only ever fills a row that is genuinely empty AND belongs to this tenant.
   // `.is("recording_url", null)` makes a re-posted callback idempotent instead
   // of letting a retry overwrite a recording already in hand.
-  const { data: updated, error: updErr } = await svc
+  //
+  // WAVE 155 (lane 155R21, LAW 5): ONE receipt per stored recording. A provider callback is not a session: the actor is `system`
+  // and the tenant is the one the SIGNED number matched (ctx.brokerageId — never a payload field). The CallSid is not a uuid, so it
+  // rides `ref`. No key: `.is("recording_url", null)` is this write's own at-most-once (a Twilio retry settles 'skipped'). The
+  // media URL itself is NOT in the receipt (it dereferences a recording of a person). A refusing ledger changes nothing.
+  type RecordingWrite = { data: Array<{ id: string }> | null; error: { message: string } | null }
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { data: updated, error: updErr } = await withActionLedger<RecordingWrite>({
+    brokerageId: ctx.brokerageId, action: "voice.call_recording.store", actor: { type: "system", userId: null },
+    subject: { type: "voice_call", ref: parsed.callSid }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
+    reasonDetail: "Twilio recording-status callback for a recorded call", channel: "voice", systemSource: "twilio_recording_callback",
+    detail: { recording_sid: parsed.recordingSid || null, duration_seconds: parsed.durationSeconds ?? null },
+  }, async (): Promise<RecordingWrite> => {
+  const { data, error } = await svc
     .from("voice_calls")
     .update({ recording_url: parsed.recordingUrl })
     .eq("vendor_call_id", parsed.callSid)
     .eq("brokerage_id", ctx.brokerageId)
     .is("recording_url", null)
     .select("id")
+  return { data: (data ?? null) as Array<{ id: string }> | null, error: error ? { message: error.message } : null }
+  }, {
+    settle: (r) => r.error ? { status: "failed", outcome: "write_refused", provider: "twilio", error: r.error.message }
+      : (r.data ?? []).length > 0 ? { status: "executed", outcome: "recording_stored", provider: "twilio", providerRef: parsed.recordingSid || null }
+      : { status: "skipped", outcome: "no_empty_row", provider: "twilio" },
+    replay: () => ({ data: null, error: { message: "the action ledger refused this callback's receipt" } }),
+  })
 
   if (updErr) {
     console.error(

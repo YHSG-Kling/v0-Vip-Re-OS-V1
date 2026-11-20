@@ -263,6 +263,27 @@ function parseEdges(file: string, s: string): Edge[] {
     if (/^\s*export\s+type\b/.test(m[0].trim())) continue
     add(m[2], m.index!, m[1] === "*" ? [{ name: "*", local: "" }] : m[1].slice(1, -1).split(",").map((x) => x.trim()).filter((x) => x && !x.startsWith("type ")).map((x) => ({ name: x.split(/\s+as\s+/)[0].trim(), local: "" })))
   }
+  // WAVE 155 (integrator; found by lane 155R21) — `const [{ a }, { b }] = await Promise.all([import("m1"), import("m2")])` BINDS
+  // NAMES, exactly like `const { a } = await import("m1")`. It was not recognised, so each import fell to the bare fallback
+  // below and bound "*": the WHOLE module. lib/listing-lifecycle/readiness-checker.ts loads governingListingAgreementTerms (three
+  // SELECTs) this way, and validateListingTransition — which only validates — inherited the inserts of two other exports of
+  // lib/listings/listing-agreement-terms.ts and read as a P0 write with no receipt. Each pattern is bound to the import at the
+  // same position: a brace pattern binds its names, a plain identifier the namespace; anything else (a spread, a call that is not
+  // an import, a nested bracket) is left to the fallback, which over-reports (stated). Controls: section G (G3b).
+  for (const m of s.matchAll(/(?:const|let|var)\s+\[([^\]]*)\]\s*=\s*await\s+Promise\.all\(\s*\[([^\]]*)\]\s*\)/g)) {
+    const split = (list: string): string[] => { const parts: string[] = []; let depth = 0, cur = ""; for (const ch of list) { if (ch === "{" || ch === "(") depth++; else if (ch === "}" || ch === ")") depth--; if (ch === "," && depth === 0) { parts.push(cur.trim()); cur = "" } else cur += ch } if (cur.trim()) parts.push(cur.trim()); return parts }
+    const patterns = split(m[1]), calls = split(m[2])
+    const listAt = m.index! + m[0].indexOf(m[2], m[0].indexOf("Promise.all"))
+    let cursor = 0
+    calls.forEach((call, i) => {
+      const at = listAt + m[2].indexOf(call, cursor); cursor = m[2].indexOf(call, cursor) + call.length
+      const imp = /^import\(\s*["']([^"']+)["']\s*\)$/.exec(call); const pat = patterns[i]
+      if (!imp || !pat) return
+      const brace = /^\{([\s\S]*)\}$/.exec(pat)
+      if (brace) add(imp[1], at, brace[1].split(",").map((x) => x.trim()).filter(Boolean).map((x) => ({ name: x.split(/\s*:\s*/)[0].trim(), local: (x.split(/\s*:\s*/)[1] ?? x).trim() })))
+      else if (ID.test(pat)) add(imp[1], at, [{ name: "*", local: pat }])
+    })
+  }
   for (const m of s.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)) {
     // WAVE 155 (lane 155R16): an INLINE TYPE (`Promise<import("x").Dates>`, `typeof import("x")`) is not an import edge — a
     // bare `import("x").Name` without `await` / a wrapping paren is a property of a Promise at run time, i.e. a type position.
@@ -2459,7 +2480,7 @@ async function main(): Promise<void> {
     // G2..G5 — planted multi-file specimens (views + edges injected, removed after)
     const files: Record<string, string> = {
       "lib/__os_coverage_lib__.ts": [`export const LIMIT = 80`, `export const RULES = Object.freeze({ a: 1, b: [2, 3] })`, `export interface Shape { a: number }`, `export type Alias = { b: string }`,
-        `export const makeClient = createThing()`, `export async function writer() { await svc.from("deals").update({}) }`].join("\n"),
+        `export const makeClient = createThing()`, `export async function writer() { await svc.from("deals").update({}) }`, `export async function readsOnly() { return svc.from("deals").select("id") }`].join("\n"),
       "lib/__os_coverage_barrel__.ts": `export { writer } from "./__os_coverage_lib__"`,
       "app/actions/__os_coverage_walk__.ts": [`"use server"`, `import { LIMIT, RULES, Shape, writer } from "@/lib/__os_coverage_lib__"`, `import { writer as viaBarrel } from "@/lib/__os_coverage_barrel__"`,
         `import { dispatchKernelEvent } from "@/lib/kernel/event-reactor"`,
@@ -2471,6 +2492,8 @@ async function main(): Promise<void> {
         `export async function usesDepsRead() { const d = { ...deps }; return d.read() }`, `export async function usesDepsLedger() { const d = { ...deps }; return d.ledger() }`,
         `export async function emitsOnly() { await svc.from("deals").update({}); await dispatchKernelEvent({ event: "x" }) }`,
         `export async function emitsAndLedgers() { await withActionLedger({ action: "a.b.c" }, async () => svc.from("deals").update({})); await dispatchKernelEvent({ event: "x" }) }`,
+        `export async function promiseAllReads() { const [{ readsOnly }, { LIMIT: lim }] = await Promise.all([import("@/lib/__os_coverage_lib__"), import("@/lib/__os_coverage_lib__")]); return [await readsOnly(), lim] }`,
+        `export async function promiseAllWrites() { const [{ writer: w2 }] = await Promise.all([import("@/lib/__os_coverage_lib__")]); await w2() }`,
         `export async function fansOutOnly() { await svc.from("deals").update({}); await processKernelEvent({ event: "x" }) }`,
         `export async function fansOutViaIndex() { await svc.from("deals").update({}); await viaKernelIndex({ event: "x" }) }`,
         `export async function fansOutAndLedgers() { await withActionLedger({ action: "a.b.c" }, async () => svc.from("deals").update({})); await processKernelEvent({ event: "x" }) }`].join("\n"),
@@ -2493,6 +2516,13 @@ async function main(): Promise<void> {
       check("G3 inline type: `Promise<import(\"x\").T>` and `typeof import(\"x\")` are not edges — NEGATIVE: `await import(\"x\")` and `(await import(\"x\")).m` still are",
         !parseEdges(W, `type A = Promise<import("@/lib/kernel/events").KernelEvent>`).length && !parseEdges(W, `type B = typeof import("@/lib/kernel/events")`).length
         && parseEdges(W, `const m = await import("@/lib/kernel/events")`).length === 1 && parseEdges(W, `const k = (await import("@/lib/kernel/events")).KernelEvent`).length === 1)
+      // G3b — a Promise.all of dynamic imports binds names, not whole modules (lane 155R21's finding)
+      check("G3b POSITIVE: `const [{ readsOnly }] = await Promise.all([import(\"m\")])` that calls only the module's READER writes NOTHING — NEGATIVE: the same shape binding and calling the module's WRITER writes its table",
+        ef("promiseAllReads").writes.size === 0 && ef("promiseAllWrites").writes.has("deals"), JSON.stringify([[...ef("promiseAllReads").writes.keys()], [...ef("promiseAllWrites").writes.keys()]]))
+      check("G3b parse: each brace pattern is bound to the import at ITS position, and the bare fallback adds no whole-module edge for them",
+        (() => { const e = parseEdges(W, `const [{ a }, { b: c }] = await Promise.all([import("@/lib/__os_coverage_lib__"), import("@/lib/__os_coverage_barrel__")])`); return e.length === 2 && e[0].pairs.length === 1 && e[0].pairs[0].name === "a" && e[1].pairs[0].name === "b" && e[1].pairs[0].local === "c" && !e.some((x) => x.pairs.some((q) => q.name === "*")) })())
+      check("G3b NEGATIVE: an element that is not a plain import (a call, a spread) is left to the whole-module fallback — the over-report stays",
+        parseEdges(W, `const [x] = await Promise.all([load(import("@/lib/__os_coverage_lib__"))])`).some((x) => x.pairs.some((q) => q.name === "*")))
       // G2 — a receipt beyond the emit door is the reactor's
       const reactorOwn = memberFacts("lib/kernel/event-reactor.ts", "dispatchKernelEvent", 1)
       check("G2 PRECONDITION (else the next control proves nothing): the reactor's own walk still carries a ledger receipt", reactorOwn.evidence.length > 0)

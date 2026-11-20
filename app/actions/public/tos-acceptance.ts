@@ -23,6 +23,17 @@ export async function recordTosAcceptanceAction(input: { email: string; version:
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { ok: false, error: "Valid email required" }
   const version = (input.version ?? "").trim()
   if (!version) return { ok: false, error: "version required" }
+  // WAVE 155 (lane 155R21) — THE DECISION, before the write: the per-connection cap of the platform's OWN signup funnel
+  // (decidePublicDoor; no tenant exists yet, so the opt-in is the platform's and there is no login wall). A refusal is answered
+  // honestly and the funnel stops (app/get-started/trial-funnel-form.tsx) — an acceptance is never dropped silently. No ledger
+  // receipt: agent_action_ledger.brokerage_id is NOT NULL and a pre-account acceptance has no tenant; the acceptance row
+  // (email, version, IP, user agent, accepted_at) is the legal record.
+  const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+  const door = await decidePublicDoor({
+    surface: "platform-tos-acceptance", callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
+    optIn: async () => ({ brokerageId: null, platform: true, basis: "the platform's own public signup funnel (no tenant)" }),
+  })
+  if (!door.allowed) return { ok: false, error: "Too many requests from this connection — your acceptance was NOT recorded. Please try again in a few minutes." }
   const svc = createServiceClient()
   const hdrs = await headers()
   const { error } = await svc.from("platform_tos_acceptances").upsert({

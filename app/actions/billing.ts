@@ -374,6 +374,12 @@ export async function startSubscriptionCheckout(
   if (discount.status === "refused") throw new Error(discount.message)
   const discountParams = discount.status === "applied" ? discount.params : { allow_promotion_codes: true as const }
 
+  // WAVE 155 (lane 155R21, LAW 5): ONE receipt per checkout session opened — FINANCIAL (it starts a paid subscription change for the
+  // tenant). Session user and tenant (CLAUDE.md §4); subject the brokerage. No key: a person who closes the modal and opens it again
+  // gets a new session. Every refusal above (custom tier, unset price, refused code) happens BEFORE the claim and leaves no row. A
+  // refusing ledger changes nothing; a non-acting claim throws instead of returning a value of another shape.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const opened = await ledgerSessionAction({ brokerageId, action: "billing.subscription_checkout.start", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { tier_name: tier.tier_name ?? null, billing_cycle: billingCycle, discount: discount.status, new_customer: !customerId } }, async (): Promise<{ clientSecret: string | null }> => {
   // Create customer if not exists
   if (!customerId) {
     const { stripe } = await import("@/lib/stripe")
@@ -422,7 +428,10 @@ export async function startSubscriptionCheckout(
     redirect_on_completion: "never",
   })
 
-  return session.client_secret
+  return { clientSecret: session.client_secret }
+  })
+  if (!("clientSecret" in opened)) throw new Error(opened.error ?? "The checkout could not be started — please try again.")
+  return opened.clientSecret
 }
 
 // ─── CANCEL SUBSCRIPTION ─────────────────────────────────────────────────────

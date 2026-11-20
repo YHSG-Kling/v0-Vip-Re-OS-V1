@@ -62,7 +62,23 @@ export async function POST(request: NextRequest) {
   if (!door.allowed) return NextResponse.json({ ok: true, minutesLogged: 0 })
   const elapsed = seen.startedAt === null ? MAX_SECONDS : Math.floor((Date.now() - seen.startedAt) / 1000) + ELAPSED_SLACK_SECONDS
   const clamped = Math.min(Math.max(seconds, 1), MAX_SECONDS, Math.max(1, elapsed))
-  const result = await endLiveAgentSession(liveSessionId, clamped)
+  // WAVE 155 (lane 155R21, LAW 5): ONE receipt per booking of live-agent minutes — FINANCIAL (the minutes feed the tenant's
+  // invoice). The tenant is the one the door PROVED (the session row's brokerage — never the body); the actor is `system` (an
+  // anonymous visitor's beacon); the subject is the session row. No key: endLiveAgentSession is its own at-most-once (a closed
+  // row books 0 and settles 'skipped'). A refusing ledger changes nothing — the booking still runs.
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  type Booked = Awaited<ReturnType<typeof endLiveAgentSession>>
+  const bookMinutes = (): Promise<Booked> => endLiveAgentSession(liveSessionId, clamped)
+  const result = door.brokerageId ? await withActionLedger<Booked>({
+    brokerageId: door.brokerageId, action: "billing.live_agent_minutes.book", actor: { type: "system", userId: null },
+    subject: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(liveSessionId) ? { type: "live_agent_session", id: liveSessionId } : { type: "live_agent_session", ref: liveSessionId },
+    riskClass: "FINANCIAL", reasonCode: "CONVERSATION_RESPONSE", reasonDetail: "embed widget session ended (visitor beacon)", channel: "web", systemSource: "embed_widget",
+    detail: { reported_seconds: seconds, billed_seconds: clamped, door: door.basis },
+  }, bookMinutes, {
+    settle: (r) => !r.ok ? { status: "failed", outcome: "close_refused", error: r.error ?? null }
+      : (r.minutesBilled ?? 0) > 0 ? { status: "executed", outcome: "minutes_booked" } : { status: "skipped", outcome: "already_closed" },
+    replay: () => ({ ok: false, error: "the action ledger refused this booking's receipt" }),
+  }) : await bookMinutes()
   if (!result.ok) {
     // Not found / already closed — not an error the visitor's page needs to
     // see or retry; the beacon fired, its job is done either way.

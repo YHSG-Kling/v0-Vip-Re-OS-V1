@@ -1308,13 +1308,29 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         // (§4 fail closed: "nobody checked" must never render as "checked and
         // fine", and a disclosure list for the wrong state is worse than none).
         if (txn?.property_state) {
+          // WAVE 155 (lane 155R21, G04 — the 155R17 pattern): this reaction SPENDS on a model and WRITES compliance_checklists and
+          // a manager signal with no decision or evidence of its own. The DECISION is the existing autonomy gate
+          // (lib/managers/autonomy-gate.ts autonomyDecision) over its two halts — the platform's god switch and platform staff's
+          // per-tenant pause — asked BEFORE the check; a held tenant gets no check and one 'skipped' receipt. ONE receipt per run
+          // (actor the compliance_officer manager, tenant the emitted event's, subject the transaction). No key: a second document
+          // on the same deal is a new reason to re-grade. A refused claim keeps today's behavior (the check still runs).
+          const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+          const { autonomyDecision, loadTenantAutonomyHalt } = await import("@/lib/managers/autonomy-gate")
+          const { loadPlatformHalt } = await import("@/lib/platform/platform-controls")
+          const discBrokerageId = params.brokerageId
+          const discState = txn.property_state
+          const discDecision = autonomyDecision({ managerKey: "compliance_officer", effective: null, platformHalt: await loadPlatformHalt(svc as never), tenantHalt: await loadTenantAutonomyHalt(discBrokerageId, svc as never) })
+          let discRun: { success: boolean; error?: string; incomplete?: boolean } | null = null
+          const runDisclosure = async (): Promise<void> => {
+          if (!discDecision.allow) return
           const { runDisclosureComplianceCheck } = await import("@/lib/compliance/disclosure-check-runner")
           const check = await runDisclosureComplianceCheck(svc, {
             transactionId,
             brokerageId: params.brokerageId,
             userId: params.agentUserId ?? null,
-            state: txn.property_state,
+            state: discState,
           })
+          discRun = { success: check.success, error: check.success ? undefined : check.error, incomplete: check.success && ((check.missingDisclosures?.length ?? 0) > 0 || (check.complianceScore ?? 100) < 100) }
 
           if (!check.success) {
             console.error(`[event-reactor] autonomous disclosure check failed for transaction ${transactionId}: ${check.error}`)
@@ -1344,6 +1360,17 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
               svc,
             )
           }
+          }
+          const discSubject = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(transactionId) ? { type: "transaction", id: transactionId } : { type: "transaction", ref: transactionId }
+          await withActionLedger<void>({ brokerageId: discBrokerageId, action: "compliance.disclosure_check.run", actor: { type: "manager", managerKey: "compliance_officer" }, subject: discSubject, riskClass: "LOW_RISK_WRITE", systemSource: "event_reactor", detail: { event: params.event, state: discState, autonomy: discDecision.allow ? "allow" : "held" } }, runDisclosure, {
+            settle: () => {
+              const r = discRun as { success: boolean; error?: string; incomplete?: boolean } | null
+              if (!discDecision.allow) return { status: "skipped", outcome: "autonomy_held", error: discDecision.reason }
+              if (r?.success) return { status: "executed", outcome: r.incomplete ? "disclosures_incomplete" : "disclosures_complete" }
+              return { status: "failed", outcome: "disclosure_check_failed", error: r?.error ?? "no check result" }
+            },
+            replay: (claim) => (claim.kind === "refused" ? runDisclosure() : undefined),
+          }, { client: svc as never })
         }
       }
     } catch (err) {

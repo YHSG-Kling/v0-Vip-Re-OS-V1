@@ -60,6 +60,7 @@ export interface SubmitDSARInput {
   subjectEmail:   string
   subjectName?:   string
   subjectPhone?:  string
+  /** @deprecated IGNORED (wave 155, lane 155R21 — CLAUDE.md §4): the tenant is the matched user's / contact's brokerage. */
   brokerageId?:   string
   notes?:         string
 }
@@ -83,6 +84,17 @@ export async function submitDataSubjectRequestAction(
   }
   if (!input.requestType) return { ok: false, error: "Request type required" }
 
+  // WAVE 155 (lane 155R21) — THE DECISION, before any read or write: the per-connection cap of the platform's OWN statutory intake
+  // (decidePublicDoor, lib/security/public-rate-limit.ts). No tenant opt-in can close a privacy-request door, so the opt-in is the
+  // platform's (no login wall: CCPA §1798.130 requires the web form to be reachable). A refusal answers the person honestly — a
+  // legal request is never dropped silently.
+  const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+  const door = await decidePublicDoor({
+    surface: "privacy-dsar-submit", callerKey: await publicCallerIp(), cap: { limit: 5, windowMs: 10 * 60_000 },
+    optIn: async () => ({ brokerageId: null, platform: true, basis: "the platform's statutory privacy-request intake (no tenant)" }),
+  })
+  if (!door.allowed) return { ok: false, error: "Too many requests from this connection — your request was NOT submitted. Please try again in a few minutes." }
+
   const svc = createServiceClient()
   const hdrs = await headers()
 
@@ -92,12 +104,18 @@ export async function submitDataSubjectRequestAction(
     svc.from("contacts").select("id, brokerage_id").eq("email", input.subjectEmail.toLowerCase()).maybeSingle(),
   ])
 
-  // Resolve brokerage_id: explicit > matched user > matched contact > null
-  const brokerageId = input.brokerageId
-    ?? matchUser?.brokerage_id
-    ?? matchContact?.brokerage_id
+  // Resolve brokerage_id: matched user > matched contact > null. WAVE 155 (lane 155R21, CLAUDE.md §4): the body's `brokerageId`
+  // used to win, so an anonymous caller could file a request into ANY tenant's queue under that tenant's 45-day clock. The tenant
+  // is now only the brokerage of the row the email matched; the field is ignored (no caller sends it — app/privacy/request/dsar-form.tsx).
+  const brokerageId: string | null = (matchUser?.brokerage_id as string | null | undefined)
+    ?? (matchContact?.brokerage_id as string | null | undefined)
     ?? null
 
+  // ONE receipt per submitted request (LAW 5) when a tenant is known — agent_action_ledger.brokerage_id is NOT NULL, so a request
+  // that matches no tenant has no valid ledger row and the data_subject_requests row (received_at, IP, UA) stays its legal record.
+  // The actor is not a user (anonymous intake). No key: every submission is its own act. A refusing ledger changes nothing.
+  type Submitted = { ok: true; requestId: string; dueDate: string } | { ok: false; error: string }
+  const submit = async (): Promise<Submitted> => {
   const { data: inserted, error } = await svc
     .from("data_subject_requests")
     .insert({
@@ -124,6 +142,18 @@ export async function submitDataSubjectRequestAction(
     requestId: inserted.id as string,
     dueDate:   inserted.due_at as string,
   }
+  }
+  if (!brokerageId) return submit()
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  return withActionLedger<Submitted>({
+    brokerageId, action: "privacy.data_subject_request.submit", actor: { type: "system", userId: null },
+    subject: { type: "data_subject_request", ref: input.requestType }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED",
+    channel: "web_form", systemSource: "privacy_request_form",
+    detail: { request_type: input.requestType, matched_user: !!matchUser?.id, matched_contact: !!matchContact?.id, door: door.basis },
+  }, submit, {
+    settle: (r) => r.ok ? { status: "executed", outcome: "received", providerRef: r.requestId } : { status: "failed", outcome: "insert_refused", error: r.error },
+    replay: () => ({ ok: false, error: "Your request could not be recorded — please try again." }),
+  })
 }
 
 // ── ADMIN: LIST QUEUE ────────────────────────────────────────────────────────

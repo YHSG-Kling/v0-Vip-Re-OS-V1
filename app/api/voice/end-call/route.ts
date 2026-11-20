@@ -43,6 +43,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 
+  // WAVE 155 (lane 155R21, LAW 5): ONE receipt per hang-up — the SESSION's user and tenant (requireAuth, CLAUDE.md §4), subject the
+  // voice_calls row the tenant check above matched. COMMUNICATION: it ends a live call with a person. No key: a second press on a
+  // call that is already over is its own (harmless) act. The response is unchanged; a refusing ledger changes nothing.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const hungUp = await ledgerSessionAction({ brokerageId, action: "voice.call.end", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "voice_call", id: call.id as string }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", channel: "voice" }, async (): Promise<{ success: boolean; error?: string }> => {
   // End via Twilio REST on the OWNING tenant's subaccount. Non-fatal — Twilio
   // may already have ended the call.
   const ended = await endOutboundAiCall(service, brokerageId, callId)
@@ -73,8 +78,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // Twilio has already hung up; the ledger is what failed. Say so rather than
     // reporting a success that leaves the row open.
     console.error("[end-call] ledger close failed:", closeErr.message)
+    return { success: false, error: "Call ended, but the record could not be closed." }
+  }
+
+  return { success: true }
+  })
+  if (!hungUp.success) {
     return NextResponse.json(
-      { success: false, error: "Call ended, but the record could not be closed." },
+      { success: false, error: hungUp.error ?? "Call ended, but the record could not be closed." },
       { status: 500 },
     )
   }

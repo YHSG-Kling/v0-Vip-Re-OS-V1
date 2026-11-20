@@ -1508,33 +1508,49 @@ export async function submitFeedback(params: {
   const supabase = createServiceClient()
 
   try {
+    // WAVE 155 (lane 155R21 — G10, P0): THE DECISION before any write — decidePublicDoor (lib/security/public-rate-limit.ts): the
+    // per-connection cap first, then the TENANT'S OWN OPT-IN, which is the attendee row the tenant's feedback email was minted for
+    // (the unguessable attendee id is the sealed credential) and the tenant that row proves. No login wall: a visitor must reach
+    // this page. Each refusal keeps its honest sentence; nothing is written on a refusal.
     // Destructure `error` — a refusal must not read as "Attendee not found"
     // and must never fall through to a write. (wave 4 slice 2)
-    const { data: attendee, error: attErr } = await supabase
-      .from("open_house_attendees").select("*").eq("id", params.attendeeId).maybeSingle()
+    const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+    const seenVisit: { attendee: any; error: boolean; tenant: string | null } = { attendee: null, error: false, tenant: null }
+    const feedbackDoor = await decidePublicDoor({
+      surface: "open-house-feedback", callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
+      optIn: async () => {
+        const { data: row, error: attErr } = await supabase
+          .from("open_house_attendees").select("*").eq("id", params.attendeeId).maybeSingle()
+        if (attErr) { seenVisit.error = true; return null }
+        if (!row) return null
+        seenVisit.attendee = row
+        // open_house_feedback carries a buyer's price opinion, their concerns and
+        // their contact link. Its RLS policy is
+        // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` and
+        // brokerage_id is NULLABLE (both verified live), so a row written with a
+        // null tenant is readable by every user of every tenant AND by anonymous
+        // callers. Resolve from the event as a fallback and REFUSE rather than
+        // write the feedback world-open.
+        let tenant: string | null = (row as { brokerage_id?: string | null }).brokerage_id ?? null
+        if (!tenant && row.event_id) {
+          const { data: ev } = await supabase
+            .from("open_house_events").select("brokerage_id").eq("id", row.event_id).maybeSingle()
+          tenant = (ev as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+        }
+        seenVisit.tenant = tenant
+        return tenant ? { brokerageId: tenant, basis: "open_house_attendees row the tenant's feedback link was minted for" } : null
+      },
+    })
+    if (!feedbackDoor.allowed) {
+      if (feedbackDoor.reason === "rate_limited") return { success: false, error: "Too many submissions from this connection — your feedback was not saved. Please try again in a few minutes." }
+      if (seenVisit.error) return { success: false, error: "Could not look up that visit — your feedback was not saved." }
+      if (!seenVisit.attendee) return { success: false, error: "Attendee not found" }
+    }
+    const attendee = seenVisit.attendee
 
-    if (attErr) {
-      return { success: false, error: "Could not look up that visit — your feedback was not saved." }
-    }
-    if (!attendee) {
-      return { success: false, error: "Attendee not found" }
-    }
-
-    // open_house_feedback carries a buyer's price opinion, their concerns and
-    // their contact link. Its RLS policy is
-    // `brokerage_id IS NULL OR brokerage_id = current_user_brokerage_id()` and
-    // brokerage_id is NULLABLE (both verified live), so a row written with a
-    // null tenant is readable by every user of every tenant AND by anonymous
-    // callers. `attendee.brokerage_id ?? null` did exactly that whenever the
-    // attendee row had drifted untenanted. Resolve from the event as a fallback
-    // and REFUSE rather than write the feedback world-open.
-    let feedbackBrokerageId: string | null =
-      (attendee as { brokerage_id?: string | null }).brokerage_id ?? null
-    if (!feedbackBrokerageId && attendee.event_id) {
-      const { data: ev } = await supabase
-        .from("open_house_events").select("brokerage_id").eq("id", attendee.event_id).maybeSingle()
-      feedbackBrokerageId = (ev as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
-    }
+    // (The tenant resolution that stood here now runs INSIDE the door's opt-in read above — same rule, same refusal.)
+    // `attendee.brokerage_id ?? null` used to write feedback world-open whenever the attendee row had drifted untenanted.
+    const feedbackBrokerageId: string | null = feedbackDoor.allowed ? feedbackDoor.brokerageId : null
     if (!feedbackBrokerageId) {
       return {
         success: false,
@@ -1608,6 +1624,14 @@ export async function monitorCompetingEvents(eventId: string) {
   if (!isValidUUID(eventId)) {
     return { competing_count: 0, same_time_conflicts: 0 }
   }
+  // WAVE 155 (lane 155R21): THE GATE — this "use server" export is a public endpoint and had none: any caller could name an event
+  // id and overwrite its competing_events_data. Now a session with a tenant first; the event is read and written INSIDE that
+  // tenant (CLAUDE.md §4); one receipt per scan through the module's `ledgered` door below (no key — a re-scan is a new scan).
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const competitionSession = await getAgentContext()
+  if (!competitionSession.isAuthenticated || !competitionSession.brokerageId) return { error: "Not authenticated" }
+  const competitionTenant = competitionSession.brokerageId
+  return ledgered("session", { action: "marketing.open_house_competition.scan", subject: { type: "open_house_event", id: eventId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const supabase = await createClient()
 
@@ -1616,6 +1640,7 @@ export async function monitorCompetingEvents(eventId: string) {
       .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", eventId)
+      .eq("brokerage_id", competitionTenant)
       .maybeSingle()
 
     if (!event) {
@@ -1660,13 +1685,15 @@ export async function monitorCompetingEvents(eventId: string) {
       .update({
         competing_events_data: competingData,
       })
-      .eq("id", eventId), "competing-events cache; returned to the caller")
+      .eq("id", eventId)
+      .eq("brokerage_id", competitionTenant), "competing-events cache; returned to the caller")
 
     return competingData
   } catch (error) {
     console.error("Monitor competing events error:", error)
     return { error: "Failed to monitor competition" }
   }
+  })
 }
 
 function parseTime(timeStr: string): number {
