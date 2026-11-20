@@ -216,6 +216,8 @@ export async function uploadFinancialVerificationDocument(params: {
     return { success: false, error: "Could not read the uploaded file" }
   }
   if (buffer.length === 0) return { success: false, error: "The uploaded file is empty" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "buyer.financial_document.upload", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { doc_category: params.docCategory, self_upload: access.isContactSelf } }, async () => {
 
   const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
   const { removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
@@ -268,6 +270,7 @@ export async function uploadFinancialVerificationDocument(params: {
     verificationAmount: params.verificationAmount,
     verificationLender: params.verificationLender,
     expirationDate:     params.expirationDate,
+  })
   })
 }
 

@@ -229,6 +229,8 @@ export async function createCampaign(params: CreateCampaignParams) {
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign.create", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { campaign_type: params.campaignType, listing_id: params.listingId ?? null } }, async () => {
 
     const supabase = await createClient()
 
@@ -269,6 +271,7 @@ export async function createCampaign(params: CreateCampaignParams) {
     await incrementFeatureUsage(userId, "marketing_studio")
 
     return { success: true, campaign }
+    }))
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create campaign"
     console.error("[MarketingStudio] createCampaign error:", message)

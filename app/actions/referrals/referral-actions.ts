@@ -432,6 +432,9 @@ export async function draftReferralThankYou(referralId: string): Promise<{
   if (!brokerageId || !agentId) {
     return { success: false, error: "Your account is not linked to an agent profile yet." }
   }
+  // WAVE 155 (lane 155R19): ONE receipt for the draft (session user, SESSION tenant); the model's spend is booked by the AI cost ledger, not here.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId, action: "referral.thank_you.draft", actor: { type: "user", userId: user.id, agentId }, subject: { type: "referral", id: referralId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const db = createServiceClient()
 
@@ -500,6 +503,7 @@ The referral has converted, so express genuine appreciation and mention I look f
     console.error("[draftReferralThankYou] generation failed:", (error as Error).message)
     return { success: false, error: "Could not draft the note — please try again." }
   }
+  })
 }
 
 export async function sendReferralThankYou(referralId: string): Promise<{ success: true }> {

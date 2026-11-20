@@ -123,9 +123,12 @@ export async function startAddendumSignatureHandoff(params: { versionId: string 
   const g = await gate()
   if (!g.ok) return { success: false, error: g.error }
   if (!isValidUUID(params.versionId)) return { success: false, error: "Invalid addendum ID" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: g.actor.brokerageId, action: "transaction.addendum_signature.handoff", actor: { type: "user", userId: g.actor.userId }, subject: { type: "contract_term_version", id: params.versionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   const r = await door.startAddendumHandoff(svc as never, g.actor, { versionId: params.versionId })
   return r.ok ? { success: true, requestId: r.requestId, label: r.display.label, detail: r.display.detail } : { success: false, error: r.message }
+  })
 }
 
 /** A brokerage finance admin approves a proposal that changes commission terms (the hold-for-human). */
@@ -133,9 +136,12 @@ export async function approveAddendumForSignature(params: { versionId: string })
   const g = await gate()
   if (!g.ok) return { success: false, error: g.error }
   if (!isValidUUID(params.versionId)) return { success: false, error: "Invalid addendum ID" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: g.actor.brokerageId, action: "transaction.addendum_signature.approve", actor: { type: "user", userId: g.actor.userId }, subject: { type: "contract_term_version", id: params.versionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   const r = await door.approveAddendumForSignature(svc as never, g.actor, { versionId: params.versionId })
   return r.ok ? { success: true } : { success: false, error: r.message }
+  })
 }
 
 /** VOID a request that is out (at the provider first). A changed addendum is a void + a new proposal, never an edit. */
@@ -169,8 +175,11 @@ export async function fileSignedAddendumCopy(params: { requestId: string; docume
   if (!isValidUUID(params.requestId)) return { success: false, error: "Invalid request ID" }
   if (params.documentId && !isValidUUID(params.documentId)) return { success: false, error: "Invalid document ID" }
   if (!isDay(params.executedOn)) return { success: false, error: "Give the date the last party signed, as yyyy-mm-dd." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: g.actor.brokerageId, action: "transaction.addendum_signature.file_signed", actor: { type: "user", userId: g.actor.userId }, subject: { type: "signature_request", id: params.requestId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { document_id: params.documentId ?? null, executed_on: params.executedOn } }, async () => {
   const svc = createServiceClient()
   const r = await door.fileSignedAddendumCopy(svc as never, g.actor, { requestId: params.requestId, documentId: params.documentId ?? null, executedOn: params.executedOn })
   if (!r.ok) return { success: false, error: r.reason }
   return { success: true, executed: r.executed, versionNo: r.versionNo }
+  })
 }

@@ -293,6 +293,8 @@ export async function generateInsights(
     const gate = await requireBrokerage()
     if (!gate.ok) return { success: false, error: gate.error }
     const brokerageId = gate.brokerageId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.ad_insight.generate", actor: { type: "user", userId: gate.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const supabase = await createClient()
 
     // Kernel gate: canAccessFeature
@@ -519,6 +521,7 @@ Be specific to real estate marketing. Identify patterns like:
     }
 
     return { success: true, insights }
+    })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }

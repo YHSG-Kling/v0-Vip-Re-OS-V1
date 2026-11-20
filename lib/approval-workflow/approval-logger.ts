@@ -19,6 +19,10 @@ import { ApprovalDecision } from "./approval-engine"
  * This is the ONLY database write allowed by System 4.3
  */
 export async function logApprovalDecision(params: {
+  /** REQUIRED (wave 155; found by lane 155R19, verified live 2026-11-20): activities.brokerage_id is NOT NULL with no default
+   *  and this insert never named it, so every approval signal was refused (23502) and returned `{ success: false }` to a
+   *  caller that did not read it. The gated actions that call this already hold the session's tenant. */
+  brokerage_id: string
   agent_id?: string
   content_id?: string // Runtime UUID (not persisted elsewhere)
   decision: ApprovalDecision
@@ -26,6 +30,7 @@ export async function logApprovalDecision(params: {
   content_preview?: string // First 200 chars only
 }): Promise<{ success: boolean; activity_id?: string; error?: string }> {
   try {
+    if (!params.brokerage_id) return { success: false, error: "No brokerage for this approval signal — not recorded" }
     const supabase = await createClient()
 
     // Map approval status to activity type
@@ -40,6 +45,7 @@ export async function logApprovalDecision(params: {
     const { data, error } = await supabase
       .from("activities")
       .insert({
+        brokerage_id: params.brokerage_id,
         agent_id: params.agent_id || null,
         entity_type: "content",
         entity_id: params.content_id || null,
@@ -84,6 +90,7 @@ export async function logApprovalDecision(params: {
  */
 export async function logBatchApprovalDecisions(
   decisions: Array<{
+    brokerage_id: string
     agent_id?: string
     content_id?: string
     decision: ApprovalDecision
@@ -100,7 +107,8 @@ export async function logBatchApprovalDecisions(
     }
   }
 
-  return { success: true, logged_count }
+  // A batch in which a row was refused is not a success (it read `success: true` with logged_count 0 before).
+  return { success: logged_count === decisions.length, logged_count }
 }
 
 /**

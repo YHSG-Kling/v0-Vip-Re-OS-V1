@@ -54,7 +54,11 @@ export async function createRule(input: {
     throw new Error(ctx.error)
   }
 
-  return await createNotificationRule({ userId: ctx.userId, rule: input })
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  // WAVE 155 (lane 155R19): ONE receipt (the acting human, the SESSION tenant) per rule change.
+  const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId ?? "", action: "tenant.notification_rule.create", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "notification_rule" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { trigger_event: input.trigger_event, notification_type: input.notification_type } }, async () => createNotificationRule({ userId: ctx.userId, rule: input }))
+  if (!("id" in r)) throw new Error(r.error ?? "The notification rule was not recorded")
+  return r
 }
 
 export async function editRule(
@@ -73,7 +77,9 @@ export async function editRule(
   }
 
   const cleanUpdates = buildRuleUpdates(updates)
-  await updateNotificationRule({ userId: ctx.userId, ruleId, updates: cleanUpdates })
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId ?? "", action: "tenant.notification_rule.update", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "notification_rule", id: ruleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(cleanUpdates) } }, async (): Promise<{ success: boolean; error?: string }> => { await updateNotificationRule({ userId: ctx.userId, ruleId, updates: cleanUpdates }); return { success: true } })
+  if (!r.success) throw new Error(r.error ?? "The notification rule change was not recorded")
 }
 
 export async function removeRule(ruleId: string): Promise<void> {
@@ -82,5 +88,7 @@ export async function removeRule(ruleId: string): Promise<void> {
     throw new Error(ctx.error)
   }
 
-  await deleteNotificationRule({ userId: ctx.userId, ruleId })
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId ?? "", action: "tenant.notification_rule.delete", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "notification_rule", id: ruleId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => { await deleteNotificationRule({ userId: ctx.userId, ruleId }); return { success: true } })
+  if (!r.success) throw new Error(r.error ?? "The notification rule deletion was not recorded")
 }

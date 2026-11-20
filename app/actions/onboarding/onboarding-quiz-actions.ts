@@ -54,10 +54,15 @@ export async function submitQuiz(
   const agentContext = await getAgentContext()
   if (!agentContext?.agentId) throw new Error("Agent context not found")
 
-  return submitQuizAttempt({
+  // WAVE 155 (lane 155R19): the attempt (and any step completion it earns) leaves ONE receipt — session user, SESSION tenant.
+  const agentId = agentContext.agentId
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: agentContext.brokerageId ?? "", action: "onboarding.quiz_attempt.submit", actor: { type: "user", userId: user.id, agentId }, subject: { type: "onboarding_quiz", id: quizId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => submitQuizAttempt({
     userId: user.id,
-    agentId: agentContext.agentId,
+    agentId,
     quizId,
     answers,
-  })
+  }))
+  if (!("score" in r)) throw new Error(r.error ?? "The quiz attempt was not recorded")
+  return r
 }

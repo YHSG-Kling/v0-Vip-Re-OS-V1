@@ -988,6 +988,10 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
 export async function emitSellerPortalViewed(contactId: string, moduleName?: string) {
   const access = await requireContactAccess(contactId)
   if (!access.ok) return
+  // WAVE 155 (lane 155R19): the view row + the kernel event leave ONE receipt; a refused view row settles it failed (the export still returns nothing).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.seller_module.view", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { module: moduleName ?? null } }, async (): Promise<{ success: boolean; error?: string }> => {
+  let viewRowRefused: string | null = null
 
   const supabase = createServiceClient()
 
@@ -1007,6 +1011,7 @@ export async function emitSellerPortalViewed(contactId: string, moduleName?: str
     const { error: viewError } = await supabase.from("client_portal_activity").insert(viewRow)
     if (viewError) {
       console.error(`[portal-seller] module-view activity NOT recorded for contact ${contactId}: ${viewError.message}`)
+      viewRowRefused = viewError.message
     }
   }
 
@@ -1016,4 +1021,6 @@ export async function emitSellerPortalViewed(contactId: string, moduleName?: str
     entityType: "contact",
     entityId: contactId,
   }).then(() => {}, (err) => { console.error("[portal-seller] kernel event failed:", err) })
+  return viewRowRefused ? { success: false, error: viewRowRefused } : { success: true }
+  })
 }

@@ -168,9 +168,13 @@ export async function assignTierToListing(
     // `brokerageId` is also caller-supplied and is used as the filter on both
     // the listing read and the tier lookup below. Pin it to the actor's real
     // tenant rather than letting the caller name the tenant it operates in.
-    if (gate.actor.brokerageId !== brokerageId) {
+    // WAVE 155 (lane 155R19): the claimed tenant is decided by the ONE decision table, never a hand-written comparison (lesson 1).
+    const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+    if (!decideClaimedTenant({ actingBrokerageId: gate.actor.brokerageId, claimedBrokerageId: brokerageId }).ok) {
       return { success: false, tierId: null, tierName: null, budgets: [], totalBudget: 0, error: "Unauthorized" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const ledgered = await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.marketing_tier.assign", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "listing", id: listingId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<AssignTierResult> => {
 
     const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
@@ -292,6 +296,7 @@ export async function assignTierToListing(
       budgets,
       totalBudget,
     }
+    }); return "tierId" in ledgered ? ledgered : { success: false, tierId: null, tierName: null, budgets: [], totalBudget: 0, error: ledgered.error ?? "Tier assignment was not recorded" }
   } catch (error) {
     console.error("[Tier Assigner] Error:", error)
     return {
@@ -430,7 +435,8 @@ export async function getTiersForBrokerage(brokerageId: string) {
     if (!reader.ok) return { success: false, error: reader.error }
     // The caller does NOT get to name the tenant whose tier configuration
     // (price bands, budgets) is returned.
-    if (reader.actor.brokerageId !== brokerageId) {
+    const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+    if (!decideClaimedTenant({ actingBrokerageId: reader.actor.brokerageId, claimedBrokerageId: brokerageId }).ok) {
       return { success: false, error: "Unauthorized" }
     }
 

@@ -758,6 +758,9 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
     if (event.brokerage_id !== ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
+    // WAVE 155 (lane 155R19): the invitation rows (queued to buyer Contacts) and the event's status leave ONE receipt.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "open_house.invitation.send", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "open_house_event", id: openHouseId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     // Find buyer contacts with active searches in brokerage
     // When caller is an agent, scope to their own contacts only
@@ -831,6 +834,7 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
 
     revalidatePath("/dashboard/open-houses")
     return { success: true, sent: contacts.length }
+    })
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error"
     return { success: false, error: msg }

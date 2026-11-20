@@ -73,6 +73,9 @@ export async function POST(request: NextRequest) {
   if (!isAdminOrBroker({ user_type: caller.user_type ?? "" })) {
     return NextResponse.json({ error: "Forbidden: brokerage admin only" }, { status: 403 })
   }
+  // WAVE 155 (lane 155R19): ONE receipt (session user, SESSION tenant) for the draft; the spend stays on the AI cost ledger. A non-2xx answer settles it failed.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = await ledgerSessionAction({ brokerageId: caller.brokerage_id, action: "education.module_content.generate", actor: { type: "user", userId: user.id }, subject: { type: "brokerage", id: caller.brokerage_id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => { const res = await (async (): Promise<NextResponse> => {
 
   try {
     const rolesLine = targetRoles.length
@@ -134,6 +137,8 @@ export async function POST(request: NextRequest) {
       { status: 500 },
     )
   }
+  })(); return { success: res.ok, error: res.ok ? undefined : `HTTP ${res.status}`, res } })
+  return "res" in ledgered ? ledgered.res : NextResponse.json({ error: ledgered.error ?? "Not recorded" }, { status: 500 })
 }
 
 // Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).

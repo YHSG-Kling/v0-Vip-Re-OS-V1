@@ -146,6 +146,21 @@ function calculateTransferTax(homeValue: number, state: string): number {
   return transferTaxRates[state] || homeValue * 0.001
 }
 
+/**
+ * WAVE 155 (lane 155R19) — THE SESSION GATE FOR THE FOUR MODEL-BACKED CALCULATORS (seller net, mortgage comparison,
+ * neighborhood comparison, investment analyzer). Each is a public "use server" endpoint that ran a model (and wrote its
+ * cost / compliance rows) for ANY caller, signed in or not; every real caller is a signed-in surface (the dashboard
+ * calculators, the AI tools hub, the buyer portal). Same identity source as saveCalculation's sessionBrokerageIdOrNull
+ * (below). The tenant may be null for a portal contact with no tenanted seat — the receipt then degrades exactly as the
+ * helper documents (the act runs, unrecorded). Not exported: "use server".
+ */
+async function calcSessionActor(): Promise<{ ok: true; userId: string; brokerageId: string | null } | { ok: false; error: string }> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  if (!session.isAuthenticated || !session.userId) return { ok: false, error: "Sign in to use this calculator." }
+  return { ok: true, userId: session.userId, brokerageId: session.brokerageId ?? null }
+}
+
 export async function calculateSellerNet(data: {
   homeValue: number
   mortgageBalance: number
@@ -157,10 +172,18 @@ export async function calculateSellerNet(data: {
   movingCost?: number
   brokerageId: string
 }) {
+  const actor = await calcSessionActor()
+  if (!actor.ok) return { success: false as const, error: actor.error }
+  // The brokerage whose commission structure prices the sheet is the SESSION's; a named one is only asserted (lesson 1).
+  const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+  const tenant = decideClaimedTenant({ actingBrokerageId: actor.brokerageId, claimedBrokerageId: data.brokerageId })
+  if (!tenant.ok) return { success: false as const, error: "Not authorized for that brokerage" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: tenant.brokerageId, action: "calculator.seller_net.run", actor: { type: "user", userId: actor.userId }, subject: { type: "brokerage", id: tenant.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = await createClient()
 
   // Get brokerage commission structure
-  const commissionStructure = await getDefaultCommissionStructure(data.brokerageId)
+  const commissionStructure = await getDefaultCommissionStructure(tenant.brokerageId)
   const totalCommissionRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
 
   const costs = {
@@ -221,7 +244,7 @@ Consider current market trends. Respond with JSON:
     const aiScenarios = await generateAIJSON(prompt)
 
     return {
-      success: true,
+      success: true as const,
       home_value: data.homeValue,
       mortgage_payoff: data.mortgageBalance,
       total_costs: totalCosts,
@@ -233,7 +256,7 @@ Consider current market trends. Respond with JSON:
   } catch (error) {
     console.error("[v0] Error in calculateSellerNet:", error)
     return {
-      success: true,
+      success: true as const,
       home_value: data.homeValue,
       mortgage_payoff: data.mortgageBalance,
       total_costs: totalCosts,
@@ -244,6 +267,7 @@ Consider current market trends. Respond with JSON:
       ],
     }
   }
+  }).then((r) => ("home_value" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 // ============================================
@@ -260,6 +284,10 @@ export async function compareMortgageScenarios(data: {
     loanType: "fixed" | "arm"
   }>
 }) {
+  const actor = await calcSessionActor()
+  if (!actor.ok) return { success: false as const, error: actor.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId ?? "", action: "calculator.mortgage_comparison.run", actor: { type: "user", userId: actor.userId }, subject: { type: "user", id: actor.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scenarios: Array.isArray(data.scenarios) ? data.scenarios.length : 0 } }, async () => {
   const calculateMonthlyPayment = (principal: number, rate: number, years: number) => {
     const monthlyRate = rate / 100 / 12
     const numPayments = years * 12
@@ -315,7 +343,7 @@ Respond with JSON:
     const aiRecommendations = await generateAIJSON(prompt)
 
     return {
-      success: true,
+      success: true as const,
       comparisons,
       recommendations: aiRecommendations.data?.recommendations,
       winner_by_category: aiRecommendations.data?.winner_by_category,
@@ -323,10 +351,11 @@ Respond with JSON:
   } catch (error) {
     console.error("[v0] Error in compareMortgageScenarios:", error)
     return {
-      success: true,
+      success: true as const,
       comparisons,
     }
   }
+  }).then((r) => ("comparisons" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 // ============================================
@@ -355,6 +384,10 @@ Respond with JSON:
  * market_data may legitimately have no row yet. That is a null, not a fallback.
  */
 export async function compareNeighborhoods(neighborhoods: string[], city: string, state: string) {
+  const actor = await calcSessionActor()
+  if (!actor.ok) return { success: false as const, error: actor.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId ?? "", action: "calculator.neighborhood_comparison.run", actor: { type: "user", userId: actor.userId }, subject: { type: "user", id: actor.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { areas: Array.isArray(neighborhoods) ? neighborhoods.length : 0 } }, async () => {
   const supabase = await createClient()
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const { getAgentContext } = await import("@/lib/identity/get-agent-context")
@@ -499,7 +532,7 @@ Respond with JSON (illustrative values; null wherever unsupported):
     const aiSummary = await generateAIJSON(prompt)
 
     return {
-      success: true,
+      success: true as const,
       comparison,
       ai_recommendations: aiSummary.data?.recommendations,
       overall_winner: aiSummary.data?.overall_winner ?? null,
@@ -509,10 +542,11 @@ Respond with JSON (illustrative values; null wherever unsupported):
   } catch (error) {
     console.error("[v0] Error in compareNeighborhoods:", error)
     return {
-      success: true,
+      success: true as const,
       comparison,
     }
   }
+  }).then((r) => ("comparison" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 // ============================================
@@ -531,6 +565,10 @@ export async function analyzeInvestmentProperty(data: {
   vacancyRate: number // % of year vacant
   address?: string
 }) {
+  const actor = await calcSessionActor()
+  if (!actor.ok) return { success: false as const, error: actor.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId ?? "", action: "calculator.investment_analysis.run", actor: { type: "user", userId: actor.userId }, subject: { type: "user", id: actor.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const downPayment = data.purchasePrice * (data.downPaymentPercent / 100)
   const loanAmount = data.purchasePrice - downPayment
   const monthlyRate = data.interestRate / 100 / 12
@@ -587,7 +625,7 @@ Determine if this is a good investment:
     const analysis = await generateAIJSON(prompt)
 
     return {
-      success: true,
+      success: true as const,
       financial_metrics: {
         purchase_price: data.purchasePrice,
         down_payment: downPayment,
@@ -606,7 +644,7 @@ Determine if this is a good investment:
   } catch (error) {
     console.error("[v0] Error in analyzeInvestmentProperty:", error)
     return {
-      success: true,
+      success: true as const,
       financial_metrics: {
         purchase_price: data.purchasePrice,
         down_payment: downPayment,
@@ -616,6 +654,7 @@ Determine if this is a good investment:
       },
     }
   }
+  }).then((r) => ("financial_metrics" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 // ============================================

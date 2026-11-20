@@ -145,7 +145,9 @@ export async function matchBuyersForListing(params: {
 
     // 6. Log signals to activities (optional)
     if (logSignals && topMatches.length > 0) {
-      await logBatchMatchSignals(listingId, topMatches)
+      // WAVE 155 (lane 155R19): the signal rows leave ONE receipt (session user, SESSION tenant) — only when they are written.
+      const { ledgerSessionAction } = await import('@/lib/kernel/action-ledger')
+      await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: 'listing.buyer_match_signal.record_batch', actor: { type: 'user', userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: 'listing', id: listingId }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'HUMAN_REQUESTED', detail: { count: topMatches.length } }, async () => logBatchMatchSignals(listingId, topMatches, { brokerageId: ctx.brokerageId ?? "", agentId: ctx.agentId ?? null }))
     }
 
     return {
@@ -250,7 +252,8 @@ export async function scoreSingleBuyerForListing(params: {
 
     // Log signal if requested
     if (logSignal) {
-      await logBuyerMatchSignal(listingId, match)
+      const { ledgerSessionAction } = await import('@/lib/kernel/action-ledger')
+      await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: 'listing.buyer_match_signal.record', actor: { type: 'user', userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: 'listing', id: listingId }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'HUMAN_REQUESTED', detail: { contact_id: contactId } }, async () => logBuyerMatchSignal(listingId, match, { brokerageId: ctx.brokerageId ?? "", agentId: ctx.agentId ?? null }))
     }
 
     return {

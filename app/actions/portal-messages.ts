@@ -271,6 +271,8 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
 
     const access = await requireContactAccess(contactId)
     if (!access.ok) return { success: false, error: access.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.message.mark_read", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { direction } }, async () => {
 
     const supabase = createServiceClient()
 
@@ -299,6 +301,7 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
     }).catch(() => {})
 
     return { success: true, count: data?.length || 0 }
+    })
   } catch (error) {
     return handleError(error, "markMessagesRead")
   }

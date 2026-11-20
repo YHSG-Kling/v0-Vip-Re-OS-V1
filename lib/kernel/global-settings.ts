@@ -183,7 +183,11 @@ async function ensureGlobalSettingsRow(
     .maybeSingle()
   const tenantName = ((brokerage as { name?: string | null } | null)?.name ?? "").trim()
 
-  const { data: inserted, error: insertError } = await svc
+  // WAVE 155 (lane 155R19): the seed is the ONLY write on the settings READ paths (getGlobalSettings / fetchGlobalSettings), and it
+  // happens once per brokerage — so its receipt sits HERE, on the insert, not on every read. Same session user, the SAME tenant the
+  // admin gate resolved; a refused insert settles it failed.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const seeded = await ledgerSessionAction({ brokerageId, action: "tenant.global_settings.seed", actor: { type: "user", userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => { const out = await svc
     .from("global_settings")
     .insert({
       brokerage_id: brokerageId,
@@ -191,7 +195,8 @@ async function ensureGlobalSettingsRow(
       ...(tenantName ? { app_name: tenantName } : {}),
     })
     .select("*")
-    .single()
+    .single(); return { success: !out.error, error: out.error?.message, out } })
+  const { data: inserted, error: insertError } = "out" in seeded ? seeded.out : { data: null, error: new Error(seeded.error ?? "Failed to initialize brokerage settings") }
 
   if (inserted) return inserted as GlobalSettingsRow
 

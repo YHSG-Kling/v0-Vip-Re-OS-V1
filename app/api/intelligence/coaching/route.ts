@@ -36,6 +36,9 @@ Top Objections Raised: ${insightData.topObjections.join(", ") || "none"}
 Top Buying Signals: ${insightData.topBuyingSignals.join(", ") || "none"}
 Avg Response Time: ${insightData.avgResponseTime}s (Team avg: ${insightData.teamAvgResponseTime}s)
 Unanswered Questions: ${insightData.unansweredCount}`
+  // WAVE 155 (lane 155R19): ONE receipt (session user, SESSION tenant) for the coaching draft; the spend stays on the AI cost ledger. A non-2xx answer settles it failed.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = await ledgerSessionAction({ brokerageId: agentCtx.brokerageId ?? "", action: "coaching.insight.generate", actor: { type: "user", userId: user.id }, subject: { type: "user", id: user.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => { const res = await (async (): Promise<Response> => {
 
   const response = await generateAIResponse({
     prompt: `You are a real estate sales coach. Analyze this agent's conversation data and provide exactly 3 coaching points as JSON array:
@@ -62,4 +65,6 @@ ${prompt}`,
   }
 
   return Response.json(points)
+  })(); return { success: res.ok, error: res.ok ? undefined : `HTTP ${res.status}`, res } })
+  return "res" in ledgered ? ledgered.res : Response.json({ error: ledgered.error ?? "Not recorded" }, { status: 500 })
 }

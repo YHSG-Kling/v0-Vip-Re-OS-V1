@@ -69,13 +69,17 @@ export async function evaluateContentApproval(params: {
     // Optionally log signal to activities — attribute to authenticated agent
     if (params.log_signal) {
       const contentPreview = params.draft.raw_content.substring(0, 200)
-      await logApprovalDecision({
+      // WAVE 155 (lane 155R19): the signal row leaves ONE receipt (session user, SESSION tenant); a refused row settles it failed.
+      const { getAgentContext } = await import("@/lib/identity/get-agent-context"); const me = await getAgentContext()
+      const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+      await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.approval_signal.record", actor: { type: "user", userId: me.userId, agentId: auth.agentId }, subject: { type: "content", id: params.content_id ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { approval_status: decision.approval_status } }, async () => logApprovalDecision({
+        brokerage_id: auth.brokerageId,
         agent_id: auth.agentId,
         content_id: params.content_id,
         decision,
         requester_role: params.context.requester_role,
         content_preview: contentPreview,
-      })
+      }))
     }
 
     return { success: true, decision }
@@ -119,13 +123,16 @@ export async function batchEvaluateContentApproval(params: {
     // Optionally log signals — attribute to authenticated agent
     if (params.log_signals) {
       const loggingData = decisions.map((decision, index) => ({
+        brokerage_id: auth.brokerageId,
         agent_id: auth.agentId,
         decision,
         requester_role: params.inputs[index].context.requester_role,
         content_preview: params.inputs[index].draft.raw_content.substring(0, 200),
       }))
 
-      await logBatchApprovalDecisions(loggingData)
+      const { getAgentContext } = await import("@/lib/identity/get-agent-context"); const me = await getAgentContext()
+      const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+      await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.approval_signal.record_batch", actor: { type: "user", userId: me.userId, agentId: auth.agentId }, subject: { type: "content", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { count: loggingData.length } }, async () => logBatchApprovalDecisions(loggingData))
     }
 
     return { success: true, decisions }

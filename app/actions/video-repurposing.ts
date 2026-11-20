@@ -580,6 +580,9 @@ export async function generateSnippetSuggestions(params: {
   if (!params.platforms?.length) {
     return { success: false, suggestions: [], error: "Select at least one platform." }
   }
+  // WAVE 155 (lane 155R19): ONE receipt for the model-written suggestions (session user, SESSION tenant); the spend stays on the AI cost ledger.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "marketing.video_snippet.suggest", actor: { type: "user", userId: auth.userId }, subject: { type: params.videoProjectId ? "video_project" : params.sourceVideoAssetId ? "video_asset" : "external_script", id: params.videoProjectId ?? params.sourceVideoAssetId ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platforms: params.platforms.length } }, async (): Promise<SnippetSuggestionsResult> => {
 
   const suggestions: SnippetSuggestion[] = []
 
@@ -660,6 +663,7 @@ Focus on:
   }
 
   return { success: true, suggestions }
+  }).then((r) => ("suggestions" in r ? r : { success: false, suggestions: [], error: r.error ?? "Not recorded" }))
 }
 
 export interface BatchCreateSnippetsResult {
@@ -1123,6 +1127,8 @@ Make each variation unique with different:
 - Call-to-actions
 - Emotional appeals
 - Hashtag strategies`
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "marketing.caption_variation.generate", actor: { type: "user", userId: auth.userId }, subject: { type: "user", id: auth.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform: params.platform, count } }, async (): Promise<CaptionVariationsResult> => {
 
   try {
     // Agent context is for AI ROUTING ONLY — the refusal decision was made by
@@ -1167,4 +1173,5 @@ Make each variation unique with different:
       error: err instanceof Error ? err.message : "Caption generation failed.",
     }
   }
+  }).then((r) => ("variations" in r ? r : { success: false, variations: [], error: r.error ?? "Not recorded" }))
 }

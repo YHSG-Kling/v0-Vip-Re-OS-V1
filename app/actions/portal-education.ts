@@ -256,6 +256,8 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
 
   const access = await requireContactAccess(contactId)
   if (!access.ok) return { success: false, error: "Forbidden" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.lesson.mark_read", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { lesson_key: lessonKey, self: access.isContactSelf } }, async () => {
 
   const service = createServiceClient()
   // 149Z (lane 149H Outside-lane 3): the lesson's milestone (the decision it teaches) rides the kernel event, so a portal
@@ -320,6 +322,7 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
   })
 
   return { success: true }
+  })
 }
 
 // ─── PORTAL EDUCATION COMPLETED → NOTIFY THE SUPERVISING AGENT ───────────────

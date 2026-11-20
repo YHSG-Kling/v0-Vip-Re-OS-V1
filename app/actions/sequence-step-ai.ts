@@ -93,6 +93,9 @@ Tone: ${tone}
 ${guidance}
 ${PERSONALIZATION_HINT}
 ${refineNote}${subjectInstruction}`
+  // WAVE 155 (lane 155R19): ONE receipt for the draft (session user, SESSION tenant); the spend stays on the AI cost ledger.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const sessionCtx = { ...ctx, brokerageId: ctx.brokerageId }
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "sequence.step_copy.compose", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "user", id: ctx.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { step_type: params.stepType } }, async () => { const ctx = sessionCtx
 
   try {
     // WAVE 151 (lane 151I): THE sender's versioned voice brief is the SYSTEM prompt — the step is drafted in the agent's own
@@ -157,6 +160,7 @@ ${refineNote}${subjectInstruction}`
   } catch (err: any) {
     return { success: false, error: err?.message ?? "Compose failed." }
   }
+  })
 }
 
 // ─── Pre-launch compliance check ─────────────────────────────────────────────

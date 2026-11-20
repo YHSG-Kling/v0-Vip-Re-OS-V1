@@ -56,8 +56,12 @@ export async function updateGlobalSettings(updates: Record<string, unknown>) {
     if (clean.primary_color !== undefined) clean.primary_color = sanitizeCssColor(clean.primary_color);
     if (clean.secondary_color !== undefined) clean.secondary_color = sanitizeCssColor(clean.secondary_color);
 
+    // WAVE 155 (lane 155R19): ONE receipt (the acting human, the SESSION tenant); the field names only — never their values.
+    const { ledgerSessionAction, resultFamily } = await import('@/lib/kernel/action-ledger');
+    return resultFamily(await ledgerSessionAction({ brokerageId: ctx.brokerageId ?? '', action: 'tenant.global_settings.update', actor: { type: 'user', userId: ctx.actorUserId }, subject: { type: 'brokerage', id: ctx.brokerageId ?? null }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'HUMAN_REQUESTED', detail: { fields: Object.keys(clean) } }, async () => {
     await kernelUpdateGlobalSettings({ userId: ctx.userId, db: ctx.db, updates: clean as any });
     return { data: true };
+    }));
   } catch (error) {
     console.error('[settings] Error updating global settings:', error);
     const message =

@@ -66,6 +66,10 @@ export async function connectCalendarProvider(input: {
   if (!providerAccountId) {
     return { ok: false, error: "The provider account (the calendar's email address or id) is required" }
   }
+  // WAVE 155 (lane 155R19): the account link leaves ONE receipt (session user, SESSION tenant — the same tenant the kernel resolves for the row).
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context"); const me = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: me.brokerageId ?? "", action: "calendar.provider_account.link", actor: { type: "user", userId: user.id }, subject: { type: "user", id: user.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { provider_type: providerType } }, async (): Promise<{ ok: true; id: string } | { ok: false; error: string }> => {
 
   try {
     const linked = await linkCalendarProvider({
@@ -81,6 +85,7 @@ export async function connectCalendarProvider(input: {
       error: error instanceof Error ? error.message : "The calendar account could not be linked",
     }
   }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "The calendar account link was not recorded" }))
 }
 
 /**

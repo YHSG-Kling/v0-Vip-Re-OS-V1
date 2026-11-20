@@ -17,15 +17,16 @@ import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // should be able to create / update / delete them. Previously the gate
 // was just auth.getUser() with no role check, so any agent could
 // rewrite the onboarding flow for their entire brokerage.
-async function getAuthenticatedAdminUserId(): Promise<string> {
+async function getAuthenticatedAdminUserId(): Promise<{ userId: string; brokerageId: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.id) throw new Error("Unauthorized")
   const { data: profile } = await supabase
-    .from("users").select("user_type").eq("id", user.id).maybeSingle()
+    .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   const isAdmin = isAdminOrBroker({ user_type: profile?.user_type ?? "" })
   if (!isAdmin) throw new Error("Forbidden: brokerage admin only")
-  return user.id
+  // WAVE 155 (lane 155R19): the SESSION's tenant, for the receipt each change below leaves (the kernel resolves the same one for the row).
+  return { userId: user.id, brokerageId: (profile as { brokerage_id?: string | null } | null)?.brokerage_id ?? "" }
 }
 
 export async function createBrokerageStep(
@@ -41,8 +42,11 @@ export async function createBrokerageStep(
     instructions?: string | null
   }
 ): Promise<{ id: string }> {
-  const userId = await getAuthenticatedAdminUserId()
-  return createOnboardingStepForBrokerage({ userId, step: input })
+  const { userId, brokerageId } = await getAuthenticatedAdminUserId()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId, action: "onboarding.brokerage_step.create", actor: { type: "user", userId }, subject: { type: "onboarding_step" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { step_key: input.step_key } }, async () => createOnboardingStepForBrokerage({ userId, step: input }))
+  if (!("id" in r)) throw new Error(r.error ?? "The onboarding step was not recorded")
+  return r
 }
 
 export async function updateBrokerageStep(
@@ -62,11 +66,15 @@ export async function updateBrokerageStep(
     >
   >
 ): Promise<void> {
-  const userId = await getAuthenticatedAdminUserId()
-  return updateOnboardingStepForBrokerage({ userId, stepId, updates })
+  const { userId, brokerageId } = await getAuthenticatedAdminUserId()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId, action: "onboarding.brokerage_step.update", actor: { type: "user", userId }, subject: { type: "onboarding_step", id: stepId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => { await updateOnboardingStepForBrokerage({ userId, stepId, updates }); return { success: true } })
+  if (!r.success) throw new Error(r.error ?? "The onboarding step change was not recorded")
 }
 
 export async function deleteBrokerageStep(stepId: string): Promise<void> {
-  const userId = await getAuthenticatedAdminUserId()
-  return deleteOnboardingStepForBrokerage({ userId, stepId })
+  const { userId, brokerageId } = await getAuthenticatedAdminUserId()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId, action: "onboarding.brokerage_step.delete", actor: { type: "user", userId }, subject: { type: "onboarding_step", id: stepId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => { await deleteOnboardingStepForBrokerage({ userId, stepId }); return { success: true } })
+  if (!r.success) throw new Error(r.error ?? "The onboarding step deletion was not recorded")
 }

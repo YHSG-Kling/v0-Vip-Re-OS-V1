@@ -40,7 +40,7 @@ import { type ApprovalDecision } from "@/lib/approval-workflow"
  * Resolve both from the session — never `x.agent_id ?? user.id`.
  */
 async function resolveLoggingIdentity(): Promise<
-  | { ok: true; brokerageId: string; agentId: string }
+  | { ok: true; brokerageId: string; agentId: string; userId: string }
   | { ok: false; error: string }
 > {
   const ctx = await getAgentContext()
@@ -52,7 +52,7 @@ async function resolveLoggingIdentity(): Promise<
       error: "No agent profile found for your account — readiness cannot be recorded.",
     }
   }
-  return { ok: true, brokerageId: ctx.brokerageId, agentId: ctx.agentId }
+  return { ok: true, brokerageId: ctx.brokerageId, agentId: ctx.agentId, userId: ctx.userId }
 }
 
 /**
@@ -95,11 +95,14 @@ export async function evaluateContentReadiness(
         if (!identity.ok) {
           log_error = identity.error
         } else {
-          const logResult = await logReadinessEvaluation(input.content_id, readinessOutput, {
-            ...options.additional_context,
+          // WAVE 155 (lane 155R19): ONE receipt for the RECORD (the activities row) — only when one is written; a pure evaluation leaves none.
+          const contentId = input.content_id, extra = options.additional_context
+          const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+          const logResult = resultFamily(await ledgerSessionAction({ brokerageId: identity.brokerageId, action: "marketing.readiness_evaluation.record", actor: { type: "user", userId: identity.userId, agentId: identity.agentId }, subject: { type: "content", id: contentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status: readinessOutput.readiness_status } }, async () => logReadinessEvaluation(contentId, readinessOutput, {
+            ...extra,
             brokerage_id: identity.brokerageId,
             agent_id: identity.agentId,
-          })
+          })))
           if (logResult.success) {
             activity_id = logResult.activity_id
           } else {
@@ -186,10 +189,11 @@ export async function batchEvaluateContentReadiness(
         if (evaluationsToLog.length === 0) {
           log_error = "No inputs carried a content_id — nothing could be recorded"
         } else {
-          const logResult = await batchLogReadinessEvaluations(evaluationsToLog)
-          logged_count = logResult.logged_count
-          if (logResult.failed_count > 0) {
-            log_error = `${logResult.failed_count} of ${evaluationsToLog.length} evaluations could not be recorded: ${logResult.errors.slice(0, 2).join("; ")}`
+          const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+          const logResult = resultFamily(await ledgerSessionAction({ brokerageId: identity.brokerageId, action: "marketing.readiness_evaluation.record_batch", actor: { type: "user", userId: identity.userId, agentId: identity.agentId }, subject: { type: "content", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { count: evaluationsToLog.length } }, async () => batchLogReadinessEvaluations(evaluationsToLog)))
+          logged_count = logResult.logged_count ?? 0
+          if ((logResult.failed_count ?? 0) > 0 || logResult.logged_count === undefined) {
+            log_error = `${logResult.failed_count ?? evaluationsToLog.length} of ${evaluationsToLog.length} evaluations could not be recorded: ${(logResult.errors ?? [logResult.error ?? "not recorded"]).slice(0, 2).join("; ")}`
           }
         }
       }
@@ -281,13 +285,15 @@ export async function checkSpecificChannelReadiness(
         if (!identity.ok) {
           log_error = identity.error
         } else {
-          const logResult = await logChannelReadinessCheck(
-            input.content_id,
+          const contentId = input.content_id
+          const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+          const logResult = resultFamily(await ledgerSessionAction({ brokerageId: identity.brokerageId, action: "marketing.channel_readiness.record", actor: { type: "user", userId: identity.userId, agentId: identity.agentId }, subject: { type: "content", id: contentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { channel: targetChannel, ready: result.is_ready } }, async () => logChannelReadinessCheck(
+            contentId,
             targetChannel,
             result.is_ready,
             result.reason,
             { brokerageId: identity.brokerageId, agentId: identity.agentId }
-          )
+          )))
           if (logResult.success) {
             activity_id = logResult.activity_id
           } else {

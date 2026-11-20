@@ -166,6 +166,8 @@ export async function generatePodcastAudio(episodeId: string) {
 
   const { userId, agentId, brokerageId } = agentContext
   const supabase = await createClient()
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.episode_audio.generate", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "podcast_episode", id: episodeId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   try {
     // ══════════════════════════════════════════════════════════════════════════
@@ -330,6 +332,7 @@ export async function generatePodcastAudio(episodeId: string) {
 
     return { success: false, error: error.message }
   }
+  }))
 }
 
 // Parse script into segments (intro, main, outro)

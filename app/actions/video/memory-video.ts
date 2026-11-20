@@ -69,10 +69,13 @@ export async function offerMemoryVideoAction(
   if (!caller.ok) return { ok: false, status: "failed", reason: caller.error }
   if (!contactId) return { ok: false, status: "failed", reason: "contactId required" }
 
-  const result = await offerMemoryVideo({
+  // WAVE 155 (lane 155R19): the gated proposal leaves ONE receipt — same shape as the dictation save below.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const offered = await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "marketing.memory_video.offer", actor: { type: "user", userId: caller.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => { const out = await offerMemoryVideo({
     brokerageId: caller.brokerageId,
     contactId,
-  })
+  }); return { success: out.ok, error: out.ok ? undefined : out.reason, out } })
+  const result: MemoryVideoOfferResult = "out" in offered ? offered.out : { ok: false, status: "failed", reason: offered.error ?? "The offer was not filed" }
   if (result.ok) revalidatePath(`/crm/contacts/${contactId}`)
   return result
 }

@@ -1622,6 +1622,8 @@ export async function generateHashtags(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   if (!params.content?.trim()) return { success: false, error: "Content cannot be empty" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof generateHashtags>>>({ brokerageId: auth.actor.brokerageId, action: "content.hashtags.generate", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "agent", id: auth.actor.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform: params.platform } }, async () => {
 
   const supabase = await createClient()
 
@@ -1706,6 +1708,7 @@ OUTPUT FORMAT (JSON):
     console.error("Generate hashtags error:", error)
     return { success: false, error: error instanceof Error ? error.message : "Failed to generate hashtags" }
   }
+  }).then((r) => ("data" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 function getPlatformHashtagRules(platform: string): string {
@@ -3005,6 +3008,12 @@ export async function getNeighborhoodData(city: string, zip?: string) {
   if (!city?.trim()) {
     return { success: false as const, error: "City is required for neighborhood data" }
   }
+  // WAVE 155 (lane 155R19): this public endpoint reached a paid model with NO session check (getAgentContext was read, never
+  // tested) — the module's own gate now runs first, and the call leaves ONE receipt; the spend stays on the AI cost ledger.
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false as const, error: auth.error }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: auth.actor.brokerageId, action: "content.neighborhood_profile.generate", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "agent", id: auth.actor.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   try {
     const agentContext = await getAgentContext()
@@ -3039,6 +3048,7 @@ Return this exact JSON structure:
     console.error("Get neighborhood data error:", error)
     return { success: false as const, error: "Failed to generate neighborhood data" }
   }
+  }))
 }
 
 // NOT EXPORTED — see the §4 note above generateSEOKeywords.

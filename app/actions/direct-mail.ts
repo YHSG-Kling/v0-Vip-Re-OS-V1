@@ -172,6 +172,8 @@ export async function createMailCampaign(params: CreateMailCampaignParams) {
     // block). It is the same chain, and it is now shared with the voice webhook, which has
     // no cookie session to reach this action. This action stays the SESSION door: identity
     // is verified above, then handed over.
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger"); const sessionActor = { ...actor, userId: actor.userId, brokerageId: actor.brokerageId }
+    return resultFamily(await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "marketing.direct_mail_campaign.create", actor: { type: "user", userId: actor.userId, agentId: agentRecordId }, subject: { type: "direct_mail_campaign" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { quantity: params.quantity ?? null } }, async () => { const actor = sessionActor
     const created = await fileDirectMailCampaign({
       ctx: { userId: actor.userId, brokerageId: actor.brokerageId, agentId: agentRecordId ?? undefined },
       campaignName: params.campaignName,
@@ -189,6 +191,7 @@ export async function createMailCampaign(params: CreateMailCampaignParams) {
 
     revalidatePath("/dashboard/campaigns/mail")
     return { success: true, campaign }
+    }))
   } catch (error) {
     console.error("[DirectMail] Create campaign error:", error)
     return handleError(error, "createMailCampaign")

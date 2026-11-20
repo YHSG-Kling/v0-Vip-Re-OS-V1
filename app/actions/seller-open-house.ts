@@ -349,6 +349,8 @@ export async function createQrCodeForEvent(params: {
 
   const evOwn = await verifyEventOwnership(params.eventId, auth.brokerageId)
   if (!evOwn.ok) return { success: false, error: evOwn.error }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "open_house.qr_code.create", actor: { type: "user", userId: auth.userId }, subject: { type: "open_house_event", id: params.eventId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_id: params.listingId } }, async () => {
 
   const supabase = await createClient()
 
@@ -398,6 +400,7 @@ export async function createQrCodeForEvent(params: {
       listing_id: params.listingId,
     },
   }
+  }))
 }
 
 // ─── TAB 2 — END EVENT ───────────────────────────────────────────────────────

@@ -139,6 +139,8 @@ export async function generateText(params: {
     const auth = await resolveAuthorizedAgentId()
     if (!auth.ok) return { success: false, error: auth.error }
     const agentId = auth.agentId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.text.generate", actor: { type: "user", userId: auth.userId, agentId: agentId }, subject: { type: "content" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.content_type } }, async (): Promise<ContentGenerationResult> => {
 
     // Gather context from database
     const context = await gatherContext({
@@ -186,6 +188,7 @@ export async function generateText(params: {
       content,
       content_id,
     }
+    })
   } catch (error) {
     return handleError(error, "generateText")
   }
@@ -208,6 +211,8 @@ export async function generateAudio(params: {
     const auth = await resolveAuthorizedAgentId()
     if (!auth.ok) return { success: false, error: auth.error }
     const agentId = auth.agentId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.audio_script.generate", actor: { type: "user", userId: auth.userId, agentId: agentId }, subject: { type: "content" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.content_type } }, async (): Promise<ContentGenerationResult> => {
 
     const context = await gatherContext({
       listing_id: params.listing_id,
@@ -247,6 +252,7 @@ export async function generateAudio(params: {
       content,
       content_id,
     }
+    })
   } catch (error) {
     return handleError(error, "generateAudio")
   }
@@ -413,6 +419,8 @@ export async function generateOmnipresent(params: {
     const auth = await resolveAuthorizedAgentId()
     if (!auth.ok) return { success: false, error: auth.error }
     const agentId = auth.agentId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.omnipresent.generate", actor: { type: "user", userId: auth.userId, agentId: agentId }, subject: { type: "content" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { formats: Array.isArray(params.formats) ? params.formats.length : 0 } }, async (): Promise<BatchContentGenerationResult> => {
 
     const contents = await generateOmnipresentContent({
       core_idea: params.core_idea,
@@ -436,6 +444,7 @@ export async function generateOmnipresent(params: {
       generated_count: contents.length,
       failed_count: 0,
     }
+    })
   } catch (error) {
     return handleError(error, "generateOmnipresent")
   }
@@ -458,6 +467,8 @@ export async function generateVariations(params: {
     const auth = await resolveAuthorizedAgentId()
     if (!auth.ok) return { success: false, error: auth.error }
     const agentId = auth.agentId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.variations.generate", actor: { type: "user", userId: auth.userId, agentId: agentId }, subject: { type: "content" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.content_type, count: params.variation_count || 3 } }, async (): Promise<BatchContentGenerationResult> => {
 
     const context = await gatherContext({
       listing_id: params.listing_id,
@@ -499,6 +510,7 @@ export async function generateVariations(params: {
       generated_count: variations.length,
       failed_count: 0,
     }
+    })
   } catch (error) {
     return handleError(error, "generateVariations")
   }
@@ -586,6 +598,8 @@ export async function generateFromURL(params: {
     const auth = await resolveAuthorizedAgentId()
     if (!auth.ok) return { success: false, error: auth.error }
     const agentId = auth.agentId
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.url_repurpose.generate", actor: { type: "user", userId: auth.userId, agentId: agentId }, subject: { type: "content" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.content_type } }, async (): Promise<ContentGenerationResult> => {
 
     const content = await generateTextContent({
       content_type: params.content_type,
@@ -611,6 +625,7 @@ export async function generateFromURL(params: {
       content,
       content_id,
     }
+    })
   } catch (error) {
     return handleError(error, "generateFromURL")
   }

@@ -476,6 +476,8 @@ export async function createNewsletterCampaign(params: {
     if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const sessionCtx = { ...ctx, userId: ctx.userId, brokerageId: ctx.brokerageId }
+    return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.newsletter_campaign.save", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "newsletter_campaign", id: isValidUUID(params.campaignId ?? "") ? params.campaignId : null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scheduled: !!params.scheduledAt } }, async () => { const ctx = sessionCtx
     const { createNewsletterCampaign: fileNewsletter } = await import("@/lib/kernel/content-creators")
     const result = await fileNewsletter({
       ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId, agentId: ctx.agentId ?? undefined },
@@ -496,6 +498,7 @@ export async function createNewsletterCampaign(params: {
       revalidatePath("/dashboard/marketing/studio")
     }
     return result
+    })
   } catch (error) {
     console.error("[AI Newsletter] Create campaign error:", error)
     return handleError(error, "createNewsletterCampaign")
