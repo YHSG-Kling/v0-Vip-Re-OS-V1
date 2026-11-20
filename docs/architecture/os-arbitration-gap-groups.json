@@ -1,13 +1,13 @@
 {
  "generator": "scripts/os-coverage-ledger.ts --write (wave 155, lane 155B1) — GENERATED, do not edit; per-row ledger: coverage/os-arbitration-coverage.json (on demand)",
  "states": {
-  "working": 2544,
-  "partial": 372,
+  "working": 2637,
+  "partial": 281,
   "missing": 169,
   "owner-held": 1
  },
  "classification": {
-  "EXECUTABLE_GAP": 453,
+  "EXECUTABLE_GAP": 362,
   "UNKNOWN": 74,
   "DECLARATIVE_READ_ONLY": 12,
   "LEGACY_ORPHAN": 2,
@@ -15,12 +15,12 @@
  },
  "classificationByDomain": {
   "transaction": {
-   "EXECUTABLE_GAP": 121,
+   "EXECUTABLE_GAP": 39,
    "UNKNOWN": 40,
    "LEGACY_ORPHAN": 2
   },
   "platform": {
-   "EXECUTABLE_GAP": 117,
+   "EXECUTABLE_GAP": 116,
    "UNKNOWN": 4,
    "DECLARATIVE_READ_ONLY": 1
   },
@@ -30,16 +30,16 @@
   },
   "customer-facing": {
    "UNKNOWN": 7,
-   "EXECUTABLE_GAP": 67,
+   "EXECUTABLE_GAP": 63,
    "DECLARATIVE_READ_ONLY": 2
   },
   "marketing": {
-   "EXECUTABLE_GAP": 96,
+   "EXECUTABLE_GAP": 93,
    "DECLARATIVE_READ_ONLY": 2,
    "UNKNOWN": 7
   },
   "education": {
-   "EXECUTABLE_GAP": 11,
+   "EXECUTABLE_GAP": 10,
    "UNKNOWN": 1
   },
   "finance": {
@@ -55,8 +55,8 @@
   }
  },
  "executableGapRisk": {
-  "P1": 248,
-  "P2": 141,
+  "P1": 158,
+  "P2": 140,
   "P0": 64
  },
  "groups": [
@@ -243,7 +243,7 @@
    },
    "leverage": [
     "scripts/os-coverage-ledger.ts:284 EVIDENCE_TABLE_RE",
-    "lib/kernel/manager-registry.ts:2161 TABLE_MANAGER"
+    "lib/kernel/manager-registry.ts:2169 TABLE_MANAGER"
    ],
    "fix": "ONE analyzer change, both directions together: narrow EVIDENCE_TABLE_RE to true logs (TRUE_LOG_RE) for ownership AND for evidence. It closes these owner gaps but also withdraws the false evidence credit on the rows counted under blindSpots.evidenceCreditedByAnEventsDomainTable — those must be ledgered in the same change (never one direction alone: that would only move a number)",
    "proof": "a planted write to calendar_events resolves its owner from TABLE_MANAGER and earns NO evidence; red at the base for both halves",
@@ -282,7 +282,7 @@
     "owner,readback": 1
    },
    "leverage": [
-    "lib/kernel/manager-registry.ts:3471 resolveTableManager"
+    "lib/kernel/manager-registry.ts:3479 resolveTableManager"
    ],
    "fix": "name the owner where the action is (the module's manager) or route the record through the owner's signal; never steward a log table to move a number",
    "proof": "census: owner resolves for each; planted log-only write stays red",
@@ -399,20 +399,19 @@
   },
   {
    "id": "G12-session-write-unledgered-P1",
-   "rows": 186,
+   "rows": 96,
    "title": "P1 user-initiated writes decided by the signed-in session that leave no action-ledger receipt",
    "risk": {
-    "P1": 186
+    "P1": 96
    },
    "domains": {
-    "transaction": 89,
-    "marketing": 72,
-    "customer-facing": 23,
-    "acquisition": 1,
-    "education": 1
+    "marketing": 69,
+    "customer-facing": 19,
+    "transaction": 7,
+    "acquisition": 1
    },
    "missing": {
-    "evidence": 185,
+    "evidence": 95,
     "evidence,readback": 1
    },
    "leverage": [
@@ -422,43 +421,43 @@
    "proof": "per module: a canary invokes one export against memSupabase and asserts an agent_action_ledger row naming actor, tenant and policy; red at the base",
    "split": "split by domain; P0 modules first",
    "sample": [
-    "http:/api/admin/transaction-forms",
-    "http:/api/chat/stream",
-    "http:/api/compliance/flags",
     "http:/api/did/agents/session/heartbeat",
-    "http:/api/onboarding/brand/generate-sample"
+    "http:/api/onboarding/training/progress",
+    "server_action:app/actions/ai-client-portal.ts#markResourceCompleted",
+    "server_action:app/actions/ai-newsletter.ts#deleteNewsletterCampaign",
+    "server_action:app/actions/ai-newsletter.ts#manageSubscriberBatch"
    ],
    "modules": {
     "app/actions/marketing-studio.ts": 8,
     "lib/listings/tier-assigner.ts": 6,
     "app/actions/superadmin/screenshot-capture.ts": 5,
-    "app/dashboard/settings/team/tc/tc-actions.ts": 5,
     "app/actions/direct-mail.ts": 4,
-    "app/actions/document-kernel-review.ts": 4,
-    "app/actions/link-to-video.ts": 4,
-    "app/actions/partner-orders.ts": 4,
     "app/actions/photo-management.ts": 4,
-    "app/actions/ai-closing-workflow.ts": 3,
-    "app/actions/ai-marketing-automation.ts": 3,
     "app/actions/ai-newsletter.ts": 3,
-    "app/actions/ai-transaction-documents.ts": 3,
-    "app/actions/compliance-phrases.ts": 3,
-    "app/actions/content-intel/sources.ts": 3
+    "app/actions/content-intel/sources.ts": 3,
+    "app/actions/newsletter/approve-template.ts": 3,
+    "app/actions/vendor-marketplace.ts": 3,
+    "lib/ads/ad-monitor.ts": 3,
+    "lib/content-generation/generation-logger.ts": 3,
+    "app/actions/listing-landing.ts": 2,
+    "app/actions/marketing/tenant-screenshots.ts": 2,
+    "app/actions/newsletter/fetch-local-news.ts": 2,
+    "app/actions/newsletter/schedule-newsletter.ts": 2
    }
   },
   {
    "id": "G12-session-write-unledgered-P2",
-   "rows": 25,
+   "rows": 24,
    "title": "P2 user-initiated writes decided by the signed-in session that leave no action-ledger receipt",
    "risk": {
-    "P2": 25
+    "P2": 24
    },
    "domains": {
-    "platform": 24,
+    "platform": 23,
     "education": 1
    },
    "missing": {
-    "evidence": 23,
+    "evidence": 22,
     "evidence,readback": 2
    },
    "leverage": [
@@ -482,14 +481,14 @@
     "lib/approval-workflow/approval-logger.ts": 2,
     "app/actions/academy-learning.ts": 1,
     "app/actions/career-tier.ts": 1,
-    "app/actions/copilot.ts": 1,
     "app/actions/demo-auth.ts": 1,
     "app/actions/network-intelligence.ts": 1,
     "app/actions/privacy/data-subject-requests.ts": 1,
     "app/actions/public/tos-acceptance.ts": 1,
     "app/actions/superadmin/platform-controls.ts": 1,
     "app/actions/superadmin/platform-providers.ts": 1,
-    "app/actions/tenant-safety-actions.ts": 1
+    "app/actions/tenant-safety-actions.ts": 1,
+    "app/actions/voice-assistant.ts": 1
    }
   },
   {
@@ -512,7 +511,7 @@
     "readback": 8
    },
    "leverage": [
-    "lib/kernel/manager-registry.ts:2161 TABLE_MANAGER"
+    "lib/kernel/manager-registry.ts:2169 TABLE_MANAGER"
    ],
    "fix": "add the operator surface that reads it, or stop writing it (orphan doctrine: name the survivor)",
    "proof": "census readback resolves to a reader outside the writer",
