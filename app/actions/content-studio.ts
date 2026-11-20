@@ -36,6 +36,8 @@ function shouldFilterByUser(role: string): boolean {
 export async function generateContentIdeas(persona?: string, _userId?: string, _userRole?: string) {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const supabase = createServiceClient()
 
@@ -119,6 +121,8 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
     console.error("Generate content ideas error:", error)
     return { success: false, error: "Failed to generate ideas" }
   }
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.idea.generate", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // Research Keywords for SEO
@@ -259,6 +263,8 @@ export async function getCompetitorContent(_userId?: string, _userRole?: string)
 export async function addCompetitor(name: string, url?: string) {
   const auth = await requireCaller()
   if (!auth.ok) return { error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const brokerageId = auth.brokerageId
 
   const supabase = createServiceClient()
@@ -289,6 +295,8 @@ export async function addCompetitor(name: string, url?: string) {
   }
 
   return data
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.competitor.add", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // Get Content Calendar - using content_ideas table as substitute
@@ -330,6 +338,8 @@ export async function scheduleContent(params: {
 }) {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const brokerageId = auth.brokerageId
   const userId = auth.userId
   const supabase = createServiceClient()
@@ -356,6 +366,8 @@ export async function scheduleContent(params: {
 
   revalidatePath("/dashboard/marketing/studio")
   return data
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.calendar.schedule", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.contentType } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // Get Publishing Stats
@@ -404,6 +416,8 @@ export async function getPublishingStats(_userId?: string, _userRole?: string) {
 export async function saveContentIdea(idea: string, contentType: string, persona?: string) {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const supabase = createServiceClient()
 
@@ -424,6 +438,8 @@ export async function saveContentIdea(idea: string, contentType: string, persona
 
   revalidatePath("/content-studio")
   return data
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.idea.save", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // Get Saved Ideas

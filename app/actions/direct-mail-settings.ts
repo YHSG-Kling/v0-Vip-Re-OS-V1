@@ -256,6 +256,9 @@ export async function approveSenderAddress(id: string): Promise<{ success: boole
 export async function setDefaultSenderAddress(id: string): Promise<{ success: boolean; error?: string }> {
   const access = await resolvePolicyScopeAccess()
   if (!access.canEditBrokerage || !access.brokerageScopeId) return { success: false, error: "Brokerage admin scope required" }
+  const caller = await requireCallerTenant()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof setDefaultSenderAddress>>>({ brokerageId: access.brokerageScopeId, action: "direct_mail.sender_address.set_default", actor: { type: "user", userId: caller.ok ? caller.userId : null }, subject: { type: "direct_mail_sender_address", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   const { data: row, error: readErr } = await svc.from("direct_mail_sender_addresses").select("id, scope_type, scope_id, approved_at").eq("id", id).eq("brokerage_id", access.brokerageScopeId).maybeSingle()
   if (readErr) return { success: false, error: `Could not read the address: ${readErr.message}` }
@@ -269,18 +272,23 @@ export async function setDefaultSenderAddress(id: string): Promise<{ success: bo
   if (!Array.isArray(data) || data.length === 0) return { success: false, error: "No row was updated (refused tenant predicate)" }
   revalidatePath("/settings/direct-mail")
   return { success: true }
+  })
 }
 
 /** Retire an address (soft: the audit trail of pieces that carried it survives). */
 export async function retireSenderAddress(id: string): Promise<{ success: boolean; error?: string }> {
   const access = await resolvePolicyScopeAccess()
   if (!access.canEditBrokerage || !access.brokerageScopeId) return { success: false, error: "Brokerage admin scope required" }
+  const caller = await requireCallerTenant()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof retireSenderAddress>>>({ brokerageId: access.brokerageScopeId, action: "direct_mail.sender_address.retire", actor: { type: "user", userId: caller.ok ? caller.userId : null }, subject: { type: "direct_mail_sender_address", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   const { data, error } = await svc.from("direct_mail_sender_addresses").update({ status: "retired", is_default: false, updated_at: new Date().toISOString() }).eq("id", id).eq("brokerage_id", access.brokerageScopeId).select("id")
   if (error) return { success: false, error: error.message }
   if (!Array.isArray(data) || data.length === 0) return { success: false, error: "No row was retired (refused tenant predicate, or already gone)" }
   revalidatePath("/settings/direct-mail")
   return { success: true }
+  })
 }
 
 export async function saveFarmMailConfig(input: {
@@ -348,6 +356,9 @@ export async function addCompetitorToWatchlist(input: {
   if (!access.canEditBrokerage || !access.brokerageScopeId) {
     return { success: false, error: "Brokerage admin scope required" }
   }
+  const caller = await requireCallerTenant()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof addCompetitorToWatchlist>>>({ brokerageId: access.brokerageScopeId, action: "direct_mail.competitor_watch.add", actor: { type: "user", userId: caller.ok ? caller.userId : null }, subject: { type: "brokerage", id: access.brokerageScopeId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const name = input.competitor_name.trim()
   if (!name) return { success: false, error: "Competitor name required" }
   if (input.min_engagement_score !== undefined && input.min_engagement_score !== null) {
@@ -379,6 +390,7 @@ export async function addCompetitorToWatchlist(input: {
 
   revalidatePath("/settings/direct-mail")
   return { success: true, entryId: data.id as string }
+  })
 }
 
 export async function removeCompetitorFromWatchlist(entryId: string): Promise<{ success: boolean; error?: string }> {
@@ -386,6 +398,9 @@ export async function removeCompetitorFromWatchlist(entryId: string): Promise<{ 
   if (!access.canEditBrokerage || !access.brokerageScopeId) {
     return { success: false, error: "Brokerage admin scope required" }
   }
+  const caller = await requireCallerTenant()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof removeCompetitorFromWatchlist>>>({ brokerageId: access.brokerageScopeId, action: "direct_mail.competitor_watch.remove", actor: { type: "user", userId: caller.ok ? caller.userId : null }, subject: { type: "competitor_brokerage", id: entryId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   // Soft-delete via is_active=false so the audit trail (which ads
   // came from which watchlist row) survives. Promoter only reads
@@ -398,4 +413,5 @@ export async function removeCompetitorFromWatchlist(entryId: string): Promise<{ 
   if (error) return { success: false, error: error.message }
   revalidatePath("/settings/direct-mail")
   return { success: true }
+  })
 }

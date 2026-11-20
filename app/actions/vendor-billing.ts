@@ -61,7 +61,9 @@ export type VendorCheckoutResult =
  * call: an unset price refuses the checkout — the owner's ruling is that no tier price is ever invented.
  */
 export async function createVendorSubscriptionCheckout(tier: VendorTier, opts?: { returnUrl?: string }): Promise<VendorCheckoutResult> {
-  const { profile, brokerageId } = await requireVendorProfile()
+  const { profile, brokerageId, userId } = await requireVendorProfile()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof createVendorSubscriptionCheckout>>> => {
   const svc = createServiceClient()
   const t = normalizeTier(tier)
   const cap = VENDOR_TIERS[t]
@@ -113,6 +115,8 @@ export async function createVendorSubscriptionCheckout(tier: VendorTier, opts?: 
   const { error: intendedTierErr } = await svc.from("vendor_marketplace_profiles").update({ subscription_tier: t, updated_at: new Date().toISOString() }).eq("id", profile.id)
   if (intendedTierErr) console.error(`[vendor-billing] intended tier NOT recorded: ${intendedTierErr.message}`)
   return { url: session.url }
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "billing.vendor_subscription.checkout", actor: { type: "user", userId: userId }, subject: { type: "vendor_marketplace_profile", id: profile.id }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { tier } }, ledgered).then((r) => { if ("success" in r) throw new Error(r.error ?? "Checkout not started"); return r }) : ledgered()
 }
 
 /** The administered monthly prices the vendor billing page shows (null = not yet published for this tenant). */

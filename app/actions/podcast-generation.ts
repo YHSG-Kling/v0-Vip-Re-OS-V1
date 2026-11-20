@@ -685,8 +685,10 @@ export async function createPodcastTemplate(params: {
   showName?: string
   hostName?: string
 }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   if (!agentId) return { success: false, error: "No agent profile for this user — the template was not created." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const supabase = await createClient()
 
   try {
@@ -712,6 +714,8 @@ export async function createPodcastTemplate(params: {
     console.error("[v0] Error creating podcast template:", error)
     return { success: false, error: error.message }
   }
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.template.create", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
 }
 
 // Update podcast template
@@ -727,8 +731,10 @@ export async function updatePodcastTemplate(
     isActive?: boolean
   }
 ) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   if (!agentId) return { success: false, error: "No agent profile for this user — nothing to update." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const supabase = await createClient()
 
   try {
@@ -757,6 +763,8 @@ export async function updatePodcastTemplate(
     console.error("[v0] Error updating podcast template:", error)
     return { success: false, error: error.message }
   }
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.template.update", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "podcast_template", id: templateId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
 }
 
 // Get distribution channels for brokerage
@@ -789,7 +797,9 @@ export async function updateDistributionChannel(
     distributionConfig?: Record<string, any>
   }
 ) {
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const supabase = await createClient()
 
   try {
@@ -813,6 +823,8 @@ export async function updateDistributionChannel(
     console.error("[v0] Error updating distribution channel:", error)
     return { success: false, error: error.message }
   }
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.distribution_channel.update", actor: { type: "user", userId: userId }, subject: { type: "podcast_distribution_channel", id: channelId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
 }
 
 // Create a PERSONAL distribution channel for the calling agent.
@@ -832,6 +844,8 @@ export async function createDistributionChannel(channelName: string) {
   if (!userId || !brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const supabase = await createClient()
 
   try {
@@ -870,6 +884,8 @@ export async function createDistributionChannel(channelName: string) {
     console.error("[v0] Error creating distribution channel:", error)
     return { success: false, error: error.message }
   }
+  }
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.distribution_channel.create", actor: { type: "user", userId: userId }, subject: { type: "podcast_distribution_channel", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { channel_name: channelName } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // Get video scripts library for episode sourcing
@@ -977,10 +993,12 @@ export async function getPodcastEpisode(episodeId: string) {
 
 // Delete podcast episode
 export async function deletePodcastEpisode(episodeId: string) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   // The ownership filter is agents-class; with no agent profile there is no row
   // this caller owns, so refuse rather than issue a delete that matches nothing.
   if (!agentId) return { success: false, error: "No agent profile for this user." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const supabase = await createClient()
 
   try {
@@ -1002,6 +1020,8 @@ export async function deletePodcastEpisode(episodeId: string) {
     console.error("[v0] Error deleting podcast episode:", error)
     return { success: false, error: error.message }
   }
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.episode.delete", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "podcast_episode", id: episodeId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
 }
 
 export async function generatePodcastEpisodeDescription(params: {
@@ -1012,6 +1032,8 @@ export async function generatePodcastEpisodeDescription(params: {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof generatePodcastEpisodeDescription>>> => {
 
     const { text } = await generateTextRouted({
       brokerageId: ctx.brokerageId,
@@ -1028,6 +1050,8 @@ Focus on what the listener gains — lead with the value, not the host.`,
     })
 
     return { success: true, description: text.trim() }
+  }
+  return await (ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "podcast.episode_description.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "agent", id: ctx.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered())
   } catch (error: any) {
     return { success: false, error: error.message }
   }
@@ -1059,8 +1083,10 @@ export async function savePodcastShowSettings(params: {
   coverArtUrl?: string
   websiteUrl?: string
 }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const supabase = await createClient()
   const { error } = await supabase
     .from("podcast_show_settings")
@@ -1081,11 +1107,15 @@ export async function savePodcastShowSettings(params: {
     )
   if (error) return { success: false, error: error.message }
   return { success: true }
+  }
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.show_settings.save", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 export async function uploadPodcastCoverArt(formData: FormData) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const file = formData.get("file") as File | null
   if (!file) return { success: false, error: "No file provided" }
   if (!file.type.startsWith("image/")) return { success: false, error: "File must be an image" }
@@ -1115,6 +1145,8 @@ export async function uploadPodcastCoverArt(formData: FormData) {
   } catch (error: any) {
     return { success: false, error: error.message }
   }
+  }
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.cover_art.upload", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1171,6 +1203,8 @@ export async function testDistributionChannelConnection(channelId: string): Prom
 export async function generatePodcastSnippetSuggestions(params: { episodeId: string }) {
   const { userId, agentId, brokerageId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context", snippets: [] }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const supabase = await createClient()
   const { data: episode } = await supabase
     .from("podcast_episodes")
@@ -1209,6 +1243,8 @@ Return as JSON array of {hook: string, body: string, suggested_caption: string, 
   } catch (error: any) {
     return { success: false, error: error.message, snippets: [] }
   }
+  }
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.snippet.suggest", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "podcast_episode", id: params.episodeId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 export async function generatePodcastBlogPost(params: { episodeId: string }) {
@@ -1251,6 +1287,8 @@ export async function generatePodcastBlogPost(params: { episodeId: string }) {
 export async function generatePodcastNewsletterTeaser(params: { episodeId: string }) {
   const { userId, agentId, brokerageId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const supabase = await createClient()
   const { data: episode } = await supabase
     .from("podcast_episodes")
@@ -1298,6 +1336,8 @@ ${(episode.script ?? "").slice(0, 1500)}`,
   } catch (error: any) {
     return { success: false, error: error.message }
   }
+  }
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.newsletter_teaser.generate", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "podcast_episode", id: params.episodeId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

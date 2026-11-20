@@ -175,6 +175,8 @@ export async function createEmailCampaign(params: CreateEmailCampaignParams) {
   try {
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
     if (!decideClaimedTenant({ actingBrokerageId: auth.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
       return { success: false, error: "That brokerage is not yours — an email campaign is filed in your own brokerage." }
     }
@@ -197,6 +199,8 @@ export async function createEmailCampaign(params: CreateEmailCampaignParams) {
     revalidatePath("/dashboard/marketing/studio")
     revalidatePath("/newsletters")
     return { success: true, campaign: result.campaign }
+  }
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "email.campaign.create", actor: { type: "user", userId: auth.userId }, subject: { type: "email_campaign", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
   } catch (error) {
     return handleError(error, "createEmailCampaign")
   }
@@ -275,6 +279,8 @@ export async function updateEmailCampaign(
 
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
     const supabase = await createClient()
 
@@ -320,6 +326,8 @@ export async function updateEmailCampaign(
     revalidatePath("/dashboard/marketing/studio")
     revalidatePath("/newsletters")
     return { success: true, campaign: data }
+  }
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "email.campaign.update", actor: { type: "user", userId: auth.userId }, subject: { type: "email_campaign", id: campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
   } catch (error) {
     return handleError(error, "updateEmailCampaign")
   }
@@ -335,6 +343,8 @@ export async function deleteEmailCampaign(campaignId: string) {
 
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
     const supabase = await createClient()
 
@@ -364,6 +374,8 @@ export async function deleteEmailCampaign(campaignId: string) {
     revalidatePath("/dashboard/marketing/studio")
     revalidatePath("/newsletters")
     return { success: true }
+  }
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "email.campaign.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "email_campaign", id: campaignId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
   } catch (error) {
     return handleError(error, "deleteEmailCampaign")
   }
@@ -375,6 +387,8 @@ export async function aiComposeEmail(params: AiComposeEmailParams) {
   try {
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
     // Apply brand voice — uses session brokerage, not params
     const brandVoice = await applyBrandVoice({
@@ -428,6 +442,8 @@ Return ONLY valid JSON with NO markdown:
     }
 
     return { success: true, subject: result.subject, preheader: result.preheader, body: result.body }
+  }
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "email.campaign.compose", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
   } catch (error) {
     console.error("[aiComposeEmail] failed:", error)
     return { success: false, error: "Failed to compose email" }
@@ -529,6 +545,8 @@ export async function scheduleEmailCampaign(
 
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
     const supabase = await createClient()
 
@@ -563,6 +581,8 @@ export async function scheduleEmailCampaign(
     revalidatePath("/dashboard/marketing/studio")
     revalidatePath("/newsletters")
     return { success: true, campaign: data }
+  }
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "email.campaign.schedule", actor: { type: "user", userId: auth.userId }, subject: { type: "email_campaign", id: campaignId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { scheduled_for: scheduledDate } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
   } catch (error) {
     return handleError(error, "scheduleEmailCampaign")
   }

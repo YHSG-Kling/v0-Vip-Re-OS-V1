@@ -35,6 +35,8 @@ export async function stageChatgptCampaignAction(input: {
 }): Promise<{ success: boolean; error?: string; package?: ChatgptLaunchPackage; alreadyStaged?: boolean }> {
   const { actor, error } = await requireActor()
   if (!actor) return { success: false, error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof stageChatgptCampaignAction>>>({ brokerageId: actor.brokerageId, action: "ads.chatgpt_campaign.stage", actor: { type: "user", userId: actor.userId }, subject: { type: "listing", id: input.listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   return stageChatgptCampaign({
     brokerageId: actor.brokerageId,
@@ -45,6 +47,7 @@ export async function stageChatgptCampaignAction(input: {
     dailyBudgetUsd: input.dailyBudgetUsd,
     campaignName: input.campaignName,
     extraContextHints: input.extraContextHints,
+  })
   })
 }
 

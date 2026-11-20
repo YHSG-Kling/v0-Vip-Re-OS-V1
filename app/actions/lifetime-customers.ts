@@ -402,7 +402,9 @@ export async function scheduleTouchpoint({
   notes?: string
 }) {
   const supabase = await createClient()
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const { data, error } = await supabase
     .from("scheduled_touchpoints")
@@ -424,6 +426,8 @@ export async function scheduleTouchpoint({
   }
 
   return { success: true, scheduled: data }
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "sphere.touchpoint.schedule", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { touchpoint_type: touchpointType } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
 }
 
 /**
@@ -566,8 +570,12 @@ export async function generateTouchpoint(params: {
   contactId: string
   touchpointType: 'anniversary' | 'birthday' | 'check_in' | 'market_update' | 'holiday' | 'referral_ask'
 }) {
-  const { agentId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   return aiGenerateTouchpoint({ agentId: agentId ?? "", ...params })
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "sphere.touchpoint.draft", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { touchpoint_type: params.touchpointType } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
 }
 
 export async function optimizeReferralAsk(contactId: string) {
@@ -585,6 +593,10 @@ export async function getLifeChangeSignals(daysBack = 7) {
 }
 
 export async function findReferralOpportunities() {
-  const { agentId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   return identifyReferralOpportunities(agentId ?? "")
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "sphere.referral_score.refresh", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
 }

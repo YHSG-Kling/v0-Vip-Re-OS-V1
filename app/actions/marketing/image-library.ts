@@ -59,6 +59,8 @@ export async function setStockProviderKeyAction(input: { apiKey: string }): Prom
   const ctx = await getAgentContext().catch(() => null)
   if (!p || !ctx?.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
   if (!isAdminOrBroker({ user_type: p.userType })) return { ok: false, error: "Forbidden — brokerage admin only" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof setStockProviderKeyAction>>>({ brokerageId: ctx.brokerageId, action: "marketing.stock_provider_key.set", actor: { type: "user", userId: p.userId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform: "pexels" } }, async () => {
   const apiKey = input.apiKey?.trim()
   if (!apiKey || apiKey.length < 10) return { ok: false, error: "That doesn't look like a valid API key" }
   const svc = createServiceClient()
@@ -69,6 +71,7 @@ export async function setStockProviderKeyAction(input: { apiKey: string }): Prom
     ? await svc.from("platform_credentials").update(row).eq("id", (existing as any).id)
     : await svc.from("platform_credentials").insert(row)
   return error ? { ok: false, error: error.message } : { ok: true }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 export async function getStockProviderStatusAction(): Promise<{ ok: boolean; tenantKeySet: boolean; platformKeySet: boolean }> {
@@ -111,6 +114,8 @@ export async function saveLibraryImageAction(input: {
     visibilityScope = "brokerage"
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof saveLibraryImageAction>>> => {
   const { data, error } = await svc.from("marketing_assets").insert({
     brokerage_id: brokerageId,
     created_by: p.userId,
@@ -132,6 +137,8 @@ export async function saveLibraryImageAction(input: {
   }).select("id").single()
   if (error || !data) return { ok: false, error: error?.message ?? "insert failed" }
   return { ok: true, id: (data as any).id }
+  }
+  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.library_image.save", actor: { type: "user", userId: p.userId }, subject: { type: "marketing_asset", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scope: v.scope } }, ledgered).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r)) : ledgered()
 }
 
 // ─── The union list every picker uses: platform-shared + (optionally) mine ────
@@ -210,6 +217,11 @@ export async function removeLibraryImageAction(id: string): Promise<{ ok: boolea
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || ctx.brokerageId !== (row as any).brokerage_id) return { ok: false, error: "Forbidden" }
   }
+  const rowTenant = (row as { visibility_scope?: string }).visibility_scope === "platform" ? null : (row as { brokerage_id?: string | null }).brokerage_id ?? null
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof removeLibraryImageAction>>> => {
   const { error } = await svc.from("marketing_assets").delete().eq("id", id)
   return error ? { ok: false, error: error.message } : { ok: true }
+  }
+  return rowTenant ? ledgerSessionAction({ brokerageId: rowTenant, action: "marketing.library_image.remove", actor: { type: "user", userId: p.userId }, subject: { type: "marketing_asset", id: id }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r)) : ledgered()
 }

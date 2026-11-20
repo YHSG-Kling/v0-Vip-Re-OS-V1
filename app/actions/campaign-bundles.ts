@@ -436,6 +436,8 @@ export async function upsertCampaignBundle(input: UpsertBundleInput): Promise<{
   const ctx = await getAgentContext()
   const brokerageId = access.brokerageScopeId ?? ctx.brokerageId
   if (!brokerageId) return { success: false, error: "brokerage_unresolved" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof upsertCampaignBundle>>>({ brokerageId: brokerageId, action: "campaign.bundle.upsert", actor: { type: "user", userId: ctx.userId }, subject: { type: "campaign_bundle", id: input.id ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   if (!input.name?.trim()) return { success: false, error: "name required" }
   if (!Array.isArray(input.items) || input.items.length === 0) {
@@ -508,6 +510,7 @@ export async function upsertCampaignBundle(input: UpsertBundleInput): Promise<{
 
   revalidatePath("/settings/campaign-bundles")
   return { success: true, bundleId }
+  })
 }
 
 export async function deactivateCampaignBundle(bundleId: string): Promise<{ success: boolean; error?: string }> {
@@ -519,6 +522,8 @@ export async function deactivateCampaignBundle(bundleId: string): Promise<{ succ
   const ctx = await getAgentContext()
   const brokerageId = access.brokerageScopeId ?? ctx.brokerageId
   if (!brokerageId) return { success: false, error: "brokerage_unresolved" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof deactivateCampaignBundle>>>({ brokerageId: brokerageId, action: "campaign.bundle.deactivate", actor: { type: "user", userId: ctx.userId }, subject: { type: "campaign_bundle", id: bundleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const svc = createServiceClient()
   const { data: row } = await svc.from("campaign_bundles")
@@ -538,4 +543,5 @@ export async function deactivateCampaignBundle(bundleId: string): Promise<{ succ
   if (error) return { success: false, error: error.message }
   revalidatePath("/settings/campaign-bundles")
   return { success: true }
+  })
 }

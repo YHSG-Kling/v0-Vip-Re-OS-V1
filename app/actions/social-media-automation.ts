@@ -509,6 +509,8 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
     // publishable, or the loop dead-ends: the publisher only picks up
     // status='scheduled' AND scheduled_for <= now, so approving without
     // scheduling silently strands the post forever.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
     const { data: current, error: currentError } = await supabase
       .from("social_posts")
       .select("status, scheduled_for, user_id")
@@ -573,6 +575,8 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
 
     revalidatePath("/dashboard/social")
     return { success: true, data: post }
+  }
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "social.post.approve", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "social_post", id: postId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
   } catch (error: any) {
     console.error("[social-media-automation] Approve post error:", error)
     return { success: false, error: error.message || "Failed to approve post" }
@@ -593,6 +597,8 @@ export async function rejectSocialPost(postId: string, _rejectorUserId?: string,
 
   const ownsPost = await verifySocialPostInBrokerage(postId, auth.brokerageId)
   if (!ownsPost.ok) return { success: false, error: "Forbidden" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const supabase = await createClient()
 
@@ -618,6 +624,8 @@ export async function rejectSocialPost(postId: string, _rejectorUserId?: string,
     console.error("[social-media-automation] Reject post error:", error)
     return { success: false, error: error.message || "Failed to reject post" }
   }
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "social.post.reject", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "social_post", id: postId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // ============================================
@@ -1021,6 +1029,8 @@ export async function trackPostPerformance(
 ): Promise<{ success: boolean; error?: string; measurement?: any }> {
   const ctx = await requireBrokerage()
   if (!ctx.ok) return { success: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof trackPostPerformance>>>({ brokerageId: ctx.brokerageId, action: "social.post_performance.record", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "social_post", id: postId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   if (!isValidUUID(postId)) return { success: false, error: "Invalid post id" }
 
   const supabase = await createClient()
@@ -1097,6 +1107,7 @@ export async function trackPostPerformance(
 
   revalidatePath("/dashboard/social")
   return { success: true, measurement: written.data }
+  })
 }
 
 /**
@@ -1125,6 +1136,8 @@ export async function refreshPostEngagementFromSync(postId: string): Promise<{
 }> {
   const ctx = await requireBrokerage()
   if (!ctx.ok) return { success: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof refreshPostEngagementFromSync>>>({ brokerageId: ctx.brokerageId, action: "social.post_performance.refresh", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "social_post", id: postId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   if (!isValidUUID(postId)) return { success: false, error: "Invalid post id" }
 
   const supabase = await createClient()
@@ -1163,6 +1176,7 @@ export async function refreshPostEngagementFromSync(postId: string): Promise<{
     engagements: (synced.engagements as number | null) ?? null,
     measurement: result.measurement,
   }
+  })
 }
 
 export async function getSocialMediaAnalytics(
@@ -1410,7 +1424,11 @@ export async function updateSocialPost(params: {
     return { success: false, error: "Invalid IDs" }
   }
 
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
   const supabase = await createClient()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   try {
     const updatePayload: Record<string, any> = { updated_at: new Date().toISOString() }
@@ -1438,6 +1456,8 @@ export async function updateSocialPost(params: {
     console.error("[social-media-automation] Update post error:", error)
     return { success: false, error: error.message || "Failed to update post" }
   }
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "social.post.update", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "social_post", id: params.postId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { rescheduled: params.scheduledFor !== undefined } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 /**

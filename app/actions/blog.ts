@@ -640,7 +640,13 @@ export async function addSeoKeyword(
     priorityScore?: number
   }
 ): Promise<{ success: boolean; keywordId?: string; error?: string }> {
+  const tenant = await requireCallerTenant(params.brokerageId)
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  if (userId !== tenant.userId) return { success: false, error: "Forbidden: you can only run this as yourself." }
+  params = { ...params, brokerageId: tenant.brokerageId }
   const supabase = await createClient()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof addSeoKeyword>>>({ brokerageId: tenant.brokerageId, action: "content.seo_keyword.add", actor: { type: "user", userId: tenant.userId }, subject: { type: "seo_keyword", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // Check if keyword already exists
   const { data: existing } = await supabase
@@ -679,6 +685,7 @@ export async function addSeoKeyword(
   }
 
   return { success: true, keywordId: keyword.id }
+  })
 }
 
 // ─── getSeoKeywords ───────────────────────────────────────────────────────────
@@ -789,6 +796,8 @@ export async function discoverKeywordsAI(
   if (!tenant.ok) return { success: false, error: tenant.error }
   if (userId !== tenant.userId) return { success: false, error: "Forbidden: you can only run this as yourself." }
   params = { ...params, brokerageId: tenant.brokerageId }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof discoverKeywordsAI>>>({ brokerageId: tenant.brokerageId, action: "content.seo_keyword.discover", actor: { type: "user", userId: tenant.userId }, subject: { type: "brokerage", id: tenant.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -884,6 +893,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
   discovered.sort((a, b) => b.popularity_pct - a.popularity_pct)
 
   return { success: true, keywords: discovered }
+  })
 }
 
 // ─── toggleKeywordActive ──────────────────────────────────────────────────────
@@ -892,7 +902,13 @@ export async function toggleKeywordActive(
   keywordId: string,
   isActive: boolean
 ): Promise<{ success: boolean; error?: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
   const supabase = await createClient()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof toggleKeywordActive>>>({ brokerageId: ctx.brokerageId, action: "content.seo_keyword.set_active", actor: { type: "user", userId: ctx.userId }, subject: { type: "seo_keyword", id: keywordId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { is_active: isActive } }, async () => {
 
   const { error } = await supabase.from("seo_keywords").update({ is_active: isActive }).eq("id", keywordId)
 
@@ -902,6 +918,7 @@ export async function toggleKeywordActive(
   }
 
   return { success: true }
+  })
 }
 
 // ─── saveBlogPost (manual create) ────────────────────────────────────────────
@@ -934,9 +951,12 @@ export async function saveBlogPost(
   if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
     return { success: false, error: "Not authenticated" }
   }
+  const sessionTenant = ctx.brokerageId
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof saveBlogPost>>>({ brokerageId: ctx.brokerageId, action: "content.blog_post.create", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "blog_post", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { createBlogPostDraft } = await import("@/lib/kernel/content-creators")
   const result = await createBlogPostDraft({
-    ctx: { userId: ctx.userId, brokerageId: ctx.brokerageId },
+    ctx: { userId: ctx.userId, brokerageId: sessionTenant },
     title: params.title,
     slug: params.slug,
     excerpt: params.excerpt,
@@ -948,6 +968,7 @@ export async function saveBlogPost(
     keywords: params.keywords,
   })
   return result.success ? { success: true, postId: result.postId } : { success: false, error: result.error }
+  })
 }
 
 // ─── generateTopicIdeas ───────────────────────────────────────────────────────
@@ -974,6 +995,8 @@ export async function generateTopicIdeas(): Promise<{
     return { success: false, error: "Not authenticated" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof generateTopicIdeas>>>({ brokerageId: ctx.brokerageId, action: "content.blog_topic.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   // ── 2. Feature gate ──────────────────────────────────────────────────────────
   const accessCheck = await mayUseFeature(ctx.userId, "seo_blog_engine")
   if (!accessCheck.allowed) {
@@ -1041,6 +1064,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
     console.error("[generateTopicIdeas] AI failed:", err)
     return { success: false, error: "Failed to generate topic ideas" }
   }
+  })
 }
 
 // ─── suggestSEOKeywords ───────────────────────────────────────────────────────
@@ -1062,6 +1086,8 @@ export async function suggestSEOKeywords(params: {
     return { success: false, error: "Not authenticated" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof suggestSEOKeywords>>>({ brokerageId: ctx.brokerageId, action: "content.seo_keyword.suggest", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   // ── 2. Feature gate ──────────────────────────────────────────────────────────
   const accessCheck = await mayUseFeature(ctx.userId, "seo_blog_engine")
   if (!accessCheck.allowed) {
@@ -1121,6 +1147,7 @@ Return ONLY valid JSON (no markdown, no code blocks):
     console.error("[suggestSEOKeywords] AI failed:", err)
     return { success: false, error: "Failed to suggest keywords" }
   }
+  })
 }
 
 /**

@@ -203,6 +203,8 @@ export async function createCampaignSequence(params: {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.userId) return { sequence: null, error: "Not authenticated" }
   if (!ctx.brokerageId) return { sequence: null, error: "Your account is not linked to a brokerage yet." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof createCampaignSequence>>> => {
   if (!decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
     return { sequence: null, error: "Forbidden: that brokerage is not yours." }
   }
@@ -234,6 +236,8 @@ export async function createCampaignSequence(params: {
   if (error) return { sequence: null, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")
   return { sequence: data as CampaignSequence }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "campaign.sequence.create", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "campaign_sequence", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { sequence_type: params.sequence_type } }, ledgered).then((r) => ("success" in r ? { sequence: null, error: r.error ?? "Not recorded" } : r)) : ledgered()
 }
 
 // ─── Update sequence ──────────────────────────────────────────────────────────
@@ -246,6 +250,8 @@ export async function updateCampaignSequence(
   // belongs to the caller's brokerage before mutating.
   const ctx = await getAgentContext()
   if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof updateCampaignSequence>>> => {
 
   const service = createServiceClient()
   const { data: existing } = await service
@@ -268,6 +274,8 @@ export async function updateCampaignSequence(
   revalidatePath("/dashboard/campaigns/sequences")
   revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
   return { success: true }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "campaign.sequence.update", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "campaign_sequence", id: sequenceId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(updates) } }, ledgered) : ledgered()
 }
 
 // ─── Delete sequence ──────────────────────────────────────────────────────────
@@ -277,6 +285,8 @@ export async function deleteCampaignSequence(sequenceId: string): Promise<{ succ
   // belongs to the caller's brokerage before deleting.
   const ctx = await getAgentContext()
   if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof deleteCampaignSequence>>> => {
 
   const service = createServiceClient()
   const { data: existing } = await service
@@ -298,6 +308,8 @@ export async function deleteCampaignSequence(sequenceId: string): Promise<{ succ
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")
   return { success: true }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "campaign.sequence.delete", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "campaign_sequence", id: sequenceId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 // ─── Create step ──────────────────────────────────────────────────────────────
@@ -325,6 +337,8 @@ export async function createSequenceStep(params: {
 }): Promise<{ step: SequenceStep | null; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { step: null, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof createSequenceStep>>> => {
 
   const service = createServiceClient()
 
@@ -377,6 +391,8 @@ export async function createSequenceStep(params: {
   if (error) return { step: null, error: error.message }
   revalidatePath(`/dashboard/campaigns/sequences/${params.sequence_id}`)
   return { step: data as SequenceStep }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "campaign.sequence_step.create", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "campaign_sequence", id: params.sequence_id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { channel: params.channel } }, ledgered).then((r) => ("success" in r ? { step: null, error: r.error ?? "Not recorded" } : r)) : ledgered()
 }
 
 // ─── Update step ──────────────────────────────────────────────────────────────
@@ -388,6 +404,8 @@ export async function updateSequenceStep(
 ): Promise<{ success: boolean; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof updateSequenceStep>>> => {
 
   const service = createServiceClient()
 
@@ -434,6 +452,8 @@ export async function updateSequenceStep(
   if (error) return { success: false, error: error.message }
   revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
   return { success: true }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "campaign.sequence_step.update", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "campaign_sequence_step", id: stepId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 // ─── Delete step ──────────────────────────────────────────────────────────────
@@ -522,6 +542,8 @@ export async function launchCampaignSequence(sequenceId: string): Promise<{ succ
   // contacts, and a bare sequence uuid was enough to start any brokerage's.
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof launchCampaignSequence>>> => {
 
   const service = createServiceClient()
 
@@ -560,6 +582,8 @@ export async function launchCampaignSequence(sequenceId: string): Promise<{ succ
   revalidatePath("/dashboard/campaigns/sequences")
   revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
   return { success: true }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "campaign.sequence.launch", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "campaign_sequence", id: sequenceId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 
@@ -594,10 +618,13 @@ export async function enrollContactInSequence(params: {
     return { enrollment: null, error: "Not authenticated" }
   }
 
+  const sessionTenant = ctx.brokerageId
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof enrollContactInSequence>>> => {
   const { enrollInSequence } = await import("@/lib/campaigns/enroll-in-sequence")
   const result = await enrollInSequence({
     sequenceId: params.sequenceId,
-    brokerageId: ctx.brokerageId,
+    brokerageId: sessionTenant,
     contactId: params.contactId ?? null,
     leadId: params.leadId ?? null,
     enrolledBy: ctx.userId ?? null,
@@ -605,6 +632,8 @@ export async function enrollContactInSequence(params: {
 
   if (result.enrollment) revalidatePath(`/dashboard/campaigns/sequences/${params.sequenceId}`)
   return result
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "campaign.sequence.enroll", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "campaign_sequence", id: params.sequenceId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { contact_id: params.contactId ?? null } }, ledgered).then((r) => ("success" in r ? { enrollment: null, error: r.error ?? "Not recorded" } : r)) : ledgered()
 }
 
 export async function cancelEnrollment(enrollmentId: string, sequenceId: string): Promise<{ success: boolean; error?: string }> {
@@ -622,6 +651,8 @@ export async function cancelEnrollment(enrollmentId: string, sequenceId: string)
   // and is what gets confirmed below.
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof cancelEnrollment>>> => {
 
   const service = createServiceClient()
   const { data: existing, error: readError } = await service
@@ -650,6 +681,8 @@ export async function cancelEnrollment(enrollmentId: string, sequenceId: string)
 
   revalidatePath(`/dashboard/campaigns/sequences/${existing.sequence_id ?? sequenceId}`)
   return { success: true }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "campaign.enrollment.cancel", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "sequence_enrollment", id: enrollmentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered) : ledgered()
 }
 
 
@@ -744,6 +777,8 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async (): Promise<Awaited<ReturnType<typeof saveSequenceSteps>>> => {
 
     const service = createServiceClient()
 
@@ -838,6 +873,8 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
     }
     revalidatePath("/dashboard/campaigns/sequences")
     return { success: true }
+  }
+  return await (ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "campaign.sequence_steps.save", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "campaign_sequence", id: sequenceId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { steps: steps.length } }, ledgered) : ledgered())
   } catch (e: any) {
     return { success: false, error: e.message }
   }

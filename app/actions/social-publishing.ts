@@ -203,6 +203,8 @@ export async function connectSocialAccount(params: {
 export async function disconnectSocialAccount(accountId: string, _userId?: string) {
   const caller = await resolveCaller()
   if (!caller.ok) throw new Error("Unauthorized")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const supabase = createServiceClient()
 
@@ -219,6 +221,8 @@ export async function disconnectSocialAccount(accountId: string, _userId?: strin
   // listed by the social dashboard (app/dashboard/social/page.tsx).
   revalidatePath("/dashboard/profile")
   revalidatePath("/dashboard/social")
+  }
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "social.account.disconnect", actor: { type: "user", userId: caller.userId }, subject: { type: "social_media_account", id: accountId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 export async function getSocialPosts(filters?: {
@@ -289,12 +293,16 @@ export async function createSocialPost(params: {
 }) {
   const caller = await resolveCaller()
   if (!caller.ok) throw new Error("Unauthorized")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   // THE writer lives in lib/social/create-social-post-draft.ts (explicit actor; the orchestrator drafts through it without a
   // session) — this action is its session door: the caller, then the studio paths revalidated.
   const result = await createSocialPostDraft(createServiceClient() as never, { userId: caller.userId, brokerageId: caller.brokerageId }, params)
   revalidatePath("/content-studio")
   if (!("complianceBlocked" in result)) revalidatePath("/social-planner")
   return result
+  }
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "social.post.create_draft", actor: { type: "user", userId: caller.userId }, subject: { type: "listing", id: params.linkedListingId ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platforms: params.platforms } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 export async function updateSocialPost(
@@ -419,6 +427,8 @@ export async function generateSocialContent(params: {
     }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const supabase = createServiceClient()
 
   // Get listing details if provided — scoped to caller's brokerage
@@ -462,4 +472,6 @@ export async function generateSocialContent(params: {
       error: error.message,
     }
   }
+  }
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "social.content.generate", actor: { type: "user", userId: caller.userId }, subject: { type: "listing", id: params.listingId ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.contentType } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }

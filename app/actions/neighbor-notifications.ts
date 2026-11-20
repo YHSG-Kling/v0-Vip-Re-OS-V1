@@ -173,6 +173,8 @@ export async function grantSellerPermission(params: {
 }): Promise<{ success: boolean; error?: string }> {
   const tenant = await resolveWriteContextForTenant(params.brokerageId)
   if (!tenant.ok) return { success: false, error: tenant.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof grantSellerPermission>>>({ brokerageId: tenant.brokerageId, action: "neighbor.seller_permission.grant", actor: { type: "user", userId: tenant.actorUserId, agentId: tenant.agentId }, subject: { type: "neighbor_notification_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { seller_contact_id: params.sellerContactId } }, async () => {
   const supabase = createServiceClient()
 
   // COUNTED (§3): an update that matches nothing (foreign or gone campaign) also resolves.
@@ -192,6 +194,7 @@ export async function grantSellerPermission(params: {
   if (error) return { success: false, error: error.message }
   if ((granted ?? []).length !== 1) return { success: false, error: "Neighbour notification campaign not found in your brokerage — no permission was recorded" }
   return { success: true }
+  })
 }
 
 /**
@@ -206,6 +209,8 @@ export async function launchNeighborNotification(params: {
   const tenant = await resolveWriteContextForTenant(params.brokerageId)
   if (!tenant.ok) return { success: false, error: tenant.error }
   params = { ...params, brokerageId: tenant.brokerageId }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof launchNeighborNotification>>>({ brokerageId: tenant.brokerageId, action: "neighbor.campaign.launch", actor: { type: "user", userId: tenant.actorUserId, agentId: tenant.agentId }, subject: { type: "neighbor_notification_campaign", id: params.campaignId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = createServiceClient()
 
   const { data: campaign } = await supabase
@@ -331,6 +336,7 @@ export async function launchNeighborNotification(params: {
     if (resetDraftErr) console.error(`[neighbor-notifications] failed send could NOT be reset to draft (it will read as sending): ${resetDraftErr.message}`)
     return { success: false, error: err.message ?? "Direct mail send failed" }
   }
+  })
 }
 
 /**

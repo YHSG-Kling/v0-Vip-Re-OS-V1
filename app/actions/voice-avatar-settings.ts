@@ -55,6 +55,8 @@ export async function updateMyVoicePreference(params: {
     return { success: false, error: "Unauthorized" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof updateMyVoicePreference>>>({ brokerageId: ctx.brokerageId, action: "voice.preference.update", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "user", id: ctx.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { preference: params.preference } }, async () => {
   const svc = createServiceClient()
   const { error } = await svc
     .from("agents")
@@ -65,6 +67,7 @@ export async function updateMyVoicePreference(params: {
     .eq("user_id", ctx.userId)
 
   return error ? { success: false, error: error.message } : { success: true }
+  })
 }
 
 /**
@@ -81,6 +84,8 @@ export async function updateMyProspectVoice(params: {
     return { success: false, error: "Unauthorized" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof updateMyProspectVoice>>>({ brokerageId: ctx.brokerageId, action: "voice.prospect_voice.update", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "user", id: ctx.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   const { error } = await svc
     .from("agents")
@@ -88,6 +93,7 @@ export async function updateMyProspectVoice(params: {
     .eq("user_id", ctx.userId)
 
   return error ? { success: false, error: error.message } : { success: true }
+  })
 }
 
 /**
@@ -123,6 +129,8 @@ export async function updateMyAssistantAvatar(params: {
     return { success: false, error: "Unauthorized" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof updateMyAssistantAvatar>>>({ brokerageId: ctx.brokerageId, action: "voice.assistant_avatar.update", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "user", id: ctx.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
 
   const requested = params.assistantAvatarId?.trim() || null
@@ -159,4 +167,5 @@ export async function updateMyAssistantAvatar(params: {
     .eq("user_id", ctx.userId)
 
   return error ? { success: false, error: error.message } : { success: true }
+  })
 }

@@ -39,6 +39,8 @@ export async function listEstimateSourcesAction(): Promise<{ ok: true; sources: 
 export async function captureEstimateStillAction(input: { source: string; address: string; listingId?: string | null }): Promise<CaptureActionResult> {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof captureEstimateStillAction>>>({ brokerageId: auth.brokerageId, action: "marketing.estimate_still.capture", actor: { type: "user", userId: auth.userId }, subject: { type: "listing", id: input.listingId ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source: input.source } }, async () => {
   const r = await captureTenantEstimateStill(
     { brokerageId: auth.brokerageId, userId: auth.userId, source: input.source, address: input.address, listingId: input.listingId ?? null },
     { svc: createServiceClient() },
@@ -46,6 +48,7 @@ export async function captureEstimateStillAction(input: { source: string; addres
   return r.ok
     ? { ok: true, assetId: r.assetId, url: r.url, cached: r.cached, source: r.source, approvalStatus: r.approvalStatus, disclaimer: r.disclaimer }
     : { ok: false, error: r.reason }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 /** The caller's brokerage's own stills for a use, every approval state.
@@ -72,6 +75,8 @@ export async function listTenantScreenshotStillsAction(input: { use: ScreenshotU
 export async function captureTenantPublicPageStillAction(input: { url: string; label?: string | null }): Promise<{ ok: true; assetId: string; url: string; cached: boolean; approvalStatus: "pending"; uses: ScreenshotUse[] } | { ok: false; error: string }> {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof captureTenantPublicPageStillAction>>>({ brokerageId: auth.brokerageId, action: "marketing.public_page_still.capture", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   if (typeof input?.url !== "string" || !input.url.trim()) return { ok: false, error: "a public page address is required" }
   const r = await captureTenantPublicPageStill(
     { brokerageId: auth.brokerageId, userId: auth.userId, url: input.url, label: typeof input.label === "string" ? input.label : null },
@@ -80,6 +85,7 @@ export async function captureTenantPublicPageStillAction(input: { url: string; l
   return r.ok
     ? { ok: true, assetId: r.assetId, url: r.url, cached: r.cached, approvalStatus: r.approvalStatus, uses: r.uses }
     : { ok: false, error: r.reason }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 /** The caller's brokerage's general public-page stills, every approval state
@@ -105,10 +111,13 @@ type ComparisonEvidenceView = { assetId: string; source: string; label: string; 
 export async function captureEstimateComparisonAction(input: { address: string; listingId?: string | null }): Promise<{ ok: true; outcomes: Array<{ source: string; ok: boolean; via: string; note?: string; reason?: string; fallback?: boolean }> } | { ok: false; error: string }> {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof captureEstimateComparisonAction>>>({ brokerageId: auth.brokerageId, action: "marketing.estimate_comparison.gather", actor: { type: "user", userId: auth.userId }, subject: { type: "listing", id: input.listingId ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { gatherEstimateComparisonEvidence } = await import("@/lib/marketing/estimate-comparison")
   const r = await gatherEstimateComparisonEvidence({ svc: createServiceClient(), brokerageId: auth.brokerageId, userId: auth.userId, address: input.address, listingId: input.listingId ?? null })
   if (!r.ok) return { ok: false, error: r.reason }
   return { ok: true, outcomes: r.outcomes.map((o) => (o.ok ? { source: o.source, ok: true, via: o.via, note: o.note } : { source: o.source, ok: false, via: o.via, reason: o.reason, fallback: o.fallback })) }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 /** THE FALLBACK (83C): the web search found nothing for a site, so a person
@@ -117,10 +126,13 @@ export async function captureEstimateComparisonAction(input: { address: string; 
 export async function typeComparisonFigureAction(input: { address: string; source: string; figure: string | number; sourceUrl?: string | null }): Promise<{ ok: true; assetId: string; figureUsd: number } | { ok: false; error: string }> {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof typeComparisonFigureAction>>>({ brokerageId: auth.brokerageId, action: "marketing.comparison_figure.type", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source: input.source } }, async () => {
   if (typeof input.source !== "string" || !input.source) return { ok: false, error: "source required" }
   const { recordTypedComparisonFigure } = await import("@/lib/marketing/estimate-web-search")
   const r = await recordTypedComparisonFigure({ svc: createServiceClient(), brokerageId: auth.brokerageId, userId: auth.userId, address: input.address, source: input.source, figure: input.figure, sourceUrl: input.sourceUrl ?? null })
   return r.ok ? r : { ok: false, error: r.reason }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 /** The caller's comparison evidence for an address, every approval state: the
@@ -145,10 +157,13 @@ export async function listEstimateComparisonAction(input: { address: string }): 
 export async function confirmComparisonFigureAction(input: { assetId: string; figure: string | number }): Promise<{ ok: true; figureUsd: number } | { ok: false; error: string }> {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof confirmComparisonFigureAction>>>({ brokerageId: auth.brokerageId, action: "marketing.comparison_figure.confirm", actor: { type: "user", userId: auth.userId }, subject: { type: "marketing_asset", id: input.assetId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   if (typeof input.assetId !== "string" || !input.assetId) return { ok: false, error: "assetId required" }
   const { confirmComparisonFigure } = await import("@/lib/marketing/estimate-comparison")
   const r = await confirmComparisonFigure(createServiceClient(), { brokerageId: auth.brokerageId, userId: auth.userId, assetId: input.assetId, figure: input.figure })
   return r.ok ? r : { ok: false, error: r.reason }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 /** Compose the piece (postcard 6x9, social square, story) from approved +
@@ -160,6 +175,8 @@ export async function composeEstimateComparisonAction(input: { address: string; 
 > {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof composeEstimateComparisonAction>>>({ brokerageId: auth.brokerageId, action: "marketing.estimate_comparison.compose", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   const { buildEstimateComparisonCreative, COMPARISON_HOOKS } = await import("@/lib/marketing/estimate-comparison")
   const hookKey = COMPARISON_HOOKS.find((h) => h.key === input.hookKey)?.key
@@ -181,13 +198,17 @@ export async function composeEstimateComparisonAction(input: { address: string; 
     return { ok: true, urls: r.urls as Record<string, string>, headline: r.copy.headline, socialCaption: r.copy.socialCaption, emailSubject: r.copy.emailSubject, videoBeats: r.copy.videoBeats }
   }
   return r.state === "needs_evidence" ? { ok: false, error: r.reason, omitted: r.omitted } : { ok: false, error: r.reason }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 /** Narrow or widen a tenant still's uses — tenant-predicated, counted update. */
 export async function setTenantScreenshotUsesAction(input: { assetId: string; uses: ScreenshotUse[] }): Promise<{ ok: true; uses: ScreenshotUse[] } | { ok: false; error: string }> {
   const auth = await requireTenantAdminOrSoloOwner()
   if (!auth.ok) return { ok: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof setTenantScreenshotUsesAction>>>({ brokerageId: auth.brokerageId, action: "marketing.screenshot_uses.set", actor: { type: "user", userId: auth.userId }, subject: { type: "marketing_asset", id: input.assetId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   if (typeof input.assetId !== "string" || !input.assetId) return { ok: false, error: "assetId required" }
   const r = await setScreenshotUses(createServiceClient(), input.assetId, Array.isArray(input.uses) ? input.uses : [], { brokerageId: auth.brokerageId })
   return r.ok ? { ok: true, uses: r.uses } : { ok: false, error: r.reason }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }

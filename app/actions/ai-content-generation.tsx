@@ -129,6 +129,8 @@ export async function updateBrandVoiceProfile(data: {
   const ctx = await getAgentContext()
   const agentId = ctx.agentId ?? data.agentId
   if (!agentId) throw new Error("No agent profile for this user yet — finish account setup.")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const fields = {
     tone: data.tone,
@@ -170,6 +172,8 @@ export async function updateBrandVoiceProfile(data: {
 
   revalidatePath("/settings/brand-voice")
   return profile
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "content.brand_voice.update", actor: { type: "user", userId: ctx.userId, agentId: agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
 }
 
 // ============================================
@@ -224,6 +228,8 @@ export async function recordContentTemplateUse(templateId: string): Promise<
 > {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof recordContentTemplateUse>>>({ brokerageId: auth.actor.brokerageId, action: "content.template.use", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "content_template", id: templateId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   if (!templateId?.trim()) return { success: false, error: "Template id is required" }
 
   const supabase = await createClient()
@@ -254,6 +260,7 @@ export async function recordContentTemplateUse(templateId: string): Promise<
   if (updateError) console.error("[recordContentTemplateUse] counter update refused:", updateError.message)
 
   return { success: true, template: { ...template, usage_count: (template.usage_count ?? 0) + (updateError ? 0 : 1) } }
+  }).then((r) => ("template" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 export async function saveContentTemplate(data: {
@@ -267,6 +274,8 @@ export async function saveContentTemplate(data: {
 }): Promise<{ success: true; template: any } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof saveContentTemplate>>>({ brokerageId: auth.actor.brokerageId, action: "content.template.create", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "content_template", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   if (!data.templateName?.trim()) return { success: false, error: "Template name is required" }
   if (!data.contentType?.trim()) return { success: false, error: "Content type is required" }
@@ -298,6 +307,7 @@ export async function saveContentTemplate(data: {
 
   revalidatePath("/dashboard/content")
   return { success: true, template }
+  }).then((r) => ("template" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 // ============================================
@@ -356,6 +366,8 @@ export async function createGeneratedContent(data: {
 }): Promise<{ success: true; content: any } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof createGeneratedContent>>>({ brokerageId: auth.actor.brokerageId, action: "content.generated.create", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "ai_generated_content", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: data.contentType } }, async () => {
 
   if (!data.content?.trim()) return { success: false, error: "Content cannot be empty" }
   if (!data.contentType?.trim()) return { success: false, error: "Content type is required" }
@@ -391,6 +403,7 @@ export async function createGeneratedContent(data: {
 
   revalidatePath("/dashboard/content")
   return { success: true, content }
+  }).then((r) => ("content" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 export async function updateContentStatus(
@@ -400,6 +413,8 @@ export async function updateContentStatus(
 ): Promise<{ success: true; content: any } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof updateContentStatus>>>({ brokerageId: auth.actor.brokerageId, action: "content.generated.set_status", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "ai_generated_content", id: contentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status } }, async () => {
 
   if (!isValidUUID(contentId)) return { success: false, error: "Invalid content ID" }
   if (!(GENERATED_CONTENT_STATUSES as readonly string[]).includes(status)) {
@@ -439,6 +454,7 @@ export async function updateContentStatus(
 
   revalidatePath("/dashboard/content")
   return { success: true, content: data }
+  }).then((r) => ("content" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 // ============================================
@@ -488,6 +504,8 @@ export async function addSEOKeyword(data: {
 }): Promise<{ success: true; keyword: any } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof addSEOKeyword>>>({ brokerageId: auth.actor.brokerageId, action: "content.seo_keyword.add", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "seo_keyword", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const kw = data.keyword?.trim()
   if (!kw) return { success: false, error: "Keyword cannot be empty" }
@@ -535,6 +553,7 @@ export async function addSEOKeyword(data: {
 
   revalidatePath("/dashboard/content")
   return { success: true, keyword }
+  }).then((r) => ("keyword" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 // ============================================
@@ -555,6 +574,8 @@ export async function trackContentPerformance(data: {
 }): Promise<{ success: true; performance: any } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof trackContentPerformance>>>({ brokerageId: auth.actor.brokerageId, action: "content.performance.record", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "ai_generated_content", id: data.contentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform: data.platform } }, async () => {
 
   if (!isValidUUID(data.contentId)) return { success: false, error: "Invalid content ID" }
   if (!data.platform?.trim()) return { success: false, error: "Platform is required" }
@@ -607,6 +628,7 @@ export async function trackContentPerformance(data: {
 
   revalidatePath("/dashboard/content")
   return { success: true, performance }
+  }).then((r) => ("performance" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 export async function getContentPerformanceStats(dateRange?: { start: string; end: string }): Promise<
@@ -753,6 +775,8 @@ export async function trackHashtagUsage(data: {
 }): Promise<{ success: true; hashtag: any } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof trackHashtagUsage>>>({ brokerageId: auth.actor.brokerageId, action: "content.hashtag.record", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "hashtag_performance", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const tag = data.hashtag?.trim()
   if (!tag) return { success: false, error: "Hashtag cannot be empty" }
@@ -836,6 +860,7 @@ export async function trackHashtagUsage(data: {
 
   revalidatePath("/dashboard/content")
   return { success: true, hashtag: created }
+  }).then((r) => ("hashtag" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 // ============================================
@@ -879,6 +904,8 @@ export async function updateABTestResults(
 ): Promise<{ success: true; test: any } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof updateABTestResults>>>({ brokerageId: auth.actor.brokerageId, action: "content.ab_test.record_results", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "content_ab_test", id: testId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   if (!isValidUUID(testId)) return { success: false, error: "Invalid test ID" }
   if (results.winner && results.winner !== "A" && results.winner !== "B") {
@@ -912,6 +939,7 @@ export async function updateABTestResults(
 
   revalidatePath("/dashboard/content")
   return { success: true, test }
+  }).then((r) => ("test" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 // ============================================
@@ -1697,6 +1725,8 @@ export async function learnFromEdits(params: {
 }): Promise<{ success: true; learnings: any } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof learnFromEdits>>>({ brokerageId: auth.actor.brokerageId, action: "content.brand_voice.learn", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "ai_generated_content", id: params.contentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   if (!isValidUUID(params.contentId)) return { success: false, error: "Invalid content ID" }
   if (!params.originalContent?.trim() || !params.editedContent?.trim()) {
@@ -1808,6 +1838,7 @@ OUTPUT FORMAT (JSON):
     console.error("Learn from edits error:", error)
     return { success: false, error: error instanceof Error ? error.message : "Failed to learn from edits" }
   }
+  }).then((r) => ("learnings" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 // ============================================
@@ -2105,6 +2136,8 @@ export async function generateContentPlan(params: {
 }): Promise<{ success: true; data: any; scheduled: number } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof generateContentPlan>>>({ brokerageId: auth.actor.brokerageId, action: "content.calendar.plan", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "agent", id: auth.actor.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const month = params.month instanceof Date ? params.month : new Date(params.month)
   if (Number.isNaN(month.getTime())) return { success: false, error: "Invalid month" }
@@ -2266,6 +2299,7 @@ OUTPUT FORMAT (JSON):
     console.error("Generate content plan error:", error)
     return { success: false, error: error instanceof Error ? error.message : "Failed to generate content plan" }
   }
+  }).then((r) => ("data" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 export async function getContentCalendar(params: { agentId: string; startDate?: string; endDate?: string }) {
@@ -2367,6 +2401,8 @@ export async function createABTest(params: {
 }): Promise<{ success: true; test: any } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof createABTest>>>({ brokerageId: auth.actor.brokerageId, action: "content.ab_test.create", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "ai_generated_content", id: params.baseContentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { test_variable: params.testVariable } }, async () => {
 
   if (!isValidUUID(params.baseContentId)) {
     return { success: false, error: "Invalid content ID" }
@@ -2456,6 +2492,7 @@ export async function createABTest(params: {
     console.error("Create A/B test error:", error)
     return { success: false, error: error instanceof Error ? error.message : "Failed to create A/B test" }
   }
+  }).then((r) => ("test" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 /** Deterministic seed from content hash — avoids non-reproducible Math.random() in AI contexts */
@@ -2552,6 +2589,8 @@ export async function analyzeABTest(testId: string): Promise<
 > {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof analyzeABTest>>>({ brokerageId: auth.actor.brokerageId, action: "content.ab_test.analyze", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "content_ab_test", id: testId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   if (!isValidUUID(testId)) {
     return { success: false, error: "Invalid test ID" }
@@ -2674,6 +2713,7 @@ export async function analyzeABTest(testId: string): Promise<
     console.error("Analyze A/B test error:", error)
     return { success: false, error: error instanceof Error ? error.message : "Failed to analyze test" }
   }
+  }).then((r) => ("data" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 function calculateConfidence(metricA: number, metricB: number, sampleSize: number): number {
@@ -3758,6 +3798,8 @@ export async function trackContentUsage(params: {
 }): Promise<{ success: true; usageId: string } | { success: false; error: string }> {
   const auth = await requireContentActor()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof trackContentUsage>>>({ brokerageId: auth.actor.brokerageId, action: "content.usage.record", actor: { type: "user", userId: auth.actor.userId, agentId: auth.actor.agentId }, subject: { type: "agent", id: auth.actor.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.contentType } }, async () => {
 
   if (!params.contentType?.trim()) return { success: false, error: "Content type is required" }
 
@@ -3797,6 +3839,7 @@ export async function trackContentUsage(params: {
 
   revalidatePath("/dashboard/content")
   return { success: true, usageId: data.id }
+  }).then((r) => ("usageId" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
 export async function getContentInsights(): Promise<
@@ -3946,6 +3989,8 @@ export async function saveDescriptionToListing(params: {
   // compliance attestation, and it was settable by a stranger.
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof saveDescriptionToListing>>>({ brokerageId: ctx.brokerageId, action: "listing.public_remarks.approve", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "listing", id: params.listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_id: params.contentId } }, async () => {
 
   // 1. Write the approved text to the listing's public_remarks field.
   //    `.select("id")` makes the scope enforceable: a scoped UPDATE that matches
@@ -3985,4 +4030,5 @@ export async function saveDescriptionToListing(params: {
   revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)
 
   return { success: true }
+  })
 }

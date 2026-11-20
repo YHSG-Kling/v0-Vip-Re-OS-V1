@@ -67,6 +67,8 @@ export async function updateAdCampaignAction(
   if (!actor.ok) return { success: false, error: actor.error }
 
   if (!campaignId) return { success: false, error: "campaignId required" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof updateAdCampaignAction>>>({ brokerageId: actor.ctx.brokerageId, action: "ads.campaign.update", actor: { type: "user", userId: actor.ctx.userId, agentId: actor.ctx.agentId ?? null }, subject: { type: "ad_campaign", id: campaignId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(updates) } }, async () => {
 
   // A budget of 0 is not "unset" — it is a campaign that can never deliver, and
   // the kernel's own rule 6 requires one of the two budgets to be a real number.
@@ -100,4 +102,5 @@ export async function updateAdCampaignAction(
 
   revalidatePath("/dashboard/campaigns/ads")
   return { success: true }
+  })
 }

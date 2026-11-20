@@ -133,6 +133,9 @@ export async function listPendingApprovals(): Promise<{ twins: Twin[]; error?: s
 export async function setDefaultTwin(twinId: string): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveWriteContextForTenant()
   if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const sessionAgent = ctx.agentId
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof setDefaultTwin>>>({ brokerageId: ctx.brokerageId, action: "avatar.twin.set_default", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "agent_avatar_asset", id: twinId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = createServiceClient()
 
   // Verify ownership
@@ -169,17 +172,20 @@ export async function setDefaultTwin(twinId: string): Promise<{ ok: boolean; err
   // Sync voice_id to agents.voice_id (canonical for ISA + video gen).
   // Without this, the rest of the platform keeps using the previous default.
   if (twin.voice_id) {
-    await syncAgentVoiceId({ agentId: ctx.agentId, elevenlabsVoiceId: twin.voice_id })
+    await syncAgentVoiceId({ agentId: sessionAgent, elevenlabsVoiceId: twin.voice_id })
   }
 
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 /** Delete a twin. The default cannot be deleted unless another exists. */
 export async function deleteTwin(twinId: string): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveWriteContextForTenant()
   if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof deleteTwin>>>({ brokerageId: ctx.brokerageId, action: "avatar.twin.delete", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "agent_avatar_asset", id: twinId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = createServiceClient()
 
   const { data: twin } = await supabase
@@ -206,6 +212,7 @@ export async function deleteTwin(twinId: string): Promise<{ ok: boolean; error?:
   if (deleteTwinErr) return { ok: false, error: `Could not delete the twin: ${deleteTwinErr.message}` }
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 /**
@@ -226,6 +233,8 @@ export async function updateTwinDetails(params: {
 }): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveWriteContextForTenant()
   if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof updateTwinDetails>>>({ brokerageId: ctx.brokerageId, action: "avatar.twin.update", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "agent_avatar_asset", id: params.twinId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = createServiceClient()
 
   // `error` destructured so a refused read is distinguishable from a genuine
@@ -274,6 +283,7 @@ export async function updateTwinDetails(params: {
 
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 // ─── Broker approval gate ─────────────────────────────────────────────────
@@ -284,6 +294,8 @@ export async function approveTwin(twinId: string): Promise<{ ok: boolean; error?
   if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof approveTwin>>>({ brokerageId: ctx.brokerageId, action: "avatar.twin.approve", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "agent_avatar_asset", id: twinId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = createServiceClient()
 
   // Brokerage scope check — broker can only approve twins in their brokerage.
@@ -308,6 +320,7 @@ export async function approveTwin(twinId: string): Promise<{ ok: boolean; error?
 
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 export async function rejectTwin(params: {
@@ -320,6 +333,8 @@ export async function rejectTwin(params: {
     return { ok: false, error: "Forbidden" }
   }
   if (!params.reason?.trim()) return { ok: false, error: "Reason required" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof rejectTwin>>>({ brokerageId: ctx.brokerageId, action: "avatar.twin.reject", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "agent_avatar_asset", id: params.twinId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = createServiceClient()
 
   const { data: twin } = await supabase
@@ -344,6 +359,7 @@ export async function rejectTwin(params: {
 
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 // ─── Twin creation orchestration ──────────────────────────────────────────
@@ -369,6 +385,8 @@ export async function createTwinDraft(params: {
 }): Promise<{ ok: boolean; twinId?: string; error?: string }> {
   const ctx = await resolveWriteContextForTenant()
   if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof createTwinDraft>>>({ brokerageId: ctx.brokerageId, action: "avatar.twin.create_draft", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "agent", id: ctx.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source_type: params.sourceType } }, async () => {
 
   const supabase = createServiceClient()
 
@@ -399,6 +417,7 @@ export async function createTwinDraft(params: {
 
   if (error || !data) return { ok: false, error: error?.message ?? "Insert failed" }
   return { ok: true, twinId: data.id }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 // attachVoiceToTwin was REMOVED here (orphan burn-down w2s3).
@@ -503,6 +522,8 @@ export async function setTwinStockVoice(params: {
 }): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveWriteContextForTenant()
   if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof setTwinStockVoice>>>({ brokerageId: ctx.brokerageId, action: "avatar.twin.set_voice", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "agent_avatar_asset", id: params.twinId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const voiceId = params.voiceId?.trim()
   if (!voiceId) return { ok: false, error: "Pick a voice" }
@@ -551,6 +572,7 @@ export async function setTwinStockVoice(params: {
 
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
 
 export async function finalizeTwin(params: {
@@ -563,6 +585,9 @@ export async function finalizeTwin(params: {
 }): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveWriteContextForTenant()
   if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const sessionAgent = ctx.agentId
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof finalizeTwin>>>({ brokerageId: ctx.brokerageId, action: "avatar.twin.finalize", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "agent_avatar_asset", id: params.twinId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = createServiceClient()
 
   const { data: twin } = await supabase
@@ -611,10 +636,11 @@ export async function finalizeTwin(params: {
     if (makeDefaultErr) return { ok: false, error: `Could not set the default twin: ${makeDefaultErr.message}` }
 
     if (twin.voice_id) {
-      await syncAgentVoiceId({ agentId: ctx.agentId, elevenlabsVoiceId: twin.voice_id })
+      await syncAgentVoiceId({ agentId: sessionAgent, elevenlabsVoiceId: twin.voice_id })
     }
   }
 
   revalidatePath("/dashboard/settings/twin-studio")
   return { ok: true }
+  }).then((r) => ("success" in r ? { ok: false as const, error: r.error ?? "Not recorded" } : r))
 }
