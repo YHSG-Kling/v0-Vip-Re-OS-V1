@@ -973,6 +973,7 @@ function generateHealthRecommendation(score: number, issues: string[]): string {
 
 export async function toggleToolFavorite(userId: string, toolName: string) {
   const supabase = await createClient()
+  const run = async (): Promise<{ favorited: boolean }> => {
   
   const { data: existing } = await supabase
     .from("ai_tool_favorites")
@@ -988,6 +989,14 @@ export async function toggleToolFavorite(userId: string, toolName: string) {
     await bestEffort(supabase.from("ai_tool_favorites").insert({ user_id: userId, tool_name: toolName }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     return { favorited: true }
   }
+  }
+  // Receipt against the SESSION user and tenant (never the argument); no session tenant = today's unrecorded behavior.
+  const { data: { user: favUser } } = await supabase.auth.getUser()
+  const { data: favTenant } = favUser ? await supabase.from("users").select("brokerage_id").eq("id", favUser.id).maybeSingle() : { data: null }
+  if (!favUser || !favTenant?.brokerage_id) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction({ brokerageId: favTenant.brokerage_id as string, action: "ai_tools.favorite.toggle", actor: { type: "user", userId: favUser.id }, subject: { type: "user", id: userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool_name: toolName } }, run)
+  return "favorited" in lr ? lr : { favorited: false }
 }
 
 export async function getUserFavorites(userId: string) {

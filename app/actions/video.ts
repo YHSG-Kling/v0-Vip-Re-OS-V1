@@ -106,7 +106,7 @@ function failed<T>(err: unknown, fallback: string): VideoActionResult<T> {
  * argument. Split out of the project gate so the gate stays short enough to
  * read in one screen.
  */
-async function callerBrokerage(): Promise<{ brokerage_id: string } | TenantDenial> {
+async function callerBrokerage(): Promise<{ brokerage_id: string; user_id: string } | TenantDenial> {
   const supabase = await createServerClient()
   const { data: auth, error: authError } = await supabase.auth.getUser()
   if (authError) return { code: "unauthenticated", message: authError.message }
@@ -121,7 +121,7 @@ async function callerBrokerage(): Promise<{ brokerage_id: string } | TenantDenia
   if (!profile?.brokerage_id) {
     return { code: "no_brokerage", message: "Your account is not linked to a brokerage yet" }
   }
-  return { brokerage_id: profile.brokerage_id as string }
+  return { brokerage_id: profile.brokerage_id as string, user_id: auth.user.id }
 }
 
 /**
@@ -196,12 +196,20 @@ export async function updateVideoGenerationSettingsAction(
 ): Promise<VideoActionResult<UpdateVideoGenerationSettingsOutput>> {
   const denial = await assertProjectInCallerBrokerage(input.projectId)
   if (denial) return denied(denial)
+  const run = async (): Promise<VideoActionResult<UpdateVideoGenerationSettingsOutput>> => {
   try {
     const data = await updateVideoGenerationSettings(input)
     return { success: true, data }
   } catch (err) {
     return failed(err, "Failed to update settings")
   }
+  }
+  // WAVE 155 (155R14): the receipt — the SESSION's user and tenant (callerBrokerage, the gate's own resolver).
+  const who = await callerBrokerage()
+  if ("code" in who) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: who.brokerage_id, action: "marketing.video_project.update_settings", actor: { type: "user", userId: who.user_id }, subject: { type: "ai_video_project", id: input.projectId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, run)
+  return "data" in r || "code" in r ? r : denied({ code: "failed", message: r.error ?? "Failed to update settings" })
 }
 
 /**

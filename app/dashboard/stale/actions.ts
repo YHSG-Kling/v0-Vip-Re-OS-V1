@@ -310,6 +310,8 @@ export async function markContactTouched(contactId: string): Promise<{ success: 
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
 
   const now = new Date().toISOString()
+  const agentId: string = agentRow.id
+  const write = async (): Promise<{ success: boolean; error?: string }> => {
   // .select("id") because a zero-row update — a contact this agent does not own —
   // comes back as error:null, which would report a write that never happened as a
   // success and leave the row on screen with no explanation.
@@ -317,13 +319,18 @@ export async function markContactTouched(contactId: string): Promise<{ success: 
     .from("contacts")
     .update({ last_contacted_at: now, updated_at: now })
     .eq("id", contactId)
-    .eq("agent_id", agentRow.id)
+    .eq("agent_id", agentId)
     .select("id")
   if (error) return { success: false, error: error.message }
   if (!updated || updated.length === 0) {
     return { success: false, error: "Contact not found among the ones assigned to you" }
   }
   return { success: true }
+  }
+  // WAVE 155 (155R14): the receipt — tenant = the session agent's own agents row; none → runs exactly as before.
+  if (!agentRow.brokerage_id) return write()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: agentRow.brokerage_id, action: "contact.touch.mark", actor: { type: "user", userId: user.id, agentId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, write)
 }
 
 /**

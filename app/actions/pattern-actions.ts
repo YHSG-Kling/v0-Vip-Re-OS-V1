@@ -180,7 +180,10 @@ export async function updatePatternStatus(
   detectionId: string,
   status: "acknowledged" | "dismissed"
 ): Promise<{ success: boolean; error?: string }> {
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId, impersonatorUserId } = await getAgentContext()
+  if (!brokerageId || !userId) return { success: false, error: "Missing agent or brokerage context" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "intel.pattern_detection.set_status", actor: { type: "user", userId: impersonatorUserId ?? userId }, subject: { type: "pattern_detection", id: detectionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status } }, async () => {
   const supabase = await createClient()
 
   const { error } = await supabase
@@ -194,6 +197,7 @@ export async function updatePatternStatus(
   }
 
   return { success: true }
+  })
 }
 
 // ─── Record Outcome ──────────────────────────────────────────────────────────

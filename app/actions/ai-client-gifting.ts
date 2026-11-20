@@ -290,6 +290,8 @@ export async function createGiftOrder(params: {
   if (!ctx.isAuthenticated || !ctx.agentId || !ctx.brokerageId) {
     return { success: false, error: "Not authenticated" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "reputation.gift_order.create", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId, agentId: ctx.agentId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { occasion: params.giftDetails.occasion, estimated_cost: params.giftDetails.cost } }, async () => {
 
   const supabase = await createClient()
 
@@ -326,6 +328,8 @@ export async function createGiftOrder(params: {
   } catch (error) {
     return handleError(error, "createGiftOrder")
   }
+  })
+  return "data" in lr ? lr : { success: false, error: lr.error ?? "This order was not recorded — nothing was saved" }
 }
 
 // ============================================================================
@@ -648,6 +652,8 @@ export async function createVendor(params: {
     const s = (v ?? "").trim()
     return s === "" ? null : s
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "reputation.gift_vendor.create", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId, agentId: ctx.agentId }, subject: { type: "gift_vendor" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { category } }, async () => {
 
   const supabase = await createClient()
   const { data, error } = await supabase
@@ -675,4 +681,6 @@ export async function createVendor(params: {
 
   revalidatePath("/lifetime-customers")
   return { success: true as const, vendor: data }
+  })
+  return "vendor" in lr ? lr : { success: false as const, error: lr.error ?? "The vendor was not saved — this change was not recorded" }
 }

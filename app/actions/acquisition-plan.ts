@@ -97,6 +97,19 @@ export async function getAcquisitionPlanView(): Promise<AcquisitionPlanView> {
   }
 }
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 /**
  * Build and store a PROPOSED plan for one of the tenant's territories. Reads the territory's own history (raw rows,
  * promotions, duplicates, cost per record) as reach / yield / quote; first-party lines need no preview. No vendor is
@@ -178,6 +191,7 @@ export async function proposeAcquisitionPlan(input: { territoryId: string; budge
       configuredProviders: (["rentcast", "batchdata"] as const).filter((p) => !!process.env[p === "rentcast" ? "RENTCAST_API_KEY" : "BATCHDATA_API_KEY"]),
     })
     plan.blindSpots.push(...extraBlindSpots)
+    return await withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, action: "acquisition.plan.propose", subject: { type: "lead_scraping_market", id: terr.id as string }, riskClass: "LOW_RISK_WRITE", detail: { budget_usd: plan.budgetUsd, total_quote_usd: plan.totalQuoteUsd } }, async (): Promise<{ success: true; plan: AcquisitionPlan; planId: string } | { success: false; error: string }> => {
     const { data: inserted, error: insErr } = await svc.from("acquisition_plans").insert({
       brokerage_id: ctx.brokerageId,
       territory_id: terr.id,
@@ -194,6 +208,7 @@ export async function proposeAcquisitionPlan(input: { territoryId: string; budge
     }).select("id").maybeSingle()
     if (insErr || !inserted) return { success: false, error: `The plan could not be saved: ${insErr?.message ?? "no row returned"}` }
     return { success: true, plan, planId: (inserted as { id: string }).id }
+    }, (error) => ({ success: false as const, error }))
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : String(e) }
   }

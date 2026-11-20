@@ -461,6 +461,8 @@ export async function saveThankYouTemplateAction(
 ): Promise<{ success: boolean; templateId?: string; error?: string }> {
   const actor = await resolveActor()
   if (!actor) return { success: false, error: "Not authenticated." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<{ success: boolean; templateId?: string; error?: string }>({ brokerageId: actor.brokerageId, action: "reputation.thank_you_template.save", actor: { type: "user", userId: actor.userId, agentId: actor.agentId }, subject: "templateId" in input ? { type: "thank_you_note_template", id: input.templateId } : { type: "thank_you_note_template" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: "templateId" in input ? { op: input.isActive ? "restore" : "retire" } : { op: "create", occasion: input.occasion, channel: input.channel } }, async () => {
 
   const service = createServiceClient()
 
@@ -504,6 +506,7 @@ export async function saveThankYouTemplateAction(
 
   if (error) return { success: false, error: error.message }
   return { success: true, templateId: data?.id }
+  })
 }
 
 export async function loadNoteHistoryAction(contactId: string): Promise<{
@@ -588,6 +591,8 @@ export async function assignGiftAction(input: {
 
   const { isValidUUID } = await import("@/lib/validations")
   if (!isValidUUID(input.contactId)) return { success: false, error: "Invalid contact ID." }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<{ success: boolean; giftId?: string; error?: string }>({ brokerageId: actor.brokerageId, action: "reputation.client_gift.assign", actor: { type: "user", userId: actor.userId, agentId: actor.agentId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { occasion: input.occasion, gift_type: input.giftType ?? "physical" } }, async () => {
 
   const service = createServiceClient()
   const { data, error } = await service.from("client_gifts").insert({
@@ -613,6 +618,7 @@ export async function assignGiftAction(input: {
 
   if (error) return { success: false, error: error.message }
   return { success: true, giftId: data?.id }
+  })
 }
 
 /**
@@ -649,6 +655,8 @@ export async function markGiftSentAction(
     }
     patch.actual_cost = paid
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actor.brokerageId, action: "reputation.client_gift.mark_sent", actor: { type: "user", userId: actor.userId, agentId: actor.agentId }, subject: { type: "client_gift", id: giftId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { actual_cost_recorded: patch.actual_cost !== undefined } }, async () => {
 
   const service = createServiceClient()
   // COUNTED. An update whose tenant/agent predicate matched nothing resolves with
@@ -665,6 +673,7 @@ export async function markGiftSentAction(
   if (error) return { success: false, error: error.message }
   if ((data ?? []).length === 0) return { success: false, error: "That gift is not yours to update." }
   return { success: true }
+  })
 }
 
 export async function loadGiftHistoryAction(contactId: string): Promise<{

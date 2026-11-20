@@ -831,6 +831,53 @@ async function ownerRulingsLayer() {
     JSON.stringify(board(null)) === JSON.stringify([AGENT, AGENT2]) && JSON.stringify(board(T1)) === JSON.stringify([AGENT]) && !board(null).includes(U(3)) && ag(U(3)).gamification_points === 0)
 }
 
+// WAVE 155 (lane 155R12 — the carry-in of lane 155C request 1): the buyer agreement's signing writers never reached the
+// reactor, so the signed-agreement appointment award paid for listings only. WIRING: every place a buyer agreement becomes
+// EXECUTED dispatches BUYER_BROKER_AGREEMENT_SIGNED through processKernelEvent AFTER its status write (stripped source; red at
+// e88c1baa); a draft or a cancel never does (negative). DRIVEN: the dispatch's exact params through the award hook the reactor
+// calls — a booking alone earns 0; the executed agreement after a held appointment +50 once; a replay 0. SIMULATED.
+async function buyerEmitLayer() {
+  console.log("\n[155R12 · buyer agreement → reactor (signed-agreement appointment) — SIMULATED]")
+  const DISPATCH = /processKernelEvent\(\{\s*event:\s*KernelEvent\.BUYER_BROKER_AGREEMENT_SIGNED\b/
+  check("positive control: the dispatch finder recognises its specimen and refuses a near-miss",
+    DISPATCH.test(`processKernelEvent({ event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId })`) && !DISPATCH.test(`recordLifecycleEvent(sb, b, { event_type: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED })`))
+  const fp = src("lib/esign-webhooks/finalize-packet.ts")
+  const fpUpdate = fp.indexOf(`signed_method: provider`), fpDispatch = fp.search(DISPATCH)
+  check("the provider webhook (finalize-packet) dispatches to the reactor AFTER it marks the buyer agreement active", fpUpdate > 0 && fpDispatch > fpUpdate)
+  const bba = src("app/actions/buyer-broker-agreements.ts")
+  const fnBody = (name: string) => { const at = bba.indexOf(`export async function ${name}(`); const next = bba.indexOf("\nexport ", at + 1); return at < 0 ? "" : bba.slice(at, next < 0 ? undefined : next) }
+  const afterActive = (body: string) => { const u = body.search(/(?<![\w])status:\s*"active"/), d = body.indexOf("reactToExecutedBBA("); return u > 0 && d > u }
+  check("buyer-broker-agreements: the one dispatcher sends BUYER_BROKER_AGREEMENT_SIGNED through processKernelEvent inside a catch (award only)",
+    DISPATCH.test(bba) && /async function reactToExecutedBBA\([^)]*\)[^{]*\{\s*try\s*\{/.test(bba))
+  check("the buyer's click-through AND the agent-recorded signature each dispatch after their status → active write",
+    afterActive(fnBody("clickThroughSignBBAAction")) && afterActive(fnBody("recordSignedBBAAction")))
+  check("NEGATIVE: drafting, dispatching for signature and cancelling a buyer agreement never reach the award (none is executed)",
+    ["createBBADraftAction", "dispatchBBAToSigningProviderAction", "cancelBBAAction"].every((n) => { const b = fnBody(n); return b.length > 0 && !b.includes("reactToExecutedBBA(") && !DISPATCH.test(b) }))
+
+  const day = 86_400_000, nowMs = Date.now(), iso = (ms: number) => new Date(ms).toISOString()
+  const BUYER = U(311), BUYER_BOOKED = U(312), CAL_HELD = U(320), CAL_BOOKED = U(321), BBA = U(330)
+  const m = memoryClient({
+    agents: [{ id: AGENT2, brokerage_id: BRK, user_id: U(6), team_id: null, gamification_points: 0 }],
+    calendar_events: [
+      { id: CAL_HELD, brokerage_id: BRK, entity_type: "contact", entity_id: BUYER, status: "completed", start_at: iso(nowMs - 6 * day), agent_user_id: U(6) },
+      { id: CAL_BOOKED, brokerage_id: BRK, entity_type: "contact", entity_id: BUYER_BOOKED, status: "scheduled", start_at: iso(nowMs + 3 * day), agent_user_id: U(6) },
+    ],
+    buyer_broker_agreements: [{ id: BBA, brokerage_id: BRK, agent_id: AGENT2, buyer_contact_id: BUYER, status: "active", signed_at: iso(nowMs - day), signed_method: "click_through", signed_document_url: null, superseded_by: null }],
+    gamification_badges: [],
+  })
+  const earned = () => (m.tables.agent_points_log ?? []).filter((l) => l.reason === "SIGNED_AGREEMENT_APPOINTMENT")
+  // The exact params reactToExecutedBBA / finalize-packet hand processKernelEvent, as the reactor forwards them to the hook.
+  const dispatch = () => awardLifecycleMilestones(m, { event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "buyer_broker_agreement", entityId: BBA })
+  const booking = await awardLifecycleMilestones(m, { event: KernelEvent.ISA_APPOINTMENT_SCHEDULED, brokerageId: BRK, entityType: "contact", entityId: BUYER_BOOKED, metadata: { agent_id: AGENT2 } })
+  check("a booking alone earns 0", booking.awarded.length === 0 && earned().length === 0)
+  const first = await dispatch()
+  check(`an EXECUTED buyer agreement after a HELD appointment earns SIGNED_AGREEMENT_APPOINTMENT +${POINT_VALUES.SIGNED_AGREEMENT_APPOINTMENT} once, to the agreement's agent`,
+    first.awarded.length === 1 && first.awarded[0].agentId === AGENT2 && first.awarded[0].points === POINT_VALUES.SIGNED_AGREEMENT_APPOINTMENT && earned().length === 1 && earned()[0].reference_id === BBA)
+  const replay = await dispatch()
+  check("a replayed dispatch (webhook re-delivery, a second click) earns 0", replay.awarded.length === 0 && replay.alreadyAwarded === 1 && earned().length === 1 &&
+    m.tables.agents[0].gamification_points === POINT_VALUES.SIGNED_AGREEMENT_APPOINTMENT)
+}
+
 async function main() {
   pureLayer()
   await memoryLayer()
@@ -839,6 +886,7 @@ async function main() {
   await awardPathLayer()
   await verifiedOutcomesLayer()
   await ownerRulingsLayer()
+  await buyerEmitLayer()
   console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ GAMIFICATION_FAIL\n" + fails.map((f) => `   - ${f}`).join("\n")); process.exit(1) }
   console.log(" ✅ GAMIFICATION_OK")

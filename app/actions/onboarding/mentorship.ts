@@ -14,6 +14,8 @@ export async function matchMentor(agentId: string): Promise<{ success: boolean; 
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Not authenticated" }
+  type MatchResult = { success: boolean; error?: string; mentorId?: string; matchScore?: number; matches?: MentorMatch[] }
+  const run = async (): Promise<MatchResult> => {
 
   const svc = createServiceClient()
   const { data: mentee } = await svc.from("agents").select("id, brokerage_id, location_id, specializations, years_experience").eq("id", agentId).maybeSingle()
@@ -56,4 +58,10 @@ export async function matchMentor(agentId: string): Promise<{ success: boolean; 
     if (mentorMatchErr) console.error(`[mentorship] mentor relationship NOT created: ${mentorMatchErr.message}`)
   }
   return { success: true, mentorId: best.mentorId, matchScore: best.score, matches }
+  }
+  // Receipt against the SESSION user's tenant; a session with no tenant runs exactly as before, unrecorded.
+  const { data: mentorTenant } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!mentorTenant?.brokerage_id) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<MatchResult>({ brokerageId: mentorTenant.brokerage_id as string, action: "onboarding.mentor.match", actor: { type: "user", userId: user.id }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, run)
 }

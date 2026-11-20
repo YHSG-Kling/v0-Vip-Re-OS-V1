@@ -17,6 +17,19 @@ import { emitKernelEvent } from "@/lib/kernel/emit"
 // service-role-only sentinelWrite ruling).
 import { bestEffort } from "@/lib/db/best-effort"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 export async function requestShowing(data: {
   contactId: string
   /** UUID when the property is an in-house listing; otherwise pass undefined
@@ -131,6 +144,9 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
       return { success: false, error: finGate.reason, errorCode: finGate.errorCode }
     }
 
+    // WAVE 155 (lane 155R12): receipt — actor = the session user (or the sessionless lane's verified actor); tenant = the contact's,
+    // read under that caller's client above. No actor → no receipt row (runs exactly as before).
+    return await withReceipt({ brokerageId: authUserId ? brokerageId : null, userId: authUserId ?? "", action: "buyer.showing_request.create", subject: { type: "contact", id: data.contactId }, riskClass: "COMMUNICATION", detail: { source: data.source ?? null, listing_id: data.listingId ?? null, options: data.preferredDates.length } }, async () => {
     // Build a readable message from preferred dates and notes
     const datesText = data.preferredDates
       .map((d, i) => `Option ${i + 1}: ${d.date} at ${d.time}`)
@@ -369,6 +385,7 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
     revalidatePath(`/crm/contacts/${data.contactId}`)
 
     return { success: true, data: showing }
+    }, (error) => ({ success: false as const, error, data: undefined }))
   } catch (error: any) {
     return { success: false, error: error.message }
   }
@@ -559,6 +576,7 @@ export async function createShowing(params: {
       return { success: false, error: finGate.reason, errorCode: finGate.errorCode }
     }
 
+    return await withReceipt({ brokerageId: creator?.id ? (c?.brokerage_id ?? null) : null, userId: creator?.id ?? "", action: "buyer.showing.create", subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", detail: { listing_id: params.propertyId, scheduled_date: params.scheduledDate } }, async () => {
     const startTime = `${params.scheduledTime}:00`
     const [eh, em] = params.scheduledTime.split(":").map(Number)
     const endTotal = eh * 60 + em + 30
@@ -588,6 +606,7 @@ export async function createShowing(params: {
     revalidatePath("/dashboard")
 
     return { success: true, showing: data }
+    }, (error) => ({ success: false as const, error }))
   } catch (error: any) {
     console.error("Error in createShowing:", error)
     return { success: false, error: error.message }
@@ -670,6 +689,7 @@ export async function cancelShowing(showingId: string, reason?: string) {
       return { success: false, error: "Forbidden" }
     }
 
+    return await withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "buyer.showing_request.cancel", subject: { type: "showing_request", id: (reqRow as any).id as string }, riskClass: "LOW_RISK_WRITE", detail: { converted_showing: !!(reqRow as any).converted_showing_id } }, async () => {
     const { data, error } = await supabase
       .from("showing_requests")
       .update({
@@ -703,6 +723,7 @@ export async function cancelShowing(showingId: string, reason?: string) {
     revalidatePath("/dashboard")
 
     return { success: true, showing: data }
+    }, (error) => ({ success: false as const, error }))
   } catch (error: any) {
     console.error("Error in cancelShowing:", error)
     return { success: false, error: error.message }

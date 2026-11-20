@@ -220,6 +220,8 @@ export async function generateWelcomeMessage(agentId: string) {
   if (spendActor.agentId !== agentId && !isAdminOrBroker({ user_type: spendActor.userType })) {
     return { success: false, error: "Only a broker or admin can generate another agent's welcome message." }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction({ brokerageId: spendActor.brokerageId, action: "onboarding.welcome_message.generate", actor: { type: "user", userId: spendActor.impersonatorUserId ?? spendActor.userId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = await createClient()
 
   try {
@@ -300,6 +302,8 @@ The message should:
     console.error("Generate welcome error:", error)
     return handleError(error, "generateWelcomeMessage")
   }
+  })
+  return "welcomeMessage" in lr ? lr : { success: false, error: lr.error ?? "This action was not recorded — nothing was generated" }
 }
 
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `askOnboardingBuddy` deleted.
@@ -531,6 +535,9 @@ export async function certifyAgent(agentId: string) {
   if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { success: false, error: "Only a broker or admin can certify and activate an agent." }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sctx = { ...ctx, brokerageId: ctx.brokerageId }
+  const lr = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "onboarding.agent.certify", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (ctx = sctx) => {
 
   const supabase = await createClient()
 
@@ -645,6 +652,8 @@ export async function certifyAgent(agentId: string) {
     console.error("Certify agent error:", error)
     return handleError(error, "certifyAgent")
   }
+  })
+  return "certified" in lr ? lr : { success: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getOnboardingAnalytics`

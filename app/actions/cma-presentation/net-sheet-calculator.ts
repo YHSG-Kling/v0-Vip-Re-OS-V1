@@ -17,6 +17,19 @@ import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { getFinancialDefaults } from "@/lib/brokerage/get-brokerage-settings"
 import { computeNetSheetScenario } from "@/lib/cma/net-sheet-math"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 export interface NetSheetInput {
   listingId: string
   contactId: string
@@ -100,6 +113,9 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
     }
 
     const supabase = await createClient()
+    // WAVE 155 (lane 155R12): no session gate stood here (a public endpoint); the siblings' exact gate (the session user).
+    const { data: { user: sessionUser } } = await supabase.auth.getUser()
+    if (!sessionUser) return { success: false, error: "Not authenticated" }
 
     // pass 13: callers pass MIXED id classes (the presentation tab sends
     // listing.agent_id = agents.id; direct actions send users.id). Resolve both
@@ -123,6 +139,8 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       return { success: false, error: "Agent brokerage not found" }
     }
 
+    // The tenant here is the one the caller's RLS-scoped reads above resolved for that agent (finding: from an argument, not the session).
+    return await withReceipt({ brokerageId: brokerageId as string, userId: sessionUser.id, action: "seller.net_sheet.generate", subject: { type: "listing", id: input.listingId }, riskClass: "LOW_RISK_WRITE", detail: { contact_id: input.contactId } }, async (): Promise<NetSheetResult> => {
     // Fetch brokerage commission structure and financial defaults in parallel
     const [commissionStructure, financialDefaults] = await Promise.all([
       getDefaultCommissionStructure(brokerageId),
@@ -308,6 +326,7 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       // which is the honest state, not a missing feature.
       disclosedBuyerAgentCommissionNote: nsDisclosedBuyerAgentNote,
     }
+    }, (error) => ({ success: false as const, error }))
   } catch (error: any) {
     console.error("[System 5.3] Net sheet generation error:", error)
     return {
@@ -457,6 +476,7 @@ export async function shareNetSheetToPortal(params: {
       return { success: false, error: "No agent profile for this user — the net sheet was not shared to the portal." }
     }
 
+    return await withReceipt({ brokerageId, userId: user.id, agentId: agentRecordId, action: "seller.net_sheet.share_to_portal", subject: { type: "contact", id: params.contactId }, riskClass: "COMMUNICATION", detail: { listing_id: params.listingId } }, async () => {
     const message =
       `Based on a sale price of ${formatCurrency(params.netSheetData.estimatedSalePrice)}, ` +
       `your estimated net proceeds are ${formatCurrency(params.netSheetData.estimatedNet)}. ` +
@@ -497,6 +517,7 @@ export async function shareNetSheetToPortal(params: {
     }
 
     return { success: true }
+    }, (error) => ({ success: false as const, error }))
   } catch (err: any) {
     console.error("[System 5.3] shareNetSheetToPortal error:", err)
     return { success: false, error: err.message || "Failed to share net sheet" }
@@ -555,6 +576,7 @@ export async function saveNetSheetEmailDraft(params: {
       .eq("id", user.id)
       .maybeSingle()
 
+    return await withReceipt({ brokerageId: agent?.brokerage_id ?? null, userId: user.id, action: "seller.net_sheet.save_email_draft", subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", detail: { listing_id: params.listingId } }, async () => {
     const { error } = await supabase.from("ai_message_drafts").insert({
       agent_user_id: user.id,
       contact_id: params.contactId,
@@ -570,6 +592,7 @@ export async function saveNetSheetEmailDraft(params: {
 
     if (error) return { success: false, error: error.message }
     return { success: true }
+    }, (error) => ({ success: false as const, error }))
   } catch (err: any) {
     return { success: false, error: err.message || "Failed to save draft" }
   }

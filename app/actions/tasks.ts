@@ -417,6 +417,8 @@ export async function deleteTask(taskId: string) {
     if (!ctx.ok) return { success: false, error: ctx.error }
     if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
     const supabase = ctx.db
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "crm.task.delete", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "task", id: taskId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     // `.select("id")` makes the affected rows observable: a zero-row DELETE
     // resolves with `error: null`, and this action used to report success on it.
@@ -437,6 +439,7 @@ export async function deleteTask(taskId: string) {
     revalidatePath("/dashboard/tasks")
 
     return { success: true }
+    })
   } catch (error) {
     return handleError(error, "deleteTask")
   }

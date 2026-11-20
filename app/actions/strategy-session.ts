@@ -105,6 +105,8 @@ export async function scheduleStrategySessionAction(input: {
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const gate = await assertCanActOnContact(input.contactId)
   if (!gate.ok) return { ok: false, error: gate.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true } | { ok: false; error: string }>({ brokerageId: gate.contact.brokerage_id as string, action: "crm.strategy_session.schedule", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { duration_min: input.session.durationMin } }, async () => {
   const svc = createServiceClient()
 
   // tasks.assigned_to_agent_id is NOT NULL (live contract) — the contact's
@@ -139,6 +141,8 @@ export async function scheduleStrategySessionAction(input: {
   })
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 
@@ -151,7 +155,7 @@ export async function setSellerFloorAction(input: {
     const { data: { user } } = await sb.auth.getUser()
     if (!user) return null
     const { data: me } = await sb.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-    return (me as any)?.brokerage_id ? { brokerageId: (me as any).brokerage_id as string } : null
+    return (me as any)?.brokerage_id ? { brokerageId: (me as any).brokerage_id as string, userId: user.id } : null
   })
   if (!gate) return { ok: false, error: "Not authenticated" }
   const svc = createServiceClient()
@@ -159,8 +163,12 @@ export async function setSellerFloorAction(input: {
     .select("id, brokerage_id").eq("id", input.listingId).maybeSingle()
   if (!listing || (listing as any).brokerage_id !== gate.brokerageId) return { ok: false, error: "Listing not found" }
   const floor = input.floor != null && input.floor > 0 ? Math.round(input.floor) : null
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true } | { ok: false; error: string }>({ brokerageId: gate.brokerageId, action: "listing.seller_floor.set", actor: { type: "user", userId: gate.userId }, subject: { type: "listing", id: input.listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { cleared: floor === null } }, async () => {
   const { error } = await svc.from("listings")
     .update({ seller_walkaway_price: floor }).eq("id", input.listingId)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

@@ -702,6 +702,8 @@ export async function saveNetSheet(params: {
   const expires = new Date()
   expires.setDate(expires.getDate() + 90)
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: profile.brokerage_id, action: "listing.net_sheet.save", actor: { type: "user", userId: user.user.id, agentId }, subject: { type: "listing", id: params.listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { contact_id: params.contactId } }, async () => {
   const { data: inserted, error } = await svc
     .from("net_sheet_calculations")
     .insert({
@@ -736,6 +738,7 @@ export async function saveNetSheet(params: {
   }
 
   return { success: true, netSheetId: inserted.id }
+  })
 }
 
 /**
@@ -764,6 +767,8 @@ export async function resolvePriceTrendAlert(
   if (!existing) return { success: false, error: "Alert not found" }
   if (existing.brokerage_id !== u.brokerage_id) return { success: false, error: "Forbidden" }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: u.brokerage_id, action: "listing.price_trend_alert.resolve", actor: { type: "user", userId: user.id }, subject: { type: "price_trend_alert", id: alertId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { error } = await supabase
     .from("price_trend_alerts")
     .update({ is_resolved: true, resolved_at: new Date().toISOString() })
@@ -771,4 +776,5 @@ export async function resolvePriceTrendAlert(
     .eq("brokerage_id", u.brokerage_id)
 
   return { success: !error, error: error?.message }
+  })
 }

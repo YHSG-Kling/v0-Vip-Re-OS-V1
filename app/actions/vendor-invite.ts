@@ -128,6 +128,8 @@ export async function inviteVendorToPlatformAction(
   if (!canInviteVendors(caller.user_type)) {
     return { ok: false, error: "Forbidden — your role cannot invite vendors" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<InviteVendorResult>({ brokerageId: caller.brokerage_id, action: "vendor.invitation.send", actor: { type: "user", userId: user.id }, subject: { type: "vendor", id: input.vendorId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { custom_message: !!input.customMessage } }, async () => {
 
   const svc = createServiceClient()
 
@@ -244,6 +246,8 @@ export async function inviteVendorToPlatformAction(
   }
 
   return { ok: true, invitationId, inviteUrl, emailSent, emailError, reused: !!existing }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // ── ACCEPT ───────────────────────────────────────────────────────────────────
@@ -548,6 +552,8 @@ export async function revokeVendorInviteAction(
   if (!isAdminOrBroker({ user_type: caller.user_type ?? "" })) {
     return { ok: false, error: "Forbidden — only a broker, admin or team lead can revoke an invitation" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: caller.brokerage_id, action: "vendor.invitation.revoke", actor: { type: "user", userId: user.id }, subject: { type: "vendor_invitation", id: invitationId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const svc = createServiceClient()
   // `.select("id")` makes the revocation PROVABLE. Without it this returned
@@ -569,4 +575,6 @@ export async function revokeVendorInviteAction(
     }
   }
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

@@ -175,6 +175,9 @@ export async function saveProviderOverride(
   // certify is refused by name, never stored.
   const verdict = providerSelectionVerdict(payload.provider_type, payload.provider_key || fallback)
   if (!verdict.ok) throw new Error(verdict.reason)
+  // The receipt names the type, key and switch only — never `config` (it can hold credentials).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr: unknown = await ledgerSessionAction({ brokerageId, action: "tenant.provider_override.save", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { provider_type: payload.provider_type, provider_key: payload.provider_key || fallback, enabled: payload.enabled } }, async () => {
 
   // Upsert on (scope_type, scope_id, provider_type)
   const { error } = await supabase
@@ -193,4 +196,6 @@ export async function saveProviderOverride(
     )
 
   if (error) throw new Error(`Failed to save provider override: ${error.message}`)
+  })
+  if (lr && typeof lr === "object" && "error" in lr) throw new Error(String((lr as { error?: string }).error ?? "The provider change was not recorded"))
 }

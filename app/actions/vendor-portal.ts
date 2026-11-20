@@ -342,6 +342,8 @@ export async function updateVendorJobStatus(data: {
   const gate = await gateVendor(data.vendorId)
   if (!gate.ok) throw new Error(gate.error)
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: gate.brokerageId, action: "vendor.job.update_status", actor: { type: "user", userId: gate.userId }, subject: { type: "vendor_job", id: data.jobId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { vendor_id: gate.vendorId, status: data.status } }, async () => {
   const supabase = await createClient()
 
   const { data: job, error: updateError } = await supabase
@@ -392,6 +394,7 @@ export async function updateVendorJobStatus(data: {
   }
 
   return job
+  })
 }
 
 
@@ -485,6 +488,8 @@ export async function updateVendorJobCost(data: {
   if (actual !== null) patch.cost_actual = actual
   if (estimate !== null) patch.cost_estimate = estimate
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: gate.brokerageId, action: "vendor.job.update_cost", actor: { type: "user", userId: gate.userId }, subject: { type: "vendor_job", id: data.jobId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { vendor_id: gate.vendorId, fields: Object.keys(patch).filter((k) => k !== "updated_at") } }, async () => {
   const supabase = await createClient()
 
   const { data: job, error } = await supabase
@@ -499,6 +504,7 @@ export async function updateVendorJobCost(data: {
   if (error) throw error
   if (!job) throw new Error("Job not found in your scope")
   return job
+  })
 }
 
 

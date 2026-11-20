@@ -25,6 +25,7 @@ export async function emitAuditEvent(request: EmitAuditEventRequest): Promise<{ 
 
   try {
     const supabase = await createClient()
+    const run = async (): Promise<{ success: boolean; error?: string }> => {
 
     // Build activity record
     const activity: any = {
@@ -54,6 +55,13 @@ export async function emitAuditEvent(request: EmitAuditEventRequest): Promise<{ 
     }
 
     return { success: true }
+    }
+    // Receipt against the SESSION user and tenant — never the request's user_id / brokerage_id; no session tenant = today's behavior, unrecorded.
+    const { data: { user: auditUser } } = await supabase.auth.getUser()
+    const { data: auditTenant } = auditUser ? await supabase.from('users').select('brokerage_id').eq('id', auditUser.id).maybeSingle() : { data: null }
+    if (!auditUser || !auditTenant?.brokerage_id) return await run()
+    const { ledgerSessionAction } = await import('@/lib/kernel/action-ledger')
+    return await ledgerSessionAction({ brokerageId: auditTenant.brokerage_id as string, action: 'voice.command_event.record', actor: { type: 'user', userId: auditUser.id }, subject: entity_type && entity_id ? { type: entity_type, id: entity_id } : { type: 'voice_command' }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'HUMAN_REQUESTED', detail: { event_type, body_matches_session: user_id === auditUser.id && brokerage_id === auditTenant.brokerage_id } }, run)
 
   } catch (error) {
     console.error('[emit-audit-event] Unexpected error:', error)

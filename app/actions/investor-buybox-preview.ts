@@ -68,6 +68,8 @@ export async function getInvestorBuyboxPreviewForListing(params: {
     const access = await resolveBatchDataAccess({ brokerageId: ctx.brokerageId, purpose: "acquisition" })
     if (!access.allowed) return { success: false, error: `Buy Box preview not available — ${access.reason}` }
 
+    // WAVE 155 (lane 155R12): one receipt for the session's provider preview (a $0, metered sample) — ledgerSessionAction, no key.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "listing.investor_buybox.preview", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "listing", id: params.listingId }, riskClass: "READ", reasonCode: "HUMAN_REQUESTED", detail: { provider: "batchdata", estimated_cost_usd: 0 } }, async (): Promise<InvestorBuyboxPreviewResult> => {
     const preview = await investorBuyboxPreview({
       address: (listing as any).address, city: (listing as any).city,
       state: (listing as any).state, zip: (listing as any).zip,
@@ -83,6 +85,7 @@ export async function getInvestorBuyboxPreviewForListing(params: {
     if (preview.unconfigured) return { success: false, unconfigured: true, error: "BatchData MCP is not configured" }
     if (!preview.ok) return { success: false, error: preview.error ?? "Buy Box preview failed" }
     return { success: true, matchedCount: preview.rows.length }
+    })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }

@@ -182,9 +182,11 @@ export async function approveSphereTouch(actionId: string): Promise<{ success: b
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", user.id).maybeSingle()
+  const { data: agentRow } = await svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
 
+  // WAVE 155 (lane 155R12): one receipt per session write — ledgerSessionAction, no key (a second click runs again).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return ledgerSessionAction({ brokerageId: agentRow.brokerage_id as string, action: "sphere.touch.approve", actor: { type: "user", userId: user.id, agentId: agentRow.id as string }, subject: { type: "predictive_listing_action", id: actionId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { error } = await svc
     .from("predictive_listing_actions")
     .update({
@@ -201,6 +203,7 @@ export async function approveSphereTouch(actionId: string): Promise<{ success: b
     .eq("status", "pending_review")
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }
 
 /**
@@ -213,9 +216,11 @@ export async function updateSphereMessage(actionId: string, messageBody: string)
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", user.id).maybeSingle()
+  const { data: agentRow } = await svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
 
+  // WAVE 155 (lane 155R12): one receipt per session write — ledgerSessionAction, no key (a second click runs again).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return ledgerSessionAction({ brokerageId: agentRow.brokerage_id as string, action: "sphere.touch.edit_message", actor: { type: "user", userId: user.id, agentId: agentRow.id as string }, subject: { type: "predictive_listing_action", id: actionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { error } = await svc
     .from("predictive_listing_actions")
     .update({ message_body: messageBody })
@@ -224,6 +229,7 @@ export async function updateSphereMessage(actionId: string, messageBody: string)
     .eq("status", "pending_review")
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }
 
 /**
@@ -235,9 +241,11 @@ export async function dismissSphereTouch(actionId: string, reason: string): Prom
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", user.id).maybeSingle()
+  const { data: agentRow } = await svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
 
+  // WAVE 155 (lane 155R12): one receipt per session write — ledgerSessionAction, no key (a second click runs again).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return ledgerSessionAction({ brokerageId: agentRow.brokerage_id as string, action: "sphere.touch.dismiss", actor: { type: "user", userId: user.id, agentId: agentRow.id as string }, subject: { type: "predictive_listing_action", id: actionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { error } = await svc
     .from("predictive_listing_actions")
     .update({
@@ -250,4 +258,5 @@ export async function dismissSphereTouch(actionId: string, reason: string): Prom
     .eq("agent_id", agentRow.id)
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }

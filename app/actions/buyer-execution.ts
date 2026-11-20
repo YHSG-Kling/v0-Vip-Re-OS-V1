@@ -32,6 +32,19 @@ import { lenderConfirmFinancialVerification, agentAssistSearchConfiguration, adm
 // owner's ruling: "can only get their contacts".
 import { requireContactAccess } from '@/lib/portal/require-contact-access'
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WAVE 3 — THE ACTOR IS THE SESSION, NEVER A PARAMETER.
 //
@@ -155,7 +168,7 @@ export async function checkBuyerCanPerformAction(params: {
 
     if (!gateCheck.allowed) {
       // Log blocked attempt
-      await logBuyerExecutionEvent({
+      await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.financial_gate.log_blocked", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { attempted: action } }, () => logBuyerExecutionEvent({
         contactId,
         eventType: `buyer.${action}.blocked`,
         userId: access.userId,
@@ -164,7 +177,7 @@ export async function checkBuyerCanPerformAction(params: {
           reason: gateCheck.reason,
           verification_status: gateCheck.verification?.isVerified || false
         }
-      })
+      }), (error) => ({ success: false as const, error }))
     }
 
     return {
@@ -240,7 +253,7 @@ export async function handleBuyerVoiceAssistant(params: {
       userId: access.userId,
     }
 
-    return await handleBuyerVoiceRequest(request)
+    return await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.voice_assistant.handle", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { intent } }, () => handleBuyerVoiceRequest(request), (error) => ({ success: false as const, spokenResponse: 'I encountered an error. Please contact your agent for assistance.', error }))
   } catch (error) {
     console.error('[buyer-execution] Error in handleBuyerVoiceAssistant:', error)
     return {
@@ -290,7 +303,7 @@ export async function lenderConfirmBuyerFinancials(params: {
   if (!access.ok) return { success: false, error: access.error }
 
   try {
-    return await lenderConfirmFinancialVerification({
+    return await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.financial_verification.lender_confirm", subject: { type: "contact", id: contactId }, riskClass: "FINANCIAL", detail: { verification_type: verificationType } }, () => lenderConfirmFinancialVerification({
       contactId,
       lenderId: access.userId,
       verificationType,
@@ -302,7 +315,7 @@ export async function lenderConfirmBuyerFinancials(params: {
         lenderName,
         notes
       }
-    })
+    }), (error) => ({ success: false as const, error }))
   } catch (error) {
     console.error('[buyer-execution] Error in lenderConfirmBuyerFinancials:', error)
     return handleError(error, 'lenderConfirmBuyerFinancials')
@@ -348,12 +361,12 @@ export async function agentConfigureBuyerSearch(params: {
   }
 
   try {
-    return await agentAssistSearchConfiguration({
+    return await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.search_criteria.configure", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE" }, () => agentAssistSearchConfiguration({
       contactId,
       agentId: access.userId,
       searchPreferences,
       notes
-    })
+    }), (error) => ({ success: false as const, error }))
   } catch (error) {
     console.error('[buyer-execution] Error in agentConfigureBuyerSearch:', error)
     return handleError(error, 'agentConfigureBuyerSearch')
@@ -442,12 +455,12 @@ export async function adminOverrideFinancialVerification(params: {
   }
 
   try {
-    return await adminOverrideFinancialGate({
+    return await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.financial_gate.override", subject: { type: "contact", id: contactId }, riskClass: "FINANCIAL", detail: { expires: !!expiresAt } }, () => adminOverrideFinancialGate({
       contactId,
       adminId: access.userId,
       reason,
       expiresAt
-    })
+    }), (error) => ({ success: false as const, error }))
   } catch (error) {
     console.error('[buyer-execution] Error in adminOverrideFinancialVerification:', error)
     return handleError(error, 'adminOverrideFinancialVerification')
@@ -490,12 +503,12 @@ export async function agentAdvanceBuyer(params: {
   }
 
   try {
-    return await agentAdvanceBuyerStage({
+    return await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.lifecycle.advance", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { target_state: targetState } }, () => agentAdvanceBuyerStage({
       contactId,
       agentId: access.userId,
       targetState,
       reason
-    })
+    }), (error) => ({ success: false as const, error }))
   } catch (error) {
     console.error('[buyer-execution] Error in agentAdvanceBuyer:', error)
     return handleError(error, 'agentAdvanceBuyer')

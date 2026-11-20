@@ -53,6 +53,8 @@ export async function removeContactFromSegmentAction(input: {
     return { ok: false, error: "This contact has no brokerage — refusing an untenanted segment write." }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId, action: "contact.segment_membership.remove", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { segment_id: input.segmentId } }, async (): Promise<{ ok: true; alreadyRemoved: boolean } | { ok: false; error: string }> => {
   const result = await removeContactFromSegment({
     contactId: input.contactId,
     segmentId: input.segmentId,
@@ -68,4 +70,6 @@ export async function removeContactFromSegmentAction(input: {
 
   revalidatePath(`/crm/contacts/${input.contactId}`)
   return { ok: true, alreadyRemoved: result.state === "already_removed" }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "The segment membership could not be closed." }
 }

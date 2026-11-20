@@ -21,7 +21,7 @@ import { createClient } from "@/lib/supabase/server"
 import { requireBrokerageAdmin } from "@/lib/auth/require-brokerage-admin"
 import type { DateRange, VendorRoiResult } from "@/lib/analytics/vendor-roi"
 
-type Gate = { ok: true; brokerageId: string } | { ok: false; error: string }
+type Gate = { ok: true; brokerageId: string; userId: string } | { ok: false; error: string }
 
 async function sessionBrokerageAdmin(): Promise<Gate> {
   const supabase = await createClient()
@@ -29,7 +29,7 @@ async function sessionBrokerageAdmin(): Promise<Gate> {
   if (!user) return { ok: false, error: "Unauthorized" }
   try {
     const ctx = await requireBrokerageAdmin(supabase, user.id)
-    return { ok: true, brokerageId: ctx.brokerageId }
+    return { ok: true, brokerageId: ctx.brokerageId, userId: user.id }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Forbidden" }
   }
@@ -42,12 +42,16 @@ export async function seedFarmTerritoriesFromServiceAreaAction(): Promise<
   const gate = await sessionBrokerageAdmin()
   if (!gate.ok) return gate
   const { seedTerritoriesFromServiceArea } = await import("@/lib/territory/metrics-aggregator")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<Awaited<ReturnType<typeof seedFarmTerritoriesFromServiceAreaAction>>>({ brokerageId: gate.brokerageId, action: "tenant.farm_territory.seed", actor: { type: "user", userId: gate.userId }, subject: { type: "brokerage", id: gate.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   try {
     const r = await seedTerritoriesFromServiceArea(gate.brokerageId)
     return { ok: true, ...r }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 /** Farm territories: record whether they follow the settings service area or are custom. */
@@ -58,12 +62,16 @@ export async function setFarmTerritoryModeAction(
   const gate = await sessionBrokerageAdmin()
   if (!gate.ok) return gate
   const { setFarmTerritoryMode } = await import("@/lib/territory/metrics-aggregator")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true } | { ok: false; error: string }>({ brokerageId: gate.brokerageId, action: "tenant.farm_territory.set_mode", actor: { type: "user", userId: gate.userId }, subject: { type: "brokerage", id: gate.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { mode } }, async () => {
   try {
     await setFarmTerritoryMode(gate.brokerageId, mode)
     return { ok: true }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 /** Provider ROI for the caller's brokerage over a 30/60/90-day window. */

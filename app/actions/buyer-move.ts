@@ -30,6 +30,19 @@ import {
   type ServiceMode,
 } from "@/lib/transactions/buyer-move"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 interface ScopedParams {
   transactionId: string
   brokerageId: string
@@ -37,13 +50,13 @@ interface ScopedParams {
 
 async function authAndScope(params: ScopedParams) {
   if (!isValidUUID(params.transactionId) || !isValidUUID(params.brokerageId)) {
-    return { supabase: null, error: "Invalid id" as const }
+    return { supabase: null, userId: null, error: "Invalid id" as const }
   }
   // TENANT FROM THE SESSION (CLAUDE.md §4; wave 153, lane 153Q). The body's brokerageId is only a claim:
   // requireCallerTenant refuses one that names a different brokerage, and the session's tenant is what
   // every read and the move-case insert below are pinned to (params.brokerageId is overwritten with it).
   const caller = await requireCallerTenant(params.brokerageId)
-  if (!caller.ok) return { supabase: null, error: "Unauthorized" as const }
+  if (!caller.ok) return { supabase: null, userId: null, error: "Unauthorized" as const }
   params.brokerageId = caller.brokerageId
   const supabase = await createClient()
   const { data: tx, error: txErr } = await supabase
@@ -52,16 +65,18 @@ async function authAndScope(params: ScopedParams) {
     .eq("id", params.transactionId)
     .eq("brokerage_id", caller.brokerageId)
     .maybeSingle()
-  if (txErr) return { supabase: null, error: "The deal couldn't be read just now. Try again shortly." as const }
-  if (!tx) return { supabase: null, error: "Transaction not found in your brokerage" as const }
-  return { supabase, error: null }
+  if (txErr) return { supabase: null, userId: null, error: "The deal couldn't be read just now. Try again shortly." as const }
+  if (!tx) return { supabase: null, userId: null, error: "Transaction not found in your brokerage" as const }
+  // WAVE 155 (lane 155R12): the session user rides along for the action-ledger receipt.
+  return { supabase, userId: caller.userId, error: null }
 }
 
 export async function ensureBuyerMoveCaseAction(
   params: ScopedParams,
 ): Promise<{ success: boolean; case?: BuyerMoveCase | null; error?: string }> {
-  const { supabase, error } = await authAndScope(params)
-  if (!supabase) return { success: false, error }
+  const { supabase, error, userId } = await authAndScope(params)
+  if (!supabase || !userId) return { success: false, error: error ?? "Unauthorized" }
+  return withReceipt({ brokerageId: params.brokerageId, userId, action: "transaction.buyer_move_case.ensure", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   try {
     const { case: moveCase } = await ensureBuyerMoveCase(supabase as any, params)
     revalidatePath(`/dashboard/transactions/${params.transactionId}`)
@@ -69,6 +84,7 @@ export async function ensureBuyerMoveCaseAction(
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : "Failed to prepare move case" }
   }
+  }, (error) => ({ success: false as const, error }))
 }
 
 export async function getBuyerMoveCaseAction(
@@ -89,12 +105,14 @@ export async function getBuyerMoveCaseAction(
 export async function updateMoveTaskAction(
   params: ScopedParams & { taskType: MoveTaskType; status: MoveTaskStatus },
 ): Promise<{ success: boolean; case?: BuyerMoveCase | null; error?: string }> {
-  const { supabase, error } = await authAndScope(params)
-  if (!supabase) return { success: false, error }
+  const { supabase, error, userId } = await authAndScope(params)
+  if (!supabase || !userId) return { success: false, error: error ?? "Unauthorized" }
+  return withReceipt({ brokerageId: params.brokerageId, userId, action: "transaction.buyer_move_task.update", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", detail: { task_type: params.taskType, status: params.status } }, async () => {
   const { ok, case: moveCase } = await updateMoveTask(supabase as any, params)
   if (!ok) return { success: false, error: "Move case not found" }
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   return { success: true, case: moveCase }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /**
@@ -106,8 +124,9 @@ export async function updateMoveTaskAction(
 export async function setServiceModeAction(
   params: ScopedParams & { mode: ServiceMode; notes?: string },
 ): Promise<{ success: boolean; case?: BuyerMoveCase | null; handoffPending?: boolean; error?: string }> {
-  const { supabase, error } = await authAndScope(params)
-  if (!supabase) return { success: false, error }
+  const { supabase, error, userId } = await authAndScope(params)
+  if (!supabase || !userId) return { success: false, error: error ?? "Unauthorized" }
+  return withReceipt({ brokerageId: params.brokerageId, userId, action: "transaction.buyer_move_case.set_mode", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", detail: { mode: params.mode } }, async () => {
 
   const { data: row } = await supabase
     .from("buyer_move_cases")
@@ -137,4 +156,5 @@ export async function setServiceModeAction(
   revalidatePath(`/dashboard/transactions/${params.transactionId}`)
   const moveCase = updated ? await getBuyerMoveCase(supabase as any, params) : null
   return { success: true, case: moveCase, handoffPending: wantsHandoff && !FEATURES.BUYER_MOVE_UTILITY_CONNECT }
+  }, (error) => ({ success: false as const, error }))
 }

@@ -583,6 +583,8 @@ export async function fulfillDeleteRequestAction(requestId: string): Promise<
 > {
   const auth = await requireFulfillmentRole()
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const erased = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "privacy.data_subject_request.fulfill_delete", actor: { type: "user", userId: auth.userId }, subject: { type: "data_subject_request", id: requestId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: boolean; error?: string; contactsAnonymized?: number }> => {
 
   const svc = createServiceClient()
   const { data: req } = await svc
@@ -664,6 +666,8 @@ export async function fulfillDeleteRequestAction(requestId: string): Promise<
 
   revalidatePath("/dashboard/admin/privacy/requests")
   return { ok: true, contactsAnonymized: anonymizedRows.length }
+  })
+  return "ok" in erased ? erased : { ok: false, error: erased.error ?? "The erasure was not run" }
 }
 
 // ── ADMIN: DENY ──────────────────────────────────────────────────────────────

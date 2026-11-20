@@ -494,6 +494,8 @@ export async function markInboxRead(params: {
     // with no explanation anywhere. Zero rows matched is NOT an error here (a
     // contact with nothing unread is the ordinary case), so these are
     // error-checked rather than counted.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "inbox.thread.mark_read", actor: { type: "user", userId: caller.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { channel: params.channel ?? null } }, async () => {
     const { error: portalReadError } = await supabase
       .from("client_portal_messages")
       .update({ read: true, read_at: new Date().toISOString() })
@@ -516,6 +518,7 @@ export async function markInboxRead(params: {
     }
 
     return { success: true }
+    })
   } catch (err) {
     return {
       success: false,

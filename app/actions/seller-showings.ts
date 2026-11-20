@@ -547,6 +547,8 @@ export async function suggestAlternativeTime(params: {
     return { success: false, error: "Forbidden" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "showing.request.suggest_alternative", actor: { type: "user", userId: auth.userId }, subject: { type: "showing_request", id: params.requestId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { proposed: params.proposedTimes?.length ?? 0 } }, async () => {
   const { data: rescheduledRows, error } = await supabase
     .from("showing_requests")
     .update({
@@ -571,6 +573,7 @@ export async function suggestAlternativeTime(params: {
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
   return { success: true }
+  })
 }
 
 /** Deny a showing request */
@@ -601,6 +604,8 @@ export async function denyShowingRequest(params: {
   // app/actions/showings.ts:updateShowingStatus. Without it an update RLS
   // refused came back with error === null and was reported as { success: true }
   // — the agent was told the request was denied when nothing was written.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "showing.request.deny", actor: { type: "user", userId: auth.userId }, subject: { type: "showing_request", id: params.requestId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { data: deniedRows, error } = await supabase
     .from("showing_requests")
     .update({
@@ -618,6 +623,7 @@ export async function denyShowingRequest(params: {
 
   revalidatePath(`/dashboard/listings/${params.listingId}/showings`)
   return { success: true }
+  })
 }
 
 /** Mark showing completed + create feedback_request + feedback rows */

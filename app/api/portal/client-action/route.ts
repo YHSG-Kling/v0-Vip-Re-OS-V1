@@ -59,7 +59,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Contact not found" }, { status: 404 })
     }
 
-    const result = await dispatchClientAction(
+    // WAVE 155 (155R14): the receipt — the SESSION's user and tenant (requireContactAccess); never the client's message text.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const r = await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.client_action.dispatch", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { contact_self: access.isContactSelf } }, async () => { const out = await dispatchClientAction(
       {
         brokerageId:  access.brokerageId,
         contactId,
@@ -70,7 +72,9 @@ export async function POST(request: Request) {
         newPrice,
       },
       service,
-    )
+    ); return { success: out.ok, error: out.ok ? undefined : out.outcome, out } })
+    if (!("out" in r)) return NextResponse.json({ error: r.error ?? "client-action failed" }, { status: 500 })
+    const result = r.out
 
     return NextResponse.json(result)
   } catch (err) {

@@ -186,6 +186,8 @@ export async function dismissCoachingCard(
     return { success: false, error: "Forbidden" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: callerRow.brokerage_id, action: "listing.coaching_card.dismiss", actor: { type: "user", userId: user.id }, subject: { type: "listing", id: listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { error } = await supabase.from("activities").insert({
     entity_type:   "listing",
     entity_id:     listingId,
@@ -198,4 +200,5 @@ export async function dismissCoachingCard(
 
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }

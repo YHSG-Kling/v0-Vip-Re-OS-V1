@@ -98,6 +98,8 @@ export async function saveFormDraftAction(input: {
 }) {
   const ctx = await resolveActorContext()
   if (!ctx) return { success: false, error: "Unauthorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerage_id, action: "forms.draft.save", actor: { type: "user", userId: ctx.user_id, agentId: ctx.agent_id }, subject: { type: String(input.context_type), ref: String(input.context_id) }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { form_name: input.form_name } }, async () => {
 
   return saveFormDraft({
     brokerage_id: ctx.brokerage_id,
@@ -106,6 +108,7 @@ export async function saveFormDraftAction(input: {
     context_type: input.context_type,
     context_id:   input.context_id,
     field_values: input.field_values,
+  })
   })
 }
 

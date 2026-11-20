@@ -225,6 +225,8 @@ Generate a specific 7-day plan with daily actions.`,
     })
 
     // Archive existing plan
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction<{ success: boolean; plan?: any; error?: string }>({ brokerageId, action: "crm.copilot_plan.generate", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId, agentId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { steps: plan.steps.length } }, async () => {
     const { error: planArchiveErr } = await supabase
       .from("copilot_plans")
       .update({ status: "superseded", updated_at: new Date().toISOString() })
@@ -250,6 +252,7 @@ Generate a specific 7-day plan with daily actions.`,
     if (planInsErr) console.error(`[workflows] copilot plan NOT saved: ${planInsErr.message}`)
 
     return { success: true, plan: newPlan }
+    })
   } catch (error: any) {
     console.error("[generateCopilotPlan] Error:", error)
     return { success: false, error: error?.message ?? "Failed to generate plan" }
@@ -919,6 +922,8 @@ export async function retryFailedWorkflow(
     if (!errRow) {
       return { success: false, error: "Forbidden" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction<{ success: boolean; retryId?: string; error?: string }>({ brokerageId, action: "automation.error.resolve", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId }, subject: { type: "automation_error", id: workflowId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { via: "retry" } }, async () => {
 
     const { error: updErr } = await svc
       .from("automation_errors")
@@ -934,6 +939,7 @@ export async function retryFailedWorkflow(
     }
 
     return { success: true, retryId: workflowId }
+    })
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to retry workflow" }
   }

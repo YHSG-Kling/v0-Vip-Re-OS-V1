@@ -1807,6 +1807,8 @@ export async function saveVideoTemplate(data: {
     throw new Error("Forbidden: only brokerage admins can save video templates (global library)")
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "marketing.video_template.save", actor: { type: "user", userId: auth.userId }, subject: { type: "video_template" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { category: data.category, library: "global" } }, async () => {
   const { data: result, error } = await supabase
     .from("video_templates")
     .insert({
@@ -1827,6 +1829,7 @@ export async function saveVideoTemplate(data: {
 
   revalidatePath("/dashboard/videos/templates")
   return result
+  })
 }
 
 export async function getEducationTemplates() {

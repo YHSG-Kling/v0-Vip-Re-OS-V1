@@ -631,6 +631,8 @@ Format as JSON with keys: summary (string), recommendations (array of 3 strings)
   const fullSummary = `${parsed.summary}\n\nPredicted time to first transaction: ${parsed.predictedTimeToTransaction}`
 
   // Save report to database
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof generatePerformanceReport>>>({ brokerageId: targetBrokerageId, action: "onboarding.performance_report.generate", actor: { type: "user", userId: user.id, agentId: targetAgentId }, subject: { type: "agent", id: targetAgentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { report_type: "onboarding_coaching" } }, async () => {
   const serviceClient = createServiceClient()
   const { data: report, error: insertError } = await serviceClient
     .from('agent_performance_reports')
@@ -658,6 +660,7 @@ Format as JSON with keys: summary (string), recommendations (array of 3 strings)
     summary: fullSummary,
     recommendations: parsed.recommendations,
   }
+  })
 }
 
 // ─── Dismiss Celebration ─────────────────────────────────────────────────────
@@ -680,6 +683,8 @@ export async function dismissCelebration(): Promise<{ success: boolean; error?: 
     return { success: false, error: 'No brokerage found' }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: userData.brokerage_id, action: "onboarding.celebration.dismiss", actor: { type: "user", userId: user.id }, subject: { type: "user", id: user.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const agentId = await resolveAgentId(supabase, user.id)
   const { error } = await supabase
     .from('agent_onboarding')
@@ -695,6 +700,7 @@ export async function dismissCelebration(): Promise<{ success: boolean; error?: 
   }
 
   return { success: true }
+  })
 }
 
 // ─── Retake Course ───────────────────────────────────────────────────────────
@@ -716,6 +722,10 @@ export async function retakeCourse(
   // must survive. Clear the completion fields (completed_at, quiz_score, viewed_at,
   // dismissed_at). Scoped to the caller's own user id — an agent can only reset
   // their own coursework.
+  const { data: tenantRow } = await supabase.from('users').select('brokerage_id').eq('id', user.id).maybeSingle()
+  if (!tenantRow?.brokerage_id) return { success: false, error: 'No brokerage found' }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: tenantRow.brokerage_id as string, action: "academy.course.retake", actor: { type: "user", userId: user.id }, subject: { type: "learning_module", id: courseId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { error } = await supabase
     .from('learning_assignments')
     .update({
@@ -733,6 +743,7 @@ export async function retakeCourse(
   }
 
   return { success: true }
+  })
 }
 
 // ─── Admin: Get Onboarding Overview ──────────────────────────────────────────

@@ -257,10 +257,11 @@ export async function markVideoStarted(videoId: string): Promise<{
   error?: string
 }> {
   try {
-    const { agentId, brokerageId } = await getAgentContext()
+    const { agentId, brokerageId, userId } = await getAgentContext()
 
     if (!agentId) return { success: false, error: "Missing agent context" }
 
+    const write = async (): Promise<{ success: boolean; error?: string }> => {
     const supabase = await createClient()
 
     // Check if this is the first video they're watching (for TRAINING_COURSE_ENROLLED)
@@ -318,6 +319,11 @@ export async function markVideoStarted(videoId: string): Promise<{
     }
 
     return { success: true }
+    }
+    // WAVE 155 (155R14): the receipt — the SESSION's user and tenant; a seat with no tenant runs exactly as before.
+    if (!brokerageId) return await write()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId, action: "training.video.start", actor: { type: "user", userId, agentId }, subject: { type: "training_video", id: videoId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, write)
   } catch (error) {
     console.error("[Training] markVideoStarted error:", error)
     return { success: false, error: "An unexpected error occurred" }

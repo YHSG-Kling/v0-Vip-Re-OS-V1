@@ -364,6 +364,8 @@ export async function updateStageProgress(data: {
 }): Promise<{ success: true } | { success: false; error: string }> {
   const access = await requireContactAccess(data.contactId)
   if (!access.ok) return { success: false, error: access.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ success: true } | { success: false; error: string }>({ brokerageId: access.brokerageId, action: "portal.journey_stage.update_progress", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { stage_id: data.currentStageId, stages_completed: data.stagesCompleted, total_stages: data.totalStages, contact_self: access.isContactSelf } }, async () => {
 
   const svc = createServiceClient()
   const now = new Date().toISOString()
@@ -421,6 +423,8 @@ export async function updateStageProgress(data: {
   revalidatePath(`/portal/${data.contactId}`)
   revalidatePath(`/portal/${data.contactId}/journey`)
   return { success: true }
+  })
+  return lr.success === true ? { success: true } : { success: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // TOMBSTONE (lane 86F, orphan doctrine §1.1) — handleTaskCompletedEvent,

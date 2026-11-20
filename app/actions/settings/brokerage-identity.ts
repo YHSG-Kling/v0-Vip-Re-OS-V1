@@ -407,6 +407,8 @@ export async function updateBrokerageIdentity(
     return { data: null, error: 'You do not have permission to change your brokerage details.' }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<ActionResult<{ saved: true }>>({ brokerageId, action: "tenant.brokerage_identity.update", actor: { type: "user", userId: seam.actorUserId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys((input ?? {}) as Record<string, unknown>) } }, async () => {
   const payload = (input ?? {}) as Record<string, unknown>
 
   // Defence-in-depth. pickWritableFields() alone would silently DROP a smuggled
@@ -574,4 +576,6 @@ export async function updateBrokerageIdentity(
   }
 
   return { data: { saved: true }, error: null }
+  })
+  return "data" in lr ? lr : { data: null, error: lr.error ?? "Your brokerage details were not saved — this change was not recorded." }
 }

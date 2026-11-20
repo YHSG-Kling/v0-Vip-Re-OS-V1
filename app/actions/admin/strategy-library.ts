@@ -41,8 +41,12 @@ export async function activateLibraryStrategyFormAction(formData: FormData): Pro
   const key = String(formData.get("key") ?? "")
   const version = Number(formData.get("version") ?? "")
   if (!/^[a-z][a-z0-9_]*$/.test(key) || !Number.isInteger(version) || version < 1) { console.warn("[strategy-library] activation refused: key/version malformed"); return }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "strategy.library_strategy.activate", actor: { type: "user", userId: gate.userId }, subject: { type: "strategy", ref: `${key}@v${version}` }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { key, version } }, async () => {
   const { activateLibraryStrategy } = await import("@/lib/kernel/strategy-engine")
   const r = await activateLibraryStrategy({ brokerageId: gate.brokerageId, key, version, actorUserId: gate.userId }, createServiceClient())
   if (!r.ok) console.warn(`[strategy-library] ${key}@v${version} not activated: ${r.reason}`)
   revalidatePath("/dashboard/admin/manager-trust")
+  return r.ok ? { success: true } : { success: false, error: r.reason }
+  })
 }

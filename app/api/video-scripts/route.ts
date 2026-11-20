@@ -77,6 +77,10 @@ export async function DELETE(req: Request) {
     }
 
     // Soft delete
+    // WAVE 155 (155R14): the receipt — the SESSION's user and tenant; the update below is unchanged.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const brokerageId: string = userRecord.brokerage_id
+    const write = async (): Promise<NextResponse> => {
     const { error } = await supabase
       .from("video_scripts_library")
       .update({ is_active: false })
@@ -88,6 +92,9 @@ export async function DELETE(req: Request) {
     }
 
     return NextResponse.json({ success: true })
+    }
+    const r = await ledgerSessionAction({ brokerageId, action: "marketing.video_script.deactivate", actor: { type: "user", userId: user.id }, subject: { type: "video_script", id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => { const out = await write(); return { success: out.ok, error: out.ok ? undefined : `HTTP ${out.status}`, out } })
+    return "out" in r ? r.out : NextResponse.json({ error: r.error ?? "The script was not removed" }, { status: 500 })
   } catch (error: any) {
     console.error("[video-scripts] DELETE error:", error)
     return NextResponse.json({ error: error.message }, { status: 500 })

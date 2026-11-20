@@ -267,6 +267,9 @@ export async function seedDefaultSequences(
     return { success: false, error: "Cannot seed for another brokerage", created: 0, skipped: 0 }
   }
 
+  // WAVE 155 (155R14): the receipt — recorded against the SESSION's tenant; a superadmin's other target is named in detail.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.sequence_catalog.seed", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: targetBrokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { target_brokerage_id: targetBrokerageId, selected: names?.length ?? null } }, async (): Promise<{ success: boolean; error?: string; created: number; skipped: number }> => {
   const supabase = createServiceClient()
   let created = 0
   let skipped = 0
@@ -323,4 +326,6 @@ export async function seedDefaultSequences(
   }
 
   return { success: true, created, skipped }
+  })
+  return "created" in r ? r : { success: false, error: r.error ?? "The sequences were not seeded", created: 0, skipped: 0 }
 }

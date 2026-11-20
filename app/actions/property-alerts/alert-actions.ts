@@ -8,6 +8,19 @@ import { isCrmContactStaff } from "@/lib/auth/crm-contact-staff"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
 import { RENTCAST_ALERT_KEY_PREFIX } from "@/lib/property-alerts/idx-alert-search"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 // ── Auth helpers ─────────────────────────────────────────────────────────────
 //
 // Property alerts have two distinct caller types:
@@ -72,7 +85,7 @@ async function requireAgent(): Promise<
 // brokerage) or the buyer the alert is for (contact.contact_user_id matches
 // auth.uid() OR contact.email matches user.email).
 async function requireAlertAccess(alertId: string): Promise<
-  | { ok: true; alert: { id: string; contact_id: string; brokerage_id: string; agent_user_id: string | null } }
+  | { ok: true; userId: string; alert: { id: string; contact_id: string; brokerage_id: string; agent_user_id: string | null } }
   | { ok: false; error: string }
 > {
   const supabase = await createClient()
@@ -94,7 +107,7 @@ async function requireAlertAccess(alertId: string): Promise<
     .eq("id", user.id)
     .maybeSingle()
   if (u?.brokerage_id && u.brokerage_id === alert.brokerage_id) {
-    return { ok: true, alert }
+    return { ok: true, userId: user.id, alert }
   }
 
   // Buyer path: the contact this alert is for is the logged-in user
@@ -108,7 +121,7 @@ async function requireAlertAccess(alertId: string): Promise<
     (contact.contact_user_id === user.id ||
       (contact.email && user.email && contact.email.toLowerCase() === user.email.toLowerCase()))
   ) {
-    return { ok: true, alert }
+    return { ok: true, userId: user.id, alert }
   }
 
   return { ok: false, error: "forbidden" }
@@ -116,7 +129,7 @@ async function requireAlertAccess(alertId: string): Promise<
 
 // Buyer-only access: enforce that the logged-in user is the contact.
 async function requireBuyerAccess(contactId: string): Promise<
-  | { ok: true; userId: string }
+  | { ok: true; userId: string; brokerageId: string }
   | { ok: false; error: string }
 > {
   const supabase = await createClient()
@@ -136,7 +149,7 @@ async function requireBuyerAccess(contactId: string): Promise<
     contact.contact_user_id === user.id ||
     (contact.email && user.email && contact.email.toLowerCase() === user.email.toLowerCase())
   ) {
-    return { ok: true, userId: user.id }
+    return { ok: true, userId: user.id, brokerageId: contact.brokerage_id as string }
   }
 
   // OR: the caller is an agent in the same brokerage acting on the buyer's behalf
@@ -146,7 +159,7 @@ async function requireBuyerAccess(contactId: string): Promise<
     .eq("id", user.id)
     .maybeSingle()
   if (u?.brokerage_id && u.brokerage_id === contact.brokerage_id) {
-    return { ok: true, userId: user.id }
+    return { ok: true, userId: user.id, brokerageId: contact.brokerage_id as string }
   }
 
   return { ok: false, error: "forbidden" }
@@ -285,6 +298,7 @@ export async function pausePropertyAlert(alertId: string, _pausedBy?: string) {
   if (!gate.ok) return { success: false, error: gate.error }
 
   const svc = createServiceClient()
+  return withReceipt({ brokerageId: gate.alert.brokerage_id, userId: gate.userId, action: "buyer.property_alert.pause", subject: { type: "property_alert", id: alertId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { error } = await svc
     .from("property_alerts")
     .update({
@@ -295,6 +309,7 @@ export async function pausePropertyAlert(alertId: string, _pausedBy?: string) {
     .eq("id", alertId)
     .eq("brokerage_id", gate.alert.brokerage_id)
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 // ── resumePropertyAlert ───────────────────────────────────────────────────────
@@ -319,12 +334,14 @@ export async function deletePropertyAlert(alertId: string) {
   if (!gate.ok) return { success: false, error: gate.error }
 
   const svc = createServiceClient()
+  return withReceipt({ brokerageId: gate.alert.brokerage_id, userId: gate.userId, action: "buyer.property_alert.delete", subject: { type: "property_alert", id: alertId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { error } = await svc
     .from("property_alerts")
     .delete()
     .eq("id", alertId)
     .eq("brokerage_id", gate.alert.brokerage_id)
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 // ── getAlertResults ───────────────────────────────────────────────────────────
@@ -393,12 +410,14 @@ export async function markResultViewed(resultId: string, contactId: string) {
   if (!gate.ok) return { success: false, error: gate.error }
 
   const svc = createServiceClient()
+  return withReceipt({ brokerageId: gate.brokerageId, userId: gate.userId, action: "buyer.alert_result.mark_viewed", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { result_id: resultId } }, async () => {
   const { error } = await svc
     .from("property_alert_results")
     .update({ buyer_viewed: true, buyer_viewed_at: new Date().toISOString() })
     .eq("id", resultId)
     .eq("contact_id", contactId)
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 // ── buyerAdjustAlert ─────────────────────────────────────────────────────────
@@ -424,12 +443,14 @@ export async function buyerAdjustAlert(
   }
 
   const svc = createServiceClient()
+  return withReceipt({ brokerageId: gate.brokerageId, userId: gate.userId, action: "buyer.property_alert.adjust", subject: { type: "property_alert", id: alertId }, riskClass: "LOW_RISK_WRITE", detail: { fields: Object.keys(allowed) } }, async () => {
   const { error } = await svc
     .from("property_alerts")
     .update({ ...allowed, updated_at: new Date().toISOString() })
     .eq("id", alertId)
     .eq("contact_id", contactId)
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 // ── runAlertNow ───────────────────────────────────────────────────────────────
@@ -557,6 +578,7 @@ export async function previewAlertCriteria(
   if (!auth.ok) return { success: false, matchCount: 0, error: auth.error }
 
   try {
+    return await withReceipt({ brokerageId: auth.brokerageId, userId: auth.userId, action: "buyer.alert_criteria.preview", subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "FINANCIAL", detail: { metered: "listing_search" } }, async () => {
     const { searchIDXForAlert } = await import("@/lib/property-alerts/idx-alert-search")
     const { scorePropertyForAlert } = await import("@/lib/property-alerts/alert-matcher")
 
@@ -590,6 +612,7 @@ export async function previewAlertCriteria(
 
     const matched = result.results.filter(p => scorePropertyForAlert(p, criteria).qualifies).length
     return { success: true, matchCount: matched, source: result.source, configured: result.api_called, error: result.error }
+    }, (error) => ({ success: false as const, matchCount: 0, error }))
   } catch (err: any) {
     return { success: false, matchCount: 0, error: err?.message }
   }

@@ -42,7 +42,7 @@ import { RECRUITING_PITCH_MAX } from "@/lib/recruiting/recruiting-pitch-limits"
 
 async function resolveBrokerAdmin(
   mode: "read" | "write",
-): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; brokerageId: string; actorUserId: string } | { ok: false; error: string }> {
   const acting = mode === "write" ? await resolveWriteContext() : await resolveActingContext()
   if (!acting.ok) return { ok: false, error: acting.error ?? "Unauthenticated" }
   if (!acting.brokerageId) return { ok: false, error: "No brokerage" }
@@ -52,7 +52,7 @@ async function resolveBrokerAdmin(
   if (!isAdminOrBroker({ user_type: acting.userType })) {
     return { ok: false, error: "Only a broker or admin can edit the recruiting pitch" }
   }
-  return { ok: true, brokerageId: acting.brokerageId }
+  return { ok: true, brokerageId: acting.brokerageId, actorUserId: acting.actorUserId }
 }
 
 /**
@@ -96,6 +96,8 @@ export async function setRecruitingPitch(pitch: string): Promise<{ ok: boolean; 
   if (trimmed.length > RECRUITING_PITCH_MAX) {
     return { ok: false, error: `The pitch is ${trimmed.length} characters — keep it under ${RECRUITING_PITCH_MAX}.` }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: ctx.brokerageId, action: "recruiting.pitch.set", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { cleared: trimmed === "", length: trimmed.length } }, async () => {
 
   const svc = createServiceClient()
   const { data: saved, error } = await svc
@@ -108,4 +110,6 @@ export async function setRecruitingPitch(pitch: string): Promise<{ ok: boolean; 
     return { ok: false, error: "The pitch was not saved — your brokerage record could not be found." }
   }
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

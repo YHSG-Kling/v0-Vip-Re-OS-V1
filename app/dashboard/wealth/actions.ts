@@ -177,8 +177,10 @@ export async function markWealthActed(recId: string): Promise<{ success: boolean
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", user.id).maybeSingle()
+  const { data: agentRow } = await svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: agentRow.brokerage_id as string, action: "wealth.recommendation.mark_acted", actor: { type: "user", userId: user.id, agentId: agentRow.id }, subject: { type: "wealth_advisor_recommendation", id: recId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status: WEALTH_STATUS_CONVERTED } }, async () => {
 
   const { error } = await svc
     .from("wealth_advisor_recommendations")
@@ -187,6 +189,7 @@ export async function markWealthActed(recId: string): Promise<{ success: boolean
     .eq("agent_id", agentRow.id)
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }
 
 export async function dismissWealthOpportunity(recId: string, reason: string): Promise<{ success: boolean; error?: string }> {
@@ -195,8 +198,10 @@ export async function dismissWealthOpportunity(recId: string, reason: string): P
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", user.id).maybeSingle()
+  const { data: agentRow } = await svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: agentRow.brokerage_id as string, action: "wealth.recommendation.dismiss", actor: { type: "user", userId: user.id, agentId: agentRow.id }, subject: { type: "wealth_advisor_recommendation", id: recId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status: WEALTH_STATUS_DISMISSED } }, async () => {
 
   const { error } = await svc
     .from("wealth_advisor_recommendations")
@@ -210,6 +215,7 @@ export async function dismissWealthOpportunity(recId: string, reason: string): P
     .eq("agent_id", agentRow.id)
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }
 
 export async function pushWealthToPortal(recId: string): Promise<{ success: boolean; error?: string }> {
@@ -218,8 +224,10 @@ export async function pushWealthToPortal(recId: string): Promise<{ success: bool
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", user.id).maybeSingle()
+  const { data: agentRow } = await svc.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
   if (!agentRow?.id) return { success: false, error: "No agent profile" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: agentRow.brokerage_id as string, action: "wealth.recommendation.push_to_portal", actor: { type: "user", userId: user.id, agentId: agentRow.id }, subject: { type: "wealth_advisor_recommendation", id: recId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { status: WEALTH_STATUS_PRESENTED } }, async () => {
 
   const { error } = await svc
     .from("wealth_advisor_recommendations")
@@ -238,4 +246,5 @@ export async function pushWealthToPortal(recId: string): Promise<{ success: bool
     .in("status", [...WEALTH_ACTIVE_STATUSES])
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }

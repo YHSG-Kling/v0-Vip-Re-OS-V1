@@ -1123,6 +1123,8 @@ export async function stampTourStopPresence(params: {
   // deleted or re-parented between the read above and this write reports SUCCESS to
   // an agent standing in the driveway. The survivor pattern is
   // lib/kernel/crm.ts::archiveContactRecord (~:981).
+  const { ledgerSessionAction } = await import('@/lib/kernel/action-ledger')
+  return ledgerSessionAction({ brokerageId, action: 'tour.stop.stamp_presence', actor: { type: 'user', userId: auth.userId }, subject: { type: 'tour_stop', id: tourStopId }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'HUMAN_REQUESTED', detail: { phase } }, async () => {
   const { data: stamped, error: stampError } = await supabase
     .from('tour_stops')
     .update(patch)
@@ -1172,6 +1174,7 @@ export async function stampTourStopPresence(params: {
     minutesOnSite: row.time_spent_minutes,
     tourStatus,
   }
+  })
 }
 
 // ─── 5. Rate a stop (day-of) ──────────────────────────────────────────────────
@@ -1466,6 +1469,8 @@ export async function updateTourStopOrder(
   if (!tourRow) return { success: false, error: 'Tour not found' }
   if (tourRow.brokerage_id !== auth.brokerageId) return { success: false, error: 'Forbidden' }
 
+  const { ledgerSessionAction } = await import('@/lib/kernel/action-ledger')
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: 'tour.stop.reorder', actor: { type: 'user', userId: auth.userId }, subject: { type: 'tour', id: tourId }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'HUMAN_REQUESTED', detail: { stops: orderedStopIds.length } }, async () => {
   const updates = orderedStopIds
     .filter(id => isValidUUID(id))
     .map((id, idx) =>
@@ -1479,6 +1484,7 @@ export async function updateTourStopOrder(
   const failed = results.find(r => r.error)
   if (failed?.error) return { success: false, error: failed.error.message }
   return { success: true }
+  })
 }
 
 // ─── 11. The shortlist BECOMES a tour ────────────────────────────────────────

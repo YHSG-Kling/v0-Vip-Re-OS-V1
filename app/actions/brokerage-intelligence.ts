@@ -217,6 +217,8 @@ export async function adoptInsightAction(params: {
     agentUserIds = ((allAgents ?? []) as Array<{ id: string }>).map((a) => a.id)
   }
 
+  // WAVE 155 (lane 155R12): one receipt per session write (ledgerSessionAction, no key).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "brokerage_intelligence.insight.adopt", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage_intelligence_insight", id: params.insightId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { target_agents: agentUserIds.length } }, async () => {
   const actions = (insight.playbook_actions as Array<{ type: string; [k: string]: unknown }>) ?? []
   let appliedCount = 0
   let skippedNoAgentProfile = 0
@@ -269,6 +271,7 @@ export async function adoptInsightAction(params: {
 
   revalidatePath("/dashboard/admin")
   return { success: true, adopted: appliedCount, skippedNoAgentProfile }
+  })
 }
 
 async function applyAction(input: {
@@ -348,6 +351,8 @@ export async function dismissInsightAction(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createClient()
+  // WAVE 155 (lane 155R12): one receipt per session write (ledgerSessionAction, no key).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "brokerage_intelligence.insight.dismiss", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage_intelligence_insight", id: params.insightId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { error } = await supabase
     .from("brokerage_intelligence_insights")
     .update({
@@ -362,6 +367,7 @@ export async function dismissInsightAction(params: {
 
   revalidatePath("/dashboard/admin")
   return { success: true }
+  })
 }
 
 // ─── On-demand mine ───────────────────────────────────────────────────────

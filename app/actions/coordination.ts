@@ -108,5 +108,8 @@ export async function clearHumanOverride(params: {
     entityId: params.entityId,
   })
   if (!owned.ok) return { success: false, message: owned.error }
-  return routerClearHumanOverride(params)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "coordination.human_override.clear", actor: { type: "user", userId: gate.userId }, subject: { type: "coordination_entity", ref: `${params.entityType}:${params.entityId}` }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { entity_type: params.entityType } }, () =>
+  routerClearHumanOverride(params))
+  return "message" in lr ? lr : { success: false, message: lr.error ?? "This change was not recorded — nothing was changed" }
 }

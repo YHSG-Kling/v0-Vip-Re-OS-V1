@@ -32,6 +32,8 @@ export async function updateEmailTemplate(id: string, updates: any) {
   // different answers, and collapsing them tells an administrator they are not one.
   if (!admin.ok) return { error: `Could not resolve your permissions: ${admin.error}` };
   if (!admin.isTenantAdmin) return { error: 'Forbidden' };
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger");
+  const lr = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.email_template.update", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "email_template", id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(updates ?? {}) } }, async () => {
 
   const svc = createServiceClient();
 
@@ -59,4 +61,6 @@ export async function updateEmailTemplate(id: string, updates: any) {
   }
 
   return { data };
+  });
+  return "success" in lr ? { error: lr.error ?? 'This change was not recorded — nothing was saved' } : lr;
 }

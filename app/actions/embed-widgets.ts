@@ -111,6 +111,8 @@ export async function createEmbed(params: {
   if (params.scope === "brokerage" && !isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Only brokers / admins can create brokerage-wide embeds" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<{ ok: boolean; widget?: EmbedWidget; error?: string }>({ brokerageId: ctx.brokerageId, action: "tenant.embed_widget.create", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "embed_widget" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scope: params.scope, ...(ctx.impersonatorUserId ? { acting_as_user_id: ctx.userId } : {}) } }, async () => {
 
   const supabase = createServiceClient()
 
@@ -148,6 +150,8 @@ export async function createEmbed(params: {
   if (error || !data) return { ok: false, error: error?.message ?? "Insert failed" }
   revalidatePath("/dashboard/settings/embeds")
   return { ok: true, widget: rowToWidget(data) }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }
 
 export async function updateEmbed(params: {
@@ -165,6 +169,8 @@ export async function updateEmbed(params: {
 }): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveWriteContextForTenant()
   if (!ctx.ok) return { ok: false, error: "Unauthorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: ctx.brokerageId, action: "tenant.embed_widget.update", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "embed_widget", id: params.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(params).filter((k) => k !== "id"), ...(ctx.impersonatorUserId ? { acting_as_user_id: ctx.userId } : {}) } }, async () => {
 
   const supabase = createServiceClient()
 
@@ -218,11 +224,15 @@ export async function updateEmbed(params: {
 
   revalidatePath("/dashboard/settings/embeds")
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }
 
 export async function deleteEmbed(id: string): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveWriteContextForTenant()
   if (!ctx.ok) return { ok: false, error: "Unauthorized" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: ctx.brokerageId, action: "tenant.embed_widget.delete", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "embed_widget", id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { ...(ctx.impersonatorUserId ? { acting_as_user_id: ctx.userId } : {}) } }, async () => {
 
   const supabase = createServiceClient()
   const { data: existing } = await supabase
@@ -241,6 +251,8 @@ export async function deleteEmbed(id: string): Promise<{ ok: boolean; error?: st
   if (widgetDeleteErr) return { ok: false, error: `Could not delete the widget: ${widgetDeleteErr.message}` }
   revalidatePath("/dashboard/settings/embeds")
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }
 
 /** Returns the available twins for assignment (owner agent's, or all in

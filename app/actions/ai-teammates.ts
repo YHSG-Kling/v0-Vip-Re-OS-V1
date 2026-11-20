@@ -169,6 +169,8 @@ export async function createAiTeammateAction(input: TeammateInput): Promise<
 
   const v = validateTeammateInput(input)
   if (!v.ok) return { ok: false, error: v.errors.join(" ") }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<Awaited<ReturnType<typeof createAiTeammateAction>>>({ brokerageId: actor.brokerageId, action: "tenant.ai_teammate.create", actor: { type: "user", userId: actor.userId }, subject: { type: "tenant_ai_teammate" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { base_manager_key: v.value.baseManagerKey, autonomy_requested: v.value.autonomy } }, async () => {
 
   const svc = createServiceClient()
 
@@ -211,6 +213,8 @@ export async function createAiTeammateAction(input: TeammateInput): Promise<
 
   revalidatePath(COMMAND_CENTER_PATH)
   return { ok: true, teammate: rowToView(row as Record<string, any>), autonomyNote: clamp.reason }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // ─── UPDATE ──────────────────────────────────────────────────────────────────
@@ -224,6 +228,8 @@ export async function updateAiTeammateAction(params: { id: string } & TeammateIn
 
   const v = validateTeammateInput(params)
   if (!v.ok) return { ok: false, error: v.errors.join(" ") }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<Awaited<ReturnType<typeof updateAiTeammateAction>>>({ brokerageId: actor.brokerageId, action: "tenant.ai_teammate.update", actor: { type: "user", userId: actor.userId }, subject: { type: "tenant_ai_teammate", id: params.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { base_manager_key: v.value.baseManagerKey, autonomy_requested: v.value.autonomy } }, async () => {
 
   const svc = createServiceClient()
   const { data: existing } = await svc.from("tenant_ai_teammates")
@@ -255,6 +261,8 @@ export async function updateAiTeammateAction(params: { id: string } & TeammateIn
 
   revalidatePath(COMMAND_CENTER_PATH)
   return { ok: true, teammate: rowToView(row as Record<string, any>), autonomyNote: clamp.reason }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // ─── STATUS (pause / reactivate / retire) ────────────────────────────────────
@@ -268,6 +276,8 @@ export async function setAiTeammateStatusAction(params: { id: string; status: Te
   if (!["active", "paused", "retired"].includes(params.status)) {
     return { ok: false, error: "Invalid status" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<Awaited<ReturnType<typeof setAiTeammateStatusAction>>>({ brokerageId: actor.brokerageId, action: "tenant.ai_teammate.set_status", actor: { type: "user", userId: actor.userId }, subject: { type: "tenant_ai_teammate", id: params.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status: params.status } }, async () => {
 
   const svc = createServiceClient()
   const { data: row, error } = await svc.from("tenant_ai_teammates")
@@ -281,4 +291,6 @@ export async function setAiTeammateStatusAction(params: { id: string; status: Te
 
   revalidatePath(COMMAND_CENTER_PATH)
   return { ok: true, teammate: rowToView(row as Record<string, any>) }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }

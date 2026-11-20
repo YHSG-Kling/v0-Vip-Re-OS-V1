@@ -1656,6 +1656,7 @@ export interface HomeValuePageConfig {
 
 export async function savePageConfig(config: HomeValuePageConfig): Promise<{ success: boolean; id?: string; error?: string }> {
   const supabase = await createClient()
+  const run = async (): Promise<{ success: boolean; id?: string; error?: string }> => {
 
   const row = {
     agent_id: config.agentId,
@@ -1691,6 +1692,13 @@ export async function savePageConfig(config: HomeValuePageConfig): Promise<{ suc
 
   if (error) return { success: false, error: error.message }
   return { success: true, id: data.id }
+  }
+  // Receipt against the SESSION user's tenant (the body's brokerageId is never the ledger's tenant); no session tenant = today's behavior, unrecorded.
+  const { data: { user: cfgUser } } = await supabase.auth.getUser()
+  const { data: cfgTenant } = cfgUser ? await supabase.from("users").select("brokerage_id").eq("id", cfgUser.id).maybeSingle() : { data: null }
+  if (!cfgUser || !cfgTenant?.brokerage_id) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: cfgTenant.brokerage_id as string, action: "marketing.home_value_page.save", actor: { type: "user", userId: cfgUser.id }, subject: { type: "agent", id: config.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { body_brokerage_matches_session: config.brokerageId === cfgTenant.brokerage_id } }, run)
 }
 
 // ============================================================================

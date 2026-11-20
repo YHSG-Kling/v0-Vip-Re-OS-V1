@@ -460,6 +460,8 @@ export async function deleteSnippet(
 
   const supabase = createServiceClient()
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "marketing.video_snippet.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "video_snippet", id: snippetId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   // Scope by brokerage so a hostile caller can't wipe another tenant's snippets.
   // `count: "exact"` is what makes the refusal legible: a DELETE that matches
   // nothing SUCCEEDS in postgrest, so without the count a cross-tenant id (or an
@@ -482,6 +484,7 @@ export async function deleteSnippet(
   revalidatePath("/dashboard/videos/snippets")
   revalidatePath("/dashboard/campaigns/repurpose")
   return { success: true }
+  })
 }
 
 // ============================================

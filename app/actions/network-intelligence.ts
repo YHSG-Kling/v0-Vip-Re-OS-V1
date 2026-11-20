@@ -37,10 +37,14 @@ export async function setNetworkBenchmarksOptIn(input: { optIn: boolean }): Prom
   const gate = await gateTenantAdmin()
   if (!gate.ok) return gate
   const optIn = input?.optIn === true
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true; version: number | null } | { ok: false; error: string }>({ brokerageId: gate.brokerageId, action: "tenant.network_benchmarks.set_opt_in", actor: { type: "user", userId: gate.userId }, subject: { type: "brokerage", id: gate.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { opt_in: optIn } }, async () => {
   const write = await mergeBrokerageSettings(createServiceClient(), gate.brokerageId, () => ({
     network_benchmarks_opt_in: { opted_in: optIn, set_by: gate.userId, set_at: new Date().toISOString() },
   }), { policy: { type: "user", userId: gate.userId, reason: `network benchmarks ${optIn ? "opted in" : "opted out"}` } })
   if (!write.ok) return { ok: false, error: write.error }
   const v = write.policyVersions.find((p) => p.key === "network_benchmarks_opt_in")
   return { ok: true, version: v?.version ?? null }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

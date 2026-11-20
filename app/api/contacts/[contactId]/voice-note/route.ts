@@ -42,6 +42,7 @@ export async function POST(
     return NextResponse.json({ error: "Not found" }, { status: 404 })
   }
 
+  const write = async () => {
   const parsed = await parseVoiceNote(transcript, {
     contactName: `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || undefined,
     contactType: contact.contact_type ?? null,
@@ -143,4 +144,9 @@ export async function POST(
      *  an empty list as "the agent mentioned no follow-up". */
     tasksRequested: parsed.tasks.length,
   })
+  }
+  // WAVE 155 (155R14): the receipt — the SESSION's user and tenant (requireAuth); the response is returned unchanged.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "contact.voice_note.capture", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => { const out = await write(); return { success: out.ok, error: out.ok ? undefined : `HTTP ${out.status}`, out } })
+  return "out" in r ? r.out : NextResponse.json({ error: r.error ?? "The voice note was not recorded" }, { status: 500 })
 }

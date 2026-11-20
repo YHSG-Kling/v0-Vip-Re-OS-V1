@@ -139,6 +139,8 @@ export async function getAgentLicenseStatus(
       .single()
 
     if (!onboarding) {
+      const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+      const created = await ledgerSessionAction({ brokerageId: agent.brokerage_id, action: "onboarding.agent_onboarding.create", actor: { type: "user", userId: user.id }, subject: { type: "agent", id: agentRecordId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { trigger: "license_status_view" } }, async () => {
       // Create new onboarding record
       const { data: newOnboarding, error: createError } = await supabase
         .from("agent_onboarding")
@@ -158,6 +160,8 @@ export async function getAgentLicenseStatus(
         return { data: null, error: "Failed to create onboarding record" }
       }
       onboarding = newOnboarding
+      })
+      if (created) return { data: null, error: created.error ?? "Failed to create onboarding record" }
     }
 
     // Get license record
@@ -485,6 +489,8 @@ export async function submitEOInsurance(
     if (!agentRecordId) {
       return { success: false, error: "No agent record for this user in this brokerage" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: agent.brokerage_id, action: "onboarding.eo_insurance.submit", actor: { type: "user", userId: user.id }, subject: { type: "agent", id: agentRecordId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { certificate_attached: !!data.certificateUrl } }, async () => {
 
     // Update the most recent license record with E&O info using the dedicated
     // E&O columns on agent_licenses (eo_insurance_carrier/policy/coverage/
@@ -577,6 +583,7 @@ export async function submitEOInsurance(
     }
 
     return { success: true }
+    })
   } catch (error) {
     console.error("[L11-License] submitEOInsurance error:", error)
     return { success: false, error: "Failed to submit E&O insurance" }

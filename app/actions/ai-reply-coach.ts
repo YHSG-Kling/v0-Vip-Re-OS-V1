@@ -72,7 +72,9 @@ export async function generateAIReplyDraft(
   if (params.agentUserId && params.agentUserId !== caller.userId) {
     return { success: false, error: "Forbidden: a reply draft is generated for your own conversations only." }
   }
-  return generateAIReplyDraftForTenant({ ...params, brokerageId: caller.brokerageId, agentUserId: caller.userId })
+  // WAVE 155 (lane 155R12): one receipt per session write (ledgerSessionAction, no key — a second draft request runs again).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "ai_reply.draft.generate", actor: { type: "user", userId: caller.userId }, subject: { type: "conversation", id: params.conversationId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { contact_id: params.contactId, channel: params.channel } }, () => generateAIReplyDraftForTenant({ ...params, brokerageId: caller.brokerageId, agentUserId: caller.userId }))
 }
 
 // ─── ACTION 2: ACCEPT DRAFT ───────────────────────────────────────────────────
@@ -214,6 +216,8 @@ export async function recordDraftSent(params: {
   if (!ctx.brokerageId) return { success: false, error: "Not authenticated" }
 
   const supabase = createServiceClient()
+  // WAVE 155 (lane 155R12): one receipt per session write (ledgerSessionAction, no key).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "ai_reply.draft.record_sent", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "ai_message_draft", id: params.draftId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { message_id: params.messageId } }, async () => {
   const { error } = await supabase
     .from("ai_message_drafts")
     .update({ sent_message_id: params.messageId, status: "sent" })
@@ -226,6 +230,7 @@ export async function recordDraftSent(params: {
 
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }
 
 // ─── ACTION 6: RECENT DRAFT OUTCOMES FOR A CONVERSATION ─────────────────────

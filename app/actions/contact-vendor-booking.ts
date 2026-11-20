@@ -259,6 +259,7 @@ export async function rateVendorBookingAsClient(input: {
     return { success: false, error: "You've already rated this service" }
   }
 
+  const rate = async (): Promise<{ success: boolean; error?: string }> => {
   // Counted update (§3): a zero-row UPDATE resolves exactly like success, so the
   // write re-states every predicate — id, contact_id, completed, still unrated
   // (the .is() also closes the race where two tabs submit at once) — and counts
@@ -289,4 +290,10 @@ export async function rateVendorBookingAsClient(input: {
   }
 
   return { success: true }
+  }
+  // WAVE 155 (155R14): the receipt — the Contact rates their OWN completed booking; tenant = the booking's (none → as before).
+  const brokerageId: string | null = booking.brokerage_id ?? contact.brokerage_id ?? null
+  if (!brokerageId) return rate()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "vendor.booking.rate", actor: { type: "user", userId: authUser.id }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { booking_id: input.bookingId, vendor_id: booking.vendor_id, rating: input.rating } }, rate)
 }

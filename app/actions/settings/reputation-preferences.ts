@@ -35,6 +35,8 @@ export async function saveReputationPreferences(
   const ctx = await resolveWriteContext()
   if (!ctx.ok) return { success: false, error: ctx.error }
   if (!ctx.brokerageId) return { success: false, error: "No brokerage found" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "reputation.preferences.save", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { auto_respond_mode: prefs.autoRespondMode, approval_hours: prefs.autoRespondApprovalHours } }, async () => {
 
   const { data: existing, error: readError } = await ctx.db
     .from("agents")
@@ -64,4 +66,5 @@ export async function saveReputationPreferences(
     return { success: false, error: "Nothing was saved — you may not have permission to change this agent's preferences." }
   }
   return { success: true }
+  })
 }

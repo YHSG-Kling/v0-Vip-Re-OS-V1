@@ -82,6 +82,7 @@ export async function ensureSmsFirstChannels(
   if (current[0] === "sms") return { skipped: true as const }
 
   const next = ["sms", ...current.filter((c) => c !== "sms")]
+  const write = async (): Promise<{ skipped: true; refused?: undefined } | { skipped: false; channels: string[]; refused?: undefined } | { skipped: true; refused: string }> => {
   // Tenant predicate on the WRITE as well as the read, and the row is COUNTED:
   // an update that matches nothing also resolves with `error: null` (§3), so
   // without `.select()` a refused write was byte-identical to one that worked.
@@ -95,6 +96,11 @@ export async function ensureSmsFirstChannels(
   if (!updated || updated.length === 0) return { skipped: true as const, refused: "Forbidden" }
 
   return { skipped: false as const, channels: next }
+  }
+  // WAVE 155 (155R14): the receipt settles on the write's own refusal (`refused` read as the error); the caller's value is `out`, unchanged.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "property_alert.channels.sms_first", actor: { type: "user", userId: caller.userId }, subject: { type: "property_alert", id: alertId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { channels: next } }, async () => { const out = await write(); return { success: !out.refused, error: out.refused, out } })
+  return "out" in r ? r.out : { skipped: true as const, refused: r.error ?? "The channel order was not saved" }
 }
 
 export async function sendFirstLookText(input: {

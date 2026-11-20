@@ -48,6 +48,19 @@ import { revalidatePath } from "next/cache"
 // every unattended run "Unauthorized"); this action stays the SESSION door.
 import { generateCmaReport, type CMAParams } from "@/lib/cma/ai-cma-report"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 /**
  * Generate comprehensive AI-powered CMA report — the SESSION door.
  *
@@ -87,11 +100,11 @@ export async function generateAICMA(params: CMAParams) {
     }
   }
 
-  const result = await generateCmaReport(createServiceClient(), {
+  const result = await withReceipt({ brokerageId: agentRow.brokerage_id as string, userId: user.id, agentId: params.agentId, action: "listing.cma_report.generate", subject: { type: "agent", id: params.agentId }, riskClass: "FINANCIAL", detail: { comps: "purchased_if_needed" } }, () => generateCmaReport(createServiceClient(), {
     brokerageId: agentRow.brokerage_id as string,
     agentUserId: user.id,
     params,
-  })
+  }), (error) => ({ success: false as const, error }))
   if (result?.success) revalidatePath("/dashboard/cma")
   return result
 }
@@ -114,6 +127,7 @@ export async function updateCMAReport(cmaId: string, updates: Partial<any>) {
   const supabase = createServiceClient()
 
   try {
+    return await withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "listing.cma_report.update", subject: { type: "cma_report", id: cmaId }, riskClass: "LOW_RISK_WRITE", detail: { fields: Object.keys(updates ?? {}) } }, async () => {
     // Strip caller-supplied tenant-control fields from the update payload
     const safeUpdates = { ...updates }
     delete safeUpdates.brokerage_id
@@ -135,6 +149,7 @@ export async function updateCMAReport(cmaId: string, updates: Partial<any>) {
 
     revalidatePath("/dashboard/cma")
     return { success: true, cma: data }
+    }, (error) => ({ success: false as const, error }))
   } catch (error) {
     console.error("[AI CMA] Update error:", error)
     return { success: false, error: "Failed to update CMA" }
@@ -208,6 +223,7 @@ export async function getAIPriceAdjustmentRecommendation(
   const supabase = createServiceClient()
 
   try {
+    return await withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "listing.cma_price_adjustment.recommend", subject: { type: "cma_report", id: cmaId }, riskClass: "LOW_RISK_WRITE", detail: { days_on_market: daysOnMarket, showings: showingCount } }, async () => {
     // COLUMNS VERIFIED LIVE. This read was `select("*")` and the prompt below then
     // interpolated `cma.ai_valuation?.estimatedValue` and `cma.market_trends?.marketType`
     // — NEITHER COLUMN EXISTS on cma_reports (checked against
@@ -309,6 +325,7 @@ Provide adjustment recommendation in JSON:
     }
 
     return { success: false, error: "Failed to generate recommendation" }
+    }, (error) => ({ success: false as const, error }))
   } catch (error) {
     console.error("[AI CMA] Price adjustment error:", error)
     return { success: false, error: "Failed to get price adjustment recommendation" }

@@ -19,6 +19,19 @@ import { revalidatePath } from "next/cache"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 /**
  * ROUND-TRIP RECEIPT: after every write, the row is read back FRESH from the
  * ledger and the receipt is composed from THAT row — never from the input.
@@ -133,6 +146,7 @@ export async function assignVendorToContact(input: {
   if (!vendor || ((vendor.brokerage_id as string | null) && (vendor.brokerage_id as string) !== ctx.brokerageId)) {
     return { success: false, error: "vendor_not_in_brokerage" }
   }
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "contact.vendor_link.assign", subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", detail: { vendor_id: input.vendorId, transaction_id: input.transactionId ?? null } }, async () => {
   const row = {
     brokerage_id: ctx.brokerageId,
     contact_id: input.contactId,
@@ -185,6 +199,7 @@ export async function assignVendorToContact(input: {
       },
     },
   }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /** Record a property upgrade on a listing (feeds the seller CMA's valuation
@@ -202,6 +217,7 @@ export async function logPropertyUpgrade(input: {
   const svc = createServiceClient()
   const { data: listing } = await svc.from("listings").select("brokerage_id").eq("id", input.listingId).maybeSingle()
   if (!listing || (listing.brokerage_id as string) !== ctx.brokerageId) return { success: false, error: "listing_not_in_brokerage" }
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "listing.property_upgrade.log", subject: { type: "listing", id: input.listingId }, riskClass: "LOW_RISK_WRITE", detail: { status: input.status ?? "completed" } }, async () => {
   const { data, error } = await svc.from("property_upgrades").insert({
     listing_id: input.listingId,
     brokerage_id: ctx.brokerageId,
@@ -230,6 +246,7 @@ export async function logPropertyUpgrade(input: {
       },
     },
   }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /** Set which milestones a contact sees in their portal (the kernel portal read
@@ -257,6 +274,7 @@ export async function setPortalMilestonePreferences(input: {
   const svc = createServiceClient()
   const { data: contact } = await svc.from("contacts").select("brokerage_id").eq("id", input.contactId).maybeSingle()
   if (!contact || (contact.brokerage_id as string) !== ctx.brokerageId) return { success: false, error: "contact_not_in_brokerage" }
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "contact.portal_milestones.set", subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", detail: { overrides: Object.keys(input.milestoneOverrides ?? {}).length } }, async () => {
   const row: Record<string, unknown> = {
     contact_id: input.contactId,
     brokerage_id: ctx.brokerageId,
@@ -285,4 +303,5 @@ export async function setPortalMilestonePreferences(input: {
       },
     },
   }
+  }, (error) => ({ success: false as const, error }))
 }

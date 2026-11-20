@@ -49,6 +49,7 @@ export async function POST(req: Request) {
     const allowed = recruitStageChange({ from: recruit.status, to: toStatus, provisioned: (recruit as { provisioned?: boolean | null }).provisioned === true })
     if (!allowed.ok) return NextResponse.json({ error: allowed.reason }, { status: 409 })
 
+    const write = async () => {
     // Build update payload
     const updatePayload: Record<string, unknown> = {
       status: toStatus,
@@ -102,6 +103,11 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ success: true, recruitId, toStatus })
+    }
+    // WAVE 155 (155R14): the receipt — the SESSION's user and tenant; the response is returned unchanged (a throw still reaches the catch below).
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const r = await ledgerSessionAction({ brokerageId: profile!.brokerage_id!, action: "recruiting.recruit.advance_stage", actor: { type: "user", userId: user.id }, subject: { type: "recruit", id: recruitId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { from: recruit.status, to: toStatus } }, async () => { const out = await write(); return { success: out.ok, error: out.ok ? undefined : `HTTP ${out.status}`, out } })
+    return "out" in r ? r.out : NextResponse.json({ error: r.error ?? "The stage change was not recorded" }, { status: 500 })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }

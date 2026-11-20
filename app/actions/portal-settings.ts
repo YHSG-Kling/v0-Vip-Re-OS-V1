@@ -159,6 +159,8 @@ export async function uploadProfilePhoto(
     const access = await requireContactAccess(contactId)
     if (!access.ok) return { success: false, error: access.error }
 
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.profile_photo.upload", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { contact_self: access.isContactSelf } }, async () => {
     const supabase = await createClient()
 
     // Upload to Supabase Storage
@@ -210,6 +212,7 @@ export async function uploadProfilePhoto(
     // Wave 154 (lane 154M): the row stores the photo's reference; the page gets the session-gated open door.
     const { documentOpenHref } = await import("@/lib/storage/signed-doc-url")
     return { success: true, url: documentOpenHref(avatarUrl) ?? undefined }
+    })
   } catch (error) {
     console.error("Error uploading profile photo:", error)
     return { success: false, error: "Failed to upload photo" }

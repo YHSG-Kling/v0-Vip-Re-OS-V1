@@ -115,6 +115,8 @@ export async function uploadStockClip(input: UploadStockClipInput): Promise<Uplo
     team_id:          input.scope === "team"  ? (agentRow?.team_id ?? null) : null,
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: profile.brokerage_id, action: "marketing.stock_clip.upload", actor: { type: "user", userId: user.id }, subject: { type: "video_asset" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scope: input.scope, category: input.category } }, async () => {
   const { data, error } = await svc
     .from("video_assets")
     .insert(row)
@@ -126,6 +128,7 @@ export async function uploadStockClip(input: UploadStockClipInput): Promise<Uplo
   }
 
   return { success: true, assetId: data.id }
+  })
 }
 
 /**
@@ -187,7 +190,13 @@ export async function deleteStockClip(assetId: string): Promise<{ success: boole
     return { success: false, error: "Only the uploader or a broker/admin can delete this clip" }
   }
 
+  const remove = async (): Promise<{ success: boolean; error?: string }> => {
   const { error } = await svc.from("video_assets").delete().eq("id", assetId)
   if (error) return { success: false, error: error.message }
   return { success: true }
+  }
+  // WAVE 155 (155R14): the receipt — tenant = the clip's (the uploader's own, or an admin proven in that brokerage); none → as before.
+  if (!clip.brokerage_id) return remove()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: clip.brokerage_id, action: "marketing.stock_clip.delete", actor: { type: "user", userId: user.id }, subject: { type: "video_asset", id: assetId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED", detail: { as_owner: isOwner } }, remove)
 }

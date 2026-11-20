@@ -77,6 +77,8 @@ export async function adoptAssistantIdentityAction(): Promise<
   const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")
   const principal = await isTenancyPrincipal(svc as any, { userId: m.userId, brokerageId: m.brokerageId, role: m.role })
   if (!principal) return { ok: false, error: "Only the tenancy's principal can set the assistant identity" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true; assistantName: string } | { ok: false; error: string }>({ brokerageId: m.brokerageId, action: "onboarding.assistant_identity.adopt", actor: { type: "user", userId: m.userId }, subject: { type: "brokerage", id: m.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // Idempotent: the brokerage-scope identity is UNIQUE(scope_type, scope_id).
   const { data: existing } = await svc.from("ai_identity_profiles")
@@ -119,4 +121,6 @@ export async function adoptAssistantIdentityAction(): Promise<
   } catch { /* ledger best-effort */ }
 
   return { ok: true, assistantName }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

@@ -32,6 +32,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const token = crypto.randomBytes(24).toString("base64url")
   const expiresAt = new Date(Date.now() + 14 * 86_400_000).toISOString()    // 14 days
 
+  const write = async (): Promise<NextResponse> => {
   const { data: tokenRow, error } = await supabase.from("buyer_intake_tokens").insert({
     brokerage_id: brokerageId,
     contact_id:   body.contactId,
@@ -51,4 +52,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     intakeUrl,
     expiresAt,
   })
+  }
+  // WAVE 155 (155R14): the receipt — the SESSION's user and tenant; never the token. The response is returned unchanged.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId, action: "buyer.intake_link.create", actor: { type: "user", userId: user.id }, subject: { type: "contact", id: body.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { expires_at: expiresAt } }, async () => { const out = await write(); return { success: out.ok, error: out.ok ? undefined : `HTTP ${out.status}`, out } })
+  return "out" in r ? r.out : NextResponse.json({ error: r.error ?? "The intake link was not created" }, { status: 500 })
 }

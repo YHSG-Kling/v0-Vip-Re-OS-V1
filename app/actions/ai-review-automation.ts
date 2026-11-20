@@ -271,6 +271,8 @@ export async function aiGenerateReviewRequest(params: {
   const supabase = await createClient()
   const scope = await requireAgentScope(supabase, params.agentId)
   if (!scope.ok) return { success: false, error: scope.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction({ brokerageId: scope.brokerageId, action: "reputation.review_request.draft", actor: { type: "user", userId: scope.userId, agentId: scope.agentId }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform: params.platform, channel: params.channel } }, async () => {
 
   // THE BODY MOVED (§1 — one core, three doors): lib/reputation/review-request-
   // draft.ts::draftReviewRequest. The review-request-on-close cron and the
@@ -293,6 +295,8 @@ export async function aiGenerateReviewRequest(params: {
   } catch (error) {
     return handleError(error, "aiGenerateReviewRequest")
   }
+  })
+  return "data" in lr ? lr : { success: false, error: lr.error ?? "This draft was not recorded — nothing was saved" }
 }
 
 // ============================================================================
@@ -742,6 +746,8 @@ export async function aiSetupReviewMonitoring(params: {
   if (!Number.isFinite(params.alertThreshold) || params.alertThreshold < 1 || params.alertThreshold > 5) {
     return { success: false, error: "Alert threshold must be a star rating between 1 and 5" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "reputation.review_monitoring.configure", actor: { type: "user", userId: gate.userId, agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platforms: params.platforms, alert_threshold: params.alertThreshold } }, async () => {
 
   try {
     // review_monitoring_config does not exist in the live schema.
@@ -840,6 +846,8 @@ export async function aiSetupReviewMonitoring(params: {
   } catch (error) {
     return handleError(error, "aiSetupReviewMonitoring")
   }
+  })
+  return "data" in lr ? lr : { success: false, error: lr.error ?? "Monitoring settings were not saved — this change was not recorded" }
 }
 
 /**

@@ -34,7 +34,7 @@ export interface PublishableRender {
 
 /** Tenant + ownership gate shared by every mutation: returns the
  *  brokerageId when the caller may act on `renderId`, else null. */
-async function authorizeRender(renderId: string): Promise<{ brokerageId: string } | { error: string }> {
+async function authorizeRender(renderId: string): Promise<{ brokerageId: string; userId: string } | { error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { error: "Unauthorized" }
   const access = await resolvePolicyScopeAccess()
@@ -51,7 +51,7 @@ async function authorizeRender(renderId: string): Promise<{ brokerageId: string 
   if (!access.canEditBrokerage && row.agent_user_id !== ctx.userId) {
     return { error: "Forbidden — not your render" }
   }
-  return { brokerageId: ctx.brokerageId }
+  return { brokerageId: ctx.brokerageId, userId: ctx.userId }
 }
 
 export async function publishRenderToWeb(renderId: string): Promise<
@@ -59,11 +59,15 @@ export async function publishRenderToWeb(renderId: string): Promise<
 > {
   const auth = await authorizeRender(renderId)
   if ("error" in auth) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "marketing.video_landing.publish", actor: { type: "user", userId: auth.userId }, subject: { type: "remotion_render", id: renderId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: true; slug: string; url: string } | { success: false; error: string }> => {
   const res = await publishVideoLanding({ renderId, brokerageId: auth.brokerageId })
   if (!res.ok || !res.slug) return { success: false, error: res.reason ?? "Publish failed" }
   revalidatePath("/dashboard/marketing/video-pages")
   revalidatePath(`/v/${res.slug}`)
   return { success: true, slug: res.slug, url: `/v/${res.slug}` }
+  })
+  return "slug" in r ? r : { success: false, error: r.error ?? "Publish failed" }
 }
 
 export async function unpublishRenderFromWeb(renderId: string): Promise<
@@ -71,11 +75,15 @@ export async function unpublishRenderFromWeb(renderId: string): Promise<
 > {
   const auth = await authorizeRender(renderId)
   if ("error" in auth) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "marketing.video_landing.unpublish", actor: { type: "user", userId: auth.userId }, subject: { type: "remotion_render", id: renderId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: true } | { success: false; error: string }> => {
   const res = await unpublishVideoLanding({ renderId, brokerageId: auth.brokerageId })
   if (!res.ok) return { success: false, error: res.reason ?? "Unpublish failed" }
   revalidatePath("/dashboard/marketing/video-pages")
   if (res.slug) revalidatePath(`/v/${res.slug}`)
   return { success: true }
+  })
+  return r.success === true ? { success: true } : { success: false, error: r.error ?? "Unpublish failed" }
 }
 
 /** Lists the caller's publishable renders (succeeded + has artifact),

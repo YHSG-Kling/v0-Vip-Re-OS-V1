@@ -3,6 +3,19 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 const COLLAB_SEARCH_AVAILABLE = process.env.COLLABORATIVE_SEARCH_ENABLED !== 'false'
 
 // ==================== COLLABORATIVE SEARCH CRUD ====================
@@ -58,6 +71,7 @@ export async function createCollaborativeSearch(
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
 
+  return withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.collaborative_search.create", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { data, error } = await svc
     .from("collaborative_searches")
     .insert({
@@ -105,6 +119,7 @@ export async function createCollaborativeSearch(
 
   revalidatePath(`/portal/${contactId}`)
   return { data }
+  }, (error) => ({ error }))
 }
 
 export async function getCollaborativeSearches(contactId: string) {
@@ -217,6 +232,7 @@ export async function closeCollaborativeSearch(
   // with error null and empty data, byte-identical to one that worked (§3) —
   // and here zero rows means the search was already closed by somebody else,
   // which the caller needs to know rather than be told "done".
+  return withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.collaborative_search.close", subject: { type: "collaborative_search", id: searchId }, riskClass: "LOW_RISK_WRITE", detail: { status } }, async (): Promise<{ success?: true; error?: string }> => {
   const { data: updated, error } = await svc
     .from("collaborative_searches")
     .update({ status, updated_at: new Date().toISOString() })
@@ -234,11 +250,16 @@ export async function closeCollaborativeSearch(
 
   revalidatePath(`/portal/${search.contact_id}`)
   return { success: true }
+  }, (error) => ({ error }))
 }
 
 export async function updateSearchCriteria(searchId: string, criteria: Record<string, any>) {
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
+  // WAVE 155 (lane 155R12): this export had NO session gate (a public endpoint writing through the RLS client); the siblings' exact gate.
+  const owner = await gateSearchOwner(searchId, { staffMay: true })
+  if (!owner.ok) return { error: owner.error }
   const supabase = await createClient()
+  return withReceipt({ brokerageId: owner.brokerageId, userId: owner.userId, action: "buyer.collaborative_search.update_criteria", subject: { type: "collaborative_search", id: searchId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const { error } = await supabase
     .from("collaborative_searches")
@@ -254,6 +275,7 @@ export async function updateSearchCriteria(searchId: string, criteria: Record<st
   }
 
   return { success: true }
+  }, (error) => ({ error }))
 }
 
 // ==================== MEMBER INVITATIONS ====================
@@ -299,8 +321,10 @@ export async function removeMember(searchId: string, memberId: string) {
   const owner = await gateSearchOwner(searchId, { staffMay: true })
   if (!owner.ok) return { error: owner.error }
   const { revokeCollaborator } = await import("@/lib/portal/collaborative-share")
+  return withReceipt({ brokerageId: owner.brokerageId, userId: owner.userId, action: "buyer.search_member.revoke", subject: { type: "collaborative_search", id: searchId }, riskClass: "LOW_RISK_WRITE", detail: { member_id: memberId } }, async () => {
   const r = await revokeCollaborator(owner.svc, { brokerageId: owner.brokerageId, contactId: owner.contactId, memberId })
   return r.ok ? { success: true } : { error: r.error }
+  }, (error) => ({ error }))
 }
 
 // ==================== PROPERTY MANAGEMENT ====================
@@ -335,6 +359,7 @@ export async function addPropertyToSearch(
     .select("id").eq("collaborative_search_id", searchId).eq("property_mls_id", propertyId).maybeSingle()
   if (existingError) return { error: existingError.message }
   if (existing) return { error: "Property already added to this search" }
+  return withReceipt({ brokerageId: owner.brokerageId, userId: owner.userId, action: "buyer.search_property.add", subject: { type: "collaborative_search", id: searchId }, riskClass: "LOW_RISK_WRITE", detail: { property_ref: propertyId } }, async () => {
   const { data, error } = await owner.svc.from("collaborative_search_properties")
     .insert({ collaborative_search_id: searchId, property_mls_id: propertyId, property_data: sharedFactsFromSaved(row, approvals.ids), added_by_contact_id: owner.contactId, status: "active" })
     .select().single()
@@ -343,11 +368,16 @@ export async function addPropertyToSearch(
     return { error: error.message }
   }
   return { data }
+  }, (error) => ({ error }))
 }
 
 export async function removePropertyFromSearch(searchId: string, propertyId: string) {
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
+  // WAVE 155 (lane 155R12): this export had NO session gate (a public endpoint writing through the RLS client); the siblings' exact gate.
+  const owner = await gateSearchOwner(searchId, { staffMay: true })
+  if (!owner.ok) return { error: owner.error }
   const supabase = await createClient()
+  return withReceipt({ brokerageId: owner.brokerageId, userId: owner.userId, action: "buyer.search_property.remove", subject: { type: "collaborative_search", id: searchId }, riskClass: "LOW_RISK_WRITE", detail: { property_ref: propertyId } }, async () => {
 
   const { error } = await supabase
     .from("collaborative_search_properties")
@@ -361,6 +391,7 @@ export async function removePropertyFromSearch(searchId: string, propertyId: str
   }
 
   return { success: true }
+  }, (error) => ({ error }))
 }
 
 export async function getSearchProperties(searchId: string) {
@@ -418,6 +449,7 @@ export async function rateProperty(
   if (!home) return { error: "That home isn't on this shared list." }
   const { data: me, error: meError } = await owner.svc.from("contacts").select("email").eq("id", owner.contactId).eq("brokerage_id", owner.brokerageId).maybeSingle()
   if (meError || !me?.email) return { error: "Your vote couldn't be recorded — your contact email is missing." }
+  return withReceipt({ brokerageId: owner.brokerageId, userId: owner.userId, action: "buyer.search_property.rate", subject: { type: "collaborative_search", id: searchId }, riskClass: "LOW_RISK_WRITE", detail: { property_id: home.id } }, async () => {
   const now = new Date().toISOString()
   const { data, error } = await owner.svc.from("property_family_ratings").upsert({
     collaborative_search_id: searchId, property_id: home.id, member_email: String(me.email).toLowerCase(), brokerage_id: owner.brokerageId,
@@ -431,6 +463,7 @@ export async function rateProperty(
   const { error: consError } = await owner.svc.from("property_consensus").upsert({ collaborative_search_id: searchId, property_id: home.id, ...consensusOf((all ?? []) as Array<{ rating: number | null }>), updated_at: now }, { onConflict: "collaborative_search_id,property_id" })
   if (consError) console.error("[collaborative-search] consensus not refreshed:", consError.message)
   return { data }
+  }, (error) => ({ error }))
 }
 
 export async function getPropertyRatings(searchId: string, propertyId: string) {
@@ -477,7 +510,11 @@ export async function getConsensus(searchId: string) {
 
 export async function markAsFinalist(searchId: string, propertyId: string, isFinalist: boolean) {
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not configured on this platform right now — platform staff can switch it back on." }
+  // WAVE 155 (lane 155R12): this export had NO session gate (a public endpoint writing through the RLS client); the siblings' exact gate.
+  const owner = await gateSearchOwner(searchId, { staffMay: true })
+  if (!owner.ok) return { error: owner.error }
   const supabase = await createClient()
+  return withReceipt({ brokerageId: owner.brokerageId, userId: owner.userId, action: "buyer.search_property.mark_finalist", subject: { type: "collaborative_search", id: searchId }, riskClass: "LOW_RISK_WRITE", detail: { property_id: propertyId, is_finalist: isFinalist } }, async () => {
 
   const { error } = await supabase
     .from("property_consensus")
@@ -491,6 +528,7 @@ export async function markAsFinalist(searchId: string, propertyId: string, isFin
   }
 
   return { success: true }
+  }, (error) => ({ error }))
 }
 
 // ==================== ACTIVITY TRACKING ====================
@@ -547,7 +585,7 @@ export async function trackPortalActivity(
     metadata: activityData || {},
     property_id: propertyId ?? null,
   }
-  const { error } = await svc.from("client_portal_activity").insert(activityRow)
+  const { error } = await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.portal_activity.track", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { activity_type: activityType } }, async () => { const r = await svc.from("client_portal_activity").insert(activityRow); return { success: !r.error, error: r.error } }, (message) => ({ success: false, error: { message } }))
 
   if (error) {
     console.error(`[collaborative-search] activity '${activityType}' NOT recorded:`, error.message)

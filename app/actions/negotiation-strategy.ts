@@ -133,6 +133,8 @@ export async function acceptStrategyAction(
   if (strat.agent_user_id && strat.agent_user_id !== auth.userId && !isAdminOrBroker({ user_type: auth.userType })) {
     return { ok: false, error: "Forbidden: not your strategy" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true } | { ok: false; error: string }>({ brokerageId: auth.brokerageId, action: "transaction.negotiation_strategy.accept", actor: { type: "user", userId: auth.userId }, subject: { type: "negotiation_strategy", id: strategyId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { disposition } }, async () => {
 
   const { error } = await svc
     .from("negotiation_strategies")
@@ -147,6 +149,8 @@ export async function acceptStrategyAction(
 
   revalidatePath("/dashboard/agent")
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // ─── Dismiss ────────────────────────────────────────────────────────────────
@@ -156,6 +160,8 @@ export async function dismissStrategyAction(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const auth = await requireAgentOrAdmin()
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true } | { ok: false; error: string }>({ brokerageId: auth.brokerageId, action: "transaction.negotiation_strategy.dismiss", actor: { type: "user", userId: auth.userId }, subject: { type: "negotiation_strategy", id: strategyId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const svc = createServiceClient()
   const update: Record<string, unknown> = {
@@ -175,6 +181,8 @@ export async function dismissStrategyAction(
 
   revalidatePath("/dashboard/agent")
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // ─── Record outcome (learning loop) ─────────────────────────────────────────

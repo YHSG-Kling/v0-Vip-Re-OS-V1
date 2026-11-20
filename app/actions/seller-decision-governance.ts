@@ -24,6 +24,19 @@ import { getAllStates, getMilestoneStates, getStateDefinition, type SellerDecisi
 import { isValidUUID } from "@/lib/validations"
 import { createClient } from "@/lib/supabase/server"
 import { readRoleGrants } from "@/lib/auth/role-grants"
+
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
 import {
   isBrokerageFinanceAdmin,
   isBrokerageFinanceAdminGrantRole,
@@ -247,6 +260,9 @@ export async function validateListingNetSheetValidity(input: NetSheetValidityInp
     if (!isValidUUID(input.listingId)) {
       return { success: false, error: "Invalid listing ID" }
     }
+    // WAVE 155 (lane 155R12): no session gate stood here (a public endpoint writing an audit row); the siblings' exact gate.
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
     
     // If no net sheet data provided, derive from events
     let netSheetInput = input
@@ -261,7 +277,7 @@ export async function validateListingNetSheetValidity(input: NetSheetValidityInp
     
     // Emit expiration warning if needed
     if (result.isValid && result.daysRemaining <= 7) {
-      await emitNetSheetExpirationWarning(input.listingId, result.daysRemaining)
+      await withReceipt({ brokerageId: auth.caller.brokerageId, userId: auth.caller.userId, action: "seller.net_sheet.warn_expiring", subject: { type: "listing", id: input.listingId }, riskClass: "LOW_RISK_WRITE", detail: { days_remaining: result.daysRemaining } }, () => emitNetSheetExpirationWarning(input.listingId, result.daysRemaining), () => undefined)
     }
     
     return {
@@ -386,7 +402,7 @@ export async function logSellerDecisionTransition(input: Omit<DecisionTransition
     // RELAY THE REAL ANSWER. This used to `await` a void and then assert
     // { success: true } — the loggers swallowed both the listing read and the
     // insert, so the action reported a written audit row over an RLS refusal.
-    const wrote = await logDecisionTransition({ ...input, authority_role: auth.caller.userType })
+    const wrote = await withReceipt({ brokerageId: auth.caller.brokerageId, userId: auth.caller.userId, action: "seller.decision.log_transition", subject: { type: "listing", id: input.listing_id }, riskClass: "LOW_RISK_WRITE" }, () => logDecisionTransition({ ...input, authority_role: auth.caller.userType }), (error) => ({ ok: false as const, error }))
     if (!wrote.ok) return { success: false, error: wrote.error }
 
     return { success: true }
@@ -415,8 +431,11 @@ export async function logCMAQuality(input: {
     if (!isValidUUID(input.listing_id)) {
       return { success: false, error: "Invalid listing ID" }
     }
+    // WAVE 155 (lane 155R12): no session gate stood here (a public endpoint writing an audit row); the siblings' exact gate.
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
     
-    const wrote = await logCMAQualityVerified(input)
+    const wrote = await withReceipt({ brokerageId: auth.caller.brokerageId, userId: auth.caller.userId, action: "seller.cma_quality.log", subject: { type: "listing", id: input.listing_id }, riskClass: "LOW_RISK_WRITE", detail: { comparable_count: input.comparable_count, quality_score: input.quality_score } }, () => logCMAQualityVerified(input), (error) => ({ ok: false as const, error }))
     if (!wrote.ok) return { success: false, error: wrote.error }
 
     return { success: true }
@@ -443,8 +462,11 @@ export async function logNetSheetActivity(input: {
     if (!isValidUUID(input.listing_id)) {
       return { success: false, error: "Invalid listing ID" }
     }
+    // WAVE 155 (lane 155R12): no session gate stood here (a public endpoint writing an audit row); the siblings' exact gate.
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
     
-    const wrote = await logNetSheetEvent(input)
+    const wrote = await withReceipt({ brokerageId: auth.caller.brokerageId, userId: auth.caller.userId, action: "seller.net_sheet.log_event", subject: { type: "listing", id: input.listing_id }, riskClass: "LOW_RISK_WRITE", detail: { event_type: input.event_type } }, () => logNetSheetEvent(input), (error) => ({ ok: false as const, error }))
     if (!wrote.ok) return { success: false, error: wrote.error }
 
     return { success: true }
@@ -469,8 +491,11 @@ export async function logPresentationActivity(input: {
     if (!isValidUUID(input.listing_id)) {
       return { success: false, error: "Invalid listing ID" }
     }
+    // WAVE 155 (lane 155R12): no session gate stood here (a public endpoint writing an audit row); the siblings' exact gate.
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
     
-    const wrote = await logPresentationEvent(input)
+    const wrote = await withReceipt({ brokerageId: auth.caller.brokerageId, userId: auth.caller.userId, action: "seller.presentation.log_event", subject: { type: "listing", id: input.listing_id }, riskClass: "LOW_RISK_WRITE", detail: { event_type: input.event_type } }, () => logPresentationEvent(input), (error) => ({ ok: false as const, error }))
     if (!wrote.ok) return { success: false, error: wrote.error }
 
     return { success: true }
@@ -497,7 +522,7 @@ export async function logSellerDecisionReversal(input: Omit<DecisionReversalEven
     const auth = await requireCaller()
     if (!auth.ok) return { success: false, error: auth.error }
 
-    const wrote = await logDecisionReversal({ ...input, authority_role: auth.caller.userType })
+    const wrote = await withReceipt({ brokerageId: auth.caller.brokerageId, userId: auth.caller.userId, action: "seller.decision.log_reversal", subject: { type: "listing", id: input.listing_id }, riskClass: "LOW_RISK_WRITE" }, () => logDecisionReversal({ ...input, authority_role: auth.caller.userType }), (error) => ({ ok: false as const, error }))
     if (!wrote.ok) return { success: false, error: wrote.error }
 
     return { success: true }

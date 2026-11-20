@@ -226,6 +226,8 @@ export async function inviteFarmContacts(params: {
     return { success: false, error: "No eligible contacts after channel/consent filtering" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "open_house.invitation.stage", actor: { type: "user", userId: auth.userId }, subject: { type: "open_house_event", id: params.eventId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { channel: params.channel, staged: invitationRows.length } }, async () => {
   const { error: invErr } = await supabase
     .from("open_house_invitations")
     .upsert(invitationRows, { onConflict: "event_id,contact_id,channel", ignoreDuplicates: true })
@@ -269,6 +271,7 @@ export async function inviteFarmContacts(params: {
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, invited: invitationRows.length }
+  })
 }
 
 // ─── TAB 1 — UPDATE RSVP ─────────────────────────────────────────────────────
@@ -291,6 +294,8 @@ export async function updateRsvp(params: {
 
   const supabase = await createClient()
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "open_house.rsvp.update", actor: { type: "user", userId: auth.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { event_id: params.eventId, rsvp: params.rsvpResponse } }, async () => {
   await supabase
     .from("open_house_invitations")
     .update({ rsvp_response: params.rsvpResponse, rsvp_updated_at: new Date().toISOString() })
@@ -327,6 +332,7 @@ export async function updateRsvp(params: {
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true }
+  })
 }
 
 // ─── TAB 2 — CREATE QR CODE FOR EVENT ────────────────────────────────────────

@@ -108,6 +108,8 @@ export async function computeAndPersistGapAction(params?: {
     agentId     = params.agentId
     brokerageId = params.brokerageId
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<Awaited<ReturnType<typeof computeAndPersistGapAction>>>({ brokerageId: ctx.brokerageId, action: "income.gap_analysis.compute", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: brokerageId !== ctx.brokerageId ? { platform_override: true, target_brokerage_id: brokerageId } : {} }, async () => {
 
   // Resolve userId for the agent — income_forecast_snapshots.agent_id FKs users(id)
   const svc0 = createServiceClient()
@@ -208,6 +210,8 @@ export async function computeAndPersistGapAction(params?: {
       actions,
     },
   }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // ── READ ─────────────────────────────────────────────────────────────────────
@@ -249,6 +253,8 @@ export async function dismissRecommendedActionAction(params: {
 }): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveAgentContext()
   if (!ctx.ok) return ctx
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: ctx.brokerageId, action: "income.recommended_action.dismiss", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "income_gap_recommended_action", id: params.actionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   // `.select("id")` + a zero-row refusal (wave 4 slice 2). Without it an
   // actionId belonging to a DIFFERENT agent matched zero rows, came back with
@@ -271,6 +277,8 @@ export async function dismissRecommendedActionAction(params: {
   }
   revalidatePath("/dashboard/income-truth")
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }
 
 export async function completeRecommendedActionAction(params: {
@@ -279,6 +287,8 @@ export async function completeRecommendedActionAction(params: {
 }): Promise<{ ok: boolean; error?: string }> {
   const ctx = await resolveAgentContext()
   if (!ctx.ok) return ctx
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: ctx.brokerageId, action: "income.recommended_action.complete", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "income_gap_recommended_action", id: params.actionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   // `.select("id")` + a zero-row refusal (wave 4 slice 2). Without it an
   // actionId belonging to a DIFFERENT agent matched zero rows, came back with
@@ -301,4 +311,6 @@ export async function completeRecommendedActionAction(params: {
   }
   revalidatePath("/dashboard/income-truth")
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }

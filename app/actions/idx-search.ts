@@ -12,6 +12,19 @@ import { revalidatePath } from "next/cache"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { PUBLICLY_VISIBLE_LISTING_STATUSES } from "@/lib/listings/listing-status-sync"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 const IDX_API_BASE = process.env.IDXBROKER_API_URL || "https://api.idxbroker.com"
 const IDX_API_KEY = process.env.IDXBROKER_API_KEY
 
@@ -241,6 +254,10 @@ export async function saveProperty(data: {
 }) {
   try {
     const supabase = await createClient()
+    // WAVE 155 (lane 155R12): the receipt's actor + tenant come from the contact gate (the session). This export has no gate of its
+    // own (it writes under RLS); a caller the gate does not admit still writes exactly as before — unrecorded, never an invented tenant.
+    const { requireContactAccess: receiptGate } = await import("@/lib/portal/require-contact-access"); const rcpt = await receiptGate(data.contactId)
+    return await withReceipt({ brokerageId: rcpt.ok ? rcpt.brokerageId : null, userId: rcpt.ok ? rcpt.userId : "", action: "buyer.saved_property.save", subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", detail: { mls_number: data.mlsNumber ?? null, listing_id: data.listingId ?? null } }, async () => {
 
     // Dedup — same contact already saved this property?
     const dedupQuery = supabase
@@ -331,6 +348,7 @@ export async function saveProperty(data: {
     // app/components/portal/PersonaPropertiesDashboard.tsx (Saved tab).
     revalidatePath(`/portal/${data.contactId}/properties`)
     return { success: true, message: "Property saved successfully" }
+    }, (error) => ({ success: false as const, error }))
   } catch (error: any) {
     console.error("Save property error:", error)
     return { success: false, error: error.message }
@@ -343,6 +361,10 @@ export async function unsaveProperty(data: {
   mlsNumber: string
 }) {
   const supabase = await createClient()
+  // WAVE 155 (lane 155R12): the receipt's actor + tenant come from the contact gate (the session). This export has no gate of its
+  // own (it writes under RLS); a caller the gate does not admit still writes exactly as before — unrecorded, never an invented tenant.
+  const { requireContactAccess: receiptGate } = await import("@/lib/portal/require-contact-access"); const rcpt = await receiptGate(data.contactId)
+  return withReceipt({ brokerageId: rcpt.ok ? rcpt.brokerageId : null, userId: rcpt.ok ? rcpt.userId : "", action: "buyer.saved_property.unsave", subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", detail: { mls_number: data.mlsNumber } }, async () => {
 
   // The result of this delete used to be discarded entirely, inside a try/catch
   // that could never fire: supabase-js RESOLVES a rejected write rather than
@@ -366,6 +388,7 @@ export async function unsaveProperty(data: {
   // Properties tab's Saved list.
   revalidatePath(`/portal/${data.contactId}/properties`)
   return { success: true, message: "Property removed from saved" }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /**
@@ -408,6 +431,7 @@ export async function trackPropertyView(data: {
       return { success: false, error: access.error }
     }
 
+    return await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.property_view.track", subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", detail: { mls_number: data.mlsNumber } }, async () => {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()
 
@@ -557,6 +581,7 @@ export async function trackPropertyView(data: {
     }
 
     return { success: true }
+    }, (error) => ({ success: false as const, error }))
   } catch (error: any) {
     console.error("Track view error:", error)
     return { success: false, error: error.message }

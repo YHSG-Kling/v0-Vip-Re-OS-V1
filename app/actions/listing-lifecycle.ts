@@ -333,7 +333,12 @@ export async function completeListingTask(taskId: string) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
-  return completeListingTaskService(taskId)
+  // WAVE 155 (155R14): the receipt — the SESSION's tenant (the service re-reads it and pins the update to it).
+  const { data: callerRow } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!callerRow?.brokerage_id) return completeListingTaskService(taskId)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: callerRow.brokerage_id, action: "listing.task.complete", actor: { type: "user", userId: user.id }, subject: { type: "task", id: taskId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, () =>
+  completeListingTaskService(taskId))
 }
 
 // TOMBSTONE (lane 86F, orphan doctrine §1.1) — the eight "EVENT HANDLERS -
@@ -366,7 +371,9 @@ export async function handlePriceReduction(payload: { listing_id?: string } & Re
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const { createServiceClient } = await import("@/lib/supabase/service")
   const { priceReductionTasks } = await import("@/lib/listing-lifecycle/lifecycle-event-tasks")
-  return priceReductionTasks(createServiceClient(), ctx.brokerageId, { listing_id: payload?.listing_id ?? null })
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"), brokerageId = ctx.brokerageId
+  return ledgerSessionAction({ brokerageId, action: "listing.price_reduction_task.create", actor: { type: "user", userId: ctx.userId }, subject: { type: "listing", id: payload?.listing_id ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, () =>
+  priceReductionTasks(createServiceClient(), brokerageId, { listing_id: payload?.listing_id ?? null }))
 }
 
 /**

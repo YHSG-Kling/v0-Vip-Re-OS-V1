@@ -133,6 +133,8 @@ export async function updateWidgetScope(scope: WidgetScope): Promise<void> {
   })
   if (!writeAdmin.ok) throw new Error(`Could not resolve your permissions: ${writeAdmin.error}`)
   if (!writeAdmin.isTenantAdmin) throw new Error("Only a brokerage administrator can change widget scope")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr: unknown = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "tenant.widget_scope.update", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { owner_type: scope.owner_type, owner_id: scope.owner_id } }, async () => {
 
   const serviceClient = createServiceClient()
   const { data: settingsRow } = await serviceClient
@@ -149,6 +151,8 @@ export async function updateWidgetScope(scope: WidgetScope): Promise<void> {
     .update({ additional_settings: { ...existing, widget_scope: scope } })
     .eq("id", settingsRow.id)
   if (updateError) throw new Error(`Could not save the widget scope: ${updateError.message}`)
+  })
+  if (lr && typeof lr === "object" && "error" in lr) throw new Error(String((lr as { error?: string }).error ?? "The widget scope change was not recorded"))
 }
 
 export async function fetchWidgetAgentsAndTeams(): Promise<{
@@ -228,6 +232,8 @@ export async function setByoCarrierPolicy(allowUserByo: boolean): Promise<{ ok: 
   // "Forbidden" and "we could not tell" are different answers to the subscriber.
   if (!byoAdmin.ok) return { ok: false, error: `Could not resolve your permissions: ${byoAdmin.error}` }
   if (!byoAdmin.isTenantAdmin) return { ok: false, error: "Forbidden" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: ctx.brokerageId, action: "tenant.byo_carrier_policy.set", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { allow_user_byo: allowUserByo } }, async () => {
 
   const serviceClient = createServiceClient()
   const { data: settingsRow } = await serviceClient
@@ -241,4 +247,6 @@ export async function setByoCarrierPolicy(allowUserByo: boolean): Promise<{ ok: 
     .eq("id", settingsRow.id)
   if (error) return { ok: false, error: "Failed to save" }
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

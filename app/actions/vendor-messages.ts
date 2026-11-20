@@ -96,6 +96,8 @@ export async function sendVendorMessage(
     return { success: false, error: "No active vendor↔contact relationship" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.message.send", actor: { type: "user", userId: ctx.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { vendor_id: input.vendorId, channel: "vendor" } }, async () => {
   const { data: msg, error } = await supabase
     .from("vendor_messages")
     .insert({
@@ -119,6 +121,7 @@ export async function sendVendorMessage(
 
   revalidatePath("/dashboard/communications/inbox")
   return { success: true, messageId: msg.id }
+  })
 }
 
 export interface VendorMessageRow {
@@ -223,6 +226,7 @@ export async function markVendorMessagesRead(input: {
     return { success: false, error: "Not permitted" }
   }
 
+  const run = async (): Promise<{ success: boolean; error?: string }> => {
   const { error } = await supabase
     .from("vendor_messages")
     .update({ read: true, read_at: new Date().toISOString() })
@@ -234,4 +238,9 @@ export async function markVendorMessagesRead(input: {
 
   if (error) return { success: false, error: error.message }
   return { success: true }
+  }
+  // WAVE 155 (155R14): a seat with no tenant has no valid receipt row (brokerage_id NOT NULL) — it runs exactly as before.
+  if (!ctx.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.message.mark_read", actor: { type: "user", userId: ctx.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { vendor_id: input.vendorId } }, run)
 }

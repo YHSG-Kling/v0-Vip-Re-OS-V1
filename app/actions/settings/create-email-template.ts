@@ -21,6 +21,8 @@ export async function createEmailTemplate(template: any) {
 
   const name = String(safe.name ?? '').trim();
   if (!name) return { error: 'Template name is required' };
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger");
+  const lr = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.email_template.create", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "email_template" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { name } }, async () => {
 
   const svc = createServiceClient();
 
@@ -56,4 +58,6 @@ export async function createEmailTemplate(template: any) {
   }
 
   return { data };
+  });
+  return "success" in lr ? { error: lr.error ?? 'This template was not recorded — nothing was saved' } : lr;
 }

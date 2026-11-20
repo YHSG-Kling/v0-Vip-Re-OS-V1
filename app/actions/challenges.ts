@@ -46,6 +46,8 @@ export async function createChallenge(input: {
   if (!input.title?.trim()) return { ok: false, error: "Title is required" }
   if (!CHALLENGE_TYPES.includes(input.challengeType)) return { ok: false, error: "Unknown challenge type" }
   if (Date.parse(input.startsAt) >= Date.parse(input.endsAt)) return { ok: false, error: "End must be after start" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: boolean; id?: string; error?: string }>({ brokerageId: auth.brokerageId, action: "recruiting.challenge.create", actor: { type: "user", userId: auth.actorUserId }, subject: input.teamId ? { type: "team", id: input.teamId } : { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { challenge_type: input.challengeType, prize_points: Math.max(0, Math.floor(input.prizePoints ?? 0)) } }, async () => {
 
   const svc = createServiceClient()
 
@@ -77,6 +79,8 @@ export async function createChallenge(input: {
   }).select("id").single()
   if (error || !data) return { ok: false, error: error?.message ?? "insert failed" }
   return { ok: true, id: (data as any).id }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 /** Enroll the current agent (or a named agent for an admin) in a challenge. Idempotent per (challenge, agent). */
@@ -105,11 +109,15 @@ export async function enrollInChallenge(input: { challengeId: string; agentId?: 
 
   const { data: agentRow } = await svc.from("agents").select("id").eq("id", targetAgentId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
   if (!agentRow) return { ok: false, error: "Agent not in this brokerage" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: ctx.brokerageId, action: "recruiting.challenge.enroll", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId }, subject: { type: "challenge", id: input.challengeId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: targetAgentId } }, async () => {
 
   const { error } = await svc.from("challenge_participants")
     .upsert({ challenge_id: input.challengeId, agent_id: targetAgentId }, { onConflict: "challenge_id,agent_id", ignoreDuplicates: true })
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 export interface ChallengeStanding {

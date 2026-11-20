@@ -140,6 +140,8 @@ export async function revokeInvitationAction(
 ): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireBrokerageAdmin()
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: auth.brokerageId, action: "tenant.invitation.revoke", actor: { type: "user", userId: auth.userId }, subject: { type: "user_invitation", id: invitationId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   const { error } = await svc
     .from("user_invitations")
@@ -150,6 +152,8 @@ export async function revokeInvitationAction(
   if (error) return { ok: false, error: error.message }
   revalidatePath("/dashboard/admin/users/invitations")
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 export async function markBrokerageSetupCompleteAction(): Promise<

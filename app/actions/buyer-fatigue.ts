@@ -13,6 +13,19 @@ import {
   type ContactFatigueWeights,
 } from "@/lib/fatigue/fatigue-display"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 // Every read in this file used to be unauthenticated and accepted
 // caller-supplied contactId / brokerageId. Any signed-in user could read
 // any brokerage's buyer fatigue scores and active alerts simply by
@@ -140,6 +153,7 @@ export async function dismissFatigueAlert(alertId: string) {
   const access = await verifyContactAccess((alert as { contact_id: string }).contact_id, auth)
   if (!access.ok) return { success: false as const, error: access.error }
 
+  return withReceipt({ brokerageId: auth.brokerageId, userId: auth.userId, action: "buyer.fatigue_alert.dismiss", subject: { type: "contact", id: (alert as { contact_id: string }).contact_id }, riskClass: "LOW_RISK_WRITE", detail: { alert_id: alertId } }, async () => {
   const { error } = await supabase
     .from("fatigue_alerts")
     .update({
@@ -152,6 +166,7 @@ export async function dismissFatigueAlert(alertId: string) {
 
   if (error) return { success: false as const, error: error.message }
   return { success: true as const }
+  }, (error) => ({ success: false as const, error }))
 }
 
 // ─── CALCULATE NOW (on-demand) ────────────────────────────────────────────────
@@ -338,6 +353,7 @@ export async function getReinvigorationSuggestions(
   const score   = scoreRes.data
 
   try {
+    return await withReceipt({ brokerageId: auth.brokerageId, userId: auth.userId, action: "buyer.fatigue_suggestions.generate", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE" }, async () => {
     const { text } = await generateText({
       brokerageId: auth.brokerageId,
       userId: auth.userId,
@@ -369,6 +385,7 @@ export async function getReinvigorationSuggestions(
 
     const suggestions: string[] = JSON.parse(text.trim())
     return { success: true as const, suggestions }
+    }, (error) => ({ success: false as const, error }))
   } catch {
     return {
       success: true as const,

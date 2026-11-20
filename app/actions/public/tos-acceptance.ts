@@ -74,6 +74,8 @@ export async function acceptCurrentTosAsCurrentUserAction(): Promise<{ ok: boole
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user?.email) return { ok: false, error: "Not authenticated" }
+  const sessionEmail = user.email
+  const run = async (user = { email: sessionEmail }): Promise<{ ok: boolean; error?: string }> => {
 
   const svc = createServiceClient()
   const { data: settings } = await svc.from("platform_settings").select("tos_version").limit(1).maybeSingle()
@@ -88,6 +90,13 @@ export async function acceptCurrentTosAsCurrentUserAction(): Promise<{ ok: boole
   }, { onConflict: "email,tos_version" })
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+  }
+  // The receipt names the tenant of the SESSION user; platform staff (no brokerage) have no valid ledger row and accept unrecorded.
+  const { data: tosUser } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!tosUser?.brokerage_id) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction({ brokerageId: tosUser.brokerage_id as string, action: "platform.tos_acceptance.accept", actor: { type: "user", userId: user.id }, subject: { type: "user", id: user.id }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, run)
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This acceptance was not recorded — please try again" }
 }
 
 /**

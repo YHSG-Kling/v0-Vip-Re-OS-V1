@@ -94,6 +94,9 @@ export async function addTeamMember(input: {
   const existingFunded = agentFundedTotal((current ?? []).filter((m) => m.agent_id !== input.agentId))
   const v = validateTeamMember({ splitPercent: input.splitPercent, sourceOfFunds: input.sourceOfFunds, existingAgentFundedPct: existingFunded })
   if (!v.ok) return { ok: false, error: v.error ?? "Invalid team member" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sctx = { ...ctx, brokerageId: ctx.brokerageId }
+  const lr = await ledgerSessionAction<{ ok: true; id: string } | { ok: false; error: string }>({ brokerageId: ctx.brokerageId, action: "team.member.add", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId }, subject: { type: "team", id: input.teamId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: input.agentId, role: input.role, split_percent: input.splitPercent, source_of_funds: input.sourceOfFunds, op: existing ? "update" : "insert" } }, async (ctx = sctx) => {
 
   if (existing) {
     const { error } = await svc.from("team_members")
@@ -121,6 +124,8 @@ export async function addTeamMember(input: {
   }
   revalidatePath("/dashboard/team")
   return { ok: true, id: (data as { id: string }).id }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 /** Deactivate a team member (soft — preserves commission history). */
@@ -141,10 +146,14 @@ export async function removeTeamMember(memberId: string): Promise<{ ok: true } |
     if (!led.ok) return { ok: false, error: led.error }
     if (!led.teamId || led.teamId !== row.team_id) return { ok: false, error: "Forbidden" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true } | { ok: false; error: string }>({ brokerageId: ctx.brokerageId, action: "team.member.remove", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId }, subject: { type: "team_member", id: memberId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { team_id: row.team_id } }, async () => {
   const { error } = await svc.from("team_members")
     .update({ is_active: false, effective_to: new Date().toISOString().split("T")[0] })
     .eq("id", memberId).eq("brokerage_id", ctx.brokerageId)
   if (error) return { ok: false, error: error.message }
   revalidatePath("/dashboard/team")
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

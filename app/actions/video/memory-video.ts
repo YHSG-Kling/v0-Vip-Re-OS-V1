@@ -114,13 +114,15 @@ export async function saveMemoryVideoDictationAction(
     return { ok: false, status: "failed", reason: "no agents record for this user in this brokerage" }
   }
 
-  const result = await recordMemoryVideoDictation({
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const recorded = await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "marketing.memory_video.save_dictation", actor: { type: "user", userId: caller.userId, agentId: agentRecordId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { segments: segments.length, mode: media?.mode ?? null } }, async () => { const out = await recordMemoryVideoDictation({
     brokerageId: caller.brokerageId,
     contactId,
     agentRecordId,
     segments,
     media: media ?? null,
-  })
+  }); return { success: out.ok, error: out.ok ? undefined : out.reason, out } })
+  const result: MemoryVideoCaptureResult = "out" in recorded ? recorded.out : { ok: false, status: "failed", reason: recorded.error ?? "The dictation was not saved" }
   if (result.ok) revalidatePath(`/crm/contacts/${contactId}`)
   return result
 }
@@ -139,11 +141,13 @@ export async function renderMemoryVideoAction(
   if (!caller.ok) return { ok: false, status: "failed", reason: caller.error }
   if (!contactId) return { ok: false, status: "failed", reason: "contactId required" }
 
-  const result = await stageMemoryVideoRender({
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const staged = await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "marketing.memory_video.render", actor: { type: "user", userId: caller.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => { const out = await stageMemoryVideoRender({
     brokerageId: caller.brokerageId,
     contactId,
     agentUserId: caller.userId,
-  })
+  }); return { success: out.ok, error: out.ok ? undefined : out.reason, out } })
+  const result: MemoryVideoRenderResult = "out" in staged ? staged.out : { ok: false, status: "failed", reason: staged.error ?? "The film was not queued" }
   if (result.ok) revalidatePath(`/crm/contacts/${contactId}`)
   return result
 }

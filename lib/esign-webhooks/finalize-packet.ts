@@ -166,6 +166,15 @@ export async function finalizeVoiceCockpitPacket(
       dedupe_key:   `bba-signed-${matchedBBA.id}`,
     })
     if (!bbaEvt.ok) console.error("[finalize-packet] BUYER_BROKER_AGREEMENT_SIGNED event not recorded:", bbaEvt.error)
+    // WAVE 155 (lane 155R12, carry-in of lane 155C request 1): the EXECUTED agreement reaches the reactor, which pays the
+    // signed-agreement appointment award (it re-reads the row; once per correction-chain root, so a re-delivered webhook pays
+    // nothing more). Award only — a failure never blocks the signature.
+    if (!bbaActiveErr) {
+      try {
+        const { processKernelEvent } = await import("@/lib/kernel/notification-engine")
+        await processKernelEvent({ event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: matchedBBA.brokerage_id as string, entityType: "buyer_broker_agreement", entityId: matchedBBA.id as string })
+      } catch (e) { console.error("[finalize-packet] buyer agreement reactor dispatch failed (award only):", e) }
+    }
 
     // Wave 58 — buyer "go-live" AUTO-handoff: propose an AI-generated welcome into the
     // client_message gate. Called here at the authoritative source because BBA-signed

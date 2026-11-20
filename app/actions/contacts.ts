@@ -575,6 +575,8 @@ export async function addContactNote(contactId: string, noteText: string, isPriv
       return { success: false, error: "Note cannot be empty" }
     }
 
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId, action: "contact.note.add", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { is_private: isPrivate } }, async () => {
     const { data, error } = await supabase
       .from("contact_notes")
       .insert({
@@ -595,6 +597,7 @@ export async function addContactNote(contactId: string, noteText: string, isPriv
     revalidatePath("/dashboard")
 
     return { success: true, noteId: data?.id ?? null }
+    })
   } catch (error: any) {
     return { success: false, error: error.message }
   }

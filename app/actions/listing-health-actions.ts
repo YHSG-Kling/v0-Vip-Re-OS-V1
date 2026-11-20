@@ -84,6 +84,7 @@ export async function resolveListingInterventionAction(params: {
   if (!row) return { success: false, error: "Intervention not found" }
   if (row.resolved) return { success: true }  // idempotent
 
+  const write = async (): Promise<{ success: boolean; error?: string }> => {
   const { error } = await supabase
     .from("listing_health_interventions")
     .update({
@@ -100,4 +101,10 @@ export async function resolveListingInterventionAction(params: {
     revalidatePath(`/dashboard/listings/${row.listing_id}`)
   }
   return { success: true }
+  }
+  // WAVE 155 (155R14): the receipt — the SESSION's tenant (one read); a seat with no tenant runs exactly as before.
+  const { data: callerRow } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (!callerRow?.brokerage_id) return write()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: callerRow.brokerage_id, action: "listing.health_intervention.resolve", actor: { type: "user", userId: user.id }, subject: { type: "listing_health_intervention", id: params.interventionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_id: row.listing_id ?? null } }, write)
 }

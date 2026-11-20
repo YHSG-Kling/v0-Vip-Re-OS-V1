@@ -96,6 +96,7 @@ export async function verifyContactAddressAction(params: {
 }): Promise<{ success: boolean; verified?: boolean; deliverability?: string | null; cost?: number; error?: string }> {
   const gate = await assertCanActOnContact(params.contactId)
   if (!gate.ok) return { success: false, error: gate.error }
+  const run = async (): Promise<{ success: boolean; verified?: boolean; deliverability?: string | null; cost?: number; error?: string }> => {
   if (!gate.contact.mailing_address) return { success: false, error: "Contact has no mailing address on file" }
   try {
     const { verifyAddressViaLob } = await import("@/lib/external/lob-address-verify")
@@ -122,4 +123,10 @@ export async function verifyContactAddressAction(params: {
     revalidatePath(`/dashboard/contacts/${params.contactId}`)
     return { success: true, verified: data.verified, deliverability: data.deliverability, cost }
   } catch (e: any) { return { success: false, error: e?.message ?? "address verify failed" } }
+  }
+  // WAVE 155 (155R14): the receipt (a paid verification), against the tenant the gate proved; no tenant → runs exactly as before.
+  const brokerageId = gate.contact.brokerage_id
+  if (!brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "contact.mailing_address.verify", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "contact", id: params.contactId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { provider: "lob" } }, run)
 }

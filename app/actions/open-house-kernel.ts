@@ -37,6 +37,19 @@ import {
   type OpenHouseCheckInInput,
 } from "@/lib/kernel/open-house"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // ACTOR + EVENT SCOPE
 // ═════════════════════════════════════════════════════════════════════════════
@@ -44,6 +57,8 @@ import {
 interface OpenHouseScope {
   /** agents.id of the signed-in actor. */
   actingAgentId: string
+  /** users.id of the signed-in actor (the action-ledger receipt's actor — agents.id and users.id are disjoint). */
+  actingUserId: string
   /** The brokerage the actor belongs to. Every write below is stamped with it. */
   brokerageId: string
   /** agents.id of the agent the event is assigned to; falls back to the actor. */
@@ -93,6 +108,7 @@ async function resolveOpenHouseScope(
     ok: true,
     scope: {
       actingAgentId: ctx.agentId,
+      actingUserId: ctx.userId,
       brokerageId: ctx.brokerageId,
       // open_house_events.agent_id FKs agents(id), same class as ctx.agentId, so
       // this is a preference between two agents ids — never a class hop.
@@ -144,7 +160,7 @@ export async function createOpenHouseAttendeeFromContactAction(input: {
   const scoped = await resolveOpenHouseScope(input.open_house_id)
   if (!scoped.ok) return { success: false as const, attendee_id: null, error: scoped.error }
 
-  return createOpenHouseAttendeeFromContact({
+  return withReceipt({ brokerageId: scoped.scope.brokerageId, userId: scoped.scope.actingUserId, agentId: scoped.scope.actingAgentId, action: "open_house.attendee.create", subject: { type: "contact", id: input.contact_id }, riskClass: "LOW_RISK_WRITE", detail: { open_house_id: input.open_house_id, tcpa_consent: !!input.tcpa_consent } }, () => createOpenHouseAttendeeFromContact({
     open_house_id: input.open_house_id,
     contact_id: input.contact_id,
     brokerage_id: scoped.scope.brokerageId,
@@ -156,7 +172,7 @@ export async function createOpenHouseAttendeeFromContactAction(input: {
     interest_level: input.interest_level,
     notes: input.notes,
     tcpa_consent: input.tcpa_consent,
-  })
+  }), (error) => ({ success: false as const, error }))
 }
 
 export async function attachOpenHouseSourceAttributionAction(input: {
@@ -187,7 +203,7 @@ export async function notifyAssignedAgentForOpenHouseLeadAction(input: {
   const scoped = await resolveOpenHouseScope(input.open_house_id)
   if (!scoped.ok) return { success: false as const, error: scoped.error }
 
-  return notifyAssignedAgentForOpenHouseLead({
+  return withReceipt({ brokerageId: scoped.scope.brokerageId, userId: scoped.scope.actingUserId, agentId: scoped.scope.actingAgentId, action: "open_house.lead.notify_agent", subject: { type: "contact", id: input.contact_id }, riskClass: "COMMUNICATION", detail: { open_house_id: input.open_house_id, attendee_id: input.attendee_id } }, () => notifyAssignedAgentForOpenHouseLead({
     contact_id: input.contact_id,
     attendee_id: input.attendee_id,
     agent_id: scoped.scope.assignedAgentId,
@@ -196,7 +212,7 @@ export async function notifyAssignedAgentForOpenHouseLeadAction(input: {
     first_name: input.first_name,
     email: input.email,
     interest_level: input.interest_level ?? 3,
-  })
+  }), (error) => ({ success: false as const, error }))
 }
 
 export async function generateOpenHouseFollowupNextActionAction(input: {
@@ -210,7 +226,7 @@ export async function generateOpenHouseFollowupNextActionAction(input: {
   const scoped = await resolveOpenHouseScope(input.open_house_id)
   if (!scoped.ok) return { success: false as const, error: scoped.error }
 
-  return generateOpenHouseFollowupNextAction({
+  return withReceipt({ brokerageId: scoped.scope.brokerageId, userId: scoped.scope.actingUserId, agentId: scoped.scope.actingAgentId, action: "open_house.followup.generate", subject: { type: "contact", id: input.contact_id }, riskClass: "LOW_RISK_WRITE", detail: { open_house_id: input.open_house_id, attendee_id: input.attendee_id } }, () => generateOpenHouseFollowupNextAction({
     contact_id: input.contact_id,
     attendee_id: input.attendee_id,
     open_house_id: input.open_house_id,
@@ -220,7 +236,7 @@ export async function generateOpenHouseFollowupNextActionAction(input: {
     interest_level: input.interest_level ?? 3,
     agent_id: scoped.scope.assignedAgentId,
     brokerage_id: scoped.scope.brokerageId,
-  })
+  }), (error) => ({ success: false as const, error }))
 }
 
 /**
@@ -448,6 +464,7 @@ export async function resolveAutopilotActionStatus(input: {
   if (!ctx.agentId) return { success: false, error: "Your sign-in has no agent profile." }
 
   const service = createServiceClient()
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "open_house.autopilot_action.resolve", subject: { type: "ai_autopilot_action", id: input.actionId }, riskClass: "LOW_RISK_WRITE", detail: { outcome: input.outcome } }, async () => {
   const { data: updated, error } = await service
     .from("ai_autopilot_actions")
     .update({ status: input.outcome, executed_at: new Date().toISOString() })
@@ -462,4 +479,5 @@ export async function resolveAutopilotActionStatus(input: {
     return { success: false, error: "Suggestion not found, not yours, or already resolved." }
   }
   return { success: true }
+  }, (error) => ({ success: false as const, error }))
 }

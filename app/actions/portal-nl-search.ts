@@ -126,6 +126,8 @@ export async function portalNaturalSearchAction(input: {
   const { loadBuyerCriteria } = await import("@/lib/buyer-search/buyer-criteria")
   const storedCriteria = await loadBuyerCriteria(svc, input.contactId, { brokerageId: (contact as { brokerage_id: string | null }).brokerage_id })
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const searched = await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.property_search.run", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { contact_self: access.isContactSelf } }, async (): Promise<PortalSearchOutcome> => {
   const { searchPropertiesCore } = await import("@/lib/buyer-search")
   const r: any = await searchPropertiesCore({
     contactId: input.contactId,
@@ -173,4 +175,6 @@ export async function portalNaturalSearchAction(input: {
   // Wave 150 (lane 150W, canary 7): the engine's hold on the buyer's stated must-haves — passed through so an empty page
   // shows the shortage explanation built from the measured figures, never a bare "nothing matches".
   return { ok: true, results, criteria: storedCriteria ? criteriaChips(storedCriteria) : [], constraints: r.constraint_answer ?? null }
+  })
+  return "ok" in searched ? searched : { ok: false, error: searched.error ?? "That search didn't run — try rephrasing (beds, price, area)." }
 }

@@ -6,6 +6,19 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { requireVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
+
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
 import {
   persistPhotoAnalysis,
   enhanceListingPhoto,
@@ -395,6 +408,7 @@ export async function optimizePhotoOrder(listingId: string): Promise<{
 
   const orderedPhotos = optimizePhotoSequence(photos, ruleSequence, rulePrioritizeQuality)
 
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: agentRecordId, action: "listing.photo_order.optimize", subject: { type: "listing", id: listingId }, riskClass: "LOW_RISK_WRITE", detail: { photos: orderedPhotos.length, rule_applied: !!ruleApplied } }, async () => {
   for (let i = 0; i < orderedPhotos.length; i++) {
     const { error: updateError } = await ctx.supabase
       .from("listing_media")
@@ -409,6 +423,7 @@ export async function optimizePhotoOrder(listingId: string): Promise<{
 
   revalidatePath(`/dashboard/listings/${listingId}`)
   return { success: true, reordered: orderedPhotos.length, ruleApplied }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /** MLS best-practice default when the agent has saved no ordering rule. */
@@ -965,6 +980,7 @@ export async function savePhotoOrderingRule(params: {
     return { success: false, error: "No agent profile for this user in this brokerage — an ordering rule has no owner to file it under." }
   }
 
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: agentRecordId, action: "listing.photo_ordering_rule.save", subject: { type: "agent", id: agentRecordId }, riskClass: "LOW_RISK_WRITE", detail: { rooms: params.roomSequence.length } }, async () => {
   const { data: rule, error: insertError } = await ctx.supabase
     .from("photo_ordering_rules")
     .insert({
@@ -994,6 +1010,7 @@ export async function savePhotoOrderingRule(params: {
   }
 
   return { success: true, data: rule }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /** The caller's own ordering rules, newest first. Agent resolved from the session. */

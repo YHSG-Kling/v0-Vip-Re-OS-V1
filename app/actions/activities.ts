@@ -45,13 +45,17 @@ export async function logActivity(data: {
   completedAt?: string
   durationMinutes?: number
 }): Promise<{ success: boolean; activityId?: string; error?: string }> {
+  const actx = await getAgentContext()
+  if (!actx.isAuthenticated || !actx.brokerageId || !actx.userId) return { success: false, error: "Unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<{ success: boolean; activityId?: string; error?: string }>({ brokerageId: actx.brokerageId, action: "crm.activity.log", actor: { type: "user", userId: actx.impersonatorUserId ?? actx.userId, agentId: actx.agentId }, subject: data.contactId ? { type: "contact", id: data.contactId } : data.transactionId ? { type: "transaction", id: data.transactionId } : { type: "activity" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { activity_type: data.activityType } }, async () => {
   try {
     const supabase = await createClient()
 
     const { data: activity, error } = await supabase
       .from("activities")
       .insert({
-        brokerage_id: data.brokerageId,
+        brokerage_id: actx.brokerageId,
         agent_id: data.agentId,
         contact_id: data.contactId ?? null,
         transaction_id: data.transactionId ?? null,
@@ -85,6 +89,7 @@ export async function logActivity(data: {
     console.error("[logActivity] Exception:", err)
     return { success: false, error: "Failed to log activity" }
   }
+  })
 }
 
 // ─── Complete Activity ───────────────────────────────────────────────────────
@@ -96,6 +101,10 @@ export async function completeActivity(
    *  seller actually said at the door — was collected and destroyed. */
   notes?: string,
 ): Promise<{ success: boolean; error?: string }> {
+  const actx = await getAgentContext()
+  if (!actx.isAuthenticated || !actx.brokerageId || !actx.userId) return { success: false, error: "Unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: actx.brokerageId, action: "crm.activity.complete", actor: { type: "user", userId: actx.impersonatorUserId ?? actx.userId, agentId: actx.agentId }, subject: { type: "activity", id: activityId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { notes_captured: !!notes?.trim() } }, async () => {
   try {
     const supabase = await createClient()
 
@@ -125,6 +134,7 @@ export async function completeActivity(
     console.error("[completeActivity] Exception:", err)
     return { success: false, error: "Failed to complete activity" }
   }
+  })
 }
 
 // ─── Get Agent Activities ────────────────────────────────────────────────────

@@ -98,6 +98,8 @@ export async function saveBrandVoiceProfileAction(input: BrandVoiceUpsertInput):
     return { success: false, error: "Agent profile not found" }
   }
 
+  const run = async (): Promise<{ success: boolean; profile?: BrandVoiceProfile; error?: string }> => {
+
   const supabase = await createClient()
 
   // Check if a profile already exists for this agent
@@ -146,4 +148,9 @@ export async function saveBrandVoiceProfileAction(input: BrandVoiceUpsertInput):
 
   if (error) return { success: false, error: error.message }
   return { success: true, profile: data! }
+  }
+  // A seat with no tenant has no valid ledger row: it saves exactly as before, unrecorded.
+  if (!ctx.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.brand_voice.save", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId, agentId: ctx.agentId }, subject: ctx.agentId ? { type: "agent", id: ctx.agentId } : { type: "brand_voice_profile" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, run)
 }

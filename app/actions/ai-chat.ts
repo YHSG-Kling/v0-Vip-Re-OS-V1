@@ -69,6 +69,19 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { getAgentContext } from "@/lib/identity"
 import { scanForProhibitedPhrases } from "@/lib/application/compliance-monitoring"
+
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
 import {
   resolveReplyStyle,
   isReplyModel,
@@ -183,6 +196,7 @@ export async function createChatSession(data: {
     }
   }
 
+  return withReceipt({ brokerageId: identity.brokerageId, userId: identity.userId, agentId: identity.agentId, action: "ai_chat.session.create", subject: data.leadId && isValidUUID(data.leadId) ? { type: "contact", id: data.leadId } : { type: "agent", id: identity.agentId }, riskClass: "LOW_RISK_WRITE", detail: { session_type: data.sessionType } }, async () => {
   const { data: session, error } = await supabase
     .from("conversations")
     .insert({
@@ -230,6 +244,7 @@ export async function createChatSession(data: {
 
   revalidatePath("/dashboard/chat")
   return session
+  }, (error) => { throw new Error(error) })
 }
 
 export async function sendChatMessage(data: {
@@ -279,6 +294,7 @@ export async function sendChatMessage(data: {
   if (conversationError) throw conversationError
   if (!conversation) throw new Error("That conversation was not found")
 
+  return withReceipt({ brokerageId: identity.brokerageId, userId: identity.userId, agentId: identity.agentId, action: "ai_chat.message.send", subject: { type: "conversation", id: data.sessionId }, riskClass: "LOW_RISK_WRITE", detail: { sender_type: data.senderType, ai_reply_requested: !!data.requestAiResponse, precomposed: !!data.precomposedAiReply } }, async () => {
   let temperatureAnalysis = null
   const isClientMessage = data.senderType === "client"
 
@@ -422,6 +438,7 @@ export async function sendChatMessage(data: {
 
   revalidatePath("/dashboard/chat")
   return { message, assistantMessage }
+  }, (error) => { throw new Error(error) })
 }
 
 // =====================================================
@@ -899,7 +916,11 @@ export async function getAiSuggestions(sessionId: string) {
 }
 
 export async function acceptAiSuggestion(suggestionId: string) {
+  // WAVE 155 (lane 155R12): this export had NO session gate (a public endpoint writing through the RLS client); the siblings' exact gate.
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) throw new Error(identity.error)
   const supabase = await createClient()
+  return withReceipt({ brokerageId: identity.brokerageId, userId: identity.userId, agentId: identity.agentId, action: "ai_chat.suggestion.accept", subject: { type: "ai_suggestion", id: suggestionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const { error } = await supabase
     .from("ai_suggestions")
@@ -913,6 +934,7 @@ export async function acceptAiSuggestion(suggestionId: string) {
 
   revalidatePath("/dashboard/chat")
   return { success: true }
+  }, (error) => { throw new Error(error) })
 }
 
 /**
@@ -1143,6 +1165,9 @@ export async function getChatTemplates(filters?: {
 }
 
 export async function applyChatTemplate(templateId: string, sessionId: string) {
+  // WAVE 155 (lane 155R12): this export had NO session gate (a public endpoint writing through the RLS client); the siblings' exact gate.
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) throw new Error(identity.error)
   const supabase = await createClient()
 
   // Get template
@@ -1151,10 +1176,10 @@ export async function applyChatTemplate(templateId: string, sessionId: string) {
   if (!template) throw new Error("Template not found")
 
   // Increment usage count
-  await bestEffort(supabase
+  await withReceipt({ brokerageId: identity.brokerageId, userId: identity.userId, agentId: identity.agentId, action: "ai_chat.template.apply", subject: { type: "chat_template", id: templateId }, riskClass: "LOW_RISK_WRITE", detail: { conversation_id: sessionId } }, () => bestEffort(supabase
     .from("chat_templates")
     .update({ usage_count: (template.usage_count || 0) + 1 })
-    .eq("id", templateId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
+    .eq("id", templateId), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent"), () => undefined)
 
   // Get session context for personalization
   const { data: session } = await supabase.from("conversations").select("*, contacts(*)").eq("id", sessionId).single()
@@ -1209,6 +1234,9 @@ export async function updateAgentChatPreferences(
   agentId: string,
   input: Partial<AgentChatPreferences>,
 ) {
+  // WAVE 155 (lane 155R12): this export had NO session gate (a public endpoint writing through the RLS client); the siblings' exact gate.
+  const identity = await callerAgentIdentity()
+  if (!identity.ok) throw new Error(identity.error)
   const supabase = await createClient()
 
   if (!isValidUUID(agentId)) throw new Error("Invalid agent id")
@@ -1240,6 +1268,7 @@ export async function updateAgentChatPreferences(
   }
   if (input.preferences !== undefined) row.preferences = input.preferences
 
+  return withReceipt({ brokerageId: identity.brokerageId, userId: identity.userId, agentId: identity.agentId, action: "ai_chat.preferences.update", subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", detail: { fields: Object.keys(input) } }, async () => {
   const { error } = await supabase
     .from("agent_chat_preferences")
     .upsert(row, { onConflict: "agent_id" })
@@ -1248,6 +1277,7 @@ export async function updateAgentChatPreferences(
 
   revalidatePath("/dashboard/settings/assistant")
   return { success: true }
+  }, (error) => { throw new Error(error) })
 }
 
 /**
@@ -1344,6 +1374,7 @@ export async function grantMessageAccess(data: {
   // UNIQUE (conversation_id, user_id) — without naming it, upsert falls back to
   // the primary key, a new uuid is generated, and re-granting access to the
   // same person raises 23505 instead of updating their permissions.
+  return withReceipt({ brokerageId: scope.brokerageId, userId: scope.userId, action: "ai_chat.message_access.grant", subject: { type: "conversation", id: data.conversationId }, riskClass: "LOW_RISK_WRITE", detail: { grantee_user_id: data.userId, grantee_type: data.userType, can_read: data.canRead ?? true, can_write: data.canWrite ?? true } }, async () => {
   const { error } = await supabase.from("message_access_control").upsert(
     {
       conversation_id: data.conversationId,
@@ -1362,6 +1393,7 @@ export async function grantMessageAccess(data: {
 
   revalidatePath("/dashboard/chat")
   return { success: true }
+  }, (error) => { throw new Error(error) })
 }
 
 export async function revokeMessageAccess(conversationId: string, userId: string) {
@@ -1370,6 +1402,7 @@ export async function revokeMessageAccess(conversationId: string, userId: string
 
   const supabase = await createClient()
 
+  return withReceipt({ brokerageId: scope.brokerageId, userId: scope.userId, action: "ai_chat.message_access.revoke", subject: { type: "conversation", id: conversationId }, riskClass: "LOW_RISK_WRITE", detail: { grantee_user_id: userId } }, async () => {
   const { error } = await supabase
     .from("message_access_control")
     .delete()
@@ -1380,6 +1413,7 @@ export async function revokeMessageAccess(conversationId: string, userId: string
 
   revalidatePath("/dashboard/chat")
   return { success: true }
+  }, (error) => { throw new Error(error) })
 }
 
 export async function getMessageAccessList(conversationId: string) {

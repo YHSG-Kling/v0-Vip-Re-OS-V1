@@ -3,6 +3,19 @@
 import { createClient } from "@/lib/supabase/server"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
+
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
 // TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
 // imported here and never called. This file's event rail is the ORCHESTRATOR,
 // not the notification engine: the hero-photo fan-out at :113 emits through
@@ -195,7 +208,11 @@ export async function approveListingMedia(mediaId: string) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Not authenticated" }
+  // WAVE 155 (lane 155R12): no tenant gate stood here (a public endpoint); the sibling upload's exact gate, session tenant only.
+  const tenant = await requireCallerTenant()
+  if (!tenant.ok) return { success: false, error: tenant.error }
 
+  return withReceipt({ brokerageId: tenant.brokerageId, userId: tenant.userId, action: "listing.media.approve", subject: { type: "listing_media", id: mediaId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { error } = await supabase
     .from("listing_media")
     .update({
@@ -207,28 +224,43 @@ export async function approveListingMedia(mediaId: string) {
     .eq("id", mediaId)
 
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 export async function rejectListingMedia(mediaId: string, notes: string) {
   const supabase = await createClient()
+  // WAVE 155 (lane 155R12): no tenant gate stood here (a public endpoint); the sibling upload's exact gate, session tenant only.
+  const tenant = await requireCallerTenant()
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  return withReceipt({ brokerageId: tenant.brokerageId, userId: tenant.userId, action: "listing.media.reject", subject: { type: "listing_media", id: mediaId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { error } = await supabase
     .from("listing_media")
     .update({ is_approved: false, rejection_notes: notes })
     .eq("id", mediaId)
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 export async function deleteListingMedia(mediaId: string) {
   const supabase = await createClient()
+  // WAVE 155 (lane 155R12): no tenant gate stood here (a public endpoint); the sibling upload's exact gate, session tenant only.
+  const tenant = await requireCallerTenant()
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  return withReceipt({ brokerageId: tenant.brokerageId, userId: tenant.userId, action: "listing.media.delete", subject: { type: "listing_media", id: mediaId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { error } = await supabase
     .from("listing_media")
     .delete()
     .eq("id", mediaId)
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 export async function setPrimaryMedia(mediaId: string, listingId: string) {
   const supabase = await createClient()
+  // WAVE 155 (lane 155R12): no tenant gate stood here (a public endpoint); the sibling upload's exact gate, session tenant only.
+  const tenant = await requireCallerTenant()
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  return withReceipt({ brokerageId: tenant.brokerageId, userId: tenant.userId, action: "listing.media.set_primary", subject: { type: "listing", id: listingId }, riskClass: "LOW_RISK_WRITE", detail: { media_id: mediaId } }, async () => {
   // Clear existing primary
   await supabase
     .from("listing_media")
@@ -240,6 +272,7 @@ export async function setPrimaryMedia(mediaId: string, listingId: string) {
     .update({ is_primary: true })
     .eq("id", mediaId)
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 export async function runComplianceCheck(mediaId: string, brokerageId: string): Promise<{ passed: boolean; violations: string[] }> {
@@ -295,11 +328,16 @@ export async function getVideoTemplates() {
 
 export async function deleteVideoProject(projectId: string) {
   const supabase = await createClient()
+  // WAVE 155 (lane 155R12): no tenant gate stood here (a public endpoint); the sibling upload's exact gate, session tenant only.
+  const tenant = await requireCallerTenant()
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  return withReceipt({ brokerageId: tenant.brokerageId, userId: tenant.userId, action: "listing.video_project.delete", subject: { type: "ai_video_project", id: projectId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { error } = await supabase
     .from("ai_video_projects")
     .delete()
     .eq("id", projectId)
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -359,7 +397,11 @@ export async function approveSocialPost(postId: string) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Not authenticated" }
+  // WAVE 155 (lane 155R12): no tenant gate stood here (a public endpoint); the sibling upload's exact gate, session tenant only.
+  const tenant = await requireCallerTenant()
+  if (!tenant.ok) return { success: false, error: tenant.error }
 
+  return withReceipt({ brokerageId: tenant.brokerageId, userId: tenant.userId, action: "listing.social_post.approve", subject: { type: "social_post", id: postId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { error } = await supabase
     .from("social_posts")
     .update({
@@ -370,13 +412,19 @@ export async function approveSocialPost(postId: string) {
     .eq("id", postId)
 
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 export async function deleteSocialPost(postId: string) {
   const supabase = await createClient()
+  // WAVE 155 (lane 155R12): no tenant gate stood here (a public endpoint); the sibling upload's exact gate, session tenant only.
+  const tenant = await requireCallerTenant()
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  return withReceipt({ brokerageId: tenant.brokerageId, userId: tenant.userId, action: "listing.social_post.delete", subject: { type: "social_post", id: postId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { error } = await supabase
     .from("social_posts")
     .delete()
     .eq("id", postId)
   return error ? { success: false, error: error.message } : { success: true }
+  }, (error) => ({ success: false as const, error }))
 }

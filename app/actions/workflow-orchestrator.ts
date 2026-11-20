@@ -103,7 +103,9 @@ export async function cancelChainRun(params: { runId: string; reason?: string })
   }
   const own = await ensureRunOwnership(params.runId, ctx.brokerageId)
   if (!own.ok) return { success: false, error: own.error }
-  return await engineCancelRun(params.runId, params.reason)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "automation.chain_run.cancel", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId }, subject: { type: "workflow_run", id: params.runId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { reason: params.reason ?? null } }, () =>
+  engineCancelRun(params.runId, params.reason))
 }
 
 export async function advanceChainRun(runId: string) {

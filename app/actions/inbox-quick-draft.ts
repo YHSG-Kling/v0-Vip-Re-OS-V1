@@ -73,7 +73,9 @@ export async function quickDraftForConversation(
   // The generator trusts its tenant (lib/ai-reply-coach/reply-draft-core.ts); this
   // action resolved it from the act-as write seam above, so it calls the core directly
   // rather than the public door (whose plain session read would not see an act-as).
-  return generateAIReplyDraftForTenant({
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "inbox.reply_draft.generate", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "contact", id: convo.contact_id ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { conversation_id: convo.id, channel } }, () =>
+  generateAIReplyDraftForTenant({
     brokerageId: ctx.brokerageId,
     agentUserId: ctx.userId,
     conversationId: convo.id,
@@ -81,5 +83,5 @@ export async function quickDraftForConversation(
     inboundMessageId: lastInbound?.id ?? null,
     inboundBody: lastInbound?.body ?? "",
     channel,
-  })
+  }))
 }

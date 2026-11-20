@@ -155,6 +155,9 @@ export async function aiGenerateTouchpoint(params: {
   // event; it calls the core with the brokerage it is scanning. Every rule the
   // calendar depends on (scheduled_date defaulting to today, the tenant anchor,
   // a read insert error that still returns the draft) moved with it.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sctx = { ...ctx, brokerageId: ctx.brokerageId }
+  const lr = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "sphere.touchpoint.draft", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId, agentId: ctx.agentId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { touchpoint_type: params.touchpointType, for_agent_id: params.agentId } }, async (ctx = sctx) => {
   try {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const { draftSphereTouchpoint } = await import("@/lib/sphere-resonance/touchpoint-draft")
@@ -174,6 +177,8 @@ export async function aiGenerateTouchpoint(params: {
   } catch (error) {
     return handleError(error, "aiGenerateTouchpoint")
   }
+  })
+  return "data" in lr ? lr : { success: false, error: lr.error ?? "This draft was not recorded — nothing was saved" }
 }
 
 // ============================================================================

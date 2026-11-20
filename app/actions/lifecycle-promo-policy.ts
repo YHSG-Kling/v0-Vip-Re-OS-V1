@@ -140,6 +140,8 @@ export async function upsertLifecyclePromoPolicy(input: {
     scopeId = access.brokerageScopeId
   }
   if (!scopeId) return { success: false, error: "Could not resolve scope id" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.lifecycle_promo_policy.upsert", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId }, subject: { type: "lifecycle_promo_policy", ref: `${scopeType}:${scopeId}:${input.eventType}` }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scope_type: scopeType, scope_id: scopeId, event_type: input.eventType, auto_spawn: input.autoSpawn } }, async () => {
 
   const svc = createServiceClient()
   const { error } = await svc.from("lifecycle_promo_policy").upsert({
@@ -154,6 +156,7 @@ export async function upsertLifecyclePromoPolicy(input: {
   if (error) return { success: false, error: error.message }
   revalidatePath("/settings/lifecycle-promos")
   return { success: true }
+  })
 }
 
 export async function deleteLifecyclePromoPolicy(input: {
@@ -182,6 +185,8 @@ export async function deleteLifecyclePromoPolicy(input: {
     scopeId = access.brokerageScopeId
   }
   if (!scopeId) return { success: false, error: "Could not resolve scope id" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.lifecycle_promo_policy.delete", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId }, subject: { type: "lifecycle_promo_policy", ref: `${scopeType}:${scopeId}:${input.eventType}` }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { scope_type: scopeType, scope_id: scopeId, event_type: input.eventType } }, async () => {
 
   const svc = createServiceClient()
   const { error } = await svc.from("lifecycle_promo_policy")
@@ -192,6 +197,7 @@ export async function deleteLifecyclePromoPolicy(input: {
   if (error) return { success: false, error: error.message }
   revalidatePath("/settings/lifecycle-promos")
   return { success: true }
+  })
 }
 
 /**
@@ -242,6 +248,8 @@ export async function upsertLifecycleMailFields(input: {
       return { success: false, error: "mailMaxRecipients must be 1-500" }
     }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.lifecycle_mail_policy.upsert", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId }, subject: { type: "lifecycle_promo_policy", ref: `${scopeType}:${scopeId}:${input.eventType}` }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { scope_type: scopeType, scope_id: scopeId, event_type: input.eventType, mail_enabled: input.mailEnabled ?? null, mail_max_recipients: input.mailMaxRecipients ?? null } }, async () => {
 
   const svc = createServiceClient()
   // Patch shape — only include the columns the caller is changing so
@@ -289,6 +297,7 @@ export async function upsertLifecycleMailFields(input: {
   if (insertError) return { success: false, error: insertError.message }
   revalidatePath("/settings/lifecycle-promos")
   return { success: true }
+  })
 }
 
 /** Wave 32 — fetch policy state for a SPECIFIC tier (used by tab switches). */

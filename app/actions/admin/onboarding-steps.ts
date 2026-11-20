@@ -135,6 +135,8 @@ export async function saveOnboardingStepAction(
   const targetRole = Array.isArray(input.targetRole) && input.targetRole.length > 0
     ? input.targetRole.map((r) => String(r).toLowerCase())
     : null
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true; id: string } | { ok: false; error: string }>({ brokerageId: auth.brokerageId, action: "onboarding.curriculum_step.save", actor: { type: "user", userId: auth.userId }, subject: input.id ? { type: "onboarding_step", id: input.id } : { type: "onboarding_step" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { step_key: stepKey, day_number: dayNumber, op: input.id ? "update" : "create" } }, async () => {
 
   const svc = createServiceClient()
 
@@ -170,6 +172,8 @@ export async function saveOnboardingStepAction(
   if (error) return { ok: false, error: error.message }
   revalidatePath("/dashboard/admin/onboarding")
   return { ok: true, id: (data as { id: string }).id }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 export async function deleteOnboardingStepAction(
@@ -177,6 +181,8 @@ export async function deleteOnboardingStepAction(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const auth = await requireAdmin()
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true } | { ok: false; error: string }>({ brokerageId: auth.brokerageId, action: "onboarding.curriculum_step.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "onboarding_step", id: stepId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
   // Refuse to delete anything but the tenant's own step (platform defaults are shared).
   const { data: existing } = await svc.from("onboarding_steps").select("brokerage_id").eq("id", stepId).maybeSingle()
@@ -187,4 +193,6 @@ export async function deleteOnboardingStepAction(
   if (error) return { ok: false, error: error.message }
   revalidatePath("/dashboard/admin/onboarding")
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

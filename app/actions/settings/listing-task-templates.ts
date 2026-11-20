@@ -58,6 +58,8 @@ export async function createListingTaskTemplate(params: {
   const supabase = ctx.db
   const brokerageId = ctx.brokerageId
 
+  // WAVE 155 (lane 155R12): one receipt per session write (ledgerSessionAction, no key). Actor = the accountable human (actorUserId).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return ledgerSessionAction({ brokerageId, action: "listing.task_template.create", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { stage: params.stage } }, async () => {
   const { error } = await supabase.from("listing_task_templates").insert({
     brokerage_id:    brokerageId,
     stage:           params.stage,
@@ -73,6 +75,7 @@ export async function createListingTaskTemplate(params: {
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/settings/listing-task-templates")
   return { success: true }
+  })
 }
 
 export async function updateListingTaskTemplate(
@@ -94,6 +97,8 @@ export async function updateListingTaskTemplate(
   const supabase = ctx.db
   const brokerageId = ctx.brokerageId
 
+  // WAVE 155 (lane 155R12): one receipt per session write (ledgerSessionAction, no key). Actor = the accountable human (actorUserId).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return ledgerSessionAction({ brokerageId, action: "listing.task_template.update", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "listing_task_template", id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(params) } }, async () => {
   // Zero rows updated is a refusal (wrong id / other tenant), not success —
   // supabase-js resolves an RLS refusal as zero rows with error:null.
   const { data: updated, error } = await supabase
@@ -109,6 +114,7 @@ export async function updateListingTaskTemplate(
   }
   revalidatePath("/dashboard/settings/listing-task-templates")
   return { success: true }
+  })
 }
 
 export async function deleteListingTaskTemplate(id: string): Promise<{ success: boolean; error?: string }> {
@@ -119,6 +125,8 @@ export async function deleteListingTaskTemplate(id: string): Promise<{ success: 
   const supabase = ctx.db
   const brokerageId = ctx.brokerageId
 
+  // WAVE 155 (lane 155R12): one receipt per session write (ledgerSessionAction, no key). Actor = the accountable human (actorUserId).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return ledgerSessionAction({ brokerageId, action: "listing.task_template.delete", actor: { type: "user", userId: ctx.actorUserId, agentId: ctx.agentId }, subject: { type: "listing_task_template", id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   // Zero rows deleted is a refusal, not success.
   const { data: deleted, error } = await supabase
     .from("listing_task_templates")
@@ -133,4 +141,5 @@ export async function deleteListingTaskTemplate(id: string): Promise<{ success: 
   }
   revalidatePath("/dashboard/settings/listing-task-templates")
   return { success: true }
+  })
 }

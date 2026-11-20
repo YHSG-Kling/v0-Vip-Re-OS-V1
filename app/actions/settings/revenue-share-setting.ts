@@ -37,7 +37,7 @@ import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting
 
 async function resolveBrokerAdmin(
   mode: "read" | "write",
-): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; brokerageId: string; actorUserId: string } | { ok: false; error: string }> {
   const acting = mode === "write" ? await resolveWriteContext() : await resolveActingContext()
   if (!acting.ok) return { ok: false, error: acting.error ?? "Unauthenticated" }
   if (!acting.brokerageId) return { ok: false, error: "No brokerage" }
@@ -55,7 +55,7 @@ async function resolveBrokerAdmin(
   if (!isSolo && !isBrokerageFinanceAdmin({ user_type: acting.userType })) {
     return { ok: false, error: "Only a broker or admin can change this setting" }
   }
-  return { ok: true, brokerageId: acting.brokerageId }
+  return { ok: true, brokerageId: acting.brokerageId, actorUserId: acting.actorUserId }
 }
 
 // TOMBSTONE (§1.1): getRevenueShareSetting was DELETED into getBenefitOfferings
@@ -70,10 +70,14 @@ export async function setRevenueShareEnabled(enabled: boolean): Promise<{ ok: bo
   // "write": read_only impersonation is refused inside the gate.
   const ctx = await resolveBrokerAdmin("write")
   if (!ctx.ok) return { ok: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: ctx.brokerageId, action: "finance.revenue_share.set_enabled", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { enabled } }, async () => {
   const svc = createServiceClient()
   const { error } = await svc.from("brokerages").update({ revenue_share_enabled: enabled }).eq("id", ctx.brokerageId)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // ─── BENEFIT OFFERINGS + TAX ASSISTANCE (m574) ───────────────────────────────
@@ -142,6 +146,8 @@ export async function setBenefitOffering(
   // "write": read_only impersonation is refused inside the gate.
   const ctx = await resolveBrokerAdmin("write")
   if (!ctx.ok) return { ok: false, error: ctx.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: ctx.brokerageId, action: "tenant.benefit_offering.set", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { benefit, offered: offered === true } }, async () => {
   const svc = createServiceClient()
   const { data: saved, error } = await svc
     .from("brokerages")
@@ -151,6 +157,8 @@ export async function setBenefitOffering(
   if (error) return { ok: false, error: error.message }
   if (!saved || saved.length === 0) return { ok: false, error: "The setting was not saved — your brokerage record could not be found." }
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // ─── REVENUE-SHARE DISTRIBUTION MODEL (m575) ─────────────────────────────────
@@ -234,6 +242,8 @@ export async function setRevenueShareDistributionModel(
   if (!(Number.isInteger(durationMonths) && durationMonths >= 0)) {
     return { ok: false, error: "Duration must be a number of months (0 = indefinite, chosen explicitly)." }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: ctx.brokerageId, action: "finance.revenue_share_model.set", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { source_of_funds: input.sourceOfFunds, rate_type: input.rateType, percent, flat_cents: flatCents, duration_months: durationMonths } }, async () => {
 
   const svc = createServiceClient()
   const { data: saved, error } = await svc
@@ -256,4 +266,6 @@ export async function setRevenueShareDistributionModel(
   }
   if (!saved || saved.length === 0) return { ok: false, error: "The model was not saved — your brokerage record could not be found." }
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "This change was not recorded — nothing was saved" }
 }

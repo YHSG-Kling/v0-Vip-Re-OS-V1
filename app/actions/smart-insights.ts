@@ -2,6 +2,19 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
+
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
 import {
   estimateMonthlyRentFromComps,
   rentSourceCaption,
@@ -744,7 +757,7 @@ export async function requestShowing(
 
   // Map the canonical { success, error } shape onto the legacy { data, error } shape
   if (!result.success) return { error: result.error }
-  return { data: result.data }
+  return { data: "data" in result ? result.data : undefined }
 }
 
 export async function getShowingRequests(contactId: string) {
@@ -887,6 +900,10 @@ export async function saveProperty(data: {
  */
 export async function unsaveProperty(contactId: string, savedPropertyId: string) {
   const supabase = await createClient()
+  // WAVE 155 (lane 155R12): the receipt's actor + tenant come from the contact gate (the session). This export has no gate of its
+  // own (it writes under RLS); a caller the gate does not admit still writes exactly as before — unrecorded, never an invented tenant.
+  const { requireContactAccess: receiptGate } = await import("@/lib/portal/require-contact-access"); const rcpt = await receiptGate(contactId)
+  return withReceipt({ brokerageId: rcpt.ok ? rcpt.brokerageId : null, userId: rcpt.ok ? rcpt.userId : "", action: "buyer.saved_property.unsave", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { saved_property_id: savedPropertyId } }, async () => {
 
   // .select() so the delete reports what it actually removed. Without it a
   // no-match and a success are the same value.
@@ -906,6 +923,7 @@ export async function unsaveProperty(contactId: string, savedPropertyId: string)
   }
 
   return { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 // TOMBSTONE (wave 144, lane 144I — the 43 duplicate action names, triaged). A second public

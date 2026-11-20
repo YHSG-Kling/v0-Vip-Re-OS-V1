@@ -150,6 +150,8 @@ export async function attachReviewSourceUrlAction(
   if (!isTenantAdminOfThisBrokerage && !isReviewsOwnAgent) {
     return { ok: false, error: "That review is not yours to edit." }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<AttachReviewSourceUrlResult>({ brokerageId: reviewRow.brokerage_id, action: "reputation.review_source_url.attach", actor: { type: "user", userId: user.id, agentId: agentRecordId ?? null }, subject: { type: "agent_review", id: reviewId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { cleared: normalized.value === null } }, async () => {
 
   const { data: updated, error: updateErr } = await service
     .from("agent_reviews")
@@ -164,4 +166,6 @@ export async function attachReviewSourceUrlAction(
   }
 
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

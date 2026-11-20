@@ -338,6 +338,8 @@ export async function addTerritoryZips(input: {
 
   const city = input.city?.trim() || null
   const state = input.state?.trim()?.toUpperCase() || null
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction<AddTerritoryResult>({ brokerageId: viewer.brokerageId, action: "tenant.territory.add_zips", actor: { type: "user", userId: viewer.userId }, subject: columns.columns.team_id ? { type: "team", id: columns.columns.team_id } : columns.columns.agent_user_id ? { type: "user", id: columns.columns.agent_user_id } : { type: "brokerage", id: viewer.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { grain: input.grain, zip_count: zips.length } }, async () => {
 
   const added: string[] = []
   const alreadyClaimed: string[] = []
@@ -409,6 +411,8 @@ export async function addTerritoryZips(input: {
 
   revalidatePath(SETTINGS_PATH)
   return { success: true, added, alreadyClaimed, reactivated, rejected: [] }
+  })
+  return "added" in r ? r : { ...EMPTY_ADD, error: r.error ?? "This change was not recorded — nothing was saved" }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -449,6 +453,8 @@ export async function setTerritoryActive(claimId: string, active: boolean): Prom
 
   const loaded = await loadWritableClaim(resolved.ctx, claimId)
   if (!loaded.ok) return { success: false, error: loaded.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: viewer.brokerageId, action: "tenant.territory.set_active", actor: { type: "user", userId: viewer.userId }, subject: { type: "subscriber_service_area", id: loaded.claim.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { active, zip_code: loaded.claim.zip_code } }, async () => {
 
   // Deactivate, never DELETE. The market sync already keeps history this way on
   // market delete, and history is the point: a zip that was covered last quarter
@@ -472,6 +478,7 @@ export async function setTerritoryActive(claimId: string, active: boolean): Prom
 
   revalidatePath(SETTINGS_PATH)
   return { success: true }
+  })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -495,6 +502,8 @@ export async function setTerritoryPrimary(claimId: string): Promise<{ success: b
   if (claim.active === false) return { success: false, error: "Re-open this territory before making it primary." }
   if (!ZIP_RE.test(claim.zip_code)) return { success: false, error: `Stored ZIP "${claim.zip_code}" is not five digits — fix the row before making it primary.` }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: viewer.brokerageId, action: "tenant.territory.set_primary", actor: { type: "user", userId: viewer.userId }, subject: { type: "subscriber_service_area", id: claim.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { zip_code: claim.zip_code } }, async () => {
   // Clear the previous primary at this grain only. `.neq("id", …)` keeps the
   // target row out of the clear so the two writes cannot fight.
   let clearQuery = supabase
@@ -524,4 +533,5 @@ export async function setTerritoryPrimary(claimId: string): Promise<{ success: b
 
   revalidatePath(SETTINGS_PATH)
   return { success: true }
+  })
 }

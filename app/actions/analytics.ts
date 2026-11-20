@@ -27,7 +27,7 @@ import { isValidUUID } from "@/lib/validations"
  */
 async function authorizeAgent(
   agentId: string,
-): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; brokerageId: string; actorUserId: string } | { ok: false; error: string }> {
   if (!isValidUUID(agentId)) return { ok: false, error: "Invalid agent ID" }
 
   const ctx = await resolveWriteContextForTenant()
@@ -43,7 +43,7 @@ async function authorizeAgent(
 
   if (error) return { ok: false, error: "Could not verify agent scope" }
   if (!data) return { ok: false, error: "Agent not found in your brokerage" }
-  return { ok: true, brokerageId: ctx.brokerageId }
+  return { ok: true, brokerageId: ctx.brokerageId, actorUserId: ctx.actorUserId }
 }
 
 // ============================================
@@ -54,6 +54,8 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
   const gate = await authorizeAgent(agentId)
   if (!gate.ok) return { success: false, error: gate.error, data: null, totalValue: 0 }
   const { brokerageId } = gate
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction({ brokerageId, action: "intel.value_delivered.aggregate", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { date: date.toISOString().slice(0, 10) } }, async () => {
 
   const supabase = await createClient()
 
@@ -247,6 +249,8 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
     data,
     totalValue: total_value_delivered,
   }
+  })
+  return "totalValue" in lr ? lr : { success: false, error: lr.error ?? "This change was not recorded — nothing was saved", data: null, totalValue: 0 }
 }
 
 // ============================================
@@ -467,6 +471,8 @@ export async function trackLeadValueJourney(contactId: string) {
   const roiMultiple = valueReceived > 0 && conversionValue ? conversionValue / valueReceived : 0
 
   // Upsert journey data. onConflict matches the live UNIQUE (contact_id).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "intel.lead_value_journey.track", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { became_client: becameClient || false } }, async () => {
   const { data: journey, error: journeyError } = await supabase
     .from("lead_value_journey")
     .upsert(
@@ -493,10 +499,12 @@ export async function trackLeadValueJourney(contactId: string) {
   // journey had not been recorded.
   if (journeyError) {
     console.error("[analytics] lead_value_journey upsert failed:", journeyError.message)
-    return null
+    return { success: false as const, error: journeyError.message }
   }
 
   return journey
+  })
+  return lr && typeof lr === "object" && "success" in lr && lr.success === false ? null : lr
 }
 
 // ============================================

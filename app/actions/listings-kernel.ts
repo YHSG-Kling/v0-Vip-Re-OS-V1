@@ -499,11 +499,13 @@ export async function saveListingDraftAction(params: {
     return { success: false, error: "A listing's commission changes through its commission terms once the listing is past draft — open Commission terms on the listing (with the reason, the executed amendment where the listing agreement sets it, and the broker's decision where your brokerage requires one)." }
   }
 
-  const result = await saveListingDraft({
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const recorded = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "listing.draft.save", actor: { type: "user", userId: ctx.userId }, subject: { type: "listing", id: params.listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(allowed) } }, () => saveListingDraft({
     listingId:    params.listingId,
     updates:      allowed as Partial<ListingUpdate>,
     actorUserId:  ctx.userId,
-  })
+  }))
+  const result = "listing" in recorded ? recorded : { success: false as const, error: recorded.error ?? "The listing was not saved" }
 
   if (result.success) {
     revalidatePath(`/dashboard/listings/${params.listingId}`)
@@ -807,7 +809,8 @@ export async function generateListingDescriptionAction(params: {
 
   const { createServiceClient } = await import("@/lib/supabase/service")
   const { draftListingDescriptionForListing } = await import("@/lib/listings/listing-description-tool")
-  const draft = await draftListingDescriptionForListing(createServiceClient(), {
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const drafted = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "listing.description.draft", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId }, subject: { type: "listing", id: params.listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, () => draftListingDescriptionForListing(createServiceClient(), {
     brokerageId: ctx.brokerageId,
     listingId: params.listingId,
     style: params.style,
@@ -815,7 +818,9 @@ export async function generateListingDescriptionAction(params: {
     actorAgentId: ctx.agentId,
     highlights: Array.isArray(params.highlights) ? params.highlights.filter((h) => typeof h === "string").slice(0, 12) : undefined,
     source: "agent_tool",
-  })
+  }))
+  if (!("ok" in drafted)) return { success: false as const, error: drafted.error ?? "The description was not drafted" }
+  const draft = drafted
   if (!draft.ok) return { success: false as const, error: draft.error }
   if (draft.heldForReview) {
     return { success: false as const, error: draft.heldReason ?? "Held for review.", heldForReview: true, warnings: draft.warnings }

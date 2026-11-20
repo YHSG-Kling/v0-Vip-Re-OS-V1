@@ -26,6 +26,19 @@ import {
   type ScoredVendor,
 } from "@/lib/marketing/vendor-ranking"
 
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
+
 // ============================================
 // TENANT GUARDS
 // ============================================
@@ -100,6 +113,7 @@ export async function activateMarketingPackage(params: {
   const supabase = await createClient()
 
   try {
+    return await withReceipt({ brokerageId: auth.brokerageId, userId: auth.userId, agentId: auth.agentId, action: "marketing.listing_package.activate", subject: { type: "transaction", id: params.transactionId }, riskClass: "FINANCIAL", detail: { package_type: params.packageType, auto_book: !!params.autoBookServices } }, async () => {
     const { data: transaction } = await supabase
       .from("transactions")
       .select("*, listings(*)")
@@ -146,6 +160,7 @@ export async function activateMarketingPackage(params: {
 
     revalidatePath("/dashboard/listings")
     return { success: true, packageId: marketingPackage.id }
+    }, (error) => ({ success: false as const, error }))
   } catch (error) {
     console.error("Activate marketing package error:", error)
     return { success: false, error: "Failed to activate package" }
@@ -180,6 +195,7 @@ export async function bookMarketingService(params: {
   const supabase = await createClient()
 
   try {
+    return await withReceipt({ brokerageId: auth.brokerageId, userId: auth.userId, agentId: auth.agentId, action: "marketing.listing_service.book", subject: { type: "transaction", id: params.transactionId }, riskClass: "FINANCIAL", detail: { package_id: params.packageId, service_type: params.serviceType } }, async () => {
     // Find optimal vendor. The result is a discriminated outcome, not a nullable
     // vendor: a REFUSED read and an EMPTY bench are different facts and the agent
     // is told which one happened instead of both surfacing as "none available".
@@ -239,6 +255,7 @@ export async function bookMarketingService(params: {
       // honest about the basis of the choice.
       unmeasuredRankingInputs: vendor.unmeasured,
     }
+    }, (error) => ({ success: false as const, error }))
   } catch (error) {
     console.error("Book marketing service error:", error)
     return { success: false, error: "Failed to book service" }
@@ -608,6 +625,7 @@ export async function generateListingOptimizations(transactionId: string) {
   const supabase = await createClient()
 
   try {
+    return await withReceipt({ brokerageId: auth.brokerageId, userId: auth.userId, agentId: auth.agentId, action: "marketing.listing_optimization.generate", subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
     // Only `listings` is embedded here, and only because a real FK joins the
     // two. Two other tables were embedded off this same select in the past —
     // listing photos and AI content — and neither has a foreign key to a
@@ -712,6 +730,7 @@ OUTPUT FORMAT (JSON):
 
     revalidatePath("/dashboard/listings")
     return { success: true, data: optimizations }
+    }, (error) => ({ success: false as const, error }))
   } catch (error) {
     console.error("Generate optimizations error:", error)
     return { success: false, error: "Failed to generate optimizations" }
@@ -886,6 +905,7 @@ export async function completeMarketingService(params: {
   }
 
   const svc = createServiceClient()
+  return withReceipt({ brokerageId: auth.brokerageId, userId: auth.userId, agentId: auth.agentId, action: "marketing.listing_service.complete", subject: { type: "listing_marketing_service", id: params.serviceId }, riskClass: "FINANCIAL", detail: { actual_cost_recorded: patch.actual_cost !== undefined } }, async () => {
   const { data, error } = await svc
     .from("listing_marketing_services")
     .update(patch)
@@ -900,6 +920,7 @@ export async function completeMarketingService(params: {
 
   revalidatePath("/dashboard/listings")
   return { success: true, completedAt }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /**
@@ -942,6 +963,7 @@ export async function recordMarketingServiceQuote(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const svc = createServiceClient()
+  return withReceipt({ brokerageId: auth.brokerageId, userId: auth.userId, agentId: auth.agentId, action: "marketing.listing_service.record_quote", subject: { type: "listing_marketing_service", id: params.serviceId }, riskClass: "FINANCIAL", detail: { quote_cleared: quoted === null } }, async () => {
   const { data, error } = await svc
     .from("listing_marketing_services")
     .update({ estimated_cost: quoted, updated_at: new Date().toISOString() })
@@ -957,6 +979,7 @@ export async function recordMarketingServiceQuote(params: {
 
   revalidatePath("/dashboard/listings")
   return { success: true, quotedCost: quoted }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /**
