@@ -127,8 +127,13 @@ export async function updateBrandVoiceProfile(data: {
 }) {
   const supabase = await createClient()
   const ctx = await getAgentContext()
-  const agentId = ctx.agentId ?? data.agentId
+  // WAVE 155 (lane 155S3): identity and tenant from the SESSION only. This used to fall back to the BODY `data.agentId` when the
+  // session had no agents row — so a seat with no agent profile (or no session) wrote ANY agent's brand voice. Now refused, and a
+  // body id naming a different agent is refused (the throw is this export's refusal idiom; its page catches it).
+  if (!ctx.isAuthenticated || !ctx.brokerageId) throw new Error("Unauthorized")
+  const agentId = ctx.agentId
   if (!agentId) throw new Error("No agent profile for this user yet — finish account setup.")
+  if (data.agentId && data.agentId !== agentId) throw new Error("Forbidden — you can edit only your own brand voice")
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
@@ -173,7 +178,7 @@ export async function updateBrandVoiceProfile(data: {
   revalidatePath("/settings/brand-voice")
   return profile
   }
-  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "content.brand_voice.update", actor: { type: "user", userId: ctx.userId, agentId: agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "content.brand_voice.update", actor: { type: "user", userId: ctx.userId, agentId: agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // ============================================

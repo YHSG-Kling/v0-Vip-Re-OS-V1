@@ -47,6 +47,10 @@ export async function logActivity(data: {
 }): Promise<{ success: boolean; activityId?: string; error?: string }> {
   const actx = await getAgentContext()
   if (!actx.isAuthenticated || !actx.brokerageId || !actx.userId) return { success: false, error: "Unauthenticated" }
+  // WAVE 155 (lane 155S3): the AGENT is the session's too (the sibling resolveOwnAgentId's rule, above). `agent_id` was still
+  // taken from the body, so a caller could file an activity under any agent (RLS its only fence). A body id naming a different
+  // agent is refused; a seat with no agents row logs with agent_id NULL rather than borrowing one.
+  if (data.agentId && data.agentId !== actx.agentId) return { success: false, error: "Forbidden — you can log only your own activity" }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return ledgerSessionAction<{ success: boolean; activityId?: string; error?: string }>({ brokerageId: actx.brokerageId, action: "crm.activity.log", actor: { type: "user", userId: actx.impersonatorUserId ?? actx.userId, agentId: actx.agentId }, subject: data.contactId ? { type: "contact", id: data.contactId } : data.transactionId ? { type: "transaction", id: data.transactionId } : { type: "activity" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { activity_type: data.activityType } }, async () => {
   try {
@@ -56,7 +60,7 @@ export async function logActivity(data: {
       .from("activities")
       .insert({
         brokerage_id: actx.brokerageId,
-        agent_id: data.agentId,
+        agent_id: actx.agentId ?? null,
         contact_id: data.contactId ?? null,
         transaction_id: data.transactionId ?? null,
         activity_type: data.activityType,

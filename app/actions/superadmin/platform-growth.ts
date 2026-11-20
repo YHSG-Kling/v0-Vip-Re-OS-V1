@@ -18,6 +18,18 @@ import {
 import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 import { upsertPlatformProspect } from "@/lib/platform/prospect-capture"
 
+// ── The public-door decision of the platform's OWN funnel (wave 155, lane 155R18 — G10). NOT exported (a "use server" export
+// is a public endpoint). No tenant exists on this door — the opt-in is the platform's own published funnel — so it decides
+// from the per-IP cap BEFORE the prospect row is written; a hand-raise form is never put behind a login wall.
+async function platformFunnelDoor(surface: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+  const door = await decidePublicDoor({
+    surface, callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
+    optIn: async () => ({ brokerageId: null, platform: true, basis: "the platform's own public funnel (no tenant)" }),
+  })
+  return door.allowed ? { ok: true } : { ok: false, error: "Too many requests from this connection — please try again in a few minutes." }
+}
+
 // ── PUBLIC: capture a prospect (no auth — a "get started / notify me" hand-raise) ──
 // TOMBSTONE (lane 76B): the inline `.upsert({...}, { onConflict: "email" })`
 // that stood here was one of THREE spellings of the platform_prospects writer
@@ -30,6 +42,8 @@ export async function capturePlatformProspectAction(input: {
 }): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const v = validateProspectInput(input)
   if (!v.ok) return { ok: false, error: v.error }
+  const door = await platformFunnelDoor("platform-prospect-capture")
+  if (!door.ok) return door
   const svc = createServiceClient()
   const saved = await upsertPlatformProspect(svc, {
     email: v.value.email, name: v.value.name, company: v.value.company,
@@ -57,6 +71,8 @@ export async function requestPlatformDemoAction(input: {
     interestNote: preferredTimes ? `Demo request — preferred times: ${preferredTimes}` : "Demo request",
   })
   if (!v.ok) return { ok: false, error: v.error }
+  const door = await platformFunnelDoor("platform-demo-request")
+  if (!door.ok) return door
   const svc = createServiceClient()
   const saved = await upsertPlatformProspect(svc, {
     email: v.value.email, name: v.value.name, company: v.value.company,

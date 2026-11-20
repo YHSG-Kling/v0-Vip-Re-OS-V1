@@ -403,7 +403,12 @@ export async function cancelBBAAction(params: {
   }
   const svc = createServiceClient()
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); return bbaReceipt(await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "transaction.buyer_agreement.cancel", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "buyer_broker_agreement", id: params.agreementId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
-  const { error } = await svc
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNT what the update changed. A zero-match update resolves like one that worked, so a
+  // wrong id, another tenant's agreement or an EXECUTED / expired one reported "cancelled" and the LEGAL receipt settled
+  // executed. Zero rows now re-reads the agreement IN THIS TENANT: already `cancelled` is this caller's desired outcome (ok —
+  // the first cancellation's reason and actor stand, nothing is overwritten); absent is a failure; any other status is a
+  // failure that names it.
+  const { data: cancelled, error } = await svc
     .from("buyer_broker_agreements")
     .update({
       status:              "cancelled",
@@ -414,7 +419,20 @@ export async function cancelBBAAction(params: {
     .eq("id", params.agreementId)
     .eq("brokerage_id", auth.brokerageId)
     .in("status", ["draft","pending_signature","active"])
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if ((cancelled ?? []).length === 0) {
+    const { data: current, error: readErr } = await svc
+      .from("buyer_broker_agreements")
+      .select("status")
+      .eq("id", params.agreementId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+    if (readErr) return { ok: false, error: `Could not confirm the agreement: ${readErr.message}` }
+    if (!current) return { ok: false, error: "Agreement not found" }
+    const status = (current as { status?: string | null }).status ?? "unknown"
+    if (status !== "cancelled") return { ok: false, error: `This agreement cannot be cancelled (status: ${status})` }
+  }
   return { ok: true }
   }))
 }

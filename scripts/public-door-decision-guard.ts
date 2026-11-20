@@ -22,6 +22,12 @@
  *   H  rules over STRIPPED source, each with a positive control: no "use server" file exports a provider applier; the voice
  *                            catalog asks the session before the provider; track-share never stores the body's contact id; the
  *                            landing counter never writes a caller's number.
+ *   I  (lane 155R18, G10)    lib/security/public-rate-limit.ts decidePublicDoor — the cap FIRST (the opt-in read is never reached
+ *                            over it), then the tenant's own opt-in row, fail closed — driven through the real blog trackers, the
+ *                            embed beacons (a forged two-hour report bills only the elapsed time), the dwell tracker, buyer intake,
+ *                            outside-agent showing, recruiting, the landing counter and the collaborator token; plus a STRIPPED-source
+ *                            order rule over all 16 doors (decision before the first write) with positive controls. RED AT 81cdddae:
+ *                            11 of 59 with only the doors reverted; `decidePublicDoor is not a function` with the library reverted.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -268,9 +274,146 @@ async function main() {
   ok("the landing-page counter never writes a caller-supplied number", !callerCount(read("app/actions/listing-landing.ts")))
   ok("CONTROL: the pre-155R5 counter (currentViewCount + 1) is caught", callerCount(`update({ view_count: currentViewCount + 1 })`))
 
+  // ── I · lane 155R18: the public-door decision (cap, then the tenant's own opt-in) BEFORE any write ──────────────────────────
+  // Each door is driven for real against the in-memory client (SIMULATED). The NEGATIVE writes nothing; the POSITIVE writes under
+  // the tenant of the opt-in row (never a body field); the cap refuses before the opt-in read. Red at 81cdddae: the doors wrote
+  // for a draft post, a closed session, an archived brokerage, a draft listing; the beacon billed what the visitor reported.
+  console.log("\n[I · lane 155R18 — every public door decides (cap → tenant opt-in) before it writes]")
+  await sectionI()
+
   console.log(`\n${"─".repeat(60)}\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail) { console.log(" ❌ PUBLIC_DOOR_DECISION_FAIL"); process.exit(1) }
   console.log(" ✅ PUBLIC_DOOR_DECISION_PASS — public doors decide from the session / the tenant's own opt-in / the cap, provider callbacks leave one receipt per event, AI spend leaves a receipt beside the same cost row (SIMULATED)")
+}
+
+/** Section I (lane 155R18) — its own scope so its names never collide with A–H. */
+async function sectionI(): Promise<void> {
+  const prl = await import("../lib/security/public-rate-limit")
+  {
+    let reads = 0
+    const optIn = async () => { reads++; return { brokerageId: BRK_A, basis: "specimen" } }
+    const first = await prl.decidePublicDoor({ surface: "r18-unit", callerKey: "10.0.0.1", cap: { limit: 1, windowMs: 60_000 }, optIn })
+    const second = await prl.decidePublicDoor({ surface: "r18-unit", callerKey: "10.0.0.1", cap: { limit: 1, windowMs: 60_000 }, optIn })
+    ok("POSITIVE: an opted-in caller under the cap is allowed and carries the tenant the opt-in row proved", first.allowed === true && first.brokerageId === BRK_A)
+    ok("NEGATIVE: over the cap → 429, and the opt-in read is NEVER reached (the cap is evaluated first)", second.allowed === false && second.status === 429 && reads === 1, JSON.stringify(second))
+    const none = await prl.decidePublicDoor({ surface: "r18-unit-b", callerKey: "x", cap: { limit: 9, windowMs: 60_000 }, optIn: async () => null })
+    const thrown = await prl.decidePublicDoor({ surface: "r18-unit-b", callerKey: "x", cap: { limit: 9, windowMs: 60_000 }, optIn: async () => { throw new Error("db down") } })
+    const tenantless = await prl.decidePublicDoor({ surface: "r18-unit-b", callerKey: "x", cap: { limit: 9, windowMs: 60_000 }, optIn: async () => ({ brokerageId: null, basis: "a tenant door with no tenant" }) })
+    const platform = await prl.decidePublicDoor({ surface: "r18-unit-b", callerKey: "x", cap: { limit: 9, windowMs: 60_000 }, optIn: async () => ({ brokerageId: null, basis: "platform funnel", platform: true }) })
+    ok("NEGATIVE: no opt-in, a read that throws, and a tenant-less opt-in on a tenant door are all refused (fail closed, 404)", [none, thrown, tenantless].every((v) => v.allowed === false && v.status === 404))
+    ok("POSITIVE: only the platform's own funnel passes without a tenant", platform.allowed === true && platform.brokerageId === null)
+  }
+  const POST_DRAFT = "d1000000-0000-4000-8000-000000000001", POST_PUB = "d1000000-0000-4000-8000-000000000002"
+  const blogWorld = () => memSupabase({ blog_posts: [{ id: POST_DRAFT, brokerage_id: BRK_A, publish_status: "draft" }, { id: POST_PUB, brokerage_id: BRK_A, publish_status: "published" }], blog_post_views: [], blog_post_share_clicks: [] })
+  const jpost = (url: string, body: unknown, ip: string) => new Request(`http://localhost${url}`, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", "x-forwarded-for": ip } }) as never
+  const tv = await import("../app/api/blog/track-view/route"), ts = await import("../app/api/blog/track-share/route")
+  G.__R5.svc = blogWorld()
+  const vDraft = await quiet(() => tv.POST(jpost("/api/blog/track-view", { blog_post_id: POST_DRAFT }, "10.1.0.1")))
+  const sDraft = await quiet(() => ts.POST(jpost("/api/blog/track-share", { blog_post_id: POST_DRAFT, share_channel: "copy_link" }, "10.1.0.1")))
+  ok("NEGATIVE: a DRAFT post takes no view and no share (404, zero rows)", vDraft.status === 404 && sDraft.status === 404 && writesTo(G.__R5.svc, "blog_post_views") === 0 && writesTo(G.__R5.svc, "blog_post_share_clicks") === 0)
+  const vPub = await quiet(() => tv.POST(jpost("/api/blog/track-view", { blog_post_id: POST_PUB, brokerage_id: BRK_B }, "10.1.0.2")))
+  const sPub = await quiet(() => ts.POST(jpost("/api/blog/track-share", { blog_post_id: POST_PUB, share_channel: "copy_link" }, "10.1.0.2")))
+  const views = G.__R5.svc.tables.blog_post_views as Row[]
+  ok("POSITIVE: a PUBLISHED post takes one view and one share, filed under the post's tenant (a body brokerage_id is ignored)", vPub.status === 200 && sPub.status === 200 && views.length === 1 && views[0].brokerage_id === BRK_A && (G.__R5.svc.tables.blog_post_share_clicks as Row[]).length === 1)
+  for (let i = 0; i < 60; i++) await quiet(() => ts.POST(jpost("/api/blog/track-share", { blog_post_id: POST_PUB, share_channel: "copy_link" }, "10.1.0.3")))
+  const sharesAtCap = (G.__R5.svc.tables.blog_post_share_clicks as Row[]).length
+  const over = await quiet(() => ts.POST(jpost("/api/blog/track-share", { blog_post_id: POST_PUB, share_channel: "copy_link" }, "10.1.0.3")))
+  ok("NEGATIVE: the 61st share from one connection inside the window → 429 and no row", over.status === 429 && (G.__R5.svc.tables.blog_post_share_clicks as Row[]).length === sharesAtCap)
+
+  const SES_ACTIVE = "e1000000-0000-4000-8000-000000000001", SES_ENDED = "e1000000-0000-4000-8000-000000000002"
+  const startedAt = new Date(Date.now() - 30_000).toISOString()
+  G.__R5.svc = memSupabase({ live_agent_sessions: [
+    { id: SES_ACTIVE, brokerage_id: BRK_A, agent_id: null, contact_id: null, surface: "widget", provider: "did", status: "active", started_at: startedAt, created_at: startedAt },
+    { id: SES_ENDED, brokerage_id: BRK_A, agent_id: null, contact_id: null, surface: "widget", provider: "did", status: "ended", started_at: startedAt, created_at: startedAt },
+  ], vendor_usage_tracking: [] })
+  const se = await import("../app/api/embed/session/end/route"), hb = await import("../app/api/embed/session/heartbeat/route")
+  const hbEnded = await quiet(() => hb.POST(jpost("/api/embed/session/heartbeat", { liveSessionId: SES_ENDED }, "10.2.0.1")))
+  const endEnded = await quiet(() => se.POST(jpost("/api/embed/session/end", { liveSessionId: SES_ENDED, seconds: 600 }, "10.2.0.1")))
+  ok("NEGATIVE: a closed session takes no heartbeat and bills nothing (zero writes)", hbEnded.status === 200 && (await endEnded.json()).minutesLogged === 0 && writesTo(G.__R5.svc, "live_agent_sessions") === 0 && writesTo(G.__R5.svc, "vendor_usage_tracking") === 0)
+  const hbOk = await quiet(() => hb.POST(jpost("/api/embed/session/heartbeat", { liveSessionId: SES_ACTIVE }, "10.2.0.2")))
+  ok("POSITIVE: the active session the widget minted takes its heartbeat (one stamp)", hbOk.status === 200 && writesTo(G.__R5.svc, "live_agent_sessions") === 1)
+  const forged = await quiet(() => se.POST(jpost("/api/embed/session/end", { liveSessionId: SES_ACTIVE, seconds: 7200 }, "10.2.0.2")))
+  const billed = Number((await forged.json()).minutesLogged)
+  ok(`NEGATIVE (P0 money truth): a 30-second session reported as two hours bills only the elapsed time — ${billed} min (≤ 1.5), never 120`, billed > 0 && billed <= 1.5, String(billed))
+
+  const VIS = "sess-r18-known"
+  G.__R5.svc = memSupabase({ website_visitors: [{ id: "v1", session_id: VIS, brokerage_id: BRK_A, contact_id: null, lead_id: null }] })
+  const dw = await import("../app/api/track/dwell/route")
+  await quiet(() => dw.POST(jpost("/api/track/dwell", { sessionId: "sess-r18-unknown", pageUrl: "https://alpha.test/a", seconds: 40 }, "10.3.0.1")))
+  ok("NEGATIVE: a dwell for a session the tenant's pixel never minted stamps nothing", writesTo(G.__R5.svc, "website_visitors") === 0)
+  await quiet(() => dw.POST(jpost("/api/track/dwell", { sessionId: VIS, pageUrl: "https://alpha.test/a", seconds: 40 }, "10.3.0.2")))
+  ok("POSITIVE: a dwell for the pixel's own session stamps that row", (G.__R5.svc.tables.website_visitors as Row[])[0].time_on_page_seconds === 40)
+
+  const TOK_OK = "tok-r18-pending", TOK_OLD = "tok-r18-expired", CT = "c1000000-0000-4000-8000-000000000001"
+  G.__R5.svc = memSupabase({
+    buyer_intake_tokens: [
+      { id: "t1", token: TOK_OK, brokerage_id: BRK_A, contact_id: CT, agent_user_id: null, status: "pending", expires_at: new Date(Date.now() + 86_400_000).toISOString() },
+      { id: "t2", token: TOK_OLD, brokerage_id: BRK_A, contact_id: CT, agent_user_id: null, status: "pending", expires_at: new Date(Date.now() - 86_400_000).toISOString() },
+    ],
+    contacts: [{ id: CT, brokerage_id: BRK_A }], documents: [], notifications: [],
+  })
+  const bi = await import("../app/api/workflow/buyer-intake/submit/route")
+  const intake = (token: string, ip: string) => quiet(() => bi.POST(jpost("/api/workflow/buyer-intake/submit", { token, legalFirstName: "Pat", legalLastName: "Lee", dlImageBlobUrl: "docref://x" }, ip)))
+  const bad = await intake("tok-r18-forged", "10.4.0.1")
+  ok("NEGATIVE: a forged intake token → 404 and ZERO writes", bad.status === 404 && G.__R5.svc.writes.length === 0)
+  const old = await intake(TOK_OLD, "10.4.0.2")
+  ok("NEGATIVE: an expired token → 410, and its expiry stamp is the ONLY write (in the refusal branch, after the decision)", old.status === 410 && G.__R5.svc.writes.length === 1 && G.__R5.svc.writes[0].table === "buyer_intake_tokens")
+  const good = await intake(TOK_OK, "10.4.0.3")
+  ok("POSITIVE: a pending token updates the contact under the TOKEN's tenant", good.status === 200 && (G.__R5.svc.tables.contacts as Row[])[0].legal_first_name === "Pat")
+
+  const L_DRAFT = "11000000-0000-4000-8000-000000000001", L_LIVE = "11000000-0000-4000-8000-000000000002"
+  G.__R5.svc = memSupabase({ listings: [{ id: L_DRAFT, brokerage_id: BRK_A, status: "draft" }, { id: L_LIVE, brokerage_id: BRK_A, status: "active", address: "1 Main", city: "Pace", state: "FL" }], showing_requests: [], notifications: [] })
+  const oas = await import("../app/actions/outside-agent-showing")
+  const req = (listingId: string) => quiet(() => oas.submitOutsideAgentShowingRequest({ listingId, buyerAgentName: "Sam", buyerAgentEmail: "sam@example.test", buyerAgentPhone: "5550000000", preferredDate: "2030-01-02", preferredStartTime: "10:00" }))
+  const rDraft = await req(L_DRAFT)
+  ok("NEGATIVE: a showing request on a DRAFT listing is refused with zero rows", rDraft.success === false && writesTo(G.__R5.svc, "showing_requests") === 0)
+  const rLive = await req(L_LIVE)
+  ok("POSITIVE: a publicly visible listing takes the request under the listing's tenant", rLive.success === true && (G.__R5.svc.tables.showing_requests as Row[]).some((r) => r.brokerage_id === BRK_A), JSON.stringify(rLive))
+
+  G.__R5.svc = memSupabase({ brokerages: [{ id: BRK_A, slug: "alpha", name: "Alpha", is_active: true, archived_at: null, deleted_at: null }, { id: BRK_B, slug: "beta", name: "Beta", is_active: true, archived_at: "2026-01-01T00:00:00Z", deleted_at: null }], agents: [], recruits: [], users: [], notifications: [] })
+  const rec = await import("../app/recruiting/[brokerageSlug]/actions")
+  const inq = (slug: string) => quiet(() => rec.submitRecruitInquiry({ brokerageSlug: slug, firstName: "Ann", lastName: "Doe", email: "ann@example.test" }))
+  const archived = await inq("beta")
+  ok("NEGATIVE: an ARCHIVED brokerage's recruiting page collects nothing", archived.success === false && writesTo(G.__R5.svc, "recruits") === 0)
+  const live = await inq("alpha")
+  ok("POSITIVE: a live brokerage's page files the recruit under its tenant", live.success === true && (G.__R5.svc.tables.recruits as Row[])[0]?.brokerage_id === BRK_A, JSON.stringify(live))
+
+  const LP_DRAFT = "12000000-0000-4000-8000-000000000001", LP_PUB = "12000000-0000-4000-8000-000000000002"
+  G.__R5.svc = memSupabase({ listing_landing_pages: [{ id: LP_DRAFT, brokerage_id: BRK_A, status: "draft", view_count: 5 }, { id: LP_PUB, brokerage_id: BRK_A, status: "published", view_count: 5 }] })
+  const ll = await import("../app/actions/listing-landing")
+  await quiet(() => ll.incrementLandingPageViews(LP_DRAFT, 999))
+  await quiet(() => ll.incrementLandingPageViews(LP_PUB, 999))
+  const lp = G.__R5.svc.tables.listing_landing_pages as Row[]
+  ok("NEGATIVE + POSITIVE: a draft page's counter does not move; a published page's moves by exactly one from its OWN count", lp[0].view_count === 5 && lp[1].view_count === 6)
+
+  G.__R5.svc = memSupabase({ collaborative_search_members: [], collaborative_searches: [] })
+  const cs = await import("../app/actions/collaborative-search")
+  const forgedLink = await quiet(() => cs.submitFamilyOpinionAction({ token: "x".repeat(40), sharedHomeId: "h1", vote: "love" }))
+  ok("NEGATIVE: a forged collaborator token is refused with the resolver's own words and ZERO writes", forgedLink.ok === false && G.__R5.svc.writes.length === 0, JSON.stringify(forgedLink))
+
+  // STRIPPED-SOURCE ORDER RULE: in every door this lane decided, the decision is called before the door's first write.
+  const DOORS: Array<[string, string]> = [
+    ["app/api/blog/track-share/route.ts", "POST"], ["app/api/blog/track-view/route.ts", "POST"], ["app/api/embed/session/end/route.ts", "POST"],
+    ["app/api/embed/session/heartbeat/route.ts", "POST"], ["app/api/open-house/register/route.ts", "POST"], ["app/api/track/dwell/route.ts", "POST"],
+    ["app/api/track/identify/route.ts", "POST"], ["app/api/workflow/buyer-intake/submit/route.ts", "POST"], ["app/api/workflow/buyer-intake/upload/route.ts", "POST"],
+    ["app/actions/listing-landing.ts", "incrementLandingPageViews"], ["app/actions/outside-agent-showing.ts", "submitOutsideAgentShowingRequest"],
+    ["app/actions/superadmin/platform-growth.ts", "capturePlatformProspectAction"], ["app/actions/superadmin/platform-growth.ts", "requestPlatformDemoAction"],
+    ["app/recruiting/[brokerageSlug]/actions.ts", "submitRecruitInquiry"], ["app/actions/collaborative-search.ts", "acceptInvitation"], ["app/actions/collaborative-search.ts", "submitFamilyOpinionAction"],
+  ]
+  const WRITE_TOKEN = /\.(?:insert|upsert|update|delete|upload)\s*\(|\b(?:sentinelWrite|registerForEvent|endLiveAgentSession|heartbeatLiveAgentSession|upsertPlatformProspect|collaboratorView|recordCollaboratorOpinion|processKernelEvent)\s*\(/
+  const DECIDES = /\b(?:decidePublicDoor|collaboratorDoor|platformFunnelDoor)\s*\(/
+  const decidesFirst = (src: string, fn: string): boolean => {
+    const c = blankStrings(stripComments(src))
+    const at = c.search(new RegExp(`export\\s+(?:async\\s+)?function\\s+${fn}\\b`)); if (at < 0) return false
+    const next = c.slice(at + 10).search(/\nexport\s/); const body = c.slice(at, next < 0 ? c.length : at + 10 + next)
+    const d = body.search(DECIDES), w = body.search(WRITE_TOKEN)
+    return d >= 0 && (w < 0 || d < w)
+  }
+  const undecided = DOORS.filter(([f, fn]) => !decidesFirst(read(f), fn)).map(([f, fn]) => `${f}#${fn}`)
+  ok(`every door this lane decided calls the decision before its first write (${DOORS.length - undecided.length}/${DOORS.length})`, undecided.length === 0, undecided.join(", "))
+  ok("POSITIVE CONTROL: a door that writes BEFORE it decides is caught", !decidesFirst(`export async function POST() { await svc.from("x").insert({}); await decidePublicDoor({}) }`, "POST"))
+  ok("POSITIVE CONTROL: a door with no decision at all is caught", !decidesFirst(`export async function POST() { await svc.from("x").insert({}) }`, "POST"))
+  ok("CONTROL: a decision named only in a comment is not a decision", !decidesFirst(`export async function POST() { // decidePublicDoor(\n await svc.from("x").insert({}) }`, "POST"))
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

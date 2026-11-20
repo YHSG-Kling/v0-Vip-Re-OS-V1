@@ -47,6 +47,7 @@ import {
 } from "@/lib/integrations/connection-manager"
 import { scopeCascade, type ScopeContext, type ConnectionScope } from "./scope"
 import { decryptSecret } from "@/lib/security/secret-crypto"
+import { openConfigSecrets } from "@/lib/connections/credential-secret"
 import type { ActionContext } from "@/lib/kernel/action-ledger"
 
 export interface ScopedConnection extends ResolvedConnection {
@@ -157,7 +158,8 @@ async function readOwnerCredential(
         accountId: data.account_id ?? null,
         accountName: data.account_name ?? null,
         apiUrl: data.api_url ?? null,
-        config: (data.config as Record<string, unknown>) ?? {},
+        // A config secret (config.auth_token …) may be sealed too (wave 155, 155S1) — opened here like the columns above.
+        config: openConfigSecrets(data.config, decryptSecret),
         isActive: true,
         // Carried so a caller can ask the connectivity agent whether this owner's
         // token is about to lapse — the owner-scoped cascade must not be the one

@@ -65,33 +65,42 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
   try {
     if (!isValidUUID(input.listingId)) return { success: false, error: "Invalid listing ID" }
     if (!isValidUUID(input.contactId)) return { success: false, error: "Invalid contact ID" }
-    if (!isValidUUID(input.agentId)) return { success: false, error: "Invalid agent ID" }
-
+    // WAVE 155 (lane 155S3): SESSION GATE FIRST (lib/auth/require-caller.ts requireCallerWithAgent). This public endpoint had
+    // none: it resolved its tenant and agent from the ARGUMENT `agentId`, wrote a `seller.cma.started` activity before reading
+    // anything, and read the listing with no tenant predicate. Now: the tenant and the agent are the SESSION's; `input.agentId`
+    // must name the caller (its agents.id — what the presentation tab and generateAICMA's own gate use — or its users.id);
+    // a body tenant naming another brokerage is refused through decideClaimedTenant; the listing must be in the tenant
+    // BEFORE any write. The paid comp pipeline (generateAICMA) is never reached on a refusal.
+    const { requireCallerWithAgent } = await import("@/lib/auth/require-caller")
+    const caller = await requireCallerWithAgent()
+    if (!caller.ok) return { success: false, error: caller.error }
+    if (!caller.agentId) return { success: false, error: "No agent profile for this user — a CMA is run by an agent" }
+    if (input.agentId && input.agentId !== caller.agentId && input.agentId !== caller.userId) {
+      return { success: false, error: "Forbidden — you can run a CMA only as yourself" }
+    }
+    const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+    const claimed = decideClaimedTenant({ actingBrokerageId: caller.brokerageId, claimedBrokerageId: input.brokerageId })
+    if (!claimed.ok) return { success: false, error: "Not authorized for that brokerage" }
+    const brokerageId = claimed.brokerageId
+    const cmaAgentRecordId = caller.agentId
     const supabase = await createClient()
 
-    // Resolve brokerage_id from agent. input.agentId is a USERS id — this
-    // lookup only works with one — and that is correct here.
-    const { data: agentCMA } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", input.agentId)
+    // Load listing for property data — IN THE SESSION'S TENANT, before anything is written.
+    const { data: listing, error: listingError } = await supabase
+      .from("listings")
+      .select("*")
+      .eq("id", input.listingId)
+      .eq("brokerage_id", brokerageId)
       .maybeSingle()
 
-    // IDENTITY CLASS (m355). The three activities writes below key
-    // activities.agent_id, which FKs AGENTS — so passing the users id above
-    // FK-rejected every one of them. The CMA itself generated and saved; only
-    // its timeline vanished, which is why nothing ever looked broken: the
-    // seller got their CMA and the agent's activity feed simply never mentioned
-    // it. Same value, two classes, one variable.
-    const { data: cmaAgentRow } = await supabase
-      .from("agents").select("id").eq("user_id", input.agentId).maybeSingle()
-    const cmaAgentRecordId = (cmaAgentRow as { id?: string } | null)?.id ?? null
+    if (listingError || !listing) {
+      return { success: false, error: "Listing not found" }
+    }
 
-    // Emit start event. The m355 note above is exactly why the error must be
-    // read: these three rows were FK-rejected for months and the only symptom
-    // was an activity feed that never mentioned the CMA.
+    // Emit start event. The m355 note (activities.agent_id FKs AGENTS) is why the agents.id is used and the error is read:
+    // these rows were FK-rejected for months and the only symptom was an activity feed that never mentioned the CMA.
     const { error: cmaStartedError } = await supabase.from("activities").insert({
-      brokerage_id: agentCMA?.brokerage_id ?? null,
+      brokerage_id: brokerageId,
       agent_id: cmaAgentRecordId,
       contact_id: input.contactId,
       listing_id: input.listingId,
@@ -110,27 +119,13 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
       console.error("[generateCMA] seller.cma.started activity REJECTED:", cmaStartedError.message)
     }
 
-    // Load listing for property data
-    const { data: listing, error: listingError } = await supabase
-      .from("listings")
-      .select("*")
-      .eq("id", input.listingId)
-      .single()
-
-    if (listingError || !listing) {
-      await emitCMAFailed(input.listingId, input.contactId, input.agentId, "Listing not found")
-      return { success: false, error: "Listing not found" }
-    }
-
     // The seller's own upgrades since purchase — property_upgrades, the same
     // rows the appraiser packet and the seller CMA page read.
     const { loadSellerUpgradesForListing } = await import("@/lib/cma/seller-upgrades")
-    const sellerUpgrades = agentCMA?.brokerage_id
-      ? await loadSellerUpgradesForListing({
-          listingId: input.listingId,
-          brokerageId: agentCMA.brokerage_id,
-        })
-      : []
+    const sellerUpgrades = await loadSellerUpgradesForListing({
+      listingId: input.listingId,
+      brokerageId,
+    })
     const sellerUpgradeLines = sellerUpgrades.map((u) =>
       u.estimatedCost ? `${u.description} (~$${Math.round(u.estimatedCost).toLocaleString()})` : u.description,
     )
@@ -140,7 +135,7 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
     // cma_reports. Map listing fields → CMAParams shape.
     const { generateAICMA } = await import("@/app/actions/ai-cma")
     const aiResult = await generateAICMA({
-      agentId: input.agentId,
+      agentId: cmaAgentRecordId,
       propertyAddress: input.targetAddress || listing.address || "",
       propertyCity: listing.city || "",
       propertyState: listing.state || "",
@@ -173,7 +168,7 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
     const aiOk = (aiResult as { success: boolean }).success
     if (!aiOk) {
       const err = (aiResult as { error?: string }).error ?? "AI CMA generation failed"
-      await emitCMAFailed(input.listingId, input.contactId, input.agentId, err)
+      await emitCMAFailed(input.listingId, input.contactId, brokerageId, cmaAgentRecordId, err)
       return { success: false, error: err }
     }
 
@@ -189,7 +184,7 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
       (aiResult as { id?: string }).id
     if (!cmaReportId) {
       const err = "CMA generated but no report id was returned"
-      await emitCMAFailed(input.listingId, input.contactId, input.agentId, err)
+      await emitCMAFailed(input.listingId, input.contactId, brokerageId, cmaAgentRecordId, err)
       return { success: false, error: err }
     }
     // Counted from the comparables the CMA actually used. `?? 0` used to be the
@@ -211,7 +206,7 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
     // listing_id to decide whether a CMA exists; if it is rejected the
     // assembler silently concludes there is no CMA.
     const { error: cmaCompletedError } = await supabase.from("activities").insert({
-      brokerage_id: agentCMA?.brokerage_id ?? null,
+      brokerage_id: brokerageId,
       agent_id: cmaAgentRecordId,
       contact_id: input.contactId,
       listing_id: input.listingId,
@@ -256,21 +251,18 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
 async function emitCMAFailed(
   listingId: string,
   contactId: string,
-  agentId: string,
+  brokerageId: string,
+  agentRecordId: string,
   reason: string
 ) {
+  // WAVE 155 (lane 155S3): the SESSION's tenant and agents.id, passed by the gated caller — no re-derivation from an argument.
   const supabase = await createClient()
-  const { data: agentFail } = await supabase.from("users").select("brokerage_id").eq("id", agentId).maybeSingle()
-  // Same class split as generateCMA: users id for the brokerage lookup, the
-  // resolved agents id for activities.agent_id (m355).
-  const { data: failAgentRow } = await supabase
-    .from("agents").select("id").eq("user_id", agentId).maybeSingle()
 
   // The record that a CMA FAILED. Losing it leaves the seller's timeline
   // showing a started-but-never-finished CMA with no stated reason.
   const { error: cmaFailedError } = await supabase.from("activities").insert({
-    brokerage_id: agentFail?.brokerage_id ?? null,
-    agent_id: (failAgentRow as { id?: string } | null)?.id ?? null,
+    brokerage_id: brokerageId,
+    agent_id: agentRecordId,
     contact_id: contactId,
     listing_id: listingId,
     activity_type: "seller.cma.failed",

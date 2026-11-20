@@ -20,7 +20,7 @@ import {
 } from "@/lib/buyer-lifecycle/lifecycle-logger"
 import { isSearchAllowed, isTourAllowed, isOfferAllowed, getEnabledGatesForBuyer, type GatingResult } from "@/lib/buyer-lifecycle/gating-helpers"
 import { checkFinancialVerification, getFinancialVerificationStatus, type FinancialVerificationResult } from "@/lib/buyer-lifecycle/financial-verification"
-import { emitFinancialVerificationEvent, type FinancialVerificationStatus } from "@/lib/buyer-lifecycle/extensions/financial-verification-schema"
+import type { FinancialVerificationStatus } from "@/lib/buyer-lifecycle/extensions/financial-verification-schema"
 import type { BuyerState } from "@/lib/buyer-lifecycle/lifecycle-definitions"
 
 /**
@@ -339,57 +339,17 @@ export async function getBuyerFinancialStatus(
   return (await getFinancialVerificationStatus(contactId)) as unknown as FinancialVerificationStatus
 }
 
-/**
- * Emit financial verification event
- */
-export async function recordBuyerFinancialVerification(params: {
-  contactId: string
-  verificationType: "preapproval" | "proof_of_funds" | "lender_intro" | "agent_confirmation"
-  userId: string
-  expiresAt?: Date
-  metadata?: Record<string, unknown>
-}): Promise<{ success: boolean; error?: string }> {
-  const { contactId, verificationType, userId, expiresAt, metadata } = params
-
-  if (!isValidUUID(contactId)) {
-    return { success: false, error: "Invalid contact ID" }
-  }
-
-  if (!userId) {
-    return { success: false, error: "User ID required" }
-  }
-
-  // emitFinancialVerificationEvent uses a typed metadata schema (FinancialVerificationEventMetadata)
-  // rather than a generic Record<string, unknown>. Caller-provided metadata fields are spread into
-  // the known typed fields below. Fields that don't map to a typed param (e.g. arbitrary caller
-  // keys) cannot be forwarded without a schema change — they are preserved in verificationNotes as
-  // a JSON string so no caller data is silently dropped.
-  const knownMetadataFields = {
-    maxBudget: metadata?.max_budget as number | undefined,
-    documentId: metadata?.document_id as string | undefined,
-    lenderName: metadata?.lender_name as string | undefined,
-    preApprovalAmount: metadata?.pre_approval_amount as number | undefined,
-  }
-
-  const reservedKeys = new Set(["max_budget", "document_id", "lender_name", "pre_approval_amount", "expires_at", "verification_type"])
-  const extraMetadata = metadata
-    ? Object.fromEntries(Object.entries(metadata).filter(([k]) => !reservedKeys.has(k)))
-    : {}
-  const verificationNotes =
-    Object.keys(extraMetadata).length > 0 ? JSON.stringify(extraMetadata) : undefined
-
-  return await emitFinancialVerificationEvent({
-    contactId,
-    verificationType,
-    userId,
-    expiresAt,
-    status: "verified",
-    verifiedBy: "agent",
-    source: "manual",
-    ...knownMetadataFields,
-    ...(verificationNotes ? { verificationNotes } : {}),
-  })
-}
+// TOMBSTONE (wave 155, lane 155S1 — CLAUDE.md §1.3 / §4): recordBuyerFinancialVerification RETIRED. It was a PUBLIC
+// ENDPOINT (a "use server" export) that took the recording user and the contact from its arguments with no session and
+// flipped a buyer's financing gate through the service client — anyone could mark any tenant's buyer pre-approved "as"
+// any user. Its ONLY caller was the sessionless voice tool-call route, which now has its own door: it calls the survivor,
+// lib/buyer-lifecycle/extensions/financial-verification-schema.ts:48 emitFinancialVerificationEvent, directly — after its
+// own registry authority ('financial_staff'), its tenant gate on the contact and the spoken-confirm hold
+// (app/api/agent-assistant/tool-call/route.ts case "confirm_buyer_financials"). The metadata mapping this wrapper did
+// (lender_name / pre_approval_amount typed fields, the rest as JSON verification notes) is done there. A gated session
+// door with no caller would be a public endpoint nobody uses; if a dashboard confirm is ever built, it gates first
+// (requireCaller + authorityAllows("confirm_buyer_financials") + the contact pinned to the session's tenant) and leaves
+// a receipt, as the wave-155 draft of this function did.
 
 /**
  * STATISTICS & REPORTING

@@ -17,7 +17,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { scanConnectivity } from "@/lib/agentic-os/resolve-connectivity"
 import { resolveConnection } from "@/lib/integrations/connection-manager"
 import { probeConnector, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
-import { secretFromConfig } from "@/lib/connections/credential-secret"
+import { secretFromConfig, openConfigSecrets } from "@/lib/connections/credential-secret"
 import { decryptSecret } from "@/lib/security/secret-crypto"
 
 // Per-brokerage probes + per-provider AI healer call (Exa search + Anthropic) can take 60–120s
@@ -108,6 +108,9 @@ export async function GET(req: Request) {
       const provider = r.platform as string
       if (!PROBE_SPECS[provider]) continue // only providers with a known liveness endpoint
       try {
+        // WAVE 155 (155S1): a config secret may be stored SEALED (phone-connect seals config.auth_token) — open it first,
+        // like the columns below; a legacy plaintext value passes through.
+        if (r.config && typeof r.config === "object") (r as { config: unknown }).config = openConfigSecrets(r.config, decryptSecret)
         const probe = await probeConnector(provider, {
           // Stored keys/tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt first.
           apiKey: decryptSecret((r.api_key as string) ?? null),

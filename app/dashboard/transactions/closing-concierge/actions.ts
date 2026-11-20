@@ -223,47 +223,84 @@ export async function loadClosingConciergeBoard(): Promise<ConciergeBoard | { er
   return { actions: rows, summary, closings, recentlyResolved }
 }
 
+/**
+ * WAVE 155 (lane 155S1, P0) — THE GATE EVERY CONCIERGE ACTION PASSES BEFORE THE SERVICE CLIENT TOUCHES A ROW.
+ *
+ * resolve / dismiss / draft / dispatch were keyed on the action id ALONE after an auth-only check, through the service
+ * client: any signed-in user of any tenant could close another tenant's closing blockers, and the draft read another
+ * tenant's transaction and its buyer / seller / lender / title emails into a model prompt billed to THAT tenant. Now:
+ *   · the caller is the SESSION (requireCaller — tenant from users.brokerage_id, never an argument; CLAUDE.md §4);
+ *   · the action row is read PINNED to the session's tenant, so another tenant's id answers the same "Action not found"
+ *     as an unknown id, with nothing read past that row and nothing written;
+ *   · the caller must be able to WORK the action's deal (lib/auth/deal-work-ownership.ts loadDealWorkAccess — the owning
+ *     agent, the assigned coordinator, the deal agent's team lead, a tenant admin, compliance). A lender, title company,
+ *     vendor or Contact on the deal is not a worker of it — the same rule the deal-health rescan route took in 119ac6b4;
+ *   · a gate that cannot run refuses (fail closed), never passes.
+ */
+async function gateConciergeAction(actionId: string): Promise<
+  | { ok: true; userId: string; brokerageId: string; action: { id: string; brokerage_id: string; transaction_id: string; agent_id: string | null; action_type: string | null; headline: string | null; detail: string | null; suggested_recipient: string | null; due_date: string | null } }
+  | { ok: false; error: string }
+> {
+  if (!UUID_RE.test(String(actionId ?? ""))) return { ok: false, error: "Action not found" }
+  const { requireCaller } = await import("@/lib/auth/require-caller")
+  const caller = await requireCaller()
+  if (!caller.ok) return { ok: false, error: caller.reason === "unauthenticated" ? "Not authenticated" : caller.error }
+  const svc = createServiceClient()
+  const { data: action, error: actionErr } = await svc
+    .from("transaction_pending_actions")
+    .select("id, brokerage_id, transaction_id, agent_id, action_type, headline, detail, suggested_recipient, due_date")
+    .eq("id", actionId)
+    .eq("brokerage_id", caller.brokerageId)
+    .maybeSingle()
+  if (actionErr) return { ok: false, error: "The action could not be read. Try again in a moment." }
+  if (!action) return { ok: false, error: "Action not found" }
+  const a = action as { id: string; brokerage_id: string; transaction_id: string; agent_id: string | null; action_type: string | null; headline: string | null; detail: string | null; suggested_recipient: string | null; due_date: string | null }
+  const { loadDealWorkAccess } = await import("@/lib/auth/deal-work-ownership")
+  const work = await loadDealWorkAccess(svc, { userId: caller.userId, brokerageId: caller.brokerageId, userType: caller.userType, transactionId: a.transaction_id })
+  if (!work.ok) return { ok: false, error: "Your access to this deal could not be confirmed. Try again in a moment." }
+  if (!work.access.capabilities.read) return { ok: false, error: "Action not found" }
+  return { ok: true, userId: caller.userId, brokerageId: caller.brokerageId, action: a }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Close one open action as `status` — tenant-pinned, and a write that matched nothing is NOT a success (§3). */
+async function closeConciergeAction(
+  gate: { userId: string; brokerageId: string; action: { id: string } },
+  status: "resolved" | "dismissed",
+  note: string | null,
+): Promise<{ success: boolean; error?: string }> {
+  const svc = createServiceClient()
+  const { data: closed, error } = await svc
+    .from("transaction_pending_actions")
+    .update({ status, resolved_at: new Date().toISOString(), resolved_by: gate.userId, resolution_note: note })
+    .eq("id", gate.action.id)
+    .eq("brokerage_id", gate.brokerageId)
+    .eq("status", "open")
+    .select("id")
+  if (error) return { success: false, error: error.message }
+  if ((closed ?? []).length !== 1) return { success: false, error: "That action is no longer open — it may already have been handled." }
+  return { success: true }
+}
+
 export async function resolveConciergeAction(
   actionId: string,
   note: string | null
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
-  return ledgered("session", { action: "transaction.pending_action.resolve", subject: { type: "transaction_pending_action", id: actionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
-  const svc = createServiceClient()
-  const { error } = await svc
-    .from("transaction_pending_actions")
-    .update({
-      status:          "resolved",
-      resolved_at:     new Date().toISOString(),
-      resolved_by:     user.id,
-      resolution_note: note,
-    })
-    .eq("id", actionId)
-    .eq("status", "open")
-  if (error) return { success: false, error: error.message }
-  return { success: true }
-  })
+  const gate = await gateConciergeAction(actionId)
+  if (!gate.ok) return { success: false, error: gate.error }
+  return ledgered("session", { action: "transaction.pending_action.resolve", subject: { type: "transaction_pending_action", id: actionId }, riskClass: "LOW_RISK_WRITE" }, async () =>
+    closeConciergeAction(gate, "resolved", note))
 }
 
 export async function dismissConciergeAction(
   actionId: string,
   note: string | null
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
-  return ledgered("session", { action: "transaction.pending_action.dismiss", subject: { type: "transaction_pending_action", id: actionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
-  const svc = createServiceClient()
-  const { error } = await svc
-    .from("transaction_pending_actions")
-    .update({ status: "dismissed", resolved_at: new Date().toISOString(), resolved_by: user.id, resolution_note: note })
-    .eq("id", actionId)
-    .eq("status", "open")
-  if (error) return { success: false, error: error.message }
-  return { success: true }
-  })
+  const gate = await gateConciergeAction(actionId)
+  if (!gate.ok) return { success: false, error: gate.error }
+  return ledgered("session", { action: "transaction.pending_action.dismiss", subject: { type: "transaction_pending_action", id: actionId }, riskClass: "LOW_RISK_WRITE" }, async () =>
+    closeConciergeAction(gate, "dismissed", note))
 }
 
 /**
@@ -275,23 +312,19 @@ export async function dismissConciergeAction(
 export async function draftConciergeActionEmail(
   actionId: string
 ): Promise<{ success: boolean; subject?: string; body?: string; suggestedRecipientEmail?: string | null; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
+  // WAVE 155 (155S1): gate FIRST — the session's tenant and the deal-work rule — so a refused caller reaches no read past
+  // the action row and the model (generateTextRouted, billed to the action's tenant) is never called.
+  const gate = await gateConciergeAction(actionId)
+  if (!gate.ok) return { success: false, error: gate.error }
+  const user = { id: gate.userId }
   return ledgered("session", { action: "transaction.pending_action.draft_email", subject: { type: "transaction_pending_action", id: actionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const svc = createServiceClient()
+  const action = gate.action
 
-  const { data: action } = await svc
-    .from("transaction_pending_actions")
-    .select("id, action_type, headline, detail, suggested_recipient, transaction_id, due_date, brokerage_id, agent_id")
-    .eq("id", actionId)
-    .maybeSingle()
-  if (!action) return { success: false, error: "Action not found" }
-
-  // Pull transaction + recipient contact info in parallel
+  // Pull transaction + recipient contact info in parallel (every tenant-carrying read pinned to the session's tenant)
   const [{ data: txn }, { data: lender }, { data: title }, { data: insp }, { data: agentUser }] = await Promise.all([
-    svc.from("transactions").select("id, deal_name, property_address, close_date, contract_date, buyer_contact_id, seller_contact_id").eq("id", action.transaction_id).maybeSingle(),
+    svc.from("transactions").select("id, deal_name, property_address, close_date, contract_date, buyer_contact_id, seller_contact_id").eq("id", action.transaction_id).eq("brokerage_id", gate.brokerageId).maybeSingle(),
     svc.from("transaction_lenders").select("lender_name, loan_officer_name, loan_officer_email").eq("transaction_id", action.transaction_id).maybeSingle(),
     svc.from("transaction_title_escrow").select("title_company_name, title_officer_name, title_officer_email, escrow_officer_name, escrow_officer_email").eq("transaction_id", action.transaction_id).maybeSingle(),
     svc.from("transaction_inspections").select("inspector_name, inspector_email, inspector_company").eq("transaction_id", action.transaction_id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
@@ -302,11 +335,11 @@ export async function draftConciergeActionEmail(
   let buyerEmail: string | null = null
   let sellerEmail: string | null = null
   if (txn?.buyer_contact_id) {
-    const { data: c } = await svc.from("contacts").select("email").eq("id", txn.buyer_contact_id).maybeSingle()
+    const { data: c } = await svc.from("contacts").select("email").eq("id", txn.buyer_contact_id).eq("brokerage_id", gate.brokerageId).maybeSingle()
     buyerEmail = c?.email ?? null
   }
   if (txn?.seller_contact_id) {
-    const { data: c } = await svc.from("contacts").select("email").eq("id", txn.seller_contact_id).maybeSingle()
+    const { data: c } = await svc.from("contacts").select("email").eq("id", txn.seller_contact_id).eq("brokerage_id", gate.brokerageId).maybeSingle()
     sellerEmail = c?.email ?? null
   }
 
@@ -340,7 +373,7 @@ Write the email body only (no subject). End with: "Thanks — ${agentName}".`
   try {
     const result = await generateTextRouted({
       feature:     "closing_concierge_email",
-      brokerageId: action.brokerage_id,
+      brokerageId: gate.brokerageId,
       system:      "You write concise, professional real-estate transaction emails. Direct but warm.",
       prompt,
       temperature: 0.4,
@@ -365,17 +398,14 @@ export async function dispatchConciergeActionEmail(args: {
   subject:        string
   body:           string
 }): Promise<{ success: boolean; error?: string; providerKey?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
+  // WAVE 155 (155S1): the same gate as resolve / dismiss / draft — this door SENDS mail under the row's tenant, so another
+  // tenant's id must stop here with nothing sent (it was keyed on the id alone).
+  const gate = await gateConciergeAction(args.actionId)
+  if (!gate.ok) return { success: false, error: gate.error }
+  const user = { id: gate.userId }
 
   const svc = createServiceClient()
-  const { data: action } = await svc
-    .from("transaction_pending_actions")
-    .select("id, brokerage_id, transaction_id, agent_id")
-    .eq("id", args.actionId)
-    .maybeSingle()
-  if (!action) return { success: false, error: "Action not found" }
+  const action = gate.action
 
   const { data: agentUser } = await svc.from("users").select("email").eq("id", user.id).maybeSingle()
   // The agent's own mailbox, else the tenant's configured sender. Never a
@@ -425,6 +455,7 @@ export async function dispatchConciergeActionEmail(args: {
     .from("transaction_pending_actions")
     .update({ dispatched_email_id: action.id, updated_at: new Date().toISOString() })
     .eq("id", action.id)
+    .eq("brokerage_id", gate.brokerageId)
     .select("id")
   if (stampErr) {
     console.error("[closing-concierge] dispatch stamp refused:", stampErr.message)

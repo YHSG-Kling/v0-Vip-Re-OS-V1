@@ -95,19 +95,25 @@ export async function markResourceCompleted(params: {
   brokerageId?: string
   completionData?: Record<string, unknown>
 }) {
+  // WAVE 155 (lane 155S3): THE CONTACT GATE FIRST — requireContactAccess (lib/portal/require-contact-access.ts), the gate the
+  // Learn tab's own reader getLessonFeed opens with. This export had NONE and took its tenant from the BODY `brokerageId`
+  // (the contact lookup was skipped whenever one was supplied): any caller could file a completion for any contact under
+  // any brokerage. The row says `signal_source: "self:portal_complete"`, so only THE CONTACT THEMSELVES may write it — a
+  // staff seat previewing the portal is refused rather than recorded as the client's own act. The tenant is the
+  // contact's (from the gate); a body tenant naming another brokerage is refused through decideClaimedTenant.
+  const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(params.contactId)
+  if (!access.ok) return { success: false, error: access.error }
+  if (!access.isContactSelf) return { success: false, error: "Only the client can mark their own lesson complete" }
+  const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+  const claimed = decideClaimedTenant({ actingBrokerageId: access.brokerageId, claimedBrokerageId: params.brokerageId })
+  if (!claimed.ok) return { success: false, error: "Not authorized for that brokerage" }
+  const brokerageId = claimed.brokerageId
   const supabase = await createClient()
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "portal.learning_module.complete", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { module_id: params.resourceId, signal_source: "self:portal_complete" } }, async (): Promise<{ success: boolean; error?: string }> => {
   try {
-    let brokerageId = params.brokerageId
-    if (!brokerageId) {
-      const { data: contact } = await supabase
-        .from("contacts")
-        .select("brokerage_id")
-        .eq("id", params.contactId)
-        .single()
-      brokerageId = contact?.brokerage_id
-    }
-
     const { error } = await supabase
       .from("learning_assignments")
       .upsert({
@@ -127,6 +133,7 @@ export async function markResourceCompleted(params: {
     console.error("[markResourceCompleted] Error:", error)
     return { success: false, error: "Failed to mark resource as completed" }
   }
+  })
 }
 
 // `getJourneyMilestones({ contactId, transactionId? })` — DELETED (orphan

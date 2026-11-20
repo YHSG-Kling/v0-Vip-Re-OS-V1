@@ -227,14 +227,9 @@ Generate a specific 7-day plan with daily actions.`,
     // Archive existing plan
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
     return await ledgerSessionAction<{ success: boolean; plan?: any; error?: string }>({ brokerageId, action: "crm.copilot_plan.generate", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId, agentId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { steps: plan.steps.length } }, async () => {
-    const { error: planArchiveErr } = await supabase
-      .from("copilot_plans")
-      .update({ status: "superseded", updated_at: new Date().toISOString() })
-      .eq("contact_id", contactId)
-      .eq("status", "active")
-    if (planArchiveErr) console.error(`[workflows] prior copilot plan NOT superseded: ${planArchiveErr.message}`)
-
-    // Insert new plan
+    // WAVE 155 (lane 155S3 — CLAUDE.md §3): the NEW plan is written FIRST and its error is READ. This used to supersede the
+    // active plan, then insert, log a refused insert and return success:true — so a refused insert left the contact with NO
+    // active plan while the agent was told a new one was ready. A refused insert is now a failure and the old plan stands.
     const { data: newPlan, error: planInsErr } = await supabase
       .from("copilot_plans")
       .insert({
@@ -249,7 +244,20 @@ Generate a specific 7-day plan with daily actions.`,
       })
       .select()
       .single()
-    if (planInsErr) console.error(`[workflows] copilot plan NOT saved: ${planInsErr.message}`)
+    if (planInsErr || !newPlan) {
+      console.error(`[workflows] copilot plan NOT saved: ${planInsErr?.message ?? "no row returned"}`)
+      return { success: false, error: `The plan was not saved: ${planInsErr?.message ?? "no row returned"}` }
+    }
+
+    // Archive the plan(s) the new one replaces — tenant-scoped, never the row just written.
+    const { error: planArchiveErr } = await supabase
+      .from("copilot_plans")
+      .update({ status: "superseded", updated_at: new Date().toISOString() })
+      .eq("contact_id", contactId)
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "active")
+      .neq("id", (newPlan as { id: string }).id)
+    if (planArchiveErr) console.error(`[workflows] prior copilot plan NOT superseded: ${planArchiveErr.message}`)
 
     return { success: true, plan: newPlan }
     })

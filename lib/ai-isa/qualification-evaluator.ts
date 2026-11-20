@@ -169,8 +169,18 @@ export async function persistQualificationSignals(
 
   // Step 4: Score the lead (governLead in scoring-only mode keeps the score
   //         current for Engine 2's rule conditions like min_score).
-  const { governLead } = await import('@/app/actions/lead-governance/govern-lead')
-  const govResult = await governLead(leadId, lead.brokerage_id)
+  //         THE WEBHOOK'S OWN DOOR (wave 155, at merge of lane 155S3). This called the session ACTION governLead, which is a
+  //         "use server" export for the lead desk: an inbound-email webhook has no session, so the call was refused on every
+  //         lead and the score was never refreshed. Here the pure scorer runs on the tenant-pinned row this function already
+  //         holds a service client for, and the score write names what it could not save.
+  const { calculateLeadScore } = await import('@/lib/lead-governance')
+  const { data: fullLead, error: fullLeadErr } = await supabase.from('leads').select('*').eq('id', leadId).eq('brokerage_id', lead.brokerage_id).maybeSingle()
+  if (fullLeadErr) console.error(`[qualification-evaluator] lead not read for scoring: ${fullLeadErr.message}`)
+  const govResult = fullLead && !fullLeadErr ? { score: calculateLeadScore(fullLead as never).finalScore } : null
+  if (govResult) {
+    const { error: govScoreErr } = await supabase.from('leads').update({ lead_score: govResult.score, updated_at: new Date().toISOString() }).eq('id', leadId).eq('brokerage_id', lead.brokerage_id)
+    if (govScoreErr) console.error(`[qualification-evaluator] lead score NOT saved: ${govScoreErr.message}`)
+  }
 
   // Step 5: Engine 2 — Qualification-Triggered Assignment
   //         Reads brokerage assignment_rules and selects an agent.

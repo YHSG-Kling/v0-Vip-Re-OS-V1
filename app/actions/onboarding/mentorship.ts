@@ -1,6 +1,5 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { rankMentorMatches, DEFAULT_MENTOR_CAPACITY, type MentorProfile, type MenteeProfile, type MentorMatch } from "@/lib/recruiting/mentor-match"
 
@@ -11,16 +10,30 @@ import { rankMentorMatches, DEFAULT_MENTOR_CAPACITY, type MentorProfile, type Me
  * path is gone). Idempotent: one active mentor per mentee.
  */
 export async function matchMentor(agentId: string): Promise<{ success: boolean; error?: string; mentorId?: string; matchScore?: number; matches?: MentorMatch[] }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
+  // WAVE 155 (lane 155S1, P0) — GATE FIRST, THEN THE SERVICE CLIENT (CLAUDE.md §4). Any signed-in user could create an
+  // agent_mentor_relationships row for ANY agentId of ANY brokerage (the mentee's own brokerage_id was taken off the
+  // argument's row). Now the caller is the SESSION (requireCaller): the mentee is read PINNED to the session's tenant, so
+  // another tenant's agent answers "Agent not found" with nothing written; and an ordinary seat may only match ITSELF —
+  // the one caller (app/dashboard/onboarding/mentorship/mentorship-client.tsx) passes the viewer's own agents.id — while a
+  // tenant admin (TENANT_ADMIN_USER_TYPES, lib/auth/resolve-user-role.ts — never a retyped list) may pair any agent of the
+  // tenant. agents.id and users.id are disjoint (§3): "itself" is crossed through agents.user_id.
+  if (typeof agentId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(agentId)) return { success: false, error: "Agent not found" }
+  const { requireCaller } = await import("@/lib/auth/require-caller")
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.reason === "unauthenticated" ? "Not authenticated" : caller.error }
+  const user = { id: caller.userId }
   type MatchResult = { success: boolean; error?: string; mentorId?: string; matchScore?: number; matches?: MentorMatch[] }
+  const gateSvc = createServiceClient()
+  const { data: menteeRow, error: menteeErr } = await gateSvc.from("agents").select("id, user_id, brokerage_id, location_id, specializations, years_experience").eq("id", agentId).eq("brokerage_id", caller.brokerageId).maybeSingle()
+  if (menteeErr) return { success: false, error: "The agent could not be read. Try again in a moment." }
+  if (!menteeRow) return { success: false, error: "Agent not found" }
+  const { TENANT_ADMIN_USER_TYPES } = await import("@/lib/auth/resolve-user-role")
+  const isTenantAdmin = TENANT_ADMIN_USER_TYPES.has(String(caller.userType ?? "").toLowerCase())
+  if (!isTenantAdmin && (menteeRow as { user_id?: string | null }).user_id !== caller.userId) return { success: false, error: "Agent not found" }
   const run = async (): Promise<MatchResult> => {
 
-  const svc = createServiceClient()
-  const { data: mentee } = await svc.from("agents").select("id, brokerage_id, location_id, specializations, years_experience").eq("id", agentId).maybeSingle()
-  if (!mentee) return { success: false, error: "Agent not found" }
-  const me = mentee as any
+  const svc = gateSvc
+  const me = menteeRow as any
 
   // Eligible mentors: active, in the same brokerage, tenured enough (>= 6 trailing/ytd transactions ~ spec),
   // not the mentee.
@@ -59,9 +72,7 @@ export async function matchMentor(agentId: string): Promise<{ success: boolean; 
   }
   return { success: true, mentorId: best.mentorId, matchScore: best.score, matches }
   }
-  // Receipt against the SESSION user's tenant; a session with no tenant runs exactly as before, unrecorded.
-  const { data: mentorTenant } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-  if (!mentorTenant?.brokerage_id) return run()
+  // Receipt against the SESSION user's tenant (requireCaller above refuses a seat with no tenant).
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-  return ledgerSessionAction<MatchResult>({ brokerageId: mentorTenant.brokerage_id as string, action: "onboarding.mentor.match", actor: { type: "user", userId: user.id }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, run)
+  return ledgerSessionAction<MatchResult>({ brokerageId: caller.brokerageId, action: "onboarding.mentor.match", actor: { type: "user", userId: user.id }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, run)
 }

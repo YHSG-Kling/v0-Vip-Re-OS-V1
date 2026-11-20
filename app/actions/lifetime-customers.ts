@@ -401,8 +401,11 @@ export async function scheduleTouchpoint({
   scheduledFor: string
   notes?: string
 }) {
+  // WAVE 155 (lane 155S3): SESSION GATE FIRST. This public endpoint had none of its own — a caller with no session or no
+  // tenant ran the insert unrecorded (the `brokerageId ? receipt : run` fork below). Now it refuses, as its delegates do.
+  const { agentId, brokerageId, userId, isAuthenticated } = await getAgentContext()
+  if (!isAuthenticated || !userId || !brokerageId || !agentId) return { success: false, error: "Unauthorized" }
   const supabase = await createClient()
-  const { agentId, brokerageId, userId } = await getAgentContext()
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
@@ -427,7 +430,7 @@ export async function scheduleTouchpoint({
 
   return { success: true, scheduled: data }
   }
-  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "sphere.touchpoint.schedule", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { touchpoint_type: touchpointType } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "sphere.touchpoint.schedule", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { touchpoint_type: touchpointType } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 /**
@@ -570,12 +573,15 @@ export async function generateTouchpoint(params: {
   contactId: string
   touchpointType: 'anniversary' | 'birthday' | 'check_in' | 'market_update' | 'holiday' | 'referral_ask'
 }) {
-  const { agentId, brokerageId, userId } = await getAgentContext()
-  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  // WAVE 155 (lane 155S3): SESSION GATE FIRST (see scheduleTouchpoint) — no session / tenant / agents row → refused, no model.
+  const { agentId, brokerageId, userId, isAuthenticated } = await getAgentContext()
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
   return aiGenerateTouchpoint({ agentId: agentId ?? "", ...params })
   }
-  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "sphere.touchpoint.draft", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { touchpoint_type: params.touchpointType } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
+  return resultFamily(!isAuthenticated || !userId || !brokerageId || !agentId
+    ? { success: false as const, error: "Unauthorized" }
+    : await ledgerSessionAction({ brokerageId: brokerageId, action: "sphere.touchpoint.draft", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { touchpoint_type: params.touchpointType } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>))
 }
 
 export async function optimizeReferralAsk(contactId: string) {
@@ -593,10 +599,13 @@ export async function getLifeChangeSignals(daysBack = 7) {
 }
 
 export async function findReferralOpportunities() {
-  const { agentId, brokerageId, userId } = await getAgentContext()
-  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  // WAVE 155 (lane 155S3): SESSION GATE FIRST (see scheduleTouchpoint) — no session / tenant / agents row → refused, no model.
+  const { agentId, brokerageId, userId, isAuthenticated } = await getAgentContext()
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
   return identifyReferralOpportunities(agentId ?? "")
   }
-  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "sphere.referral_score.refresh", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
+  return resultFamily(!isAuthenticated || !userId || !brokerageId || !agentId
+    ? { success: false as const, error: "Unauthorized" }
+    : await ledgerSessionAction({ brokerageId: brokerageId, action: "sphere.referral_score.refresh", actor: { type: "user", userId: userId, agentId: agentId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>))
 }

@@ -797,12 +797,29 @@ export async function updateDistributionChannel(
     distributionConfig?: Record<string, any>
   }
 ) {
-  const { brokerageId, userId } = await getAgentContext()
+  // WAVE 155 (lane 155S3): SESSION GATE FIRST (the sibling createDistributionChannel's refusal). It had none: the update ran for
+  // any caller and the no-tenant branch skipped the receipt. The settings page edits only PERSONAL rows (agent_user_id = the
+  // session user); a BROKERAGE row (agent_user_id NULL, inherited by every agent) stays with the tenant roster.
+  const { brokerageId, userId, isAuthenticated, userType } = await getAgentContext()
+  if (!isAuthenticated || !userId || !brokerageId) return { success: false, error: "Unauthorized" }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
   const supabase = await createClient()
 
   try {
+    const { data: lane, error: laneError } = await supabase
+      .from("podcast_distribution_channels")
+      .select("id, agent_user_id")
+      .eq("id", channelId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (laneError) throw laneError
+    if (!lane) return { success: false, error: "Channel not found" }
+    const laneOwner = (lane as { agent_user_id?: string | null }).agent_user_id ?? null
+    const { TENANT_ADMIN_USER_TYPES } = await import("@/lib/auth/resolve-user-role")
+    if (laneOwner !== userId && !(laneOwner === null && TENANT_ADMIN_USER_TYPES.has(String(userType ?? "")))) {
+      return { success: false, error: "Forbidden — you can edit only your own channel" }
+    }
     const { data: channel, error } = await supabase
       .from("podcast_distribution_channels")
       .update({
@@ -824,7 +841,7 @@ export async function updateDistributionChannel(
     return { success: false, error: error.message }
   }
   }
-  return brokerageId ? ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.distribution_channel.update", actor: { type: "user", userId: userId }, subject: { type: "podcast_distribution_channel", id: channelId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>) : ledgered()
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "podcast.distribution_channel.update", actor: { type: "user", userId: userId }, subject: { type: "podcast_distribution_channel", id: channelId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // Create a PERSONAL distribution channel for the calling agent.

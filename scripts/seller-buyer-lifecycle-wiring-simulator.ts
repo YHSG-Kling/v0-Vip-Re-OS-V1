@@ -759,8 +759,10 @@ const MUTATIONS: Array<{ id: string; file: string; note: string; find: string; r
     replace: `export async function checkCMAReady(listingId: string) {\n  return { success: true, data: { isReady: false } }\n}\n\nexport async function evaluateListingCMAQuality(` },
 
   { id: "D6", file: GOV, note: "drop the expiry warning the survivor carries",
-    find: `      await emitNetSheetExpirationWarning(input.listingId, result.daysRemaining)`,
-    replace: `      void result.daysRemaining` },
+    // The warning is emitted INSIDE its receipt now (wave 155, lane 155R12: `withReceipt(…, () => emitNetSheetExpirationWarning(…), …)`),
+    // so the mutation is planted on that callback — the negative test had lost its anchor and said so.
+    find: `() => emitNetSheetExpirationWarning(input.listingId, result.daysRemaining)`,
+    replace: `() => { void result.daysRemaining; return Promise.resolve() }` },
 
   { id: "D9", file: CARD, note: "stop calling the detailed CMA evaluator",
     find: `        evaluateListingCMAQuality({ listingId }),`,

@@ -872,8 +872,10 @@ if (RUN_NEGATIVE) {
   mutate(
     "SITE 1 — the vendor payout falls back to stripe.transfers.create() on the platform key",
     F.vendorPayments,
-    `    const transfer = await createTransfer(`,
-    `    const transfer = await stripe.transfers.create({ amount: 1 } as never) ?? await createTransfer(`,
+    // The transfer now runs INSIDE the payout sink's decision record (wave 155, lane 155R8: `ledgerToolCall(…, () => createTransfer(`),
+    // so the mutation is planted on that call — the control had lost its anchor and said so.
+    `    }, () => createTransfer(`,
+    `    }, async () => await stripe.transfers.create({ amount: 1 } as never) ?? createTransfer(`,
     () => seesResidualIn(F.vendorPayments, "transfers.create"),
   )
 

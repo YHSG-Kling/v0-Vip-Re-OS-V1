@@ -135,8 +135,22 @@ export async function incrementLandingPageViews(pageId: string, currentViewCount
     // POST could set any page's counter to any number, published or not. The count is now read from the row itself and only a
     // PUBLISHED page (the same predicate getLandingPageBySlug serves) is counted; `currentViewCount` is kept for the caller's shape.
     void currentViewCount
-    const { data: page, error: pageErr } = await supabase.from("listing_landing_pages").select("view_count").eq("id", pageId).eq("status", "published").maybeSingle()
-    if (pageErr || !page) return
+    // WAVE 155 (lane 155R18 — G10): that read is now the DECISION's opt-in read, made BEFORE the counter moves — the per-IP
+    // cap, then the TENANT'S OWN OPT-IN (a page its tenant PUBLISHED; the brokerage is that row's).
+    const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+    const seen: { page: { view_count?: number | null } | null } = { page: null }
+    const door = await decidePublicDoor({
+      surface: "landing-page-view", callerKey: await publicCallerIp(), cap: { limit: 120, windowMs: 60_000 },
+      optIn: async () => {
+        const { data, error } = await supabase.from("listing_landing_pages").select("view_count, brokerage_id").eq("id", pageId).eq("status", "published").maybeSingle()
+        const row = data as { view_count?: number | null; brokerage_id?: string | null } | null
+        if (error || !row?.brokerage_id) return null
+        seen.page = row
+        return { brokerageId: row.brokerage_id, basis: "listing_landing_pages.status = published" }
+      },
+    })
+    const page = seen.page
+    if (!door.allowed || !page) return
     await sentinelWrite(supabase, supabase
       .from("listing_landing_pages")
       .update({ view_count: (Number((page as { view_count?: number | null }).view_count) || 0) + 1, updated_at: new Date().toISOString() })

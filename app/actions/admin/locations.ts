@@ -251,6 +251,12 @@ export async function deleteLocationAction(id: string): Promise<{ ok: true } | {
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "office.location.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "location", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const svc = createServiceClient()
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): the office must exist IN THIS TENANT before anyone is moved, and the delete is COUNTED.
+  // A DELETE that matches nothing resolves like one that worked, so a wrong id / another tenant's office reported "Deleted" and
+  // the card vanished. Zero rows is a FAILURE for this caller (the sibling updateLocationAction's rule, above): the UI restores it.
+  const { data: office, error: officeErr } = await svc.from("locations").select("id").eq("id", id).eq("brokerage_id", auth.brokerageId).maybeSingle()
+  if (officeErr) return { ok: false, error: `Could not confirm the office: ${officeErr.message}` }
+  if (!office) return { ok: false, error: "Office not found in your workspace" }
   // Unassign BOTH office columns first so nobody is left pointing at a deleted
   // office. users.location_id is ON DELETE SET NULL at the FK, so the database
   // would handle that one — this is explicit anyway because agents.location_id
@@ -262,8 +268,9 @@ export async function deleteLocationAction(id: string): Promise<{ ok: true } | {
   if (usersUnassignErr) return { ok: false, error: `Could not unassign users from this office: ${usersUnassignErr.message}` }
   const { error: agentsUnassignErr } = await svc.from("agents").update({ location_id: null }).eq("location_id", id).eq("brokerage_id", auth.brokerageId)
   if (agentsUnassignErr) return { ok: false, error: `Could not unassign agents from this office: ${agentsUnassignErr.message}` }
-  const { error } = await svc.from("locations").delete().eq("id", id).eq("brokerage_id", auth.brokerageId)
+  const { data: deleted, error } = await svc.from("locations").delete().eq("id", id).eq("brokerage_id", auth.brokerageId).select("id")
   if (error) return { ok: false, error: error.message }
+  if ((deleted ?? []).length !== 1) return { ok: false, error: "Office not found in your workspace" }
   revalidatePath("/dashboard/admin/locations")
   return { ok: true }
   }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))

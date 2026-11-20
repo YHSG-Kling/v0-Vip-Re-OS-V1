@@ -54,14 +54,32 @@ export async function submitOutsideAgentShowingRequest(
 
   // Resolve the listing's brokerage so we can tag the request + notify the
   // right people. Don't trust client-provided brokerage info.
-  const { data: listing } = await supabase
-    .from("listings")
-    .select("id, brokerage_id, agent_id, seller_contact_id, address, city, state")
-    .eq("id", input.listingId)
-    .maybeSingle()
-  if (!listing || !listing.brokerage_id) {
-    return { success: false, error: "Listing not found" }
+  // WAVE 155 (lane 155R18 — G10): as the DECISION's opt-in read, BEFORE the request row or any notification — the per-IP cap,
+  // then the TENANT'S OWN OPT-IN: a listing in a PUBLICLY VISIBLE status (the one shared predicate the public listing page
+  // serves, lib/listings/listing-status-sync.ts publiclyVisibleListingStatuses). A draft or withdrawn listing takes no request.
+  const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+  const { publiclyVisibleListingStatuses } = await import("@/lib/listings/listing-status-sync")
+  type ListingRow = { id: string; brokerage_id: string | null; agent_id: string | null; seller_contact_id: string | null; address: string | null; city: string | null; state: string | null }
+  const seen: { listing: ListingRow | null } = { listing: null }
+  const door = await decidePublicDoor({
+    surface: "outside-agent-showing", callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
+    optIn: async () => {
+      const { data, error } = await supabase
+        .from("listings")
+        .select("id, brokerage_id, agent_id, seller_contact_id, address, city, state")
+        .eq("id", input.listingId)
+        .in("status", publiclyVisibleListingStatuses())
+        .maybeSingle()
+      const row = data as ListingRow | null
+      if (error || !row?.brokerage_id) return null
+      seen.listing = row
+      return { brokerageId: row.brokerage_id, basis: "listings.status publicly visible" }
+    },
+  })
+  if (!door.allowed) {
+    return { success: false, error: door.reason === "rate_limited" ? "Too many requests from this connection — try again shortly." : "Listing not found" }
   }
+  const listing = { ...seen.listing!, brokerage_id: door.brokerageId as string }
 
   // Compute a 30-min default end time if the form didn't supply one
   const startHHMM = input.preferredStartTime

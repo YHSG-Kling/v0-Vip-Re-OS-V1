@@ -147,8 +147,11 @@ function secretLayer() {
   // The writers whose secret was being discarded must still be writing it.
   check("connectApiKeyProvider still writes the secret into config (field-spec `phone` → auth_token)",
     /config:\s*\{\s*auth_token:\s*trim\("authToken"\)/.test(blankComments(src("lib/connections/field-spec.ts"))))
-  check("connectPhoneAction still writes config.auth_token",
-    /config:\s*\{\s*auth_token:\s*params\.authToken\.trim\(\)/.test(blankComments(src("app/actions/phone-connect.ts"))))
+  // WAVE 155 (155S1): the RULE is "the phone connect still writes the secret into config.auth_token" — now SEALED through the
+  // one envelope like its sibling api_key (secretFromConfig opens it). A write that dropped the key, or stored it in
+  // plaintext again, fails.
+  check("connectPhoneAction still writes config.auth_token (sealed through encryptSecret)",
+    /config:\s*\{\s*auth_token:\s*encryptSecret\(\s*params\.authToken\.trim\(\)\s*\)/.test(blankComments(src("app/actions/phone-connect.ts"))))
 
   // ── 1b. ONE VOCABULARY: three spellings of "the secret in config" merged ───
   const health = blankComments(src("app/api/cron/connector-health/route.ts"))

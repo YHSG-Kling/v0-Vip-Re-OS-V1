@@ -60,14 +60,29 @@ export async function submitRecruitInquiry(
   const svc = createServiceClient()
 
   // ── Resolve the brokerage from its slug ───────────────────────────────────
-  const { data: brokerage } = await svc
-    .from("brokerages")
-    .select("id, name")
-    .eq("slug", input.brokerageSlug)
-    .maybeSingle()
-  if (!brokerage) {
-    return { success: false, error: "Brokerage not found" }
+  // WAVE 155 (lane 155R18 — G10): as the DECISION's opt-in read, BEFORE the recruit row or any notification — the per-IP cap,
+  // then the TENANT'S OWN OPT-IN: the live brokerage its public slug names (the recruiting page's own slug predicate, minus a
+  // tenant that is archived, deleted or deactivated — an archived brokerage's page must not keep collecting recruits).
+  const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+  const seen: { brokerage: { id: string; name: string | null } | null } = { brokerage: null }
+  const door = await decidePublicDoor({
+    surface: "recruit-inquiry", callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
+    optIn: async () => {
+      const { data, error } = await svc
+        .from("brokerages")
+        .select("id, name, is_active, archived_at, deleted_at")
+        .eq("slug", input.brokerageSlug)
+        .maybeSingle()
+      const b = data as { id: string; name: string | null; is_active: boolean | null; archived_at: string | null; deleted_at: string | null } | null
+      if (error || !b || b.is_active === false || b.archived_at || b.deleted_at) return null
+      seen.brokerage = { id: b.id, name: b.name }
+      return { brokerageId: b.id, basis: "brokerages.slug (live tenant: active, not archived, not deleted)" }
+    },
+  })
+  if (!door.allowed || !seen.brokerage) {
+    return { success: false, error: !door.allowed && door.reason === "rate_limited" ? "Too many requests from this connection — try again shortly." : "Brokerage not found" }
   }
+  const brokerage = seen.brokerage
 
   // ── Validate the referring agent (if any) belongs to this brokerage ──────
   // We don't trust the URL param. If the agent isn't in this brokerage we

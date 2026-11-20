@@ -26,11 +26,11 @@
  * doctrine's answer to that is BUILD the missing half (an admin surface that
  * calls this action), not delete one of the two doors.
  *
- * FOUND, NOT FIXED: the gate below admits any tenant admin/broker and then reads
- * `lead_scraping_markets` by id with NO brokerage predicate (line ~45), even
- * though the select pulls `brokerage_id`. A brokerage admin can preview another
- * tenant's market, its territory phrases and its budget burn. Fenced surface —
- * reported rather than changed.
+ * FIXED (wave 155, lane 155S1): the market read below is pinned to the session's
+ * tenant for a brokerage admin (platform superadmin keeps the platform-wide view),
+ * BEFORE either paid provider seam. Only the AUTHORIZATION changed; the dry-run
+ * itself (what it pulls, what it previews, that it writes nothing to
+ * raw_scraped_leads) is untouched, so the owner's scraping fence is respected.
  */
 
 import { BatchDataClient } from '@/lib/external'
@@ -65,25 +65,47 @@ export async function runScrapeTestAction(marketId: string, source: string) {
     return { error: 'Unauthorized', status: 401 }
   }
 
-  // Verify the user has admin access (superadmin or brokerage admin)
-  const { data: userRow } = await supabase
+  // Verify the user has admin access (superadmin or brokerage admin). §3: the refusal is READ — an unreadable profile
+  // refuses (the gate could not run), it never reads as "not an admin".
+  const { data: userRow, error: userErr } = await supabase
     .from('users')
-    .select('user_type, brokerage_id')
+    .select('user_type, brokerage_id, platform_role')
     .eq('id', user.id)
     .maybeSingle()
+  if (userErr) return { error: 'Your access could not be confirmed. Try again in a moment.', status: 503 }
 
-  if (!userRow || !isAdminOrBroker({ user_type: userRow.user_type ?? '' })) {
+  const isPlatformSuperadmin = !!userRow && isPlatformSuperadminIdentity(userRow.user_type, (userRow as { platform_role?: string | null }).platform_role)
+  if (!userRow || (!isPlatformSuperadmin && !isAdminOrBroker({ user_type: userRow.user_type ?? '' }))) {
     return { error: 'Forbidden', status: 403 }
   }
 
   // ── Load market ─────────────────────────────────────────────────────────────
-  const { data: market, error: marketErr } = await supabase
-    .from('lead_scraping_markets')
-    .select('id, brokerage_id, name, city, state, zip_codes, counties, enabled_sources, monthly_budget_usd, spend_this_month, is_active')
-    .eq('id', marketId)
-    .single()
+  // WAVE 155 (lane 155S1, P0) — THE MARKET MUST BE THE CALLER'S BEFORE ANY PAID SEAM IS REACHED. This read had NO tenant
+  // predicate, so a brokerage admin could name another tenant's market and run a PAID BatchData / Apify pull over that
+  // tenant's territory (and read its budget burn). The scope is WRITTEN DOWN (lib/kernel/tenant-scope.ts), never inferred:
+  // a tenant admin reads inside the SESSION's tenant (tenantScope refuses a blank tenant); platform superadmin — the
+  // diagnostics page's own "Platform-wide" view (app/dashboard/admin/scrape-diagnostics/page.tsx isSuperadmin, the ONE
+  // total-control test) — names any market. Another tenant's market and an unknown id answer the same 404, and neither
+  // provider seam below is called.
+  const { tenantScope, platformScope, isTenantScopeRefusal } = await import('@/lib/kernel/tenant-scope')
+  let scope: ReturnType<typeof tenantScope>
+  try {
+    scope = isPlatformSuperadmin
+      ? platformScope('scrape dry-run by platform superadmin — the diagnostics page is platform-wide for that seat')
+      : tenantScope((userRow as { brokerage_id?: string | null }).brokerage_id, 'runScrapeTestAction market read')
+  } catch (e) {
+    if (isTenantScopeRefusal(e)) return { error: 'Forbidden', status: 403 }
+    throw e
+  }
+  const marketCols = 'id, brokerage_id, name, city, state, zip_codes, counties, enabled_sources, monthly_budget_usd, spend_this_month, is_active'
+  const { data: market, error: marketErr } = scope.kind === 'tenant'
+    ? await supabase.from('lead_scraping_markets').select(marketCols).eq('id', marketId).eq('brokerage_id', scope.brokerageId).maybeSingle()
+    : await supabase.from('lead_scraping_markets').select(marketCols).eq('id', marketId).maybeSingle()
 
-  if (marketErr || !market) {
+  if (marketErr) {
+    return { error: 'The market could not be read. Try again in a moment.', status: 503 }
+  }
+  if (!market) {
     return { error: 'Market not found', status: 404 }
   }
 

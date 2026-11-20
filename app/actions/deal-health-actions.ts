@@ -83,15 +83,32 @@ export async function rescanDealHealthAction(params: {
     return { success: false, error: "Invalid transaction id" }
   }
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  // WAVE 155 (lane 155S1) — THE SAME GATE AS THE ROUTE'S MANUAL RESCAN (app/api/cron/deal-health-scan/route.ts POST, commit
+  // 119ac6b4). This action read the transaction through the row policy alone, and the live policy lets a VENDOR PARTY on the
+  // deal read the transaction row — so a vendor could re-score a deal and raise DEAL_AT_RISK_DETECTED for its tenant. Now:
+  // the caller is the SESSION (requireCaller); they must be able to WORK this deal (lib/auth/deal-work-ownership.ts
+  // loadDealWorkAccess — owning agent, assigned coordinator, the deal agent's team lead, a tenant admin, compliance; a lender,
+  // title company, vendor or Contact is not a worker of it); the transaction is read PINNED to the session's tenant. Another
+  // tenant's deal, an unknown id and a deal the caller may not work all answer "Transaction not found"; a gate that cannot
+  // run refuses, never passes.
+  const { requireCaller } = await import("@/lib/auth/require-caller")
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.reason === "unauthenticated" ? "Unauthorized" : caller.error }
+  const user = { id: caller.userId }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { loadDealWorkAccess } = await import("@/lib/auth/deal-work-ownership")
+  const work = await loadDealWorkAccess(svc, { userId: caller.userId, brokerageId: caller.brokerageId, userType: caller.userType, transactionId: params.transactionId })
+  if (!work.ok) return { success: false, error: "Your access to this deal could not be confirmed. Try again in a moment." }
+  if (!work.access.capabilities.read) return { success: false, error: "Transaction not found" }
 
-  const { data: tx } = await supabase
+  const { data: tx, error: txErr } = await svc
     .from("transactions")
     .select("id, brokerage_id")
     .eq("id", params.transactionId)
+    .eq("brokerage_id", caller.brokerageId)
     .maybeSingle()
+  if (txErr) return { success: false, error: "The transaction could not be read. Try again in a moment." }
   if (!tx) return { success: false, error: "Transaction not found" }
 
   try {

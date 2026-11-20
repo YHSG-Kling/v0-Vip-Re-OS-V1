@@ -1318,9 +1318,15 @@ export async function getSocialMediaAnalytics(
  * Increments an error_count column (added via migration) for circuit-breaker tracking.
  */
 export async function retryFailedPost(postId: string, userId: string) {
-  if (!isValidUUID(postId) || !isValidUUID(userId)) {
+  if (!isValidUUID(postId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  // WAVE 155 (lane 155S3): the sibling gate (requireBrokerage, as updateSocialPost uses) FIRST. This public endpoint had none and
+  // stamped the BODY `userId` as the actor of the retry event; the actor and tenant are now the session's, and a body id naming
+  // another user is refused.
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+  if (userId && userId !== auth.userId) return { success: false, error: "Forbidden" }
 
   const supabase = await createClient()
 
@@ -1334,6 +1340,7 @@ export async function retryFailedPost(postId: string, userId: string) {
         updated_at: new Date().toISOString(),
       })
       .eq("id", postId)
+      .eq("brokerage_id", auth.brokerageId)
       .eq("status", "failed") // only retry truly failed posts
       .select()
       .maybeSingle()
@@ -1356,7 +1363,7 @@ export async function retryFailedPost(postId: string, userId: string) {
       entityId: postId,
       brokerageId: post.brokerage_id,
       event: "social_post_retry_queued",
-      actorUserId: userId,
+      actorUserId: auth.userId,
       metadata: { retried_at: new Date().toISOString() },
     }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 
@@ -1373,9 +1380,13 @@ export async function retryFailedPost(postId: string, userId: string) {
  * Does NOT hard-delete the row so publish logs are preserved.
  */
 export async function deleteSocialPost(postId: string, userId: string) {
-  if (!isValidUUID(postId) || !isValidUUID(userId)) {
+  if (!isValidUUID(postId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  // WAVE 155 (lane 155S3): sibling gate first — see retryFailedPost.
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+  if (userId && userId !== auth.userId) return { success: false, error: "Forbidden" }
 
   const supabase = await createClient()
 
@@ -1387,6 +1398,7 @@ export async function deleteSocialPost(postId: string, userId: string) {
         updated_at: new Date().toISOString(),
       })
       .eq("id", postId)
+      .eq("brokerage_id", auth.brokerageId)
       .in("status", ["draft", "scheduled", "failed", "cancelled"])
       .select("id, brokerage_id, platform, status")
       .maybeSingle()
@@ -1399,7 +1411,7 @@ export async function deleteSocialPost(postId: string, userId: string) {
       entityId: postId,
       brokerageId: post.brokerage_id,
       event: "social_post_deleted",
-      actorUserId: userId,
+      actorUserId: auth.userId,
       metadata: { deleted_at: new Date().toISOString() },
     }).then(k.asWriteResult)), "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped")
 

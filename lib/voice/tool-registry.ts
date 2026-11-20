@@ -838,6 +838,9 @@ export const VOICE_TOOL_MANAGER = {
   // takes the owner of the existing entry that does the same thing, so one action has one answer (CLAUDE.md §6):
   lender_confirm_financials: "shopping_agent", // the lender's side of confirm_buyer_financials — the same financing gate
   update_contact_status: "ai_isa",             // contact engagement / CRM touch, as log_activity
+  // WAVE 155 (155R7 request 3, applied by 155S1): its only writes are chat_sessions / chat_messages — the question log of the
+  // on-demand educator, which TABLE_MANAGER already gives to data_steward (lib/kernel/manager-registry.ts). One owner, fixed.
+  ask_guidance: "data_steward",
   // voice_followup, start_marketing and cut_promo are NOT listed here: they are team commands and already have their one owner in
   // lib/kernel/ai-teammates.ts TEAM_COMMAND_MANAGER (the two tables are disjoint by rule — test:voice-kernel-surface RM8; the one
   // resolver reads this table first, then that one: lib/voice-admin/assistant-reach.ts toolOwner). A second answer here would

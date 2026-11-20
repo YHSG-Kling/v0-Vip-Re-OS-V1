@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { checkPublicRateLimit } from "@/lib/security/public-rate-limit"
+import { decidePublicDoor, callerIpFrom } from "@/lib/security/public-rate-limit"
 import { resolveCapturedLanguage } from "@/lib/contact-pipeline/contact-capture"
 import { registerForEvent } from "@/lib/open-house/event-attendance"
 
@@ -18,16 +18,32 @@ import { registerForEvent } from "@/lib/open-house/event-attendance"
  *   · a Zoom event mints the person's own Zoom registrant (the key the participant webhook verifies attendance on).
  */
 export async function POST(req: NextRequest) {
-  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") || "unknown"
-  const rate = checkPublicRateLimit("open-house-register", ip, { limit: 30, windowMs: 10 * 60_000 })
-  if (!rate.allowed) {
-    return NextResponse.json({ error: "Too many registrations from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) } })
-  }
+  const ip = callerIpFrom(req.headers)
   let body: Record<string, any>
   try { body = await req.json() } catch { return NextResponse.json({ error: "Invalid request" }, { status: 400 }) }
+  const eventId = String(body.eventId ?? "")
+  const svc = createServiceClient()
+  // WAVE 155 (lane 155R18 — G10, P0): the DECISION before any capture, consent row, contact or Zoom registrant — the per-IP cap
+  // (unchanged: 30 per 10 minutes), then the TENANT'S OWN OPT-IN: an event its tenant PUBLISHED (registerForEvent re-reads the
+  // same row and still refuses a cancelled / completed event with its own words).
+  const door = await decidePublicDoor({
+    surface: "open-house-register", callerKey: ip, cap: { limit: 30, windowMs: 10 * 60_000 },
+    optIn: async () => {
+      if (!eventId) return null
+      const { data: ev, error } = await svc.from("open_house_events").select("id, brokerage_id, is_published").eq("id", eventId).maybeSingle()
+      const e = ev as { brokerage_id: string | null; is_published: boolean | null } | null
+      if (error || !e?.brokerage_id || e.is_published !== true) return null
+      return { brokerageId: e.brokerage_id, basis: "open_house_events.is_published" }
+    },
+  })
+  if (!door.allowed) {
+    return door.reason === "rate_limited"
+      ? NextResponse.json({ error: "Too many registrations from this connection — try again shortly." }, { status: 429, headers: { "Retry-After": String(door.retryAfterSeconds) } })
+      : NextResponse.json({ error: "Registration for this event is not open yet" }, { status: 404 })
+  }
 
   const result = await registerForEvent(createServiceClient(), {
-    eventId: String(body.eventId ?? ""),
+    eventId,
     firstName: String(body.firstName ?? ""),
     lastName: String(body.lastName ?? ""),
     email: String(body.email ?? ""),

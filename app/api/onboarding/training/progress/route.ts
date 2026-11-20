@@ -47,6 +47,17 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // WAVE 155 (lane 155S3): getAgentContext() NEVER throws — an anonymous caller gets the safe default (isAuthenticated false,
+    // agentId / brokerageId null), so the catch above never fired and this route wrote a completion row with agent_id NULL and
+    // fired TRAINING_VIDEO_COMPLETED / TRAINING_COURSE_COMPLETED with an empty tenant for anyone who POSTed. The guard is
+    // opt-in (lib/identity/get-agent-context.ts:57): it is now applied.
+    if (!context.isAuthenticated || !context.agentId || !context.brokerageId) {
+      return NextResponse.json(
+        { success: false, error: "Unauthorized" },
+        { status: 401 }
+      )
+    }
+
     const { agentId, brokerageId } = context
 
     // Rate limiting check

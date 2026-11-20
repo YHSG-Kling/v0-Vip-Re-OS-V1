@@ -31,6 +31,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { decidePublicDoor, callerIpFrom } from '@/lib/security/public-rate-limit'
 
 export const dynamic = 'force-dynamic'
 
@@ -69,6 +70,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!pageUrl || pageUrl.length > 2048) return NextResponse.json(OPAQUE_OK)
 
   const supabase = createServiceClient()
+
+  // WAVE 155 (lane 155R18 — G10): the DECISION before the stamp — the per-IP cap (this route had none; identify's is the
+  // model), then the TENANT'S OWN OPT-IN: the visitor row the tenant's own installed pixel minted (a session the pixel never
+  // recorded belongs to no tenant and is stamped nowhere). Over the cap or unknown, the answer stays OPAQUE_OK.
+  const door = await decidePublicDoor({
+    surface: 'track-dwell', callerKey: callerIpFrom(req.headers), cap: { limit: 60, windowMs: 60_000 },
+    optIn: async () => {
+      const { data: v, error } = await supabase.from('website_visitors').select('brokerage_id').eq('session_id', sessionId).maybeSingle()
+      const b = (v as { brokerage_id: string | null } | null)?.brokerage_id
+      if (error || !b) return null
+      return { brokerageId: b, basis: "website_visitors row minted by the tenant's installed pixel" }
+    },
+  })
+  if (!door.allowed) return NextResponse.json(OPAQUE_OK)
 
   // page_url is written ALONGSIDE the seconds, on purpose: the digest reader
   // (lib/kernel/site-traffic-insights.ts) buckets on the (page_url,

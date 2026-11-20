@@ -1,9 +1,17 @@
-'use server'
+// app/actions/voice-assistant/core/emit-audit-event.ts
+// ─────────────────────────────────────────────────────────────────────────────
+// SYSTEM 6.1 - Audit Event Emitter. INTERNAL ONLY — emits voice command events to activities for the audit trail.
+//
+// TOMBSTONE (wave 155, lane 155S3 — CLAUDE.md §4, §1): THIS FILE USED TO BE `'use server'`, which made `emitAuditEvent`
+// a PUBLIC HTTP ENDPOINT taking `user_id` and `brokerage_id` straight from the request body: anyone could POST an
+// activities row naming any user in any brokerage (the receipt read the session, the ROW did not). Its ONLY caller is
+// server-side — app/actions/voice-assistant/handle-voice-command.ts handleVoiceCommand, which resolves user_id /
+// brokerage_id from getAgentContext() before every call. The survivor is THIS SAME FUNCTION as a plain server-only
+// module, exactly as its sibling core/dispatch-command.ts was converted (its header, lines 5-19): handleVoiceCommand
+// imports it unchanged; nothing outside the server can address it. The identity in `request` is now INJECTED by that
+// session-resolving caller, never accepted from a client.
 
-/**
- * SYSTEM 6.1 - Audit Event Emitter
- * Emits voice command events to activities table for complete audit trail
- */
+import "server-only"
 
 import { createClient } from '@/lib/supabase/server'
 

@@ -523,13 +523,14 @@ export async function deleteEducationModule(moduleId: string): Promise<{ success
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "education.learning_module.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module", id: moduleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { surface: "license_tracking", cross_tenant_by_platform_staff: existing.brokerage_id !== auth.brokerageId } }, async () => {
 
-  const { error } = await service
-    .from("learning_modules")
-    .delete()
-    .eq("id", moduleId)
-    .eq("brokerage_id", existing.brokerage_id)
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNTED. `.eq("brokerage_id", null)` renders `brokerage_id=eq.null`, which matches NO
+  // row — so a platform-staff delete of a PLATFORM module (brokerage_id NULL) silently "succeeded" with nothing deleted. A NULL
+  // owner is matched with IS NULL, and zero deleted rows is a FAILURE for this caller (the module was proven present above).
+  const del = service.from("learning_modules").delete().eq("id", moduleId)
+  const { data: deleted, error } = await (existing.brokerage_id === null ? del.is("brokerage_id", null) : del.eq("brokerage_id", existing.brokerage_id)).select("id")
 
   if (error) return { success: false, error: error.message }
+  if ((deleted ?? []).length === 0) return { success: false, error: "The module was not deleted (it may already be gone)" }
   return { success: true }
   })
 }

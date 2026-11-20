@@ -42,6 +42,9 @@ const STUB_BY_SPEC: Record<string, string> = {
   "server-only": "export{}",
   "@/lib/supabase/service": "export const createServiceClient = (...a) => globalThis.__MOG.svc(...a)",
   "@/app/actions/buyer-lifecycle-core": "export const recordBuyerFinancialVerification = async (a) => globalThis.__MOG.record(a); export const getBuyerFinancialStatus = async () => ({ status: 'unknown' })",
+  // WAVE 155 (155S1): the sessionless voice route's confirm_buyer_financials now calls the lib writer directly (its own door —
+  // the session action no longer takes an argument identity). The seam follows the call; the rule it counts is unchanged.
+  "@/lib/buyer-lifecycle/extensions/financial-verification-schema": "export const emitFinancialVerificationEvent = async (a) => globalThis.__MOG.record(a)",
 }
 registerHooks({
   resolve(spec: string, ctx: any, next: any) {

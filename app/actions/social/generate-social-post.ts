@@ -397,6 +397,17 @@ export async function generateWeeklyContentPlan(params: {
   }>
   error?: string
 }> {
+  // WAVE 155 (lane 155S3): TENANT AND USER FROM THE SESSION, before the paid model — the sibling gate
+  // (requireCallerTenant(params.brokerageId), as generateSocialPostContent / generateContextualDraft use). This export had NO
+  // gate: the body brokerageId chose the tenant the model spend and the brand voice keyed on, and the body agentId was stamped
+  // as campaign_calendar.agent_user_id. A body tenant naming another brokerage is refused; a body agentId naming another user
+  // is refused (the planner passes the session's own users.id); the calendar rows carry the session user.
+  const tenant = await requireCallerTenant(params.brokerageId)
+  if (!tenant.ok) return { success: false, error: tenant.error }
+  if (params.agentId && params.agentId !== tenant.userId) return { success: false, error: "Forbidden — you can plan only your own calendar" }
+  params = { ...params, brokerageId: tenant.brokerageId, agentId: tenant.userId }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: tenant.brokerageId, action: "social.weekly_plan.generate", actor: { type: "user", userId: tenant.userId }, subject: { type: "user", id: tenant.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { team_id: params.teamId ?? null } }, async (): Promise<{ success: boolean; data?: Array<{ day: string; contentType: string; platform: string; hook: string; suggestedTime: string }>; error?: string }> => {
   try {
     const brandVoice = await resolveBrandVoice(params.brokerageId, params.agentId, params.teamId)
 
@@ -486,6 +497,7 @@ export async function generateWeeklyContentPlan(params: {
     // the user — map known infra failures to an honest, actionable message.
     return { success: false, error: friendlyAiError(error, "Failed to generate weekly plan") }
   }
+  })
 }
 
 /**

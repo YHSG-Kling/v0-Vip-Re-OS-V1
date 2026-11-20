@@ -274,6 +274,10 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // WAVE 155 (155R7 request 1, applied by 155S1): a tool decided PER CALL (lib/voice/tool-registry.ts VOICE_TOOL_PER_CALL_OWNER)
+  // returns the manager resolved for THIS call as `ownerManager`; it rides the audit row's instruction — never overriding a
+  // fixed VOICE_TOOL_MANAGER row.
+  if (!instruction.manager && result && typeof result === "object" && typeof (result as { ownerManager?: unknown }).ownerManager === "string") instruction = { ...instruction, manager: (result as { ownerManager: string }).ownerManager }
   const latencyMs = Date.now() - start
 
   // ── Audit log + counter ────────────────────────────────────────────────
@@ -648,16 +652,23 @@ async function runTool(
         }
       }
 
-      const { recordBuyerFinancialVerification } = await import("@/app/actions/buyer-lifecycle-core")
-      const res = await recordBuyerFinancialVerification({
+      // WAVE 155 (lane 155S1, P0): THIS route's own door. It used to call app/actions/buyer-lifecycle-core.ts
+      // recordBuyerFinancialVerification — a "use server" export, i.e. a public endpoint taking any user and contact id with
+      // no session — which is now RETIRED (tombstone there). The route is sessionless (a shared ElevenLabs secret), so it
+      // calls the lib writer directly, AFTER
+      // its own gates above (registry authority 'financial_staff', the contact pinned to session.brokerage_id, and the
+      // spoken-confirm hold), with the verified voice-session user — never a model-supplied id.
+      const { emitFinancialVerificationEvent } = await import("@/lib/buyer-lifecycle/extensions/financial-verification-schema")
+      const res = await emitFinancialVerificationEvent({
         contactId,
         verificationType,
-        userId: session.user_id,          // the acting staff member
-        metadata: {
-          lender_name: params.lender_name ? String(params.lender_name) : undefined,
-          pre_approval_amount: approvedAmount,
-          recorded_via: "voice_assistant",
-        },
+        userId: session.user_id,          // the acting staff member (the voice session's verified user)
+        status: "verified",
+        verifiedBy: "agent",
+        source: "manual",
+        lenderName: params.lender_name ? String(params.lender_name) : undefined,
+        preApprovalAmount: approvedAmount,
+        verificationNotes: JSON.stringify({ recorded_via: "voice_assistant" }),
       })
       if (!res.success) {
         return { error: res.error ?? "Could not record financing." }
@@ -2313,8 +2324,13 @@ async function fillFormField(
     return !f || f.value === null || f.value === undefined || f.confidence === "missing" || f.confidence === "low"
   }).map(d => d.label)
 
+  // WAVE 155 (155R7 request 1): "the form's own packet owner decides" — the document's mode → the packet tool that stages it
+  // → that tool's manager, resolved for THIS call (fails closed to null on an unknown mode).
+  const { voiceToolOwnerForCall } = await import("@/lib/voice/tool-registry")
+  const { MANAGERS } = await import("@/lib/kernel/manager-registry")
   return {
     success: true,
+    ownerManager: voiceToolOwnerForCall("fill_form_field", { formMode: mode }, MANAGERS),
     field: def.label,
     value,
     applied_default: rawValue === "default",

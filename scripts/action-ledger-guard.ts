@@ -832,7 +832,7 @@ async function main() {
     // event left behind in the module. The superset is asserted on a named key per site.
     const MERGED_102C: Array<[string, string, RegExp]> = [
       ["app/actions/business-card/business-card-actions.ts", "BUSINESS_CARD_APPROVED", /routed_to: "vendor"[^]*?subject_user_type/],
-      ["app/actions/video-voice.ts", "VOICE_CLONE_READY", /quality_score/],
+      ["lib/voice/voice-clone-training.ts", "VOICE_CLONE_READY", /quality_score/], // wave 155 (155S1): moved, body unchanged, out of the "use server" file (app/actions/video-voice.ts) where it was a public endpoint
       ["app/actions/video/generate-script.ts", "SCRIPT_GENERATED", /approval_status/],
       ["app/actions/video-generation.ts", "SCRIPT_GENERATED", /approval_status/],
       ["app/actions/video-generation.ts", "VIDEO_HIGH_PERFORMER_DETECTED", /completion_rate/],

@@ -343,6 +343,32 @@ export async function getStageRules() {
   return { rules: data || [] }
 }
 
+/**
+ * WAVE 155 (lane 155S1, P0) — WHO MAY WRITE THE STAGE-RULE CATALOGUE.
+ *
+ * `compliance_rules` is a PLATFORM catalogue, not a tenant's data: it has NO tenant column (scripts/schema-snapshot.ts — no
+ * brokerage_id), every reader reads it whole (getStageRules above; its select policy is USING (TRUE)), m471 classifies it with
+ * the other catalogues ("a catalogue is not a tenant's data"), and its write policies admit public.is_platform_admin() only
+ * (063 cr_ins_p / cr_upd_p / cr_del_p), which reads `platform_role = 'superadmin'` (m780). createStageRule / deleteStageRule
+ * had NO session gate at all and inserted the CALLER'S params into that global table — one tenant's rule would steer every
+ * tenant's stage transitions, if the row policy were ever missing or the client ever the service role.
+ *
+ * So the app now says what the database says, FIRST: platform superadmin (lib/platform/platform-staff-roster.ts
+ * isPlatformSuperadminIdentity — the one total-control test, the app mirror of is_platform_admin()). WHAT A TENANT MAY DO:
+ * read the catalogue (getStageRules, unchanged); a tenant-specific rule needs a tenant column this table does not have —
+ * that is a product / schema decision, not a gate to loosen. A gate that cannot run refuses.
+ */
+async function requireStageRuleAuthor(): Promise<{ ok: true; userId: string; brokerageId: string | null } | { ok: false; error: string }> {
+  const { resolveCallerIdentity } = await import("@/lib/auth/require-caller")
+  const caller = await resolveCallerIdentity()
+  if (!caller.ok) return { ok: false, error: caller.reason === "unauthenticated" ? "Not authenticated" : caller.error }
+  const { isPlatformSuperadminIdentity } = await import("@/lib/platform/platform-staff-roster")
+  if (!isPlatformSuperadminIdentity(caller.userType, caller.platformRole)) {
+    return { ok: false, error: "Stage rules are a platform-wide catalogue — only platform staff can change them. Your brokerage can view them." }
+  }
+  return { ok: true, userId: caller.userId, brokerageId: caller.brokerageId }
+}
+
 export async function createStageRule(params: {
   rule_type: string
   from_stage: string
@@ -351,12 +377,18 @@ export async function createStageRule(params: {
   auto_transition: boolean
   actions_on_transition: any[]
 }) {
+  // A refusal THROWS, like this export's own write failure always has: its one caller (app/settings/services/services-content.tsx)
+  // treats a resolved call as success and closes the dialog, so a returned refusal would render as a saved rule.
+  const gate = await requireStageRuleAuthor()
+  if (!gate.ok) throw new Error(gate.error)
   const supabase = await createClient()
-  const { brokerageId, userId } = await getAgentContext()
+  const { brokerageId, userId } = gate
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
-  const { data, error } = await supabase.from("compliance_rules").insert(params).select().single()
+  // Only the catalogue's own columns travel — never an arbitrary caller key (a PGRST204 would refuse the whole row, §3).
+  const row = { rule_type: params.rule_type, from_stage: params.from_stage, to_stage: params.to_stage, required_conditions: params.required_conditions, auto_transition: params.auto_transition, actions_on_transition: params.actions_on_transition }
+  const { data, error } = await supabase.from("compliance_rules").insert(row).select().single()
 
   if (error) throw error
 
@@ -367,14 +399,18 @@ export async function createStageRule(params: {
 }
 
 export async function deleteStageRule(ruleId: string) {
+  const gate = await requireStageRuleAuthor()
+  if (!gate.ok) throw new Error(gate.error) // throws, like its own write failure (see createStageRule)
   const supabase = await createClient()
-  const { brokerageId, userId } = await getAgentContext()
+  const { brokerageId, userId } = gate
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
-  const { error } = await supabase.from("compliance_rules").delete().eq("id", ruleId)
+  // §3: a DELETE that matches nothing resolves exactly like one that worked — count what came back.
+  const { data: removed, error } = await supabase.from("compliance_rules").delete().eq("id", ruleId).select("id")
 
   if (error) throw error
+  if ((removed ?? []).length === 0) throw new Error("That stage rule was not found — it may already have been removed.")
 
   revalidatePath("/settings/services")
   return { success: true }

@@ -199,7 +199,7 @@ async function routeTeamCommand(
       if (!ordinal) return { ok: false, spoken: "Which one — number one, two, or three? Say the rank and I'll knock it out." }
       const { runStandupAction } = await import("@/lib/kernel/standup-action")
       const r = await runStandupAction({ brokerageId: ctx.brokerageId, agentUserId: ctx.agentUserId, ordinal, firstName: ctx.firstName ?? null }, svc)
-      return { ok: r.ok, spoken: r.spoken, data: { ordinal, actedKind: r.actedKind ?? null, entityId: r.entityId ?? null } }
+      return { ok: r.ok, spoken: r.spoken, data: { ordinal, actedKind: r.actedKind ?? null, entityId: r.entityId ?? null }, ownerManager: r.manager ?? null }
     }
     case "voice_followup": {
       // "Send the Hendersons a follow-up" — propose→approve AS the agent through the SAME gate

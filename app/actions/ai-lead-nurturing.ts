@@ -137,12 +137,16 @@ export async function aiGenerateDripCampaign(params: {
 
   try {
     // Scope contact + agent to caller's brokerage
-    const { data: contact } = await supabase
+    // WAVE 155 (lane 155S3): the contact is READ (error and absence) BEFORE the paid model. This used `.single()` with the error
+    // dropped, so another tenant's contact id — or one RLS hides — still bought a prediction over `contact: null`.
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", params.contactId)
       .eq("brokerage_id", auth.brokerageId)
-      .single()
+      .maybeSingle()
+    if (contactError) return { success: false, error: `Could not read this contact: ${contactError.message}` }
+    if (!contact) return { success: false, error: "Contact not found" }
 
     const { data: agent } = await supabase
       .from("agents")
@@ -340,12 +344,16 @@ export async function aiSuggestFollowUp(params: {
 
   try {
     // Scope contact lookup to caller's brokerage
-    const { data: contact } = await supabase
+    // WAVE 155 (lane 155S3): the contact is READ (error and absence) BEFORE the paid model. This used `.single()` with the error
+    // dropped, so another tenant's contact id — or one RLS hides — still bought a prediction over `contact: null`.
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", params.contactId)
       .eq("brokerage_id", auth.brokerageId)
-      .single()
+      .maybeSingle()
+    if (contactError) return { success: false, error: `Could not read this contact: ${contactError.message}` }
+    if (!contact) return { success: false, error: "Contact not found" }
 
     const { data: recentInteractions } = await supabase
       .from("activities")
@@ -522,12 +530,16 @@ export async function aiPredictConversion(params: {
   const supabase = await createClient()
 
   try {
-    const { data: contact } = await supabase
+    // WAVE 155 (lane 155S3): the contact is READ (error and absence) BEFORE the paid model. This used `.single()` with the error
+    // dropped, so another tenant's contact id — or one RLS hides — still bought a prediction over `contact: null`.
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", params.contactId)
       .eq("brokerage_id", auth.brokerageId)
-      .single()
+      .maybeSingle()
+    if (contactError) return { success: false, error: `Could not read this contact: ${contactError.message}` }
+    if (!contact) return { success: false, error: "Contact not found" }
 
     const { data: interactions } = await supabase
       .from("activities")
@@ -604,8 +616,13 @@ For projectedTimeline pick ONE bucket only when the contact's own words or a dat
     }
     // A zero-row update is a refusal wearing the shape of success.
     const persisted = !updateError && !!updated && updated.length > 0
+    const shaped = { ...prediction, projectedTimeline, timelineBasis: "model_estimate" as const }
+    // WAVE 155 (lane 155S3 — CLAUDE.md §3): a refused or zero-row write is NOT success. It used to return success:true with
+    // persisted:false, so the receipt settled "executed" and the panel showed a forecast the Contact never received. The
+    // estimate rides along for inspection; the result says it was not recorded.
+    if (!persisted) return { success: false, error: `The forecast was not recorded on this contact${updateError ? `: ${updateError.message}` : " (no row matched)"}`, prediction: shaped, persisted: false, projectedTimeline }
 
-    return { success: true, prediction: { ...prediction, projectedTimeline, timelineBasis: "model_estimate" as const }, persisted, projectedTimeline }
+    return { success: true, prediction: shaped, persisted, projectedTimeline }
     })
   } catch (error) {
     console.error("[v0] AI conversion prediction error:", error)

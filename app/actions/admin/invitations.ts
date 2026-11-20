@@ -143,13 +143,30 @@ export async function revokeInvitationAction(
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const lr = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: auth.brokerageId, action: "tenant.invitation.revoke", actor: { type: "user", userId: auth.userId }, subject: { type: "user_invitation", id: invitationId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
-  const { error } = await svc
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNT what the update changed. An update that matches nothing resolves exactly like one
+  // that worked, so a wrong id, another tenant's invitation or an already-accepted one reported "Invitation revoked." Zero rows
+  // now re-reads the invitation IN THIS TENANT: already `revoked` is this caller's desired outcome (ok — a double click, or a
+  // second admin got there first); absent is a failure ("not found"); any other status is a failure that names it.
+  const { data: revoked, error } = await svc
     .from("user_invitations")
     .update({ status: "revoked" })
     .eq("id", invitationId)
     .eq("brokerage_id", auth.brokerageId)
     .eq("status", "pending")
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if ((revoked ?? []).length === 0) {
+    const { data: current, error: readErr } = await svc
+      .from("user_invitations")
+      .select("status")
+      .eq("id", invitationId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+    if (readErr) return { ok: false, error: `Could not confirm the invitation: ${readErr.message}` }
+    if (!current) return { ok: false, error: "Invitation not found in your workspace" }
+    const status = (current as { status?: string | null }).status ?? "unknown"
+    if (status !== "revoked") return { ok: false, error: `This invitation is no longer pending (status: ${status})` }
+  }
   revalidatePath("/dashboard/admin/users/invitations")
   return { ok: true }
   })

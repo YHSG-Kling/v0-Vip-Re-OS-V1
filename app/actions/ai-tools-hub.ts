@@ -972,13 +972,21 @@ function generateHealthRecommendation(score: number, issues: string[]): string {
 // =====================================================
 
 export async function toggleToolFavorite(userId: string, toolName: string) {
+  // WAVE 155 (lane 155S3): the SESSION user, gated first (lib/auth/require-caller.ts requireCaller). The favorite row used to be
+  // keyed on the ARGUMENT `userId` with no gate — any caller could add or remove another user's favorites. A body id naming a
+  // different user is refused; no session / no tenant is refused.
+  const { requireCaller } = await import("@/lib/auth/require-caller")
+  const caller = await requireCaller()
+  if (!caller.ok) return { favorited: false, error: caller.error }
+  if (userId && userId !== caller.userId) return { favorited: false, error: "Forbidden" }
+  const sessionUserId = caller.userId
   const supabase = await createClient()
   const run = async (): Promise<{ favorited: boolean }> => {
   
   const { data: existing } = await supabase
     .from("ai_tool_favorites")
     .select()
-    .eq("user_id", userId)
+    .eq("user_id", sessionUserId)
     .eq("tool_name", toolName)
     .maybeSingle()
   
@@ -986,26 +994,27 @@ export async function toggleToolFavorite(userId: string, toolName: string) {
     await bestEffort(supabase.from("ai_tool_favorites").delete().eq("id", existing.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     return { favorited: false }
   } else {
-    await bestEffort(supabase.from("ai_tool_favorites").insert({ user_id: userId, tool_name: toolName }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
+    await bestEffort(supabase.from("ai_tool_favorites").insert({ user_id: sessionUserId, tool_name: toolName }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     return { favorited: true }
   }
   }
-  // Receipt against the SESSION user and tenant (never the argument); no session tenant = today's unrecorded behavior.
-  const { data: { user: favUser } } = await supabase.auth.getUser()
-  const { data: favTenant } = favUser ? await supabase.from("users").select("brokerage_id").eq("id", favUser.id).maybeSingle() : { data: null }
-  if (!favUser || !favTenant?.brokerage_id) return run()
+  // Receipt against the SESSION user and tenant (the gate above) — never the argument.
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-  const lr = await ledgerSessionAction({ brokerageId: favTenant.brokerage_id as string, action: "ai_tools.favorite.toggle", actor: { type: "user", userId: favUser.id }, subject: { type: "user", id: userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool_name: toolName } }, run)
+  const lr = await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "ai_tools.favorite.toggle", actor: { type: "user", userId: sessionUserId }, subject: { type: "user", id: sessionUserId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool_name: toolName } }, run)
   return "favorited" in lr ? lr : { favorited: false }
 }
 
 export async function getUserFavorites(userId: string) {
+  // WAVE 155 (lane 155S3): the SESSION user's favorites only (same gate as toggleToolFavorite). Another user's id → nothing.
+  const { resolveCallerIdentity } = await import("@/lib/auth/require-caller")
+  const caller = await resolveCallerIdentity()
+  if (!caller.ok || (userId && userId !== caller.userId)) return []
   const supabase = await createClient()
   
   const { data } = await supabase
     .from("ai_tool_favorites")
     .select("tool_name")
-    .eq("user_id", userId)
+    .eq("user_id", caller.userId)
   
   return data?.map((f) => f.tool_name) || []
 }

@@ -72,6 +72,7 @@ export interface GovernanceResult {
  * Execute full governance cycle for a lead
  */
 export async function governLead(leadId: string, _brokerageId?: string, _actorAgentId?: string): Promise<GovernanceResult> {
+  void _actorAgentId // ignored — the actor is the session's (below)
   // Auth gate — was previously trusting caller-supplied identity
   const authClient = await createClient()
   const { data: { user } } = await authClient.auth.getUser()
@@ -82,20 +83,47 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
       slaStatus: 'unknown', promotionReady: false, message: 'Unauthorized',
     }
   }
-  const { data: callerRow } = await authClient
+  // WAVE 155 (lane 155S3): THE LEAD DESK, not any seat. Leads belong to the brokerage (CLAUDE.md §5); governance scores,
+  // ROUTES and REASSIGNS a lead, so it is the lead desk's act — LEAD_DESK_USER_TYPES through the ONE resolver
+  // (lib/auth/lead-visibility.ts resolveLeadVisibility: admission AND row scope from the session). Before this any signed-in
+  // seat of the tenant (an agent, a vendor seat, a contact's portal user) could force a reassignment. Every read's error is
+  // READ (§3) — a gate that cannot run refuses.
+  const { resolveLeadVisibility, leadRowInScope } = await import('@/lib/auth/lead-visibility')
+  const { decideClaimedTenant } = await import('@/lib/platform/acting-context')
+  const refuse = (message: string): GovernanceResult => ({
+    success: false, leadId, score: 0, scoreExplanation: '',
+    routingDecision: 'hold_for_review', agentAssigned: null,
+    slaStatus: 'unknown', promotionReady: false, message,
+  })
+  const { data: callerRow, error: callerErr } = await authClient
     .from('users')
-    .select('brokerage_id')
+    .select('brokerage_id, user_type, platform_role')
     .eq('id', user.id)
     .maybeSingle()
-  if (!callerRow?.brokerage_id) {
-    return {
-      success: false, leadId, score: 0, scoreExplanation: '',
-      routingDecision: 'hold_for_review', agentAssigned: null,
-      slaStatus: 'unknown', promotionReady: false, message: 'Unauthorized',
-    }
-  }
-  const brokerageId = callerRow.brokerage_id
-  const actorAgentId = user.id
+  if (callerErr) return refuse('Could not verify your account')
+  if (!callerRow?.brokerage_id) return refuse('Unauthorized')
+  // A caller-named tenant goes through THE decision table (lib/platform/acting-context.ts decideClaimedTenant) — another
+  // brokerage's id is refused, never silently replaced (lesson 1: no hand-written comparison).
+  const claimed = decideClaimedTenant({ actingBrokerageId: callerRow.brokerage_id as string, claimedBrokerageId: _brokerageId })
+  if (!claimed.ok) return refuse('Not authorized for that brokerage')
+  const brokerageId = claimed.brokerageId
+  const desk = await resolveLeadVisibility(authClient, {
+    userId: user.id,
+    userType: (callerRow as { user_type?: string | null }).user_type ?? null,
+    platformRole: (callerRow as { platform_role?: string | null }).platform_role ?? null,
+    brokerageId,
+  })
+  if (!desk.allowed) return refuse(desk.status === 'forbidden' ? 'Forbidden — lead governance is the lead desk\'s' : desk.reason)
+  // §3 — agents.id and users.id are DISJOINT. This slot used to hold `user.id` (a users.id) and every activities.agent_id
+  // fallback below wrote it into an agents FK. The actor's agents.id is crossed via agents.user_id; a lead-desk seat with no
+  // agents row (most admins) is NULL, never a borrowed id.
+  const { data: actorAgent, error: actorAgentErr } = await authClient
+    .from('agents')
+    .select('id')
+    .eq('user_id', user.id)
+    .maybeSingle()
+  if (actorAgentErr) return refuse('Could not resolve your agent record')
+  const actorAgentId: string | null = (actorAgent as { id?: string } | null)?.id ?? null
 
   const supabase = createServiceClient()
 
@@ -114,8 +142,10 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
       throw new Error(`Lead ${leadId} not found`)
     }
 
-    if (lead.brokerage_id !== brokerageId) {
-      throw new Error('Forbidden: lead belongs to a different brokerage')
+    // ROW SCOPE (the same rule the lead list uses): another tenant's lead, or — for a team lead in a multi-team tenant — a
+    // lead outside the teams they lead, is refused before anything is written.
+    if (!leadRowInScope(desk.scope, lead) || lead.brokerage_id !== brokerageId) {
+      throw new Error('Forbidden: lead is not on your lead desk')
     }
 
     // STEP 2: CALCULATE AUTHORITATIVE SCORE

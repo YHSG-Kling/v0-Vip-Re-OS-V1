@@ -185,10 +185,15 @@ export async function enrichLead(leadId: string) {
     if (!brokerageId) return { success: false, error: "Missing brokerage context" }
     // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt (ledgerSessionAction, lib/kernel/action-ledger.ts — the one
     // helper): session user + tenant, the lead's opaque id only (Leads belong to the brokerage; no identity in a receipt). No key.
+    // WAVE 155 (lane 155S3, the truth fix): the request goes through the ONE governed enrichment queue (lib/enrichment/
+    // lead-enrichment-core.ts via serviceEnrichLead) — the lead is no longer stamped "enriched" with an invented confidence.
+    // queued / already queued / recently enriched are honest successes; every other refusal (no identifier, live deal, budget,
+    // backlog, not found, error) is reported as a failure with its reason. The receipt records the door, not a guessed status.
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    return await ledgerSessionAction({ brokerageId, action: "lead.enrichment.mark", actor: { type: "user", userId }, subject: { type: "lead", id: leadId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { enrichment_status: "enriched", provider_called: false } }, async () => {
-    const lead = await serviceEnrichLead((agentId ?? null) as any, brokerageId, leadId)
-    return { success: true, lead }
+    return await ledgerSessionAction({ brokerageId, action: "lead.enrichment.mark", actor: { type: "user", userId }, subject: { type: "lead", id: leadId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { door: "lead_enrichment_queue" } }, async (): Promise<{ success: boolean; enrichment?: string; error?: string }> => {
+    const outcome = await serviceEnrichLead(agentId ?? null, brokerageId, leadId)
+    if (outcome.status === "refused") return { success: false, enrichment: outcome.reason, error: `Enrichment not requested: ${outcome.reason}${outcome.error ? ` (${outcome.error})` : ""}` }
+    return { success: true, enrichment: outcome.status }
     })
   } catch (error) {
     return { success: false, error: String(error) }

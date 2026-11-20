@@ -298,7 +298,7 @@ const WIRED: Array<{ fn: string; from: string; surface: string }> = [
  * Deliberately NOT wired — each with the named duplicate that justifies it.
  *
  * `aiCheckDisclosures` is NOT here any more (wave 46 lane EC): unlike
- * prepareForClosing/getClosingPrep/logDocumentAccess, which stay unwired
+ * prepareForClosing/logDocumentAccess (getClosingPrep, their alias, retired wave 155 lane 155R18), which stay unwired
  * because a second door onto the SAME row would race the first, the owner's
  * orphan-doctrine ruling for this one was DELETE with a tombstone once its
  * two capabilities the survivor lacked (stateSpecificRequirements, the AI
@@ -307,7 +307,6 @@ const WIRED: Array<{ fn: string; from: string; surface: string }> = [
  */
 const UNWIRED: Array<{ fn: string; from: string; duplicate: string }> = [
   { fn: "prepareForClosing", from: F.coordinator, duplicate: "ai-closing-workflow.ts:aiGenerateClosingChecklist" },
-  { fn: "getClosingPrep", from: F.coordinator, duplicate: "ai-closing-workflow.ts:aiGenerateClosingChecklist" },
   { fn: "logDocumentAccess", from: F.dotloop, duplicate: "lib/kernel/document-custody.ts:issueGovernedDocumentUrl" },
 ]
 
@@ -585,7 +584,10 @@ ASSERTIONS.push({
     return { ok: offenders.length === 0, detail: offenders.join(", ") }
   },
   breaks: [
-    { file: F.coordinator, find: "    const scope = await scopeTransaction(params.transactionId)\n    if (!scope.ok) return { success: false, error: scope.error }\n\n    const supabase = await createClient()\n\n    const { data: transaction, error: txnError } = await supabase\n      .from(\"transactions\")\n      .select(\`\n        *,\n        transaction_deadlines(*),\n        transaction_milestones(*)\n      \`)", replace: "    const scope = { ok: true, brokerageId: \"\", userId: \"\", agentId: \"\" } as any\n\n    const supabase = await createClient()\n\n    const { data: transaction, error: txnError } = await supabase\n      .from(\"transactions\")\n      .select(\`\n        *,\n        transaction_deadlines(*),\n        transaction_milestones(*)\n      \`)" },
+    // Restated (wave 155, lane 155R18): the G12 receipt lane put the ledger door between the gate and the read, so the old find
+    // (gate, blank line, createClient) matched nothing and this negative was theatre AT THE BASE. Same mutation: the deadline
+    // predictor's gate call and its refusal are replaced by a forged scope.
+    { file: F.coordinator, find: "    const scope = await scopeTransaction(params.transactionId)\n    if (!scope.ok) return { success: false, error: scope.error }\n    const { ledgerSessionAction } = await import(\"@/lib/kernel/action-ledger\")\n    return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? \"\", action: \"transaction.deadlines.predict\"", replace: "    const scope = { ok: true, brokerageId: \"\", userId: \"\", agentId: \"\" } as any\n    const { ledgerSessionAction } = await import(\"@/lib/kernel/action-ledger\")\n    return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? \"\", action: \"transaction.deadlines.predict\"" },
   ],
 })
 

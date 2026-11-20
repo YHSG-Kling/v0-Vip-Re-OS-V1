@@ -56,7 +56,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { decryptSecret } from "@/lib/security/secret-crypto"
-import { secretFromConfig } from "@/lib/connections/credential-secret"
+import { secretFromConfig, openConfigSecrets } from "@/lib/connections/credential-secret"
 
 /** canonical name → every alias that appears in any table for the same provider. */
 const PROVIDER_ALIASES: Record<string, string[]> = {
@@ -273,6 +273,9 @@ export async function resolveConnectionResult(
           return { status: "unreadable", store: "platform_credentials", scope, detail: c.detail }
         }
       } else if (data) {
+        // WAVE 155 (155S1): a config secret may be stored SEALED (phone-connect seals config.auth_token like api_key) — open
+        // the row's config once, here, so the shared reading below and the returned config both carry the plaintext.
+        ;(data as { config: unknown }).config = openConfigSecrets((data as { config: unknown }).config, decryptSecret)
         return {
           status: "connected",
           connection: {

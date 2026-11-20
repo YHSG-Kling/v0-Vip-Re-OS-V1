@@ -22,6 +22,7 @@ export async function POST(request: NextRequest) {
   // Hoisted so the outer catch can still fail the training job — an unexpected
   // throw is exactly the case where a 'queued' row would otherwise be stranded.
   let trainingIdForCleanup: string | undefined
+  let trainingScopeForCleanup: { brokerageId: string; profileId: string } | undefined
   try {
     const supabase = await createClient()
     const auth = await requireAuth(supabase)
@@ -75,11 +76,16 @@ export async function POST(request: NextRequest) {
     // for a job that will never finish.
     trainingIdForCleanup = training_id
 
+    // WAVE 155 (lane 155S1): the training-job writer is no longer a public "use server" export — it lives in the plain server
+    // module lib/voice/voice-clone-training.ts and takes THIS session's tenant and the profile the request names, so a
+    // training_id of another tenant (or of another profile) is refused there with nothing written.
+    const trainingScope = { brokerageId: auth.brokerageId, profileId: String(profile_id ?? "") }
+    trainingScopeForCleanup = trainingScope
     const failJob = async (message: string) => {
       if (!training_id) return
       try {
-        const { updateTrainingJobStatus } = await import("@/app/actions/video-voice")
-        await updateTrainingJobStatus(training_id, "failed", undefined, message)
+        const { updateTrainingJobStatus } = await import("@/lib/voice/voice-clone-training")
+        await updateTrainingJobStatus(training_id, "failed", undefined, message, trainingScope)
       } catch (err) {
         console.error("[voice-clone] could not mark training job failed:", err)
       }
@@ -229,11 +235,11 @@ export async function POST(request: NextRequest) {
     //   · quick upload sends profile_id alone → the profile is promoted here.
     if (training_id) {
       try {
-        const { updateTrainingJobStatus } = await import("@/app/actions/video-voice")
+        const { updateTrainingJobStatus } = await import("@/lib/voice/voice-clone-training")
         await updateTrainingJobStatus(training_id, "completed", {
           voice_id: elevenlabs_voice_id,
           sample_count: sample_audio_urls.length,
-        })
+        }, undefined, trainingScope)
       } catch (err: any) {
         console.error("[voice-clone] training reconciliation failed:", err)
         return NextResponse.json(
@@ -287,12 +293,14 @@ export async function POST(request: NextRequest) {
     console.error("[ElevenLabs] voice-clone error:", error)
     if (trainingIdForCleanup) {
       try {
-        const { updateTrainingJobStatus } = await import("@/app/actions/video-voice")
+        if (!trainingScopeForCleanup) throw new Error("no session scope was resolved before the failure")
+        const { updateTrainingJobStatus } = await import("@/lib/voice/voice-clone-training")
         await updateTrainingJobStatus(
           trainingIdForCleanup,
           "failed",
           undefined,
           error?.message ?? "Internal server error",
+          trainingScopeForCleanup,
         )
       } catch (cleanupErr) {
         console.error("[voice-clone] could not mark training job failed:", cleanupErr)

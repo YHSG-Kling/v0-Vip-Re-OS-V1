@@ -63,7 +63,13 @@ export async function connectPhoneAction(params: {
     platform,
     scope: member.agentScoped ? "agent" : "brokerage",
     api_key: encryptSecret(params.accountSid.trim()),
-    config: { auth_token: params.authToken.trim(), from_number: params.fromNumber.trim() },
+    // WAVE 155 (lane 155S1, P0): the carrier AUTH TOKEN is the pair's SECRET half and was stored in PLAINTEXT beside the
+    // sealed Account SID. It is sealed through the same envelope (lib/security/secret-crypto.ts encryptSecret — enc:v1,
+    // AES-256-GCM; with no key it REFUSES, never stores plaintext) and read back through the one reader of a config secret,
+    // lib/connections/credential-secret.ts secretFromConfig, which opens it with decryptSecret (a legacy plaintext value
+    // passes through verbatim, so rows stored before this change keep working). Re-sealing those stored rows is the existing
+    // platform-staff job's (app/actions/superadmin/secret-migration.ts resealLegacyPlaintextSecretsAction).
+    config: { auth_token: encryptSecret(params.authToken.trim()), from_number: params.fromNumber.trim() },
     is_active: true,
     updated_at: new Date().toISOString(),
   }

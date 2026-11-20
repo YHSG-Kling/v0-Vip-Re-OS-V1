@@ -54,11 +54,23 @@ export async function getBuyerClosingCosts(input: {
   if (!UUID_RE.test(input.contactId) || !UUID_RE.test(input.transactionId)) {
     return { success: false, error: "Invalid ids" }
   }
+  // WAVE 155 (lane 155S1, P0) — GATE FIRST, THEN THE SERVICE CLIENT (CLAUDE.md §4). This export had NO session: party
+  // membership was checked only against the two ARGUMENT ids, so anyone who knew (or guessed) a contact id and its deal id
+  // read that deal's price, loan and lender, and `refineWithAi` billed a model call to the deal's tenant. Now the portal's
+  // one gate decides first (lib/portal/require-contact-access.ts — the same rule the portal layout and every portal action
+  // use): the CONTACT THEMSELVES (linked user, matching email, or an accepted unexpired invite) reads only their own deal's
+  // figures (§5 — "contacts see no financials, only their own"), and contact-facing STAFF of the contact's tenant read that
+  // tenant's deals. The transaction is then read PINNED to the contact's tenant, so another tenant's deal answers "not
+  // found" with nothing else read; the model is reachable only after both.
+  const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(input.contactId)
+  if (!access.ok) return { success: false, error: access.error === "Unauthorized" ? "Not authenticated" : access.error === "Access check failed" ? "Your access could not be confirmed. Try again in a moment." : "Not a party to this transaction" }
   return ledgered(input.refineWithAi ? "session" : null, { action: "transaction.buyer_closing_costs.refine", subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", detail: { transaction_id: input.transactionId } }, async () => {
   const svc = createServiceClient()
-  const { data: tx } = await svc.from("transactions")
+  const { data: tx, error: txErr } = await svc.from("transactions")
     .select("id, brokerage_id, purchase_price, loan_amount, contact_id, buyer_contact_id, seller_contact_id, property_state, property_city")
-    .eq("id", input.transactionId).maybeSingle()
+    .eq("id", input.transactionId).eq("brokerage_id", access.brokerageId).maybeSingle()
+  if (txErr) return { success: false, error: "The transaction could not be read. Try again in a moment." }
   if (!tx) return { success: false, error: "Transaction not found" }
   const isParty = [(tx as any).contact_id, (tx as any).buyer_contact_id, (tx as any).seller_contact_id]
     .filter(Boolean).includes(input.contactId)

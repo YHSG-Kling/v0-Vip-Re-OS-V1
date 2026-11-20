@@ -223,7 +223,8 @@ check("W3 every contracted routeFile exists",WEBHOOK_CONTRACT.every((e) => exist
 console.log("\n[P · public write census — not session-gated by the proxy ⇒ gated, throttled or classified]")
 /** Gate idioms, read from stripped code (a tombstone naming one is not a gate). */
 const GATE = /\b(requireAuth|requireUser|requireCallerTenant|requireContactAccess|require[A-Z]\w*Actor|require[A-Z]\w*Access|requireSuperadminAuth|requirePlatformStaffAuth|getAgentContext|resolveWriteContextForTenant|resolveWriteContext|verifyCronAuth|serveDomainApi|resolveAgenticCaller|resolveExternalPartnerIdentity|auth\.getUser)\s*\(|INTERNAL_API_SECRET|RELAY_SHARED_SECRET/
-const THROTTLE = /\bcheckPublicRateLimit\s*\(/
+// decidePublicDoor (lib/security/public-rate-limit.ts, wave 155 lane 155R18) calls checkPublicRateLimit FIRST and then reads the tenant's own opt-in.
+const THROTTLE = /\b(?:checkPublicRateLimit|decidePublicDoor)\s*\(/
 const contracted = new Set(WEBHOOK_CONTRACT.map((e) => e.routeFile))
 /** Ungated, unthrottled writers that are acceptable as they stand — each with its reason. */
 const PUBLIC_WRITE_CLASSIFIED: Record<string, string> = {

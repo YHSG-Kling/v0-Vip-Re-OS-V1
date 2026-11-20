@@ -60,7 +60,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
-import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
+import { decidePublicDoor, callerIpFrom } from '@/lib/security/public-rate-limit'
 import { processKernelEvent } from '@/lib/kernel'
 import { KernelEvent } from '@/lib/kernel/events'
 
@@ -98,13 +98,6 @@ function normalizePhone(raw: unknown): string | null {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  // PUBLIC-WRITE THROTTLE (lane 138F readiness audit, P1). Over the ceiling the
-  // answer stays the constant OPAQUE_OK (note 3) — a throttle must not become
-  // the oracle this route refuses to be. Idiom: app/api/track/visitor/route.ts.
-  const rateIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || req.headers.get('x-real-ip') || 'unknown'
-  if (!checkPublicRateLimit('track-identify', rateIp, { limit: 60, windowMs: 60_000 }).allowed) {
-    return NextResponse.json(OPAQUE_OK)
-  }
   let body: IdentifyBody
 
   try {
@@ -129,14 +122,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // session_id is UNIQUE, so this is single-valued by construction. `error` is
   // destructured because supabase-js RESOLVES a refusal: without it a refused
   // read arrives as data:null and reads exactly like "no such session".
-  const { data: visitor, error: visitorError } = await supabase
-    .from('website_visitors')
-    .select('id, brokerage_id, lead_id, contact_id')
-    .eq('session_id', sessionId)
-    .maybeSingle()
-
-  if (visitorError) {
-    console.error('[track/identify] visitor lookup refused:', visitorError.message)
+  //
+  // WAVE 155 (lane 155R18 — G10): that read is now the DECISION's opt-in read, made BEFORE any match or stamp — the
+  // PUBLIC-WRITE THROTTLE first (lane 138F readiness audit, P1: unchanged at 60 per minute per IP; over the ceiling the answer
+  // stays the constant OPAQUE_OK, note 3 — a throttle must not become the oracle this route refuses to be), then the TENANT'S
+  // OWN OPT-IN: the visitor row the tenant's own installed pixel minted.
+  type VisitorRow = { id: string; brokerage_id: string | null; lead_id: string | null; contact_id: string | null }
+  const seen: { visitor: VisitorRow | null; error: string | null } = { visitor: null, error: null }
+  const door = await decidePublicDoor({
+    surface: 'track-identify', callerKey: callerIpFrom(req.headers), cap: { limit: 60, windowMs: 60_000 },
+    optIn: async () => {
+      const { data, error } = await supabase
+        .from('website_visitors')
+        .select('id, brokerage_id, lead_id, contact_id')
+        .eq('session_id', sessionId)
+        .maybeSingle()
+      if (error) { seen.error = error.message; return null }
+      seen.visitor = (data as VisitorRow | null) ?? null
+      return seen.visitor?.brokerage_id ? { brokerageId: seen.visitor.brokerage_id, basis: "website_visitors row minted by the tenant's installed pixel" } : null
+    },
+  })
+  const visitor = seen.visitor
+  if (!door.allowed) {
+    if (seen.error) console.error('[track/identify] visitor lookup refused:', seen.error)
     return NextResponse.json(OPAQUE_OK)
   }
   if (!visitor?.brokerage_id) return NextResponse.json(OPAQUE_OK)

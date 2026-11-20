@@ -1,4 +1,3 @@
-'use server'
 // POST /api/widget/session
 // Creates or resumes a chat_session for an embedded widget.
 // Returns session token + resolved AI identity (assistant name, persona, tone).

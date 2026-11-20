@@ -695,6 +695,27 @@ export async function shareHomesWithFamilyAction(input: {
   return { ok: true, searchId: r.searchId, memberId: r.memberId, sharedCount: r.sharedHomeIds.length, delivery: r.delivery, link: shareLink(r.token), notes: r.notes }
 }
 
+/** NOT exported (a "use server" export is a public endpoint): the public-door decision the two token-only doors below share. */
+async function collaboratorDoor(
+  svc: ReturnType<typeof import("@/lib/supabase/service").createServiceClient>,
+  token: string,
+  surface: string,
+  resolve: typeof import("@/lib/portal/collaborative-share").resolveCollaborator,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+  const seen: { error: string | null } = { error: null }
+  const door = await decidePublicDoor({
+    surface, callerKey: await publicCallerIp(), cap: { limit: 60, windowMs: 10 * 60_000 },
+    optIn: async () => {
+      const c = await resolve(svc, token)
+      if (!c.ok) { seen.error = c.error; return null }
+      return { brokerageId: c.c.brokerageId, basis: "collaborative_search_members sealed token (hash, scope, expiry, revocation, active search)" }
+    },
+  })
+  if (door.allowed) return { ok: true }
+  return { ok: false, error: door.reason === "rate_limited" ? "Too many tries from this connection — please wait a few minutes." : seen.error ?? "This link isn't valid. Ask the person who shared it to send a fresh one." }
+}
+
 /**
  * The collaborator opens the shared homes (token only) — the invitation's acceptance IS the first open. Returns ONLY
  * the shared homes and their own opinions.
@@ -707,15 +728,24 @@ export async function shareHomesWithFamilyAction(input: {
  */
 export async function acceptInvitation(token: string) {
   const { createServiceClient } = await import("@/lib/supabase/service")
-  const { collaboratorView } = await import("@/lib/portal/collaborative-share")
-  return collaboratorView(createServiceClient(), String(token ?? ""))
+  const { collaboratorView, resolveCollaborator } = await import("@/lib/portal/collaborative-share")
+  const svc = createServiceClient()
+  // WAVE 155 (lane 155R18 — G10): the DECISION before the acceptance stamp — the per-IP cap, then the sealed collaborator
+  // token the buyer's share minted (hash, scope, expiry, revocation, active search: resolveCollaborator). Its own refusal
+  // words are kept for the person holding the link.
+  const door = await collaboratorDoor(svc, String(token ?? ""), "collab-accept", resolveCollaborator)
+  if (!door.ok) return door
+  return collaboratorView(svc, String(token ?? ""))
 }
 
 /** The collaborator's opinion on one shared home (token only — the member is the one the token proves). */
 export async function submitFamilyOpinionAction(input: { token: string; sharedHomeId: string; vote: "love" | "like" | "neutral" | "dislike" | "pass"; comment?: string | null }) {
   const { createServiceClient } = await import("@/lib/supabase/service")
-  const { recordCollaboratorOpinion } = await import("@/lib/portal/collaborative-share")
+  const { recordCollaboratorOpinion, resolveCollaborator } = await import("@/lib/portal/collaborative-share")
   const svc = createServiceClient()
+  // WAVE 155 (lane 155R18 — G10): the same DECISION before the opinion, the consensus or the Shopping Agent signal is written.
+  const door = await collaboratorDoor(svc, String(input?.token ?? ""), "collab-opinion", resolveCollaborator)
+  if (!door.ok) return door
   return recordCollaboratorOpinion(svc, String(input?.token ?? ""), { sharedHomeId: String(input?.sharedHomeId ?? ""), vote: input?.vote, comment: input?.comment ?? null }, {
     tellShoppingAgent: async (p) => {
       const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")

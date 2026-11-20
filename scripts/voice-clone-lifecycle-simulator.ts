@@ -149,12 +149,14 @@ console.log("\n── two CHECK vocabularies, two types ──")
   check("the two vocabularies genuinely differ — which is why one union was a bug",
     liveJob.some((s) => !liveProfile.includes(s)) && liveProfile.some((s) => !liveJob.includes(s)))
 
-  const v = src("app/actions/video-voice.ts")
+  // WAVE 155 (155S1): the job-outcome writer moved out of the "use server" file (where it was a public endpoint) into the
+  // plain server module lib/voice/voice-clone-training.ts — the mapping lives there now; the rule is unchanged.
+  const w = src("lib/voice/voice-clone-training.ts")
   check("the job→profile mapping is keyed by the job type, so a new job status cannot be forgotten",
-    /Record<VoiceTrainingJobStatus,\s*VoiceProfileTrainingStatus>/.test(v))
+    /Record<VoiceTrainingJobStatus,\s*VoiceProfileTrainingStatus>/.test(w))
   check("…and every mapped target is storable in the profile column",
     (() => {
-      const table = /Record<VoiceTrainingJobStatus,\s*VoiceProfileTrainingStatus>\s*=\s*\{([\s\S]*?)\}/.exec(v)?.[1] ?? ""
+      const table = /Record<VoiceTrainingJobStatus,\s*VoiceProfileTrainingStatus>\s*=\s*\{([\s\S]*?)\}/.exec(w)?.[1] ?? ""
       const targets = [...table.matchAll(/:\s*"(\w+)"/g)].map((m) => m[1])
       return targets.length === liveJob.length && targets.every((t2) => liveProfile.includes(t2))
     })())
@@ -197,6 +199,15 @@ console.log("\n── the clone is SYNCHRONOUS, and the guided capture is now wi
   // that is what promotes the profile and fires VOICE_CLONE_READY.
   check("guided capture is reconciled through the training job, not around it",
     /training_id/.test(route) && /updateTrainingJobStatus\(\s*training_id,\s*"completed"/.test(route))
+  // WAVE 155 (155S1): the writer is NOT a public endpoint — no "use server" file exports it, the route imports the plain
+  // module, and every call passes the session-verified scope. POSITIVE CONTROL: the export regex finds it in the plain module.
+  check("the training-job writer is no longer a \"use server\" export (it was a public endpoint taking any training id)",
+    !/export\s+async\s+function\s+updateTrainingJobStatus\b/.test(v) && /export\s+async\s+function\s+updateTrainingJobStatus\b/.test(src("lib/voice/voice-clone-training.ts")))
+  check("…the route imports it from the plain server module, and every call passes the session scope",
+    !/@\/app\/actions\/video-voice/.test(route) && /@\/lib\/voice\/voice-clone-training/.test(route) &&
+    (route.match(/updateTrainingJobStatus\(/g) ?? []).length === (route.match(/updateTrainingJobStatus\([\s\S]*?trainingScope(ForCleanup)?\s*,?\s*\)/g) ?? []).length)
+  check("…and the plain module pins the job read to the caller's tenant AND profile",
+    /\.eq\("brokerage_id", scope\.brokerageId\)\s*\.eq\("voice_profile_id", scope\.profileId\)/.test(src("lib/voice/voice-clone-training.ts")))
   check("a training_id without its profile_id is refused",
     /if \(training_id && !profile_id\)/.test(route))
   check("every provider-failure path moves the job to 'failed' (no job left at 'queued' forever)",
@@ -258,7 +269,7 @@ console.log("\n── the profile is a SINGLETON, and a re-record does not cost 
     guardsLiveClone(fnBody(v, "updateVoiceProfileSamples")))
   check("…nor destroyed when the replacement clone fails",
     (() => {
-      const b = fnBody(v, "updateTrainingJobStatus")
+      const b = fnBody(src("lib/voice/voice-clone-training.ts"), "updateTrainingJobStatus")
       // the failure branch must consult the surviving voice id and choose 'ready'
       return /status === "failed" && !!\w+\?\.elevenlabs_voice_id/.test(b) &&
              /\?\s*"ready"\s*:\s*PROFILE_STATUS_FOR_JOB\[status\]/.test(b)

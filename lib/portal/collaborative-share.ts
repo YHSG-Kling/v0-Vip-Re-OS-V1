@@ -322,8 +322,10 @@ interface CollaboratorContext {
 
 type CollaboratorResolution = { ok: true; c: CollaboratorContext } | { ok: false; error: string }
 
-/** Resolve a token to its member — hash match, scope feedback_only, not revoked, not expired, search active. */
-async function resolveCollaborator(svc: Svc, token: string, now: Date = new Date()): Promise<CollaboratorResolution> {
+/** Resolve a token to its member — hash match, scope feedback_only, not revoked, not expired, search active.
+ *  EXPORTED (wave 155, lane 155R18) — read-only: app/actions/collaborative-search.ts reads it as the public-door decision's
+ *  opt-in (lib/security/public-rate-limit.ts decidePublicDoor) BEFORE collaboratorView / recordCollaboratorOpinion write. */
+export async function resolveCollaborator(svc: Svc, token: string, now: Date = new Date()): Promise<CollaboratorResolution> {
   const raw = String(token ?? "").trim()
   if (raw.length < 20 || raw.length > 200) return { ok: false, error: "This link isn't complete — open it straight from the message you were sent." }
   const { data: m, error } = await svc.from("collaborative_search_members")

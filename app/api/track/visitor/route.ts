@@ -1,4 +1,3 @@
-"use server"
 // POST /api/track/visitor
 //
 // BUILT (orphan doctrine §1.2, wave 64C — lead-scraping audit lane).

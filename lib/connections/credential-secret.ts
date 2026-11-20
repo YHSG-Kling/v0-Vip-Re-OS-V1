@@ -62,6 +62,23 @@ export const CONFIG_SECRET_KEYS = ["auth_token", "api_secret", "client_secret", 
  * `"" ` passed to `Basic base64(id:"")` produces a request that fails at the
  * provider with an opaque 401 rather than an honest "not connected" here.
  */
+/**
+ * WAVE 155 (155S1): a config secret may be stored SEALED (enc:v1 — app/actions/phone-connect.ts seals config.auth_token like
+ * its sibling api_key). The readers that already open stored secrets (the scoped reader, and the two that read the store
+ * directly) pass their opener — `decryptSecret` — so this module stays pure and is not a second caller of the envelope.
+ * Returns a shallow copy with each CONFIG_SECRET_KEYS string value opened; a legacy plaintext value comes back verbatim
+ * (decryptSecret passes it through). A non-object config is returned as an empty object.
+ */
+export function openConfigSecrets(config: unknown, open: (v: string) => string | null): Record<string, unknown> {
+  if (!config || typeof config !== "object") return {}
+  const out: Record<string, unknown> = { ...(config as Record<string, unknown>) }
+  for (const key of CONFIG_SECRET_KEYS) {
+    const v = out[key]
+    if (typeof v === "string" && v.trim() !== "") out[key] = open(v)
+  }
+  return out
+}
+
 export function secretFromConfig(config: unknown): string | null {
   if (!config || typeof config !== "object") return null
   const blob = config as Record<string, unknown>

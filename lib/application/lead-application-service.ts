@@ -53,8 +53,8 @@ import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 // Function map below:
 //   • serviceGetLeads / serviceGetLead — query `leads` (Lane A, post-promotion)
 //                                        for the admin CRM view at /app/leads.
-//   • serviceEnrichLead               — flag a `leads` row as enriched
-//                                       (sets enrichment_status / confidence).
+//   • serviceEnrichLead               — REQUEST enrichment through the one governed queue
+//                                       (lib/enrichment/lead-enrichment-core.ts); stamps nothing itself.
 //   (lead → contact promotion is the kernel command convertLeadToContact, used
 //    by the lead-lifecycle action — consolidated; the former service variants
 //    were removed.)
@@ -249,36 +249,35 @@ export async function serviceGetLead(agentId: string, brokerageId: string, id: s
   return data
 }
 
-export async function serviceEnrichLead(agentId: string, brokerageId: string, leadId: string) {
-  const supabase = await createClient()
+/**
+ * WAVE 155 (lane 155S3 — the TRUTH fix; CLAUDE.md §1 "extend before replacing", directive "unmeasured is unknown").
+ *
+ * BEFORE: this called NO provider (a `// TODO: Call AI enrichment service` stood where the call should be) and then stamped
+ * the lead `enrichment_status: "enriched"`, `last_enriched_at: now` and an INVENTED `enrichment_confidence: 0.8`. All three
+ * were false: nothing was looked up, "enriched" is not even a word of the ONE leads.enrichment_status vocabulary
+ * (lib/lead-pipeline/enrichment-retry.ts LEAD_ENRICHMENT_STATUSES = pending | partial | complete, wave 151), and the fresh
+ * `last_enriched_at` made lib/enrichment/lead-freshness.ts treat the lead as recently enriched so the real net skipped it.
+ * It also filtered `.eq("agent_id", agentId)`, which a lead-desk seat (no agents row) never matches.
+ *
+ * AFTER: the button asks THE ONE governed enrichment door — lib/enrichment/lead-enrichment-core.ts queueLeadEnrichment (the
+ * one writer of a lead-triggered lead_enrichment_queue row: identifier gate, freshness by evidence, live-deal suppression,
+ * pending-row idempotency, backlog cap, vendor-budget pre-flight). NOTHING is stamped on the lead here: the drain records
+ * `complete` / `partial` and the provider's confidence only when a provider actually answers. The caller (app/actions/
+ * lead-management.ts enrichLead) has already gated the lead desk and the lead's row scope; the tenant is the session's.
+ * `_agentId` is kept for the signature only — Leads belong to the brokerage, not to an agent predicate.
+ */
+export type LeadEnrichRequestOutcome =
+  | { status: "queued" }
+  | { status: "already_queued" | "recently_enriched" }
+  | { status: "refused"; reason: string; error?: string }
 
-  const { data: lead, error: leadError } = await supabase
-    .from("leads")
-    .select("*")
-    .eq("id", leadId)
-    .eq("agent_id", agentId)
-    .eq("brokerage_id", brokerageId)
-    .single()
-
-  if (leadError) throw leadError
-
-  // TODO: Call AI enrichment service (email validation, phone lookup, social profiles)
-  const { data, error } = await supabase
-    .from("leads")
-    .update({
-      enrichment_status: "enriched",
-      last_enriched_at: new Date().toISOString(),
-      enrichment_confidence: 0.8,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", leadId)
-    .select()
-    .single()
-
-  if (error) throw error
-
+export async function serviceEnrichLead(_agentId: string | null, brokerageId: string, leadId: string): Promise<LeadEnrichRequestOutcome> {
+  const { queueLeadEnrichment } = await import("@/lib/enrichment/lead-enrichment-core")
+  const outcome = await queueLeadEnrichment({ leadId, brokerageId, triggerType: "manual_request" })
   revalidatePath("/leads")
-  return data
+  if (outcome.queued) return { status: "queued" }
+  if (outcome.reason === "already_queued" || outcome.reason === "recently_enriched") return { status: outcome.reason }
+  return { status: "refused", reason: outcome.reason ?? "error", error: outcome.error }
 }
 
 export async function serviceRejectLead(

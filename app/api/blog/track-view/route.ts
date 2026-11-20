@@ -12,7 +12,7 @@
  *   · IP hashing (we never store raw IP)
  *   · brokerage scope check via blog_post_id (only valid post IDs can
  *     receive views)
- *   · rate limit at the edge (CDN) — not enforced here
+ *   · a per-IP cap and a PUBLISHED post, decided before any write (decidePublicDoor — wave 155, lane 155R18)
  *
  * POST body:
  *   { blog_post_id, source?, referrer?, persona_snapshot? }   (a contact_id in the body is ignored — wave 155, lane 155K2)
@@ -20,6 +20,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { decidePublicDoor, callerIpFrom } from "@/lib/security/public-rate-limit"
 import { createHash } from "node:crypto"
 
 export const dynamic = "force-dynamic"
@@ -44,15 +45,25 @@ export async function POST(req: NextRequest) {
 
   const svc = createServiceClient()
 
-  // Resolve brokerage_id from the blog post — also serves as existence check.
-  const { data: post } = await svc.from("blog_posts")
-    .select("id, brokerage_id")
-    .eq("id", body.blog_post_id)
-    .maybeSingle()
-  const p = post as { id: string; brokerage_id: string | null } | null
-  if (!p || !p.brokerage_id) {
-    return NextResponse.json({ error: "blog post not found" }, { status: 404 })
+  // WAVE 155 (lane 155R18 — G10): the DECISION before any write — the per-IP cap (the "rate limit at the edge" this header
+  // used to promise was never enforced here), then the TENANT'S OWN OPT-IN: a post its tenant PUBLISHED. A draft takes no
+  // view; the brokerage is that row's, never the body's.
+  const postId = body.blog_post_id
+  const seen: { p: { id: string; brokerage_id: string } | null } = { p: null }
+  const door = await decidePublicDoor({
+    surface: "blog-track-view", callerKey: callerIpFrom(req.headers), cap: { limit: 120, windowMs: 60_000 },
+    optIn: async () => {
+      const { data: post, error } = await svc.from("blog_posts").select("id, brokerage_id, publish_status").eq("id", postId).maybeSingle()
+      const row = post as { id: string; brokerage_id: string | null; publish_status: string | null } | null
+      if (error || !row?.brokerage_id || row.publish_status !== "published") return null
+      seen.p = { id: row.id, brokerage_id: row.brokerage_id }
+      return { brokerageId: row.brokerage_id, basis: "blog_posts.publish_status = published" }
+    },
+  })
+  if (!door.allowed || !seen.p) {
+    return NextResponse.json({ error: !door.allowed && door.reason === "rate_limited" ? "too many requests" : "blog post not found" }, { status: door.allowed ? 404 : door.status })
   }
+  const p = seen.p
 
   // IP hashing — we never store the raw IP. Salt is fixed per-brokerage
   // so the same household scanning multiple pages within a brokerage

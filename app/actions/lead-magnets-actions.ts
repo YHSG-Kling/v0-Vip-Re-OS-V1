@@ -358,15 +358,25 @@ export async function saveMagnetLandingContentAction(
 ) {
   try {
     const ctx = await getAgentContext()
-    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { success: false as const, error: "Not authenticated" }
+    // WAVE 155 (lane 155S3): WHO MAY OVERWRITE A MAGNET'S PUBLIC COPY — the file's own rule (promiseScopeFor, below): the admin
+    // roster (isAdminOrBroker) acts brokerage-wide; an agent only on THEIR OWN magnet (lead_capture_forms.agent_id = their
+    // agents.id). Before this any seat of the tenant could rewrite any magnet's landing page. A seat with neither is refused.
+    const brokerageWide = isAdminOrBroker({ user_type: ctx.role })
+    if (!brokerageWide && !ctx.agentId) return { success: false as const, error: "Forbidden" }
     return await withSessionReceipt({ userId: ctx.userId, brokerageId: ctx.brokerageId }, "marketing.lead_magnet_landing.save", { type: "lead_capture_form", id: magnetId }, "LOW_RISK_WRITE", { fields: Object.keys((landing ?? {}) as object) }, async () => {
     const supabase = createServiceClient()
-    const { error } = await supabase
+    let write = supabase
       .from("lead_capture_forms")
       .update({ landing_content: landing })
       .eq("id", magnetId)
       .eq("brokerage_id", ctx.brokerageId)
+    if (!brokerageWide) write = write.eq("agent_id", ctx.agentId as string)
+    // COUNTED (CLAUDE.md §3): an update that matched nothing — another tenant's magnet, another agent's, a wrong id — is a
+    // FAILURE for both callers (the draft review and the playbook runner), never a quiet "saved".
+    const { data: saved, error } = await write.select("id")
     if (error) return { success: false as const, error: error.message }
+    if ((saved ?? []).length === 0) return { success: false as const, error: "Lead magnet not found, or not yours to edit" }
     return { success: true as const }
     }, refusedResult)
   } catch (err: any) {

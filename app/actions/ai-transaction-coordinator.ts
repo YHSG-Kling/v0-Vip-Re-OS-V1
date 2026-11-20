@@ -1359,9 +1359,7 @@ Create a comprehensive plan including:
   }
 }
 
-// Backward compatibility alias — wrapped because "use server" rejects `const = fn`.
-// Shares prepareForClosing's "not wired, second writer" verdict; see the note there.
-/** @proofSeam kept unwired on purpose — see the tag on prepareForClosing above; same proofs. */
-export async function getClosingPrep(...args: Parameters<typeof prepareForClosing>) {
-  return prepareForClosing(...args)
-}
+// TOMBSTONE (wave 155, lane 155R18 — CLAUDE.md §1.3; requested by 155R7): getClosingPrep — an uncalled alias of
+// prepareForClosing (app/actions/ai-transaction-coordinator.ts:1072, same file); survivor of the capability:
+// app/actions/ai-closing-workflow.ts:26 aiGenerateClosingChecklist. Nothing was merged: the alias forwarded its arguments and
+// added no behavior. No importer in app/ lib/ components/ scripts/ (grep, wave 155).

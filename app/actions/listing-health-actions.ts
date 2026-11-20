@@ -32,18 +32,32 @@ export async function rescanListingHealthAction(params: {
     return { success: false, error: "Invalid listing id" }
   }
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
-
-  // RLS confirms brokerage gating; we still bounce the request if the listing
-  // doesn't resolve under the caller's auth scope.
-  const { data: listing } = await supabase
+  // WAVE 155 (lane 155S1) — THE SAME GATE AS THE ROUTE'S MANUAL RESCAN (app/api/cron/listing-health-scan/route.ts POST,
+  // commit 119ac6b4). This action relied on the row policy alone, which admits ANY agent of the tenant (not the listing's
+  // own agent only). Now: the caller is the SESSION (requireCaller); the seat must be tenant staff (isCrmContactStaff —
+  // lib/auth/crm-contact-staff.ts, the derived back-office roster; a vendor, lender, title or Contact seat is not tenant
+  // staff); the listing is read through the SESSION client PINNED to the session's tenant; and an AGENT seat rescans only
+  // its OWN listing (listings.agent_id is an agents.id, crossed from the session user through the canonical resolver — the id
+  // spaces are disjoint, CLAUDE.md §3). Another tenant's listing, an unknown id and a listing the caller may not open all
+  // answer the same "Listing not found"; a read that is refused refuses.
+  const { requireCaller } = await import("@/lib/auth/require-caller")
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.reason === "unauthenticated" ? "Unauthorized" : caller.error }
+  const { isCrmContactStaff } = await import("@/lib/auth/crm-contact-staff")
+  if (!isCrmContactStaff(caller.userType)) return { success: false, error: "Listing not found" }
+  const { data: listing, error: listingErr } = await caller.supabase
     .from("listings")
-    .select("id")
+    .select("id, brokerage_id, agent_id")
     .eq("id", params.listingId)
+    .eq("brokerage_id", caller.brokerageId)
     .maybeSingle()
+  if (listingErr) return { success: false, error: "Your access to this listing could not be confirmed. Try again in a moment." }
   if (!listing) return { success: false, error: "Listing not found" }
+  if (String(caller.userType).toLowerCase() === "agent") {
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    const ownAgentId = await resolveUserIdToAgentRecord(caller.userId, caller.brokerageId)
+    if (!ownAgentId || (listing as { agent_id?: string | null }).agent_id !== ownAgentId) return { success: false, error: "Listing not found" }
+  }
 
   try {
     const result = await calculateListingHealth({ listingId: params.listingId })

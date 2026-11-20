@@ -24,6 +24,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { decidePublicDoor, callerIpFrom } from "@/lib/security/public-rate-limit"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { DOCUMENT_BUCKET } from "@/lib/kernel/document-autofile"
@@ -69,19 +70,32 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: gate.reason }, { status: 413 })
   }
 
-  // Validate token
+  // Validate token — WAVE 155 (lane 155R18 — G10): as the DECISION's opt-in read, BEFORE the upload or any write: the per-IP
+  // cap, then the sealed one-time credential the TENANT issued (pending, unexpired). The expiry stamp happens only in the
+  // refusal branch, after the decision.
   const svc = createServiceClient()
-  const { data: tokenRow } = await svc
-    .from("buyer_intake_tokens")
-    .select("id, contact_id, status, expires_at")
-    .eq("token", token)
-    .maybeSingle()
-  if (!tokenRow) return NextResponse.json({ error: "Invalid token" }, { status: 404 })
-  if (tokenRow.status !== "pending") return NextResponse.json({ error: "Token already used" }, { status: 410 })
-  if (new Date(tokenRow.expires_at) < new Date()) {
-    await sentinelWrite(svc, svc.from("buyer_intake_tokens").update({ status: "expired" }).eq("id", tokenRow.id), { table: "buyer_intake_tokens", flow: "intake_token_expired", reason: "expiry stamp; the expired response is returned regardless" })
+  type TokenRow = { id: string; brokerage_id: string | null; contact_id: string; status: string; expires_at: string }
+  const seen: { row: TokenRow | null } = { row: null }
+  const door = await decidePublicDoor({
+    surface: "buyer-intake-upload", callerKey: callerIpFrom(req.headers), cap: { limit: 20, windowMs: 10 * 60_000 },
+    optIn: async () => {
+      const { data, error } = await svc.from("buyer_intake_tokens").select("id, brokerage_id, contact_id, status, expires_at").eq("token", token).maybeSingle()
+      if (error) return null
+      seen.row = (data as TokenRow | null) ?? null
+      const r = seen.row
+      if (!r?.brokerage_id || r.status !== "pending" || !(new Date(r.expires_at) >= new Date())) return null
+      return { brokerageId: r.brokerage_id, basis: "buyer_intake_tokens row (pending, unexpired) issued by the tenant" }
+    },
+  })
+  if (!door.allowed) {
+    if (door.reason === "rate_limited") return NextResponse.json({ error: "Too many uploads — try again shortly." }, { status: 429, headers: { "Retry-After": String(door.retryAfterSeconds) } })
+    const r = seen.row
+    if (!r || !r.brokerage_id) return NextResponse.json({ error: "Invalid token" }, { status: 404 })
+    if (r.status !== "pending") return NextResponse.json({ error: "Token already used" }, { status: 410 })
+    await sentinelWrite(svc, svc.from("buyer_intake_tokens").update({ status: "expired" }).eq("id", r.id), { table: "buyer_intake_tokens", flow: "intake_token_expired", reason: "expiry stamp; the expired response is returned regardless" })
     return NextResponse.json({ error: "Token expired" }, { status: 410 })
   }
+  const tokenRow = seen.row!
 
   // Store in the PRIVATE client-documents bucket (never a public blob store).
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "bin"

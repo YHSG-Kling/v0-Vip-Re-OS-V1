@@ -261,8 +261,11 @@ export async function saveProperty(data: {
     // WAVE 155 (lane 155R12): the receipt's actor + tenant come from the contact gate (the session). This export has no gate of its
     // own (it writes under RLS); a caller the gate does not admit still writes exactly as before — unrecorded, never an invented tenant.
     const { requireContactAccess: receiptGate } = await import("@/lib/portal/require-contact-access"); const rcpt = await receiptGate(data.contactId)
+    // WAVE 155 (lane 155S3): the contact gate now REFUSES — it used to decide only whether a receipt was written, and a caller it
+    // did not admit still saved a property onto any contact (and stamped a BODY brokerageId when the contact row was unreadable).
+    if (!rcpt.ok) return { success: false, error: rcpt.error }
     const { resultFamily } = await import("@/lib/kernel/action-ledger")
-    return resultFamily(await withReceipt({ brokerageId: rcpt.ok ? rcpt.brokerageId : null, userId: rcpt.ok ? rcpt.userId : "", action: "buyer.saved_property.save", subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", detail: { mls_number: data.mlsNumber ?? null, listing_id: data.listingId ?? null } }, async () => {
+    return resultFamily(await withReceipt({ brokerageId: rcpt.brokerageId, userId: rcpt.userId, action: "buyer.saved_property.save", subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", detail: { mls_number: data.mlsNumber ?? null, listing_id: data.listingId ?? null } }, async () => {
 
     // Dedup — same contact already saved this property?
     const dedupQuery = supabase
@@ -295,7 +298,7 @@ export async function saveProperty(data: {
     const { error: insertErr } = await supabase.from("saved_properties").insert({
       contact_id:           data.contactId,
       user_id:              userIdValue,
-      brokerage_id:         contactRow?.brokerage_id ?? data.propertyData.brokerageId ?? null,
+      brokerage_id:         rcpt.brokerageId, // the gate's tenant (the contact's brokerage) — never the body's
       listing_id:           data.listingId ?? null,
       mls_number:           data.mlsNumber ?? null,
       external_property_id: data.externalPropertyId ?? null,
@@ -370,7 +373,9 @@ export async function unsaveProperty(data: {
   // WAVE 155 (lane 155R12): the receipt's actor + tenant come from the contact gate (the session). This export has no gate of its
   // own (it writes under RLS); a caller the gate does not admit still writes exactly as before — unrecorded, never an invented tenant.
   const { requireContactAccess: receiptGate } = await import("@/lib/portal/require-contact-access"); const rcpt = await receiptGate(data.contactId)
-  return withReceipt({ brokerageId: rcpt.ok ? rcpt.brokerageId : null, userId: rcpt.ok ? rcpt.userId : "", action: "buyer.saved_property.unsave", subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", detail: { mls_number: data.mlsNumber } }, async () => {
+  // WAVE 155 (lane 155S3): the gate REFUSES (see saveProperty) — a caller it does not admit no longer deletes under RLS alone.
+  if (!rcpt.ok) return { success: false, error: rcpt.error }
+  return withReceipt({ brokerageId: rcpt.brokerageId, userId: rcpt.userId, action: "buyer.saved_property.unsave", subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", detail: { mls_number: data.mlsNumber } }, async () => {
 
   // The result of this delete used to be discarded entirely, inside a try/catch
   // that could never fire: supabase-js RESOLVES a rejected write rather than

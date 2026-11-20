@@ -172,13 +172,17 @@ export async function toggleIsaPhoneNumber(params: {
   const supabase = createServiceClient()
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "voice.phone_number.toggle", actor: { type: "user", userId: auth.userId }, subject: { type: "tenant_phone_number", id: params.id }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { is_active: params.active } }, async () => {
-  const { error } = await supabase
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNTED. A zero-match update (wrong id, another tenant's number) used to report
+  // success and settle the COMMUNICATION receipt executed. Zero rows is a FAILURE for this caller: the switch snaps back.
+  const { data: toggled, error } = await supabase
     .from("tenant_phone_numbers")
     .update({ is_active: params.active })
     .eq("id", params.id)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if ((toggled ?? []).length === 0) return { success: false, error: "Phone number not found in your workspace" }
   revalidatePath("/dashboard/settings/isa-calling")
   return { success: true }
   })
@@ -194,13 +198,18 @@ export async function deleteIsaPhoneNumber(params: {
   const supabase = createServiceClient()
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "voice.phone_number.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "tenant_phone_number", id: params.id }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: {} }, async () => {
-  const { error } = await supabase
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNTED. A DELETE that matches nothing resolves like one that worked. Zero rows is a
+  // FAILURE for this caller ("not in your workspace") — inside the tenant predicate an already-gone number and a foreign one
+  // look identical, and neither may read as "removed".
+  const { data: removed, error } = await supabase
     .from("tenant_phone_numbers")
     .delete()
     .eq("id", params.id)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if ((removed ?? []).length === 0) return { success: false, error: "Phone number not found in your workspace" }
   revalidatePath("/dashboard/settings/isa-calling")
   return { success: true }
   })

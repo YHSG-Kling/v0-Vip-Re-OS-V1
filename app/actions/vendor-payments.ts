@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { requireVendorActor } from "@/lib/kernel/portal-auth"
+import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 // ── WHICH STRIPE ACCOUNT THIS FILE USES, AND WHY IT IS TWO IMPORTS ──────────
 //
 // OWNER RULING (verbatim): "no sites should move tenant money on the platform key."
@@ -576,6 +577,18 @@ export async function initiateVendorPayout(params: {
     return { success: false, error: "Unauthorized" }
   }
 
+  // WAVE 155 (lane 155S1, P0) — WHO MAY OBLIGATE THE BROKERAGE TO PAY IS ALREADY RULED (CLAUDE.md §4):
+  // TENANT_COMMERCE_ADMIN_USER_TYPES (lib/auth/resolve-user-role.ts isTenantCommerceAdmin — the operational admin roster
+  // minus compliance_officer, derived, never retyped). This export had no role test at all: ANY seat of the tenant —
+  // an agent, a contact, the vendor seat itself — could move the brokerage's money to any of its vendors. Checked FIRST,
+  // before any vendor, W-9 or Stripe read, so a refused seat reaches nothing. Under an act-as grant the EFFECTIVE identity
+  // is judged (the grant never exceeds the account it walks, §5).
+  // NOT CHANGED HERE (owner question — $S/lane155S1-notes.md): binding `amount` to the vendor's available earnings; the
+  // amount is still the caller's number.
+  if (!isTenantCommerceAdmin({ user_type: ctx.userType })) {
+    return { success: false, error: "Only a brokerage admin who may commit the brokerage's money can release a vendor payout." }
+  }
+
   // CRITICAL: caller-supplied vendorId fed straight into stripe.transfers
   // .create() destination. Without this check, any signed-in user could
   // wire money to any other tenant's vendor Stripe Connect account by
@@ -651,7 +664,7 @@ export async function initiateVendorPayout(params: {
     // not apply), so it writes its OWN decision record: the transfer runs inside ledgerToolCall (session human → authorized_human;
     // claim → transfer → settle on ONE row, its detail.governance naming the gates above). Secrets never enter the detail.
     const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
-    const gates = ["resolveWriteContextForTenant (session tenant)", "verifyVendorInCallerBrokerage", "earnings in brokerage + vendor", "Stripe Connect onboarding complete"]
+    const gates = ["resolveWriteContextForTenant (session tenant)", "isTenantCommerceAdmin (TENANT_COMMERCE_ADMIN_USER_TYPES)", "verifyVendorInCallerBrokerage", "earnings in brokerage + vendor", "Stripe Connect onboarding complete"]
     const transfer = (await ledgerToolCall({
       brokerageId: ctx.brokerageId, action: "vendor.payout.transfer", channel: "payout_sink", actor: { type: "user", userId: ctx.actorUserId },
       subject: { type: "vendor", id: params.vendorId }, riskClass: "IRREVERSIBLE", systemSource: "vendor_payout", reasonCode: "HUMAN_REQUESTED",
