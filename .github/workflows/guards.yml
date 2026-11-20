@@ -71,6 +71,13 @@ jobs:
       # 12.86 GB). 14336 is the value build.yml already runs on this same 16 GB runner. This is the LAST bump the
       # runner can take — the next step is project references (splitting scripts/ from the app program), as the
       # paragraph above already says.
+      #
+      # 2026-11-20 (wave 155): THE SPLIT. The one program had grown to 14,021 files / 5.57 M types, 13.18 GB peak RSS.
+      # `npm run type-check` now runs two programs one after the other: tsconfig.app.json (no roots under scripts/ —
+      # 12,632 files, 11.47 GB peak) and tsconfig.scripts.json (the scripts roots and what they import — 9,607 files,
+      # 8.03 GB peak). Both checked clean; together they load exactly the 6,771 first-party files the one program did.
+      # The peak is the larger of the two: 1.71 GB lower, for 45 s more. The cap below is UNCHANGED and is headroom
+      # now. test:type-check-coverage (in the chain) fails if a root of tsconfig.json is in neither program.
       NODE_OPTIONS: --max-old-space-size=14336
     steps:
       - uses: actions/checkout@v4

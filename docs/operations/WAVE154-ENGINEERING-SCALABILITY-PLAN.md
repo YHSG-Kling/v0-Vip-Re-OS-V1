@@ -44,6 +44,12 @@ What it buys: each program holds about 1,200 fewer root files and their own decl
 programs, not their sum. The size of the saving is unmeasured. Measure it with `--extendedDiagnostics` on the same box class
 before anyone touches a cap.
 
+**Stage 0 is DONE (wave 155, measured 2026-11-20, each program alone on the box).** One program: 14,021 files, 13.18 GB peak
+RSS, 367 s. Two programs, one after the other: app 12,632 files / 11.47 GB / 295 s, then scripts 9,607 files / 8.03 GB / 117 s.
+Both 0 errors; together they load exactly the 6,771 first-party files the one program loaded (0 missing, 0 extra). Peak
+1.71 GB lower for 45 s more. The generated vocabulary cache did not need to move: excluding `scripts/` removes ROOTS, and a
+script the app imports is still loaded by import. `test:type-check-coverage` holds the partition. The cap was not touched.
+
 **Stage 1: project references for the leaves.** `remotion/` (0 alias imports out) and `types/` become `composite` projects
 with `declaration` output, and app references them. This buys incremental `.tsbuildinfo` reuse in CI, and remotion stops being
 re-checked on every app change.

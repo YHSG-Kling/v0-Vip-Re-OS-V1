@@ -210,9 +210,17 @@ This has bitten timeline (six spellings), video status (22), and vendor category
   12288 MB with 12.05 GB in use and PASSED at a 14000 MB cap, `--extendedDiagnostics` "Memory used: 13087618K", peak RSS
   12.86 GB. 14336 is the cap now, here and in `guards.yml` / `e2e.yml`; it is the last bump a 16 GB box can take — the
   next step is splitting the program with project references, not a larger number.)
+  (THE SPLIT, measured 2026-11-20, wave 155, alone on the same class of box: the one program had grown to 14,021 files /
+  1.95 M lines / 5.57 M types, "Memory used: 13135283K", peak RSS 13.18 GB. `npm run type-check` is now TWO programs run
+  one after the other — `tsconfig.app.json` (every root except those under `scripts/`: 12,632 files, peak RSS 11.47 GB,
+  295 s) and then `tsconfig.scripts.json` (the roots under `scripts/` and what they import: 9,607 files, peak RSS 8.03 GB,
+  117 s). Both 0 errors; the first-party files they load are together exactly the 6,771 the one program loaded. The peak
+  is the larger of the two, not their sum: 1.71 GB lower for 45 s more. The cap stays 14336 — it is headroom now, not a
+  target. `test:type-check-coverage` holds the partition: every root of `tsconfig.json` is a root of one of the two, no
+  compiler option is overridden, and the command runs both joined by `&&`. Never run the two side by side.)
   and **`GUARD_EXIT` grepped from the log is the only trustworthy signal** —
   the log contains the words "fail" and "failed" hundreds of times in prose.
-- Do not run a full `tsc --noEmit` or full guard chain in parallel lanes; they
+- Do not run `npm run type-check`, either of its two programs, or the full guard chain in parallel lanes; they
   OOM each other.
 
 ## 8. CI
