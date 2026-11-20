@@ -1,12 +1,12 @@
 // POST /api/widget/message
-// Streaming AI chat for the embedded widget.
-// Validates widget_session_token, loads identity + history, streams response,
-// persists both user and assistant turns to chat_messages.
+// AI chat for the embedded widget.
+// Validates widget_session_token, loads identity + history, decides the answer, SCREENS any model draft before a byte
+// reaches the visitor (wave 155, lane 155F2), streams the screened text, persists both user and assistant turns to chat_messages.
 // No auth required — rate-limited by session token.
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest } from 'next/server'
-import { convertToModelMessages, UIMessage } from 'ai'
+import { convertToModelMessages, createUIMessageStream, createUIMessageStreamResponse, UIMessage } from 'ai'
 import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { createServiceClient } from '@/lib/supabase/service'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'
@@ -19,6 +19,25 @@ import { buildQualificationPrompt } from '@/lib/ai-isa/qualification-playbook'
 import { loadBrandPlaybookContext } from '@/lib/ai-isa/brand-playbook-context'
 
 const MAX_HISTORY = 20 // keep last 20 messages for context window
+
+/** The longest a visitor waits for a screened model answer (lane 155F2). Past it the held answer goes out (what is on file + who
+ *  follows up) and the late draft is discarded, never sent. A CHOSEN ceiling, not a measured one (owner decision, lane 155F2 notes):
+ *  long enough for a 512-token draft with a tool step, short enough that a hung provider never leaves the visitor in silence. */
+const WIDGET_ANSWER_DEADLINE_MS = 12_000
+
+/** The screened text as the widget's UI-message stream, sentence by sentence (the client renders it exactly as it rendered tokens). */
+function screenedStream(text: string): Response {
+  const parts = text.split(/(?<=[.!?])\s+/).filter(Boolean)
+  return createUIMessageStreamResponse({
+    stream: createUIMessageStream({
+      execute: ({ writer }) => {
+        writer.write({ type: 'text-start', id: 'answer' })
+        parts.forEach((p, i) => writer.write({ type: 'text-delta', id: 'answer', delta: i === 0 ? p : ` ${p}` }))
+        writer.write({ type: 'text-end', id: 'answer' })
+      },
+    }),
+  })
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -180,9 +199,10 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
     // DETERMINISTICALLY here — no model, no tools. The visitor token is never a portal sign-in, so no deal fact is read or
     // stated on this door (contactId null); the session's assigned agent gets ONE task / bell for it (deduplicated), and the
     // tenant stays the session row's (INJECT-001 — nothing in the message or the body can name another). General questions
-    // stream from the model below as before.
+    // are SCREENED before delivery below (lane 155F2).
+    let qad: typeof import('@/lib/portal/question-answer-decision') | null = null
     try {
-      const qad = await import('@/lib/portal/question-answer-decision')
+      qad = await import('@/lib/portal/question-answer-decision')
       const cls = qad.classifyPortalQuestion(userText)
       if (cls.guard || cls.urgency === 'critical' || !(cls.kind === 'general_education' || cls.kind === 'tenant_procedure')) {
         const decision = await qad.decidePortalAnswer(supabase, { brokerageId: session.brokerage_id, contactId: null, question: userText, agentName: null })
@@ -205,10 +225,21 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
         })
       }
     } catch (e) {
-      console.error('[widget/message] answer decision failed — the model answers under its own rails (non-blocking):', e instanceof Error ? e.message : e)
+      console.error('[widget/message] answer decision failed on the deterministic branch:', e instanceof Error ? e.message : e)
     }
 
-    // ── Stream response ───────────────────────────────────────────────────
+    // FAIL CLOSED (CLAUDE.md §4): without the claim screen no model text may reach an anonymous visitor. The visitor is still
+    // answered — what we can say and who follows up — never silence.
+    if (!qad) {
+      const text = "Thanks for your question — I can't answer it reliably right now, so someone from the team will follow up with you."
+      await sentinelWrite(supabase, supabase.from('chat_messages').insert({
+        session_id: session.id, role: 'assistant', content: text,
+        metadata: { widget: true, assistant_name: brand.assistantName, portal_answer: { answered: 'held', reason: 'claim screen unavailable — model not asked', model_calls: 0 } },
+      }), { table: "chat_messages", flow: "chat_messages_write", reason: "chat history persistence; never blocks the answer" })
+      return screenedStream(text)
+    }
+
+    // ── Screened general answer (wave 155, lane 155F2 — owner R10, eval HALLUC-006) ──
     const recentMessages = messages.slice(-MAX_HISTORY)
 
     // Ledger identity for this anonymous lane: the cost lands on the TENANT
@@ -258,60 +289,101 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.`
       persona: widgetPersona,
     })
 
-    // Routed streaming entry: routing table model, tenant fair-use cap checked
-    // BEFORE the first byte, cost ledger written on finish.
-    let result: Awaited<ReturnType<typeof streamTextRouted>>
-    try {
-      result = await streamTextRouted({
-        feature: 'widget_visitor_chat',
-        system,
-        messages: await convertToModelMessages(recentMessages),
-        temperature: 0.7,
-        maxTokens: 512,
-        // Lane 74B — cost-ranked order + need-dedup (persona-tool-policy.ts
-        // ::selectToolsForPersona): free tools first, RentCast next,
-        // BatchData last, and a BatchData tool a cheaper same-registry tool
-        // already covers is dropped.
-        // Wave 98 (98C): narrowed by the tenant's AUTHORITY LADDER rung for the persona agent.
-        tools: selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }, {
-          authorityLevel: await (await import("@/lib/managers/autonomy-gate")).resolveAgentAuthorityLevel(session.brokerage_id, "ai_isa"),
-        }),
-        maxSteps: 5,
-        userId: ledgerUserId,
-        brokerageId: session.brokerage_id,
-        agentId: session.agent_id,
-        manager: 'ai_isa',
-        onFinish: async ({ text }) => {
-          // Persist assistant turn
-          await sentinelWrite(supabase, supabase.from('chat_messages').insert({
-            session_id: session.id,
-            role: 'assistant',
-            content: text,
-            metadata: { widget: true, assistant_name: brand.assistantName },
-          }), { table: "chat_messages", flow: "chat_messages_write", reason: "chat history persistence; never blocks the streamed answer" })
-
-          // Detect lead capture keywords in assistant reply
-          const captureHit = /your info|follow up|reach out|team will contact/i.test(text)
-          if (captureHit && session.capture_state !== 'captured') {
-            await sentinelWrite(supabase, supabase
-              .from('chat_sessions')
-              .update({ capture_state: 'signals_captured', updated_at: new Date().toISOString() })
-              .eq('id', session.id), { table: "chat_sessions", flow: "chat_sessions_write", reason: "capture-signal stamp on the session" })
-          }
-        },
+    // SCREEN BEFORE DELIVERY (lane 155F2). This public, anonymous door used to stream the model's tokens straight to the visitor,
+    // so an unsourced figure, date or status reached them before anything judged it. Now ONE decision (decidePortalAnswer — the
+    // SAME claim screen the tutor and the home assistant use) runs first:
+    //   · the ONE ranker CONFIDENT in a help row → that row answers at once (no model call, no wait);
+    //   · otherwise the routed model drafts in full SERVER-SIDE (same routing, fair-use pre-flight, tools and cost ledger), every
+    //     figure / date / status sentence it adds that the help base, the tenant's own prompt context or its tools' results do
+    //     not carry is stripped, and only then is the screened text streamed;
+    //   · a draft the screen empties, a model failure or a draft over WIDGET_ANSWER_DEADLINE_MS is HELD: the visitor still gets
+    //     what is on file (the help row when there is one) and who follows up, and the session's agent gets ONE task.
+    // THE COST, measured: the first visible byte waits for the whole draft (generation, bounded by maxTokens 512 and the deadline)
+    // instead of its first token; the screen itself is sub-millisecond (scripts/portal-answer-guard.ts measures it). Every turn
+    // records model_ms / screen_ms in chat_messages.metadata.portal_answer.latency so the live cost is readable, not guessed.
+    let fairUse: AIFairUseError | null = null
+    let timedOut = false
+    const toolsForTurn = selectToolsForPersona({ ...freeTools, ...batchDataTools, ...rentCastTools }, {
+      // Lane 74B — cost-ranked order + need-dedup; wave 98 (98C): narrowed by the tenant's AUTHORITY LADDER rung.
+      authorityLevel: await (await import("@/lib/managers/autonomy-gate")).resolveAgentAuthorityLevel(session.brokerage_id, "ai_isa"),
+    })
+    const modelMessages = await convertToModelMessages(recentMessages)
+    const decision = await qad.decidePortalAnswer(supabase, {
+      brokerageId: session.brokerage_id, contactId: null, question: userText, agentName: 'someone from the team',
+      deterministicWhenConfident: true, conversational: true,
+      // The tenant's own prompt context (brand voice, office hours, service areas, knowledge) is what the model was given — its
+      // facts may be repeated. The visitor's own words are NOT a source: echoing a figure they typed would affirm it.
+      extraSourceText: system,
+      generalAnswer: async ({ sources }) => {
+        let result: Awaited<ReturnType<typeof streamTextRouted>>
+        try {
+          // Routed streaming entry: routing table model, tenant fair-use cap checked BEFORE any token, cost ledger written on
+          // finish (inside streamTextRouted). Consumed here, never piped to the visitor.
+          result = await streamTextRouted({
+            feature: 'widget_visitor_chat',
+            system: sources.length > 0 ? `${system}\n\nVERIFIED SOURCES — answer ONLY from these; never add a figure, date or deadline they do not contain:\n${sources.map((s) => `- ${s.title}: ${s.excerpt}`).join('\n')}` : system,
+            messages: modelMessages,
+            temperature: 0.7,
+            maxTokens: 512,
+            tools: toolsForTurn,
+            maxSteps: 5,
+            userId: ledgerUserId,
+            brokerageId: session.brokerage_id,
+            agentId: session.agent_id,
+            manager: 'ai_isa',
+          })
+        } catch (err) {
+          if (err instanceof AIFairUseError) { fairUse = err; return null }
+          throw err
+        }
+        const drafted = (async () => {
+          const steps = await result.steps
+          const draft = steps.map((s) => s.text).filter(Boolean).join('\n').trim() || (await result.text)
+          // What the tools retrieved this turn (RentCast / BatchData / the free tools) is a retrieved source the screen allows.
+          const sourceText = steps.flatMap((s) => (s.toolResults ?? []).map((r) => { try { return JSON.stringify((r as { output?: unknown }).output ?? null) } catch { return '' } })).join('\n')
+          return { draft, sourceText }
+        })()
+        const raced = await qad!.withinDeadline(drafted, WIDGET_ANSWER_DEADLINE_MS)
+        if ('timedOut' in raced) { timedOut = true; return null }
+        return raced.value
+      },
+    })
+    // Tenant hit its monthly AI cap — refuse cleanly, as before (nothing was generated).
+    if (fairUse) {
+      return new Response(JSON.stringify({ error: 'Chat is temporarily unavailable.' }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json' },
       })
-    } catch (err) {
-      // Tenant hit its monthly AI cap — refuse cleanly instead of streaming.
-      if (err instanceof AIFairUseError) {
-        return new Response(JSON.stringify({ error: 'Chat is temporarily unavailable.' }), {
-          status: 429,
-          headers: { 'Content-Type': 'application/json' },
-        })
-      }
-      throw err
+    }
+    const text = decision.text.replace(/your agent/g, 'someone from the team')
+    await sentinelWrite(supabase, supabase.from('chat_messages').insert({
+      session_id: session.id, role: 'assistant', content: text,
+      metadata: {
+        widget: true, assistant_name: brand.assistantName,
+        portal_answer: {
+          kind: decision.cls.kind, answered: decision.answered, sources: decision.sources.slice(0, 6), stripped_sentences: decision.stripped.length, model_calls: decision.modelCalls,
+          latency: { model_ms: decision.timing?.modelMs ?? null, screen_ms: decision.timing?.screenMs ?? null, deadline_ms: WIDGET_ANSWER_DEADLINE_MS, timed_out: timedOut },
+        },
+      },
+    }), { table: "chat_messages", flow: "chat_messages_write", reason: "chat history persistence (the SCREENED text — never the raw draft); never blocks the answer" })
+
+    // A HELD answer is a question nobody answered: ONE task / bell for the session's agent (deduplicated per session + question).
+    // A conversation turn that survived the screen is not escalated (that would page the agent for every "what area?").
+    if (decision.answered === 'held') {
+      const ding = await qad.fileQuestionDing(supabase, { brokerageId: session.brokerage_id, contactId: session.contact_id ?? null, sessionId: session.id, agentId: session.agent_id ?? null, question: userText, decision, surface: 'website_widget' })
+      if (decision.plan.notify && !ding.filed && !ding.deduped && ding.notified === 0) console.error('[widget/message] held-answer ding not filed:', ding.reason)
     }
 
-    return result.toUIMessageStreamResponse()
+    // Detect lead capture keywords in the reply the visitor actually got.
+    const captureHit = /your info|follow up|reach out|team will contact/i.test(text)
+    if (captureHit && session.capture_state !== 'captured') {
+      await sentinelWrite(supabase, supabase
+        .from('chat_sessions')
+        .update({ capture_state: 'signals_captured', updated_at: new Date().toISOString() })
+        .eq('id', session.id), { table: "chat_sessions", flow: "chat_sessions_write", reason: "capture-signal stamp on the session" })
+    }
+
+    return screenedStream(text)
   } catch (err: any) {
     console.error('[Widget/message] Unhandled error:', err?.message)
     return new Response(JSON.stringify({ error: 'Server error' }), {

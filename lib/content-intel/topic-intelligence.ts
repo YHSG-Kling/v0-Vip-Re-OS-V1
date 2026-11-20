@@ -223,11 +223,14 @@ export async function runTopicIntelligencePass(db: Db, brokerageId: string, opts
     }
     const filed: Array<{ id: string; theme: IntelTheme; isNew: boolean }> = []
     if (topicIdeas.length) {
-      const r = await intakeTopicIdeas(db, { brokerageId, ideas: topicIdeas, now })
+      // ONE SUBJECT, ONE TOPIC (wave 155, lane 155F2): a live row already holding this subject under the retired question
+      // key is merged into, never duplicated beside.
+      const adoption = await (await import("@/lib/customer-intelligence/website-question-topics")).adoptLiveSubjectKeys(db, brokerageId, topicIdeas)
+      const r = await intakeTopicIdeas(db, { brokerageId, ideas: adoption.ideas, now })
       if (r.refused) out.errors.push(`intake refused — nothing filed: ${r.refused}`)
       out.errors.push(...r.errors)
       for (const x of r.excluded) out.dropped[`intake:${x.reason}`] = (out.dropped[`intake:${x.reason}`] ?? 0) + 1
-      const byKey = new Map(themes.map((t) => [themeDedupKey(t.evidence.theme_key), t]))
+      const byKey = new Map(themes.map((t) => { const k = themeDedupKey(t.evidence.theme_key); return [adoption.adopted.get(k) ?? k, t] }))
       for (const row of r.rows) {
         const t = byKey.get(row.dedupKey)
         if (!t) continue

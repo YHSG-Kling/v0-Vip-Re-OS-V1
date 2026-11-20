@@ -251,6 +251,8 @@ export async function handleBuyerVoiceAssistant(params: {
       intent,
       transcript,
       userId: access.userId,
+      // Wave 155 (lane 155F2): the general-question door answers inside the SESSION's tenant (never a request value).
+      brokerageId: access.brokerageId,
     }
 
     return await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.voice_assistant.handle", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { intent } }, () => handleBuyerVoiceRequest(request), (error) => ({ success: false as const, spokenResponse: 'I encountered an error. Please contact your agent for assistance.', error }))

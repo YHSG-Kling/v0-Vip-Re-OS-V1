@@ -316,12 +316,47 @@ export function screenDraftAgainstSources(draft: string, sourceTexts: readonly s
     else kept.push(s)
   }
   const text = kept.join(" ").trim()
-  return { text, stripped, held: text.length < 20 }
+  // HELD = the screen took something and what is left is too thin to stand alone, or nothing was drafted. A short CLEAN draft ("Happy
+  // to help! What area?") is not held (wave 155, lane 155F2): on the widget's conversation it would have replaced every brief turn.
+  return { text, stripped, held: text.length === 0 || (stripped.length > 0 && text.length < 20) }
+}
+
+/** The deadline race the widget's screened answer runs under (lane 155F2): resolves the value, or null once `ms` passes. The late
+ *  promise is caught (never an unhandled rejection) and its value is DISCARDED — a late draft never reaches anyone. */
+export async function withinDeadline<T>(p: Promise<T>, ms: number): Promise<{ value: T; ms: number } | { timedOut: true; ms: number }> {
+  const started = Date.now()
+  let timer: ReturnType<typeof setTimeout> | null = null
+  p.catch(() => undefined)
+  try {
+    const out = await Promise.race([p.then((value) => ({ value })), new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), Math.max(1, ms)) })])
+    return out ? { value: out.value, ms: Date.now() - started } : { timedOut: true, ms: Date.now() - started }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 // ── 5. THE ANSWER DECISION ────────────────────────────────────────────────────────────────────────
 
-export interface KnowledgeSource { id: string; source: "article" | "kb"; title: string; excerpt: string; version: string | null }
+export interface KnowledgeSource {
+  id: string; source: "article" | "kb"; title: string; excerpt: string; version: string | null
+  /** The ONE ranker's overlap score, and the score the question would earn against itself (every question word in a title). Both
+   *  null when the caller's seam does not rank. Confident = the row's title carries every question word (score === maxScore). */
+  score?: number | null
+  maxScore?: number | null
+}
+
+/** PURE — the ranker is CONFIDENT in a row when its title carries every content word of the question, and there are at least two
+ *  (a one-word question matches too much). Derived from the ranker's own scale (title ×2 per word) — no tuned threshold. */
+export function knowledgeIsConfident(k: KnowledgeSource | undefined): boolean {
+  return !!k && typeof k.score === "number" && typeof k.maxScore === "number" && k.maxScore >= 4 && k.score >= k.maxScore
+}
+
+/** PURE — the sourced floor sentence of a help row (a question-shaped title is not repeated in front of its own answer). */
+function knowledgeFloor(k: KnowledgeSource): string {
+  const ex = k.excerpt.trim()
+  const body = `${ex}${/[.!?]$/.test(ex) ? "" : "…"}`
+  return /\?\s*$/.test(k.title) ? body : `${k.title}: ${body}`
+}
 export type AnswerState = "sourced" | "unresolved" | "uncertain" | "held" | "refused" | "deferred"
 
 export interface DingPlan {
@@ -367,6 +402,11 @@ export interface PortalAnswerDecision {
   plan: DingPlan
   /** Model calls made for this answer (0 for every deterministic branch). */
   modelCalls: number
+  /** Wall-clock of the general branch (ms): the surface's model draft, and the claim screen that judged it. null = not run. */
+  timing?: { modelMs: number | null; screenMs: number | null }
+  /** Lane 155G's situation chooser (lib/video/situation-artifact-choice.ts) for a knowledge-sourced general answer, when the
+   *  surface named a recipient. The ARTIFACT only — delivery stays with the rails that own it. */
+  artifact?: import("@/lib/video/situation-artifact-choice").ArtifactChoice | null
 }
 
 export interface PortalAnswerInput {
@@ -375,10 +415,20 @@ export interface PortalAnswerInput {
   contactId: string | null
   question: string
   agentName: string | null
-  /** The surface's own model call, given the retrieved sources (the tutor / home prompts stay where they are). */
-  generalAnswer?: ((a: { sources: KnowledgeSource[] }) => Promise<string | null>) | null
+  /** The surface's own model call, given the retrieved sources (the tutor / home prompts stay where they are). It may return the
+   *  text its tools retrieved beside the draft (`sourceText`) — those are retrieved sources too, so the screen allows them. */
+  generalAnswer?: ((a: { sources: KnowledgeSource[] }) => Promise<string | { draft: string | null; sourceText?: string | null } | null>) | null
   /** Extra facts the surface already holds (the home assistant's facts block) — allowed claims for the screen. */
   extraSourceText?: string | null
+  /** Lane 155F2: when the ONE ranker is CONFIDENT (knowledgeIsConfident) the sourced row answers deterministically — no model call,
+   *  no wait. Opt-in per surface (the public widget); the tutor keeps its own phrasing. */
+  deterministicWhenConfident?: boolean
+  /** Lane 155F2: the surface is a CONVERSATION (the widget's qualification chat). A draft with no knowledge row that survived the
+   *  screen is delivered as is (a question back to the visitor is not an "uncertain answer"); only a HELD draft escalates. */
+  conversational?: boolean
+  /** Lane 155G (Outside-lane request 2): the chooser's inputs. `recipient` absent = the chooser is not asked. */
+  distinctAskers?: number | null
+  recipient?: import("@/lib/video/situation-artifact-choice").ArtifactSituation["recipient"]
 }
 
 export interface PortalAnswerDeps {
@@ -388,8 +438,10 @@ export interface PortalAnswerDeps {
 
 /** The help base this tenant may read (published platform-wide or its own) — lib/support/ticket-triage.ts's ONE ranker. */
 const defaultKnowledge: NonNullable<PortalAnswerDeps["knowledge"]> = async (db, a) => {
-  const { findHelpCandidates } = await import("@/lib/support/ticket-triage")
-  return (await findHelpCandidates(db as never, a.brokerageId, a.question, 3)).map((c) => ({ id: c.id, source: c.source, title: c.title, excerpt: c.excerpt, version: c.version ?? null }))
+  const { findHelpCandidates, rankHelpCandidates } = await import("@/lib/support/ticket-triage")
+  // The ranker's own ceiling for THIS question: the question ranked against itself (every content word in the title).
+  const maxScore = rankHelpCandidates(a.question, [{ id: "self", source: "kb", title: a.question, body: "" }], 1)[0]?.score ?? 0
+  return (await findHelpCandidates(db as never, a.brokerageId, a.question, 3)).map((c) => ({ id: c.id, source: c.source, title: c.title, excerpt: c.excerpt, version: c.version ?? null, score: c.score, maxScore }))
 }
 
 /**
@@ -420,19 +472,46 @@ export async function decidePortalAnswer(db: Db, input: PortalAnswerInput, deps:
   // General education / tenant procedure — the verified knowledge, then the surface's own phrasing, screened.
   let kb: KnowledgeSource[] = []
   try { kb = await (deps.knowledge ?? defaultKnowledge)(db, { brokerageId: input.brokerageId, question: input.question }) } catch { kb = [] }
-  let draft: string | null = null
-  if (input.generalAnswer) { modelCalls++; try { draft = (await input.generalAnswer({ sources: kb })) ?? null } catch { draft = null } }
-  const sourceTexts = [...kb.map((k) => `${k.title} ${k.excerpt}`), input.extraSourceText ?? ""]
-  const screened = draft ? screenDraftAgainstSources(draft, sourceTexts) : { text: "", stripped: [], held: true }
   const sources = kb.map((k) => ({ source: `${k.source === "article" ? "knowledge_articles" : "help_topics_kb"}:${k.id}`, version: k.version }))
-  if (kb.length > 0) {
-    const text = !screened.held ? screened.text : `${kb[0].title}: ${kb[0].excerpt.trim()}${/[.!?]$/.test(kb[0].excerpt.trim()) ? "" : "…"}`
-    return done({ cls, text, answered: "sourced", sources, stripped: screened.stripped, deal: null, party: null, missing: [] })
+  // Lane 155G's chooser (Outside-lane request 2, applied here): the ARTIFACT for a knowledge-sourced answer — a plain answer, an
+  // educational video at the topic pool's recurrence floor, an agent task, or no touch. Asked only when the surface names a recipient.
+  const chooseArtifact = async (): Promise<PortalAnswerDecision["artifact"]> => {
+    if (!input.recipient) return null
+    try {
+      const { chooseSituationArtifact } = await import("@/lib/video/situation-artifact-choice")
+      return chooseSituationArtifact({ kind: "client_question", question: cls, distinctAskers: input.distinctAskers ?? null, sourceFacts: sources.map((s) => ({ fact: s.source, source: s.source, asOf: s.version })), recipient: input.recipient, producer: { avatarReady: null, renderReady: true }, agentAssigned: true })
+    } catch { return null }
+  }
+  // CONFIDENT help row (lane 155F2): answered from the record itself, at once — no model, nothing for the screen to judge.
+  if (input.deterministicWhenConfident && knowledgeIsConfident(kb[0])) {
+    return { ...done({ cls, text: knowledgeFloor(kb[0]), answered: "sourced", sources, stripped: [], deal: null, party: null, missing: [] }), timing: { modelMs: null, screenMs: null }, artifact: await chooseArtifact() }
+  }
+  let draft: string | null = null
+  let toolSourceText = ""
+  const t0 = Date.now()
+  if (input.generalAnswer) {
+    modelCalls++
+    try {
+      const r = await input.generalAnswer({ sources: kb })
+      if (typeof r === "string") draft = r
+      else if (r) { draft = r.draft ?? null; toolSourceText = r.sourceText ?? "" }
+    } catch { draft = null }
+  }
+  const t1 = Date.now()
+  const sourceTexts = [...kb.map((k) => `${k.title} ${k.excerpt}`), input.extraSourceText ?? "", toolSourceText]
+  const screened = draft ? screenDraftAgainstSources(draft, sourceTexts) : { text: "", stripped: [], held: true }
+  const timing = { modelMs: input.generalAnswer ? t1 - t0 : null, screenMs: Date.now() - t1 }
+  // A held draft falls back to the help row only when the ranker is CONFIDENT in it (lane 155F2): a row matched on one shared word
+  // ("home") is not an answer to this question, and stating it would be the off-topic answer the screen exists to prevent.
+  if (kb.length > 0 && (!screened.held || knowledgeIsConfident(kb[0]))) {
+    const text = !screened.held ? screened.text : knowledgeFloor(kb[0])
+    return { ...done({ cls, text, answered: "sourced", sources, stripped: screened.stripped, deal: null, party: null, missing: [] }), timing, artifact: await chooseArtifact() }
   }
   // Nothing in the tenant's knowledge answers it: a general explanation may still help, but it is UNCERTAIN — no unsourced figure
-  // survives the screen, and the question goes to a person and to knowledge repair (F3).
-  const text = !screened.held ? `${screened.text} ${agent} can confirm how this applies to you.` : `That's a good question — I don't have a verified answer for it here, so I've passed it to ${agent}.`
-  return done({ cls, text, answered: screened.held ? "held" : "uncertain", sources: [], stripped: screened.stripped, deal: null, party: null, missing: ["a verified knowledge article"] })
+  // survives the screen, and the question goes to a person and to knowledge repair (F3). A conversation turn that survived the
+  // screen is delivered as is (lane 155F2): the visitor is being asked something, not told an unsourced fact.
+  const text = !screened.held ? (input.conversational ? screened.text : `${screened.text} ${agent} can confirm how this applies to you.`) : `That's a good question — I don't have a verified answer for it here, so I've passed it to ${agent}.`
+  return { ...done({ cls, text, answered: screened.held ? "held" : "uncertain", sources: [], stripped: screened.stripped, deal: null, party: null, missing: ["a verified knowledge article"] }), timing }
 }
 
 // ── 6. THE DING (one writer; one task per unresolved question; a bell to the named recipients) ────
@@ -460,7 +539,7 @@ export interface QuestionDingInput {
   agentId: string | null
   question: string
   decision: PortalAnswerDecision
-  surface: "portal_tutor" | "home_assistant" | "website_widget"
+  surface: "portal_tutor" | "home_assistant" | "website_widget" | "buyer_assistant"
   now?: Date
 }
 export interface QuestionDingResult { filed: boolean; deduped: boolean; taskId: string | null; notified: number; reopened: boolean; reason: string }
@@ -600,6 +679,71 @@ export interface QuestionReplyDeps {
   sendPortal?: typeof import("@/lib/portal/portal-message-egress").insertPortalMessage
   dealContext?: typeof loadDealContext
   ledger?: typeof import("@/lib/kernel/action-ledger").withActionLedger
+  /** How the authoritative answer is delivered (lane 155F2, item 4). Default: chooseAnswerFollowUp — the EXISTING follow-up arbiter. */
+  chooseFollowUp?: (db: Db, a: AnswerFollowUpInput) => Promise<AnswerFollowUpChoice>
+}
+
+// ── 7a. THE FOLLOW-UP CHOICE (lane 155F2 — directive F1.7 "let the arbiter decide whether to send the Contact a follow-up") ─────
+
+export interface AnswerFollowUpInput {
+  brokerageId: string
+  contactId: string
+  fact: DealFact
+  answer: string
+  sources: string[]
+  /** Test / caller seams for the arbiter itself (never a second arbiter): the model, its budget, the tenant policy. */
+  decide?: import("@/lib/ai-isa/followup-arbiter").ArbiterDecide
+  budgetMs?: number
+  policy?: import("@/lib/ai-isa/followup-policy").FollowupPolicy
+  /** Called once if the arbiter answers after its budget: the written answer already went (stale_answered) — evidence only. */
+  onLate?: (late: { optionId: string | null; ms: number }) => void
+}
+export interface AnswerFollowUpChoice {
+  optionId: "answer_on_portal" | "answer_with_video"
+  source: "ai" | "deterministic"
+  rationale: string
+  timedOut: boolean
+  /** The options the arbiter was offered (one option = no choice, nothing asked). */
+  menu: string[]
+}
+
+/**
+ * THE EXISTING ARBITER chooses how a client's answered question is delivered: the written answer on the portal (the planned verdict
+ * and the timely fallback), or the written answer with a short explainer video when the answer rests on several records. Inside the
+ * arbiter's INTERACTIVE latency budget (ARBITER_LATENCY_BUDGET_MS.interactive, 2.5 s — a person is waiting on this answer): over it,
+ * the planned verdict runs and a late reply is evidence only (it never sends — the written answer already went). The written answer is
+ * never withheld for a render. "Nothing" is not on this menu: the person asked, and the record now answers them. Never throws.
+ */
+export async function chooseAnswerFollowUp(db: Db, a: AnswerFollowUpInput): Promise<AnswerFollowUpChoice> {
+  const answerOpt = { id: "answer_on_portal" as const, kind: "communication" as const, channels: ["in_app" as const], why: [`the client asked about ${FACT_LABEL[a.fact]} on the portal; the record now answers it`, `answer: ${a.answer.slice(0, 240)}`] }
+  const videoOpt = { id: "answer_with_video" as const, kind: "video" as const, channels: ["in_app" as const], why: [`the answer rests on ${a.sources.length} records — a short explainer alongside the written answer may help`] }
+  const offerVideo = a.sources.length >= 2
+  const menu = offerVideo ? [answerOpt, videoOpt] : [answerOpt]
+  const planned: AnswerFollowUpChoice = { optionId: "answer_on_portal", source: "deterministic", rationale: offerVideo ? "the planned verdict: the written answer on the portal" : "one way to answer (a single record) — nothing for the arbiter to choose", timedOut: false, menu: menu.map((o) => o.id) }
+  if (!offerVideo) return planned
+  try {
+    const arb = await import("@/lib/ai-isa/followup-arbiter")
+    const policy = a.policy ?? (await (await import("@/lib/ai-isa/followup-policy")).loadFollowupPolicy(db as never, a.brokerageId)).policy
+    const facts = {
+      subject: "contact" as const,
+      relationship: { type: "client_with_an_answered_portal_question", persona: null, hasAssignedAgent: true },
+      intent: null,
+      history: { hoursSinceAnyTouch: null, hoursSinceAgentTouch: null, campaignTouches7d: null, lastChannel: "in_app", portalEducationViews: null },
+      journey: { transactionStage: null, nextMilestone: null, openLessons: null, nextLesson: null },
+      preferences: [], fatigueRisk: null, localHour: null,
+      moment: { key: "client_question_answered", intent: "A client asked a question on the portal and the authoritative answer just arrived. Choose how it is delivered: the written answer on the portal, or the written answer with a short explainer video when the answer has several moving parts.", daysSinceOpen: 0 },
+      blindSpots: ["whether the client read their earlier portal messages is not visible here"],
+    }
+    const d = await arb.arbitrateFollowUp({
+      brokerageId: a.brokerageId, facts, menu: { menu, locked: null }, planned: answerOpt, policy,
+      latencyBudgetMs: a.budgetMs ?? arb.ARBITER_LATENCY_BUDGET_MS.interactive,
+      onLateResult: a.onLate ? (late) => a.onLate!({ optionId: late.decision?.optionId ?? null, ms: late.ms }) : null,
+    }, { decide: a.decide })
+    const optionId = d.optionId === "answer_with_video" ? "answer_with_video" : "answer_on_portal"
+    return { optionId, source: d.source, rationale: d.rationale, timedOut: !!(d as { timedOut?: unknown }).timedOut, menu: planned.menu }
+  } catch (e) {
+    return { ...planned, rationale: `the planned verdict stands — the arbiter could not be asked (${e instanceof Error ? e.message : String(e)})` }
+  }
 }
 
 const defaultMayFollowUp: NonNullable<QuestionReplyDeps["mayFollowUp"]> = async (db, a) => {
@@ -680,7 +824,7 @@ async function recordVerifiedReply(
  */
 async function reevaluateQuestionTask(
   db: Db,
-  a: { brokerageId: string; task: Record<string, any>; tags: string[]; fact: DealFact; role: DealPartyRole | null; now: Date; evidence: string },
+  a: { brokerageId: string; task: Record<string, any>; tags: string[]; fact: DealFact; role: DealPartyRole | null; now: Date; evidence: string; alreadyTold?: AlreadyTold | null },
   deps: QuestionReplyDeps,
 ): Promise<{ updated: boolean; closed: boolean; wasClosed: boolean; followUpSent: boolean; followUpDuplicate: boolean; answer: string; error?: string }> {
   const { task, tags, fact, role, now } = a
@@ -688,10 +832,19 @@ async function reevaluateQuestionTask(
   const ctx = await (deps.dealContext ?? loadDealContext)(db, { brokerageId: a.brokerageId, contactId: task.contact_id })
   const composed = composeDealAnswer(cls, ctx, null)
   let followUpSent = false, followUpDuplicate = false
+  let choiceLine = ""
+  const extraTags: string[] = []
   const answerTag = `pq_followup:${hash(composed.text)}`
-  if (composed.resolved && tags.includes(answerTag)) followUpDuplicate = true
+  // The seat writer ALREADY told this client this fact in its own message (the lender's Clear-to-Close portal message): the question
+  // closes on that evidence and nothing is sent again — the client hears it once (lane 155F2, item 2).
+  const told = composed.resolved && a.alreadyTold && a.alreadyTold.fact === fact && a.alreadyTold.contactId === task.contact_id ? a.alreadyTold : null
+  if (told) choiceLine = ` Client already told by ${told.evidence} — not messaged again.`
+  else if (composed.resolved && tags.includes(answerTag)) followUpDuplicate = true
   else if (composed.resolved) {
     const gate = await (deps.mayFollowUp ?? defaultMayFollowUp)(db, { brokerageId: a.brokerageId, contactId: task.contact_id })
+    const choice = gate.ok && task.assigned_to_agent_id ? await (deps.chooseFollowUp ?? chooseAnswerFollowUp)(db, { brokerageId: a.brokerageId, contactId: task.contact_id, fact, answer: composed.text, sources: composed.sources.map((s) => s.source) }) : null
+    if (choice) choiceLine = ` Follow-up: ${choice.optionId.replace(/_/g, " ")} (${choice.source}${choice.timedOut ? ", arbiter over its budget — the planned verdict ran" : ""}: ${choice.rationale.slice(0, 160)}).${choice.optionId === "answer_with_video" ? " The written answer went now; a short explainer video is suggested — request it from the video studio (it is never sent before approval)." : ""}`
+    if (choice?.optionId === "answer_with_video") extraTags.push("pq_video_suggested")
     if (gate.ok && task.assigned_to_agent_id) {
       const send = deps.sendPortal ?? (await import("@/lib/portal/portal-message-egress")).insertPortalMessage
       const sent = await send(db, { brokerage_id: a.brokerageId, contact_id: task.contact_id, agent_id: task.assigned_to_agent_id, transaction_id: task.transaction_id, direction: "agent_to_client", channel: "portal", read: false, body: `An update on your question: ${composed.text}` }, { actor: { type: "manager", managerKey: "ai_isa" }, reasonCode: "HUMAN_REQUESTED", reasonDetail: "answer to the client's portal question after the authoritative information arrived", cycle: `${task.id}:${answerTag}`, systemSource: "portal_question_reply" })
@@ -700,8 +853,8 @@ async function reevaluateQuestionTask(
     }
   }
   const wasClosed = task.status === "completed"
-  const line = `\n${a.evidence}; client ${followUpSent ? "answered on the portal" : followUpDuplicate ? "already answered with this — not re-sent" : composed.resolved ? "not messaged (the follow-up gate refused)" : "still unresolved"}. Sources: ${composed.sources.map((s) => s.source).join(", ") || "none"}.`
-  const patch: Record<string, unknown> = { description: `${task.description ?? ""}${line}`.slice(0, 4000), tags: [...new Set([...tags, ...(followUpSent ? [answerTag] : []), "pq_replied"])], updated_at: now.toISOString() }
+  const line = `\n${a.evidence}; client ${told ? "answered by the party's own message" : followUpSent ? "answered on the portal" : followUpDuplicate ? "already answered with this — not re-sent" : composed.resolved ? "not messaged (the follow-up gate refused)" : "still unresolved"}.${choiceLine} Sources: ${composed.sources.map((s) => s.source).join(", ") || "none"}.`
+  const patch: Record<string, unknown> = { description: `${task.description ?? ""}${line}`.slice(0, 4000), tags: [...new Set([...tags, ...extraTags, ...(followUpSent || told ? [answerTag] : []), "pq_replied"])], updated_at: now.toISOString() }
   const closes = !wasClosed && composed.resolved
   if (closes) { patch.status = "completed"; patch.completed_at = now.toISOString() }
   const { data: upd, error: uErr } = await db.from("tasks").update(patch).eq("id", task.id).eq("brokerage_id", a.brokerageId).select("id")
@@ -709,13 +862,17 @@ async function reevaluateQuestionTask(
   return { updated, closed: closes && updated, wasClosed, followUpSent, followUpDuplicate, answer: composed.text, error: uErr?.message }
 }
 
+/** The seat writer already told the client this fact in its own message (lane 155F2): close on it, never message twice. */
+export interface AlreadyTold { fact: DealFact; contactId: string; evidence: string }
+
 /**
  * THE ON-PLATFORM VENDOR'S ANSWER (F1.7): after a vendor seat writer updates the domain record (the lender portal's
  * issueClearToClose, updateLenderLoanStatus; the title portal), every OPEN portal-question task on that deal is re-evaluated
  * from the record — answered, followed up once, closed with evidence; still-unknown stays open. Tenant-pinned; never throws.
  */
-export async function reevaluateOpenQuestionsForDeal(db: Db, a: { brokerageId: string; transactionId: string; now?: Date }, deps: QuestionReplyDeps = {}): Promise<{ evaluated: number; closed: number; followUps: number; errors: string[] }> {
+export async function reevaluateOpenQuestionsForDeal(db: Db, a: { brokerageId: string; transactionId: string; now?: Date; alreadyTold?: AlreadyTold | null }, deps: QuestionReplyDeps = {}): Promise<{ evaluated: number; closed: number; followUps: number; errors: string[] }> {
   const out = { evaluated: 0, closed: 0, followUps: 0, errors: [] as string[] }
+  if (!a.brokerageId || !a.transactionId) { out.errors.push("no tenant / transaction — nothing re-evaluated (fail closed)"); return out }
   try {
     const now = a.now ?? new Date()
     const { data, error } = await db.from("tasks").select("id, brokerage_id, contact_id, transaction_id, assigned_to_agent_id, status, tags, description, title")
@@ -727,7 +884,7 @@ export async function reevaluateOpenQuestionsForDeal(db: Db, a: { brokerageId: s
       if (!fact || !task.contact_id) continue
       const role = (tags.find((t) => t.startsWith("pq_party:"))?.slice(9) ?? null) as DealPartyRole | null
       out.evaluated++
-      const ev = await reevaluateQuestionTask(db, { brokerageId: a.brokerageId, task, tags, fact, role, now, evidence: `RECORD UPDATED (${now.toISOString()}) by the party's own seat` }, deps)
+      const ev = await reevaluateQuestionTask(db, { brokerageId: a.brokerageId, task, tags, fact, role, now, evidence: `RECORD UPDATED (${now.toISOString()}) by the party's own seat`, alreadyTold: a.alreadyTold ?? null }, deps)
       if (ev.closed) out.closed++
       if (ev.followUpSent) out.followUps++
       if (!ev.updated) out.errors.push(`task ${task.id}: ${ev.error ?? "not updated"}`)

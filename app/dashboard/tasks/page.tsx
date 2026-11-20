@@ -111,6 +111,18 @@ function TaskRowCard({
             <span className="text-xs text-muted-foreground">{task.source}</span>
           )}
           {name && <span className="text-xs text-muted-foreground">Assigned to {name}</span>}
+          {/* A client's portal question (wave 155, lane 155F2): the task opens the reply panel on the client's Help page, where
+              the assigned agent / TC / admin records the answer. The literal is PORTAL_QUESTION_TASK_SOURCE
+              (lib/portal/question-answer-decision.ts) — not imported, so this page's graph stays as it was; the proof
+              (scripts/portal-answer-guard.ts) holds the two equal. */}
+          {task.source === "portal_question" && task.contact_id && (
+            <Link
+              href={`/portal/${task.contact_id}/help`}
+              className="text-xs font-medium text-primary hover:underline underline-offset-4"
+            >
+              Reply to client
+            </Link>
+          )}
         </div>
       </div>
       <div className="flex items-center gap-3 shrink-0">

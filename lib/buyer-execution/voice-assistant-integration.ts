@@ -19,6 +19,9 @@ export interface VoiceAssistantRequest {
   intent: 'explain_progress' | 'whats_next' | 'search_properties' | 'schedule_tour' | 'general_question'
   transcript: string
   userId?: string
+  /** Wave 155 (lane 155F2): the SESSION's tenant (requireContactAccess in app/actions/buyer-execution.ts) — never a request value.
+   *  Required for `general_question`; absent → that intent refuses (fail closed). */
+  brokerageId?: string | null
 }
 
 export interface VoiceAssistantResponse {
@@ -69,7 +72,10 @@ export async function handleBuyerVoiceRequest(
       
       case 'schedule_tour':
         return await scheduleTourVoice(context, transcript)
-      
+
+      case 'general_question':
+        return await generalQuestionVoice({ contactId, brokerageId: request.brokerageId ?? null, transcript })
+
       default:
         return {
           success: false,
@@ -83,6 +89,46 @@ export async function handleBuyerVoiceRequest(
       spokenResponse: "I encountered an error. Please try again or contact your agent.",
       error: error instanceof Error ? error.message : 'Unknown error'
     }
+  }
+}
+
+/**
+ * THE FOURTH DOOR (wave 155, lane 155F2 — owner R10). A free question to the buyer assistant used to fall to the router's default
+ * ("I'm not sure how to help with that"). It now takes the SAME decision as the portal tutor, the home assistant and the widget
+ * (lib/portal/question-answer-decision.ts decidePortalAnswer): a deal / lender / title fact from the record only, a guard question
+ * its fixed answer, a general question from the tenant's verified help base — no model on this door — and the question the record
+ * cannot answer goes to the assigned agent as ONE task (fileQuestionDing). The caller gated the session (requireContactAccess);
+ * the tenant is that session's, and the contact is re-read inside it.
+ */
+async function generalQuestionVoice(a: { contactId: string; brokerageId: string | null; transcript: string }): Promise<VoiceAssistantResponse> {
+  const question = (a.transcript ?? '').trim()
+  if (!a.brokerageId) return { success: false, spokenResponse: "I had trouble identifying your account. Please try again.", error: 'no session tenant' }
+  if (!question) return { success: false, spokenResponse: "What would you like to know? Ask me in a sentence and I'll check your file." }
+  const [{ createServiceClient }, qad] = await Promise.all([import('@/lib/supabase/service'), import('@/lib/portal/question-answer-decision')])
+  const svc = createServiceClient()
+  const { data: contact, error: cErr } = await svc.from('contacts').select('id, agent_id').eq('id', a.contactId).eq('brokerage_id', a.brokerageId).maybeSingle()
+  if (cErr) return { success: false, spokenResponse: "I can't reach your file right now. Please try again or contact your agent.", error: cErr.message }
+  if (!contact) return { success: false, spokenResponse: "I had trouble identifying your account. Please try again." }
+  const agentId = (contact as { agent_id?: string | null }).agent_id ?? null
+  let agentName: string | null = null
+  if (agentId) {
+    // agents carries no name: agents.id and users.id are DISJOINT — cross via agents.user_id (CLAUDE.md §3). A refused read only
+    // costs the name ("your agent" is said instead).
+    const { data: ag } = await svc.from('agents').select('user_id').eq('id', agentId).eq('brokerage_id', a.brokerageId).maybeSingle()
+    const uid = (ag as { user_id?: string | null } | null)?.user_id ?? null
+    if (uid) {
+      const { data: u } = await svc.from('users').select('first_name').eq('id', uid).maybeSingle()
+      agentName = (u as { first_name?: string | null } | null)?.first_name ?? null
+    }
+  }
+  const decision = await qad.decidePortalAnswer(svc, { brokerageId: a.brokerageId, contactId: a.contactId, question, agentName })
+  const ding = await qad.fileQuestionDing(svc, { brokerageId: a.brokerageId, contactId: a.contactId, sessionId: null, agentId, question, decision, surface: 'buyer_assistant' })
+  if (decision.plan.notify && !ding.filed && !ding.deduped && ding.notified === 0) console.error('[voice-assistant] question ding not filed:', ding.reason)
+  return {
+    success: decision.answered !== 'refused',
+    spokenResponse: decision.text,
+    displayData: { answered: decision.answered, sources: decision.sources.slice(0, 6), questionKind: decision.cls.kind },
+    actionsRequired: ding.filed ? ['Your agent has your question and will follow up.'] : undefined,
   }
 }
 

@@ -72,6 +72,43 @@ const CONSUMER_FAQ_TITLES: Readonly<Record<string, string>> = Object.freeze({
   clear_to_close: "What does \"clear to close\" mean, and what happens in the final week before closing?",
 })
 
+// ── ONE VOCABULARY FOR ONE SUBJECT (wave 155, lane 155F2 — CLAUDE.md §6) ────────────────────────────────────────────────────
+// Two spellings named the same subject: this feeder keyed `website_question:<lexicon topic>` while the wave-154 customer-question
+// themes (lib/content-intel/topic-intelligence.ts, 154G1) key `ti:customer_question:<theme>` — so "closing costs" asked on the
+// website and "closing costs" read from inbound messages became TWO topics. THE ONE KEY is the theme vocabulary's
+// (lib/content-intel/topic-themes.ts THEME_RULES — the one producer of theme labels): NEW topics from this feeder key
+// `ti:customer_question:<theme>`, and a live row still carrying the old key is ADOPTED (the idea merges into it) instead of
+// duplicated. Live rows are never re-keyed here — that is owner SQL (lane 155F2 notes). The reader below treats both as one subject.
+
+/** The theme vocabulary's prefix for a customer question (topic-intelligence.ts themeDedupKey(`customer_question:<key>`)). */
+export const CUSTOMER_QUESTION_SUBJECT_PREFIX = "ti:customer_question:"
+/** The retired spelling — read and adopted, never written for a new topic. */
+export const LEGACY_QUESTION_KEY_PREFIX = `${WEBSITE_QUESTION_SOURCE_KIND}:`
+/** Each lexicon topic (lib/education/question-gap.ts) → its theme key in topic-themes.ts. Every CONSUMER_FAQ_TITLES key is mapped
+ *  (scripts/portal-answer-guard.ts checks each value is a real theme key — a mapping onto a name that does not exist reads as
+ *  "one subject" while merging nothing). */
+export const QUESTION_TOPIC_THEME: Readonly<Record<string, string>> = Object.freeze({
+  new_construction_warranty: "new_construction", closing_costs: "closing_costs", title_insurance: "escrow_title", insurance: "insurance",
+  escrow: "escrow_title", earnest_money: "escrow_title", appraisal: "appraisal", inspection: "home_inspection", contingency: "offers_negotiation",
+  pre_approval: "pre_approval", hoa: "hoa", property_tax: "property_taxes", wire_fraud: "escrow_title", clear_to_close: "buying_process",
+})
+/** PURE — the ONE key a NEW topic for this lexicon topic carries. */
+export function questionSubjectKey(topic: string): string {
+  const theme = QUESTION_TOPIC_THEME[topic]
+  return theme ? `${CUSTOMER_QUESTION_SUBJECT_PREFIX}${theme}` : `${LEGACY_QUESTION_KEY_PREFIX}${topic}`
+}
+/** PURE — the SUBJECT (theme key) a stored topic key names, whichever spelling it carries; null = not a customer-question topic. */
+export function subjectOfTopicKey(key: string | null | undefined): string | null {
+  const k = String(key ?? "")
+  if (k.startsWith(CUSTOMER_QUESTION_SUBJECT_PREFIX)) return k.slice(CUSTOMER_QUESTION_SUBJECT_PREFIX.length) || null
+  if (k.startsWith(LEGACY_QUESTION_KEY_PREFIX)) { const t = k.slice(LEGACY_QUESTION_KEY_PREFIX.length); return QUESTION_TOPIC_THEME[t] ?? t }
+  return null
+}
+/** PURE — every stored key that names this subject (the new one first, then each retired lexicon spelling that maps to it). */
+function keysForSubject(theme: string): string[] {
+  return [`${CUSTOMER_QUESTION_SUBJECT_PREFIX}${theme}`, ...Object.keys(QUESTION_TOPIC_THEME).filter((t) => QUESTION_TOPIC_THEME[t] === theme).map((t) => `${LEGACY_QUESTION_KEY_PREFIX}${t}`)]
+}
+
 /** One customer question in the window. `askerKey` is a contact (`c:`) when signed in, else the session (`s:`). */
 interface CustomerQuestionRow { askerKey: string; content: string; createdAt: string; channel?: "website" | "portal" }
 
@@ -115,7 +152,7 @@ function customerQuestionTopicIdeas(rows: readonly CustomerQuestionRow[], a: { n
       evidence: { kind: "measured", metric: "distinct_askers", value: askers, unit: "askers", note: `${askers} distinct askers (${where}) in ${QUESTION_TOPIC_FLOOR.windowDays} days; no asker identity or wording stored` },
       rights: "first_party",
       brief: { consumer_question: title, suggested_original_formats: ["local_faq", "education_magnet"], observation_key: `${WEBSITE_QUESTION_SOURCE_KIND}:${topic}:n${askers}` },
-      dedupKey: `${WEBSITE_QUESTION_SOURCE_KIND}:${topic}`,
+      dedupKey: questionSubjectKey(topic),
     })
   }
   return { ideas, belowFloor, unclassified, individual }
@@ -136,6 +173,47 @@ interface CustomerQuestionDeps {
   intake?: (db: Db, a: { brokerageId: string; ideas: TopicIdea[]; now?: Date }) => Promise<Pick<TopicIntakeResult, "ok" | "inserted" | "merged" | "excluded">>
   /** The F3 hold. Default: the open knowledge-repair task for the theme in this tenant (tasks). */
   openRepair?: (db: Db, brokerageId: string, topic: string) => Promise<{ id: string } | { error: string } | null>
+}
+
+/**
+ * THE intake, behind ONE SUBJECT, ONE TOPIC (lane 155F2): before an idea goes to lib/content-intel/topic-intake.ts, a live row for
+ * its subject under either spelling is ADOPTED — the idea takes that row's key and merges into it — so a retired-key row is never
+ * duplicated by its new spelling. A refused read stores nothing (fail closed: a second topic for one subject is worse than a late
+ * one). An injected intake owns its own dedup.
+ */
+const defaultIntake: NonNullable<CustomerQuestionDeps["intake"]> = async (db, x) => {
+  const { ideas } = await adoptLiveSubjectKeys(db, x.brokerageId, x.ideas)
+  if (ideas.length === 0) return { ok: false, inserted: 0, merged: 0, excluded: [] }
+  return (await import("@/lib/content-intel/topic-intake")).intakeTopicIdeas(db as never, { ...x, ideas })
+}
+
+/**
+ * ONE SUBJECT, ONE TOPIC — the adoption step, exported for every customer-question producer (this feeder's intake, and the wave-154
+ * theme pass in lib/content-intel/topic-intelligence.ts — lane 155F2 Outside-lane request to 155H). Each idea whose key names a
+ * customer-question subject takes the key of a LIVE row for that subject under either spelling (new key first); `adopted` maps the
+ * idea's original key → the adopted one so a caller matching intake rows by key can follow it. An idea whose read was refused is
+ * HELD (left out, said) — never filed under a possibly-duplicate key. Tenant-pinned; never throws.
+ */
+export async function adoptLiveSubjectKeys(db: Db, brokerageId: string, input: readonly TopicIdea[]): Promise<{ ideas: TopicIdea[]; adopted: Map<string, string>; held: string[] }> {
+  const ideas: TopicIdea[] = []
+  const adopted = new Map<string, string>()
+  const held: string[] = []
+  for (const idea of input) {
+    const subject = subjectOfTopicKey(idea.dedupKey)
+    if (!subject) { ideas.push(idea); continue }
+    try {
+      const keys = keysForSubject(subject)
+      const { data: live, error } = await db.from("content_topic_bank").select("id, raw_data").eq("brokerage_id", brokerageId).in("raw_data->>dedup_key", keys).limit(10)
+      if (error) { held.push(String(idea.dedupKey)); console.error(`[website-question-topics] topic pool read refused (${error.message}) — ${idea.dedupKey} held, nothing stored`); continue }
+      const liveKeys = new Set(((live ?? []) as Array<{ raw_data: { dedup_key?: string } | null }>).map((r) => String(r.raw_data?.dedup_key ?? "")))
+      const adopt = keys.find((k) => liveKeys.has(k))
+      if (adopt && adopt !== idea.dedupKey) adopted.set(String(idea.dedupKey), adopt)
+      ideas.push(adopt ? { ...idea, dedupKey: adopt } : idea)
+    } catch (e) {
+      held.push(String(idea.dedupKey)); console.error(`[website-question-topics] subject adoption threw — ${idea.dedupKey} held:`, e instanceof Error ? e.message : e)
+    }
+  }
+  return { ideas, adopted, held }
 }
 
 const defaultReadQuestions: NonNullable<CustomerQuestionDeps["readQuestions"]> = async (db, a) => {
@@ -178,13 +256,14 @@ export async function considerCustomerQuestion(db: Db, a: { brokerageId: string 
     const read = await (deps.readQuestions ?? defaultReadQuestions)(db, { brokerageId: a.brokerageId, since })
     if ("error" in read) return { status: "refused", reason: `customer questions read refused: ${read.error}` }
     const { ideas, belowFloor } = customerQuestionTopicIdeas(read.rows, { now })
-    const idea = ideas.find((i) => i.dedupKey === `${WEBSITE_QUESTION_SOURCE_KIND}:${cls.topic}`)
+    // Two lexicon topics may share a subject (escrow / earnest money), so the idea is found by its own FAQ, not by the shared key.
+    const idea = ideas.find((i) => i.title === CONSUMER_FAQ_TITLES[cls.topic])
     if (!idea) return { status: "below_floor", topic: cls.topic, askers: belowFloor.find((b) => b.topic === cls.topic)?.askers ?? 0 }
     const askers = idea.evidence.value ?? 0
     const repair = await (deps.openRepair ?? openRepairFor)(db, a.brokerageId, cls.topic)
     if (repair && "error" in repair) return { status: "refused", reason: `knowledge-repair read refused (${repair.error}) — held, nothing published` }
     if (repair) return { status: "held_for_repair", topic: cls.topic, askers, repairTaskId: repair.id }
-    const intake = deps.intake ?? (async (d: Db, x: { brokerageId: string; ideas: TopicIdea[]; now?: Date }) => (await import("@/lib/content-intel/topic-intake")).intakeTopicIdeas(d as never, x))
+    const intake = deps.intake ?? defaultIntake
     const r = await intake(db, { brokerageId: a.brokerageId, ideas: [idea], now })
     if (!r.ok && r.inserted === 0 && r.merged === 0 && r.excluded.length === 0) return { status: "refused", reason: "the topic intake stored nothing" }
     return { status: "submitted", topic: cls.topic, askers, inserted: r.inserted, merged: r.merged, excluded: r.excluded.length }
@@ -239,15 +318,21 @@ export async function readQuestionLoopMetrics(db: Db, a: { brokerageId: string; 
   if (hours.length) { const s = hours.sort((x, y) => x - y); out.medianHoursToAuthoritativeAnswer = Math.round((s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) * 10) / 10 }
   const { data: bank, error: bErr } = await db.from("content_topic_bank").select("id, raw_data").eq("brokerage_id", a.brokerageId).limit(500)
   if (bErr) out.blindSpots.push(`topic pool not read (${bErr.message})`)
-  const ours = ((bank ?? []) as Array<{ id: string; raw_data: { dedup_key?: string } | null }>).filter((b) => String(b.raw_data?.dedup_key ?? "").startsWith(`${WEBSITE_QUESTION_SOURCE_KIND}:`))
+  // BOTH SPELLINGS ARE ONE SUBJECT (lane 155F2, CLAUDE.md §6): a topic keyed `website_question:<lexicon>` (retired) and one keyed
+  // `ti:customer_question:<theme>` (the one key) are read as the same subject; its first use is the earliest across them, and its
+  // askers are every lexicon topic that maps to it.
+  const ours = ((bank ?? []) as Array<{ id: string; raw_data: { dedup_key?: string } | null }>).filter((b) => subjectOfTopicKey(b.raw_data?.dedup_key) !== null)
   if (ours.length) {
     const { data: uses, error: uErr } = await db.from("content_topic_uses").select("topic_id, used_at").eq("brokerage_id", a.brokerageId).in("topic_id", ours.map((b) => b.id)).limit(2000)
     if (uErr) out.blindSpots.push(`topic uses not read (${uErr.message})`)
+    const firstBySubject = new Map<string, string>()
     for (const b of ours) {
       const first = ((uses ?? []) as Array<{ topic_id: string; used_at: string | null }>).filter((u) => u.topic_id === b.id && u.used_at).map((u) => u.used_at as string).sort()[0]
-      if (!first) continue
-      const theme = String(b.raw_data?.dedup_key).slice(WEBSITE_QUESTION_SOURCE_KIND.length + 1)
-      const list = byTheme.get(theme) ?? []
+      const subject = subjectOfTopicKey(b.raw_data?.dedup_key) as string
+      if (first && (!firstBySubject.has(subject) || first < (firstBySubject.get(subject) as string))) firstBySubject.set(subject, first)
+    }
+    for (const [theme, first] of firstBySubject) {
+      const list = [...byTheme.entries()].filter(([t]) => (QUESTION_TOPIC_THEME[t] ?? t) === theme).flatMap(([, l]) => l)
       const f = Date.parse(first)
       const before = new Set(list.filter((x) => Date.parse(x.at) < f && Date.parse(x.at) >= f - 30 * 86_400_000).map((x) => x.askerKey)).size
       const afterWindowClosed = now.getTime() - f >= 30 * 86_400_000

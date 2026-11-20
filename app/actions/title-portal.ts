@@ -480,6 +480,18 @@ export async function updateTitleStatus(data: {
   if (error) return { success: false, error: error.message }
 
   const brokerageId = actor.brokerageId
+
+  // THE CLIENT'S OPEN QUESTIONS (wave 155, lane 155F2 — owner R10): title answered through ITS OWN seat (requireTitleActor above),
+  // so open portal questions on this deal are re-evaluated from the record — "did title come back clean?" closes once and the
+  // client is answered once; a replay sends nothing. Gate first, then the service client. Non-blocking.
+  try {
+    const [{ reevaluateOpenQuestionsForDeal }, { createServiceClient }] = await Promise.all([import("@/lib/portal/question-answer-decision"), import("@/lib/supabase/service")])
+    const r = await reevaluateOpenQuestionsForDeal(createServiceClient(), { brokerageId, transactionId: data.transactionId })
+    if (r.errors.length > 0) console.error("[updateTitleStatus] open client questions not fully re-evaluated:", r.errors.join("; "))
+  } catch (err) {
+    console.error("[updateTitleStatus] open client questions not re-evaluated (non-blocking):", err instanceof Error ? err.message : err)
+  }
+
   const eventName =
     data.newStatus === "closing_ready"
       ? KernelEvent.CLOSING_SCHEDULED

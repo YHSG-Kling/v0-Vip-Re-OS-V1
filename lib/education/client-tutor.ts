@@ -89,14 +89,15 @@ export interface TutorAnswer {
 
 /** Resolve the client's tutor context (role, stage, agent) — best-effort, ALWAYS inside the session's tenant (wave 155: a missing
  *  tenant reads nothing — it never decays into "any tenant"). */
-async function resolveTutorContext(svc: Svc, contactId: string, brokerageId: string): Promise<{ ctx: TutorContext; brokerageId: string | null; agentId: string | null }> {
-  const { data: c } = await svc.from("contacts").select("first_name, contact_type, contact_persona, buyer_stage, brokerage_id, agent_id").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
+async function resolveTutorContext(svc: Svc, contactId: string, brokerageId: string): Promise<{ ctx: TutorContext; brokerageId: string | null; agentId: string | null; agentUserId: string | null; videoOptOut: boolean | null }> {
+  const { data: c } = await svc.from("contacts").select("first_name, contact_type, contact_persona, buyer_stage, brokerage_id, agent_id, video_opt_out").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
   const cc = c as any
   const role: TutorContext["role"] = cc?.contact_type === "seller" ? "seller" : isLifetimeCustomerType(cc?.contact_type) ? "homeowner" : cc?.contact_type === "buyer" ? "buyer" : "client"
   let agentName: string | null = null
+  let uid: string | null = null
   if (cc?.agent_id) {
     const { data: a } = await svc.from("agents").select("user_id").eq("id", cc.agent_id).maybeSingle()
-    const uid = (a as any)?.user_id
+    uid = (a as any)?.user_id ?? null
     if (uid) {
       const { data: u } = await svc.from("users").select("first_name, last_name").eq("id", uid).maybeSingle()
       const full = [(u as any)?.first_name, (u as any)?.last_name].filter(Boolean).join(" ").trim()
@@ -107,6 +108,8 @@ async function resolveTutorContext(svc: Svc, contactId: string, brokerageId: str
     ctx: { firstName: cc?.first_name ?? null, role, persona: cc?.contact_persona ?? null, stageLabel: cc?.buyer_stage ? String(cc.buyer_stage).replace(/_/g, " ") : null, agentName },
     brokerageId: cc?.brokerage_id ?? null,
     agentId: cc?.agent_id ?? null,
+    agentUserId: uid,
+    videoOptOut: typeof cc?.video_opt_out === "boolean" ? cc.video_opt_out : null,
   }
 }
 
@@ -128,7 +131,7 @@ export async function answerTutorQuestion(
   if (!question) return { answer: TUTOR_SAFE_FALLBACK, relatedModules: [], held: false }
   if (!input.brokerageId) return { answer: TUTOR_SAFE_FALLBACK, relatedModules: [], held: false, answered: "refused", sources: [] }
 
-  const { ctx, brokerageId, agentId } = await resolveTutorContext(svc, input.contactId, input.brokerageId)
+  const { ctx, brokerageId, agentId, agentUserId, videoOptOut } = await resolveTutorContext(svc, input.contactId, input.brokerageId)
   // A contact the session's tenant does not hold is indistinguishable from no contact (PRIV-001): nothing is read or said.
   if (!brokerageId) return { answer: TUTOR_SAFE_FALLBACK, relatedModules: [], held: false, answered: "refused", sources: [] }
 
@@ -155,6 +158,10 @@ export async function answerTutorQuestion(
   const decision = brokerageId
     ? await qad.decidePortalAnswer(svc, {
         brokerageId, contactId: input.contactId, question, agentName: ctx.agentName,
+        // Lane 155G's situation chooser (applied by lane 155F2): a video is playable and a written answer readable on the portal;
+        // an unknown opt-out counts as an opt-out (a video is never chosen for someone whose preference was not read).
+        recipient: { type: "contact", videoOptOut: videoOptOut !== false, playableVia: ["in_app"], writtenVia: ["in_app"] },
+        distinctAskers: null,
         generalAnswer: async ({ sources }) => (await generate({
           system: sources.length > 0 ? `${system}\nVERIFIED SOURCES — answer ONLY from these; never add a figure, date or deadline they do not contain:\n${sources.map((s) => `- ${s.title}: ${s.excerpt}`).join("\n")}` : system,
           prompt: question,
@@ -186,6 +193,16 @@ export async function answerTutorQuestion(
   const ding = await qad.fileQuestionDing(svc, { brokerageId, contactId: input.contactId, sessionId: sid, agentId, question, decision, surface: "portal_tutor", now: input.now })
   if (!ding.filed && !ding.deduped && ding.notified === 0 && decision.plan.notify) console.error(`[client-tutor] question ding not filed: ${ding.reason}`)
   await followThroughKnowledge(svc, { brokerageId, contactId: input.contactId, agentId, question, decision: { ...decision, answered: held ? "held" : decision.answered }, sessionId: sid, now: input.now })
+  // The chooser picked an educational video (lane 155G's rule: only at the topic pool's recurrence floor): it is PROPOSED to the
+  // Asset Manager's approval queue — never rendered or sent from here; delivery is client-video-delivery's door after approval.
+  if (decision.artifact?.chosen === "educational_video" && agentUserId) {
+    try {
+      const { recordProposedAssetActions } = await import("@/lib/agents/asset-manager-actions")
+      await recordProposedAssetActions({ brokerageId, managedAgentSessionId: null, actions: [{ action_type: "direct_video", action_input: { kind: "explainer", contact_id: input.contactId, agent_user_id: agentUserId }, rationale: decision.artifact.why }] })
+    } catch (e) {
+      console.error("[client-tutor] explainer video proposal not recorded (non-blocking):", e instanceof Error ? e.message : e)
+    }
+  }
   return { answer, relatedModules, held, answered: held ? "held" : decision.answered, sources: decision.sources.map((s) => ({ source: s.source, version: s.version })), ding: { filed: ding.filed, deduped: ding.deduped, notified: ding.notified } }
 }
 

@@ -17,19 +17,32 @@
  * getAgentContext stubs return the signed-in seat — the gates themselves have their own proofs); the MODEL, the EMBEDDER and
  * the arbiter's lawful-channel gate are COUNTED seams; no provider is ever called. Source scans read STRIPPED source.
  *
- * BLIND SPOTS (beside the number): no CHECK / FK / RLS is enforced in memory; the widget's general (model-streamed) answers are
- * not screened before delivery (only its deterministic branch is proven here); the lifetime home assistant
+ * WAVE 155, LANE 155F2 — the loop finished: the widget's GENERAL answers are drafted server-side, screened by the same claim
+ * screen and only then streamed (HALLUC-006 on the public door; the screen's latency measured); the lender's and title's OWN seat
+ * writers re-evaluate the client's open questions (the client hears once; a replay sends nothing; an unauthenticated "I am the
+ * lender" changes nothing — INJECT-004); the buyer assistant's free question takes the same decision (the fourth door); the
+ * EXISTING follow-up arbiter chooses how an authoritative answer is delivered inside its 2.5 s budget (SCOPE-006 — the timely
+ * fallback answers, the late result never sends); the task row opens the reply panel; two topic-key spellings are one subject.
+ *
+ * BLIND SPOTS (beside the number): no CHECK / FK / RLS is enforced in memory; a LIVE model's generation time (the added wait
+ * before the widget's first byte) is not measured here — only the screen's own cost is; the lifetime home assistant
  * (app/actions/portal-lifetime.ts askHomeAssistant) is proven by stripped-source wiring + the shared decision it calls, not
  * executed (its context reader spans a dozen tables); a live model's phrasing is not sampled (owner-authorized step).
  */
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
+import { pathToFileURL } from "node:url"
 import { registerHooks } from "node:module"
 import { stripComments } from "./strip-comments"
 import { memSupabase, type MemClient } from "./in-memory-supabase"
 
 const G = globalThis as any
-G.__PA = { svc: null as MemClient | null, access: null as any, agentCtx: null as any, model: { calls: 0, reply: (_a: any) => "" }, stream: 0, embeds: 0, arbiter: 0, tenantReads: [] as string[] }
+G.__PA = {
+  svc: null as MemClient | null, access: null as any, agentCtx: null as any, model: { calls: 0, reply: (_a: any) => "" }, stream: 0, embeds: 0, arbiter: 0, tenantReads: [] as string[],
+  // Lane 155F2 — the widget's routed model, drafting SERVER-SIDE: its reply, the tools' outputs, a delay, an outage, the fair-use cap.
+  streamReply: (_a: any) => ({ text: "", tools: [] as unknown[] }), streamDelayMs: 0, streamThrow: null as null | "outage" | "fair_use", streamSystems: [] as string[],
+  lender: null as any, title: null as any, events: 0,
+}
 const STUB: Record<string, string> = {
   "server-only": "export{}",
   "next/cache": "export function revalidatePath(){}; export function revalidateTag(){}",
@@ -37,7 +50,9 @@ const STUB: Record<string, string> = {
   "@/lib/supabase/server": "export async function createClient(){ const s = globalThis.__PA.svc; if (!s) throw new Error('portal-answer-guard: no session client'); return s }",
   "@/lib/portal/require-contact-access": "export async function requireContactAccess(){ return globalThis.__PA.access ?? { ok: false, error: 'Unauthorized' } }",
   "@/lib/identity/get-agent-context": "export async function getAgentContext(){ return globalThis.__PA.agentCtx ?? { userId: '', agentId: null, brokerageId: null, teamId: null, userType: '', role: '', isAuthenticated: false } }",
-  "@/lib/ai/models": "export class AIFairUseError extends Error {}; export async function generateTextRouted(a){ globalThis.__PA.model.calls++; return { text: globalThis.__PA.model.reply(a) } }; export async function streamTextRouted(a){ globalThis.__PA.stream++; return { toUIMessageStreamResponse(){ return new Response('model-stream') } } }",
+  // The routed stream: steps / text resolve after the seam's delay; toUIMessageStreamResponse would pipe the RAW draft (what the
+  // base route returned) — a screened route never calls it.
+  "@/lib/ai/models": "export class AIFairUseError extends Error {}; export async function generateTextRouted(a){ globalThis.__PA.model.calls++; return { text: globalThis.__PA.model.reply(a) } }; export async function streamTextRouted(a){ const P = globalThis.__PA; P.stream++; P.streamSystems.push(String(a.system ?? '')); if (P.streamThrow === 'fair_use') throw new AIFairUseError('cap'); if (P.streamThrow === 'outage') throw new Error('provider down'); const r = P.streamReply(a); const done = new Promise((res) => setTimeout(() => res(r), P.streamDelayMs)); return { steps: done.then((x) => [{ text: x.text, toolResults: (x.tools ?? []).map((o) => ({ output: o })) }]), text: done.then((x) => x.text), toUIMessageStreamResponse(){ return new Response(r.text) } } }",
   "@/lib/knowledge/embedding-service": "export async function generateEmbedding(){ globalThis.__PA.embeds++; return new Array(1536).fill(0) }",
   "@/lib/kernel/write-sentinel": "export async function sentinelWrite(_s, q){ return await q }",
   "@/lib/learning-router/composer": "export async function pickLearningModulesForActor(){ return [] }",
@@ -50,8 +65,16 @@ const STUB: Record<string, string> = {
   "@/lib/ai-isa/qualification-playbook": "export function buildQualificationPrompt(){ return '' }",
   "@/lib/security/public-rate-limit": "export function checkPublicRateLimit(){ return { allowed: true, retryAfterSeconds: 0 } }",
   "@/lib/managers/autonomy-gate": "export async function resolveAgentAuthorityLevel(){ return 'assist' }",
-  // The arbiter is lane B's (read-only here): its lawful-channel gate is a COUNTED seam that admits the portal (in_app).
-  "@/lib/ai-isa/followup-arbiter": "export async function lawfulChannelsForContact(){ globalThis.__PA.arbiter++; return { ok: true, lawful: new Set(['in_app', 'email']), refusals: {} } }",
+  // The arbiter is lane B's (read-only here): the REAL module (arbitrateFollowUp, its budget race, its validator) with only its
+  // lawful-channel gate replaced by a COUNTED seam that admits the portal (in_app). Its model is the injected `decide` (counted).
+  "@/lib/ai-isa/followup-arbiter": `export * from ${JSON.stringify(pathToFileURL(join(process.cwd(), "lib/ai-isa/followup-arbiter.ts")).href)}; export async function lawfulChannelsForContact(){ globalThis.__PA.arbiter++; return { ok: true, lawful: new Set(['in_app', 'email']), refusals: {} } }`,
+  // Lane 155F2 — the seat gates (their own proofs live elsewhere): the lender / title SEAT is a fixture; null = no seat → refused.
+  "@/lib/kernel/portal-auth": "export class PortalAuthError extends Error {}; export async function requireLenderVendorActor(){ const a = globalThis.__PA.lender; if (!a) throw new PortalAuthError('Not an authenticated lender vendor on this transaction'); return a }; export async function requireTitleActor(){ const a = globalThis.__PA.title; if (!a) throw new PortalAuthError('Not an authenticated title user'); return a }",
+  "@/lib/kernel/transactions": "export async function emitTransactionEvent(){ globalThis.__PA.events++; return { ok: true } }",
+  "@/lib/storage/signed-doc-url": "export function documentOpenHref(){ return '#' }",
+  "@/lib/transactions/milestone-service": "export async function completeMilestone(){ return { ok: true } }",
+  "./buyer-execution-engine": "export async function logBuyerExecutionEvent(){ return { success: true } }; export async function getBuyerJourneyStatus(){ return { success: false } }; export async function enforceFinancialGate(){ return { allowed: false } }; export function getBuyerFriendlyMessage(){ return {} }",
+  "@/lib/buyer-search": "export async function searchPropertiesCore(){ return { success: false } }",
 }
 registerHooks({
   resolve(spec: string, ctx: any, next: any) {
@@ -80,7 +103,10 @@ const U_AG1 = "u1000000-0000-4000-8000-0000000000a1", U_AG2 = "u2000000-0000-400
 const U_VI = "u1000000-0000-4000-8000-0000000000f1", U_ADMIN = "u1000000-0000-4000-8000-0000000000ad"
 const T1 = "t1000000-0000-4000-8000-000000000001", T3 = "t3000000-0000-4000-8000-000000000003"
 const V_L = "v1000000-0000-4000-8000-00000000000a", V_T = "v1000000-0000-4000-8000-00000000000b", V_I = "v1000000-0000-4000-8000-00000000000c"
-const NOW = new Date("2026-11-19T15:00:00.000Z")
+// "Now" is DERIVED (a fixture must not pin a calendar date that expires — charter rule; scripts/next-action-follow-on-guard.ts broke
+// that way). The deal dates below are relative to it.
+const NOW = new Date()
+const dayOffset = (days: number) => new Date(NOW.getTime() + days * 86_400_000).toISOString().slice(0, 10)
 
 function world(): MemClient {
   const contact = (id: string, b: string, agent: string, first: string) => ({ id, brokerage_id: b, agent_id: agent, first_name: first, contact_type: "buyer", contact_persona: "first_time_buyer", buyer_stage: "under_contract" })
@@ -96,7 +122,7 @@ function world(): MemClient {
     ],
     transaction_coordinators: [{ id: "tc-1", brokerage_id: B1, user_id: U_TC1 }],
     transaction_lenders: [{ id: "tl-1", brokerage_id: B1, transaction_id: T1, lender_name: "Gulf Coast Lending", underwriting_status: "in_review", clear_to_close_date: null, updated_at: "2026-11-12T00:00:00.000Z" }],
-    transaction_title_escrow: [{ id: "te-1", brokerage_id: B1, transaction_id: T1, title_company_name: "Bay Title", title_status: "ordered", title_commitment_date: null, closing_scheduled_date: null, updated_at: "2026-11-12T00:00:00.000Z" }],
+    transaction_title_escrow: [{ id: "te-1", brokerage_id: B1, transaction_id: T1, title_company_name: "Bay Title", title_company_email: "closer@baytitle.example", title_status: "ordered", title_commitment_date: null, closing_scheduled_date: null, updated_at: "2026-11-12T00:00:00.000Z" }],
     transaction_milestones: [], trid_disclosure_receipts: [],
     vendor_assignments: [{ id: "va-1", brokerage_id: B1, transaction_id: T1, vendor_id: V_L, assignment_type: "lender" }, { id: "va-2", brokerage_id: B1, transaction_id: T1, vendor_id: V_T, assignment_type: "title" }, { id: "va-3", brokerage_id: B1, transaction_id: T1, vendor_id: V_I, assignment_type: "insurance" }],
     // Lender and title are OFF the platform (no seat); the insurer has a vendor seat (ON the platform).
@@ -340,6 +366,203 @@ async function main() {
     check("F3 numbers: repeat askers per theme measured (earnest_money 3); unmeasured numbers are null, never 0", m.repeatAskersByTheme.earnest_money === 3 && m.medianHoursToAuthoritativeAnswer === null, m)
   }
 
+  // ═══ 155F2 item 1 — the PUBLIC widget's general answer is screened BEFORE delivery ═══
+  section("155F2 / HALLUC-006 (widget) — a general answer is drafted server-side, screened, then streamed; a held draft still answers")
+  const widgetWorld = () => { const w = world(); (w as any).tables.chat_sessions.push({ id: "ws-9", brokerage_id: B1, agent_id: AG1, status: "active", capture_state: "anonymous", contact_id: null, widget_session_token: "tok-9", session_type: "website_widget" }); return w }
+  const { POST: widgetPOST } = await import("../app/api/widget/message/route")
+  const ask = async (text: string) => { const res = await widgetPOST(new Request("http://x", { method: "POST", body: JSON.stringify({ session_token: "tok-9", messages: [{ id: "m", role: "user", parts: [{ type: "text", text }] }] }) }) as any); return { status: res.status, body: await res.text() } }
+  const lastTurn = (db: MemClient) => rows(db, "chat_messages").filter((m) => m.role === "assistant").slice(-1)[0]
+  {
+    const db = widgetWorld(); G.__PA.svc = db; G.__PA.stream = 0; G.__PA.streamThrow = null; G.__PA.streamDelayMs = 0
+    G.__PA.streamReply = () => ({ text: "Most inspections take two to three hours and cost $425. A home inspection looks at the structure, roof, plumbing, electrical and heating systems.", tools: [] })
+    const r = await ask("What does a home inspection cover?")
+    check("HALLUC-006 (public door): the model's unsourced '$425' NEVER reaches the visitor; the sourced-safe sentence does", r.status === 200 && !/\$425|425/.test(r.body) && /structure, roof, plumbing/.test(r.body) && G.__PA.stream === 1, r.body.slice(0, 400))
+    const turn = lastTurn(db)
+    check("the stored assistant turn is the SCREENED text (never the raw draft) with stripped_sentences 1 and the latency it cost (model_ms, screen_ms)", !!turn && !/\$425/.test(turn.content) && turn.metadata?.portal_answer?.stripped_sentences === 1 && typeof turn.metadata?.portal_answer?.latency?.model_ms === "number" && typeof turn.metadata?.portal_answer?.latency?.screen_ms === "number" && turn.metadata?.portal_answer?.latency?.timed_out === false, turn?.metadata)
+    check("a conversation turn that survived the screen pages nobody (no task, no bell — the widget is a qualification chat)", qTasks(db).length === 0 && rows(db, "notifications").length === 0)
+    G.__PA.streamReply = () => ({ text: "Great! Which part of town are you looking in?", tools: [] })
+    const q = await ask("We are thinking about moving to the area")
+    check("a short clean question back to the visitor is delivered as is (not 'held', no suffix)", /Which part of town are you looking in\?/.test(q.body) && !/verified answer/.test(q.body), q.body.slice(0, 300))
+    // HELD: every sentence unsupported → the visitor still gets an answer + who follows up; the session's agent gets ONE task.
+    G.__PA.streamReply = () => ({ text: "It costs $425 and takes 14 days.", tools: [] })
+    const h = await ask("How long does a home inspection take and what does it cost?")
+    check("HELD: a draft the screen empties is never sent; the visitor still gets an answer naming who follows up (never silence)", h.status === 200 && !/425|14 days/.test(h.body) && /passed it to someone from the team/.test(h.body), h.body.slice(0, 300))
+    check("HELD: the session's agent gets exactly ONE task preserving the exact question", qTasks(db).length === 1 && qTasks(db)[0].assigned_to_agent_id === AG1 && /How long does a home inspection take/.test(qTasks(db)[0].description))
+    // Provider outage → held answer, 200, never silence.
+    G.__PA.streamThrow = "outage"
+    const o = await ask("What is a seller concession?")
+    check("a model OUTAGE still answers the visitor (held answer, status 200) — never silence, never a raw error", o.status === 200 && /passed it to someone from the team/.test(o.body), o)
+    G.__PA.streamThrow = "fair_use"
+    const f = await ask("What is a seller concession?")
+    check("the tenant's fair-use cap still refuses cleanly (429, as before) — nothing generated", f.status === 429)
+    G.__PA.streamThrow = null
+    // A CONFIDENT help row answers deterministically — no model call, no wait.
+    const before = G.__PA.stream
+    const c = await ask("What is an appraisal contingency?")
+    check("a CONFIDENT help-base match (every question word in its title) answers from the record at once — 0 model calls", G.__PA.stream === before && /appraises below the agreed price/.test(c.body) && lastTurn(db).metadata?.portal_answer?.model_calls === 0, c.body.slice(0, 300))
+    // Tool results ARE retrieved sources: a figure the tool returned survives; the same figure without the tool output does not.
+    G.__PA.streamReply = () => ({ text: "The estimated value on file is $512,000.", tools: [{ value: 512000, formatted: "$512,000", source: "rentcast_avm" }] })
+    const t = await ask("Roughly what are homes on Pine Ave going for?")
+    G.__PA.streamReply = () => ({ text: "The estimated value on file is $512,000.", tools: [] })
+    const t2 = await ask("Roughly what are homes on Pine Ave going for these days?")
+    check("a figure the turn's TOOL returned is a retrieved source and is delivered; POSITIVE CONTROL: the same figure with no tool output is stripped", /\$512,000/.test(t.body) && !/512/.test(t2.body), [t.body.slice(0, 200), t2.body.slice(0, 200)])
+    // The deadline race: a late draft is discarded, never sent.
+    let lateResolved = false
+    const slow = new Promise<string>((res) => setTimeout(() => { lateResolved = true; res("late draft with $999") }, 120))
+    const raced = await qad.withinDeadline(slow, 20)
+    const fast = await qad.withinDeadline(Promise.resolve("on time"), 1000)
+    await new Promise((res) => setTimeout(res, 150))
+    check("SCOPE (widget deadline): a draft past WIDGET_ANSWER_DEADLINE_MS times out (held answer goes); its late value is discarded; an on-time draft is returned", "timedOut" in raced && lateResolved && "value" in fast && fast.value === "on time")
+    // THE COST, measured: the screen over a ~512-token draft against a large tenant prompt.
+    const draft = Array.from({ length: 40 }, (_, i) => `Sentence ${i} explains a step of the process in plain words, and mentions ${i % 3 === 0 ? "$1,200" : "the agent"}.`).join(" ")
+    const corpus = ["A".repeat(6000), "Office hours 9 to 5. Service areas: Destin, Navarre."]
+    const ms: number[] = []
+    for (let i = 0; i < 200; i++) { const s = performance.now(); qad.screenDraftAgainstSources(draft, corpus); ms.push(performance.now() - s) }
+    ms.sort((x, y) => x - y)
+    const p50 = ms[100], p95 = ms[190]
+    console.log(`  · MEASURED: claim screen over a ${draft.split(/\s+/).length}-word draft + ${corpus.join("").length}-char corpus — p50 ${p50.toFixed(3)} ms, p95 ${p95.toFixed(3)} ms (200 runs). The added wait before the first byte is the model's full generation minus its first token (not measured here — no live model).`)
+    check("the screen's own added latency is negligible beside a model call (p95 < 25 ms over a 512-token-class draft)", p95 < 25, { p50, p95 })
+  }
+
+  // ═══ 155F2 item 2 — the lender's / title's OWN seat answers; the client hears once; a replay sends nothing; INJECT-004 ═══
+  section("155F2 item 2 — vendor SEAT writers re-evaluate the open question: closed once, the client told once, a replay sends nothing")
+  {
+    const lp = await import("../app/actions/lender-portal-actions")
+    const db = world(); G.__PA.svc = db; signIn(C1, B1)
+    await askEducationTutor(C1, "Has my lender cleared me to close?")
+    const task = qTasks(db).find((t) => (t.tags ?? []).includes("pq_fact:lender_clearance"))!
+    // INJECT-004: no authenticated lender seat → the writer refuses; nothing changes.
+    G.__PA.lender = null
+    let refused = false
+    try { await lp.issueClearToClose({ transactionId: T1 }) } catch { refused = true }
+    const st = await lp.updateLenderLoanStatus({ transactionId: T1, newStatus: "approved" })
+    check("INJECT-004: an unauthenticated 'I am the lender' (no vendor seat) changes NOTHING — CTC refused, status refused, the question stays open", refused && !st.success && rows(db, "transaction_lenders")[0].underwriting_status === "in_review" && qTasks(db).find((t) => t.id === task.id)?.status === "pending" && rows(db, "client_portal_messages").length === 0)
+    // The lender's own seat issues Clear to Close.
+    G.__PA.lender = { userId: "u-lender", vendorId: V_L, brokerageId: B1, lenderCompany: "Gulf Coast Lending" }
+    const r = await lp.issueClearToClose({ transactionId: T1 })
+    const msgs = () => rows(db, "client_portal_messages").filter((m) => m.contact_id === C1)
+    const after = qTasks(db).find((t) => t.id === task.id)
+    check("SIMULATED: the lender's seat issues CTC → the client's open question CLOSES with evidence ('already told by the lender's own Clear to Close message')", r.success && after?.status === "completed" && /Client already told by the lender's own Clear to Close message/.test(after?.description ?? ""), after?.description)
+    check("the client hears ONCE: the lender's CTC message only — no second 'An update on your question' message", msgs().length === 1 && /issued Clear to Close/.test(msgs()[0].body) && !msgs().some((m) => /An update on your question/.test(m.body)), msgs().map((m) => m.body))
+    await lp.issueClearToClose({ transactionId: T1 })
+    check("a REPLAYED Clear to Close sends NOTHING (no second CTC message, no follow-up; the closed task is not re-read)", msgs().length === 1)
+    // updateLenderLoanStatus on a fresh deal: the record answers, the arbiter chooses how, one follow-up, a replay sends nothing.
+    const db2 = world(); G.__PA.svc = db2; signIn(C1, B1)
+    await askEducationTutor(C1, "Has my lender cleared me to close?")
+    G.__PA.arbiter = 0
+    const s1 = await lp.updateLenderLoanStatus({ transactionId: T1, newStatus: "approved" })
+    const m2 = () => rows(db2, "client_portal_messages").filter((m) => /An update on your question/.test(m.body))
+    const lt = qTasks(db2).find((t) => (t.tags ?? []).includes("pq_fact:lender_clearance"))
+    check("SIMULATED: a loan-status update to 'approved' from the lender's seat → ONE follow-up to the client, the task closed with the follow-up choice recorded", s1.success && m2().length === 1 && /Your lender's record shows clear to close/.test(m2()[0].body) && lt?.status === "completed" && /Follow-up: answer on portal/.test(lt?.description ?? "") && G.__PA.arbiter === 1, lt?.description)
+    await lp.updateLenderLoanStatus({ transactionId: T1, newStatus: "approved" })
+    check("a replayed status update sends nothing", m2().length === 1)
+    // Title's own seat writes a positive status.
+    const db3 = world(); G.__PA.svc = db3; signIn(C1, B1)
+    await askEducationTutor(C1, "Did title come back clean?")
+    const tp = await import("../app/actions/title-portal")
+    G.__PA.title = null
+    const tr0 = await tp.updateTitleStatus({ transactionId: T1, titleUserId: "u-title", newStatus: "commitment_issued" })
+    check("INJECT-004 (title): no authenticated title seat → refused; the record and the question are untouched", !tr0.success && rows(db3, "transaction_title_escrow")[0].title_status === "ordered" && qTasks(db3).every((t) => t.status === "pending"))
+    G.__PA.title = { userId: "u-title", email: "closer@baytitle.example", brokerageId: B1 }
+    const tr = await tp.updateTitleStatus({ transactionId: T1, titleUserId: "u-title", newStatus: "commitment_issued" })
+    const tt = qTasks(db3).find((t) => (t.tags ?? []).includes("pq_fact:title_clearance"))
+    const tm = rows(db3, "client_portal_messages").filter((m) => /title record shows "commitment issued"/.test(m.body))
+    check("SIMULATED: title's seat writes 'commitment issued' → the title question closes once and the client is told once", tr.success && tt?.status === "completed" && tm.length === 1, { task: tt?.status, msgs: tm.length })
+    await tp.updateTitleStatus({ transactionId: T1, titleUserId: "u-title", newStatus: "commitment_issued" })
+    check("a replayed title status sends nothing", rows(db3, "client_portal_messages").filter((m) => /title record shows/.test(m.body)).length === 1)
+    G.__PA.lender = null; G.__PA.title = null
+  }
+
+  // ═══ 155F2 item 3 — the fourth door ═══
+  section("155F2 item 3 — the buyer assistant's free question takes the SAME decision as the portal (no model on this door)")
+  {
+    const { handleBuyerVoiceRequest } = await import("../lib/buyer-execution/voice-assistant-integration")
+    const db = world(); G.__PA.svc = db; G.__PA.model.calls = 0; G.__PA.stream = 0
+    const v = await handleBuyerVoiceRequest({ contactId: C1, intent: "general_question", transcript: "Has my lender cleared me to close?", brokerageId: B1 })
+    const p = await qad.decidePortalAnswer(db, { brokerageId: B1, contactId: C1, question: "Has my lender cleared me to close?", agentName: "Alex" })
+    check("voice: the same question → the SAME decision text as the portal decision (the record's answer, never a yes)", v.spokenResponse === p.text && /No clear-to-close from your lender is recorded/.test(v.spokenResponse), [v.spokenResponse, p.text])
+    check("voice: ONE task for the assigned agent (deduplicated with the portal's), 0 model calls on this door", qTasks(db).length === 1 && G.__PA.model.calls === 0 && G.__PA.stream === 0 && rows(db, "agent_action_ledger").some((l) => l.action === "portal.question.ding" && l.system_source === "buyer_assistant"))
+    const k = await handleBuyerVoiceRequest({ contactId: C1, intent: "general_question", transcript: "What is an appraisal contingency?", brokerageId: B1 })
+    check("voice: a general question is answered from the verified help base with its source", /appraises below the agreed price/.test(k.spokenResponse) && (k.displayData as any)?.answered === "sourced")
+    const none = await handleBuyerVoiceRequest({ contactId: C1, intent: "general_question", transcript: "Has my lender cleared me to close?" })
+    const other = await handleBuyerVoiceRequest({ contactId: C1, intent: "general_question", transcript: "What is my closing date?", brokerageId: B2 })
+    check("voice: no session tenant → refused (fail closed); another tenant's session reads nothing of this contact", !none.success && !other.success && !/2027-01-15/.test(other.spokenResponse))
+  }
+
+  // ═══ 155F2 item 4 — SCOPE-006: the EXISTING arbiter chooses the follow-up inside its budget ═══
+  section("155F2 item 4 / SCOPE-006 — the follow-up arbiter chooses how the answer is delivered; over budget the fallback answers, the late result never sends")
+  {
+    const { DEFAULT_FOLLOWUP_POLICY } = await import("../lib/ai-isa/followup-policy")
+    const arb = await import("../lib/ai-isa/followup-arbiter")
+    check("the budget is the arbiter's own INTERACTIVE ceiling (2.5 s), not a number of this lane's", arb.ARBITER_LATENCY_BUDGET_MS.interactive === 2_500)
+    const openClosingTask = (db: MemClient) => { (db as any).tables.tasks.push({ id: "pq-close-1", brokerage_id: B1, contact_id: C1, transaction_id: T1, assigned_to_agent_id: AG1, status: "pending", source: "portal_question", tags: ["pq:x", "portal_question", "pq_fact:closing_date"], description: "Question (exact): \"when do we close?\"", title: "Client question — confirm the closing date" }) }
+    // Two records answer the closing date (the executed amendment + the title schedule) → the arbiter has a real choice.
+    const twoSources = (db: MemClient) => { (db as any).tables.transaction_title_escrow[0].closing_scheduled_date = dayOffset(60) }
+    let decides = 0, late = 0
+    const slowDecide = async () => { decides++; await new Promise((res) => setTimeout(res, 150)); return { optionId: "answer_with_video", channel: "in_app", format: "avatar_video", rationale: "several records — a short explainer helps", evidence: ["moment", "journey"], confidence: 0.8 } }
+    const db = world(); G.__PA.svc = db; openClosingTask(db); twoSources(db)
+    const t0 = Date.now()
+    const re = await qad.reevaluateOpenQuestionsForDeal(db, { brokerageId: B1, transactionId: T1, now: NOW }, { chooseFollowUp: (d, a) => qad.chooseAnswerFollowUp(d, { ...a, decide: slowDecide, budgetMs: 30, policy: DEFAULT_FOLLOWUP_POLICY as any, onLate: () => { late++ } }) })
+    const took = Date.now() - t0
+    const sent = () => rows(db, "client_portal_messages").filter((m) => /An update on your question/.test(m.body))
+    const task = rows(db, "tasks").find((t) => t.id === "pq-close-1")
+    check("SCOPE-006: the arbiter over its budget → the planned fallback (the written answer) went IN TIME; the task closed and says the fallback ran", re.followUps === 1 && sent().length === 1 && took < 140 && task?.status === "completed" && /arbiter over its budget/.test(task?.description ?? ""), { took, re, d: task?.description })
+    await new Promise((res) => setTimeout(res, 200))
+    check("SCOPE-006: the LATE result arrived once (evidence only) and sent NOTHING — still one message, no video tag", late === 1 && decides === 1 && sent().length === 1 && !(task?.tags ?? []).includes("pq_video_suggested"))
+    // POSITIVE CONTROL: an on-time arbiter choice is honored (video suggested beside the written answer — never instead of it).
+    const db2 = world(); G.__PA.svc = db2; openClosingTask(db2); twoSources(db2)
+    await qad.reevaluateOpenQuestionsForDeal(db2, { brokerageId: B1, transactionId: T1, now: NOW }, { chooseFollowUp: (d, a) => qad.chooseAnswerFollowUp(d, { ...a, decide: async () => ({ optionId: "answer_with_video", channel: "in_app", format: "avatar_video", rationale: "several records — a short explainer helps", evidence: ["moment", "journey"], confidence: 0.8 }), budgetMs: 1000, policy: DEFAULT_FOLLOWUP_POLICY as any }) })
+    const t2 = rows(db2, "tasks").find((t) => t.id === "pq-close-1")
+    check("POSITIVE CONTROL: an on-time AI choice of a video is honored — the written answer still went, the task tagged pq_video_suggested", rows(db2, "client_portal_messages").filter((m) => /An update on your question/.test(m.body)).length === 1 && (t2?.tags ?? []).includes("pq_video_suggested") && /answer with video \(ai/.test(t2?.description ?? ""), t2?.description)
+    const one = await qad.chooseAnswerFollowUp(db2, { brokerageId: B1, contactId: C1, fact: "lender_clearance", answer: "x", sources: ["transaction_lenders:tl-1.clear_to_close_date"], decide: async () => { decides++; return {} } })
+    check("a single-record answer has ONE way to answer — the arbiter's model is not asked (no spend for no choice)", one.optionId === "answer_on_portal" && one.source === "deterministic" && one.menu.length === 1 && decides === 1)
+  }
+
+  // ═══ 155F2 item 5 — the task row opens the reply panel ═══
+  section("155F2 item 5 — a portal-question task opens the client's reply panel from the agent's task list")
+  {
+    const page = code("app/dashboard/tasks/page.tsx")
+    const linkRe = /task\.source\s*===\s*["']portal_question["'][\s\S]{0,200}href=\{`\/portal\/\$\{task\.contact_id\}\/help`\}/
+    check("the task row links source='portal_question' tasks to /portal/<contact_id>/help", linkRe.test(page))
+    check("the literal on the page IS the decision module's PORTAL_QUESTION_TASK_SOURCE (the two cannot drift)", qad.PORTAL_QUESTION_TASK_SOURCE === "portal_question")
+    check("POSITIVE CONTROL: the link finder sees a specimen and rejects a wrong href", linkRe.test('task.source === "portal_question" && x && (<Link href={`/portal/${task.contact_id}/help`}>') && !linkRe.test('task.source === "portal_question" && (<Link href={`/dashboard/tasks/${task.id}`}>'))
+  }
+
+  // ═══ 155F2 item 6 — one vocabulary: two spellings, one subject ═══
+  section("155F2 item 6 — `website_question:<topic>` and `ti:customer_question:<theme>` are ONE subject; new topics carry one key")
+  {
+    const wq = await import("../lib/customer-intelligence/website-question-topics")
+    const themesSrc = code("lib/content-intel/topic-themes.ts")
+    const themeKeys = new Set([...themesSrc.matchAll(/\{\s*key:\s*"([a-z_]+)"/g)].map((m) => m[1]))
+    const unmapped = Object.values(wq.QUESTION_TOPIC_THEME).filter((v) => !themeKeys.has(v))
+    check("every mapping target is a REAL theme key in topic-themes.ts (a mapping onto an absent name would merge nothing)", themeKeys.size >= 20 && unmapped.length === 0, { unmapped, themes: themeKeys.size })
+    check("POSITIVE CONTROL: the theme-key finder rejects a name that is not a theme", !themeKeys.has("not_a_theme") && themeKeys.has("closing_costs"))
+    const faqSrc = code("lib/customer-intelligence/website-question-topics.ts")
+    const faqBlock = faqSrc.slice(faqSrc.indexOf("CONSUMER_FAQ_TITLES"), faqSrc.indexOf("})", faqSrc.indexOf("CONSUMER_FAQ_TITLES")))
+    const faqTopics = [...faqBlock.matchAll(/^\s+([a-z_]+):\s*"/gm)].map((m) => m[1])
+    check("every consumer-FAQ lexicon topic is mapped (none keeps the retired spelling for a NEW topic)", faqTopics.length >= 10 && faqTopics.every((t) => wq.questionSubjectKey(t).startsWith(wq.CUSTOMER_QUESTION_SUBJECT_PREFIX)), faqTopics.filter((t) => !wq.QUESTION_TOPIC_THEME[t]))
+    check("the reader: 'website_question:earnest_money' and 'ti:customer_question:escrow_title' are ONE subject; POSITIVE CONTROL: closing costs is another", wq.subjectOfTopicKey("website_question:earnest_money") === "escrow_title" && wq.subjectOfTopicKey("ti:customer_question:escrow_title") === "escrow_title" && wq.subjectOfTopicKey("website_question:closing_costs") === "closing_costs" && wq.subjectOfTopicKey("ti:other:closing_costs") === null)
+    // Behavior: three askers of closing costs; a LIVE row under the retired key is adopted (merged), never duplicated.
+    const seed = (db: MemClient) => {
+      for (const [i, s] of ["v-1", "v-2", "v-3"].entries()) {
+        ;(db as any).tables.chat_sessions.push({ id: s, brokerage_id: B1, contact_id: null, session_type: "website_widget", created_at: new Date().toISOString() })
+        ;(db as any).tables.chat_messages.push({ id: `vm-${i}`, session_id: s, role: "user", content: "What closing costs should a buyer expect?", created_at: new Date().toISOString() })
+      }
+    }
+    const reader = (db: MemClient) => async (_d: unknown, a: { brokerageId: string; since: string }) => ({ rows: rows(db, "chat_messages").filter((m) => m.role === "user" && rows(db, "chat_sessions").some((s) => s.id === m.session_id && s.brokerage_id === a.brokerageId)).map((m) => ({ askerKey: `s:${m.session_id}`, content: m.content, createdAt: m.created_at, channel: "website" as const })) })
+    const fresh = world(); seed(fresh)
+    const n1 = await wq.considerCustomerQuestion(fresh, { brokerageId: B1, text: "What closing costs should a buyer expect?" }, { readQuestions: reader(fresh) })
+    check("a NEW topic carries the ONE key `ti:customer_question:closing_costs`", n1.status === "submitted" && rows(fresh, "content_topic_bank").length === 1 && rows(fresh, "content_topic_bank")[0].raw_data?.dedup_key === "ti:customer_question:closing_costs", rows(fresh, "content_topic_bank")[0]?.raw_data?.dedup_key)
+    const legacy = world(); seed(legacy)
+    ;(legacy as any).tables.content_topic_bank.push({ id: "ctb-legacy", brokerage_id: B1, topic_title: "What closing costs should I expect, and which ones are usually the buyer's or the seller's?", status: "active", raw_data: { dedup_key: "website_question:closing_costs" }, created_at: new Date().toISOString() })
+    const n2 = await wq.considerCustomerQuestion(legacy, { brokerageId: B1, text: "What closing costs should a buyer expect?" }, { readQuestions: reader(legacy) })
+    check("a LIVE row under the retired key is ADOPTED: the idea merges into it — still ONE topic, nothing re-keyed", n2.status === "submitted" && rows(legacy, "content_topic_bank").length === 1 && rows(legacy, "content_topic_bank")[0].raw_data?.dedup_key === "website_question:closing_costs", { n2, bank: rows(legacy, "content_topic_bank").map((b) => b.raw_data?.dedup_key) })
+    ;(legacy as any).tables.content_topic_bank.push({ id: "ctb-ti", brokerage_id: B1, topic_title: "Closing costs — what they are and who pays them", status: "active", raw_data: { dedup_key: "ti:customer_question:closing_costs" }, created_at: new Date().toISOString() })
+    ;(legacy as any).tables.content_topic_uses.push({ id: "u1", brokerage_id: B1, topic_id: "ctb-ti", used_at: new Date(NOW.getTime() - 86_400_000).toISOString() }, { id: "u2", brokerage_id: B1, topic_id: "ctb-legacy", used_at: new Date(NOW.getTime() - 3 * 86_400_000).toISOString() })
+    const m = await wq.readQuestionLoopMetrics(legacy, { brokerageId: B1, now: NOW }, { readQuestions: reader(legacy) })
+    check("the reader counts the two spellings as ONE subject: one publication entry for closing_costs, first use = the earlier of the two", m.repeatsAroundPublication.filter((p) => p.theme === "closing_costs").length === 1 && m.repeatsAroundPublication.find((p) => p.theme === "closing_costs")?.firstUsedAt === new Date(NOW.getTime() - 3 * 86_400_000).toISOString(), m.repeatsAroundPublication)
+  }
+
   // ═══ wiring (stripped source) ═══
   section("wiring — the three doors use the ONE decision; nothing reached by a second chatbot")
   {
@@ -353,6 +576,26 @@ async function main() {
     const qadSrc = code("lib/portal/question-answer-decision.ts")
     check("no static runtime import in the decision module (the feeder imports its pure classifier without the readers)", !/^import\s+(?!type\b)/m.test(qadSrc))
     check("POSITIVE CONTROL: the static-import finder sees a specimen", /^import\s+(?!type\b)/m.test('import { x } from "y"\n'))
+  }
+
+  // ═══ the portal assistant's own door (wired at merge) ═══
+  section("wiring — the portal assistant route answers through the ONE decision, never with raw model text")
+  {
+    // A client-facing route may call the model ONLY inside the decision's draft callback, and what it returns is the decision's
+    // text. The rule is read from stripped source; the control is the route's own pre-wave-155 shape.
+    const screenedDoor = (srcText: string): boolean => {
+      const c = stripComments(srcText)
+      const at = c.indexOf("generateAIResponse(")
+      const draftAt = c.indexOf("generalAnswer:")
+      return /decidePortalAnswer\(/.test(c) && /fileQuestionDing\(/.test(c) && /const responseText = decision\.text\b/.test(c)
+        && at > 0 && draftAt > 0 && at > draftAt && !/\bresponse\.text\b/.test(c)
+    }
+    const assistant = readFileSync(join(ROOT, "app/api/portal/ai-assistant/route.ts"), "utf8")
+    check("app/api/portal/ai-assistant: the model is called only inside the decision's draft callback and the client receives decision.text", screenedDoor(assistant))
+    check("the route gates on the contact before anything (requireContactAccess precedes the decision) and takes the tenant from that gate", (() => { const c = stripComments(assistant); const g = c.indexOf("requireContactAccess("); const d = c.indexOf("decidePortalAnswer("); return g > 0 && d > g && /brokerageId:\s*access\.brokerageId/.test(c) })())
+    check("POSITIVE CONTROL: the pre-wave-155 shape (the model's text returned as the answer) fails the rule",
+      !screenedDoor('const response = await generateAIResponse({ prompt: fullPrompt })\nconst text = response.text\nreturn NextResponse.json({ response: text })'))
+    check("NEGATIVE CONTROL: a comment naming the decision is not a call", !screenedDoor('// decidePortalAnswer( fileQuestionDing( const responseText = decision.text generalAnswer: generateAIResponse(\nconst t = (await generateAIResponse({})).text'))
   }
 
   console.log(`\n${passed} passed, ${failed} failed  (SIMULATED — in-memory database; model, embedder and arbiter gate are counted seams)`)

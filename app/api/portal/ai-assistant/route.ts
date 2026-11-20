@@ -191,33 +191,49 @@ User: ${message}
 
 Please respond as the AI assistant.`
 
-    const response = await generateAIResponse({
-      prompt: fullPrompt,
-      metadata: {
-        userId: actorContext?.userId ?? "",
-        brokerageId: actorContext?.brokerageId,
-        feature: "portal_message",
-      },
-    })
-    const text = response.text
-
-    // Parse response for suggestions and actions
-    let responseText = text
+    // THE ONE ANSWER DECISION (wave 155, lanes 155F / 155F2). This is the portal assistant's live "Something else" door, and
+    // it sent the model's text to a client UNSCREENED: a closing date, a lender status or a figure the model made up reached
+    // the client as an answer. Now the question is classified first; a deal fact is answered from the tenant's own records
+    // or not at all; and a general answer is the model's draft with every figure, date and status it cannot source removed
+    // (the client context this route already loaded counts as a source). When the answer is not enough, the responsible
+    // agent gets one task — the same decision and the same task the tutor, the home assistant and the widget use.
     let suggestions: string[] = []
     let actions: { label: string; action: string }[] = []
-
-    // Try to extract JSON from the response
-    const jsonMatch = text.match(/\{[\s\S]*"suggestions"[\s\S]*\}/)
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0])
-        suggestions = parsed.suggestions || []
-        actions = parsed.actions || []
-        responseText = text.replace(jsonMatch[0], "").trim()
-      } catch {
-        // JSON parsing failed, use text as-is
-      }
-    }
+    const qad = await import("@/lib/portal/question-answer-decision")
+    const svc = (await import("@/lib/supabase/service")).createServiceClient()
+    const question = String(message ?? "")
+    const decision = await qad.decidePortalAnswer(svc, {
+      brokerageId: access.brokerageId, contactId, question, agentName: null, extraSourceText: contextParts.join("\n"),
+      generalAnswer: async () => {
+        const raw = (await generateAIResponse({
+          prompt: fullPrompt,
+          metadata: { userId: actorContext?.userId ?? "", brokerageId: actorContext?.brokerageId, feature: "portal_message" },
+        })).text
+        // The model appends its follow-up chips as a JSON block. Split it off BEFORE the screen: only the prose is an
+        // answer, and a screen that edits prose must not be handed JSON to edit.
+        const jsonMatch = raw.match(/\{[\s\S]*"suggestions"[\s\S]*\}/)
+        if (!jsonMatch) return raw
+        try {
+          const parsed = JSON.parse(jsonMatch[0])
+          suggestions = Array.isArray(parsed.suggestions) ? parsed.suggestions.filter((x: unknown) => typeof x === "string").slice(0, 3) : []
+          actions = Array.isArray(parsed.actions) ? parsed.actions.filter((x: any) => x && typeof x.label === "string" && typeof x.action === "string").slice(0, 3) : []
+        } catch {
+          // not parseable — drop the block rather than show a client raw JSON
+        }
+        return raw.replace(jsonMatch[0], "").trim()
+      },
+    })
+    const responseText = decision.text
+    // Follow-up chips belong to a model answer that survived as written. A deterministic, held or refused answer shows none.
+    if (decision.modelCalls === 0 || decision.answered !== "sourced") { suggestions = []; actions = [] }
+    const { data: assigned, error: assignedError } = await svc.from("contacts").select("agent_id").eq("id", contactId).eq("brokerage_id", access.brokerageId).maybeSingle()
+    if (assignedError) console.error("[portal/ai-assistant] the contact's agent could not be read — no task routed:", assignedError.message)
+    const ding = await qad.fileQuestionDing(svc, {
+      brokerageId: access.brokerageId, contactId, sessionId: null,
+      agentId: (assigned as { agent_id?: string | null } | null)?.agent_id ?? null,
+      question, decision, surface: "buyer_assistant",
+    })
+    if (decision.plan.notify && !ding.filed && !ding.deduped && ding.notified === 0) console.error("[portal/ai-assistant] question task not filed:", ding.reason)
 
     return NextResponse.json({
       response: responseText,

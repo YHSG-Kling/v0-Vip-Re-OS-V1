@@ -223,7 +223,21 @@ export async function issueClearToClose(data: {
   // every Clear to Close and the discarded result swallowed the refusal.
   // transaction_id is stamped so the m482 vendor lane can later narrow from
   // has_vendor_seat() to is_assigned_vendor_on_transaction(transaction_id).
+  // ONCE PER DEAL (wave 155, lane 155F2): a replayed Clear to Close (a second click, a retried request) re-stamps the records above
+  // but does not tell the buyer again. The prior message is read on the SERVICE client after the gate (the vendor seat's own RLS
+  // cannot see client threads, so a session read would always report "none"); a refused read sends (never silence on a real CTC).
+  let ctcMessageSent = false
+  let ctcAlreadyTold = false
   if (transaction.buyer_contact_id && transaction.agent_id) {
+    const { data: priorCtc, error: priorCtcErr } = await createServiceClient().from("client_portal_messages").select("id")
+      .eq("brokerage_id", actor.brokerageId).eq("transaction_id", data.transactionId).eq("contact_id", transaction.buyer_contact_id)
+      .eq("metadata->>type", "clear_to_close").limit(1)
+    if (priorCtcErr) console.error("[lenderPortal:CTC] prior CTC message read refused — sending:", priorCtcErr.message)
+    ctcAlreadyTold = !priorCtcErr && (priorCtc ?? []).length > 0
+  }
+  if (ctcAlreadyTold) {
+    ctcMessageSent = true
+  } else if (transaction.buyer_contact_id && transaction.agent_id) {
     const { error: ctcMessageError } = await supabase.from("client_portal_messages").insert({
       brokerage_id: actor.brokerageId,
       contact_id: transaction.buyer_contact_id,
@@ -232,11 +246,12 @@ export async function issueClearToClose(data: {
       direction: "agent_to_client",
       channel: "portal",
       body: `Great news! ${actor.lenderCompany || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
+      metadata: { type: "clear_to_close", vendor_id: actor.vendorId },
       created_at: new Date().toISOString(),
     })
     if (ctcMessageError) {
       console.error("[lenderPortal:CTC] buyer CTC message refused:", ctcMessageError.message)
-    }
+    } else ctcMessageSent = true
   } else {
     console.error(
       `[lenderPortal:CTC] buyer CTC message NOT sent for transaction ${data.transactionId}: ` +
@@ -285,6 +300,22 @@ export async function issueClearToClose(data: {
     })
   } catch (err) {
     console.error("[lenderPortal:CTC] emitTransactionEvent(FINANCING_CLEAR_TO_CLOSE) failed (non-blocking)", err)
+  }
+
+  // THE CLIENT'S OPEN QUESTIONS (wave 155, lane 155F2 — owner R10, directive F1.7). The lender answered through ITS OWN seat
+  // (gated above by requireLenderVendorActor — a lender is a vendor category, never a user type), so every open portal question on
+  // this deal is re-evaluated from the record. The buyer's "am I clear to close?" closes ONCE on the Clear to Close message just
+  // sent (alreadyTold — the buyer is not told twice); a question the record still cannot answer stays open. Gate first, then the
+  // service client (the question tasks are the agent's rows). Non-blocking: the CTC itself already landed.
+  try {
+    const { reevaluateOpenQuestionsForDeal } = await import("@/lib/portal/question-answer-decision")
+    const r = await reevaluateOpenQuestionsForDeal(createServiceClient(), {
+      brokerageId: actor.brokerageId, transactionId: data.transactionId,
+      alreadyTold: ctcMessageSent && transaction.buyer_contact_id ? { fact: "lender_clearance", contactId: transaction.buyer_contact_id, evidence: "the lender's own Clear to Close message on the portal" } : null,
+    })
+    if (r.errors.length > 0) console.error("[lenderPortal:CTC] open client questions not fully re-evaluated:", r.errors.join("; "))
+  } catch (err) {
+    console.error("[lenderPortal:CTC] open client questions not re-evaluated (non-blocking):", err instanceof Error ? err.message : err)
   }
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
@@ -404,8 +435,21 @@ export async function updateLenderLoanStatus(data: {
       updated_at: new Date().toISOString(),
     })
     .eq("transaction_id", data.transactionId)
+    // The comment above always promised this predicate; the query never carried it (lane 155F2 — the tenant from the session).
+    .eq("brokerage_id", actor.brokerageId)
 
   if (error) return { success: false, error: error.message }
+
+  // THE CLIENT'S OPEN QUESTIONS (wave 155, lane 155F2): the lender answered through its own seat — open portal questions on this
+  // deal are re-evaluated from the record; one that now resolves (an approved / clear-to-close status) answers the client ONCE
+  // (the follow-up arbiter chooses how) and closes with evidence; a replay sends nothing. Non-blocking.
+  try {
+    const { reevaluateOpenQuestionsForDeal } = await import("@/lib/portal/question-answer-decision")
+    const r = await reevaluateOpenQuestionsForDeal(createServiceClient(), { brokerageId: actor.brokerageId, transactionId: data.transactionId })
+    if (r.errors.length > 0) console.error("[updateLenderLoanStatus] open client questions not fully re-evaluated:", r.errors.join("; "))
+  } catch (err) {
+    console.error("[updateLenderLoanStatus] open client questions not re-evaluated (non-blocking):", err instanceof Error ? err.message : err)
+  }
 
   // THE ASK IS ANSWERED (lane 78D, blind spot 4). app/actions/lender-status-
   // request.ts files the agent's request as `document_requests` rows (status
