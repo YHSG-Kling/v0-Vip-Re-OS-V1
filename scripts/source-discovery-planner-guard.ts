@@ -150,11 +150,14 @@ async function main() {
       && cron.indexOf("resolveSourceDoor({") > 0 && cron.indexOf("resolveSourceDoor({") < cron.indexOf("const enabledSources = expandEnabledSources(configuredSources.filter((v) => !closedTokens.includes(v)))")
       && /results\.errors\.push\(`\$\{market\.name\}: source\(s\) not run — /.test(cron))
   {
-    const plans = [{ ...approvedRow, lines: [{ source: "facebook_group", status: "approved", approvedAt: now.toISOString() }] }] as never
+    // WAVE 155 (155H): facebook_group is IDEAS-ONLY now, so the positive sample is a real acquisition source — and an approved
+    // line for an ideas-only source is asserted to admit NOTHING.
+    const plans = [{ ...approvedRow, lines: [{ source: "craigslist_wanted", status: "approved", approvedAt: now.toISOString() }] }] as never
     check("RUN: an approved per-territory line admits that source for that tenant only; an unapproved source and a tenant-less market are refused (POSITIVE + NEGATIVE)",
-      pl.paidPullApproval(plans, { brokerageId: T1, source: "facebook_group" }, now).allowed
+      pl.paidPullApproval(plans, { brokerageId: T1, source: "craigslist_wanted" }, now).allowed
         && !pl.paidPullApproval(plans, { brokerageId: T1, source: "zenrows_zillow" }, now).allowed
-        && !pl.paidPullApproval(plans, { brokerageId: null, source: "facebook_group" }, now).allowed)
+        && !pl.paidPullApproval(plans, { brokerageId: null, source: "craigslist_wanted" }, now).allowed
+        && !pl.paidPullApproval([{ ...approvedRow, lines: [{ source: "facebook_group", status: "approved", approvedAt: now.toISOString() }] }] as never, { brokerageId: T1, source: "facebook_group" }, now).allowed)
   }
 
   console.log(`\nSOURCE DISCOVERY PLANNER — ${passed} passed, ${failed} failed ${failed === 0 ? "✅ SOURCE_DISCOVERY_PLANNER_PASS" : "❌ SOURCE_DISCOVERY_PLANNER_FAIL"}`)

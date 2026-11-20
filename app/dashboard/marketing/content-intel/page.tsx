@@ -12,6 +12,7 @@ import { listContentSources, type ContentSourceRow } from "@/app/actions/content
 import { ContentSourceForm, SaveTopicObservationForm } from "./content-source-form"
 import { ToggleButton, DeleteSourceButton } from "./toggle-button"
 import { EventsAndCirclesPanel } from "./events-and-circles-panel"
+import { getIntelligenceBriefAction } from "./topic-actions"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -27,6 +28,7 @@ export default async function ContentIntelPage() {
     )
   }
 
+  const brief = await getIntelligenceBriefAction()
   const platform = result.sources.filter((s) => s.brokerage_id === null)
   const local    = result.sources.filter((s) => s.brokerage_id !== null)
 
@@ -46,6 +48,9 @@ export default async function ContentIntelPage() {
           — every intelligence topic with its source, evidence and approval state.
         </p>
       </div>
+
+      {/* Wave 155 (155H, directive H4): today's intelligence brief per active territory. */}
+      <IntelligenceBriefSection brief={brief} />
 
       {/* Wave 154 (154G3): local events (G8) and circle methods (G9) — app/actions/events-and-circles.ts. */}
       <EventsAndCirclesPanel />
@@ -83,6 +88,63 @@ export default async function ContentIntelPage() {
         <SourceTable sources={platform} editable={false} />
       </section>
     </div>
+  )
+}
+
+type BriefResult = Awaited<ReturnType<typeof getIntelligenceBriefAction>>
+
+function IntelligenceBriefSection({ brief }: { brief: BriefResult }) {
+  if (!brief.success) {
+    return (
+      <section>
+        <h2 className="text-lg font-semibold mb-3">Today&apos;s intelligence brief</h2>
+        <p className="text-sm text-red-600">{brief.error}</p>
+      </section>
+    )
+  }
+  const b = brief.brief
+  const groups = [
+    ...b.territories.map((t) => ({ key: t.id, label: t.label, entries: t.entries })),
+    { key: "tenant", label: "Across your brokerage", entries: b.tenantWide },
+  ].filter((g) => g.entries.length > 0)
+  return (
+    <section>
+      <h2 className="text-lg font-semibold mb-1">Today&apos;s intelligence brief</h2>
+      <p className="text-xs text-gray-500 mb-3">
+        Topics found or seen again in the last {b.windowHours} hours ({b.freshTotal} fresh in all), cheapest truthful source first: your own
+        customers&apos; questions, verified local facts, search demand, then public conversation (ideas only, never a lead). Engagement is
+        shown only where the source measured or reported it, and never as your own.
+      </p>
+      {groups.length === 0 ? (
+        <p className="text-sm text-gray-500">Nothing new today.</p>
+      ) : (
+        groups.map((g) => (
+          <div key={g.key} className="mb-4">
+            <h3 className="font-medium text-sm mb-1">{g.label}</h3>
+            <ul className="text-sm space-y-1">
+              {g.entries.slice(0, 12).map((e) => (
+                <li key={e.id}>
+                  <span className="font-medium">{e.title}</span>{" "}
+                  <span className="text-gray-500">
+                    · {e.rung.replace(/_/g, " ")} · evidence {e.evidence.kind}
+                    {e.evidence.value !== null ? ` (${e.evidence.metric ?? "value"} ${e.evidence.value})` : ""} · next:{" "}
+                    {e.route.route.replace(/_/g, " ")} — {e.route.why}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))
+      )}
+      {b.cost && (
+        <p className="text-xs text-gray-600 mt-2">
+          Last {b.cost.windowDays} days: intelligence spend {b.cost.spendUsd === null ? "unknown" : `$${b.cost.spendUsd}`} ({b.cost.spendBasis});{" "}
+          {b.cost.topicLinkedAssets} topic-linked asset(s); cost per asset{" "}
+          {b.cost.costPerTopicLinkedAsset === null ? "unknown" : `$${b.cost.costPerTopicLinkedAsset}`}. Cost per assisted conversation and per
+          qualified contact: unknown ({b.cost.unknownBecause}).
+        </p>
+      )}
+    </section>
   )
 }
 

@@ -22,7 +22,7 @@
 // HUNTING market (motivated-seller pulls earn their cost). Vendor scores and counts keep their own units — the
 // expected-lead figures below are observed ratios from this territory's own history, never a probability.
 
-import { SOURCE_MAP, SOURCE_VENDOR, SOURCE_PAID_PERSON_DATA, sourceRightsFor, type SourceKey } from "./source-intent-map"
+import { SOURCE_MAP, SOURCE_VENDOR, SOURCE_PAID_PERSON_DATA, resolveSourceKey, sourceRightsFor, type SourceKey } from "./source-intent-map"
 import { SOURCE_ACQUISITION } from "./acquisition-coverage"
 // The REI Playbook v5.5 method has ONE home (wave 150, lane 150KLMO): the investor buy-box criteria and the hunting/farming
 // reading come from lib/investor/rei-playbook.ts investorPlay — the two inline literals this planner carried are merged there.
@@ -35,6 +35,7 @@ import { previewAggregateList, type AggregateListPreview } from "./pre-pull-dedu
 // Wave 151 (lane 151F, integrated with 151C): the ONE reading of why a verdict refuses a paid want — paidPullApproval consumes
 // it before the approval is looked up (the verdict type is 151C's; budget-eval re-exports it).
 import { prePullRefusal } from "@/lib/vendor-governance/budget-eval"
+import { datafinitiDatasetSelection } from "./datafiniti-dataset-door"
 
 /** The acquisition plays the owner named (buyer AND seller), one vocabulary. */
 const ACQUISITION_PLAYS = [
@@ -132,7 +133,25 @@ export function previewsFromObservedSearchCounts(
 }
 
 /** `held` (wave 151, lane 151C): the pre-pull value formula held the line — never approvable, re-preview first. */
-type PlanLineStatus = "free_ready" | "proposed" | "needs_preview" | "needs_quote" | "over_budget" | "blocked_rights" | "held" | "provider_preferred" | "approved"
+type PlanLineStatus = "free_ready" | "proposed" | "needs_preview" | "needs_quote" | "over_budget" | "blocked_rights" | "held" | "provider_preferred" | "approved" | "ideas_only"
+
+// ─── IDEAS-ONLY ROUTES (wave 155, lane 155H — owner ruling R12, directive H1 / binding decision 12) ─────────────────────
+// "Facebook Groups / Meta ads / competitors / Nextdoor stay IDEAS-ONLY." At the batch-2 base (d2d6468c) the three SourceKeys
+// below were ordinary acquisition lines: with a preview and a quote planSourceDiscovery PROPOSED them, an approved plan line
+// opened resolveSourceDoor for them, and app/api/cron/lead-scraping/route.ts (which asks resolveSourceDoor for every configured
+// per-territory source before it builds enabledSources) would file their posts as Raw Leads. Their content reaches the ONE
+// topic intake instead (lib/content-intel/public-chatter-topics.ts — Nextdoor posts, Facebook group questions, Meta Ad
+// Library creatives, reworded, no author, no contact). Meta ads and competitor posts have no SourceKey (they never were an
+// acquisition line). A self-identified public person stating their own need is path B (lib/acquisition-plays/public-request.ts).
+export const IDEAS_ONLY_SOURCES: ReadonlySet<SourceKey> = new Set<SourceKey>(["facebook_group", "facebook_recommend_realtor", "nextdoor_intent"])
+
+/** PURE — why `source` may never become a Raw Lead (null = not an ideas-only route). Aliases resolve first ("nextdoor"). */
+export function ideasOnlySourceProblem(source: string): string | null {
+  const key = resolveSourceKey(String(source ?? ""))
+  return IDEAS_ONLY_SOURCES.has(key)
+    ? `${key} is an IDEAS-ONLY route (owner ruling R12): its public posts feed the topic pool through the one topic intake, reworded — never a Raw Lead, a purchased person or an outreach list`
+    : null
+}
 
 // ─── PROVIDER FIRST (wave 153, lane 153N — owner ruling B3, verbatim: "scraping needs to be current data but if you can get
 // the info from a data provider, then that is the safer bet") ───────────────────────────────────────────────────────────
@@ -302,7 +321,9 @@ export function planSourceDiscovery(input: {
       status: "proposed", why: "",
     }
     const preferred = providerFirstVerdict(source, input.configuredProviders ?? [])
-    if (rights === "unknown") { line.status = "blocked_rights"; line.why = "no rights basis names this source" }
+    const ideasOnly = ideasOnlySourceProblem(source)
+    if (ideasOnly) { line.status = "ideas_only"; line.why = ideasOnly }
+    else if (rights === "unknown") { line.status = "blocked_rights"; line.why = "no rights basis names this source" }
     else if (preferred) { line.status = "provider_preferred"; line.why = `${preferred.provider} supplies ${preferred.fact} (${preferred.endpoint}) — a data provider is the safer source than a scrape (owner ruling B3)` }
     else if (!paid) { line.status = "free_ready"; line.why = "first-party — the tenant's own data, no vendor call, no spend" }
     else if (reach === null) { line.status = "needs_preview"; line.why = "no free preview count and no history — nothing to show before buying" }
@@ -471,6 +492,9 @@ function approvedPlanLine(
 ): { allowed: true; planId: string; maxSpendUsd: number | null; approvedAt: string | null } | { allowed: false; reason: string } {
   if (plans === null) return { allowed: false, reason: "the acquisition-plan store could not be read" }
   if (!want.brokerageId) return { allowed: false, reason: "no tenant owns this share — a platform pull needs a tenant's approval" }
+  // Wave 155 (155H, R12): an approval stored before the ruling cannot reopen an ideas-only route.
+  const ideasOnly = ideasOnlySourceProblem(want.source)
+  if (ideasOnly) return { allowed: false, reason: ideasOnly }
   for (const p of plans) {
     if (p.brokerage_id !== want.brokerageId || p.status !== "approved") continue
     if (!p.valid_until || Date.parse(p.valid_until) < now.getTime()) continue
@@ -513,6 +537,9 @@ export function resolveSourceDoor(input: {
     return { ...v, allowed: false, reason: `${v.door} door open, but the pre-pull value formula ${value!.decision === "hold" ? "holds" : "refuses"} this pull — ${why}` }
   }
 
+  // Wave 155 (155H, R12): FIRST — no plan, provider, tenant connection or public-source door opens an ideas-only route.
+  const ideasOnly = ideasOnlySourceProblem(input.source)
+  if (ideasOnly) { tried.push(`ideas-only: ${ideasOnly}`); return base("unavailable", false, ideasOnly, vendor !== "internal" && vendor !== "osint") }
   if (rights.rights === "unknown" || vendor === null) {
     return base("unavailable", false, `no vendor contract names ${input.source} — its rights basis is unknown and is never guessed (fail closed)`, true)
   }
@@ -589,4 +616,223 @@ export function paidPullApproval(
   const v = resolveSourceDoor({ source: want.source, brokerageId: want.brokerageId, plans, platform: door.platform ?? null, tenant: door.tenant ?? null, value: door.value ?? null, now })
   if (!v.allowed) return { allowed: false, reason: v.reason, door: v.door }
   return { allowed: true, planId: v.planId ?? `door:${v.door}`, maxSpendUsd: v.maxSpendUsd, approvedAt: v.approvedAt, door: v.door }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// THE INTELLIGENCE SOURCE LADDER — ONE SELECTOR (wave 155, lane 155H — directive H1 / H2 / H4, owner ruling R12)
+// ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// Owner: "ai can also do searches for popular trends/people posts … creative and safe reasonable ways to collect data and hot
+// topics … keeping in mind our roadblocks." The answer is a CHEAPEST-TRUTHFUL-SOURCE ladder, decided here and nowhere else
+// (an extension of this planner, not a second one). PURE — no client, no network, no credential: a caller states each
+// candidate's facts (status, rights, fields, territory, age, cost, rate limit, overlap) and this picks the lowest rung that is
+// allowed and fit for the outcome, saying for every other candidate why it was not used.
+//
+// THREE SOURCE CLASSES, THREE ALLOWED OUTCOMES (H1) — enforced below, not described:
+//   · idea            → the topic pool ONLY (public chatter, Facebook group topics, Meta Ad Library themes, competitor
+//                        content, Reddit, trends). Never a Raw Lead.
+//   · acquisition     → the canonical RawData → Raw Lead path ONLY (consented first-party inquiry, a licensed person
+//                        dataset, a self-identified public person through path B). Never the topic pool as a lead surrogate.
+//   · market_evidence → education / search, and the topic pool for an education piece (permitted public records, licensed
+//                        property / sold data, confirmed local events). Anonymous aggregate interest is never a person.
+// A PAID candidate is never chosen without license + approval (`paidApproved`) — the selector then authorizes ZERO paid calls,
+// and an unknown cost is never read as free.
+
+export type IntelligenceSourceClass = "idea" | "acquisition" | "market_evidence"
+export type IntelligenceOutcome = "topic_pool" | "raw_data" | "education_search"
+
+export const INTELLIGENCE_CLASS_OUTCOMES: Readonly<Record<IntelligenceSourceClass, readonly IntelligenceOutcome[]>> = Object.freeze({
+  idea: ["topic_pool"],
+  acquisition: ["raw_data"],
+  market_evidence: ["education_search", "topic_pool"],
+})
+
+/** The ladder, cheapest truthful source first. The index IS the preference order. */
+export const INTELLIGENCE_LADDER = [
+  "cached_verified",  // a verified record already held — no call at all
+  "first_party",      // questions / consented signals already arriving: website chat, portal, appointments, saved-home patterns
+  "public_fact",      // accessible public government facts, verified market data, independently confirmed local events
+  "search_demand",    // aggregate (anonymous) search interest — Trends / Search Console / first-party demand
+  "public_chatter",   // public posts and questions — IDEAS ONLY
+  "grounded_person",  // a self-identified public person stating their own need — the gated RawData path B only
+  "licensed_dataset", // paid structured data — a COUNTED gap-filler, after everything free
+  "costly_scrape",    // a duplicate scrape — last
+] as const
+export type IntelligenceRung = (typeof INTELLIGENCE_LADDER)[number]
+
+/** Which classes a rung may serve (a public post can never be an acquisition source; a grounded person never a topic). */
+const RUNG_CLASSES: Readonly<Record<IntelligenceRung, readonly IntelligenceSourceClass[]>> = Object.freeze({
+  cached_verified: ["idea", "acquisition", "market_evidence"],
+  first_party: ["idea", "acquisition", "market_evidence"],
+  public_fact: ["market_evidence"],
+  search_demand: ["idea", "market_evidence"],
+  public_chatter: ["idea"],
+  grounded_person: ["acquisition"],
+  licensed_dataset: ["acquisition", "market_evidence"],
+  costly_scrape: ["idea", "acquisition", "market_evidence"],
+})
+
+/** A paid candidate whose records overlap what is already held by at least this ratio is not bought (a stated policy line,
+ *  not a measurement: nine in ten already held means the pull mostly re-buys). Measured overlap only — unknown is not assumed. */
+export const LADDER_MAX_PAID_OVERLAP = 0.9
+
+export interface IntelligenceSourceCandidate {
+  key: string
+  rung: IntelligenceRung
+  sourceClass: IntelligenceSourceClass
+  status: "available" | "not_connected" | "owner_held" | "license_held" | "refused"
+  rights: "licensed" | "first_party" | "public_record" | "public_read_reworded" | "public_citation" | "unknown"
+  /** The fields this source can supply; null = unknown (a paid source is never bought to find out). */
+  fieldsAvailable: readonly string[] | null
+  /** Does the source cover the tenant's authorized territory? null = unknown. */
+  territoryCovered: boolean | null
+  /** Age of the newest event / record the source would supply, in days; null = unknown. */
+  eventAgeDays: number | null
+  /** The freshness window this outcome tolerates for this source, in days; null = no window stated. */
+  maxAgeDays: number | null
+  /** Estimated total cost in USD (provider + enrichment + AI); null = unknown (never read as 0). */
+  estimatedCostUsd: number | null
+  paid: boolean
+  /** Calls left in the source's rate-limit window; null = unknown. */
+  rateLimitRemaining: number | null
+  /** Measured share of the records already held (pre-pull dedup); null = unknown. */
+  dedupOverlapRatio: number | null
+  /** A private group / sign-in page — never read, under any class. */
+  privateSource?: boolean
+  /** THE pre-pull value verdict for a paid candidate, when evaluated (pre-pull-value.ts); a hold / refuse closes it. */
+  value?: PrePullValueVerdict | null
+}
+
+export interface IntelligenceNeed {
+  outcome: IntelligenceOutcome
+  neededFields?: readonly string[]
+  budgetUsd: number | null
+  /** License recorded AND a spend approval exists (an approved plan line or a door with a ceiling). False → zero paid calls. */
+  paidApproved: boolean
+}
+
+export interface LadderTrailEntry { key: string; rung: IntelligenceRung; verdict: "chosen" | "eligible" | "deferred" | "refused"; why: string }
+
+export interface LadderChoice {
+  chosen: IntelligenceSourceCandidate | null
+  trail: LadderTrailEntry[]
+  /** 1 only when the chosen candidate is paid and approved; the caller's paid seam is counted against this. */
+  paidCallsAuthorized: number
+  reason: string
+}
+
+/** PURE — one candidate against one need: null when eligible, else the refusal; a "defer:" prefix = eligible later. */
+function ladderProblem(c: IntelligenceSourceCandidate, need: IntelligenceNeed): string | null {
+  if (c.privateSource) return "a private group or sign-in page — never read (no fetch is made)"
+  if (!INTELLIGENCE_CLASS_OUTCOMES[c.sourceClass].includes(need.outcome)) return `a ${c.sourceClass} source may feed ${INTELLIGENCE_CLASS_OUTCOMES[c.sourceClass].join(" / ")}, never ${need.outcome}`
+  if (!RUNG_CLASSES[c.rung].includes(c.sourceClass)) return `the ${c.rung} rung cannot serve the ${c.sourceClass} class`
+  if (need.outcome === "raw_data") { const io = ideasOnlySourceProblem(c.key); if (io) return io }
+  if (c.status !== "available") return c.status === "license_held" ? "LICENSE-HELD — no rights on record" : c.status === "owner_held" ? "OWNER-HELD" : c.status === "not_connected" ? "not connected" : "refused by its own gate"
+  if (c.rights === "unknown") return "rights unknown — never guessed"
+  if (c.territoryCovered === false) return "outside the tenant's authorized territory"
+  if (c.territoryCovered === null && need.outcome === "raw_data") return "territory coverage unknown — a person record needs a territory"
+  if (c.eventAgeDays !== null && c.maxAgeDays !== null && c.eventAgeDays > c.maxAgeDays) return `stale — ${c.eventAgeDays} days old against a ${c.maxAgeDays}-day window`
+  if (c.eventAgeDays === null && need.outcome === "raw_data") return "record age unknown — a person's need is current only with a date"
+  const needed = need.neededFields ?? []
+  if (needed.length) {
+    if (c.fieldsAvailable === null) { if (c.paid) return `field availability unknown — never paid for to find out (${needed.join(", ")})` }
+    else { const missing = needed.filter((f) => !c.fieldsAvailable!.includes(f)); if (missing.length) return `does not supply ${missing.join(", ")}` }
+  }
+  if (c.paid) {
+    if (!need.paidApproved) return "paid source without license + approval — 0 paid calls authorized"
+    if (c.estimatedCostUsd === null) return "estimated cost unknown — an unknown cost is not zero"
+    if (need.budgetUsd === null) return "no budget ceiling recorded — a paid pull needs one"
+    if (c.estimatedCostUsd > need.budgetUsd) return `$${c.estimatedCostUsd} exceeds the $${need.budgetUsd} ceiling`
+    if (c.dedupOverlapRatio !== null && c.dedupOverlapRatio >= LADDER_MAX_PAID_OVERLAP) return `${Math.round(c.dedupOverlapRatio * 100)}% of its records are already held — the pull would mostly re-buy`
+    const why = c.value ? prePullRefusal(c.value) : null
+    if (why) return `the pre-pull value formula refuses — ${why}`
+  }
+  if (c.rateLimitRemaining !== null && c.rateLimitRemaining <= 0) return "defer: rate limit exhausted for this window"
+  return null
+}
+
+/**
+ * PURE — THE SELECTOR. The lowest eligible rung wins; within a rung, the lower known cost (a free candidate before a costed
+ * one). Every candidate gets a trail line. Nothing is called here; `paidCallsAuthorized` is what the caller's paid seam may
+ * spend against (0 unless the chosen candidate is paid and approved).
+ */
+export function chooseIntelligenceSource(need: IntelligenceNeed, candidates: readonly IntelligenceSourceCandidate[]): LadderChoice {
+  const trail: LadderTrailEntry[] = []
+  const eligible: IntelligenceSourceCandidate[] = []
+  for (const c of candidates) {
+    const p = ladderProblem(c, need)
+    if (p === null) { eligible.push(c); continue }
+    trail.push({ key: c.key, rung: c.rung, verdict: p.startsWith("defer:") ? "deferred" : "refused", why: p.replace(/^defer:\s*/, "") })
+  }
+  const rank = (c: IntelligenceSourceCandidate) => INTELLIGENCE_LADDER.indexOf(c.rung)
+  const cost = (c: IntelligenceSourceCandidate) => (c.paid ? c.estimatedCostUsd ?? Number.POSITIVE_INFINITY : 0)
+  eligible.sort((a, b) => rank(a) - rank(b) || cost(a) - cost(b))
+  const chosen = eligible[0] ?? null
+  for (const c of eligible) trail.push({ key: c.key, rung: c.rung, verdict: c === chosen ? "chosen" : "eligible", why: c === chosen ? `lowest eligible rung (${c.rung})${c.paid ? ` — paid, approved, $${c.estimatedCostUsd}` : " — no spend"}` : `eligible, but ${chosen!.rung} is cheaper on the ladder` })
+  return {
+    chosen, trail, paidCallsAuthorized: chosen && chosen.paid ? 1 : 0,
+    reason: chosen ? `${chosen.key} (${chosen.rung}) for ${need.outcome}` : `no source is eligible for ${need.outcome} — ${trail.map((t) => `${t.key}: ${t.why}`).join(" · ") || "no candidates"}`,
+  }
+}
+
+/**
+ * THE LICENSED-DATASET SEAM (lane 155I requests its selector rows here — Datafiniti's people / property / business / product
+ * datasets, and any other licensed provider). A provider row becomes a ladder candidate on the licensed_dataset rung; dormant
+ * pending rights or no rights record → license_held (zero calls); unit price × records when both are known, else unknown.
+ */
+export interface LicensedDatasetSelectorRow {
+  provider: string
+  dataset: string
+  sourceClass: Extract<IntelligenceSourceClass, "acquisition" | "market_evidence">
+  activation: PlatformProviderDoor["activation"]
+  rightsRecorded: boolean
+  fields: readonly string[] | null
+  unitUsd: number | null
+  records: number | null
+  territoryCovered: boolean | null
+  eventAgeDays?: number | null
+  maxAgeDays?: number | null
+  dedupOverlapRatio?: number | null
+  rateLimitRemaining?: number | null
+}
+
+/**
+ * THE DATAFINITI ROWS ON THE PAID RUNG (lane 155I's carry-in). Datafiniti property / business / product are dataset NEEDS
+ * decided by 155I's own door (schema → count → overlap → approval), never acquisition SourceKeys; people stays
+ * `datafiniti_people` with no acquisition play. The rows reach this ladder ONLY through this seam, bound by the integrator to
+ * lib/lead-pipeline/datafiniti-dataset-door.ts datafinitiDatasetSelection. Unbound (null) → no Datafiniti candidate at all.
+ */
+export type DatafinitiDatasetSeam = () => ReadonlyArray<{ dataset: string; role: string; licenseHeld: boolean }>
+/** Production binding — null until the integrator binds it (the exact line is in lane 155H's notes). */
+// BOUND (wave 155, at merge of lanes 155H + 155I): the ladder reads the ONE dataset selection (lib/lead-pipeline/datafiniti-dataset-door.ts).
+// Every row is license-held today, so none is spendable — the rule is asserted by test:intelligence-brief on whatever this returns.
+export const PRODUCTION_DATAFINITI_DATASET_SEAM: DatafinitiDatasetSeam | null = () => datafinitiDatasetSelection().map((r) => ({ dataset: r.dataType, role: r.selection, licenseHeld: r.licenseHeld }))
+
+/** PURE — the seam's rows as ladder candidates. A licenseHeld row is license_held (NO spend is ever offered); a row its door
+ *  calls not_needed / dormant is refused here; a conditional row is available with an UNKNOWN cost, so the ladder never buys it
+ *  until 155I's door supplies a count and a quote. */
+export function datafinitiLadderCandidates(seam: DatafinitiDatasetSeam | null = PRODUCTION_DATAFINITI_DATASET_SEAM): IntelligenceSourceCandidate[] {
+  if (!seam) return []
+  return seam().map((r) => ({
+    key: `datafiniti:${r.dataset}`, rung: "licensed_dataset" as const, sourceClass: r.dataset === "people" ? "acquisition" as const : "market_evidence" as const,
+    status: r.licenseHeld ? "license_held" as const : r.role === "conditional_gap_fill" ? "available" as const : "refused" as const,
+    rights: r.licenseHeld ? "unknown" as const : "licensed" as const, fieldsAvailable: null, territoryCovered: null, eventAgeDays: null, maxAgeDays: null,
+    estimatedCostUsd: null, paid: true, rateLimitRemaining: null, dedupOverlapRatio: null,
+  }))
+}
+
+/** PURE — the Datafiniti rows that may be offered ANY spend (never a licenseHeld row). Today all four are license-held → []. */
+export function spendableDatafinitiRows(seam: DatafinitiDatasetSeam | null = PRODUCTION_DATAFINITI_DATASET_SEAM): string[] {
+  return seam ? seam().filter((r) => !r.licenseHeld).map((r) => r.dataset) : []
+}
+
+export function licensedDatasetCandidate(row: LicensedDatasetSelectorRow): IntelligenceSourceCandidate {
+  const held = row.activation === "dormant_pending_rights" || !row.rightsRecorded
+  return {
+    key: `${row.provider}:${row.dataset}`, rung: "licensed_dataset", sourceClass: row.sourceClass,
+    status: held ? "license_held" : row.activation === "active" ? "available" : "not_connected",
+    rights: held ? "unknown" : "licensed", fieldsAvailable: row.fields, territoryCovered: row.territoryCovered,
+    eventAgeDays: row.eventAgeDays ?? null, maxAgeDays: row.maxAgeDays ?? null,
+    estimatedCostUsd: row.unitUsd !== null && row.records !== null ? Math.round(row.unitUsd * row.records * 100) / 100 : null,
+    paid: true, rateLimitRemaining: row.rateLimitRemaining ?? null, dedupOverlapRatio: row.dedupOverlapRatio ?? null,
+  }
 }

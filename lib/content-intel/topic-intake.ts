@@ -76,6 +76,8 @@ export type TopicExclusionReason =
 
 /** Intake refusals beyond the R9 gate — machine-readable, returned in `excluded`, never stored. */
 type TopicIntakeRefusal = "personal_data_in_topic" | "rights_unknown" | "stale_source" | "already_expired" | "empty_title" | "invalid_observed_at"
+  // wave 155 (lane 155H — directive H2, eval INJECT-002)
+  | "embedded_instruction" | "unmeasured_trend_claim" | "late_news_as_breaking"
 
 /** What a person is told when an idea was NOT stored — one sentence per reason in the two closed vocabularies above. */
 const NOT_STORED_TEXT: Readonly<Record<TopicExclusionReason | TopicIntakeRefusal, string>> = Object.freeze({
@@ -90,6 +92,9 @@ const NOT_STORED_TEXT: Readonly<Record<TopicExclusionReason | TopicIntakeRefusal
   already_expired: "The topic's freshness window has already ended.",
   empty_title: "There was no topic text to save.",
   invalid_observed_at: "The observation date could not be read.",
+  embedded_instruction: "It reads as an instruction (to send messages, ignore rules or change settings), not a topic. Instructions found in public posts are never followed or stored.",
+  unmeasured_trend_claim: "It claims to be trending or rising, but no measured or provider-reported figure supports that.",
+  late_news_as_breaking: "It calls itself breaking news, but its source is more than two days old or undated.",
 })
 /** The tenant-facing sentence for a not-stored reason; an unlisted reason gets a plain fallback, never a raw code. */
 export function explainTopicNotStored(reason: string): string {
@@ -235,6 +240,13 @@ const KIND_WINDOWS: Readonly<Record<string, { expiresDays: number; maxSourceAgeD
   news_article: { expiresDays: 21, maxSourceAgeDays: 120 },          // content-intel-rss (21 d)
   web_research: { expiresDays: 14, maxSourceAgeDays: 120 },          // content-intel-exa (14 d)
   refurbish_competitor_post: { expiresDays: 30, maxSourceAgeDays: 180 },
+  // wave 155 (155H — directive H2 "a stale trend is refused"): the search-demand kinds had NO window, so the 365-day default let
+  // a trend whose measurement window ended months ago file as current interest. The window's END is the source date
+  // (search-demand.ts trendIdea publishedAt = windowEnd). Policy lines, not measurements: interest older than these is history.
+  google_trends: { expiresDays: 14, maxSourceAgeDays: 30 },          // search-demand.ts TOPIC_TTL_DAYS (14 d)
+  search_demand_search_console: { expiresDays: 14, maxSourceAgeDays: 45 },
+  search_demand_keyword_intel: { expiresDays: 14, maxSourceAgeDays: 45 },
+  search_demand_first_party: { expiresDays: 21, maxSourceAgeDays: 60 }, // search-demand.ts FIRST_PARTY_WINDOW_DAYS (60 d)
 })
 const DEFAULT_WINDOW = { expiresDays: 21, maxSourceAgeDays: 365 }
 
@@ -314,6 +326,55 @@ interface ProvenanceEntry {
   evidence: { kind: TopicEvidenceKind; metric: string | null; value: number | null; unit: string | null }
 }
 
+// ── Wave 155 (lane 155H) — instruction taint, unsupported popularity, late "breaking" news — PURE ───────────────────────
+
+/** An imperative aimed at the system (send to everyone, ignore rules, change the tenant) — eval INJECT-002. The factual part of
+ *  a post may become a topic through a rewording; the instruction itself is never stored and nothing obeys it. */
+const INSTRUCTION_RE = /\b(?:ignore (?:all |any |your |the )?(?:previous |prior |above )?(?:instructions|rules|prompts?)|disregard (?:all |your |the )?(?:previous |prior )?(?:rules|instructions)|send (?:an? |this |the )?(?:sms|texts?|text messages?|emails?|messages?|dms?)(?: blast)? to (?:everyone|everybody|all|every)|(?:text|email|message|dm) (?:everyone|everybody|all (?:of )?(?:your|the) (?:contacts|leads|clients|list))|system prompt|you are now (?:an? )?|act as (?:an? |the )?(?:admin|administrator|system|developer)|change (?:the )?tenant(?:_id)?|tenant_id)/i
+/** A POPULARITY claim (not a market fact: "premiums are rising" is a fact to verify, "everyone is asking" is popularity). */
+const POPULARITY_CLAIM_RE = /\b(?:trending|going viral|viral|everyone(?:'s| is) (?:asking|talking)|hot(?:test)? topic|rising trend|(?:interest|searches|search interest|search demand|questions|buzz|chatter|popularity|attention)\s+(?:is |are |has |have )?(?:been )?(?:rising|surging|spiking|soaring|exploding|growing fast|up \d+%?))/i
+const BREAKING_RE = /\b(?:breaking(?: news)?|just in|just announced|happening now|developing story)\b/i
+/** How old a source may be and still be called breaking (a policy line: two days). */
+const BREAKING_MAX_AGE_MS = 2 * DAY_MS
+
+/** PURE — the H2 screen beyond the R9 gate: null = passes, else the refusal. */
+function trendIntegrityProblem(idea: TopicIdea, title: string, nowMs: number): TopicIntakeRefusal | null {
+  const text = `${title} ${idea.angle ?? ""}`
+  if (INSTRUCTION_RE.test(text)) return "embedded_instruction"
+  if (POPULARITY_CLAIM_RE.test(text)) {
+    const e = idea.evidence
+    const supported = !!e && e.kind !== "unknown" && typeof e.value === "number" && Number.isFinite(e.value)
+    if (!supported) return "unmeasured_trend_claim"
+  }
+  if (BREAKING_RE.test(text)) {
+    const published = iso(idea.publishedAt)
+    if (!published || nowMs - Date.parse(published) > BREAKING_MAX_AGE_MS) return "late_news_as_breaking"
+  }
+  return null
+}
+
+/** PURE — how specific the topic's place is (the brief ranks a ZIP-level topic above a statewide one; nothing is inferred). */
+function localSpecificityOf(geo: TopicIdea["geo"]): "zip" | "city" | "state" | "label" | "none" {
+  const g = geoRelevanceOf(geo)
+  if (!g) return "none"
+  return g.zip_codes.length ? "zip" : g.cities.length ? "city" : g.states.length ? "state" : "label"
+}
+
+/** The H2 freshness record every stored topic carries (raw_data.intake.freshness): event date (when the source stated one),
+ *  first seen, last checked, confidence (the evidence KIND and the count of distinct observations — never a made-up score),
+ *  local specificity and expiry. */
+function freshnessOf(p: Prepared, nowIso: string, observations: number, firstSeen: string | null, evidenceKind: TopicEvidenceKind) {
+  const ev = p.extra.event_date ?? p.extra.event_start // local-intel.ts files a dated fact's start as event_start
+  return {
+    event_date: typeof ev === "string" ? iso(ev) : null,
+    first_seen: firstSeen ?? p.observedAt,
+    last_checked: nowIso,
+    confidence: { evidence_kind: evidenceKind, independent_observations: observations },
+    local_specificity: localSpecificityOf(p.idea.geo),
+    expires_at: p.expiresAt,
+  }
+}
+
 type Prepared = { idea: TopicIdea; dedupKey: string; obsKey: string; expiresAt: string; observedAt: string; brief: Record<string, unknown>; extra: Record<string, unknown>; transport: string | null }
 
 /** PURE — screen + normalize one idea. Returns the refusal reason or the prepared idea. */
@@ -327,6 +388,8 @@ function prepare(idea: TopicIdea, nowMs: number, strip: { n: number }): { reason
   const pd = personalDataProblem(title) ?? personalDataProblem(idea.angle)
   if (pd) return { reason: "personal_data_in_topic" }
   if (idea.rights === "unknown" || !idea.rights) return { reason: "rights_unknown" }
+  const integrity = trendIntegrityProblem(idea, title, nowMs)
+  if (integrity) return { reason: integrity }
   const win = topicWindowFor(idea.sourceKind)
   const published = iso(idea.publishedAt)
   if (published && nowMs - Date.parse(published) > win.maxSourceAgeDays * DAY_MS) return { reason: "stale_source" }
@@ -473,7 +536,7 @@ export async function intakeTopicIdeas(db: Db, args: { brokerageId: string | nul
             ...(prior.raw_data ?? {}), ...p.extra,
             dedup_key: p.dedupKey, provenance: prov, independent_observations: prov.length,
             evidence: best, popularity_evidence_type: best.kind,
-            intake: { ...(prior.raw_data?.intake ?? {}), version: 1, last_observed_at: p.observedAt },
+            intake: { ...(prior.raw_data?.intake ?? {}), version: 1, last_observed_at: p.observedAt, freshness: freshnessOf(p, now.toISOString(), prov.length, (prior.raw_data?.intake?.freshness?.first_seen ?? prior.raw_data?.intake?.first_observed_at ?? null) as string | null, best.kind) },
             creative_brief: { ...(prior.raw_data?.creative_brief ?? {}), ...Object.fromEntries(Object.entries(creativeBrief(p)).filter(([, v]) => v !== null)), expires_at: expires, popularity_evidence_type: best.kind },
           },
         }
@@ -506,7 +569,7 @@ export async function intakeTopicIdeas(db: Db, args: { brokerageId: string | nul
         ...(score !== undefined ? { engagement_score: score } : {}),
         raw_data: {
           ...p.extra, dedup_key: p.dedupKey, provenance: [entry], independent_observations: 1, evidence: ev, popularity_evidence_type: ev.kind,
-          intake: { version: 1, source_kind: p.idea.sourceKind, rights: p.idea.rights, first_observed_at: p.observedAt, last_observed_at: p.observedAt, refurbish_trigger_kind: refurbishTriggerKindForTopicSource(p.idea.sourceKind) },
+          intake: { version: 1, source_kind: p.idea.sourceKind, rights: p.idea.rights, first_observed_at: p.observedAt, last_observed_at: p.observedAt, refurbish_trigger_kind: refurbishTriggerKindForTopicSource(p.idea.sourceKind), freshness: freshnessOf(p, now.toISOString(), 1, null, ev.kind) },
           creative_brief: creativeBrief(p),
         },
       }).select("id")

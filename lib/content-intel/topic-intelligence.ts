@@ -319,3 +319,249 @@ export async function readTopicApproval(db: Db, brokerageId: string, topicId: st
     topic: { id: t.id, title: t.topic_title, categories: t.categories ?? [], evidence: ((t.raw_data as { topic_evidence?: TopicEvidence } | null)?.topic_evidence) ?? null, rawData: t.raw_data },
   }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// EVIDENCE → ROUTE, AND THE DAILY INTELLIGENCE BRIEF (wave 155, lane 155H — directive H3 / H4, owner ruling R12)
+// ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// H3: "TOPIC EVIDENCE → freshness / relevance decision → existing topic bank → arbiter chooses Refurbish / Omnipresence / local
+// newsletter / flyer / educational video / portal article / no action". The decision below is NOT a new arbiter: it names, for a
+// topic the ONE intake already filed, which EXISTING executor may take it, and why — each executor keeps its own gates
+// (refurbishTriggerVerdict re-checks the competitor watchlist; planOmnipresenceSchedule spaces the platforms; pickTopics claims
+// per office; selectVideoFormat picks the video artifact). A competitor CONCEPT may inspire an original piece (idea_only); no
+// copied text, no borrowed metric is ever presented as the tenant's own.
+// H4: a high-signal, low-cost brief per authorized tenant territory (the tenant's ACTIVE lead_scraping_markets rows), with the
+// ladder rung of every topic and MEASURED cost per topic-linked asset — assisted conversations and qualified Contacts stay
+// UNKNOWN (no attribution link from a topic to a conversation or a Contact exists in the schema) rather than estimated.
+
+/** Mirrors lib/lead-pipeline/source-discovery-planner.ts INTELLIGENCE_LADDER (kept local so this module adds no import edge;
+ *  scripts/intelligence-brief-guard.ts asserts the two vocabularies agree). */
+type BriefRung = "cached_verified" | "first_party" | "public_fact" | "search_demand" | "public_chatter" | "grounded_person" | "licensed_dataset" | "costly_scrape"
+type BriefClass = "idea" | "acquisition" | "market_evidence"
+
+/** The topic pool's source kinds → the ladder rung and source class they stand on. A kind not listed is said, never guessed. */
+export const TOPIC_KIND_LADDER: Readonly<Record<string, { rung: BriefRung; sourceClass: BriefClass }>> = Object.freeze({
+  website_question: { rung: "first_party", sourceClass: "idea" },
+  search_demand_first_party: { rung: "first_party", sourceClass: "idea" },
+  own_content_outcome: { rung: "first_party", sourceClass: "idea" },
+  own_observation: { rung: "first_party", sourceClass: "idea" },
+  local_fact: { rung: "public_fact", sourceClass: "market_evidence" },
+  news_article: { rung: "public_fact", sourceClass: "market_evidence" },
+  google_trends: { rung: "search_demand", sourceClass: "idea" },
+  search_demand_search_console: { rung: "search_demand", sourceClass: "idea" },
+  search_demand_keyword_intel: { rung: "search_demand", sourceClass: "idea" },
+  community_post: { rung: "public_chatter", sourceClass: "idea" },
+  facebook_group_question: { rung: "public_chatter", sourceClass: "idea" },
+  reddit_thread: { rung: "public_chatter", sourceClass: "idea" },
+  apify_social: { rung: "public_chatter", sourceClass: "idea" },
+  brand_listening: { rung: "public_chatter", sourceClass: "idea" },
+  meta_ad_creative: { rung: "public_chatter", sourceClass: "idea" },
+  competitor_ad: { rung: "public_chatter", sourceClass: "idea" },
+  competitor_post: { rung: "public_chatter", sourceClass: "idea" },
+  refurbish_competitor_post: { rung: "public_chatter", sourceClass: "idea" },
+  web_research: { rung: "public_chatter", sourceClass: "idea" },
+  manual_link: { rung: "public_chatter", sourceClass: "idea" },
+})
+
+export type TopicRoute = "refurbish" | "omnipresence" | "newsletter" | "flyer" | "educational_video" | "portal_article" | "no_action"
+
+/** The EXISTING executor each route hands to (file + function). */
+export const TOPIC_ROUTE_EXECUTORS: Readonly<Record<Exclude<TopicRoute, "no_action">, string>> = Object.freeze({
+  refurbish: "lib/repurpose/refurbish-idea.ts refurbishTriggerVerdict (idea_only for outside sources; the watchlist is re-checked there)",
+  omnipresence: "lib/repurpose/omnipresence-plan.ts planOmnipresenceSchedule",
+  newsletter: "lib/content-intel/topic-bank.ts pickTopics (asset newsletter_campaign — the newsletter selects its sections)",
+  flyer: "lib/content-intel/topic-bank.ts pickTopics (the flyer / print builder claims the topic)",
+  educational_video: "lib/video/video-director.ts selectVideoFormat (video is the artifact; the channel is chosen at delivery)",
+  portal_article: "lib/content-intel/topic-bank.ts pickTopics (asset blog_post — the answer published where the question is asked)",
+})
+
+/**
+ * THE ROUTE POLICY — a PRODUCT ORDERING CHOICE, not a measurement (said so the numbers below never read as evidence):
+ * a topic seen in at least `omnipresenceMinObservations` DISTINCT observations with MEASURED evidence earns multi-platform
+ * presence; otherwise the topic's own kind decides.
+ */
+export const TOPIC_ROUTE_POLICY = Object.freeze({ omnipresenceMinObservations: 3 })
+
+export interface BriefTopicRow {
+  id: string
+  topic_title: string
+  status: string | null
+  expires_at: string | null
+  categories: string[] | null
+  geo_relevance: { cities?: string[]; states?: string[]; zip_codes?: string[]; label?: string | null } | null
+  raw_data: Record<string, any> | null
+  scraped_at?: string | null
+}
+
+export interface TopicRouteDecision { route: TopicRoute; alternates: TopicRoute[]; executor: string | null; why: string }
+
+const COMPETITOR_KINDS = new Set(["meta_ad_creative", "competitor_ad", "competitor_post", "refurbish_competitor_post"])
+const SEARCH_KINDS = new Set(["google_trends", "search_demand_search_console", "search_demand_keyword_intel"])
+
+/** PURE — which existing executor may take this topic, or no action (with the reason). */
+export function routeTopicEvidence(t: BriefTopicRow, now: Date = new Date()): TopicRouteDecision {
+  const none = (why: string): TopicRouteDecision => ({ route: "no_action", alternates: [], executor: null, why })
+  const pick = (route: Exclude<TopicRoute, "no_action">, alternates: TopicRoute[], why: string): TopicRouteDecision => ({ route, alternates, executor: TOPIC_ROUTE_EXECUTORS[route], why })
+  if (t.status !== "fresh") return none(`the topic is ${t.status ?? "of unknown status"} — retired, used or rejected topics start nothing`)
+  if (!t.expires_at || Date.parse(t.expires_at) <= now.getTime()) return none("the topic's freshness window has ended")
+  const rd = t.raw_data ?? {}
+  const kind = String(rd.intake?.source_kind ?? "")
+  const observations = Number(rd.independent_observations ?? 0)
+  if (Array.isArray(rd.source_removals) && rd.source_removals.length && observations === 0) return none("every source behind the topic was removed — dependent content must not start")
+  if (!kind) return none("filed before the one intake — no source kind to route on")
+  const evidenceKind = String(rd.evidence?.kind ?? rd.popularity_evidence_type ?? "unknown")
+  const local = rd.intake?.freshness?.local_specificity ? rd.intake.freshness.local_specificity !== "none"
+    : !!(t.geo_relevance && ((t.geo_relevance.cities ?? []).length || (t.geo_relevance.states ?? []).length || (t.geo_relevance.zip_codes ?? []).length))
+  const question = typeof rd.creative_brief?.consumer_question === "string" && rd.creative_brief.consumer_question.trim().length > 0
+
+  let base: TopicRouteDecision
+  if (COMPETITOR_KINDS.has(kind)) base = pick("refurbish", [], "a competitor concept — an ORIGINAL piece in the subscriber's voice; no copied text, no borrowed metrics")
+  else if (kind === "own_content_outcome") base = pick("refurbish", [], "the tenant's own piece under its own measured baseline — refresh it")
+  else if (kind === "local_fact") {
+    const ev = rd.intake?.freshness?.event_date ?? rd.event_start ?? null
+    const upcoming = typeof ev === "string" && Date.parse(ev) > now.getTime()
+    base = upcoming ? pick("newsletter", ["flyer", "educational_video"], "a verified upcoming local event — the newsletter's community section (R8), a flyer if the office wants print")
+      : pick("newsletter", ["portal_article"], "a verified local fact — market / community education")
+  } else if (kind === "news_article") base = pick("newsletter", ["portal_article"], "a credited headline — market education with the source named")
+  else if (SEARCH_KINDS.has(kind)) base = local ? pick("newsletter", ["educational_video", "portal_article"], "real local search demand — a market-education section that answers it")
+    : pick("portal_article", ["educational_video"], "search demand without a place — an evergreen answer")
+  else if (kind === "website_question" || kind === "search_demand_first_party" || kind === "own_observation") base = pick("portal_article", ["educational_video", "newsletter"], "a question this tenant's own people keep asking — answer it where it is asked")
+  else if (TOPIC_KIND_LADDER[kind]?.rung === "public_chatter") base = question ? pick("educational_video", ["portal_article", "newsletter"], "a public consumer question, reworded — an educational video artifact answers it")
+    : pick("refurbish", [], "a public conversation theme — an original piece (idea only)")
+  else return none(`no route policy names source kind ${kind}`)
+
+  if (evidenceKind === "measured" && observations >= TOPIC_ROUTE_POLICY.omnipresenceMinObservations && !COMPETITOR_KINDS.has(kind)) {
+    return { route: "omnipresence", alternates: [base.route, ...base.alternates].filter((r) => r !== "omnipresence"), executor: TOPIC_ROUTE_EXECUTORS.omnipresence, why: `${observations} distinct observations with measured evidence — present it on every platform (${base.why})` }
+  }
+  return base
+}
+
+export interface BriefEntry {
+  id: string
+  title: string
+  sourceKind: string | null
+  rung: BriefRung | "unclassified"
+  sourceClass: BriefClass | "unclassified"
+  /** measured / proxy / unknown — a value only when measured or proxy, with its metric; never shown as the tenant's own. */
+  evidence: { kind: string; metric: string | null; value: number | null; basis: string }
+  observations: number
+  freshness: { eventDate: string | null; firstSeen: string | null; lastChecked: string | null; expiresAt: string | null; localSpecificity: string }
+  route: TopicRouteDecision
+}
+
+export interface IntelligenceBrief {
+  ok: boolean
+  brokerageId: string
+  generatedAt: string
+  windowHours: number
+  territories: Array<{ id: string; label: string; entries: BriefEntry[] }>
+  /** Topics with no place, or a place outside every active territory (still the tenant's). */
+  tenantWide: BriefEntry[]
+  freshTotal: number
+  byRung: Record<string, number>
+  byRoute: Record<string, number>
+  cost: null | {
+    windowDays: number
+    spendUsd: number | null
+    spendBasis: string
+    topicLinkedAssets: number
+    costPerTopicLinkedAsset: number | null
+    assistedConversations: null
+    costPerAssistedConversation: null
+    qualifiedContacts: null
+    costPerQualifiedContact: null
+    unknownBecause: string
+  }
+  blindSpots: string[]
+  error: string | null
+}
+
+/** vendor_usage_tracking.request_metadata.system_source values that ARE intelligence spend (proven bookings only). */
+export const INTELLIGENCE_SPEND_SYSTEM_SOURCES = ["local_intel", "brand_listening"] as const
+
+function briefEntry(t: BriefTopicRow, now: Date): BriefEntry {
+  const rd = t.raw_data ?? {}
+  const kind = typeof rd.intake?.source_kind === "string" ? rd.intake.source_kind : null
+  const lad = kind ? TOPIC_KIND_LADDER[kind] : undefined
+  const ev = rd.evidence ?? {}
+  const evKind = ev.kind === "measured" || ev.kind === "proxy" ? ev.kind : "unknown"
+  const value = evKind !== "unknown" && typeof ev.value === "number" && Number.isFinite(ev.value) ? ev.value : null
+  const fr = rd.intake?.freshness ?? {}
+  return {
+    id: t.id, title: t.topic_title, sourceKind: kind, rung: lad?.rung ?? "unclassified", sourceClass: lad?.sourceClass ?? "unclassified",
+    evidence: { kind: value === null ? "unknown" : evKind, metric: value === null ? null : (ev.metric ?? null), value,
+      basis: value === null ? "unknown — not measured; no number is shown" : evKind === "proxy" ? "a proxy from the source (not the tenant's own engagement)" : "measured at the source (not the tenant's own engagement)" },
+    observations: Number(rd.independent_observations ?? 0) || 0,
+    freshness: { eventDate: fr.event_date ?? null, firstSeen: fr.first_seen ?? rd.intake?.first_observed_at ?? null, lastChecked: fr.last_checked ?? t.scraped_at ?? null, expiresAt: t.expires_at, localSpecificity: fr.local_specificity ?? "unknown" },
+    route: routeTopicEvidence(t, now),
+  }
+}
+
+/** PURE — does a topic's place fall inside a territory (ZIP, city or state named on both sides; never a guess). */
+function topicInTerritory(geo: BriefTopicRow["geo_relevance"], m: { city: string | null; state: string | null; zip_codes: string[] | null }): boolean {
+  if (!geo) return false
+  const lc = (s: unknown) => String(s ?? "").trim().toLowerCase()
+  const zips = new Set((m.zip_codes ?? []).map((z) => String(z).slice(0, 5)))
+  if ((geo.zip_codes ?? []).some((z) => zips.has(String(z).slice(0, 5)))) return true
+  const sameState = !m.state || !(geo.states ?? []).length || (geo.states ?? []).some((s) => lc(s) === lc(m.state))
+  if (m.city && (geo.cities ?? []).some((c) => lc(c) === lc(m.city)) && sameState) return true
+  return !m.city && !!m.state && !(geo.cities ?? []).length && (geo.states ?? []).some((s) => lc(s) === lc(m.state))
+}
+
+/**
+ * THE DAILY INTELLIGENCE BRIEF for one tenant (H4) — computed on read for the last `windowHours` (no new table, no new cron):
+ * the topics the ONE intake filed or re-observed in the window, per active territory, each with its ladder rung, evidence kind,
+ * freshness record and route. `includeCost` (the caller decides — a tenant admin) adds MEASURED intelligence spend over
+ * `costWindowDays` against topic-linked assets; unknowns stay unknown. Tenant-pinned; every refusal is read and said.
+ */
+export async function buildTerritoryIntelligenceBrief(db: Db, brokerageId: string, opts: { now?: Date; windowHours?: number; costWindowDays?: number; includeCost?: boolean } = {}): Promise<IntelligenceBrief> {
+  const now = opts.now ?? new Date()
+  const windowHours = opts.windowHours ?? 24
+  const out: IntelligenceBrief = { ok: false, brokerageId, generatedAt: now.toISOString(), windowHours, territories: [], tenantWide: [], freshTotal: 0, byRung: {}, byRoute: {}, cost: null, blindSpots: [], error: null }
+  if (!brokerageId) { out.error = "no tenant"; return out }
+  const { data: markets, error: mErr } = await db.from("lead_scraping_markets").select("id, name, city, state, zip_codes").eq("brokerage_id", brokerageId).eq("is_active", true).limit(50)
+  if (mErr) out.blindSpots.push(`territories not read (${mErr.message ?? "unknown"}) — every topic is listed tenant-wide`)
+  const terr = ((mErr ? [] : markets ?? []) as Array<{ id: string; name: string | null; city: string | null; state: string | null; zip_codes: string[] | null }>)
+  if (!mErr && terr.length === 0) out.blindSpots.push("no active territory — every topic is listed tenant-wide")
+  const { data: topics, error: tErr } = await db.from("content_topic_bank").select("id, topic_title, status, expires_at, categories, geo_relevance, raw_data, scraped_at")
+    .eq("brokerage_id", brokerageId).eq("status", "fresh").gt("expires_at", now.toISOString()).order("scraped_at", { ascending: false }).limit(300)
+  if (tErr) { out.error = `content_topic_bank read refused: ${tErr.message ?? "unknown"}`; return out }
+  const rows = (topics ?? []) as BriefTopicRow[]
+  out.freshTotal = rows.length
+  const since = now.getTime() - windowHours * 3_600_000
+  const today = rows.filter((r) => { const at = Date.parse(String(r.scraped_at ?? "")); return Number.isFinite(at) && at >= since })
+  out.territories = terr.map((m) => ({ id: m.id, label: m.name || [m.city, m.state].filter(Boolean).join(", ") || m.id, entries: [] }))
+  for (const r of today) {
+    const e = briefEntry(r, now)
+    out.byRung[e.rung] = (out.byRung[e.rung] ?? 0) + 1
+    out.byRoute[e.route.route] = (out.byRoute[e.route.route] ?? 0) + 1
+    let placed = false
+    terr.forEach((m, i) => { if (topicInTerritory(r.geo_relevance, m)) { out.territories[i].entries.push(e); placed = true } })
+    if (!placed) out.tenantWide.push(e)
+  }
+  out.blindSpots.push("platform-pool topics (brokerage_id null) are not in a tenant's brief — they are not this tenant's evidence")
+  out.blindSpots.push("topics retired today are not listed (retirement time lives in raw_data.source_removals; the brief reads fresh topics only)")
+
+  if (opts.includeCost) {
+    const days = opts.costWindowDays ?? 30
+    const sinceIso = new Date(now.getTime() - days * DAY_MS).toISOString()
+    const unknownBecause = "no attribution link from a topic to a conversation or a Contact exists in the schema — never estimated"
+    const cost: NonNullable<IntelligenceBrief["cost"]> = { windowDays: days, spendUsd: null, spendBasis: "", topicLinkedAssets: 0, costPerTopicLinkedAsset: null, assistedConversations: null, costPerAssistedConversation: null, qualifiedContacts: null, costPerQualifiedContact: null, unknownBecause }
+    const { data: spend, error: sErr } = await db.from("vendor_usage_tracking").select("total_cost, request_metadata").eq("brokerage_id", brokerageId).gte("created_at", sinceIso).limit(5000)
+    if (sErr) cost.spendBasis = `spend unknown — vendor_usage_tracking read refused (${sErr.message ?? "unknown"})`
+    else {
+      const mine = ((spend ?? []) as Array<{ total_cost: number | null; request_metadata: Record<string, any> | null }>).filter((r) => (INTELLIGENCE_SPEND_SYSTEM_SOURCES as readonly string[]).includes(String(r.request_metadata?.system_source ?? "")))
+      const unpriced = mine.filter((r) => r.request_metadata?.price_state === "unknown" || typeof r.total_cost !== "number").length
+      if (unpriced > 0) cost.spendBasis = `spend unknown — ${unpriced} of ${mine.length} intelligence bookings carry no price`
+      else { cost.spendUsd = Math.round(mine.reduce((n, r) => n + Number(r.total_cost), 0) * 100) / 100; cost.spendBasis = `${mine.length} platform-covered booking(s) under ${INTELLIGENCE_SPEND_SYSTEM_SOURCES.join(" / ")} (vendor_usage_tracking)` }
+    }
+    const { data: uses, error: uErr } = await db.from("content_topic_uses").select("asset_id, asset_type").eq("brokerage_id", brokerageId).gte("used_at", sinceIso).limit(5000)
+    if (uErr) out.blindSpots.push(`topic-linked assets not read (${uErr.message ?? "unknown"}) — cost per asset unknown`)
+    else cost.topicLinkedAssets = new Set(((uses ?? []) as Array<{ asset_id: string | null; asset_type: string | null }>).filter((u) => u.asset_id).map((u) => `${u.asset_type}:${u.asset_id}`)).size
+    cost.costPerTopicLinkedAsset = cost.spendUsd !== null && !uErr && cost.topicLinkedAssets > 0 ? Math.round((cost.spendUsd / cost.topicLinkedAssets) * 100) / 100 : null
+    out.cost = cost
+    out.blindSpots.push("topic-linked assets are content_topic_uses rows — a topic used in an asset; publication is not verified here")
+    out.blindSpots.push("community / Apify / Exa / RSS / Reddit topic transports report cost on the action ledger only — not yet booked under a system source this brief reads")
+  }
+  out.ok = true
+  return out
+}

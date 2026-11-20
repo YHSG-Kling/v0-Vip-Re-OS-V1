@@ -115,3 +115,23 @@ export async function stageTopicTvSpotAction(input: { topicId: string; assetId: 
     return { success: false, error: (e as Error)?.message ?? "Failed to stage the TV spot" }
   }
 }
+
+/**
+ * Wave 155 (lane 155H — directive H4): TODAY'S INTELLIGENCE BRIEF for the caller's tenant (from the SESSION), per active
+ * territory — lib/content-intel/topic-intelligence.ts buildTerritoryIntelligenceBrief. Readable by the same members as the topic
+ * list above; the measured cost block (platform-covered intelligence spend per topic-linked asset) only for the operational
+ * admin roster (TENANT_ADMIN_USER_TYPES). Read-only: it starts nothing.
+ */
+// The return type is INFERRED on purpose: a type-position `import("…").IntelligenceBrief` reads to the arbitration census
+// (scripts/os-coverage-ledger.ts) as an edge to the whole module, which charged this read-only door with the topic pass's writes.
+export async function getIntelligenceBriefAction() {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    const { buildTerritoryIntelligenceBrief } = await import("@/lib/content-intel/topic-intelligence")
+    const brief = await buildTerritoryIntelligenceBrief(createServiceClient(), ctx.brokerageId, { includeCost: TENANT_ADMIN_USER_TYPES.has(ctx.userType ?? "") })
+    return brief.ok ? { success: true as const, brief } : { success: false as const, error: brief.error ?? "The brief could not be built." }
+  } catch (e) {
+    return { success: false as const, error: (e as Error)?.message ?? "Failed to build the intelligence brief" }
+  }
+}
