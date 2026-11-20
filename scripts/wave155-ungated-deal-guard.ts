@@ -25,6 +25,7 @@
  * still takes `agentIds` (in-tenant scope) from the caller — see the lane notes.
  */
 import { registerHooks } from "node:module"
+import { readFileSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 import { join } from "node:path"
 import { memSupabase, type MemClient, type Row } from "./in-memory-supabase"
@@ -394,7 +395,10 @@ async function main() {
     const m = as(u("a", 7)); const x = await drive(() => tp.sendTitleMessageToAgent({ transactionId: TX1, titleUserId: u("8", 1), message: "Title commitment is in." }))
     check("BUG no agents.id is written into a contacts column (client_portal_messages untouched)", !T(m, "client_portal_messages").some((r) => r.contact_id === AG_A) && T(m, "client_portal_messages").length === 0, T(m, "client_portal_messages"))
     check("POS the note reaches the agent's USER seat (agents.id → users.id via agents.user_id)", (x.r as any)?.success === true && T(m, "notifications").some((r) => r.user_id === U_AGENT && r.entity_id === TX1), { x, n: T(m, "notifications") })
-    check("POS …and its durable record carries the agents.id in an AGENTS column (communications.agent_id), no contact", T(m, "communications").some((r) => r.agent_id === AG_A && r.contact_id === null && r.brokerage_id === B1), T(m, "communications"))
+    check("POS …and its durable record is on the DEAL'S TIMELINE (activities.transaction_id — the table the deal page reads), with the agents.id in an AGENTS column, the session tenant and no contact",
+      T(m, "activities").some((r) => r.activity_type === "title_message" && r.transaction_id === TX1 && r.agent_id === AG_A && r.brokerage_id === B1 && !r.contact_id) && T(m, "communications").length === 0, T(m, "activities").filter((r) => r.activity_type === "title_message"))
+    check("…and the deal page really reads that table by transaction (a durable record nobody reads is not a record)",
+      /\.from\("activities"\)[\s\S]{0,200}?\.eq\("transaction_id",\s*transactionId\)/.test(readFileSync(join(ROOT, "app/transactions/[transactionId]/page.tsx"), "utf8")))
   }
 
   // ═══ chat stream route (BUG) ══════════════════════════════════════════════════════════════════════════════════════

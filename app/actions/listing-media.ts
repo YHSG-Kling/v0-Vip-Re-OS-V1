@@ -261,17 +261,32 @@ export async function setPrimaryMedia(mediaId: string, listingId: string) {
   const tenant = await requireCallerTenant()
   if (!tenant.ok) return { success: false, error: tenant.error }
   return withReceipt({ brokerageId: tenant.brokerageId, userId: tenant.userId, action: "listing.media.set_primary", subject: { type: "listing", id: listingId }, riskClass: "LOW_RISK_WRITE", detail: { media_id: mediaId } }, async () => {
-  // Clear existing primary
-  await supabase
+  // The photo must be ON this listing before anything is cleared: a wrong id used to clear the listing's primary, match
+  // nothing on the set below, and report success (CLAUDE.md §3 — a write that matches nothing resolves like one that worked).
+  const { data: target, error: findErr } = await supabase
+    .from("listing_media")
+    .select("id")
+    .eq("id", mediaId)
+    .eq("listing_id", listingId)
+    .maybeSingle()
+  if (findErr) return { success: false, error: findErr.message }
+  if (!target) return { success: false, error: "That photo is not on this listing." }
+  // Clear existing primary — its refusal is READ: a clear that did not land, followed by the set, leaves two primaries.
+  const { error: clearErr } = await supabase
     .from("listing_media")
     .update({ is_primary: false })
     .eq("listing_id", listingId)
-  // Set new primary
-  const { error } = await supabase
+  if (clearErr) return { success: false, error: clearErr.message }
+  // Set new primary — pinned to the listing and COUNTED.
+  const { data: set, error } = await supabase
     .from("listing_media")
     .update({ is_primary: true })
     .eq("id", mediaId)
-  return error ? { success: false, error: error.message } : { success: true }
+    .eq("listing_id", listingId)
+    .select("id")
+  if (error) return { success: false, error: error.message }
+  if ((set ?? []).length === 0) return { success: false, error: "The primary photo was not saved. Try again." }
+  return { success: true }
   }, (error) => ({ success: false as const, error }))
 }
 

@@ -297,12 +297,15 @@ export async function updateRsvp(params: {
 
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "open_house.rsvp.update", actor: { type: "user", userId: auth.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { event_id: params.eventId, rsvp: params.rsvpResponse } }, async () => {
-  await supabase
+  // The refusal is READ (CLAUDE.md §3). Zero rows is NOT a failure here: an RSVP can arrive for a contact who was never
+  // sent an invitation, and the tracking upsert below is the record the tallies read.
+  const { error: inviteErr } = await supabase
     .from("open_house_invitations")
     .update({ rsvp_response: params.rsvpResponse, rsvp_updated_at: new Date().toISOString() })
     .eq("event_id", params.eventId)
     .eq("contact_id", params.contactId)
     .eq("brokerage_id", auth.brokerageId)
+  if (inviteErr) return { success: false, error: `RSVP not saved: ${inviteErr.message}` }
 
   // Tenant from the EVENT record (verifyEventOwnership above already read it and
   // refused anything outside the caller's brokerage). Without it this upsert

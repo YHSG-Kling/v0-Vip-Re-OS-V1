@@ -372,28 +372,50 @@ async function listingAgreementEvidence(db: LedgerCapableClient, brokerageId: st
   return (await hasGenuineAppointment(db, brokerageId, probes, agentUserId, executedAt, now)) ? { referenceId: root.id, agentId: l.agent_id } : null
 }
 
-/** R3 — BUYER_BROKER_AGREEMENT_SIGNED (entity buyer_broker_agreement): the ROOT of the agreement's correction chain (a
- *  superseding re-sign never pays again) + its agent, when a genuine appointment with the buyer preceded the signature. */
+/** R3 — BUYER_BROKER_AGREEMENT_SIGNED (entity buyer_broker_agreement): the ROOT of the ENGAGEMENT (a re-sign never pays again) +
+ *  its agent, when a genuine appointment with the buyer preceded the signature.
+ *
+ *  THE ROOT IS DERIVED FROM FACTS ON FILE, NOT FROM A LINK NOTHING WRITES (wave 155, integrator). The first version walked
+ *  `buyer_broker_agreements.superseded_by` back to the original. That column exists, and NO code, trigger or function writes
+ *  it (read from the live database 2026-11-20: 0 triggers that mention it, 0 rows) — so the walk never found a predecessor and
+ *  a replacement agreement with the same buyer would have been paid as a new one. The engagement is now read from what the
+ *  agreements themselves record: an EARLIER executed agreement between the SAME agent and the SAME buyer that was still in
+ *  force when the later one was signed (not cancelled before it, not expired before it) is the same engagement, and the walk
+ *  repeats from it. An agreement signed after the earlier one was cancelled or had expired is a new engagement.
+ *  @proofSeam scripts/gamification-guard.ts */
 async function buyerAgreementEvidence(db: LedgerCapableClient, brokerageId: string, agreementId: string, now: Date): Promise<{ referenceId: string; agentId: string } | null> {
-  const cols = "id, agent_id, buyer_contact_id, status, signed_at, signed_method, signed_document_url, superseded_by"
+  const cols = "id, agent_id, buyer_contact_id, status, signed_at, signed_method, signed_document_url"
   const { data, error } = await db.from("buyer_broker_agreements").select(cols).eq("id", agreementId).eq("brokerage_id", brokerageId).maybeSingle()
   if (error) { console.error(`[lifecycle-gamification] buyer agreement read refused: ${error.message}`); return null }
   type Bba = { id: string; agent_id?: string | null; buyer_contact_id?: string | null; status?: string | null; signed_at?: string | null; signed_method?: string | null; signed_document_url?: string | null }
   const row = data as Bba | null
   if (!row || !row.signed_at || !BUYER_EXECUTED_STATUS.has(String(row.status)) || !isUuid(row.agent_id) || !isUuid(row.buyer_contact_id)) return null
   if (!row.signed_method || (row.signed_method === "wet_signature" && !row.signed_document_url)) return null
-  let root = row.id
-  for (let hop = 0; hop < 10; hop++) {
-    const { data: prev, error: prevErr } = await db.from("buyer_broker_agreements").select("id").eq("brokerage_id", brokerageId).eq("superseded_by", root).maybeSingle()
-    if (prevErr) { console.error(`[lifecycle-gamification] agreement chain read refused: ${prevErr.message}`); return null }
-    const prevId = (prev as { id?: string } | null)?.id
-    if (!isUuid(prevId)) break
-    root = prevId
-  }
+  const { data: pairRows, error: pairErr } = await db.from("buyer_broker_agreements").select("id, status, signed_at, cancelled_at, expiration_date")
+    .eq("brokerage_id", brokerageId).eq("agent_id", row.agent_id).eq("buyer_contact_id", row.buyer_contact_id)
+  if (pairErr) { console.error(`[lifecycle-gamification] agreement engagement read refused: ${pairErr.message}`); return null }
+  const root = buyerEngagementRoot({ id: row.id, signed_at: row.signed_at }, (pairRows ?? []) as BuyerAgreementFact[])
   const agentUserId = await agentUserIdOf(db, brokerageId, row.agent_id)
   if (!agentUserId) return null
   return (await hasGenuineAppointment(db, brokerageId, [{ col: "entity_id", val: row.buyer_contact_id, entityType: "contact" }], agentUserId, row.signed_at, now))
     ? { referenceId: root, agentId: row.agent_id } : null
+}
+
+export interface BuyerAgreementFact { id: string; status?: string | null; signed_at?: string | null; cancelled_at?: string | null; expiration_date?: string | null }
+/** PURE. The first agreement of the engagement `current` belongs to, among the executed agreements of ONE agent–buyer pair. */
+export function buyerEngagementRoot(current: { id: string; signed_at: string }, pair: readonly BuyerAgreementFact[]): string {
+  const executed = pair.filter((p) => !!p.signed_at && BUYER_EXECUTED_STATUS.has(String(p.status)) && p.id !== current.id)
+    .sort((x, y) => String(x.signed_at).localeCompare(String(y.signed_at)))
+  let cur = current
+  for (let hop = 0; hop < 10; hop++) {
+    const day = cur.signed_at.slice(0, 10)
+    const earlier = executed.find((p) => String(p.signed_at) < cur.signed_at
+      && (!p.cancelled_at || String(p.cancelled_at) >= cur.signed_at)
+      && (!p.expiration_date || String(p.expiration_date).slice(0, 10) >= day))
+    if (!earlier) break
+    cur = { id: earlier.id, signed_at: String(earlier.signed_at) }
+  }
+  return cur.id
 }
 
 export interface LifecycleAwardOutcome {

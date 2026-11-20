@@ -900,10 +900,11 @@ export async function saveProperty(data: {
  */
 export async function unsaveProperty(contactId: string, savedPropertyId: string) {
   const supabase = await createClient()
-  // WAVE 155 (lane 155R12): the receipt's actor + tenant come from the contact gate (the session). This export has no gate of its
-  // own (it writes under RLS); a caller the gate does not admit still writes exactly as before — unrecorded, never an invented tenant.
+  // WAVE 155 (lane 155R12, then the integrator — CLAUDE.md §4 fail closed): the contact gate (the session) names the receipt's
+  // actor + tenant AND decides the write. A caller the gate does not admit is REFUSED; before, the delete still ran under RLS, unrecorded.
   const { requireContactAccess: receiptGate } = await import("@/lib/portal/require-contact-access"); const rcpt = await receiptGate(contactId)
-  return withReceipt({ brokerageId: rcpt.ok ? rcpt.brokerageId : null, userId: rcpt.ok ? rcpt.userId : "", action: "buyer.saved_property.unsave", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { saved_property_id: savedPropertyId } }, async () => {
+  if (!rcpt.ok) return { success: false as const, error: rcpt.error }
+  return withReceipt({ brokerageId: rcpt.brokerageId, userId: rcpt.userId, action: "buyer.saved_property.unsave", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { saved_property_id: savedPropertyId } }, async () => {
 
   // .select() so the delete reports what it actually removed. Without it a
   // no-match and a success are the same value.

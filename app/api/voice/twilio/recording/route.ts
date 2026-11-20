@@ -97,7 +97,11 @@ export async function POST(request: NextRequest) {
     settle: (r) => r.error ? { status: "failed", outcome: "write_refused", provider: "twilio", error: r.error.message }
       : (r.data ?? []).length > 0 ? { status: "executed", outcome: "recording_stored", provider: "twilio", providerRef: parsed.recordingSid || null }
       : { status: "skipped", outcome: "no_empty_row", provider: "twilio" },
-    replay: () => ({ data: null, error: { message: "the action ledger refused this callback's receipt" } }),
+    // Claim-aware: a REFUSED claim is an error the log names; an already-recorded or in-flight one wrote (or is writing) the row,
+    // so this delivery has nothing to write — zero rows, which the retry branch below already tells apart.
+    replay: (claim) => claim.kind === "refused"
+      ? { data: null, error: { message: `the action ledger refused this callback's receipt: ${claim.error}` } }
+      : { data: [], error: null },
   })
 
   if (updErr) {

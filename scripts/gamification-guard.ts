@@ -25,7 +25,7 @@ import {
 } from "../lib/gamification/award-points"
 import { AWARD_CENSUS } from "../lib/gamification/award-census"
 import { REFERRAL_TERMINAL_WON } from "../lib/referrals/referral-status"
-import { awardLifecycleMilestones, awardBadgeToAgent, recordOpenHouseHeld, canonicalHeldOpenHouseId, appointmentStage } from "../lib/gamification/lifecycle-awards"
+import { awardLifecycleMilestones, awardBadgeToAgent, recordOpenHouseHeld, canonicalHeldOpenHouseId, appointmentStage, buyerEngagementRoot } from "../lib/gamification/lifecycle-awards"
 import { tierDistributionLine, tierForPoints } from "../lib/gamification/tiers"
 import { isUnderStrain, strainedFromRows } from "../lib/gamification/strain"
 import { anniversaryYearsOn, ANNIVERSARY_WINDOW_DAYS, anniversaryStartDate } from "../lib/gamification/work-anniversaries"
@@ -718,7 +718,7 @@ async function ownerRulingsLayer() {
       { id: LA3, brokerage_id: BRK, listing_id: L3, esign_status: "sent", seller_signed_at: null, agent_signed_at: null, compliance_passed: null, fully_executed_at: null, created_at: iso(nowMs - 11 * day) },
     ],
     buyer_broker_agreements: [
-      { id: BBA1, brokerage_id: BRK, agent_id: AGENT2, buyer_contact_id: BUYER, status: "superseded", signed_at: iso(nowMs - 9 * day), signed_method: "docusign", signed_document_url: null, superseded_by: BBA2 },
+      { id: BBA1, brokerage_id: BRK, agent_id: AGENT2, buyer_contact_id: BUYER, status: "superseded", signed_at: iso(nowMs - 9 * day), signed_method: "docusign", signed_document_url: null, superseded_by: null },
       { id: BBA2, brokerage_id: BRK, agent_id: AGENT2, buyer_contact_id: BUYER, status: "active", signed_at: iso(nowMs - 2 * day), signed_method: "docusign", signed_document_url: null, superseded_by: null },
       { id: BBA_WET, brokerage_id: BRK, agent_id: AGENT2, buyer_contact_id: BUYER, status: "active", signed_at: iso(nowMs - 1 * day), signed_method: "wet_signature", signed_document_url: null, superseded_by: null },
       { id: BBA_FUT, brokerage_id: BRK, agent_id: AGENT2, buyer_contact_id: BUYER2, status: "active", signed_at: iso(nowMs - 1 * day), signed_method: "click_through", signed_document_url: null, superseded_by: null },
@@ -805,7 +805,22 @@ async function ownerRulingsLayer() {
     noAppt.awarded.length === 0 && unsigned.awarded.length === 0 && unsigned.refused.some((x) => /a booking alone earns nothing/.test(x)))
   const bba = await awardLifecycleMilestones(m, { event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "buyer_broker_agreement", entityId: BBA2 })
   const bbaOld = await awardLifecycleMilestones(m, { event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "buyer_broker_agreement", entityId: BBA1 })
-  check("a buyer agreement re-signed as a CORRECTION pays once: the award is keyed on the ROOT of the supersede chain, so the original and the correction land one row",
+  // THE ENGAGEMENT ROOT IS DERIVED FROM FACTS ON FILE (wave 155). `superseded_by` has no writer in code or in the database, so the
+  // rule no longer reads it: an earlier executed agreement of the same agent and buyer that was still in force when the later
+  // one was signed is the same engagement. PURE controls first — the finder must tell a re-sign from a new engagement.
+  {
+    const A = "a".repeat(8), B = "b".repeat(8), C = "c".repeat(8)
+    const at = (d: number) => iso(nowMs - d * day)
+    check("PURE: a re-sign while the earlier agreement is still in force roots at the EARLIER agreement (it does not pay again)",
+      buyerEngagementRoot({ id: B, signed_at: at(2) }, [{ id: A, status: "active", signed_at: at(9) }, { id: B, status: "active", signed_at: at(2) }]) === A)
+    check("PURE: the walk is transitive — a third agreement roots at the first even when the first had expired before the third",
+      buyerEngagementRoot({ id: C, signed_at: at(1) }, [{ id: A, status: "expired", signed_at: at(30), expiration_date: at(8).slice(0, 10) }, { id: B, status: "active", signed_at: at(9) }, { id: C, status: "active", signed_at: at(1) }]) === A)
+    check("PURE NEGATIVE: an agreement signed AFTER the earlier one was cancelled is a new engagement (its own root)",
+      buyerEngagementRoot({ id: B, signed_at: at(2) }, [{ id: A, status: "expired", signed_at: at(9), cancelled_at: at(5) }, { id: B, status: "active", signed_at: at(2) }]) === B)
+    check("PURE NEGATIVE: an agreement signed after the earlier one EXPIRED is a new engagement; a draft or unsigned row is never a predecessor",
+      buyerEngagementRoot({ id: B, signed_at: at(2) }, [{ id: A, status: "expired", signed_at: at(90), expiration_date: at(20).slice(0, 10) }, { id: C, status: "draft", signed_at: null }, { id: B, status: "active", signed_at: at(2) }]) === B)
+  }
+  check("a buyer agreement re-signed as a CORRECTION pays once: the award is keyed on the ROOT of the engagement (no supersede link is read), so the original and the correction land one row",
     bba.awarded.length === 1 && bba.awarded[0].agentId === AGENT2 && bbaOld.awarded.length === 0 && rows("SIGNED_AGREEMENT_APPOINTMENT").filter((r) => r.agent_id === AGENT2).length === 1 &&
       rows("SIGNED_AGREEMENT_APPOINTMENT").some((r) => r.reference_id === BBA1))
   const wet = await awardLifecycleMilestones(m, { event: KernelEvent.BUYER_BROKER_AGREEMENT_SIGNED, brokerageId: BRK, entityType: "buyer_broker_agreement", entityId: BBA_WET })

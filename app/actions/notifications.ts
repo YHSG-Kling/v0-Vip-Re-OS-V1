@@ -10,8 +10,8 @@
 // client keyed on the EFFECTIVE userId and silently zero-rowed under act-as —
 // now land, with row counts as the proof.
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
-import { createServiceClient } from "@/lib/supabase/service"
-import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+// (The service client and the roster test were imported here only for createNotification, retired below — the two mark-read
+// writers ride the acting db the seam hands them.)
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -137,127 +137,16 @@ export async function markAllRead(): Promise<{
   return { success: true }
 }
 
-// ── createNotification ────────────────────────────────────────────────────────
-// Used by other systems to fire notifications. Uses service client (bypasses RLS).
-
-export async function createNotification(params: {
-  title: string
-  body: string
-  type: NotificationType
-  agentId: string
-  brokerageId: string
-  entityType?: string
-  entityId?: string
-  priority?: string
-}): Promise<{ success: boolean; id?: string; error?: string }> {
-  const { title, body, type, agentId, brokerageId, entityType, entityId, priority } =
-    params
-
-  const supabase = createServiceClient()
-
-  // Caller authorization: the PLATFORM act-as write seam. Refuses read_only
-  // impersonation before this service-client write (the kernel homonym it
-  // replaced never checked the mode, so a read_only grant could write here).
-  // Under act-as, ctx.userId/agentId/brokerageId are the IMPERSONATED seat's —
-  // the tenant checks below evaluate that seat's authority, never more.
-  const ctx = await resolveWriteContext()
-  if (!ctx.ok) {
-    return { success: false, error: ctx.error }
-  }
-
-  // Deny authenticated callers who have no agent identity and are not a
-  // broker/admin/superadmin — they cannot be authorized to create notifications.
-  if (!ctx.agentId && !isAdminOrBroker({ user_type: ctx.userType })) {
-    return { success: false, error: "Agent identity required" }
-  }
-
-  // Always fetch the target agent (user_id + brokerage_id) — needed both for
-  // auth and for the insert below.
-  const targetAgentQuery = supabase
-    .from("agents")
-    .select("user_id, brokerage_id")
-    .eq("id", agentId)
-    .maybeSingle()
-
-  let targetAgent: { user_id: string | null; brokerage_id: string | null } | null = null
-
-  if (ctx.agentId && ctx.agentId !== agentId) {
-    // Fetch both agents in parallel so we can compare brokerage IDs from the DB.
-    const [{ data: callerAgent }, { data: ta, error: agentError }] = await Promise.all([
-      supabase.from("agents").select("brokerage_id").eq("id", ctx.agentId).maybeSingle(),
-      targetAgentQuery,
-    ])
-    if (agentError || !ta?.user_id) {
-      console.warn("[notifications] createNotification: agent lookup failed", agentError?.message)
-      return { success: false, error: "Agent not found" }
-    }
-    targetAgent = ta
-    if (!callerAgent || callerAgent.brokerage_id !== targetAgent.brokerage_id) {
-      return { success: false, error: "Unauthorized" }
-    }
-  } else {
-    // No cross-agent auth needed (caller == target, or caller is broker/admin)
-    const { data: ta, error: agentError } = await targetAgentQuery
-    if (agentError || !ta?.user_id) {
-      console.warn("[notifications] createNotification: agent lookup failed", agentError?.message)
-      return { success: false, error: "Agent not found" }
-    }
-    targetAgent = ta
-    // Broker/admin callers (no agentId) must stay within their own brokerage.
-    // ctx.brokerageId may be null (untenanted staff seat): NULL matches no
-    // tenant, so the mismatch branch fires and only a superadmin passes it.
-    //
-    // The superadmin exemption reads BOTH identity columns. WriteContext carries
-    // only user_type, and `ctx.userType !== "superadmin"` was true for the
-    // platform's only superadmin — whose row is (user_type='admin',
-    // platform_role='superadmin') — so the platform owner was pinned to a single
-    // tenant and could not notify an agent in any other brokerage. platform_role
-    // is not on the context, so it is read here, and ONLY on the branch that would
-    // otherwise refuse: the tenant-matching common case never pays for the query.
-    // Same shape as public.is_platform_admin(); see app/actions/vendor-budget.ts:136-147.
-    if (!ctx.agentId && targetAgent.brokerage_id !== ctx.brokerageId) {
-      let isSuperadmin = ctx.userType === "superadmin"
-      if (!isSuperadmin) {
-        const { data: actorRow } = await supabase
-          .from("users")
-          .select("platform_role")
-          .eq("id", ctx.userId)
-          .maybeSingle()
-        isSuperadmin = (actorRow as { platform_role?: string | null } | null)?.platform_role === "superadmin"
-      }
-      if (!isSuperadmin) return { success: false, error: "Unauthorized" }
-    }
-  }
-
-  if (!targetAgent.brokerage_id) {
-    console.warn("[notifications] createNotification: agent has no brokerage_id, cannot create notification")
-    return { success: false, error: "Agent has no brokerage context" }
-  }
-  if (targetAgent.brokerage_id !== brokerageId) {
-    console.warn("[notifications] brokerageId mismatch — using agent's brokerage_id")
-  }
-  const resolvedBrokerageId = targetAgent.brokerage_id
-
-  const { data, error } = await supabase
-    .from("notifications")
-    .insert({
-      user_id: targetAgent.user_id,
-      brokerage_id: resolvedBrokerageId,
-      title,
-      body,
-      type,
-      is_read: false,
-      entity_type: entityType ?? null,
-      entity_id: entityId ?? null,
-      priority: priority ?? null,
-    })
-    .select("id")
-    .single()
-
-  if (error) {
-    console.warn("[notifications] createNotification insert failed:", error.message)
-    return { success: false, error: error.message }
-  }
-
-  return { success: true, id: String(data.id) }
-}
+// TOMBSTONE (CLAUDE.md §1 case 3 — wave 155, integrator). `createNotification` DELETED: a public "use server" endpoint that wrote
+// a notification of any type for any agent of the caller's brokerage through the service client. Its last caller,
+// app/actions/communications.ts sendNotificationToAgent, was itself retired this wave (lane 155B2 — an ungated door), which left
+// this export reachable only as an endpoint nobody calls. Nothing to merge: in-app notices are written where the fact is known —
+// SURVIVOR lib/kernel/notification-engine.ts:206 (processKernelEvent's rule-driven insert, now decided and receipted at the one
+// fan-out) and the kernel modules that own a notice (os-health, referral-radar, document-compliance-audit …). The bell's readers
+// and the two mark-read writers below are unchanged.
+//
+// TOMBSTONE (wave 155, lane 155R20; §1 case 1 — a DUPLICATE; moved here when the emptied file app/actions/notification-actions.ts
+// was deleted). Its markAllRead and markOneRead re-implemented the two writers below on the cookie client WITHOUT the act-as
+// write seam (a read_only impersonation grant was not refused) and read a zero-row mark as success. SURVIVORS: markNotificationRead
+// and markAllRead in this file; the one caller, app/notifications/page.tsx, calls them. The kernel helpers the duplicate wrapped
+// (lib/kernel/notification-center.ts markNotificationRead / markAllNotificationsRead) were retired with it.

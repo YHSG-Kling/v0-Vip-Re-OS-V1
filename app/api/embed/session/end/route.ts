@@ -77,7 +77,7 @@ export async function POST(request: NextRequest) {
   }, bookMinutes, {
     settle: (r) => !r.ok ? { status: "failed", outcome: "close_refused", error: r.error ?? null }
       : (r.minutesBilled ?? 0) > 0 ? { status: "executed", outcome: "minutes_booked" } : { status: "skipped", outcome: "already_closed" },
-    replay: () => ({ ok: false, error: "the action ledger refused this booking's receipt" }),
+    replay: (claim) => ({ ok: false, error: claim.kind === "refused" ? `the action ledger refused this booking's receipt: ${claim.error}` : "this session's minutes were already booked" }),
   }) : await bookMinutes()
   if (!result.ok) {
     // Not found / already closed — not an error the visitor's page needs to

@@ -156,6 +156,11 @@ console.log("\n[positive controls — the finder still sees the defect before an
     swallowedIn("lib/x.ts", `const ups = ids.map((id, n) =>\n  s.from("tasks").update({ n }).eq("id", id))\nconst results = await Promise.all(ups)\nif (results.find((r) => r.error)) return`).length === 0
     && swallowedIn("lib/x.ts", `const ups = ids.map((id) => s.from("tasks").delete().eq("id", id))\nawait Promise.all(ups)`).join() === "tasks"
     && swallowedIn("lib/x.ts", `;({ data } = await s.from("tasks").update(p).eq("id", i))`).join() === "tasks")
+  check("PC16 an arrow EXPRESSION BODY handed to a pass-through ledger wrapper counts only when the wrapper's binding reads `error` (a dropped result, a `{ data }` binding and an unknown wrapper are still found)",
+    swallowedIn("lib/x.ts", `const { data, error } = await withActionLedger({ brokerageId: b, action: "tasks.create", actor: { type: "system" }, subject: { type: "task", id }, riskClass: "LOW_RISK_WRITE", detail: { a: 1 } }, async () => await s\n  .from("tasks")\n  .insert(row)\n  .select()\n  .maybeSingle(), hooks)\nif (error) return`).length === 0
+    && swallowedIn("lib/x.ts", `await withActionLedger({ brokerageId: b, action: "tasks.create" }, async () => await s.from("tasks").insert(row), hooks)`).join() === "tasks"
+    && swallowedIn("lib/x.ts", `const { data } = await ledgerSessionAction({ brokerageId: b, action: "tasks.create" }, async () => s.from("tasks").insert(row).select().maybeSingle())`).join() === "tasks"
+    && swallowedIn("lib/x.ts", `const { error } = await someOtherWrapper({ brokerageId: b, action: "tasks.create", actor: { type: "system" }, subject: { type: "task", id }, riskClass: "LOW_RISK_WRITE", detail: { a: 1, b: 2, c: 3 } }, async () => s.from("tasks").insert(row))`).join() === "tasks")
 }
 
 const SITES = process.argv.includes("--sites")
@@ -176,6 +181,42 @@ for (const f of files) {
   }
 }
 const total = [...found.values()].reduce((a, b) => a + b, 0)
+
+// ── THE PASS-THROUGH WRAPPERS REALLY PASS THROUGH (shape 4's premise, proven on the corpus) ──
+// silent-write-guard credits a write whose arrow is handed to one of PASS_THROUGH_WRAPPERS when the WRAPPER's binding reads
+// `error`. That is only honest while every declaration of each name returns its callback's own result: a generic `<T>` function
+// taking a `() => Promise<T>` and returning `Promise<T>` — or `Promise<T | <refusal>>`, the kernel's own "not run" answer, which
+// carries a truthy `error` too, so a binding that reads `error` still sees it. Any other signature fails here, by name and file.
+const WRAPPER_NAMES = sw.PASS_THROUGH_WRAPPERS as readonly string[]
+/** PURE — declarations of `name` in `code` whose signature is NOT `<T>(… () => Promise<T> …): Promise<T>`. */
+function nonPassThroughDeclarations(code: string, name: string): number {
+  let bad = 0
+  const re = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*(<[^>]*>)?\\s*\\(`, "g")
+  for (let m = re.exec(code); m; m = re.exec(code)) {
+    const generic = /^<\s*([A-Za-z_$][\w$]*)/.exec(m[1] ?? "")?.[1]
+    // the parameter list, by balanced parentheses, then the return annotation up to the body's `{`
+    let depth = 0, end = -1
+    for (let i = re.lastIndex - 1; i < code.length; i++) { const c = code[i]; if (c === "(") depth++; else if (c === ")") { depth--; if (depth === 0) { end = i; break } } }
+    const params = end < 0 ? "" : code.slice(re.lastIndex, end)
+    const ret = end < 0 ? "" : /^\s*:\s*([^{]*)\{/.exec(code.slice(end + 1))?.[1]?.trim() ?? ""
+    // A same-named function that takes NO callback (lib/kernel/improvement-proposals.ts's `ledgered(svc, row, …)`) cannot be
+    // shape 4's callee — the compiler refuses an arrow argument — so it is not judged as a wrapper.
+    if (end >= 0 && !/=>/.test(params)) continue
+    const ok = !!generic && new RegExp(`\\(\\s*\\)\\s*=>\\s*Promise<\\s*${generic}\\s*>`).test(params) && (ret === `Promise<${generic}>` || ret.startsWith(`Promise<${generic} |`))
+    if (!ok) bad++
+  }
+  return bad
+}
+const wrapperDecls: string[] = [], wrapperBad: string[] = []
+for (const f of files) {
+  const code = stripComments(readFileSync(f, "utf8"))
+  for (const name of WRAPPER_NAMES) {
+    const n = (code.match(new RegExp(`(?:async\\s+)?function\\s+${name}\\s*(?:<[^>]*>)?\\s*\\(`, "g")) ?? []).length
+    if (n === 0) continue
+    wrapperDecls.push(`${f}:${name}`)
+    if (nonPassThroughDeclarations(code, name) > 0) wrapperBad.push(`${f}:${name}`)
+  }
+}
 const byOwner = { consequential: 0, notification: 0, other: 0 }
 const byTable = new Map<string, number>()
 const byRoot = new Map<string, number>()
@@ -214,6 +255,14 @@ const baselineTotal = Object.values(baseline).reduce((a, b) => a + b, 0)
 console.log(`  · frozen debt ${baselineTotal}`)
 if (burned.length > 0) console.log(`  ↓ ${burned.length} site(s) improved — tighten with SWALLOWED_REFUSAL_BASELINE=1`)
 check(`no NEW swallowed refusal on any live table (${grew.length} new)`, grew.length === 0, grew.slice(0, 10).join(" | "))
+check(`every declaration of a pass-through wrapper returns its callback's own result (${wrapperDecls.length} declarations of ${WRAPPER_NAMES.join(" / ")})`,
+  wrapperBad.length === 0 && WRAPPER_NAMES.filter((n) => n !== "ledgered").every((n) => wrapperDecls.includes(`lib/kernel/action-ledger.ts:${n}`)), wrapperBad.slice(0, 8).join(" | "))
+check("POSITIVE CONTROL: a wrapper that returns its OWN result shape, or is not generic over its callback, is seen (and the real shape is not)",
+  nonPassThroughDeclarations(`async function ledgered(run: () => Promise<unknown>): Promise<{ error: string | null }> { return { error: null } }`, "ledgered") === 1
+  && nonPassThroughDeclarations(`async function ledgered<T>(who: W, run: () => Promise<T>): Promise<{ error: string | null }> { return { error: null } }`, "ledgered") === 1
+  && nonPassThroughDeclarations(`async function ledgered<T>(who: W, what: { a: string }, run: () => Promise<T>): Promise<T> { return run() }`, "ledgered") === 0
+  && nonPassThroughDeclarations(`async function ledgered(svc: Svc, row: Row, direction: "promote" | "rollback"): Promise<PromoteResult> { return x }`, "ledgered") === 0
+  && nonPassThroughDeclarations(`export function ledgerToolCall<T>(ctx: C, run: () => Promise<T>, opts?: { now?: Date }): Promise<T | SinkRefusal | { success: boolean }> { return w(ctx, run) }`, "ledgerToolCall") === 0)
 check("the consequential tables stay at ZERO in the WIDER corpus too (silent-write-guard's invariant, beyond its roots)",
   byOwner.consequential === 0, [...found.keys()].filter((k) => (CONSEQUENTIAL_TABLES as readonly string[]).includes(k.split(" → ")[1])).slice(0, 8).join(" | "))
 

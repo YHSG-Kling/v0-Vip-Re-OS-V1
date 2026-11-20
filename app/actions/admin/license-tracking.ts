@@ -526,8 +526,9 @@ export async function deleteEducationModule(moduleId: string): Promise<{ success
   // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNTED. `.eq("brokerage_id", null)` renders `brokerage_id=eq.null`, which matches NO
   // row — so a platform-staff delete of a PLATFORM module (brokerage_id NULL) silently "succeeded" with nothing deleted. A NULL
   // owner is matched with IS NULL, and zero deleted rows is a FAILURE for this caller (the module was proven present above).
-  const del = service.from("learning_modules").delete().eq("id", moduleId)
-  const { data: deleted, error } = await (existing.brokerage_id === null ? del.is("brokerage_id", null) : del.eq("brokerage_id", existing.brokerage_id)).select("id")
+  let del = service.from("learning_modules").delete().eq("id", moduleId)
+  del = existing.brokerage_id === null ? del.is("brokerage_id", null) : del.eq("brokerage_id", existing.brokerage_id)
+  const { data: deleted, error } = await del.select("id")
 
   if (error) return { success: false, error: error.message }
   if ((deleted ?? []).length === 0) return { success: false, error: "The module was not deleted (it may already be gone)" }

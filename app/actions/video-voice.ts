@@ -6,7 +6,6 @@
 // ============================================
 
 import { bestEffort } from "@/lib/db/best-effort"
-import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
@@ -15,7 +14,6 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
 import type {
-  VoiceTrainingJobStatus,
   VoiceProfileTrainingStatus,
   SampleManifest,
   VoiceProfile,

@@ -640,7 +640,7 @@ export function paidPullApproval(
 export type IntelligenceSourceClass = "idea" | "acquisition" | "market_evidence"
 export type IntelligenceOutcome = "topic_pool" | "raw_data" | "education_search"
 
-export const INTELLIGENCE_CLASS_OUTCOMES: Readonly<Record<IntelligenceSourceClass, readonly IntelligenceOutcome[]>> = Object.freeze({
+const INTELLIGENCE_CLASS_OUTCOMES: Readonly<Record<IntelligenceSourceClass, readonly IntelligenceOutcome[]>> = Object.freeze({
   idea: ["topic_pool"],
   acquisition: ["raw_data"],
   market_evidence: ["education_search", "topic_pool"],
@@ -673,7 +673,7 @@ const RUNG_CLASSES: Readonly<Record<IntelligenceRung, readonly IntelligenceSourc
 
 /** A paid candidate whose records overlap what is already held by at least this ratio is not bought (a stated policy line,
  *  not a measurement: nine in ten already held means the pull mostly re-buys). Measured overlap only — unknown is not assumed. */
-export const LADDER_MAX_PAID_OVERLAP = 0.9
+const LADDER_MAX_PAID_OVERLAP = 0.9
 
 export interface IntelligenceSourceCandidate {
   key: string

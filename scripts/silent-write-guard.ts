@@ -445,10 +445,50 @@ function capturedByMapArrow(m: string, at: number): boolean {
   return !!awaitedAs && resultsReadError(m, awaitedAs[1], open)
 }
 
-/** PURE — any of the three structural shapes. */
+/**
+ * The wrappers whose awaited result IS their callback's result — `<T>(…, run: () => Promise<T>, …): Promise<T>`.
+ * The three kernel ones are lib/kernel/action-ledger.ts's; `ledgered` is the file-local helper a route declares
+ * around them. scripts/swallowed-refusal-census.ts proves the signature of every declaration of each name
+ * (a wrapper that returned its OWN `{ error }` would hide the write's refusal behind a binding named `error`).
+ */
+export const PASS_THROUGH_WRAPPERS = ["withActionLedger", "ledgerSessionAction", "ledgerToolCall", "ledgered"] as const
+
+/**
+ * PURE — shape 4 (wave 155): the write is the EXPRESSION BODY of an arrow handed to a pass-through ledger wrapper,
+ * and the wrapper's awaited result is bound by a declaration that reads `error`:
+ *
+ *     const { data, error } = await withActionLedger(ctx, async () => await svc.from(t).insert(r).select().maybeSingle(), hooks)
+ *
+ * The receipt wave put a one-line context object between the destructure and the write, so the 160-character
+ * lookbehind no longer reached the binding and four writes that READ their error were reported as swallowed.
+ * Asked for, exactly as in the other shapes: the result lands in a binding and THAT binding's `error` is read.
+ * A block-bodied arrow (`async () => { await svc.from(t)… }`), a wrapper not in the list, a result bound to
+ * `{ data }` only, and a wrapper whose result is dropped are all still found (controls below and PC16).
+ */
+function capturedByPassThroughWrapper(m: string, at: number): boolean {
+  let head = headBefore(m, receiverStart(m, at))
+  if (/(?<![\w$])await$/.test(head)) head = head.slice(0, -5).replace(/\s+$/, "")
+  if (!/=>$/.test(head)) return false
+  // the unmatched `(` that opens the wrapper call
+  let depth = 0, open = -1
+  for (let i = head.length - 3; i >= 0; i--) {
+    const c = m[i]
+    if (")]}".includes(c)) depth++
+    else if ("([{".includes(c)) { if (depth === 0) { open = i; break } depth-- }
+  }
+  if (open < 0 || m[open] !== "(") return false
+  const callee = new RegExp(`(?<![\\w$.])(?:${PASS_THROUGH_WRAPPERS.join("|")})\\s*(?:<[^<>()]*>)?\\s*$`).exec(m.slice(0, open))
+  if (!callee) return false
+  const beforeCallee = headBefore(m, callee.index)
+  if (!/(?<![\w$])await$/.test(beforeCallee)) return false
+  const decl = enclosingDeclaration(m, beforeCallee.length - 5)
+  return !!decl && bindingReadsError(m, decl.binding, decl.eq, true)
+}
+
+/** PURE — any of the four structural shapes. */
 function capturedByEnclosingExpression(stmt: string, at: number): boolean {
   const m = masked(stmt)
-  return capturedByTernaryArm(m, at) || capturedByPromiseAll(m, at) || capturedByMapArrow(m, at)
+  return capturedByTernaryArm(m, at) || capturedByPromiseAll(m, at) || capturedByMapArrow(m, at) || capturedByPassThroughWrapper(m, at)
 }
 
 /**
@@ -526,6 +566,16 @@ console.log("\n[pure — the detector]")
   check("...and STILL flags the builder ternary awaited with its error dropped",
     silentWritesIn(
       `let q = open\n  ? svc.from("contacts").update(a).eq("id", i)\n  : svc.from("contacts").update(b).eq("id", i)\nawait applyTenantScope(q, scope)`).length === 2)
+  check("W155 accepts an arrow EXPRESSION BODY handed to a pass-through ledger wrapper whose result is destructured with `error`",
+    silentWritesIn(
+      `const { data, error } = await withActionLedger({ brokerageId: b, action: "x.y", detail: { a: [1, 2], s: "a ( b" } }, async () => await svc\n  .from("contacts")\n  .insert(row)\n  .select()\n  .maybeSingle(), hooks)\nif (error) return`).length === 0
+    && silentWritesIn(
+      `const { data: flag, error } = await ledgered<Row>(auth, { action: "x.y" }, async () => svc.from("contacts").update(p).eq("id", i).select().maybeSingle())\nif (error) return`).length === 0)
+  check("W155 still finds the same wrapper when the binding does not read `error`, when the result is dropped,\n    when the wrapper is not a pass-through one, and when the arrow has a block body",
+    silentWritesIn(`const { data } = await withActionLedger(ctx, async () => await svc.from("contacts").insert(row).select().maybeSingle(), hooks)`).join() === "contacts"
+    && silentWritesIn(`await withActionLedger(ctx, async () => await svc.from("contacts").insert(row), hooks)`).join() === "contacts"
+    && silentWritesIn(`const { error } = await tryCatch({ a: "${"x".repeat(170)}" }, async () => await svc.from("contacts").insert(row))`).join() === "contacts"
+    && silentWritesIn(`const { error } = await withActionLedger({ a: "${"x".repeat(170)}" }, async () => {\n  await svc.from("contacts").insert(row)\n  return { error: null }\n}, hooks)`).join() === "contacts")
   check("88F accepts a Promise.all ELEMENT whose destructured slot is read for `error`",
     silentWritesIn(
       `const [u, v] = await Promise.all([\n  svc.from("contacts").update(p).eq("id", i),\n  svc.from("commissions").insert(r),\n])\nif (u.error || v.error) return`).length === 0)

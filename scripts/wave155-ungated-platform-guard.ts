@@ -446,6 +446,15 @@ async function driven() {
     fresh(seed(AS_CONTACT))
     const r2 = await as(AS_CONTACT, () => m.saveProperty({ contactId: C, mlsNumber: "MLS-2", propertyData: { brokerageId: B, address: "2 Bay" } }))
     check("saveProperty: the contact themselves → saved in the CONTACT's tenant (the body tenant is ignored)", ok(r2) && T("saved_properties").find((p) => p.mls_number === "MLS-2")?.brokerage_id === A, JSON.stringify(r2))
+    // 20b. the SECOND unsave door (app/actions/smart-insights.ts unsaveProperty, keyed by saved_properties.id). It called the
+    // contact gate only to name its receipt and ran the delete whatever the gate said; it now refuses (CLAUDE.md §4 — fail closed).
+    const si = await mod("app/actions/smart-insights")
+    fresh(seed(AS_CONTACT))
+    const r3 = await as(ANON, () => si.unsaveProperty(C, X))
+    neg("smart-insights unsaveProperty: no session → refused; the saved home is still there", !ok(r3) && T("saved_properties").length === 1, `${JSON.stringify(r3)} rows=${T("saved_properties").length}`)
+    fresh(seed(AS_CONTACT))
+    const r4 = await as(AS_CONTACT, () => si.unsaveProperty(C, X))
+    check("smart-insights unsaveProperty: the contact themselves → removed", ok(r4) && T("saved_properties").length === 0, `${JSON.stringify(r4)} rows=${T("saved_properties").length}`)
   }
 
   // 21. buyer-broker-agreements cancelBBAAction ──────────────────────────────────────────────────────────────────

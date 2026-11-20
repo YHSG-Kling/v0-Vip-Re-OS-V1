@@ -1707,7 +1707,7 @@ function parseTime(timeStr: string): number {
 
 // TOMBSTONE (wave 146, lane 146G — owner ruling 15; eight-step proof row `checkInAttendee` in
 // scripts/manager-duplicate-proof-guard.ts): checkInAttendee DELETED here → survivor
-// app/actions/seller-open-house.ts:658 checkInAttendee — the kiosk check-in the event-day tab calls: event-derived
+// app/actions/seller-open-house.ts:661 checkInAttendee — the kiosk check-in the event-day tab calls: event-derived
 // brokerage, refuses a completed / cancelled event, REQUIRES TCPA consent, dedupes on (event, email), records the
 // consent on contact_consent_events and emits OPEN_HOUSE_ATTENDEE_CAPTURED. This twin had no importer. Its only
 // behaviours the survivor lacks were not merged, on purpose: it DEFAULTED tcpa_consent to true when optInFollowUp was

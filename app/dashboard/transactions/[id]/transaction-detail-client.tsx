@@ -2659,7 +2659,7 @@ export function TransactionDetailClient({
                             <Button
                               size="sm"
                               variant="ghost"
-                              className="h-7 text-xs px-2"
+                              className="h-9 text-xs px-3"
                               disabled={isPending}
                               onClick={() => { setPacketEmail(""); setPacketConfirmed(false); setPacketNote(""); setPacketError(null); setPacketSendOpen(true) }}
                             >

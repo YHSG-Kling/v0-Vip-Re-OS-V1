@@ -62,15 +62,15 @@ export const DUPLICATE_ACTION_LEDGER: Readonly<Record<string, LedgerRow>> = {
   approveSocialPost: { verdict: "kept", class: "lane_domain", survivor: null, dependency: "both wired — listing-media.ts:329 (listing social panel) and social-media-automation.ts:464 (command center, social dashboard); app/actions/social* is lane 146E's domain and the approval door is contract C5 (approverFor)." },
   checkCompliance: { verdict: "kept", class: "homonym", survivor: null, dependency: "different functions: ai-content-generation.tsx:1953 fair-housing-scans generated TEXT and writes ai_generated_content.compliance_*; link-to-video.ts:251 runs an AI compliance review of a VIDEO SCRIPT (used twice in its own file). Neither covers the other; the text scan's caller is the content composer (routing, not retirement)." },
   checkInAttendee: { verdict: "retired", retiredTwins: [{
-    twin: "app/actions/open-house-automation.ts", survivor: "app/actions/seller-open-house.ts:658",
+    twin: "app/actions/open-house-automation.ts", survivor: "app/actions/seller-open-house.ts:661",
     steps: {
       file_function: "app/actions/open-house-automation.ts:1651 checkInAttendee (wave-146 base bf67aa63)",
       intended_behaviour: "record an open-house attendee check-in against the event's brokerage",
-      candidate_survivor: "app/actions/seller-open-house.ts:658 checkInAttendee — the kiosk check-in the event-day tab calls",
+      candidate_survivor: "app/actions/seller-open-house.ts:661 checkInAttendee — the kiosk check-in the event-day tab calls",
       survivor_covers: "same open_house_attendees insert with the event-derived brokerage and the (event, email) dedupe, plus: refuses a completed / cancelled event, REQUIRES TCPA consent, records it on contact_consent_events, emits OPEN_HOUSE_ATTENDEE_CAPTURED",
       callers_migrated: "the twin had 0 importers (named / dynamic / namespace / barrel, runtime and scripts) and no string-keyed mention — nothing to migrate",
       unique_behaviour: "two behaviours only, both deliberately NOT merged: tcpa_consent defaulted to TRUE when optInFollowUp was omitted (consent without an affirmative act — the survivor refuses it) and an interest level stamped at sign-in (the survivor leaves it NULL by design; the follow-up path scores interest). mapInterestLevelText stays (recordVisitor uses it)",
-      retired_with_tombstone: "open-house-automation.ts DIGITAL CHECK-IN block — tombstone names app/actions/seller-open-house.ts:658",
+      retired_with_tombstone: "open-house-automation.ts DIGITAL CHECK-IN block — tombstone names app/actions/seller-open-house.ts:661",
       guards_rerun: RERUN,
     } }] },
   completeMilestone: { verdict: "kept", class: "money_legal", survivor: "lib/kernel/transactions.ts:913 completeTransactionMilestone", dependency: "both twins are unwired (copilot.ts:425 user-client update by id; transactions.ts:165 → TransactionService). The kernel command is the convergence target. Wave 146 (146Z): its tenant predicate LANDED — the update is pinned to brokerage_id + transaction_id and COUNTED (0 rows = refused), so it is now a provable survivor. KEPT this wave, not retired: the wired agent door is app/actions/transaction-milestones.ts completeMilestoneAction → lib/transactions/milestone-service.ts (a third spelling outside app/actions), and converging the three onto one door is a deal-domain consequential change for deal_coordinator — the eight steps are written there, not guessed here." },
@@ -128,7 +128,7 @@ export const DUPLICATE_ACTION_LEDGER: Readonly<Record<string, LedgerRow>> = {
       survivor_covers: "same notifications update on the seat's own rows, plus: the act-as write seam (resolveWriteContext — a read_only impersonation grant is refused) and a zero-row single mark is a refusal, not a success",
       callers_migrated: "app/notifications/page.tsx — the twin's only importer — now calls the survivors (inline form actions); no script or string-keyed mention",
       unique_behaviour: "none worth keeping: the twin threw on Unauthorized (the survivor returns a refusal) and filtered is_read=false on the single mark (the survivor counts the row instead). Its kernel helpers lib/kernel/notification-center.ts markNotificationRead / markAllNotificationsRead lost their only caller and are retired with tombstones",
-      retired_with_tombstone: "app/actions/notification-actions.ts is a tombstone naming app/actions/notifications.ts:115 (lane 155R20, wave 155)",
+      retired_with_tombstone: "the emptied file app/actions/notification-actions.ts is DELETED (an action file imported by nothing is an orphan); its tombstone lives on the survivor app/actions/notifications.ts and names the deleted path (lane 155R20 + integrator, wave 155)",
       guards_rerun: RERUN,
     } }] },
   recordSellerResponse: { verdict: "kept", class: "homonym", survivor: null, dependency: "track-offer-lifecycle.ts:401 is the activities-derived lifecycle mirror, documented there (:396-399) as a DIFFERENT function from the wired record-seller-response.ts:122; offer domain (consequential — an acceptance propagates into the transaction lane)." },
@@ -184,12 +184,23 @@ function census(files: readonly string[], textOf: (f: string) => string): Map<st
 function twinProblems(name: string, t: RetiredTwin, rawOf: (f: string) => string | null): string[] {
   const out: string[] = []
   const twinRaw = rawOf(t.twin)
-  if (twinRaw === null) return [`${t.twin} does not exist`]
-  const twinStripped = stripComments(twinRaw)
-  if (exportsFn(twinStripped, name)) out.push(`${t.twin} still exports ${name}`)
-  if (!twinRaw.includes(t.survivor)) out.push(`${t.twin} has no tombstone naming ${t.survivor}`)
-  else if (twinStripped.includes(t.survivor)) out.push(`${t.twin} names ${t.survivor} in CODE (a string), not in a tombstone comment`)
-  if (!/TOMBSTONE/.test(twinRaw)) out.push(`${t.twin} carries no TOMBSTONE marker`)
+  const [survivorFile] = [t.survivor.slice(0, t.survivor.lastIndexOf(":"))]
+  if (twinRaw === null) {
+    // THE WHOLE TWIN FILE IS GONE (wave 155). That is the strongest "twin gone" there is — a deleted file exports nothing — and
+    // an emptied action file kept only to hold a comment is itself an orphan file (test:no-orphan-actions). The tombstone then
+    // lives on the SURVIVOR and must name the deleted twin's path, in a comment: a deleted file with no tombstone anywhere is a
+    // capability that vanished without a record.
+    const survivorRaw = rawOf(survivorFile)
+    if (survivorRaw === null) return [`${t.twin} does not exist and neither does its survivor ${survivorFile}`]
+    if (!/TOMBSTONE/.test(survivorRaw) || !survivorRaw.includes(t.twin)) out.push(`${t.twin} is deleted and ${survivorFile} carries no TOMBSTONE naming it`)
+    else if (stripComments(survivorRaw).includes(t.twin)) out.push(`${survivorFile} names ${t.twin} in CODE (a string), not in a tombstone comment`)
+  } else {
+    const twinStripped = stripComments(twinRaw)
+    if (exportsFn(twinStripped, name)) out.push(`${t.twin} still exports ${name}`)
+    if (!twinRaw.includes(t.survivor)) out.push(`${t.twin} has no tombstone naming ${t.survivor}`)
+    else if (twinStripped.includes(t.survivor)) out.push(`${t.twin} names ${t.survivor} in CODE (a string), not in a tombstone comment`)
+    if (!/TOMBSTONE/.test(twinRaw)) out.push(`${t.twin} carries no TOMBSTONE marker`)
+  }
   const [sf, sl] = [t.survivor.slice(0, t.survivor.lastIndexOf(":")), Number(t.survivor.slice(t.survivor.lastIndexOf(":") + 1))]
   const survRaw = rawOf(sf)
   if (survRaw === null) out.push(`survivor ${sf} does not exist`)
@@ -229,6 +240,9 @@ function main() {
   const fixture = (xFile: string) => (f: string) => f === "app/actions/x.ts" ? xFile : f === "app/actions/y.ts" ? yFile : null
   check("L3 control: a well-formed retirement passes the same check", twinProblems("doIt", ctlTwin, fixture("// TOMBSTONE: doIt DELETED → survivor\n// app/actions/y.ts:3 doIt\nexport async function other() {}\n")).length === 0, twinProblems("doIt", ctlTwin, fixture("// TOMBSTONE: doIt DELETED → survivor\n// app/actions/y.ts:3 doIt\nexport async function other() {}\n")).join("; "))
   check("L3 positive control: a twin that still exports the name is caught", twinProblems("doIt", ctlTwin, fixture("// TOMBSTONE → app/actions/y.ts:3\nexport async function doIt() {}\n")).some((p) => /still exports/.test(p)))
+  const survivorWith = (tomb: string) => (f: string) => f === "app/actions/x.ts" ? null : f === "app/actions/y.ts" ? `// line 1\n${tomb}\nexport async function doIt() {}\n` : null
+  check("L3 control: a twin whose FILE is deleted passes when the survivor carries a tombstone naming the deleted path", twinProblems("doIt", ctlTwin, survivorWith("// TOMBSTONE: app/actions/x.ts doIt DELETED → this file")).length === 0, twinProblems("doIt", ctlTwin, survivorWith("// TOMBSTONE: app/actions/x.ts doIt DELETED → this file")).join("; "))
+  check("L3 positive control: a deleted twin with NO tombstone on its survivor is caught", twinProblems("doIt", ctlTwin, survivorWith("// nothing recorded here")).some((p) => /carries no TOMBSTONE naming it/.test(p)))
   check("L3 positive control: a tombstone naming the wrong line is caught", twinProblems("doIt", { ...ctlTwin, survivor: "app/actions/y.ts:1" }, fixture("// TOMBSTONE → app/actions/y.ts:1\n")).some((p) => /is not where/.test(p)))
   check("L3 positive control: a 'tombstone' inside a string literal is not a tombstone", twinProblems("doIt", ctlTwin, fixture("const note = \"TOMBSTONE app/actions/y.ts:3\"\n")).some((p) => /in CODE/.test(p)))
 

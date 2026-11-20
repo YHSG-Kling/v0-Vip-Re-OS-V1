@@ -152,7 +152,11 @@ export async function submitDataSubjectRequestAction(
     detail: { request_type: input.requestType, matched_user: !!matchUser?.id, matched_contact: !!matchContact?.id, door: door.basis },
   }, submit, {
     settle: (r) => r.ok ? { status: "executed", outcome: "received", providerRef: r.requestId } : { status: "failed", outcome: "insert_refused", error: r.error },
-    replay: () => ({ ok: false, error: "Your request could not be recorded — please try again." }),
+    // Claim-aware: only a REFUSED claim means nothing was recorded. An already-recorded or in-flight claim must not tell the
+    // person to submit a legal request a second time.
+    replay: (claim) => claim.kind === "refused"
+      ? { ok: false, error: "Your request could not be recorded — please try again." }
+      : { ok: false, error: "This request is already being recorded — you do not need to submit it again." },
   })
 }
 

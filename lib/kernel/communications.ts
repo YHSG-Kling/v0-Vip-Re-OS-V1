@@ -198,6 +198,15 @@ export interface InboxThread {
   lead_id?: string | null
 }
 
+/**
+ * THE CLIENT SEAM (wave 155). This module stopped being a server-action module (header above), so it is now a PLAIN module —
+ * and the barrel puts it on the calendar-sync cron's import path (for evaluateOutboundEligibility, which builds no client).
+ * The two inbox functions build the COOKIE client, which reads nothing where there is no session. Their only callers are the
+ * session actions in app/actions/inbox.ts, which take the default; a caller with no session must hand in its own client
+ * rather than silently read an empty inbox (the recruit-processor shape scripts/sessionless-use-server-census.ts holds).
+ */
+export interface InboxClientSeam { client?: Awaited<ReturnType<typeof createServerClient>> }
+
 export interface LoadUniversalInboxInput {
   actorContext: ActorContext
   channel?: InboxChannel
@@ -234,13 +243,14 @@ export interface UniversalInboxResult {
  *   - Results merged and sorted newest-first
  */
 export async function loadUniversalInbox(
-  input: LoadUniversalInboxInput
+  input: LoadUniversalInboxInput,
+  opts?: InboxClientSeam,
 ): Promise<{ success: boolean; data?: UniversalInboxResult; error?: string }> {
   try {
     const { actorContext, channel = "all", contactId, unreadOnly = false, limit = 50 } = input
     // Lead-lane-only mode: one lead's conversation, or the whole ISA lead lane.
     const leadLaneOnly = !!input.leadId || input.party === "lead"
-    const supabase = await createServerClient()
+    const supabase = opts?.client ?? await createServerClient()
 
     // ── 1. Resolve agent_id from actorContext.userId when role = agent ────────
     let agentId: string | null = null
@@ -662,11 +672,12 @@ export interface SendInboxReplyInput {
  *   messages OR client_portal_messages
  */
 export async function sendInboxReply(
-  input: SendInboxReplyInput
+  input: SendInboxReplyInput,
+  opts?: InboxClientSeam,
 ): Promise<{ success: boolean; messageId?: string; error?: string }> {
   try {
     const { actorContext, contactId, body, channel } = input
-    const supabase = await createServerClient()
+    const supabase = opts?.client ?? await createServerClient()
 
     // Load contact for compliance gate
     const { data: contact } = await supabase

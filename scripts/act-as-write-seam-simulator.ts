@@ -330,7 +330,9 @@ function main() {
     ["app/actions/settings/revenue-share-setting.ts", "setRevenueShareEnabled"],
     ["app/actions/settings/showing-financial-gate-setting.ts", "setShowingFinancialGateRequired"],
     ["app/actions/user-profile.ts", "updateMyAgentIdentity"],
-    ["app/actions/notifications.ts", "createNotification"],
+    // createNotification was retired (wave 155 — no caller left; tombstone in the file). The file's two live writers stay pinned.
+    ["app/actions/notifications.ts", "markNotificationRead"],
+    ["app/actions/notifications.ts", "markAllRead"],
   ]
   for (const [file, fn] of WRITERS) {
     const s = read(file)

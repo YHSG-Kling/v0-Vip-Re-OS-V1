@@ -808,18 +808,17 @@ console.log("\n═══ 7. THE ROUTE ITSELF (lane 88F) — no cron/webhook rout
   // not called — lib/kernel/index.ts alone drags a dozen session-mode helpers onto the
   // calendar-sync cron's path. So this is a RATCHET, not a zero: the 30 measured on
   // 2026-09-28 (lane 88F, after recruit-processor was fixed) are frozen and may only
-  // shrink; a NEW plain module that builds the cookie client on a sessionless path fails.
+  // shrink (27 since wave 155: three left the list); a NEW plain module that builds the cookie client on a sessionless path fails.
   const PLAIN_COOKIE_MODULE_BASELINE = new Set([
     "lib/ai/cost-tracking.ts", "lib/ai/models.ts", "lib/ai/pipeline.ts", "lib/application/ai-isa.ts",
     "lib/application/compliance-monitoring.ts", "lib/application/lead-application-service.ts",
     "lib/application/listing-lifecycle.ts", "lib/application/listings.ts", "lib/application/transactions.ts",
     "lib/auth/require-caller.ts", "lib/campaigns/roi-calculator.ts", "lib/communications/vendor-communications.tsx",
-    "lib/compliance-rules/compliance-logger.ts", "lib/events/event-helpers.ts", "lib/kernel/0.1-feature-access.ts",
+    "lib/events/event-helpers.ts", "lib/kernel/0.1-feature-access.ts",
     "lib/kernel/agent-onboarding.ts", "lib/kernel/ai-model.ts", "lib/kernel/calendar-engine.ts",
     "lib/kernel/calendar-sync.ts", "lib/kernel/education.ts", "lib/kernel/helpers.ts", "lib/kernel/listings.ts",
     "lib/kernel/notification-center.ts", "lib/kernel/offers.ts", "lib/kernel/onboarding-reminders.ts",
-    "lib/kernel/portal.ts", "lib/kernel/video.ts", "lib/platform/require-capability.ts", "lib/security/rbac.ts",
-    "lib/security/server-action-guard.ts",
+    "lib/kernel/portal.ts", "lib/kernel/video.ts", "lib/platform/require-capability.ts",
   ])
   const pcPlain = runCensus({
     files: ["app/api/cron/raw/route.ts", "lib/raw/processor.ts"],

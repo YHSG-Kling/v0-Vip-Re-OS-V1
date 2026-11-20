@@ -684,19 +684,23 @@ export async function sendTitleMessageToAgent(data: {
   if (!agentUserId) throw new Error("This deal's agent has no user seat to receive the message")
 
   const body = `[TITLE/ESCROW] ${titleUser?.company_name || "Title Company"} re: ${tx.property_address || "Transaction"}:\n\n${data.message}`
-  // The DURABLE record — what the title company told the agent on this deal — in the tenant's communication log
-  // (communications: agent_id → agents, the right class for tx.agent_id; contact_id null by design, this is not a client
-  // thread). The bell below is the delivery; a dismissed bell must not be the only trace of a partner's note on a deal.
-  const { error: logError } = await svc.from("communications").insert({
+  // The DURABLE record — what the title company told the agent on this deal — on the DEAL'S OWN TIMELINE: an `activities`
+  // row carrying transaction_id, which app/transactions/[transactionId]/page.tsx reads and renders (agent_id → agents, the
+  // right class for tx.agent_id; no contact — this is not a client thread). The bell below is the delivery; a dismissed bell
+  // must not be the only trace of a partner's note on a deal.
+  // (Wave 155, integrator: lane 155S2 first filed this in `communications` with agent_id — a column no screen or job reads,
+  // so the "durable record" was a write with no reader. The deal timeline is where an agent looks for what happened on a deal.)
+  const { error: logError } = await svc.from("activities").insert({
     brokerage_id: actor.brokerageId,
     agent_id: tx.agent_id,
-    contact_id: null,
-    direction: "inbound",
-    channel: "portal",
-    subject: `Title / escrow note — ${tx.property_address || "transaction"}`,
-    content_preview: data.message.slice(0, 280),
-    sent_at: new Date().toISOString(),
-    metadata: { type: "title_message", transaction_id: data.transactionId, title_user_id: actor.titleUserId, title_email: actor.email },
+    transaction_id: data.transactionId,
+    entity_type: "transaction",
+    entity_id: data.transactionId,
+    activity_type: "title_message",
+    title: `Title / escrow note — ${titleUser?.company_name || "title company"}`,
+    description: data.message.slice(0, 2000),
+    status: "completed",
+    metadata: { type: "title_message", title_user_id: actor.titleUserId, title_email: actor.email },
   })
   if (logError) throw logError
 

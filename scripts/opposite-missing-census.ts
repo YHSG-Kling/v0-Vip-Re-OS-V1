@@ -3100,6 +3100,12 @@ function splitParamList(s: string): string[] {
 }
 
 function scanInertParams(file: string, src: string): InertParam[] {
+  // A DECLARATION FILE HAS NO BODIES (wave 155). The bodyless walk above recognises an ambient signature by the stop word that
+  // follows it — and misses one whose RETURN TYPE is an object literal: `function create(text: string, opts?: O): { modules: … }`
+  // (types/qrcode.d.ts). That `{` was adopted as the body and both parameters were reported inert. In a `.d.ts` there is nothing
+  // to read a parameter WITH, so the file is not judged at all. The same shape in a `.ts` file is still judged (and is a real
+  // bodyless declaration only inside `declare` — a blind spot that remains, stated). Controls: C4 below.
+  if (AMBIENT_RE.test(file)) return []
   const out: InertParam[] = []
   for (const m of src.matchAll(/(?:^|\n)[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*(?:<[^(]*>)?\s*\(/g)) {
     const parenOpen = m.index! + m[0].length - 1
@@ -3193,6 +3199,16 @@ stage("C4 params")
   control("C4 treats an AMBIENT declaration (no body) as unresolved, never as inert",
     scanInertParams("<control>", blankComments(ambient)).length === 0,
     scanInertParams("<control>", blankComments(ambient)).map((g) => `${g.fn}::${g.param}`).join(","))
+  // …and the ambient shape the stop words cannot see: an OBJECT-LITERAL return type. In a declaration file it is not judged.
+  const ambientObjectReturn =
+    `declare module 'thing' {\n` +
+    `  function create(text: string, options?: { level?: 'L' | 'H' }): { modules: { size: number }; version: number }\n\n` +
+    `  export { create }\n` +
+    `}\n`
+  control("C4 does not judge a DECLARATION FILE (.d.ts): an object-literal return type is not a body",
+    scanInertParams("types/thing.d.ts", blankComments(ambientObjectReturn)).length === 0)
+  control("C4 POSITIVE: a real inert parameter in an ordinary file is still found when the same text sits beside it",
+    scanInertParams("lib/thing.ts", blankComments(`export function realTwo(used: string, ignored: number): string {\n  return used\n}\n`)).some((g) => g.param === "ignored"))
   // POSITIVE CONTROL for the line above (§2): the stop-word set must not have blinded
   // the scan. Give the SAME ambient block a real implementation and the inert
   // parameter must still be found — a fix that reports zero because it stopped

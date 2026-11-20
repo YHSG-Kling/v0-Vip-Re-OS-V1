@@ -226,7 +226,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   return { stamped: true }
   }, {
     settle: (r) => r.stamped ? { status: 'executed', outcome: 'identified' } : { status: 'failed', outcome: r.why },
-    replay: () => ({ stamped: false, why: 'ledger_refused' }),
+    replay: (claim) => ({ stamped: false, why: claim.kind === 'refused' ? 'ledger_refused' : 'already_recorded' }),
   })
   if (!stamp.stamped) return NextResponse.json(OPAQUE_OK)
 

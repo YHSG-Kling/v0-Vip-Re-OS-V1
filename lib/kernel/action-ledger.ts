@@ -980,7 +980,7 @@ export interface NextTrigger { kind: NextTriggerKind; at: string | null; event: 
 export type VerificationInput =
   | { kind: "deterministic"; check: string }
   | { kind: "authorized_human"; userId: string; authority: string; at?: string | null }
-export type DecisionVerification =
+type DecisionVerification =
   | { kind: "deterministic"; check: string }
   | { kind: "authorized_human"; user_id: string; authority: string; at: string | null }
 
@@ -1133,8 +1133,8 @@ function governanceContractGaps(governance: unknown, riskClass: string | null | 
 /** The typed reasons the sink rule gives (one spelling — the refusal row and the caller's feedback carry it). */
 export const SINK_REASONS = ["non_consequential", "trusted_origin", "verified_deterministic", "verified_by_authorized_human", "decision_expired", "unverified_untrusted_origin", "trust_class_unknown", "target_outside_capability_set", "capability_set_unknown"] as const
 export type SinkReason = (typeof SINK_REASONS)[number]
-export interface SinkVerdict { decision: "ALLOW" | "DENY" | "HOLD"; reason: SinkReason; detail: string; trustClass: DecisionTrustClass | null; approvalBasis: ApprovalBasis | null; nextTrigger: NextTrigger | null }
-export interface SinkRuleInput {
+interface SinkVerdict { decision: "ALLOW" | "DENY" | "HOLD"; reason: SinkReason; detail: string; trustClass: DecisionTrustClass | null; approvalBasis: ApprovalBasis | null; nextTrigger: NextTrigger | null }
+interface SinkRuleInput {
   riskClass: string | null
   /** Established by the BOUNDARY (the wrapper / the route), never by the model. */
   trustClass: string | null

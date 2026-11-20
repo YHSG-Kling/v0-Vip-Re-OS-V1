@@ -131,6 +131,9 @@ function triggerWriterProved(entry: string): boolean {
 // request. `walk()` enumerated DIRECTORIES and a root FILE is not a directory.
 // `rootRuntimeFiles()` from the same survivor supplies them.
 
+/** The text right after a `.from("t")`: is the FIRST call on the chain a write? */
+function isWriteOnFrom(after: string): boolean { return /^\s*\.(insert|upsert|update|delete)\s*\(/.test(after) }
+
 function main() {
   const files: string[] = [
     ...walkTs(join(process.cwd(), "app")),
@@ -168,7 +171,14 @@ function main() {
     while ((m = FROM.exec(s))) {
       const table = m[1]
       const window = s.slice(m.index, m.index + m[0].length + 160)
-      if (/\.(insert|upsert|update|delete)\s*\(/.test(window)) writers.add(table)
+      // A WRITE IS THE VERB ON THIS `.from()` — NOT ANY WRITE VERB NEARBY (wave 155). The verb was looked for anywhere in the
+      // 160-character window, so `.from("title_company_users").select(…).single()` followed by an insert into ANOTHER table on the
+      // next statement counted as a writer of title_company_users. That table has no writer anywhere — app code, trigger or
+      // database function, 0 rows live — and the gate of the whole title portal reads it; the sweep reported it clean until a
+      // lane moved the neighboring insert. supabase-js writes are always `.from(t).insert|upsert|update|delete(`, so the verb
+      // must be the FIRST call on the chain (whitespace and a line break allowed). Measured on the same tree: 718 tables have
+      // a writer by either rule — the bleed credited exactly one table, and it is now visible. Controls: isWriteOnFrom below.
+      if (isWriteOnFrom(s.slice(m.index + m[0].length, m.index + m[0].length + 160))) writers.add(table)
       if (/\.select\s*\(/.test(window)) {
         const set = readers.get(table) ?? new Set<string>()
         set.add(f.replace(process.cwd() + "/", ""))
@@ -176,6 +186,16 @@ function main() {
       }
     }
   }
+
+  // CONTROLS for the writer rule (CLAUDE.md §2 — an absence finder must still see what it was written for).
+  const controls: Array<[string, boolean]> = [
+    ["a write chained on its own .from() is a writer (same line)", isWriteOnFrom(`.insert({ a: 1 })`)],
+    ["…and across a line break", isWriteOnFrom(`\n      .update({ a: 1 })\n      .eq("id", id)`)],
+    ["POSITIVE CONTROL: a .select() chain is NOT a writer because the NEXT statement inserts into another table", !isWriteOnFrom(`.select("company_name").eq("id", x).single()\n  const { error } = await supabase.from("client_portal_messages").insert({`)],
+    ["a read-back after a write (.insert(…).select()) is still a writer", isWriteOnFrom(`.insert(row).select("id").single()`)],
+  ]
+  const badControls = controls.filter(([, ok]) => !ok).map(([n]) => n)
+  if (badControls.length) { console.error(`✗ writer-rule control(s) failed: ${badControls.join(" | ")}`); process.exit(1) }
 
   const offenders = [...readers.keys()]
     .filter((t) => !writers.has(t) && !SEEDED_REFERENCE.has(t) && !DB_VIEWS.has(t) && !(t in VARIABLE_TABLE_WRITERS) && !(t in DB_FUNCTION_WRITERS) && !(t in DB_TRIGGER_WRITERS && triggerWriterProved(DB_TRIGGER_WRITERS[t])))

@@ -16,7 +16,6 @@
  * actions in app/actions/listing-media.ts are reused.
  */
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"

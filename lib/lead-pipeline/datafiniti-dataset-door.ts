@@ -38,7 +38,7 @@ import type { TenantProviderConnectionVerdict } from "@/lib/providers/tenant-pro
 import type { MeterVendorInput } from "@/lib/vendor-governance/meter-vendor"
 
 const VENDOR = "datafiniti"
-export const DATAFINITI_DATASET_DOWNLOAD_JOB_TYPE = "datafiniti_dataset_download"
+const DATAFINITI_DATASET_DOWNLOAD_JOB_TYPE = "datafiniti_dataset_download"
 /** Cache policy (ours, not the vendor's — the docs state no schema version signal): a schema is re-read after a day. */
 const SCHEMA_TTL_MS = 24 * 3_600_000
 

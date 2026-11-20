@@ -209,8 +209,18 @@ async function main() {
   const offenders = callerFiles.filter((f) => unread(code(f)))
   ok(`every caller of emitEventFromCron READS its result (${callerFiles.length} caller files found; unread: ${offenders.length})`,
     callerFiles.length >= 1 && offenders.length === 0, offenders.join(", "))
+  // RULE, not a variable name: the check read `!emitted.success` literally, so a caller that names the result `r`
+  // (lib/transactions/deadline-monitor.ts — it logs the refusal and falls back to the body) read as "does not act on a refusal".
+  // Every binding of an emitEventFromCron result must be tested for failure under ITS OWN name.
+  const actsOnRefusal = (src: string): boolean => {
+    const names = [...src.matchAll(/\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+emitEventFromCron\s*\(/g)].map((m) => m[1])
+    return names.length > 0 && names.every((n) => new RegExp(`!\\s*${n.replace(/\$/g, "\\$")}\\.(?:success|eventId)\\b`).test(src))
+  }
   ok("…and each one acts on success:false (logs / counts / throws with the reason), never on the old throw alone",
-    callerFiles.every((f) => /!\s*emitted\.(success|eventId)/.test(code(f))), callerFiles.filter((f) => !/!\s*emitted\.(success|eventId)/.test(code(f))).join(", "))
+    callerFiles.every((f) => actsOnRefusal(code(f))), callerFiles.filter((f) => !actsOnRefusal(code(f))).join(", "))
+  ok("POSITIVE CONTROL: a caller that binds the result and never tests it for failure is caught — under any variable name",
+    !actsOnRefusal(`const r = await emitEventFromCron({ a: 1 }); if (r.eventId) done(r.eventId)`) && actsOnRefusal(`const r = await emitEventFromCron({ a: 1 }); if (!r.success) console.error(r.error)`)
+    && !actsOnRefusal(`const emitted = await emitEventFromCron({}); const other = await emitEventFromCron({}); if (!emitted.success) log()`))
 
   // Lane 92A — the two USER-FACING image doors no longer only LOG a refused fan-out: the
   // loss lands on the refusal ledger the repair digest / Exception Center read

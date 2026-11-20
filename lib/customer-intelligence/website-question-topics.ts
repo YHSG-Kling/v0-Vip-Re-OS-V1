@@ -244,6 +244,8 @@ async function openRepairFor(db: Db, brokerageId: string, topic: string): Promis
  * nothing (no read); an individual one is never counted. Otherwise the tenant's own window is read, the floor applied, an open
  * knowledge repair holds the theme, and — at or above the floor — ONE anonymized idea goes to the intake (a re-ask merges into
  * the same topic by its dedup key). Never throws; a refused read stores nothing and says so.
+ * TOMBSTONE (wave 155, lane 155F — CLAUDE.md §1): `considerWebsiteQuestion` was this function's name while the widget was its
+ * only caller. RENAMED, not removed — the survivor is considerCustomerQuestion (this declaration), now also the portal tutor's door.
  */
 export async function considerCustomerQuestion(db: Db, a: { brokerageId: string | null; text: string; now?: Date }, deps: CustomerQuestionDeps = {}): Promise<CustomerQuestionOutcome> {
   try {

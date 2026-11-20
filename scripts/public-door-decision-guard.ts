@@ -251,7 +251,9 @@ async function main() {
   // ── H · rules over stripped source ─────────────────────────────────────────
   console.log("\n[H · rules over STRIPPED source — each with a positive control]")
   const code = (s: string) => blankStrings(stripComments(s))
-  const isUseServer = (s: string) => /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*["']use server["']/.test(s)
+  // The directive is the first STATEMENT of the file: comments are removed by the one scanner (scripts/strip-comments.ts),
+  // never by a regex written here (test:comment-strip-discipline).
+  const isUseServer = (s: string) => /^\s*["']use server["']/.test(stripComments(s))
   const APPLIERS = ["applyVendorSubscriptionEvent", "recordCeCompletionFromProvider"]
   const exportsApplier = (s: string) => APPLIERS.filter((n) => new RegExp(`export\\s+async\\s+function\\s+${n}\\b`).test(code(s)))
   const files: string[] = []
