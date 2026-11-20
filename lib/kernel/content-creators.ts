@@ -250,6 +250,10 @@ export async function authorNewsletterContent(input: AuthorNewsletterContentInpu
       complianceWarnings?: string[]
       /** The final personalization phase's account (wave 145); its version is recorded when the campaign is created. */
       humanization: ReturnType<typeof humanizationOf>
+      /** WAVE 155 (155G2): which sections were selected from which verified facts; absent for the Insider Edit. */
+      sectionPlan?: import("@/lib/kernel/newsletter/section-planner").SectionPlan
+      /** Modules omitted for want of a verified fact, and sections the model wrote anyway that were dropped. */
+      sectionsOmitted?: string[]
     }
 > {
   const { ctx } = input
@@ -376,6 +380,25 @@ export async function authorNewsletterContent(input: AuthorNewsletterContentInpu
   const localFactsBlock = localIntel.renderLocalFactsForPrompt(localRead.error ? [] : localRead.facts)
 
   const isInsiderTemplate = template.id === "insider"
+
+  // WAVE 155 (lane 155G2 — directive G3, owner R8): THE SECTION SELECTOR. The template's FIXED list ("hero,
+  // featured_listings, market_update, tips, cta") asked for a listing and a market update whether or not either existed, so
+  // the model filled them. Now 2–5 sections are SELECTED from verified facts (market_data figures, the author's own ACTIVE
+  // listing, an upcoming verified event, a sourced community resource) and a missing module is omitted, never filled.
+  // Client-supplied featuredListings / marketStats are no longer stated (unverifiable); a featured listing's id only
+  // PREFERS that listing when it passes the same checks. The Insider Edit keeps its own authored direction (blind spot).
+  const planner = await import("@/lib/kernel/newsletter/section-planner")
+  const sectionPlan = isInsiderTemplate ? null : planner.selectNewsletterSections(
+    (await planner.gatherSectionCandidates(supabase as never, {
+      brokerageId, agentId: agentId ?? null, localFacts: localRead.error ? [] : localRead.facts, topics,
+      audienceCities: [...locationCounts.values()].map((l) => l.city),
+      preferredListingIds: (input.featuredListings ?? []).map((l: { id?: unknown }) => (typeof l?.id === "string" ? l.id : "")).filter(Boolean),
+    })).candidates,
+    { recentModules: await planner.recentPlanModules(supabase as never, { brokerageId, agentId: agentId ?? null }) },
+  )
+  // The planned event / resource joins the topic → asset lineage, so lib/newsletter/local-events.ts correctEvent holds this
+  // draft when the event is canceled or rescheduled (content_topic_uses is the lineage it walks).
+  for (const s of sectionPlan?.selected ?? []) if (s.provenance && (s.provenance.kind === "local_event" || s.provenance.kind === "topic")) allTopicIds.add(s.provenance.topicId)
   const insiderBlock = isInsiderTemplate
     ? `\n═══ THE INSIDER EDIT — SECTION DIRECTION ═══
 This issue is a curated "deal of the week" newsletter, NOT a property blast.
@@ -422,11 +445,11 @@ than the direction asks for, write fewer — and with none, write the section wi
 
 Template Style: ${template.style}
 Topic: ${input.topic}
-Sections needed: ${template.sections.join(", ")}
+${sectionPlan ? planner.renderPlanForPrompt(sectionPlan) : `Sections needed: ${template.sections.join(", ")}`}
 ${input.tone ? `Tone: ${input.tone}` : ""}
 
-${input.featuredListings?.length ? `Featured Listings: ${JSON.stringify(input.featuredListings)}` : ""}
-${input.marketStats ? `Market Stats: ${JSON.stringify(input.marketStats)}` : ""}
+${!sectionPlan && input.featuredListings?.length ? `Featured Listings: ${JSON.stringify(input.featuredListings)}` : ""}
+${!sectionPlan && input.marketStats ? `Market Stats: ${JSON.stringify(input.marketStats)}` : ""}
 
 ═══ LEAD CONTENT — TOPIC INTELLIGENCE BANK ═══
 These are the audience-relevant value threads the platform's content-intelligence layer
@@ -523,7 +546,7 @@ ${insiderBlock}`,
   const { stripAiTells } = await import("@/lib/lead-magnets/book-editorial")
   for (const section of brandedSections as Array<{ content: string }>) section.content = stripAiTells(String(section.content ?? "")).text
 
-  const plainText = brandedSections.map((s: any) => `${s.title}\n${s.content}`).join("\n\n")
+  let plainText = brandedSections.map((s: any) => `${s.title}\n${s.content}`).join("\n\n")
   // Post-check over the whole issue (§5): warnings PASS THROUGH; a hard fair-housing flag or a
   // phrase the brokerage marked blocking refuses the draft before anything is stored or counted.
   const graded = await gradeWrittenCopy({ userId, brokerageId }, plainText, supabase)
@@ -531,6 +554,19 @@ ${insiderBlock}`,
     return { success: false, error: `The drafted newsletter tripped a hard compliance flag and was not kept: ${graded.redFlags.join("; ")}`, complianceWarnings: graded.redFlags }
   }
   const complianceWarnings = [...graded.warnings, ...unknownNotes]
+
+  // WAVE 155 (155G2): THE PLAN IS ENFORCED — after the compliance screening, which therefore judged EVERYTHING the model
+  // wrote (a hard flag in a section that would be dropped still refuses the draft). A fact-bearing section the plan did not
+  // select (a listing, statistic, event, business or testimonial with nothing verified behind it) is DROPPED; the kept
+  // ones carry their provenance for the send-time re-check (verifyIssueProvenance).
+  const enforced = sectionPlan ? planner.enforcePlanOnSections(brandedSections, sectionPlan) : null
+  if (enforced) {
+    brandedSections.splice(0, brandedSections.length, ...enforced.sections)
+    if (enforced.dropped.length > 0) {
+      console.warn(`[content-creators] newsletter: ${enforced.dropped.length} unverified section(s) omitted: ${enforced.dropped.map((d) => `${d.sectionType} "${d.title}"`).join("; ")}`)
+      plainText = brandedSections.map((s: any) => `${s.title}\n${s.content}`).join("\n\n")
+    }
+  }
 
   const usage = await incrementFeatureUsage(userId, "newsletter_engine", featureClient)
   if (!usage.success) console.error("[content-creators] newsletter_engine usage NOT counted:", usage.error)
@@ -572,6 +608,9 @@ ${insiderBlock}`,
         them_percentage: quality.themPercentage,
         agent_percentage: quality.agentPercentage,
         warnings: quality.warnings,
+        // WAVE 155 (155G2): the SERVER's record of which verified facts the issue was written from. The creator stamps
+        // provenance from THIS row (by contentId), never from what the browser sends back.
+        ...(sectionPlan ? { section_plan: sectionPlan, sections_omitted_unverified: enforced?.dropped ?? [] } : {}),
       },
     })
     .select("id")
@@ -589,6 +628,7 @@ ${insiderBlock}`,
     contentId: artifactId,
     seedTopicIds: [...allTopicIds],
     ...(complianceWarnings.length > 0 ? { complianceWarnings } : {}),
+    ...(sectionPlan ? { sectionPlan, sectionsOmitted: [...sectionPlan.omitted.map((o) => `${o.module}: ${o.reason}`), ...(enforced?.dropped ?? []).map((d) => `${d.sectionType} "${d.title}": ${d.reason}`)] } : {}),
   }
 }
 
@@ -612,6 +652,9 @@ interface CreateNewsletterCampaignInput {
    *  merged from the unwired lib/kernel/marketing.ts createNewsletterCampaign. Omitted, the
    *  column defaults stand, exactly as the manual editor always wrote them. */
   aiAuthored?: boolean
+  /** WAVE 155 (155G2): the ai_generated_content id authorNewsletterContent returned. Its stored section plan (read here,
+   *  tenant-pinned) stamps each section's provenance — the browser's copy of the sections never supplies provenance. */
+  authoredContentId?: string
 }
 
 /**
@@ -649,6 +692,24 @@ export async function createNewsletterCampaign(input: CreateNewsletterCampaignIn
     marketingCampaignId = v.id
   }
 
+  // WAVE 155 (155G2): PER-SECTION PROVENANCE, stamped server-side, so a cancelled event or a sold listing invalidates the
+  // issue before it sends (verifyIssueProvenance in both senders). Source of truth, in order: the authored plan on
+  // ai_generated_content (this tenant, content_type newsletter); on an edit without one, the provenance the stored issue
+  // already had. Whatever `provenance` the caller sent is stripped either way.
+  if (Array.isArray(input.content)) {
+    const planner = await import("@/lib/kernel/newsletter/section-planner")
+    let plan: import("@/lib/kernel/newsletter/section-planner").SectionPlan | null = null
+    if (input.authoredContentId) {
+      const { data: authored, error: authoredErr } = await supabase.from("ai_generated_content").select("metadata")
+        .eq("id", input.authoredContentId).eq("brokerage_id", brokerageId).eq("content_type", "newsletter").limit(1)
+      if (authoredErr) console.error("[content-creators] authored newsletter plan unreadable — sections carry no provenance:", authoredErr.message)
+      plan = planner.parseSectionPlan(((authored ?? []) as Array<{ metadata: Record<string, unknown> | null }>)[0]?.metadata?.section_plan)
+    } else if (input.campaignId) {
+      const { data: prior } = await supabase.from("newsletter_campaigns").select("content").eq("id", input.campaignId).eq("brokerage_id", brokerageId).limit(1)
+      plan = planner.planFromStoredIssue(((prior ?? []) as Array<{ content: unknown }>)[0]?.content)
+    }
+    input = { ...input, content: planner.stampSectionProvenance(input.content, plan) }
+  }
   const body = typeof input.content === "string" ? input.content : JSON.stringify(input.content)
   let newsletter: Record<string, any>
   if (input.campaignId) {

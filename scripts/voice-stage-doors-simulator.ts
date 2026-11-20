@@ -333,6 +333,9 @@ function freshWorld(): void {
       ai_video_projects: [], ai_generated_content: [], feature_usage_tracking: [], agent_assistant_tool_calls: [],
       platform_controls: [], marketing_campaigns: [], newsletter_subscribers: [], content_topic_bank: [],
       video_scripts_library: [], lifecycle_events: [], brand_voice_profile: [],
+      // WAVE 155 (155G2): a VERIFIED market row, so the section selector selects the fixture's market_update section
+      // (lib/kernel/newsletter/section-planner.ts drops a fact-bearing section with no verified fact behind it).
+      market_data: [{ id: uuid(), brokerage_id: A.brokerage, market_area: "Naples", city: "Naples", state: "FL", data_date: new Date().toISOString().slice(0, 10), source_type: "rentcast", median_sale_price: 500000, sold_listings_30d: 12 }],
     },
   }
 }

@@ -225,6 +225,12 @@ async function main() {
   const realHit = await scanPublicCopy("A home that is perfect for families, with a big yard.", "lead_magnet")
   check("B5 the REAL scan uses the ONE pattern list: phrase → the compliant fix → the legal reference (lib/compliance-rules/fair-housing-patterns.ts)",
     !realHit.ok && realHit.findings.some((f) => f.phrase === "perfect for families" && f.fix === "Spacious layout with multiple bedrooms" && /3604/.test(f.reference) && f.severity === "high"), JSON.stringify(realHit))
+  const youngHit = await scanPublicCopy("This street is perfect for young families.", "newsletter")
+  const growingHit = await scanPublicCopy("A layout perfect for growing young families.", "listing")
+  const notFamilial = await scanPublicCopy("A patio perfect for entertaining, and a kitchen perfect for a serious cook.", "listing")
+  check("B5b an adjective between \"for\" and \"families\" is still the familial-status phrase (wave 155: \"perfect for young families\" was missed); a sentence with no family in it is not flagged",
+    youngHit.findings.some((f) => f.phrase === "perfect for families") && growingHit.findings.some((f) => f.phrase === "perfect for families")
+    && !notFamilial.findings.some((f) => f.phrase === "perfect for families"), JSON.stringify({ youngHit: youngHit.findings.length, growingHit: growingHit.findings.length, notFamilial: notFamilial.findings }))
   const privateSurfaces: CopySurface[] = ["cda", "settlement_statement", "internal_form", "private_note", "financial_record"]
   const publicSurfaces: CopySurface[] = ["listing", "ad", "landing_page", "lead_magnet", "book", "social", "video_script", "newsletter", "blog"]
   const cdaScan = await scanPublicCopy("A home that is perfect for families, with a big yard.", "cda")

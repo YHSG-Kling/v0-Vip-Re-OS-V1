@@ -44,6 +44,13 @@ export interface ListingFlyerProps {
   qrCaption: string
   /** Status eyebrow: JUST LISTED / OPEN HOUSE SATURDAY 1–3 / FOR SALE. */
   statusLine: string
+  /** WAVE 155 (155G2 — directive G4 "date / status"): the line under the eyebrow — an open house's date and time
+   *  ("Sat, Nov 22 · 1–3 PM ET"). Absent → nothing is drawn (never a placeholder). */
+  statusDetail?: string | null
+  /** The day price and status were last confirmed — a printed flyer outlives the listing row it came from. */
+  asOfDate?: string | null
+  /** Print-safe image metadata: who holds the photos' rights ("Photos: Jane Doe Photography"). */
+  photoCredit?: string | null
   brand: {
     primaryColor: string
     accentColor: string
@@ -65,7 +72,7 @@ const SAFE = 96 // ~0.25" + bleed compensation
 export const ListingFlyer: React.FC<ListingFlyerProps> = ({
   address, cityState, price, beds, baths, sqft, propertyType, highlights,
   heroImageUrl, photoUrls, agentName, agentPhone, agentPhotoUrl,
-  qrCodeDataUrl, qrCaption, statusLine, brand,
+  qrCodeDataUrl, qrCaption, statusLine, brand, statusDetail = null, asOfDate = null, photoCredit = null,
 }) => {
   const { width: W, height: H } = useVideoConfig()
   const facts = [
@@ -83,6 +90,7 @@ export const ListingFlyer: React.FC<ListingFlyerProps> = ({
           fontSize: 64, fontWeight: 800, letterSpacing: 10, textTransform: "uppercase",
         }}>
           {statusLine}
+          {statusDetail ? <div data-flyer-status-detail="1" style={{ fontSize: 44, fontWeight: 700, letterSpacing: 2, marginTop: 10, textTransform: "none" }}>{statusDetail}</div> : null}
         </div>
         {brand.logoUrl && (
           <div style={{ position: "absolute", top: SAFE + 40, right: SAFE + 40, padding: 28, backgroundColor: "#ffffffee", borderRadius: 16 }}>
@@ -157,6 +165,8 @@ export const ListingFlyer: React.FC<ListingFlyerProps> = ({
         <div style={{ fontSize: 32, color: "#9ca3af", marginTop: 36, letterSpacing: 1 }}>
           {brand.showEhoMark && "Equal Housing Opportunity. "}
           {brand.licenseLine ?? ""} Information deemed reliable but not guaranteed.
+          {asOfDate ? ` Price and status as of ${asOfDate}.` : ""}
+          {photoCredit ? ` ${photoCredit}.` : ""}
         </div>
       </div>
     </AbsoluteFill>

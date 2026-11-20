@@ -20,7 +20,9 @@ export interface FairHousingPattern {
 export const FAIR_HOUSING_PATTERNS: FairHousingPattern[] = [
   // Critical — direct protected-class references
   {
-    pattern: /perfect\s+(for|area\s+for)\s+famil/gi,
+    // Up to two words may sit between "for" and "famil…": "perfect for young families" and "perfect for growing young
+    // families" steer on familial status exactly as the bare phrase does, and the earlier pattern missed both.
+    pattern: /perfect\s+(for|area\s+for)\s+(?:[a-z'-]+\s+){0,2}famil/gi,
     phrase: "perfect for families",
     severity: "high",
     fix: "Spacious layout with multiple bedrooms",

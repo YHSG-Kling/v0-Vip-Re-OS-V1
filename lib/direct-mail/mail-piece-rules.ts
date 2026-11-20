@@ -9,7 +9,7 @@
 // after lane 151H; no definition is duplicated — each lives here once).
 // WAVE 152 (lane 152C): the one import is the PURE QR contract (it imports nothing either), for the quiet zone the
 // optional QR region of every layout prints with — still client-safe by construction.
-import { QR_RENDER_DEFAULTS } from "@/lib/marketing/qr-contract"
+import { QR_RENDER_DEFAULTS, QR_PLACEMENT_MINIMUMS } from "@/lib/marketing/qr-contract"
 
 export const MAIL_FORMATS = ["letter", "personal_letter", "postcard", "handwritten_card"] as const
 export type MailFormat = (typeof MAIL_FORMATS)[number]
@@ -89,25 +89,25 @@ export const MAIL_LAYOUT_LIBRARY: Readonly<Record<"letter" | "personal_letter" |
     slot: "letter", format: "letter", pieceType: "letter", label: MAIL_FORMAT_LABELS.letter,
     layout: "8.5×11 letter: letterhead strip (logo, display name, tagline), #10 window address block at 0.94in/0.5in, date, body grid, signature block with creator attribution and license line, footer with the verbatim long disclosure. No brand, address or name is in the layout itself.",
     mergeVariables: [...LAYOUT_COMMON, "copy_text", "agent_photo_url", "disclosure_long"], typeface: "brand_font", status: "lob_global_template",
-    qrRegion: { optional: true, anchor: "bottom-right of the page beside the signature block, above the footer disclosure, clear of the #10 window", sizeIn: 1, minSizeIn: 0.8, quietZoneModules: QR_QUIET },
+    qrRegion: { optional: true, anchor: "bottom-right of the page beside the signature block, above the footer disclosure, clear of the #10 window", sizeIn: 1, minSizeIn: QR_PLACEMENT_MINIMUMS.printMinSideIn, quietZoneModules: QR_QUIET },
   },
   personal_letter: {
     slot: "personal_letter", format: "personal_letter", pieceType: "letter", label: MAIL_FORMAT_LABELS.personal_letter,
     layout: "8.5×11 note: generous margins, a short body set in the handwriting-style printed typeface (note_font_family / note_font_css_url), a first-name salutation, a signature line in the same typeface with the sender's printed name, a small letterhead and footer in the brand font with the verbatim short disclosure. Printed in color. Labeled handwriting-style printed, never handwritten.",
     mergeVariables: [...LAYOUT_COMMON, "note_body", "note_font_family", "note_font_css_url", "agent_photo_url"], typeface: "handwriting_style", status: "lob_global_template",
-    qrRegion: { optional: true, anchor: "bottom-right of the page beside the handwriting-style signature, above the footer — the symbol prints black on white whatever the note's ink color", sizeIn: 0.9, minSizeIn: 0.8, quietZoneModules: QR_QUIET },
+    qrRegion: { optional: true, anchor: "bottom-right of the page beside the handwriting-style signature, above the footer — the symbol prints black on white whatever the note's ink color", sizeIn: 0.9, minSizeIn: QR_PLACEMENT_MINIMUMS.printMinSideIn, quietZoneModules: QR_QUIET },
   },
   postcard_front: {
     slot: "postcard_front", format: "postcard", pieceType: "postcard", label: "Postcard front (printed)",
     layout: "4×6 / 6×9 front: full-bleed art zone (front_art_url or picture_url), headline, logo lockup, QR with its destination URL. No address zone on the front.",
     mergeVariables: [...LAYOUT_COMMON, "front_art_url", "picture_url", "copy_text"], typeface: "brand_font", status: "lob_global_template",
-    qrRegion: { optional: true, anchor: "lower-right of the art zone inside the logo lockup band, on a white plate the size of the quiet zone", sizeIn: 1, minSizeIn: 0.8, quietZoneModules: QR_QUIET },
+    qrRegion: { optional: true, anchor: "lower-right of the art zone inside the logo lockup band, on a white plate the size of the quiet zone", sizeIn: 1, minSizeIn: QR_PLACEMENT_MINIMUMS.printMinSideIn, quietZoneModules: QR_QUIET },
   },
   postcard_back: {
     slot: "postcard_back", format: "postcard", pieceType: "postcard", label: "Postcard back (printed)",
     layout: "4×6 / 6×9 back: left 48% message zone (body, signoff, agent photo, opt-out line), right 52% left EMPTY for Lob's address block, indicia and postal markings (the return address Lob prints there is the tenant's `from`, never the platform's). Verbatim short disclosure and license line along the bottom.",
     mergeVariables: [...LAYOUT_COMMON, "back_art_url", "copy_text", "agent_photo_url"], typeface: "brand_font", status: "lob_global_template",
-    qrRegion: { optional: true, anchor: "message zone (left 48%) under the body, above the opt-out line — never in the right 52% reserved for the address block and postal markings", sizeIn: 0.8, minSizeIn: 0.8, quietZoneModules: QR_QUIET },
+    qrRegion: { optional: true, anchor: "message zone (left 48%) under the body, above the opt-out line — never in the right 52% reserved for the address block and postal markings", sizeIn: 0.8, minSizeIn: QR_PLACEMENT_MINIMUMS.printMinSideIn, quietZoneModules: QR_QUIET },
   },
   notecard: {
     slot: null, format: "notecard", pieceType: null, label: "Folded notecard (no Lob product)",

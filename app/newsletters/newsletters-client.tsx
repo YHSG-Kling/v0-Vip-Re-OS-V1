@@ -149,6 +149,8 @@ interface WizardData {
    *  render reads the same threads back for cohesion (sections + video lead
    *  with the same content). */
   seedTopicIds: string[]
+  /** WAVE 155 (155G2): the authored row's id — the server stamps per-section provenance from ITS stored plan. */
+  authoredContentId: string | null
   // Step 5 – Timing
   sendOptimization: {
     recommendedDay: string
@@ -171,6 +173,7 @@ const INITIAL_WIZARD: WizardData = {
   sections: ["Market Update", "Home Tips"],
   generatedSections: [],
   seedTopicIds: [],
+  authoredContentId: null,
   subjectLine: "",
   subjectVariants: [],
   wordCount: null,
@@ -770,6 +773,7 @@ export function NewslettersClient({
           seedTopicIds: Array.isArray((result as { seedTopicIds?: string[] }).seedTopicIds)
             ? (result as { seedTopicIds?: string[] }).seedTopicIds ?? []
             : [],
+          authoredContentId: typeof (result as { contentId?: string | null }).contentId === "string" ? (result as { contentId?: string | null }).contentId ?? null : null,
           wordCount: result.wordCount ?? null,
           estimatedReadTime: result.estimatedReadTime ?? null,
         })
@@ -847,6 +851,7 @@ export function NewslettersClient({
         // newsletter_campaign-asset uses AND the video render reads them
         // back for cohesion with the section content.
         seedTopicIds: wizard.seedTopicIds,
+        authoredContentId: wizard.authoredContentId ?? undefined,
       })
       if (result.success && result.newsletter) {
         // Record which LOCAL headlines this campaign used — newsletter_local_content

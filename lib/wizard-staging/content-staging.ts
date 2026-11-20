@@ -82,6 +82,8 @@ export async function stageNewsletterDraft(
       seedTopicIds,
       // Model-written: stamped for the marketing-ai-approvals queue (pending_review).
       aiAuthored: true,
+      // WAVE 155 (155G2): per-section provenance from the authored plan (the senders re-check it before mailing).
+      authoredContentId: authored.contentId ?? undefined,
     })
     if (!result.success) return { success: false, error: result.error ?? "Newsletter creation failed" }
     const newsletterId = String(result.newsletter.id)

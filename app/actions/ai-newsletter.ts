@@ -461,6 +461,9 @@ export async function createNewsletterCampaign(params: {
   campaignId?: string
   /** newsletter_campaigns.marketing_campaign_id — verified in-tenant inside the creator. */
   marketingCampaignId?: string
+  /** WAVE 155 (155G2): the contentId aiWriteNewsletterContent returned — the creator reads that row's section plan
+   *  (tenant-pinned) to stamp per-section provenance; nothing the browser sends is taken as provenance. */
+  authoredContentId?: string
 }): Promise<{ success: boolean; error?: string; newsletter?: Record<string, any>; audienceSize?: number }> {
   // TOMBSTONE (wave 85F, §1.1). The envelope insert/update, the Wave 20 section decompose, the
   // topic-use ledger, NEWSLETTER_SCHEDULED and the usage counter MOVED to the one creator,
@@ -486,6 +489,7 @@ export async function createNewsletterCampaign(params: {
       seedTopicIds: params.seedTopicIds,
       campaignId: params.campaignId,
       marketingCampaignId: params.marketingCampaignId,
+      authoredContentId: isValidUUID(params.authoredContentId ?? "") ? params.authoredContentId : undefined,
     })
     if (result.success) {
       revalidatePath("/content-studio")
@@ -552,6 +556,28 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
       return { success: false, error: "Newsletter not found" }
     }
 
+    // WAVE 155 (155G2 — directive G3, "existing approval / publish rail only"): send-now never jumps the review queue. An
+    // issue IN review ('pending_review' — AI-authored, or held because a fact it states changed) or REJECTED is refused
+    // here; the scheduled sender already requires 'approved'. A manual draft keeps its old send-now behavior.
+    const approvalStatus = String((newsletter as { approval_status?: string | null }).approval_status ?? "")
+    if (approvalStatus === "pending_review" || approvalStatus === "rejected") {
+      return { success: false, error: approvalStatus === "rejected" ? "This newsletter was rejected in review and cannot be sent. Revise it and submit it again." : "This newsletter is waiting for review. It can be sent once an approver approves it." }
+    }
+    // PER-SECTION PROVENANCE — the same live re-check the scheduled sender runs, before anyone is mailed.
+    const planner = await import("@/lib/kernel/newsletter/section-planner")
+    const issue = planner.parseStoredIssue((newsletter as { content?: unknown }).content)
+    const provenance = await planner.verifyIssueProvenance(supabase as never, sessionBrokerageId, issue.provenance)
+    if (!provenance.ok) {
+      if (provenance.hold) {
+        const { data: held, error: holdErr } = await supabase.from("newsletter_campaigns")
+          .update({ status: "deferred", approval_status: "pending_review", defer_reason: provenance.reason })
+          .eq("id", params.newsletterId).eq("brokerage_id", sessionBrokerageId).select("id")
+        if (holdErr || (held ?? []).length !== 1) console.error(`[ai-newsletter] provenance hold not recorded for ${params.newsletterId}: ${holdErr?.message ?? "matched no row"}`)
+      }
+      const what = provenance.invalid.map((i) => i.reason.replace(/_/g, " ")).join(", ") || "a fact could not be re-checked"
+      return { success: false, error: `Not sent: ${what}. The newsletter states something that is no longer true — revise it and send it again.` }
+    }
+
     // Kernel: Brand compliance check before send
     const compliance = await checkBrandCompliance({
       contentType: "newsletter",
@@ -591,6 +617,10 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
     }
     const fromAddress = `newsletter@${newsletterFromDomain}`
     let sent = 0, suppressed = 0, errors = 0
+    // WAVE 155 (155G2 — 155E carry-in 1): the ONE email QR slot, resolved once for the campaign (THE minter, service door —
+    // the tenant is the session's, verified above).
+    const nl = newsletter as { id: string; brokerage_id: string; agent_id?: string | null; created_by?: string | null; marketing_campaign_id?: string | null }
+    const nlQr = await planner.resolveNewsletterEmailQr((await import("@/lib/supabase/service")).createServiceClient() as never, { id: nl.id, brokerage_id: sessionBrokerageId, agent_id: nl.agent_id ?? null, created_by: nl.created_by ?? null, marketing_campaign_id: nl.marketing_campaign_id ?? null }, issue.provenance)
 
     for (const subscriber of subscribers) {
       const contactObj = (subscriber as { contact?: { email?: string | null; contact_persona?: string | null; city?: string | null; state?: string | null; zip_code?: string | null } }).contact
@@ -612,9 +642,10 @@ export async function sendNewsletter(params: { newsletterId: string; agentId?: s
           brokerageId:      sessionBrokerageId,
           newsletterId,
           campaignSubject:  (newsletter as { subject_line?: string | null }).subject_line ?? null,
-          campaignBodyHtml: newsletter.content ?? null,
+          campaignBodyHtml: issue.introHtml,
         },
         sections,
+        qr: nlQr.qr,
       })
 
       const result = await dispatchEmail({

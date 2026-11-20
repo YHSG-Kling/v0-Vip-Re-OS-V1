@@ -163,9 +163,12 @@ async function deferCampaign(
   svc: ReturnType<typeof createServiceClient>,
   c: CampaignRow,
   reason: string,
+  /** WAVE 155 (155G2): a provenance HOLD also returns the issue to review (approval_status 'pending_review'), the same
+   *  hold lib/newsletter/local-events.ts holdDerivedDrafts applies — the content must be revised before it may go. */
+  extra?: { approval_status: "pending_review" },
 ): Promise<CampaignResult> {
   const { error: deferErr } = await svc.from("newsletter_campaigns")
-    .update({ status: "deferred", defer_reason: reason })
+    .update({ status: "deferred", defer_reason: reason.slice(0, 300), ...(extra ?? {}) })
     .eq("id", c.id)
   if (deferErr) console.error(`[publish-newsletters] campaign NOT marked deferred: ${deferErr.message}`)
   processKernelEvent({
@@ -187,6 +190,13 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   // "newsletter" for section assembly is the campaign itself. There is no
   // separate newsletters row to pull sections from.
   const newsletterId: string = c.id
+  // WAVE 155 (155G2): the stored issue. The creator stores an array issue as its JSON section list (lib/kernel/
+  // content-creators.ts createNewsletterCampaign), and this sender used `c.content` verbatim as the email's intro HTML —
+  // every recipient got the raw JSON above the real sections. The array is not an intro (its sections render from
+  // newsletter_sections); prose / HTML content still is. The per-section provenance rides on that array.
+  const planner = await import("@/lib/kernel/newsletter/section-planner")
+  const issue = planner.parseStoredIssue(c.content)
+  const introHtml = issue.introHtml
 
   // Brokerage-wide newsletter cooldown (1/7d default). Per-segment scoping is
   // a follow-up — the campaign row doesn't carry the audience segment yet
@@ -264,7 +274,7 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     target_locations: { cities?: string[]; states?: string[]; zip_codes?: string[] } | null
   }>
   const sectionCount  = sectionGate.count ?? sectionRows.length
-  const hasCampaignBody  = ((c.content ?? "").trim().length > 0)
+  const hasCampaignBody  = ((introHtml ?? "").trim().length > 0)
   const hasUniversalSection = sectionRows.some((s) => {
     const personaScoped  = Array.isArray(s.target_personas)  && s.target_personas.length > 0
     const locationScoped = !!s.target_locations && (
@@ -279,6 +289,16 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   }
   if (!hasUniversalSection && !hasCampaignBody) {
     return await deferCampaign(svc, c, "sections_missing:no_universal_fallback")
+  }
+
+  // Check (2.2) — WAVE 155 (155G2, directive G3): PER-SECTION PROVENANCE, re-checked against the live rows before the
+  // campaign is claimed — so before any recipient is mailed. A canceled / postponed / past event, a listing that is no
+  // longer ACTIVE (sold), a retired resource or a stale market row HOLDS the issue (deferred + back to review); a refused
+  // read defers it (fail closed — "nobody checked" never reads as "checked and fine"). An issue with no recorded
+  // provenance (manual editor copy) passes here; the human who wrote it is covered by the approval rail.
+  const provenance = await planner.verifyIssueProvenance(svc, c.brokerage_id, issue.provenance)
+  if (!provenance.ok) {
+    return await deferCampaign(svc, c, provenance.reason, provenance.hold ? { approval_status: "pending_review" } : undefined)
   }
 
   // Check (2.5) — SEO SCORE GATE/NUDGE (orphan doctrine §1.2 reader for
@@ -363,7 +383,7 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
       brokerageId:      c.brokerage_id,
       newsletterId,
       campaignSubject:  c.subject_line,
-      campaignBodyHtml: videoEmbed + (c.content ?? ""),
+      campaignBodyHtml: videoEmbed + (introHtml ?? ""),
     },
     sections: previewSections,
   })
@@ -484,6 +504,12 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     console.error(`[publish-newsletters] preference batch load failed for ${c.id}:`, (e as Error).message)
   }
 
+  // WAVE 155 (155G2 — lane 155E carry-in 1): the ONE QR slot, resolved ONCE per campaign through THE minter
+  // (lib/marketing/tracked-qr.ts resolveArtifactQrSlot, slot `email_link`): in an email it is a clickable TRACKED link to a
+  // real public page (the planned listing, else the agent's public profile). No destination / held / refused → no block.
+  const nlQr = await planner.resolveNewsletterEmailQr(svc, c, issue.provenance)
+  if (!nlQr.qr) console.warn(`[publish-newsletters] campaign ${c.id}: no QR link (${nlQr.status})`)
+
   // For each subscriber: resolve persona → sections → assemble → dispatch → log.
   let sent = 0, suppressed = 0, errors = 0
   const fromAddress = `newsletter@${newsletterFromDomain}`
@@ -591,10 +617,11 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
         newsletterId,
         campaignSubject:  c.subject_line,
         campaignBodyHtml: recipientVideoEmbed
-          ? `${recipientVideoEmbed}\n${c.content ?? ""}`
-          : c.content,
+          ? `${recipientVideoEmbed}\n${introHtml ?? ""}`
+          : introHtml,
       },
       sections,
+      qr: nlQr.qr,
     })
 
     const result = await dispatchEmail({

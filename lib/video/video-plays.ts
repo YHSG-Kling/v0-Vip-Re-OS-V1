@@ -166,9 +166,23 @@ export async function runListingFlyers(svc: any): Promise<{ flyers: number; skip
   const out = { flyers: 0, skipped: 0, delivered: 0, errors: 0 }
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: listings } = await svc.from("listings")
-    .select("id, brokerage_id, agent_id, address, city, state, list_price, bedrooms, bathrooms, sqft, property_type, public_remarks, photos, primary_photo_url, lifecycle_stage")
+    .select("id, brokerage_id, agent_id, address, city, state, list_price, bedrooms, bathrooms, sqft, property_type, public_remarks, photos, primary_photo_url, lifecycle_stage, status, open_house_event_date")
     .in("lifecycle_stage", ["COMING_SOON_ACTIVE", "MLS_ACTIVE", "OPEN_HOUSE_MARKETING", "OPEN_HOUSE_EVENT"])
+    // Wave 155 (lane 155G2): the stage alone is not the market status. A listing that went pending or sold while its
+    // stage was not advanced must never be printed as JUST LISTED. An unset status keeps the earlier behavior.
+    .or("status.is.null,status.in.(active,coming_soon)")
     .is("deleted_at", null).gte("created_at", since).limit(300)
+  // The brokerage's license line, read once per tenant — the same row the spoken disclosure reads (lib/video/verbal-disclosure.ts).
+  const licenseLines = new Map<string, string | null>()
+  const licenseLineFor = async (brokerageId: string): Promise<string | null> => {
+    if (licenseLines.has(brokerageId)) return licenseLines.get(brokerageId) ?? null
+    const { data: b, error } = await svc.from("brokerages").select("name, dba, license_number, license_state").eq("id", brokerageId).maybeSingle()
+    const row = error ? null : (b as { name?: string | null; dba?: string | null; license_number?: string | null; license_state?: string | null } | null)
+    const trade = row?.dba ?? row?.name
+    const line = row?.license_number && trade ? `${trade} · Lic. ${row.license_number}${row.license_state ? ` ${row.license_state}` : ""}` : null
+    licenseLines.set(brokerageId, line)
+    return line
+  }
   for (const l of ((listings ?? []) as any[])) {
     const photos = Array.isArray(l.photos) ? l.photos.map((p: any) => (typeof p === "string" ? p : p?.url)).filter((u: any) => typeof u === "string") : []
     const hero = l.primary_photo_url ?? photos[0]
@@ -228,7 +242,13 @@ export async function runListingFlyers(svc: any): Promise<{ flyers: number; skip
         agentPhotoUrl: (agent as any)?.photo_url ?? (agent as any)?.profile_image_url ?? null,
         qrCodeDataUrl: qr?.qrCodeDataUrl ?? null, qrCaption: "Scan to tour",
         statusLine,
-        brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, logoUrl: brand.logoUrl, brokerageName: brand.brokerageName, licenseLine: null, showEhoMark: true },
+        // The open-house DATE when the listing carries one (a calendar date; no time is invented), and the day the price
+        // and status were read — a printed piece outlives the moment it was made.
+        statusDetail: stage.startsWith("OPEN_HOUSE") && l.open_house_event_date
+          ? new Date(`${String(l.open_house_event_date).slice(0, 10)}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" })
+          : null,
+        asOfDate: new Date().toISOString().slice(0, 10),
+        brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, logoUrl: brand.logoUrl, brokerageName: brand.brokerageName, licenseLine: await licenseLineFor(l.brokerage_id), showEhoMark: true },
       }
 
       // THE AUTHORITATIVE GATE, on the payload that will actually be staged —
