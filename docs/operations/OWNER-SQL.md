@@ -1481,3 +1481,64 @@ commit;
 -- and the table's two classification lines are removed (lib/kernel/brokerage-transfer.ts, lib/kernel/manager-registry.ts).
 -- Rollback: none (the table held no rows); its definition is in the migration history.
 ```
+
+### R.6 Five deal tables: the INSERT side of row security admits any signed-in seat of a tenant — HELD, needs a write-site audit first
+
+- Found 2026-11-20 while making deal-detail edits save for every deal-desk seat (`lib/application/transactions.ts`
+  `dealDeskWriteContext`, proof `test:deal-desk` §E). Read on the live database (`pg_policies`, `has_table_privilege`), not
+  from migration files. Tables: `transaction_participants`, `transaction_deadlines`, `transaction_title_escrow`, `transaction_repair_negotiations`, `transaction_timeline`.
+- What is live. Each table has exactly two `ALL` policies and `authenticated` holds INSERT on it:
+  - `trx_agent_<table>` — USING: the caller is `agent_id` / `buyer_agent_id` / `seller_agent_id` of the row's deal. WITH CHECK:
+    `brokerage_id = current_user_brokerage_id()` — **the tenant only; not the deal, not the seat.**
+  - `trx_broker_<table>` — USING and WITH CHECK: the row's tenant is the caller's AND `current_user_type()` is one of
+    `broker`, `admin`, `super_admin`, `tc`.
+- Why it matters. An INSERT that returns nothing is judged by WITH CHECK alone, and permissive policies OR together. So any
+  signed-in user who has a tenant — a vendor seat or a client (contact) seat included — can insert a row into these tables
+  through the data API on ANY `transaction_id`, another tenant's deal included, as long as the row carries their own tenant.
+  The deal's agents then see that row (their USING is the deal, not the row's tenant). The application's own doors do not
+  offer this; the database does.
+- Also in these policies: `super_admin` is not a storable `users.user_type` (a dead name), and `broker_owner`, `broker_admin`
+  and `compliance_officer` are not named. The application no longer depends on that roster for the deal-detail doors — they
+  write on the service client after the deal desk has passed — so the roster below is alignment, not a fix for those doors.
+- Status: **HELD (not run, and not yet tested against the live database).** 43 write sites in 16 files write these five tables
+  and most do not say in one line which client they hold; a tightened CHECK refuses any that still write through a session
+  client for a seat the new policy does not name (for example a team lead's timeline line on a team member's deal). Audit
+  those write sites first, then run this. A team lead's led-team clause is deliberately NOT proposed here: it needs the team
+  function, and the application serves that seat through the gated doors.
+
+```sql
+-- Before: expect 10 rows (2 per table); every trx_agent_* with_check reads "(brokerage_id = current_user_brokerage_id())"
+select tablename, policyname, cmd, with_check from pg_policies
+ where schemaname = 'public' and tablename in ('transaction_participants', 'transaction_deadlines', 'transaction_title_escrow', 'transaction_repair_negotiations', 'transaction_timeline') order by 1, 2;
+-- Do (one transaction; ALTER POLICY keeps each policy's name, command and roles):
+begin;
+alter policy trx_agent_transaction_participants on public.transaction_participants
+  with check (brokerage_id = current_user_brokerage_id() and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id() and (t.agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.buyer_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.seller_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()))));
+alter policy trx_broker_transaction_participants on public.transaction_participants
+  using (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']))
+  with check (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']));
+alter policy trx_agent_transaction_deadlines on public.transaction_deadlines
+  with check (brokerage_id = current_user_brokerage_id() and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id() and (t.agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.buyer_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.seller_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()))));
+alter policy trx_broker_transaction_deadlines on public.transaction_deadlines
+  using (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']))
+  with check (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']));
+alter policy trx_agent_transaction_title_escrow on public.transaction_title_escrow
+  with check (brokerage_id = current_user_brokerage_id() and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id() and (t.agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.buyer_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.seller_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()))));
+alter policy trx_broker_transaction_title_escrow on public.transaction_title_escrow
+  using (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']))
+  with check (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']));
+alter policy trx_agent_transaction_repair_negotiations on public.transaction_repair_negotiations
+  with check (brokerage_id = current_user_brokerage_id() and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id() and (t.agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.buyer_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.seller_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()))));
+alter policy trx_broker_transaction_repair_negotiations on public.transaction_repair_negotiations
+  using (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']))
+  with check (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']));
+alter policy trx_agent_transaction_timeline on public.transaction_timeline
+  with check (brokerage_id = current_user_brokerage_id() and transaction_id in (select t.id from public.transactions t where t.brokerage_id = current_user_brokerage_id() and (t.agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.buyer_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()) or t.seller_agent_id in (select a.id from public.agents a where a.user_id = auth.uid()))));
+alter policy trx_broker_transaction_timeline on public.transaction_timeline
+  using (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']))
+  with check (brokerage_id = current_user_brokerage_id() and current_user_type() = any (array['broker','broker_owner','broker_admin','admin','compliance_officer','tc']));
+commit;
+-- After: the same SELECT — every trx_agent_* with_check now names the deal; every trx_broker_* names the six desk seats.
+-- Then, signed in as a vendor seat and as a contact seat of a test tenant, an INSERT into each table must be refused (42501).
+-- Rollback: re-run ALTER POLICY with the with_check / using text the Before read returned.
+```

@@ -773,9 +773,9 @@ export async function setDocumentClientVisibility(documentId: string, visible: b
 // TIMELINE
 // ============================================
 
-// TOMBSTONE (wave 155, lane 155R28 — §1 case 2) RETIRED addTimelineEntry → SURVIVOR lib/application/transactions.ts:1077 addTimelineEntry · CALLED BY lib/application/transactions.ts:544 addTimelineEntry
-//   A deal's timeline is written by the act it records (every service writer calls it in-module — addParticipant, addDeadline,
-//   respondToRepairRequest … — and the kernel's emitTransactionEvent). A public door that wrote ANY activity line onto ANY deal
+// TOMBSTONE (wave 155, lane 155R28 — §1 case 2) RETIRED addTimelineEntry → SURVIVOR lib/application/transactions.ts:1077 addTimelineEntry · CALLED BY lib/application/transactions.ts:344 addTimelineEntry
+//   A deal's timeline is written by the act it records (the service writers call it in-module — updateTransaction, addLender … —
+//   the deal-detail writers reach its ONE insert, writeTimelineLine, on the deal desk's client; and the kernel's emitTransactionEvent). A public door that wrote ANY activity line onto ANY deal
 //   with a caller-chosen `performedBy` is not a product verb.
 // TOMBSTONE (wave 155, lane 155R28 — §1 case 2) RETIRED getTransactionTimeline → SURVIVOR app/dashboard/transactions/[id]/page.tsx:317 transaction_timeline · CALLED BY app/dashboard/transactions/[id]/page.tsx:317 transaction_timeline
 //   The deal page reads its timeline itself, inside the deal's tenant check.

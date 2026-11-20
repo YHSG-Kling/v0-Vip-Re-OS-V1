@@ -138,7 +138,8 @@ const DB_HARNESS = `
         gt: () => thenable, like: () => thenable, or: () => thenable, order: () => thenable,
         limit: () => thenable, range: () => thenable,
         single: async () => ({ data: null, error: null }),
-        maybeSingle: async () => ({ data: null, error: null }),
+        // RESTATED (deal desk, 2026-11-20): a deal-detail writer reads its row's deal before it writes; a case scripts that row.
+        maybeSingle: async () => ({ data: globalThis.__ROW__ ?? null, error: null }),
         // Wave 84D: a real PromiseLike — supabase-js builders accept
         // .then(undefined, onRejected), which runA2pRegistrationAction uses
         // on its audit insert (now this subject's writer).
@@ -562,9 +563,25 @@ async function main() {
         exports.inPipelineColumn = () => false
       `,
       "@/lib/enrichment/deal-vocabulary": `exports.TXN_STATUSES_AFTER = []; exports.TXN_STAGES_AFTER = []`,
+      // PUBLISHED STUB (2026-11-20): the deal desk is SCRIPTED here. This proof's subject is which CLIENT a write rides and what
+      // a grant mode does to it — who works a deal is test:deal-desk's (the real decideDealDesk, driven per seat). Unset = admits.
+      "@/lib/transactions/role-guard": `exports.decideDealDesk = async () => (globalThis.__DESK__ ?? { allowed: true, tier: "brokerage", via: "seat" })`,
     }
     const before = await loadModule(file, beforeFix(file), extraStubs, "before")
     const after = await loadModule(file, read(file), extraStubs, "after")
+    // THE DEAL-DETAIL WRITERS (derived, comment-stripped): the writers that resolve their client through dealDeskWriteContext —
+    // the write seam FIRST (so every grant-mode assertion below is unchanged for them), then the deal desk, then the SERVICE
+    // client. For those, "a normal tenant seat writes on its own RLS client" is no longer the rule: the rule is "the desk
+    // decides, and only then is anything written".
+    const afterSrc = stripComments(read(file))
+    const fnText = (name: string): string => { const at = afterSrc.search(new RegExp(`^(?:export\\s+)?async\\s+function\\s+${name}\\s*\\(`, "m")); const end = at < 0 ? -1 : afterSrc.indexOf("\n}\n", at); return at < 0 ? "" : afterSrc.slice(at, end < 0 ? undefined : end + 3) }
+    const isDeskWriter = (name: string) => /\bdealDeskWriteContext\s*\(/.test(fnText(name))
+    const DESK_REFUSES = { allowed: false, code: "not_your_deal", reason: "Not your deal (scripted)" }
+    /** Run one writer with the desk scripted (and the row a row-keyed writer reads first). */
+    const withDesk = async (desk: unknown, s: ScriptedSession, fn: () => Promise<any>) => {
+      ;(globalThis as any).__DESK__ = desk; (globalThis as any).__ROW__ = { transaction_id: "t1" }
+      try { return await underSession(s, fn) } finally { delete (globalThis as any).__DESK__; delete (globalThis as any).__ROW__ }
+    }
 
     // WRITERS, one from each family the file owns. Chosen because each is a
     // different table and a different return shape — the conversion had to keep
@@ -594,11 +611,16 @@ async function main() {
     // THE OTHER DIRECTION — the one that was silently losing support's work.
     for (const [fn, args] of WRITERS) {
       const b = await underSession(FULL_GRANT, () => before[fn](...args))
-      const a = await underSession(FULL_GRANT, () => after[fn](...args))
+      const a = isDeskWriter(fn) ? await withDesk(undefined, FULL_GRANT, () => after[fn](...args)) : await underSession(FULL_GRANT, () => after[fn](...args))
       check(`transactions · BEFORE — ${fn} wrote a full act-as grant through the COOKIE client (RLS refuses; supabase-js resolves it as success)`,
         b.calls.length > 0 && b.calls.every((c: any) => c.channel === "cookie"))
       check(`transactions · AFTER — ${fn} writes through the SERVICE client, so the support write lands`,
         a.calls.length > 0 && a.calls.every((c: any) => c.channel === "service"))
+      if (isDeskWriter(fn)) {
+        const no = await withDesk(DESK_REFUSES, FULL_GRANT, () => after[fn](...args))
+        check(`transactions · AFTER — ${fn} under a full grant whose seat the deal desk REFUSES attempts no write (a grant walks the account and never exceeds it)`,
+          no.calls.length === 0 && !succeeded(no.result), JSON.stringify(no.result).slice(0, 140) + " | writes=" + no.calls.length)
+      }
     }
 
     // A NORMAL TENANT SEAT MUST NOT MOVE AT ALL.
@@ -608,11 +630,27 @@ async function main() {
     // claimAction), not the action's write. Only that carrier is set aside; any other service write still fails this check.
     const ledgerCarrier = (c: any) => c.table === "agent_action_ledger" && c.channel === "service"
     for (const [fn, args] of WRITERS) {
+      if (isDeskWriter(fn)) continue // restated just below — the desk decides for these
       const a = await underSession(session(), () => after[fn](...args))
       const own = a.calls.filter((c: any) => !ledgerCarrier(c))
       check(`transactions · a normal tenant user still writes on their OWN RLS client — ${fn}`,
         own.length > 0 && own.every((c: any) => c.channel === "cookie"), JSON.stringify(a.calls))
     }
+    // RESTATED TO THE RULE (deal desk, 2026-11-20). A deal-detail writer no longer rides the seat's RLS client: the live policies
+    // on its table name fewer seats than the deal desk admits and refused every insert that carried no tenant. The rule now is
+    // GATE FIRST, THEN THE SERVICE CLIENT (CLAUDE.md §4) — so for a normal tenant seat: admitted by the desk, EVERYTHING it writes
+    // (the row and its timeline line) is on the service client; refused by the desk, NOTHING is written on any channel.
+    const deskSampled = WRITERS.filter(([fn]) => isDeskWriter(fn))
+    for (const [fn, args] of deskSampled) {
+      const yes = await withDesk(undefined, session(), () => after[fn](...args))
+      check(`transactions · a deal-detail writer, desk ADMITS a normal tenant seat — ${fn} writes on the SERVICE client only, after the gate`,
+        yes.calls.length > 0 && yes.calls.every((c: any) => c.channel === "service"), JSON.stringify(yes.calls))
+      const no = await withDesk(DESK_REFUSES, session(), () => after[fn](...args))
+      check(`transactions · a deal-detail writer, desk REFUSES a normal tenant seat — ${fn} attempts NO write on any channel`,
+        no.calls.length === 0 && !succeeded(no.result), JSON.stringify(no.result).slice(0, 140) + " | writes=" + no.calls.length)
+    }
+    check("transactions · the sample still holds BOTH kinds of writer (the split above is not vacuous on either side)",
+      deskSampled.length > 0 && deskSampled.length < WRITERS.length, `${deskSampled.length} of ${WRITERS.length}`)
     check("transactions · CONTROL: only the ledger carrier is set aside — a domain write on the service client is still caught",
       ledgerCarrier({ table: "agent_action_ledger", channel: "service" }) && !ledgerCarrier({ table: "transactions", channel: "service" }) && !ledgerCarrier({ table: "agent_action_ledger", channel: "cookie" }))
 
@@ -657,11 +695,29 @@ async function main() {
     }
     const WRITE = /\.(insert|update|upsert|delete)\s*\(/
     const writers = spans.filter((s) => WRITE.test(lines.slice(s.start, s.end).join("\n")) && s.name !== "actingWriteContext")
-    const ungated = writers.filter((s) => {
-      const body = lines.slice(s.start, s.end).join("\n")
-      return !/const gate = await actingWriteContext\(\)/.test(body)
-        && !/resolveWriteContext(ForTenant)?\(\)/.test(body)
+    // RESTATED (deal desk, 2026-11-20): a writer resolves its client from the seam in one of three ways, and each is checked —
+    //   (1) directly: `const gate = await actingWriteContext()` (or resolveWriteContext);
+    //   (2) through dealDeskWriteContext, which must ITSELF call the seam before it opens the service client (asserted below);
+    //   (3) an UNEXPORTED sink that is handed its client: every function that calls it must be a (1) or (2) writer.
+    const bodyOf = (s: { start: number; end: number }) => lines.slice(s.start, s.end).join("\n")
+    const viaSeam = (body: string) => /const gate = await actingWriteContext\(\)/.test(body) || /resolveWriteContext(ForTenant)?\(\)/.test(body)
+    const viaDesk = (body: string) => /const gate = await dealDeskWriteContext\(/.test(body)
+    const handedSinks = writers.filter((s) => {
+      const body = bodyOf(s)
+      if (viaSeam(body) || viaDesk(body) || /^export\s/.test(lines[s.start])) return false
+      const callers = spans.filter((c) => c.name !== s.name && new RegExp(`\\b${s.name}\\s*\\(`).test(bodyOf(c)))
+      return callers.length > 0 && callers.every((c) => viaSeam(bodyOf(c)) || viaDesk(bodyOf(c)))
     })
+    const ungated = writers.filter((s) => !viaSeam(bodyOf(s)) && !viaDesk(bodyOf(s)) && !handedSinks.includes(s))
+    const deskSpan = spans.find((s) => s.name === "dealDeskWriteContext")
+    const deskBody = deskSpan ? bodyOf(deskSpan) : ""
+    const deskWriters = writers.filter((s) => viaDesk(bodyOf(s)))
+    console.log(`   writers by route: ${writers.length - deskWriters.length - handedSinks.length} on the seam · ${deskWriters.length} through the deal desk · ${handedSinks.length} handed sink(s): ${handedSinks.map((s) => s.name).join(", ") || "none"}`)
+    check("the deal-desk route STANDS ON the seam: dealDeskWriteContext calls actingWriteContext() and returns its refusal before it opens the service client or asks the desk",
+      deskWriters.length === 0 || (deskBody.indexOf("await actingWriteContext()") >= 0 && deskBody.indexOf("await actingWriteContext()") < deskBody.indexOf("createServiceClient(")
+        && deskBody.indexOf("await actingWriteContext()") < deskBody.indexOf("decideDealDesk(") && /if\s*\(\s*!\s*seam\.ok\s*\)\s*return/.test(deskBody)), deskBody.slice(0, 200))
+    check("control · the three-route rule still catches a writer with no route, and an EXPORTED function is never a handed sink",
+      !viaSeam("const supabase = await createClient()") && !viaDesk("const supabase = await createClient()") && viaDesk("const gate = await dealDeskWriteContext({ transactionId })") && handedSinks.every((s) => !/^export\s/.test(lines[s.start])))
     const cookieLeft = spans.filter((s) => /await createClient\(\)/.test(lines.slice(s.start, s.end).join("\n")))
     const cookieWriters = cookieLeft.filter((s) => WRITE.test(lines.slice(s.start, s.end).join("\n")))
     console.log(`   functions: ${spans.length} | writers: ${writers.length} | still holding a raw createClient(): ${cookieLeft.length} (all readers: ${cookieWriters.length === 0})`)

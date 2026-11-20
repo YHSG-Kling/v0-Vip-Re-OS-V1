@@ -192,6 +192,7 @@ census measures one; ENGINEERING READY — OWNER ACTIONS REMAIN once neither doe
 - **R.3** re-key live `website_question:` topic rows onto `ti:customer_question:<theme>` (§R l.1428-1445), collisions first.
 - **R.4** retarget the m705 "First Appointment" badge to `SIGNED_AGREEMENT_APPOINTMENT` (§R l.1446-1460); default: shown unavailable.
 - **R.5** (optional) drop the empty `title_company_users` table: nothing writes or reads it now; the block refuses if it is not empty.
+- **R.6** (HELD — audit first) five deal tables accept an INSERT from any signed-in seat of a tenant, on any deal id, because the agent policy's WITH CHECK names only the tenant; the block aligns the CHECK with the deal and the roster with the deal desk. Not run, not yet tested live.
 
 ## 12. Engineering record (no owner action)
 

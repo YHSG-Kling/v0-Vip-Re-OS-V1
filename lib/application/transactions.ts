@@ -529,23 +529,23 @@ export async function addParticipant(participantData: {
   license_number?: string
   notes?: string
 }) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ transactionId: participantData.transaction_id })
   if (!gate.ok) return { success: false, error: gate.error }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.participant.add", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: participantData.transaction_id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, role: participantData.role } }, async () => {
   const supabase = gate.db
-  const { data, error } = await supabase.from("transaction_participants").insert(participantData).select().single()
+  const { data, error } = await supabase.from("transaction_participants").insert({ transaction_id: gate.transactionId, brokerage_id: gate.brokerageId, role: participantData.role, name: participantData.name, company: participantData.company, email: participantData.email, phone: participantData.phone, license_number: participantData.license_number, notes: participantData.notes }).select().single()
 
   if (error) {
     console.error("Error adding participant:", error)
     return { success: false, error: error.message }
   }
 
-  await addTimelineEntry(
-    participantData.transaction_id,
-    "participant_added",
-    `${participantData.role} "${participantData.name}" added to transaction`,
-  )
+  await writeTimelineLine(gate.db, gate.brokerageId, {
+    transaction_id: gate.transactionId,
+    activity_type: "participant_added",
+    description: `${participantData.role} "${participantData.name}" added to transaction`,
+  })
 
   revalidatePath("/transactions")
   return { success: true, data }
@@ -559,13 +559,13 @@ export async function updateParticipant(
     phone: string; license_number: string; notes: string
   }>,
 ) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ table: "transaction_participants", rowId: participantId })
   if (!gate.ok) return { success: false, error: gate.error }
   const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_participants")
-    .update(updates)
-    .eq("id", participantId)
+    .update(withoutRowIdentity(updates))
+    .eq("id", participantId).eq("transaction_id", gate.transactionId)
     .select()
     .single()
 
@@ -578,11 +578,11 @@ export async function updateParticipant(
 }
 
 export async function removeParticipant(participantId: string) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ table: "transaction_participants", rowId: participantId })
   if (!gate.ok) return { success: false, error: gate.error }
   const supabase = gate.db
   // A DELETE that matched nothing also resolves (CLAUDE.md §3): `.select()` it and COUNT — zero rows is a refusal, not a removal.
-  const { data: removed, error } = await supabase.from("transaction_participants").delete().eq("id", participantId).select("id")
+  const { data: removed, error } = await supabase.from("transaction_participants").delete().eq("id", participantId).eq("transaction_id", gate.transactionId).select("id")
 
   if (error) {
     console.error("Error removing participant:", error)
@@ -688,17 +688,17 @@ export async function addTitleEscrow(data: {
   closing_location?: string
   notes?: string
 }) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ transactionId: data.transaction_id })
   if (!gate.ok) return { success: false, error: gate.error }
   const supabase = gate.db
-  const { data: result, error } = await supabase.from("transaction_title_escrow").insert(data).select().single()
+  const { data: result, error } = await supabase.from("transaction_title_escrow").insert({ ...data, transaction_id: gate.transactionId, brokerage_id: gate.brokerageId }).select().single()
 
   if (error) {
     console.error("Error adding title/escrow:", error)
     return { success: false, error: error.message }
   }
 
-  await addTimelineEntry(data.transaction_id, "title_escrow_added", `Title company "${data.title_company_name}" assigned`)
+  await writeTimelineLine(gate.db, gate.brokerageId, { transaction_id: gate.transactionId, activity_type: "title_escrow_added", description: `Title company "${data.title_company_name}" assigned` })
   // gate.brokerageId is nullable on the act-as seam; a closing without a tenant
   // cannot be announced to one, so the emit is skipped (and said) rather than
   // typed away (integrator, 2026-09-03).
@@ -719,13 +719,13 @@ export async function addTitleEscrow(data: {
 }
 
 export async function updateTitleEscrow(titleEscrowId: string, updates: Record<string, unknown>) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ table: "transaction_title_escrow", rowId: titleEscrowId })
   if (!gate.ok) return { success: false, error: gate.error }
   const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_title_escrow")
-    .update(updates)
-    .eq("id", titleEscrowId)
+    .update(withoutRowIdentity(updates))
+    .eq("id", titleEscrowId).eq("transaction_id", gate.transactionId)
     .select()
     .single()
 
@@ -1091,14 +1091,14 @@ export async function addTimelineEntry(
     return
   }
   const supabase = gate.db
-  const { error } = await supabase.from("transaction_timeline").insert({
+  await writeTimelineLine(supabase, gate.brokerageId, {
     transaction_id: transactionId,
     activity_type: activityType,
     description,
     performed_by: performedBy,
     metadata,
   })
-  if (error) console.error("Error adding timeline entry:", error)
+
 }
 
 export async function getTransactionTimeline(transactionId: string) {
@@ -1126,7 +1126,7 @@ export async function addDeadline(deadlineData: {
   notes: string
   deadline_date: string
 }) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ transactionId: deadlineData.transaction_id })
   if (!gate.ok) return { success: false, error: gate.error }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.deadline.add", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction", id: deadlineData.transaction_id }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, deadline_type: deadlineData.deadline_type } }, async () => {
@@ -1134,7 +1134,7 @@ export async function addDeadline(deadlineData: {
   const { data, error } = await supabase
     .from("transaction_deadlines")
     .insert({
-      transaction_id: deadlineData.transaction_id,
+      transaction_id: gate.transactionId, brokerage_id: gate.brokerageId,
       deadline_type: deadlineData.deadline_type,
       notes: deadlineData.notes,
       deadline_date: deadlineData.deadline_date,
@@ -1148,11 +1148,11 @@ export async function addDeadline(deadlineData: {
     return { success: false, error: error.message }
   }
 
-  await addTimelineEntry(
-    deadlineData.transaction_id,
-    "deadline_added",
-    `Deadline "${deadlineData.notes}" added for ${deadlineData.deadline_date}`,
-  )
+  await writeTimelineLine(gate.db, gate.brokerageId, {
+    transaction_id: gate.transactionId,
+    activity_type: "deadline_added",
+    description: `Deadline "${deadlineData.notes}" added for ${deadlineData.deadline_date}`,
+  })
   revalidatePath("/transactions")
   return { success: true, data }
   })
@@ -1162,13 +1162,13 @@ export async function updateDeadline(
   deadlineId: string,
   updates: Partial<{ status: string; deadline_date: string; notes: string; completed_at: string }>,
 ) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ table: "transaction_deadlines", rowId: deadlineId })
   if (!gate.ok) return { success: false, error: gate.error }
   const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_deadlines")
-    .update(updates)
-    .eq("id", deadlineId)
+    .update(withoutRowIdentity(updates))
+    .eq("id", deadlineId).eq("transaction_id", gate.transactionId)
     .select()
     .single()
 
@@ -1181,7 +1181,7 @@ export async function updateDeadline(
 }
 
 export async function completeDeadline(deadlineId: string) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ table: "transaction_deadlines", rowId: deadlineId })
   if (!gate.ok) return { success: false, error: gate.error }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.deadline.complete", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction_deadline", id: deadlineId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId } }, async () => {
@@ -1189,7 +1189,7 @@ export async function completeDeadline(deadlineId: string) {
   const { data, error } = await supabase
     .from("transaction_deadlines")
     .update({ status: "completed", completed_at: new Date().toISOString() })
-    .eq("id", deadlineId)
+    .eq("id", deadlineId).eq("transaction_id", gate.transactionId)
     .select("*, transactions(id)")
     .single()
 
@@ -1198,8 +1198,8 @@ export async function completeDeadline(deadlineId: string) {
     return { success: false, error: error.message }
   }
 
-  if (data?.transactions?.id) {
-    await addTimelineEntry(data.transactions.id, "deadline_completed", `Deadline "${data.notes}" completed`)
+  if (data) {
+    await writeTimelineLine(gate.db, gate.brokerageId, { transaction_id: gate.transactionId, activity_type: "deadline_completed", description: `Deadline "${data.notes}" completed` })
   }
   revalidatePath("/transactions")
   return { success: true, data }
@@ -1483,12 +1483,12 @@ export async function submitRepairRequest(requestData: {
   priority?: string
   notes?: string
 }) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ transactionId: requestData.transaction_id })
   if (!gate.ok) return { success: false, error: gate.error }
   const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_repair_negotiations")
-    .insert({ ...requestData, status: "requested" })
+    .insert({ ...requestData, transaction_id: gate.transactionId, brokerage_id: gate.brokerageId, status: "requested" })
     .select()
     .single()
 
@@ -1497,11 +1497,11 @@ export async function submitRepairRequest(requestData: {
     return { success: false, error: error.message }
   }
 
-  await addTimelineEntry(
-    requestData.transaction_id,
-    "repair_requested",
-    `Repair request submitted: ${requestData.item_description}`,
-  )
+  await writeTimelineLine(gate.db, gate.brokerageId, {
+    transaction_id: gate.transactionId,
+    activity_type: "repair_requested",
+    description: `Repair request submitted: ${requestData.item_description}`,
+  })
   revalidatePath("/transactions")
   return { success: true, data }
 }
@@ -1512,7 +1512,7 @@ export async function respondToRepairRequest(
   counterOffer?: number,
   notes?: string,
 ) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ table: "transaction_repair_negotiations", rowId: requestId })
   if (!gate.ok) return { success: false, error: gate.error }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: gate.brokerageId ?? "", action: "transaction.repair_request.respond", actor: { type: "user", userId: gate.actorUserId }, subject: { type: "transaction_repair_negotiation", id: requestId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { effective_user_id: gate.userId, response } }, async () => {
@@ -1533,8 +1533,8 @@ export async function respondToRepairRequest(
 
   const { data, error } = await supabase
     .from("transaction_repair_negotiations")
-    .update(updates)
-    .eq("id", requestId)
+    .update(withoutRowIdentity(updates))
+    .eq("id", requestId).eq("transaction_id", gate.transactionId)
     .select("*, transactions(id)")
     .single()
 
@@ -1543,8 +1543,8 @@ export async function respondToRepairRequest(
     return { success: false, error: error.message }
   }
 
-  if (data?.transactions?.id) {
-    await addTimelineEntry(data.transactions.id, "repair_response", `Repair request ${response}: ${data.item_description}`)
+  if (data) {
+    await writeTimelineLine(gate.db, gate.brokerageId, { transaction_id: gate.transactionId, activity_type: "repair_response", description: `Repair request ${response}: ${data.item_description}` })
   }
   revalidatePath("/transactions")
   return { success: true, data }
@@ -1556,7 +1556,7 @@ export async function finalizeRepairNegotiation(
   resolution: "repair" | "credit" | "as_is",
   finalAmount?: number,
 ) {
-  const gate = await actingWriteContext()
+  const gate = await dealDeskWriteContext({ table: "transaction_repair_negotiations", rowId: requestId })
   if (!gate.ok) return { success: false, error: gate.error }
   const supabase = gate.db
   // Map resolution → status CHECK; finalAmount→actual_cost; persist the
@@ -1574,7 +1574,7 @@ export async function finalizeRepairNegotiation(
       responded_at: new Date().toISOString(),
       notes: `Resolved: ${resolution}${finalAmount != null ? ` ($${finalAmount})` : ""}`,
     })
-    .eq("id", requestId)
+    .eq("id", requestId).eq("transaction_id", gate.transactionId)
     .select("*, transactions(id)")
     .single()
 
@@ -1583,12 +1583,12 @@ export async function finalizeRepairNegotiation(
     return { success: false, error: error.message }
   }
 
-  if (data?.transactions?.id) {
-    await addTimelineEntry(
-      data.transactions.id,
-      "repair_resolved",
-      `Repair negotiation resolved: ${resolution} - $${finalAmount || 0}`,
-    )
+  if (data) {
+    await writeTimelineLine(gate.db, gate.brokerageId, {
+      transaction_id: gate.transactionId,
+      activity_type: "repair_resolved",
+      description: `Repair negotiation resolved: ${resolution} - $${finalAmount || 0}`,
+    })
   }
   revalidatePath("/transactions")
   return { success: true, data }
@@ -3557,4 +3557,82 @@ function getMilestoneIcon(milestoneName: string): string {
 function getUpdateIcon(updateType: string): string {
   const icons: Record<string, string> = { celebration: "party-popper", urgent: "alert-triangle", info: "info", milestone: "flag" }
   return icons[updateType] || "bell"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// THE DEAL-DETAIL WRITE CONTEXT (wave 155 follow-on, 2026-11-20) — the deal desk FIRST, then the service client.
+//
+// WHAT WAS WRONG (measured on the live database, pg_policies, 2026-11-20). The nine deal-detail writers above (participants,
+// title / escrow, deadlines, the repair response) wrote through the caller's row-security client. Each of those four tables —
+// and transaction_timeline — carries exactly two policies: the agents on the deal, and the seats `broker`, `admin`,
+// `super_admin`, `tc` of the row's tenant; and BOTH policies' WITH CHECK require the NEW row's brokerage_id to be the
+// caller's tenant.
+//   · A broker owner, a broker admin, a compliance officer and a team lead working a team member's deal pass the deal desk
+//     (lib/transactions/role-guard.ts decideDealDesk) and were then refused by the database: the edit came back "not saved".
+//   · addParticipant, addDeadline and addTimelineEntry inserted with NO brokerage_id, so that WITH CHECK refused them for
+//     EVERY seat, the agent on the deal included: nobody could add a participant or a deadline from the deal page, and no
+//     timeline line written by this file landed.
+//
+// WHAT THIS IS. CLAUDE.md §4 — gate first, then use the service client. It stands ON the one write seam (actingWriteContext:
+// the session, the grant mode — a read_only grant still refuses — and the EFFECTIVE seat and tenant), asks the ONE deal desk
+// about THIS deal with that seat and tenant, and only then hands back the service client. The roster is the desk's: this file
+// carries none, and no longer inherits the policies'. Every writer then pins its row to the deal the desk just read IN the
+// session's tenant (`transaction_id`), stamps the session tenant on what it inserts, and never lets a patch move a row to
+// another deal or tenant (withoutRowIdentity). A child row's own brokerage_id is not the pin — older writers never stamped
+// it; the deal's tenant is the truth (the same rule as app/actions/transactions.ts requireDealRowActor).
+// A grant walks the account and never exceeds it (§5): under a full grant the desk is asked with the impersonated seat.
+// Fail closed: an unreadable row, an unreadable deal, or a gate that cannot run refuses. Not exported.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+type DealChildTable = "transaction_participants" | "transaction_deadlines" | "transaction_title_escrow" | "transaction_repair_negotiations"
+type DealDeskWriteGate =
+  | { ok: true; db: any; transactionId: string; brokerageId: string; userId: string; actorUserId: string }
+  | { ok: false; error: string }
+
+async function dealDeskWriteContext(target: { transactionId: string } | { table: DealChildTable; rowId: string }): Promise<DealDeskWriteGate> {
+  const seam = await actingWriteContext()
+  if (!seam.ok) return { ok: false, error: seam.error }
+  if (!seam.brokerageId) return { ok: false, error: "Your account is not linked to a brokerage yet." }
+  try {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const db: any = createServiceClient()
+    let transactionId = "transactionId" in target ? String(target.transactionId ?? "") : ""
+    if ("rowId" in target) {
+      // The row's deal, read after the session is known. A refused read refuses (CLAUDE.md §3: the error is read).
+      const { data: row, error } = await db.from(target.table).select("transaction_id").eq("id", target.rowId).maybeSingle()
+      if (error) return { ok: false, error: `Could not verify the record: ${error.message}` }
+      transactionId = String((row as { transaction_id?: string | null } | null)?.transaction_id ?? "")
+      if (!transactionId) return { ok: false, error: "Record not found" }
+    }
+    if (!transactionId) return { ok: false, error: "Transaction not found" }
+    const { decideDealDesk } = await import("@/lib/transactions/role-guard")
+    const desk = await decideDealDesk({ userId: seam.userId, role: seam.userType ?? "", brokerageId: seam.brokerageId, transactionId })
+    if (!desk.allowed) return { ok: false, error: desk.reason }
+    return { ok: true, db, transactionId, brokerageId: seam.brokerageId, userId: seam.userId, actorUserId: seam.actorUserId ?? seam.userId }
+  } catch {
+    return { ok: false, error: "Unauthorized" }
+  }
+}
+
+/** A child row's identity is never patched: its id, its deal and its tenant are dropped from any update, so a row cannot be moved. */
+function withoutRowIdentity(patch: Record<string, unknown> | null | undefined): Record<string, unknown> {
+  const rest: Record<string, unknown> = { ...(patch ?? {}) }
+  delete rest.id
+  delete rest.transaction_id
+  delete rest.brokerage_id
+  return rest
+}
+
+/**
+ * THE ONE insert of a deal's timeline line (transaction_timeline). The tenant is stamped HERE, after the row, from the write
+ * context that holds the client: the seam's for addTimelineEntry, the desk's for the deal-detail writers (so their line rides
+ * the same client as the edit it records, not a second resolution of the session). Best-effort by contract — the act is the
+ * record — so a refusal is read and logged (CLAUDE.md §3), never thrown.
+ */
+async function writeTimelineLine(
+  db: any,
+  brokerageId: string | null,
+  row: { transaction_id: string; activity_type: string; description: string; performed_by?: string; metadata?: Record<string, unknown> },
+): Promise<void> {
+  const { error } = await db.from("transaction_timeline").insert({ ...row, brokerage_id: brokerageId ?? undefined })
+  if (error) console.error("Error adding timeline entry:", error)
 }
