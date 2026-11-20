@@ -57,6 +57,16 @@
  *       · the doors that DID ride a session client are driven or source-ruled: the earnest-money door and the one timeline
  *         writer under BOTH policy modes, the AI deadline door and the two former inline timeline inserts by source rule.
  *     With DEAL_DESK_ROOT=<the tree before this change> the census finds the session sites and the driven doors go red.
+ * §G  THE AI DEAL DOORS (follow-on, 2026-11-20). app/actions/ai-transaction-coordinator.ts gated its doors on "the caller can
+ *     READ the deal in the session's tenant" (scopeTransaction), and app/actions/ai-closing-workflow.ts on session + tenant —
+ *     and the transactions SELECT policies admit a vendor seat assigned to the deal. So a lender / title / inspector seat
+ *     could spend a model call on the deal (AI is platform-covered: a call a seat may not make is a wrong invoice), and two
+ *     of those doors also write or send. §G: the doors are DERIVED (every exported action of the two files that reaches a
+ *     model or the shared gate); each must reach the deal desk — and return its refusal — BEFORE the first model call and
+ *     before any write, with a control per rule; every door is DRIVEN with the model seam replaced by a COUNTED stub (no
+ *     provider is ever reached): each seat the desk refuses spends 0 model calls and writes nothing, each seat it admits
+ *     reaches the seam. The agent-wide risk scan asks the desk per deal: only admitted deals reach the model, and a deal id
+ *     that comes back from the model lands only on an admitted deal. Red on the tree before the change.
  *
  * BLIND SPOTS (published). The in-memory client has no row security, CHECKs or foreign keys — which is exactly why a gate
  * that leaned on row security shows up here. lib/teams/team-scope.ts leadsAgentsTeam is a counted fixture (it calls a
@@ -74,7 +84,10 @@
  * rather than passing. A declaration `x = handed ?? createServiceClient()` counts as the service client; its handed half is not
  * followed (one site: lib/voice/team-commands.ts). PG_MEASURED was measured with NO row security on public.transactions / public.agents (the policies'
  * subqueries read them as the caller); live, those tables have their own policies, which can only refuse more. §F does not
- * drive the AI deadline door (it reaches a model) — its rule is read from source.
+ * drive the AI deadline door (it reaches a model) — its rule is read from source. §G's model seam is a stub that returns an
+ * empty object: a door is shown to REACH the model, not to do anything sensible with its answer (that is each door's own
+ * proof). The outbound send (sendTransactionCommunication) is driven for refusals only — a send is never performed here.
+ * The fake has no row security on public.transactions, which is exactly the "whoever can read the deal" the old gate was.
  */
 import { registerHooks } from "node:module"
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs"
@@ -154,7 +167,7 @@ function world(): MemClient {
 const G = globalThis as any
 G.__DD = {
   mem: world() as MemClient, seat: null as string | null, refuseTransactions: false, leads: LEADS, rls: false, policy: "live" as "live" | "proposed",
-  calls: { milestones: [] as any[], events: [] as any[], lender: [] as any[], other: 0 },
+  calls: { milestones: [] as any[], events: [] as any[], lender: [] as any[], other: 0, model: 0 }, modelObject: null as any,
   /** The caller's client. §E turns `rls` on: it is then the model of the live policies; the service client never is. */
   sess: () => (G.__DD.rls ? policySession(G.__DD.base(), G.__DD.seat) : G.__DD.base()),
   svc: () => G.__DD.base(),
@@ -173,6 +186,10 @@ const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
 const OVERRIDE: Record<string, string> = {
   "lib/supabase/server.ts": "export async function createClient(){ return globalThis.__DD.sess() }; export async function createServerClient(){ return globalThis.__DD.sess() }",
   "lib/supabase/service.ts": "export function createServiceClient(){ return globalThis.__DD.svc() }",
+  // §G THE MODEL SEAM — counted; a provider is never reached. The stub answers with globalThis.__DD.modelObject (default {}).
+  "lib/ai/generate.ts": "export function bookedGenerateObject(){ return async () => { globalThis.__DD.calls.model++; return { object: globalThis.__DD.modelObject ?? {}, usage: {} } } }",
+  "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__DD.calls.model++; return { text: 'stub', usage: {} } }",
+  "lib/ai/resolve-model.ts": "export function resolveModel(x){ return x }",
 }
 /** Replace the module entirely — counted seams; the real module (and whatever it would reach) never loads. */
 const REPLACE: Record<string, string> = {
@@ -218,7 +235,7 @@ registerHooks({
 const load = (p: string) => import(pathToFileURL(join(ROOT, p)).href)
 function as(seat: string | null): MemClient {
   G.__DD.mem = world(); G.__DD.seat = seat; G.__DD.refuseTransactions = false; G.__DD.rls = false; G.__DD.policy = "live"
-  G.__DD.calls = { milestones: [], events: [], lender: [], other: 0 }
+  G.__DD.calls = { milestones: [], events: [], lender: [], other: 0, model: 0 }; G.__DD.modelObject = null
   return G.__DD.mem
 }
 const quiet = async <X,>(fn: () => Promise<X>): Promise<X> => {
@@ -890,10 +907,10 @@ async function sectionF() {
     && /\.update\(updates\)\s*\.eq\("id", params\.titleEscrowId\)\.eq\("transaction_id", params\.transactionId\)\.eq\("brokerage_id", auth\.brokerageId\)\.select\("id"\)/.test(em) && /\(saved \?\? \[\]\)\.length !== 1/.test(em)
     && em.indexOf("...updates") >= 0 && em.indexOf("...updates") < em.indexOf("brokerage_id:   auth.brokerageId"), em.slice(0, 160))
   const coord = stripComments(raw("app/actions/ai-transaction-coordinator.ts")), pd = coord.slice(Math.max(0, coord.indexOf("export async function predictAndManageDeadlines(")), coord.indexOf("\nexport async function ", coord.indexOf("export async function predictAndManageDeadlines(") + 10))
-  const deskAt = pd.indexOf("decideDealDesk("), modelAt = pd.search(/\b(?:bookedGenerateObject|generateText|generateObject)\s*\(/), insertAt = pd.indexOf('.from("transaction_deadlines").insert(')
-  check("predictAndManageDeadlines asks the deal desk BEFORE the model is reached and before any deadline is written, returns its refusal, and inserts on the service client with the deal and the session's tenant",
-    deskAt >= 0 && modelAt > deskAt && insertAt > deskAt && /if\s*\(\s*!\s*desk\.allowed\s*\)\s*return/.test(pd) && pd.indexOf("if (!desk.allowed) return") < modelAt
-    && /await svc\.from\("transaction_deadlines"\)\.insert\(/.test(pd) && /const svc = \(await import\("@\/lib\/supabase\/service"\)\)\.createServiceClient\(\)/.test(pd) && pd.indexOf("const svc = ") > pd.indexOf("if (!desk.allowed) return") && /brokerage_id:\s*scope\.brokerageId/.test(pd), { deskAt, modelAt, insertAt })
+  const scopeAt = pd.indexOf("scopeTransaction("), modelAt = pd.search(/\b(?:bookedGenerateObject|generateText|generateObject)\s*\(/), insertAt = pd.indexOf('.from("transaction_deadlines").insert(')
+  check("predictAndManageDeadlines passes the file's one gate (the deal desk, §G) BEFORE the model is reached and before any deadline is written, returns its refusal, and inserts on a service client opened only after it, with the deal and the session's tenant",
+    scopeAt >= 0 && modelAt > scopeAt && insertAt > scopeAt && /if\s*\(\s*!\s*scope\.ok\s*\)\s*return/.test(pd) && pd.indexOf("if (!scope.ok) return") < modelAt
+    && /await svc\.from\("transaction_deadlines"\)\.insert\(/.test(pd) && /const svc = \(await import\("@\/lib\/supabase\/service"\)\)\.createServiceClient\(\)/.test(pd) && pd.indexOf("const svc = ") > pd.indexOf("if (!scope.ok) return") && /brokerage_id:\s*scope\.brokerageId/.test(pd), { scopeAt, modelAt, insertAt })
   const closing = stripComments(raw("app/actions/ai-closing-workflow.ts")), vm = stripComments(raw("app/actions/vendor-marketplace.ts"))
   check("the AI closing analysis and the vendor booking write no timeline row themselves any more — both hand the line to the ONE timeline writer, which asks the deal desk for that deal",
     !/\.from\(\s*"transaction_timeline"\s*\)/.test(closing) && /\baddTimelineEntry\s*\(/.test(closing) && !/\.from\(\s*"transaction_timeline"\s*\)/.test(vm) && /\baddTimelineEntry\s*\(/.test(vm))
@@ -945,6 +962,125 @@ async function sectionF() {
   }
 }
 
+// ═══ §G — the AI deal doors ════════════════════════════════════════════════════════════════════════════════════════════
+const COORD = "app/actions/ai-transaction-coordinator.ts", CLOSING = "app/actions/ai-closing-workflow.ts"
+const MODEL_CALL = /\b(?:generateObject|generateText)\s*\(/
+/** A door that scans a BOOK, not one deal — named, with the rule it is held to instead (not an exemption). */
+const BOOK_DOORS: Record<string, string> = { monitorTransactionRisks: "it scans an agent's in-escrow book: the desk is asked per deal, only the deals it admits reach the model, and the write-back is pinned to them" }
+/** PURE — problems with one AI deal door's comment-stripped source (empty = the rule holds). */
+function aiDoorProblems(name: string, body: string): string[] {
+  const out: string[] = []
+  const modelAt = body.search(MODEL_CALL), writeAt = body.search(/\.(?:insert|update|upsert|delete)\s*\(/)
+  const firstEffect = Math.min(...[modelAt, writeAt].filter((i) => i >= 0), Infinity)
+  const scopeAt = body.search(/\bscopeTransaction\s*\(/), deskAt = body.search(/\bdecideDealDesk\s*\(/)
+  if (BOOK_DOORS[name]) {
+    if (deskAt < 0 || deskAt > firstEffect) out.push("does not ask the deal desk before the model / a write")
+    if (!/\(await decideDealDesk\([\s\S]*?\)\)\.allowed\)\s*transactions\.push\(/.test(body)) out.push("the list the model sees is not the desk-admitted one")
+    const emptyAt = body.search(/if\s*\(\s*transactions\.length\s*===\s*0\s*\)\s*return/)
+    if (emptyAt < 0 || (modelAt >= 0 && emptyAt > modelAt)) out.push("an empty admitted set does not return before the model")
+    if (writeAt >= 0 && !/\.in\(\s*"id"\s*,\s*transactions\.map\(/.test(body)) out.push("the write-back is not pinned to the admitted deals")
+    return out
+  }
+  const gateAt = scopeAt >= 0 ? scopeAt : deskAt
+  if (gateAt < 0) return ["does not reach the deal desk (neither the file's gate nor decideDealDesk)"]
+  if (gateAt > firstEffect) out.push("reaches a model or writes BEFORE the desk")
+  const refAt = body.search(scopeAt >= 0 ? /if\s*\(\s*!\s*scope\.ok\s*\)\s*return/ : /if\s*\(\s*!\s*desk\.allowed\s*\)\s*return/)
+  if (refAt < 0) out.push("the desk's refusal is not returned")
+  else if (refAt > firstEffect) out.push("the refusal is returned only AFTER a model call or a write")
+  return out
+}
+/** How each derived door is called, and what the stubbed model's answer lets it do. `reach` = a desk seat is shown reaching the model seam. */
+const AI_DOORS: Record<string, { file: string; call: (m: any) => Promise<any>; reach: boolean }> = {
+  analyzeTransactionHealth: { file: COORD, call: (m) => m.analyzeTransactionHealth({ transactionId: TX1 }), reach: true },
+  predictAndManageDeadlines: { file: COORD, call: (m) => m.predictAndManageDeadlines({ transactionId: TX1 }), reach: true },
+  generateSmartTasks: { file: COORD, call: (m) => m.generateSmartTasks({ transactionId: TX1 }), reach: true },
+  draftTransactionCommunication: { file: COORD, call: (m) => m.draftTransactionCommunication({ transactionId: TX1, recipientRole: "buyer", communicationType: "update" }), reach: true },
+  listTransactionCommunications: { file: COORD, call: (m) => m.listTransactionCommunications(TX1), reach: false },
+  sendTransactionCommunication: { file: COORD, call: (m) => m.sendTransactionCommunication({ transactionId: TX1, communicationId: u("7", 1), finalContent: "hello" }), reach: false },
+  generatePostClosingPlan: { file: COORD, call: (m) => m.generatePostClosingPlan({ transactionId: TX1 }), reach: true },
+  monitorTransactionRisks: { file: COORD, call: (m) => m.monitorTransactionRisks(AG_A), reach: true },
+  aiGenerateClosingChecklist: { file: CLOSING, call: (m) => m.aiGenerateClosingChecklist({ transactionId: TX1, agentId: AG_A, brokerageId: B1 }), reach: true },
+  aiTrackClosingMilestones: { file: CLOSING, call: (m) => m.aiTrackClosingMilestones({ transactionId: TX1 }), reach: true },
+}
+/** Exports of the two files that are NOT AI deal doors — derived, and each named with why it was left. */
+const LEFT_AS_IS: Record<string, string> = {
+  getClosingChecklist: "a READ on the caller's row-security client — no model, no write",
+  getClosingPrepSummary: "a READ on the caller's row-security client — no model, no write",
+  completeChecklistItem: "a checklist tick on the write seam's client — no model is reached; row security decides the seat",
+}
+
+async function sectionG() {
+  section("§G · the AI deal doors — the deal desk before any model call or write")
+  const srcs: Record<string, string> = { [COORD]: stripComments(raw(COORD)), [CLOSING]: stripComments(raw(CLOSING)) }
+  const isDoor = (file: string, n: string) => { const b = fnWhole(srcs[file], n); return MODEL_CALL.test(b) || /\bscopeTransaction\s*\(/.test(b) }
+  const derived = Object.keys(srcs).flatMap((f) => exportedActions(srcs[f]).filter((n) => isDoor(f, n)).map((n) => [f, n] as const))
+  const left = Object.keys(srcs).flatMap((f) => exportedActions(srcs[f]).filter((n) => !isDoor(f, n)))
+  const undriven = derived.filter(([, n]) => !AI_DOORS[n]).map(([, n]) => n), stale = Object.keys(AI_DOORS).filter((n) => !derived.some(([f, d]) => d === n && f === AI_DOORS[n].file))
+  check(`the AI deal doors are derived, not listed: ${derived.length} exported actions of the two files reach a model or the shared gate, and every one is driven below`, derived.length > 0 && undriven.length === 0 && stale.length === 0, { derived: derived.map(([, n]) => n), undriven, stale })
+  check(`…and the ${left.length} exports that are NOT doors are each named with the reason they were left (none reaches a model)`, left.length > 0 && left.every((n) => !!LEFT_AS_IS[n]) && Object.keys(LEFT_AS_IS).every((n) => left.includes(n)), { left, named: Object.keys(LEFT_AS_IS) })
+  console.log(`    (published) left as is: ${left.map((n) => `${n} — ${LEFT_AS_IS[n] ?? "UNNAMED"}`).join(" · ")}`)
+  for (const [f, n] of derived) {
+    const p = aiDoorProblems(n, fnWhole(srcs[f], n))
+    check(`${n}: ${BOOK_DOORS[n] ? `the book rule — ${BOOK_DOORS[n]}` : "reaches the deal desk and returns its refusal before the first model call and before any write"}`, p.length === 0, p)
+  }
+  const st = fnWhole(srcs[COORD], "scopeTransaction")
+  check("scopeTransaction (the coordinator file's ONE gate) is not exported, asks decideDealDesk with the SESSION's seat and tenant, returns its refusal, and no longer reads the deal on the caller's client",
+    st.length > 0 && !/^export\s+async\s+function\s+scopeTransaction\b/m.test(srcs[COORD]) && /decideDealDesk\(\s*\{[^}]*role:\s*ctx\.userType[^}]*brokerageId:\s*ctx\.brokerageId/.test(st)
+    && /if\s*\(\s*!\s*desk\.allowed\s*\)\s*return\s*\{\s*ok:\s*false/.test(st) && st.indexOf("decideDealDesk(") < st.lastIndexOf("ok: true") && !/\.from\s*\(/.test(st) && !/\bcreateClient\s*\(/.test(st), st.slice(0, 200))
+  const good = `export async function planted(params: P) {\n  const scope = await scopeTransaction(params.transactionId)\n  if (!scope.ok) return { success: false, error: scope.error }\n  const { object } = await generateObject({ prompt: "x" })\n  await supabase.from("transaction_tasks").insert({ a: 1 })\n  return { success: true }\n}\n`
+  const direct = good.replace("const scope = await scopeTransaction(params.transactionId)", "const desk = await decideDealDesk({ transactionId: params.transactionId })").replace("if (!scope.ok) return { success: false, error: scope.error }", "if (!desk.allowed) return { success: false, error: desk.reason }")
+  const book = `export async function monitorTransactionRisks(agentId: string) {\n  const transactions: any[] = []; for (const t of readable ?? []) if ((await decideDealDesk({ transactionId: t.id })).allowed) transactions.push(t)\n  if (transactions.length === 0) return { success: true }\n  const { object } = await generateObject({ prompt: "x" })\n  await supabase.from("transactions").update({ a: 1 }).eq("id", r.id).in("id", transactions.map((t) => t.id))\n}\n`
+  check("§G CONTROLS — a well-formed door passes through the file's gate and through the desk directly; no gate, a model call before the gate, a write before it, an unreturned refusal and a refusal returned only after the model are each caught; the book rule catches an unfiltered list, a model call on an empty set and an unpinned write-back; a gate named only in a comment is not a gate",
+    aiDoorProblems("planted", good).length === 0 && aiDoorProblems("planted", direct).length === 0 && aiDoorProblems("monitorTransactionRisks", book).length === 0
+    && aiDoorProblems("planted", good.replace(/  const scope[^\n]*\n[^\n]*\n/, "")).some((p) => /does not reach/.test(p))
+    && aiDoorProblems("planted", good.replace("  const scope", `  const { object: early } = await generateObject({ prompt: "x" })\n  const scope`)).some((p) => /BEFORE the desk/.test(p))
+    && aiDoorProblems("planted", good.replace("  const scope", `  await supabase.from("t").delete()\n  const scope`)).some((p) => /BEFORE the desk/.test(p))
+    && aiDoorProblems("planted", good.replace(/  if \(!scope\.ok\)[^\n]*\n/, "")).some((p) => /not returned/.test(p))
+    && aiDoorProblems("planted", good.replace(/  if \(!scope\.ok\)[^\n]*\n/, "").replace("  return { success: true }", "  if (!scope.ok) return { success: false }\n  return { success: true }")).some((p) => /only AFTER/.test(p))
+    && aiDoorProblems("monitorTransactionRisks", book.replace(/if \(\(await decideDealDesk\([^\n]*\)\)\.allowed\) /, "")).some((p) => /not the desk-admitted/.test(p))
+    && aiDoorProblems("monitorTransactionRisks", book.replace(/  if \(transactions\.length === 0\)[^\n]*\n/, "")).some((p) => /empty admitted set/.test(p))
+    && aiDoorProblems("monitorTransactionRisks", book.replace('.in("id", transactions.map((t) => t.id))', "")).some((p) => /not pinned/.test(p))
+    && aiDoorProblems("planted", stripComments(good.replace(/  const scope[^\n]*\n[^\n]*\n/, "  // const scope = await scopeTransaction(params.transactionId)\n"))).some((p) => /does not reach/.test(p)))
+
+  // ── DRIVEN: the model seam is a counted stub — a provider is never reached ──
+  const mods: Record<string, any> = {}
+  for (const f of Object.keys(srcs)) { try { mods[f] = await quiet(() => load(f)) } catch (e) { check(`${f} loads in the harness`, false, (e as Error)?.message?.slice(0, 300)) } }
+  const receiptOnly = (m: MemClient) => m.writes.filter((w) => w.table !== "agent_action_ledger")
+  for (const [door, d] of Object.entries(AI_DOORS)) {
+    const mod = mods[d.file]
+    if (!mod || typeof mod[door] !== "function") { check(`${door} exists on ${d.file}`, false); continue }
+    const spent: string[] = []
+    for (const [seat, label] of OFF_DESK_SEATS) {
+      const m = as(seat)
+      const x = await drive(() => d.call(mod))
+      const answeredNo = BOOK_DOORS[door] ? (refused(x) || ((x.r as any)?.success === true && !(x.r as any)?.riskAnalysis)) : refused(x)
+      if (G.__DD.calls.model !== 0 || receiptOnly(m).length !== 0 || !answeredNo) spent.push(`${label}: model=${G.__DD.calls.model} writes=${receiptOnly(m).map((w) => `${w.op} ${w.table}`).join(",") || 0} answered ${JSON.stringify(x.r ?? x.threw)?.slice(0, 110)}`)
+    }
+    check(`NEG ${door}: each of the ${OFF_DESK_SEATS.length} seats the desk refuses reaches NO model and writes nothing (a vendor assigned to the deal included)`, spent.length === 0, spent)
+    if (!d.reach) continue
+    const stopped: string[] = []
+    for (const [seat, label] of DESK_SEATS) {
+      as(seat)
+      const x = await drive(() => d.call(mod))
+      if (G.__DD.calls.model < 1) stopped.push(`${label}: ${JSON.stringify(x.r ?? x.threw)?.slice(0, 140)}`)
+    }
+    check(`${door}: each of the ${DESK_SEATS.length} seats the desk admits passes the gate — the model seam is reached (counted, never a provider)`, stopped.length === 0, stopped)
+  }
+  // The outbound send and the read: a desk seat is not refused BY THE GATE (the send itself is never performed here).
+  if (mods[COORD]) {
+    const m = as(U_TC)
+    const listed = await drive(() => mods[COORD].listTransactionCommunications(TX1))
+    check("listTransactionCommunications: a desk seat (the coordinator) passes the gate and reads; nothing is written", (listed.r as any)?.success !== false && receiptOnly(m).length === 0, listed.r ?? listed.threw)
+    // The book: a deal id that comes back FROM THE MODEL lands only on a deal the desk admitted.
+    const m2 = as(U_BROKER)
+    G.__DD.modelObject = { overallRiskLevel: "high", transactionRisks: [{ transactionId: TX1, riskLevel: "high", primaryRisk: "appraisal gap" }, { transactionId: TX_X, riskLevel: "critical", primaryRisk: "PLANTED" }], immediateActions: [], weeklyFocus: [] }
+    const scan = await drive(() => mods[COORD].monitorTransactionRisks(AG_A))
+    const own = T(m2, "transactions").find((r) => r.id === TX1), other = T(m2, "transactions").find((r) => r.id === TX_X)
+    check("monitorTransactionRisks: the risk the model names lands on the admitted deal; a deal id the model INVENTS (another tenant's) is not written and is not counted as applied",
+      (scan.r as any)?.success === true && own?.ai_risk_level === "high" && other?.ai_risk_level === undefined && (scan.r as any)?.appliedCount === 1 && G.__DD.calls.model === 1, { r: { success: (scan.r as any)?.success, appliedCount: (scan.r as any)?.appliedCount, scannedCount: (scan.r as any)?.scannedCount }, own: own?.ai_risk_level, other: other?.ai_risk_level, threw: scan.threw })
+  }
+}
+
 // ═══ §D ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
 function sectionD() {
   section("§D · registration")
@@ -960,10 +1096,11 @@ async function main() {
   sectionC()
   await sectionE()
   await sectionF()
+  await sectionG()
   if (ROOT === WT) sectionD()
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   if (failed) { console.log(`❌ DEAL_DESK_FAIL — ${fails.slice(0, 12).join(" | ")}`); process.exit(1) }
-  console.log("✅ DEAL_DESK_PASS — one decision says who may work a deal; every milestone door and every deal-detail edit asks it; every seat it admits saves the edit, a seat that does not work the deal writes nothing, and no write on the five deal tables rides a session client")
+  console.log("✅ DEAL_DESK_PASS — one decision says who may work a deal; every milestone door and every deal-detail edit asks it; every seat it admits saves the edit, a seat that does not work the deal writes nothing, no write on the five deal tables rides a session client, and no AI deal door reaches a model before the desk")
   process.exit(0)
 }
 main().catch((e) => { console.error(e); process.exit(1) })

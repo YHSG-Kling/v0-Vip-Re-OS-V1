@@ -99,22 +99,22 @@ async function scopeTransaction(transactionId: string): Promise<CoordinatorScope
   if (!isValidUUID(transactionId)) return { ok: false, error: "Invalid transaction ID" }
 
   const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) return { ok: false, error: "Unauthorized" }
 
-  const supabase = await createClient()
-  // Destructure `error` — a REFUSED read here used to look like "transaction
-  // not found" and, worse, a clean gate.
-  const { data: txn, error } = await supabase
-    .from("transactions")
-    .select("id, brokerage_id")
-    .eq("id", transactionId)
-    .maybeSingle()
-
-  if (error) return { ok: false, error: `Could not verify the transaction: ${error.message}` }
-  if (!txn) return { ok: false, error: "Transaction not found" }
-  if (txn.brokerage_id !== ctx.brokerageId) {
-    return { ok: false, error: "Forbidden: transaction not in your brokerage" }
-  }
+  // THE DEAL DESK (lib/transactions/role-guard.ts decideDealDesk) — the ONE "who may WORK this deal" decision, asked with the
+  // session's seat and tenant. It reads the deal on the service client IN that tenant and fails closed on a refused read.
+  //
+  // WHAT THIS WAS: a read of the deal on the caller's row-security client plus a tenant comparison — "whoever can READ the
+  // deal". public.transactions' SELECT policies admit a vendor seat assigned to the deal (CLAUDE.md §4), so a lender / title /
+  // inspector seat passed this gate and every door below spent a model call on the deal (two of them also write or send).
+  // A paid call a seat may not make is a wrong invoice (§5: ai_tool_usage is the cost ledger).
+  //
+  // Every door of this file that names ONE deal calls this before a model is reached and before anything is written. The
+  // roster is the desk's; this file carries none. (monitorTransactionRisks scans a BOOK: it asks the same desk per deal.)
+  const { decideDealDesk } = await import("@/lib/transactions/role-guard")
+  const desk = await decideDealDesk({ userId: ctx.userId, role: ctx.userType ?? "", brokerageId: ctx.brokerageId, transactionId })
+  if (!desk.allowed) return { ok: false, error: desk.reason }
+  // Fail closed all the way down: a seat with no type, a deal of another tenant and an unreadable deal are each a refusal above.
 
   return { ok: true, userId: ctx.userId, agentId: ctx.agentId, brokerageId: ctx.brokerageId, userType: ctx.userType }
 }
@@ -321,9 +321,9 @@ export async function predictAndManageDeadlines(params: {
     if (!scope.ok) return { success: false, error: scope.error }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
     return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "transaction.deadlines.predict", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
-    const desk = await (await import("@/lib/transactions/role-guard")).decideDealDesk({ userId: scope.userId ?? "", role: scope.userType ?? "", brokerageId: scope.brokerageId ?? "", transactionId: params.transactionId })
-    if (!desk.allowed) return { success: false, error: desk.reason } // THE DEAL DESK, before the model is reached and before any deadline is written
-    const supabase = await createClient(); const svc = (await import("@/lib/supabase/service")).createServiceClient() // supabase READS as the caller; svc WRITES the deadlines, after the desk
+    // The deal desk has decided (scopeTransaction above): the model is reached, and deadlines are written, only for a seat that works this deal.
+    const supabase = await createClient() // READS the deal as the caller
+    const svc = (await import("@/lib/supabase/service")).createServiceClient() // WRITES the deadlines — after the desk (CLAUDE.md §4)
     const { data: transaction, error: txnError } = await supabase
       .from("transactions")
       .select(`
@@ -954,7 +954,7 @@ export async function monitorTransactionRisks(agentId: string) {
     const supabase = await createClient()
 
     // Get all active transactions
-    const { data: transactions } = await supabase
+    const { data: readable } = await supabase
       .from("transactions")
       .select(`
         *,
@@ -964,9 +964,9 @@ export async function monitorTransactionRisks(agentId: string) {
       .eq("agent_id", agentId)
       .in("status", [...TRANSACTION_STATUSES_IN_ESCROW])
 
-    if (!transactions || transactions.length === 0) {
-      return { success: true, risks: [], summary: "No active transactions" }
-    }
+    const { decideDealDesk } = await import("@/lib/transactions/role-guard") // THE DEAL DESK, per deal: only deals this seat WORKS reach the model
+    const transactions: any[] = []; for (const t of readable ?? []) if ((await decideDealDesk({ userId: ctx.userId ?? "", role: ctx.userType ?? "", brokerageId: ctx.brokerageId ?? "", transactionId: t.id })).allowed) transactions.push(t)
+    if (transactions.length === 0) return { success: true, risks: [], summary: "No active transactions" }
 
     const { object: riskAnalysis } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
@@ -1012,17 +1012,17 @@ Identify:
     // the panel would show risk the deals themselves never recorded.
     let appliedCount = 0
     for (const risk of riskAnalysis.transactionRisks) {
-      const { error: applyError } = await supabase
+      const { data: applied, error: applyError } = await supabase
         .from("transactions")
         .update({
           ai_risk_level: risk.riskLevel,
           ai_primary_risk: risk.primaryRisk,
         })
-        .eq("id", risk.transactionId)
-      if (applyError) {
+        .eq("id", risk.transactionId).in("id", transactions.map((t: any) => t.id)).select("id") // the id is MODEL output: it lands only on a deal the desk admitted
+      if (applyError || (applied ?? []).length !== 1) { // COUNTED: an update that matches nothing also resolves (CLAUDE.md §3)
         console.error(
           `[transaction-coordinator] risk not written to ${risk.transactionId}:`,
-          applyError.message,
+          applyError?.message ?? "no row matched (not a deal this seat works)",
         )
         continue
       }

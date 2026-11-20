@@ -41,9 +41,9 @@ export async function aiGenerateClosingChecklist(params: {
   // brokerageId naming another tenant is refused (decideClaimedTenant inside resolveWriteContextForTenant); the deal must be
   // the session tenant's BEFORE a token is spent. `params.agentId` is validated for shape and no longer trusted for anything.
   const ctx = await resolveWriteContextForTenant(params.brokerageId)
-  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) {
-    return { success: false, error: "Unauthorized" }
-  }
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) return { success: false, error: "Unauthorized" }
+  const desk = await (await import("@/lib/transactions/role-guard")).decideDealDesk({ userId: ctx.userId, role: ctx.userType ?? "", brokerageId: ctx.brokerageId, transactionId: params.transactionId })
+  if (!desk.allowed) return { success: false, error: desk.reason } // THE DEAL DESK — before the receipt is claimed, a token is spent or a row is written
   const sessionBrokerageId = ctx.brokerageId
   const supabase = ctx.db
   return ledgered({ userId: ctx.actorUserId, brokerageId: sessionBrokerageId, agentId: ctx.agentId }, { action: "transaction.closing_checklist.generate", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
@@ -362,9 +362,9 @@ export async function aiTrackClosingMilestones(params: {
   }
 
   const ctx = await resolveWriteContextForTenant()
-  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) {
-    return { success: false, error: "Unauthorized" }
-  }
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) return { success: false, error: "Unauthorized" }
+  const desk = await (await import("@/lib/transactions/role-guard")).decideDealDesk({ userId: ctx.userId, role: ctx.userType ?? "", brokerageId: ctx.brokerageId, transactionId: params.transactionId })
+  if (!desk.allowed) return { success: false, error: desk.reason } // THE DEAL DESK — who may WORK this deal; it was "whoever can read it", a vendor seat included
   const brokerageId = ctx.brokerageId
   const actorUserId = ctx.userId
   return ledgered({ userId: ctx.actorUserId, brokerageId, agentId: ctx.agentId }, { action: "transaction.closing_milestones.track", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
