@@ -516,3 +516,136 @@ async function runHandler(
     }
   }
 }
+
+// ─── WAVE 155 (lane 155G) — THE SERVICE-ACTOR MEDIA JOB: an APPROVED topic master becomes a real video ─────────────────────
+//
+// MEASURED AT BASE d2d6468c (wave 154 §14): a topic's master post (lib/repurpose/refurbish-run.ts) is filed for the TEXT
+// platforms only; Instagram / TikTok / YouTube were recorded `media_partial` ("no media producer for a text master") and nothing
+// ever read that list. The producers existed — the Director rail (lib/video/video-director.ts commissionVideo: service client,
+// tenant-scoped, compliance-gated hook, metered, idempotent per director_key, pending_review) and the completion distributor
+// (lib/repurpose/distribute.ts, fired by video.generated) — but no scheduled worker connected an approved master to them.
+//
+// NOW the publish-social-posts cron runs this job each tick (bounded). For each APPROVED topic master (a PERSON approved it —
+// approved_by is required; the service never self-approves) that still carries media_partial and no media_job:
+//   1. the topic is still fresh (expired = closed, never produced late) and the creator owner (user_id + agent_id) is on record;
+//   2. each wanted platform passes THE variant contract (lib/video/media-variant-contract.ts) against the sender's connected
+//      account — permission refused / not connected / no video route → that platform is refused by name; none left = held, no spend;
+//   3. the situation chooser (lib/video/situation-artifact-choice.ts, kind lead_magnet_topic) confirms a reel is warranted;
+//   4. commissionVideo stages ONE educational reel (the avatar-led explainer, square — vertical feeds take it; with no recorded
+//      avatar the D-ID leg parks at awaiting_presenter_setup, blocked on a person, never faked) under the CREATOR OWNER's seat,
+//      with the approved master as the spoken script, `autonomous: true` (the meter records a service commission), and
+//      video_metadata.media_job naming who OWNS it (creator) apart from who EXECUTED it (service actor: asset_manager, this job);
+//      video_metadata.repurpose hands the admitted variants to the completion distributor;
+//   5. the master's post_brief.media_job is stamped (one commission per master — a replay stages nothing twice) and one ledger
+//      row records the decision (recordNonAction — marketing.decision.send_touch / do_nothing).
+// What it never does: impersonate a user, read a session cookie, publish, or present a script as a video — the render, the
+// verified-playable check, each variant's own approval and the publish cron's egress check all still stand between this and air.
+
+type MediaJobDb = { from: (t: string) => any }
+type MediaCommission = { ok: boolean; status: string; videoProjectId?: string; reason?: string }
+
+export interface TopicMediaJobDeps {
+  /** @proofSeam scripts/artifact-production-guard.ts — production: commissionVideo (lib/video/video-director.ts), the ONE Director rail. */
+  commission?: (svc: MediaJobDb, situation: Record<string, unknown>, opts: Record<string, unknown>) => Promise<MediaCommission>
+  /** @proofSeam scripts/artifact-production-guard.ts — production: recordNonAction (lib/kernel/action-ledger.ts). */
+  record?: (svc: MediaJobDb, row: Record<string, unknown>) => Promise<{ recorded: boolean; error?: string }>
+  /** @proofSeam scripts/artifact-production-guard.ts — production: detectFairHousingRedFlags + escalateScriptToHumanReview
+   *  (lib/video/script-compliance.ts) on the text the reel will SPEAK. A hard flag escalates to a person; nothing renders. */
+  screen?: (svc: MediaJobDb, a: { text: string; userId: string; brokerageId: string; title: string }) => Promise<{ hard: string[]; escalated: boolean; error?: string }>
+  now?: () => Date
+}
+
+async function prodScreenSpokenText(svc: MediaJobDb, a: { text: string; userId: string; brokerageId: string; title: string }): Promise<{ hard: string[]; escalated: boolean; error?: string }> {
+  const { detectFairHousingRedFlags, escalateScriptToHumanReview } = await import("@/lib/video/script-compliance")
+  const hard = detectFairHousingRedFlags(a.text, "buyer")
+  if (!hard.length) return { hard, escalated: false }
+  const r = await escalateScriptToHumanReview({ actor: { userId: a.userId, brokerageId: a.brokerageId }, script: a.text, videoType: "education", title: a.title, redFlags: hard, client: svc as never })
+  return { hard, escalated: r.ok === true, error: r.ok ? undefined : (r as { error?: string }).error }
+}
+
+export interface TopicMediaJobResult {
+  scanned: number
+  commissioned: number
+  alreadyStaged: number
+  held: Array<{ postId: string; reason: string }>
+  errors: string[]
+}
+
+/** `scope` is REQUIRED (lib/kernel/tenant-scope.ts): one tenant, or every tenant with the reason written at the call site — a
+ *  missing tenant never decays into "every tenant". Each master's own brokerage_id pins every read and write after the sweep. */
+export async function runApprovedTopicMediaJobs(svc: MediaJobDb, opts: { scope: import("@/lib/kernel/tenant-scope").TenantScope; max?: number }, deps: TopicMediaJobDeps = {}): Promise<TopicMediaJobResult> {
+  const now = (deps.now ?? (() => new Date()))()
+  const out: TopicMediaJobResult = { scanned: 0, commissioned: 0, alreadyStaged: 0, held: [], errors: [] }
+  const record = deps.record ?? (async (s: MediaJobDb, r: Record<string, unknown>) => (await import("@/lib/kernel/action-ledger")).recordNonAction(r as never, { client: s as never }))
+  const commission = deps.commission ?? (async (s: MediaJobDb, situation: Record<string, unknown>, o: Record<string, unknown>): Promise<MediaCommission> => (await import("@/lib/video/video-director")).commissionVideo(situation as never, o as never, s as never))
+  const { applyTenantScope } = await import("@/lib/kernel/tenant-scope")
+  const q = applyTenantScope(svc.from("social_posts")
+    .select("id, brokerage_id, agent_id, user_id, content, post_brief, approved_by, approved_at")
+    .eq("approval_status", "approved").eq("ai_generated", true).not("approved_by", "is", null)
+    .eq("post_brief->>source", "topic_refurbish").eq("post_brief->>role", "master").is("post_brief->media_job", null)
+    .gte("created_at", new Date(now.getTime() - 30 * 86_400_000).toISOString()), opts.scope)
+  const { data, error } = await q.order("approved_at", { ascending: false }).limit(25)
+  if (error) { out.errors.push(`approved masters unreadable: ${error.message}`); return out }
+  type Master = { id: string; brokerage_id: string; agent_id: string | null; user_id: string | null; content: string | null; post_brief: Record<string, any> | null; approved_by: string | null; approved_at: string | null }
+  const masters = ((data ?? []) as Master[]).filter((m) => !!m.approved_by && Array.isArray(m.post_brief?.media_partial) && m.post_brief!.media_partial.length > 0 && !m.post_brief!.media_job)
+  const { decidePlatformVariant } = await import("@/lib/video/media-variant-contract")
+  const { chooseSituationArtifact } = await import("@/lib/video/situation-artifact-choice")
+  const max = Math.max(0, opts.max ?? 3)
+  for (const m of masters) {
+    if (out.commissioned + out.alreadyStaged >= max) break
+    out.scanned++
+    const pb = m.post_brief ?? {}
+    const topicId = String(pb.topic_id ?? "")
+    const day = now.toISOString().slice(0, 10)
+    const ledger = async (started: boolean, reason: string, detail: Record<string, unknown>) => {
+      const r = await record(svc, { brokerageId: m.brokerage_id, domain: "marketing", decision: started ? "send_touch" : "do_nothing", actor: { type: "manager", managerKey: "asset_manager" }, subject: { type: "social_posts", id: m.id, ref: topicId ? `content_topic:${topicId}` : null }, reasonCode: "NURTURE_TOUCH", reasonDetail: reason.slice(0, 500), cycle: started ? `topic_media:post:${m.id}` : `topic_media:post:${m.id}:held:${day}`, systemSource: "topic_media_job", policyKey: "refurbish_trigger", detail: { media_job: detail } }).catch((e: unknown) => ({ recorded: false, error: e instanceof Error ? e.message : String(e) }))
+      if (!r.recorded) out.errors.push(`${m.id}: decision NOT ledgered (${r.error ?? "refused"})`)
+    }
+    const hold = async (reason: string, detail: Record<string, unknown> = {}) => { out.held.push({ postId: m.id, reason }); await ledger(false, reason, { outcome: "held", ...detail }) }
+    if (!pb.topic_expires_at || !(Date.parse(String(pb.topic_expires_at)) > now.getTime())) { await hold("the topic's freshness window ended — closed, never produced late"); continue }
+    if (!m.user_id || !m.agent_id) { await hold("the master names no creator owner (user + agent) — nothing is produced under nobody's seat"); continue }
+    const wanted = [...new Set((pb.media_partial as unknown[]).map((p) => String(p).toLowerCase()))]
+    const { data: accts, error: aErr } = await svc.from("social_media_accounts").select("platform, is_active, scope").eq("brokerage_id", m.brokerage_id).eq("agent_id", m.agent_id).in("platform", wanted)
+    if (aErr) { await hold(`the sender's connected accounts could not be read (${aErr.message}) — nothing produced`); continue }
+    const byPlatform = new Map<string, { isActive: boolean; scope: string | null }>()
+    for (const a of (accts ?? []) as Array<{ platform: string; is_active: boolean | null; scope: string | null }>) {
+      const prev = byPlatform.get(a.platform)
+      if (!prev || (!prev.isActive && a.is_active)) byPlatform.set(a.platform, { isActive: a.is_active === true, scope: a.scope ?? null })
+    }
+    // PLANNED media: the explainer's square cut (AgentExplainerReel, 1:1 — vertical feeds take it). distribute.ts re-runs the
+    // contract on the REAL render (its recorded format and duration, verified playable) before any draft exists.
+    const verdicts = wanted.map((platform) => decidePlatformVariant({ platform, account: byPlatform.get(platform) ?? null, media: { kind: "video", playable: true, aspect: "1:1", durationSeconds: null } }))
+    const admitted = verdicts.flatMap((v) => (v.ok ? [v] : []))
+    const refused = verdicts.flatMap((v) => (v.ok ? [] : [{ platform: v.platform, reason: v.reason }]))
+    if (!admitted.length) { await hold(`no platform may carry a video for this sender: ${refused.map((r) => `${r.platform} — ${r.reason}`).join("; ")}`, { refused_variants: refused }); continue }
+    const approvedText = String(m.content ?? "").trim()
+    const choice = chooseSituationArtifact({ kind: "lead_magnet_topic", sourceFacts: approvedText ? [{ fact: approvedText.slice(0, 280), source: `social_posts:${m.id} (approved master)`, asOf: m.approved_at }] : [], recipient: { type: "audience", videoOptOut: false, playableVia: ["social"], writtenVia: ["social"] }, producer: { avatarReady: null, renderReady: true }, agentAssigned: true })
+    if (choice.chosen !== "educational_video") { await hold(`no reel is warranted: ${choice.why}`, { choice: choice.chosen, refused_variants: refused }); continue }
+    // FAIR HOUSING ON WHAT THE REEL WILL SAY (CLAUDE.md §5; eval BIAS-003): a hard flag escalates to a person and nothing renders;
+    // advisory findings pass through to the Director's own compliance-first hook gate. A screen that cannot run holds (fail closed).
+    const title = `Topic reel — ${approvedText.slice(0, 60) || topicId}`
+    const fh = await (deps.screen ?? prodScreenSpokenText)(svc, { text: approvedText, userId: m.user_id, brokerageId: m.brokerage_id, title }).catch((e: unknown) => ({ hard: [] as string[], escalated: false, error: `screen threw: ${e instanceof Error ? e.message : String(e)}` }))
+    if (fh.error && !fh.hard.length) { await hold(`the fair-housing screen could not run (${fh.error}) — nothing rendered unscreened`, { outcome: "screen_unavailable" }); continue }
+    if (fh.hard.length) { await hold(`hard fair-housing flag — ${fh.escalated ? "escalated to a person for review" : `escalation NOT filed (${fh.error ?? "refused"})`}; nothing rendered: ${fh.hard.slice(0, 3).join("; ")}`, { outcome: "escalated_fair_housing", red_flags: fh.hard, escalated: fh.escalated }); continue }
+    const mediaJob = {
+      master_post_id: m.id, topic_id: topicId || null,
+      creator_owner: { user_id: m.user_id, agent_id: m.agent_id }, approved_by: m.approved_by, approved_at: m.approved_at,
+      executed_by: { type: "service", manager: "asset_manager", job: "topic_media", worker: "cron:publish-social-posts" },
+      planned_variants: admitted.map((v) => ({ platform: v.platform, route: v.route, format: v.format, permission: v.permission })), refused_variants: refused,
+      source_facts: [{ source: `social_posts:${m.id} (approved master)`, as_of: m.approved_at }],
+      usage_rights: String(pb.rights ?? "unstated"), privacy: "public_marketing", decision: choice.why, artifacts: choice.artifacts,
+    }
+    const c: MediaCommission = await commission(svc,
+      { kind: "explainer", tier: "solo_agent", targetChannel: "tiktok", facts: { topic_id: topicId || null, approved_text: approvedText.slice(0, 600) } },
+      { brokerageId: m.brokerage_id, agentUserId: m.user_id, idempotencyDiscriminator: `topic_media:${m.id}`, autonomous: true, spokenScript: approvedText || null, title, meterFeature: "topic_media_job",
+        extraMetadata: { media_job: mediaJob, repurpose: { channels: admitted.map((v) => v.format), distribute_as_draft: true, rights_basis: pb.rights ?? null } } },
+    ).catch((e: unknown): MediaCommission => ({ ok: false, status: "failed", reason: e instanceof Error ? e.message : String(e) }))
+    if (!c.ok || !c.videoProjectId) { await hold(`the reel was not staged (${c.status}: ${c.reason ?? "no project"}) — nothing claimed as produced`, { commission_status: c.status, refused_variants: refused }); continue }
+    const stamp = { video_project_id: c.videoProjectId, status: c.status, at: now.toISOString(), executed_by: mediaJob.executed_by }
+    const { data: upd, error: sErr } = await svc.from("social_posts").update({ post_brief: { ...pb, media_job: stamp }, updated_at: now.toISOString() }).eq("id", m.id).eq("brokerage_id", m.brokerage_id).select("id")
+    if (sErr || !Array.isArray(upd) || upd.length === 0) out.errors.push(`${m.id}: reel ${c.videoProjectId} staged but the master was NOT stamped (${sErr?.message ?? "matched no row"}) — the director_key keeps a replay from staging twice`)
+    if (c.status === "already_staged") out.alreadyStaged++; else out.commissioned++
+    await ledger(true, `an educational reel of the approved master is ${c.status === "already_staged" ? "already staged" : "staged"} (${c.videoProjectId}) for ${admitted.map((v) => `${v.platform}:${v.route}`).join(", ")}${refused.length ? `; refused ${refused.map((r) => r.platform).join(", ")}` : ""}`, { outcome: c.status, video_project_id: c.videoProjectId, ...mediaJob })
+  }
+  return out
+}

@@ -119,12 +119,21 @@ export async function queueProductVideoRender(
   const tagged = await demoStillImageUrls(svc, draft.angle)
   const imageUrls = tagged.length > 0 ? tagged : await screenshotUrlsForUse(svc, "product_video", { limit: 8 })
   const spec = composeProductVideoSpec(draft.angle, format, brand, null, imageUrls)
+  // WAVE 155 (lane 155G, carry-in from 155E): the end card's QR comes from THE one minter (lib/marketing/tracked-qr.ts) —
+  // a PLATFORM code to the real sign-up page, tracked per scan; ProductPromoReel already renders `qrCodeDataUrl`. A mint that
+  // fails renders without a code (null), never a placeholder. Renders queued before this keep the code they were rendered with.
+  const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+  const minted = await mintTrackedQr({
+    brokerageId: null, owner: "platform", label: `product_promo:${draft.angle}:${format}`, destinationType: "landing_page",
+    targetUrl: `${brand.ctaUrl}/get-started`, mintContext: { artifact_slot: "video_end_card", placement: "video_endcard" },
+  }, svc).catch(() => null)
+  const inputProps = { ...(spec.inputProps as unknown as Record<string, unknown>), qrCodeDataUrl: minted?.qrCodeDataUrl ?? null }
   const r = await recordRenderQueued({
     brokerageId: PLATFORM_HOUSE_BROKERAGE_ID,
     compositionId: spec.compositionId,
     entityType: PLATFORM_SOCIAL_DRAFT_ENTITY,
     entityId: draft.id,
-    inputProps: spec.inputProps as unknown as Record<string, unknown>,
+    inputProps,
     scopeType: "brokerage",
     scopeId: PLATFORM_HOUSE_BROKERAGE_ID,
     requestedVia: input.requestedVia,

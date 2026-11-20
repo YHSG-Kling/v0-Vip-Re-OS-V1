@@ -309,6 +309,9 @@ export async function GET(
           token_expires_at: tokens.expires_in
             ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
             : null,
+          // Wave 155 (lane 155G): keep what the provider GRANTED. Without it the media-variant contract can only read a
+          // connected account's video permission as "unverified" (lib/video/media-variant-contract.ts).
+          scope: typeof (tokens as { scope?: unknown }).scope === "string" ? (tokens as { scope: string }).scope : null,
           account_id: stateData.userId, // placeholder; real account_id fetched by publisher on first use
           account_name: config.displayName,
           is_active: true,

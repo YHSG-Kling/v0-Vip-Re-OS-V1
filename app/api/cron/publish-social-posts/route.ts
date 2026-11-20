@@ -95,6 +95,20 @@ export async function GET(request: Request) {
       console.error("[cron/publish-social-posts] youtube backfill failed:", (e as Error).message)
     }
 
+    // TOPIC MEDIA JOB (wave 155, lane 155G — wave 154 §14). An APPROVED topic master whose media platforms were left
+    // `media_partial` gets ONE educational reel staged through the Director rail by the SERVICE actor (asset_manager) under the
+    // creator owner's seat — no session, no impersonation, nothing published here (lib/agents/asset-manager-actions.ts
+    // runApprovedTopicMediaJobs). The render, the verified-playable check, each variant's own approval and the egress check
+    // below all still stand. Bounded per tick; best-effort — a refusal is printed, never allowed to hold the posts that are due.
+    try {
+      const { runApprovedTopicMediaJobs } = await import("@/lib/agents/asset-manager-actions")
+      const { platformScope } = await import("@/lib/kernel/tenant-scope")
+      const mj = await runApprovedTopicMediaJobs(supabase, { max: 3, scope: platformScope("cron-authenticated sweep (verifyCronAuth) of APPROVED topic masters across tenants — each master's own brokerage_id pins every later read, write and commission") })
+      if (mj.commissioned || mj.alreadyStaged || mj.held.length || mj.errors.length) console.log(`[cron/publish-social-posts] topic media: ${mj.commissioned} staged, ${mj.alreadyStaged} already staged, ${mj.held.length} held${mj.errors.length ? `; ${mj.errors.slice(0, 3).join(" | ")}` : ""}`)
+    } catch (e) {
+      console.error("[cron/publish-social-posts] topic media job failed:", (e as Error).message)
+    }
+
     // SELECT social_posts WHERE status='scheduled' AND approval_status='approved'
     // AND scheduled_for <= now() ORDER BY scheduled_for ASC LIMIT 20
     const { data: posts, error } = await supabase
@@ -283,6 +297,10 @@ export async function GET(request: Request) {
                 if (!priv.ok) throw new Error(`YouTube privacy could not be resolved — leg held: ${priv.reason}`)
                 fanYoutubePrivacy = priv.privacyStatus
               }
+              // 155G EGRESS: a media platform never receives a text-only post or the wrong media kind (no provider call).
+              const { mediaEgressVerdict } = await import("@/lib/video/media-variant-contract")
+              const fanEgress = mediaEgressVerdict(acct.platform, post.media_urls || [])
+              if (!fanEgress.ok) throw new Error(`held at egress — ${fanEgress.reason}`)
               const pr = await publishToSocialPlatform(acct.platform, {
                 content: fanContent, mediaUrls: post.media_urls || [],
                 accessToken: acct.access_token, accountId: acct.account_id, hashtags: post.hashtags || [],
@@ -359,6 +377,13 @@ export async function GET(request: Request) {
           youtubePrivacy = priv.privacyStatus
           if (priv.privacyStatus === "private") console.warn(`[publish-social-posts] post ${post.id}: ${priv.detail}`)
         }
+
+        // 155G EGRESS (lib/video/media-variant-contract.ts mediaEgressVerdict): a text-only post is never handed to a media
+        // platform as "the video", and a video is never handed to a publisher here that posts images only — held before any
+        // provider call; the catch below records it failed with the reason (never "published").
+        const { mediaEgressVerdict } = await import("@/lib/video/media-variant-contract")
+        const egress = mediaEgressVerdict(post.platform, post.media_urls || [])
+        if (!egress.ok) throw new Error(`held at egress — ${egress.reason}`)
 
         const publishResult = await publishToSocialPlatform(post.platform, {
           content: compliantContent,
