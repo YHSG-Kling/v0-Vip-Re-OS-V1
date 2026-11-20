@@ -957,7 +957,7 @@ const TRUST_CLASS_MAP: Readonly<Record<string, DecisionTrustClass>> = {
 }
 
 /** WHY a decision may execute. Reuses the existing spellings where they exist (APPROVAL_BASIS_MAP). */
-export const APPROVAL_BASES = ["policy_permitted", "human_approval", "tenant_override", "standing_authority"] as const
+const APPROVAL_BASES = ["policy_permitted", "human_approval", "tenant_override", "standing_authority"] as const
 type ApprovalBasis = (typeof APPROVAL_BASES)[number]
 const APPROVAL_BASIS_MAP: Readonly<Record<string, ApprovalBasis>> = {
   ...Object.fromEntries(APPROVAL_BASES.map((b) => [b, b])),

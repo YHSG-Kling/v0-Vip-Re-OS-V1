@@ -14,7 +14,7 @@ import { recordingPlaybackPath } from "@/lib/voice/recording-playback-path"
 /**
  * ONE ANALYSED CALL. Sourced from `voice_calls` + `call_analyses` — the dialled
  * -call ledger — not from `conversation_insights`, which analyses TEXT threads
- * and stamps `is_voice_conversation: false` on every row it writes.
+ * and leaves `is_voice_conversation` at its column default (false) on every row it writes.
  *
  * THREE FIELDS WENT AWAY WITH THAT SWITCH, and none of them is a rename:
  *

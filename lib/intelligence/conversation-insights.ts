@@ -49,8 +49,8 @@ const insightSchema = z.object({
 // The voice-only siblings (voice_quality_score / interruption_count /
 // silence_duration_seconds / call_completion_status / is_voice_conversation=true)
 // are DELIBERATELY not derived here — this writer analyzes a text/message
-// thread, so it stamps is_voice_conversation=false and leaves the voice
-// metrics NULL. There is currently no honest source for them anywhere: the
+// thread, so the flag stays at its column DEFAULT (false) and the voice
+// metrics stay NULL. There is currently no honest source for them anywhere: the
 // voice pipeline stores a flat transcript with no per-utterance timestamps
 // (call_transcriptions.speaker_turns is written as [] —
 // app/actions/ai-voice-transcription.ts:545), so silence/interruption/quality
@@ -64,9 +64,9 @@ const insightSchema = z.object({
 // app/dashboard/communications/intelligence/page.tsx), the same re-sourcing
 // the Voice tab got. conversation_insights is text-only end to end, per the
 // ruling: conversation_insights = TEXT conversations; voice_calls /
-// call_analyses = actual dialled calls. The constant-false stamp below stays:
-// it is the true fact about every row this writer produces, and it keeps the
-// column from lying if a real voice writer ever does appear.
+// call_analyses = actual dialled calls. The constant-false stamp is GONE (wave
+// 155): the column's own DEFAULT already says false for every row this writer
+// produces, nothing reads it, and a write nobody reads is not a fact kept.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The subset of a messages row the derivation needs, in CHRONOLOGICAL order. */
@@ -296,7 +296,7 @@ export async function updateConversationMemory(
         requires_human_review: analytics.requiresHumanReview,
         // This writer analyzes a TEXT thread. The voice metrics have no honest
         // source yet (no per-utterance timestamps anywhere) and stay NULL.
-        is_voice_conversation: false,
+        // is_voice_conversation is NOT written: the column DEFAULT is false (live, read 2026-11-20) and no code reads it.
         last_updated_at: nowIso,
         // Readers filter and order on updated_at (the dashboard's 7/30-day
         // windows); the DB default only fires on INSERT, so the update path
@@ -330,7 +330,7 @@ export async function updateConversationMemory(
         escalation_recommended: analytics.escalationRecommended,
         escalation_urgency: analytics.escalationUrgency,
         requires_human_review: analytics.requiresHumanReview,
-        is_voice_conversation: false,
+        // is_voice_conversation is NOT written: the column DEFAULT is false (live, read 2026-11-20) and no code reads it.
         last_updated_at: nowIso,
       })
 

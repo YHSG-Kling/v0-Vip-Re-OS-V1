@@ -292,16 +292,37 @@ export async function GET(
     // callback. Resolve the connecting user's brokerage; account_id keeps the
     // userId placeholder (the publisher fills the real one on first use), so
     // (brokerage_id, platform, account_id=userId) is unique per user.
-    const { data: connectingUser } = await supabase
+    const { data: connectingUser, error: connectingUserErr } = await supabase
       .from("users").select("brokerage_id").eq("id", stateData.userId).maybeSingle()
+    // A refused read is not "no brokerage" (CLAUDE.md §3), and social_media_accounts.brokerage_id is NOT NULL: a connect that
+    // cannot name its tenant is refused here with its reason, instead of being sent to the database to fail as "save failed".
+    const connectingBrokerageId = ((connectingUser as { brokerage_id?: string | null } | null)?.brokerage_id) ?? null
+    if (connectingUserErr || !connectingBrokerageId) {
+      console.error(`[Social OAuth] ${platform}: the connecting user's brokerage could not be resolved`, connectingUserErr?.message ?? "no brokerage on the user row")
+      return redirectWithResult(baseUrl, false, platform, connectingUserErr ? "Could not verify your account — try again" : "Your account is not linked to a brokerage yet")
+    }
+    // WAVE 155 (convergence) — THE WRITER OF social_media_accounts.agent_id. This callback is the ONE way the product connects a
+    // channel (the two pasted-token doors that also wrote the row were retired by lane 155R29, tombstones in
+    // app/actions/social-media-automation.ts and app/actions/social-publishing.ts), and it never stamped the agent — while the
+    // readers that post "in the sender's voice on the sender's channel" FILTER on it (lib/repurpose/refurbish-run.ts senderAccounts,
+    // lib/agents/asset-manager-actions.ts). Every channel connected through the product was therefore invisible to them. The agent
+    // is the connecting user's agents row IN THE SAME TENANT (agents.id and users.id are disjoint — crossed via agents.user_id);
+    // NULL is a real answer for a seat with no agents row, a refused lookup is not.
+    const { data: connectingAgent, error: connectingAgentErr } = await supabase
+      .from("agents").select("id").eq("user_id", stateData.userId).eq("brokerage_id", connectingBrokerageId).maybeSingle()
+    if (connectingAgentErr) {
+      console.error(`[Social OAuth] ${platform}: the connecting user's agent row could not be read`, connectingAgentErr.message)
+      return redirectWithResult(baseUrl, false, platform, "Could not verify your agent profile — try again")
+    }
 
     // Upsert into social_media_accounts
     const { error: upsertError } = await supabase
       .from("social_media_accounts")
       .upsert(
         {
-          brokerage_id: (connectingUser as any)?.brokerage_id ?? null,
+          brokerage_id: connectingBrokerageId,
           user_id: stateData.userId,
+          agent_id: (connectingAgent as { id?: string } | null)?.id ?? null,
           platform,
           // Wave 140H — the callback writes ENCRYPTED columns only (fail closed with no key).
           access_token: encryptSecret(tokens.access_token),

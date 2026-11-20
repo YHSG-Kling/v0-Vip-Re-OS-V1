@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   ArrowLeft,
-  Building,
+  // (Building was imported here and never rendered — removed; this line keeps the file:line references into the page true)
   FileText,
   Clock,
   CheckCircle2,

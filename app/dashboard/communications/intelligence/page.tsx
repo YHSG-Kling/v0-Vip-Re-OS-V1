@@ -81,7 +81,7 @@ export default async function IntelligencePage() {
 
     // 5. chart data, TEXT series — last 30 days of health scores by date.
     //    This read no longer selects `is_voice_conversation`: the ONE writer of
-    //    this table stamps it false on both of its paths (it analyzes message
+    //    this table leaves it at its false default (it analyzes message
     //    threads — lib/intelligence/conversation-insights.ts:58-70, a ruling
     //    that stands), so splitting these rows on that flag put every row in
     //    the text bucket and rendered the chart's voice line as a PERMANENT
@@ -153,6 +153,7 @@ export default async function IntelligencePage() {
         response_time_avg_seconds,
         objections_raised,
         buying_signals,
+        pain_points,
         conversations!inner(
           brokerage_id,
           agents(id, users(first_name, last_name))
@@ -168,8 +169,8 @@ export default async function IntelligencePage() {
     // `interruption_count`, `silence_duration_seconds` and
     // `call_completion_status`. All four were READ BY CODE AND WRITTEN BY NOBODY
     // (census 1b), and the filter itself could never match: the ONE writer of
-    // that table stamps `is_voice_conversation: false` on both its insert and
-    // its update paths, and says why in a ruling that stands
+    // that table never sets `is_voice_conversation` (it stays at its false
+    // default on every row), and says why in a ruling that stands
     // (lib/intelligence/conversation-insights.ts:58-70) —
     //
     //   "This writer analyzes a TEXT thread. The voice metrics have no honest
@@ -352,6 +353,10 @@ export default async function IntelligencePage() {
     response_times: number[]
     objections: string[]
     signals: string[]
+    // WAVE 155 (convergence): conversation_insights.pain_points is extracted and stored for every analysed thread and was shown
+    // NOWHERE — its one reader was a prompt helper only an uncalled endpoint reached (retired; tombstone in
+    // lib/intelligence/conversation-insights.ts). It is read here, beside the objections and signals it was extracted with.
+    painPoints: string[]
   }
   const agentMap = new Map<string, AgentBucket>()
 
@@ -363,7 +368,7 @@ export default async function IntelligencePage() {
       ? `${agent.users.first_name ?? ""} ${agent.users.last_name ?? ""}`.trim() || "Unknown Agent"
       : "Unknown Agent"
     if (!agentMap.has(aid)) {
-      agentMap.set(aid, { agent_id: aid, agent_name: aname, health_scores: [], sentiment_scores: [], response_times: [], objections: [], signals: [] })
+      agentMap.set(aid, { agent_id: aid, agent_name: aname, health_scores: [], sentiment_scores: [], response_times: [], objections: [], signals: [], painPoints: [] })
     }
     const bucket = agentMap.get(aid)!
     if (row.health_score != null) bucket.health_scores.push(row.health_score * 100)
@@ -371,6 +376,7 @@ export default async function IntelligencePage() {
     if (row.response_time_avg_seconds != null) bucket.response_times.push(row.response_time_avg_seconds)
     if (Array.isArray(row.objections_raised)) bucket.objections.push(...row.objections_raised)
     if (Array.isArray(row.buying_signals)) bucket.signals.push(...row.buying_signals)
+    if (Array.isArray(row.pain_points)) bucket.painPoints.push(...row.pain_points)
     // Map sentiment string to 0-100 numeric score
     const sentMap: Record<string, number> = { positive: 80, neutral: 50, negative: 20 }
     bucket.sentiment_scores.push(sentMap[row.overall_sentiment ?? "neutral"] ?? 50)
@@ -385,6 +391,7 @@ export default async function IntelligencePage() {
     avg_health_score:         Math.round(avgArr(b.health_scores)),
     objections_raised:        b.objections,
     buying_signals:           b.signals,
+    pain_points:              b.painPoints,
     response_time_avg_seconds: b.response_times.length > 0 ? avgArr(b.response_times) : null,
     conversation_count:       b.health_scores.length,
   }))

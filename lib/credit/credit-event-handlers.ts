@@ -38,7 +38,7 @@
 import "server-only"
 import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 
-export interface CreditEventOutcome {
+interface CreditEventOutcome {
   success: boolean
   written: string[]
   skipped: string[]

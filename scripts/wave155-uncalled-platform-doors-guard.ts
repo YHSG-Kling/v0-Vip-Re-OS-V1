@@ -425,10 +425,47 @@ async function sectionB() {
   })
 }
 
+// ══ §C — WHAT THE SURVIVOR LACKED (integrator, wave 155 convergence) ═══════════════════════════════════════════════════════════════════
+// Both retired connectSocialAccount doors wrote social_media_accounts.agent_id; their survivor, the OAuth callback, did not — and the
+// readers that post on "the sender's own channel" filter on it, so every channel connected through the product was invisible to them
+// (the opposite-missing census raised it as a column read by code and written by nobody the moment the dead writers left). The rule,
+// on comment-stripped source: the callback's upsert stamps agent_id from an agents row resolved by the connecting user AND the tenant,
+// reads that lookup's error, and never writes a tenantless row.
+/** PURE — problems with a social-account callback source (empty = the rule holds). */
+function socialCallbackProblems(code: string): string[] {
+  const out: string[] = []
+  const up = /\.from\(\s*"social_media_accounts"\s*\)\s*\.upsert\(\s*\{([\s\S]*?)\}\s*,\s*\{\s*onConflict/.exec(code)?.[1] ?? null
+  if (up === null) return ["no social_media_accounts upsert found"]
+  if (!/\bagent_id\s*:/.test(up)) out.push("the upsert does not stamp agent_id")
+  if (/\bbrokerage_id\s*:[^,\n]*\?\?\s*null/.test(up)) out.push("the upsert may write a tenantless row (brokerage_id … ?? null)")
+  const lookup = /const\s*\{\s*data:\s*(\w+)\s*,\s*error:\s*(\w+)\s*\}\s*=\s*await\s+\w+\s*\.from\(\s*"agents"\s*\)\s*\.select\(\s*"id"\s*\)([^\n]*)/.exec(code)
+  if (!lookup) out.push("no agents lookup that reads its error")
+  else {
+    if (!/\.eq\(\s*"user_id"/.test(lookup[3]) || !/\.eq\(\s*"brokerage_id"/.test(lookup[3])) out.push("the agents lookup is not pinned to the connecting user AND the tenant")
+    if (!new RegExp(`if\\s*\\(\\s*${lookup[2]}\\s*\\)`).test(code)) out.push("the agents lookup's error is never read")
+    if (!new RegExp(`agent_id\\s*:[^\\n]*\\b${lookup[1]}\\b`).test(up)) out.push("agent_id is not the looked-up agents row")
+  }
+  return out
+}
+function sectionC() {
+  section("§C · app/api/social/oauth/[platform]/route.ts — the survivor of the two retired connect doors writes what its readers filter on")
+  const src = readAt(ROOT)("app/api/social/oauth/[platform]/route.ts")
+  const problems = src === null ? ["route file missing"] : socialCallbackProblems(stripComments(src))
+  check("the OAuth callback stamps agent_id from the connecting user's agents row in the same tenant, reads the lookup's error, and never writes a tenantless row", problems.length === 0, problems)
+  const good = `const { data: a, error: aErr } = await db.from("agents").select("id").eq("user_id", u).eq("brokerage_id", b).maybeSingle()\nif (aErr) return fail()\nawait db.from("social_media_accounts").upsert({ brokerage_id: b, user_id: u, agent_id: (a as any)?.id ?? null }, { onConflict: "x" })`
+  check("§C CONTROLS — a well-formed callback passes; no agent_id, a tenantless fallback, an unpinned lookup and an unread lookup error are each caught",
+    socialCallbackProblems(good).length === 0
+    && socialCallbackProblems(good.replace(", agent_id: (a as any)?.id ?? null", "")).some((x) => x.includes("does not stamp"))
+    && socialCallbackProblems(good.replace("brokerage_id: b,", "brokerage_id: b ?? null,")).some((x) => x.includes("tenantless"))
+    && socialCallbackProblems(good.replace('.eq("brokerage_id", b)', "")).some((x) => x.includes("not pinned"))
+    && socialCallbackProblems(good.replace("if (aErr) return fail()", "")).some((x) => x.includes("never read")))
+}
+
 async function main() {
   console.log(`\nwave155-uncalled-platform-doors-guard — lane 155R29 (modules from ${ROOT === WT ? "this worktree" : ROOT})`)
   sectionA()
   await sectionB()
+  sectionC()
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   if (failed) { console.log(`❌ WAVE155_UNCALLED_PLATFORM_DOORS_FAIL — ${fails.join(" | ")}`); process.exit(1) }
   console.log("✅ WAVE155_UNCALLED_PLATFORM_DOORS_PASS — every retired door names a called survivor; every added gate refuses")

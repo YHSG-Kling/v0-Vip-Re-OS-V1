@@ -10,7 +10,7 @@
 // "not configured" when the key is absent). Marketing-staff-gated + audited.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { headers } from "next/headers"
+// (the next/headers import left with its last reader — nothing in this module reads request headers; the line stays so the file:line references into this module hold)
 import { revalidatePath } from "next/cache"
 import { resolveProductBrand, loadProductBrand, validateTopic, type ProductBrand } from "@/lib/platform/product-brand"
 import { requireMarketing } from "@/lib/auth/platform-guard"

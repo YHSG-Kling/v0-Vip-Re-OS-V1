@@ -55,8 +55,8 @@ export const LENDER_BENCH_CATEGORIES = ["lender", "refinance_lender"] as const
 // its old identity table (title_company_users) had 0 rows and no writer anywhere, so no title company could ever
 // pass the gate. The gate is lib/kernel/portal-auth.ts requireTitleVendorActor; the category test is stated ONCE, here.
 
-/** The vendor category that IS a title company — one spelling, from the one vocabulary module. */
-export const TITLE_VENDOR_CATEGORY = VENDOR_CATEGORY_TITLE
+// (TITLE_VENDOR_CATEGORY, an alias of VENDOR_CATEGORY_TITLE that nothing read, is removed — CLAUDE.md §6, one spelling: the
+// survivor is VENDOR_CATEGORY_TITLE from the vocabulary module this file imports, used by TITLE_BENCH_CATEGORIES below.)
 
 /** The title bench spelled for a POSTGRES filter (exact, case-sensitive) — the vendors.category CHECK values that
  *  ARE title. Exactly one today; `isTitleVendorCategory` accepts exactly these, so the two cannot disagree. */

@@ -35,6 +35,7 @@ interface AgentInsight {
   avg_health_score: number
   objections_raised: string[]
   buying_signals: string[]
+  pain_points: string[]
   response_time_avg_seconds: number | null
   conversation_count: number
 }
