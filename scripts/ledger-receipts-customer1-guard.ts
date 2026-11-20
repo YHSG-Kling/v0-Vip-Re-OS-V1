@@ -187,7 +187,8 @@ const OVERRIDE: Record<string, Record<string, unknown>> = {
   "@/lib/platform/acting-context": {
     resolveWriteContext: async () => ({ ok: true, userId: UID, agentId: AG, brokerageId: BRK, userType: "broker", isImpersonating: false, impersonatorUserId: null, actorUserId: UID, db: MEM }),
     resolveActingContext: async () => ({ ok: true, userId: UID, agentId: AG, brokerageId: BRK, actorUserId: UID, db: MEM }),
-    decideClaimedTenant: () => ({ ok: true }),
+    // the REAL rule, not a stub that always agrees (a permissive copy made this guard's own negative control pass for the wrong reason)
+    decideClaimedTenant: (i: { actingBrokerageId?: string | null; claimedBrokerageId?: string | null }) => !i.actingBrokerageId ? { ok: false, reason: "no_session_tenant" } : i.claimedBrokerageId && i.claimedBrokerageId !== i.actingBrokerageId ? { ok: false, reason: "tenant_mismatch" } : { ok: true, brokerageId: i.actingBrokerageId },
   },
   "@/lib/auth/contact-access": { assertCanActOnContact: async (cid: string) => ({ ok: true, actorUserId: UID, contact: { id: cid, brokerage_id: BRK } }) },
   "@/lib/kernel/agent-identity-resolver": { resolveUserIdToAgentRecord: async () => AG },

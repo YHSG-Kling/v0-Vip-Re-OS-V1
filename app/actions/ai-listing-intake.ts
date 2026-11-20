@@ -1,5 +1,6 @@
 "use server"
 
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -946,7 +947,7 @@ export async function generateListingAgreement(params: {
   try {
     // WAVE 155 (155R3): a "use server" export is a public endpoint — the tenant is the SESSION's (CLAUDE.md §4), the body's must match it.
     const sessionCtx = await getAgentContext()
-    if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId || sessionCtx.brokerageId !== params.brokerageId) return { success: false, error: "Unauthorized" }
+    if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId || !decideClaimedTenant({ actingBrokerageId: sessionCtx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
     return await ledgerSessionAction({ brokerageId: sessionCtx.brokerageId, action: "listing.agreement_packet.stage", actor: { type: "user", userId: sessionCtx.userId, agentId: sessionCtx.agentId ?? null }, subject: { type: "document", id: params.documentId && isValidUUID(params.documentId) ? params.documentId : null, ref: params.documentId ? null : "listing_packet" }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { contact_id: params.contactId ?? null } }, async () => {
     const supabase = await createClient()
@@ -1138,7 +1139,7 @@ export async function generateListingLandingPage(params: {
   try {
     // WAVE 155 (155R3): a "use server" export is a public endpoint — the tenant is the SESSION's (CLAUDE.md §4), the body's must match it.
     const sessionCtx = await getAgentContext()
-    if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId || sessionCtx.brokerageId !== params.brokerageId) return { success: false, error: "Unauthorized" }
+    if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId || !decideClaimedTenant({ actingBrokerageId: sessionCtx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
     return await ledgerSessionAction({ brokerageId: sessionCtx.brokerageId, action: "listing.landing_page.publish", actor: { type: "user", userId: sessionCtx.userId, agentId: sessionCtx.agentId ?? null }, subject: { type: "listing", id: params.listingId && isValidUUID(params.listingId) ? params.listingId : null, ref: params.listingId ? null : "landing_page" }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { contact_id: params.contactId ?? null } }, async () => {
     const supabase = await createClient()

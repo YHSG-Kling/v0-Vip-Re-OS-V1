@@ -88,7 +88,7 @@ const CLASSES: SinkClass[] = [
     sink: { file: "lib/connections/resolve-scoped.ts", fn: "readOwnerCredential" },
     gates: [/\.eq\(\s*["'`]owner_type["'`]/, /\.eq\(\s*["'`]owner_id["'`]/], seamInBody: /\bdecryptSecret\s*\(/,
     seam: /\bdecryptSecret\s*\(/, seamView: "calls",
-    recordFn: "resolveScopedConnectionResult",
+    recordFn: "resolveScopedConnectionForOrigin",
     // E: an owner / tenant pin (or the scoped / legacy resolver) before the decrypt, inside the same function.
     door: /\.eq\(\s*["'`](?:brokerage_id|owner_id|owner_type|user_id|agent_id|agent_user_id|tenant_id|vendor_id)["'`]|\bresolveScopedConnection(?:Result)?\s*\(|\bresolveConnection(?:Result)?\s*\(/,
     allowed: (f) => f === "lib/connections/resolve-scoped.ts" || f === "lib/security/secret-crypto.ts" || f === "lib/security/secret-migration.ts",
@@ -373,7 +373,7 @@ check("NEGATIVE CONTROL · the door finder REJECTS a seam that precedes its gate
 
   interface Case { key: string; seed?: Record<string, Array<Record<string, any>>>; precondition?: string[]; action: string; run: (w: World, origin: any) => Promise<unknown> }
   const cases: Case[] = [
-    { key: "credentials", action: "access.credential.read", run: async (_w, o) => (await import("../lib/connections/resolve-scoped")).resolveScopedConnectionResult("quickbooks", { brokerageId: B, agentUserId: U }, o) },
+    { key: "credentials", action: "access.credential.read", run: async (_w, o) => (await import("../lib/connections/resolve-scoped")).resolveScopedConnectionForOrigin("quickbooks", { brokerageId: B, agentUserId: U }, o) },
     { key: "paid_acquisition", action: "acquisition.pull.admit", run: async (w, o) => {
       const { runPooledBatchDataLane } = await import("../lib/lead-pipeline/pooled-pull")
       return runPooledBatchDataLane("batchdata_motivated", [{ territory: { id: T, brokerage_id: B, state: "FL", zip_codes: ["32571"] }, triggers: ["pre_foreclosure"], lookbackDays: null, origin: o }], {

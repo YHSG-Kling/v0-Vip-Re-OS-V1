@@ -1,5 +1,6 @@
 "use server"
 
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -1693,12 +1694,20 @@ export async function savePageConfig(config: HomeValuePageConfig): Promise<{ suc
   if (error) return { success: false, error: error.message }
   return { success: true, id: data.id }
   }
-  // Receipt against the SESSION user's tenant (the body's brokerageId is never the ledger's tenant); no session tenant = today's behavior, unrecorded.
+  // THE TENANT IS THE SESSION'S (CLAUDE.md §4). This export wrote `brokerage_id` straight from its argument. Now: a signed-in
+  // caller; a body tenant that names a DIFFERENT brokerage is refused through the one decision table (decideClaimedTenant),
+  // never silently replaced; and the row carries the session's tenant. A session with no tenant (platform staff) runs as
+  // before, unrecorded — there is no tenant to record against and none is invented.
   const { data: { user: cfgUser } } = await supabase.auth.getUser()
-  const { data: cfgTenant } = cfgUser ? await supabase.from("users").select("brokerage_id").eq("id", cfgUser.id).maybeSingle() : { data: null }
-  if (!cfgUser || !cfgTenant?.brokerage_id) return run()
+  if (!cfgUser) return { success: false, error: "Unauthorized" }
+  const { data: cfgTenant, error: cfgTenantError } = await supabase.from("users").select("brokerage_id").eq("id", cfgUser.id).maybeSingle()
+  if (cfgTenantError) return { success: false, error: "Could not verify your workspace. Try again." }
+  if (!cfgTenant?.brokerage_id) return run()
+  const tenant = decideClaimedTenant({ actingBrokerageId: cfgTenant.brokerage_id as string, claimedBrokerageId: config.brokerageId })
+  if (!tenant.ok) return { success: false, error: "Forbidden: that brokerage is not yours." }
+  config = { ...config, brokerageId: tenant.brokerageId }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-  return ledgerSessionAction({ brokerageId: cfgTenant.brokerage_id as string, action: "marketing.home_value_page.save", actor: { type: "user", userId: cfgUser.id }, subject: { type: "agent", id: config.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { body_brokerage_matches_session: config.brokerageId === cfgTenant.brokerage_id } }, run)
+  return ledgerSessionAction({ brokerageId: cfgTenant.brokerage_id as string, action: "marketing.home_value_page.save", actor: { type: "user", userId: cfgUser.id }, subject: { type: "agent", id: config.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, run)
 }
 
 // ============================================================================

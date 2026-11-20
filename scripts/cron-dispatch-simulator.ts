@@ -52,7 +52,7 @@ async function main() {
   check("'0 8,17 * * *' twice-daily property alerts", isDue("0 8,17 * * *", new Date(Date.UTC(2026, 5, 9, 17, 0))))
   const at0600mon = duePaths(new Date(Date.UTC(2026, 5, 8, 6, 0)))
   check("Monday 06:00 UTC: dailies + hourlies + steps all due together (>20 paths)", at0600mon.length > 20, `got ${at0600mon.length}`)
-  check("Monday 06:00 includes the 6am dailies", at0600mon.includes("/api/cron/contact-enrichment") && at0600mon.includes("/api/deal-health/cron"))
+  check("Monday 06:00 includes the 6am dailies", at0600mon.includes("/api/cron/contact-enrichment") && at0600mon.includes("/api/cron/actor-health"))
   const at0137 = duePaths(new Date(Date.UTC(2026, 5, 9, 1, 37)))
   check("a quiet minute (01:37) dispatches nothing", at0137.length === 0, `got ${at0137.join(", ")}`)
   check("every registry schedule is valid 5-field syntax the matcher supports",

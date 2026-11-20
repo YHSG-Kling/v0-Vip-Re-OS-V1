@@ -172,7 +172,7 @@ console.log("\n[G3 · each touched route, invoked for real]")
     { file: "app/api/internal/remotion/render-just-listed/route.ts", method: "POST", xHeader: false },
     { file: "app/api/internal/remotion/render-newsletter-video/route.ts", method: "POST", xHeader: false },
     { file: "app/api/internal/remotion/render-composition/route.ts", method: "POST", xHeader: false },
-    { file: "app/api/deal-health/cron/route.ts", method: "GET", xHeader: false },
+    // app/api/deal-health/cron — RETIRED (wave 155, duplicate of app/api/cron/deal-health-scan/route.ts:35); the registry census in G6 proves no dispatched path points at it.
     { file: "app/api/admin/scrape-test/route.ts", method: "GET", xHeader: false },
     { file: "app/api/cron/sphere-resonance/route.ts", method: "GET", xHeader: false },
     { file: "app/api/cron/wealth-opportunity-scan/route.ts", method: "GET", xHeader: false },

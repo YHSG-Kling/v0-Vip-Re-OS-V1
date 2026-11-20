@@ -257,7 +257,9 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/content-intel-reddit"                , schedule: "0 6 * * *" },
   { path: "/api/cron/predictive-listing-scoring"          , schedule: "0 6 * * *" },
   { path: "/api/cron/team-heatmap-snapshot"               , schedule: "42 6 * * *" }, // (staggered r43)
-  { path: "/api/deal-health/cron"                         , schedule: "0 6 * * *" },
+  // TOMBSTONE (wave 155): "/api/deal-health/cron" RETIRED — a daily duplicate of the 4-hourly deal-health sweep. Both ran
+  // calculateDealHealth over every open deal; this one asked no decision door, emitted no event and opened no intervention.
+  // SURVIVOR: app/api/cron/deal-health-scan/route.ts:35 (GET), which now also carries the duplicate's soft-delete filter.
   { path: "/api/cron/annual-home-value-reports"           , schedule: "0 7 * * *" },
   { path: "/api/cron/blog-cadence-tick"                   , schedule: "0 7 * * *" },
   { path: "/api/cron/newsletter-cadence-tick"             , schedule: "0 7 * * *" },

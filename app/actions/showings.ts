@@ -576,7 +576,7 @@ export async function createShowing(params: {
       return { success: false, error: finGate.reason, errorCode: finGate.errorCode }
     }
 
-    return await withReceipt({ brokerageId: creator?.id ? (c?.brokerage_id ?? null) : null, userId: creator?.id ?? "", action: "buyer.showing.create", subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", detail: { listing_id: params.propertyId, scheduled_date: params.scheduledDate } }, async () => {
+    return await withReceipt({ brokerageId: creator?.id ? (c?.brokerage_id ?? null) : null, userId: creator?.id ?? "", action: "buyer.showing.create", subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", detail: { listing_id: params.propertyId, scheduled_date: params.scheduledDate } }, async (): Promise<{ success: boolean; showing?: any; error?: string }> => {
     const startTime = `${params.scheduledTime}:00`
     const [eh, em] = params.scheduledTime.split(":").map(Number)
     const endTotal = eh * 60 + em + 30

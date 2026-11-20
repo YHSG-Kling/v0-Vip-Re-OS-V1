@@ -59,10 +59,13 @@ export async function GET(request: NextRequest) {
     // (transactions_stage_check) — CLOSED / LOST are the two terminal stages. The previous filter used
     // lowercase 'closed,cancelled,on_hold' (none of which the column can ever hold), so it excluded
     // nothing and re-scanned finished deals every 6h, producing false at-risk alerts on closed deals.
+    // MERGED FROM THE RETIRED DUPLICATE (wave 155; /api/deal-health/cron ran the same scorer once a day): a soft-deleted
+    // deal is not scanned. This sweep had no such filter, so a deleted deal could still raise an at-risk alert.
     const { data: transactions, error: fetchError } = await supabase
       .from("transactions")
       .select("id, brokerage_id")
       .not("stage", "in", "(CLOSED,LOST)")
+      .is("deleted_at", null)
 
     if (fetchError) {
       throw new Error(`Failed to fetch transactions: ${fetchError.message}`)

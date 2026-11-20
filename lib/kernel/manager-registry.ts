@@ -3252,7 +3252,7 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/dual-transaction-timing": "listing_concierge",
   // ── Deal Coordinator — under contract → close ──
   "/api/cron/deal-health-scan": "deal_coordinator",
-  "/api/deal-health/cron": "deal_coordinator",
+  // TOMBSTONE (wave 155): "/api/deal-health/cron" RETIRED (duplicate). SURVIVOR: "/api/cron/deal-health-scan" (app/api/cron/deal-health-scan/route.ts:35).
   "/api/cron/deadline-watcher": "deal_coordinator",
   "/api/cron/task-overdue": "deal_coordinator",
   "/api/cron/task-due": "deal_coordinator",

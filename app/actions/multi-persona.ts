@@ -1,5 +1,6 @@
 "use server"
 
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { bestEffort } from "@/lib/db/best-effort"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
@@ -572,7 +573,7 @@ export async function createWorkflowAutomation(data: {
   // WAVE 155 (155R3): no session gate (RLS only) — the module's own requireCaller() (its siblings' gate) is resolved here.
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
-  if (data.brokerageId && data.brokerageId !== auth.brokerageId) throw new Error("Forbidden")
+  if (!decideClaimedTenant({ actingBrokerageId: auth.brokerageId, claimedBrokerageId: data.brokerageId }).ok) throw new Error("Forbidden")
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "workflow.automation.create", actor: { type: "user", userId: auth.userId }, subject: { type: "workflow_automation", ref: "new" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { workflow_type: data.workflowType, trigger_event: data.triggerEvent } }, async () => {
   const supabase = await createClient()

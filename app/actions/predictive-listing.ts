@@ -10,6 +10,7 @@
  *   - listQueuedAutoTouches(agentId) — review queue for the agent
  */
 
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
@@ -126,7 +127,7 @@ export async function dismissPredictiveSeller(params: {
   // WAVE 155 (lane 155R12): the tenant came from the ARGUMENT (CLAUDE.md §4). The sibling's session gate (getAgentContext, see
   // listDismissedPredictiveSellers) now decides it: an argument naming another tenant is refused.
   const { getAgentContext } = await import("@/lib/identity"); const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId || ctx.brokerageId !== params.brokerageId) return { success: false, error: "Unauthorized" }
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
   const supabase = await createClient()
   const days = params.days ?? 90
   return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "predictive.seller.dismiss", subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", detail: { days } }, async () => {
@@ -256,7 +257,7 @@ export async function markPredictiveAction(params: {
   // WAVE 155 (lane 155R12): the tenant came from the ARGUMENT (CLAUDE.md §4). The sibling's session gate (getAgentContext, see
   // listDismissedPredictiveSellers) now decides it: an argument naming another tenant is refused.
   const { getAgentContext } = await import("@/lib/identity"); const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId || ctx.brokerageId !== params.brokerageId) return { success: false, error: "Unauthorized" }
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
   const supabase = await createClient()
   return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "predictive.seller.mark_action", subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", detail: { action_type: params.actionType } }, async () => {
   const { error } = await supabase
@@ -303,7 +304,7 @@ export async function cancelQueuedAutoTouch(params: {
   // WAVE 155 (lane 155R12): the tenant came from the ARGUMENT (CLAUDE.md §4). The sibling's session gate (getAgentContext, see
   // listDismissedPredictiveSellers) now decides it: an argument naming another tenant is refused.
   const { getAgentContext } = await import("@/lib/identity"); const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId || ctx.brokerageId !== params.brokerageId) return { success: false, error: "Unauthorized" }
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
   const supabase = await createClient()
   return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "predictive.auto_touch.cancel", subject: { type: "predictive_listing_action", id: params.actionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { error } = await supabase

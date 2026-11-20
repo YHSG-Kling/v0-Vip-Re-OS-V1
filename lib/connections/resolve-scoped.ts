@@ -191,10 +191,7 @@ async function readOwnerCredential(
 export async function resolveScopedConnectionResult(
   provider: string,
   ctx: ScopeContext & { agentId?: string | null },
-  /** WAVE 155 (155R8): who asked for this credential when it is not the caller's own deterministic code (see credentialAtSink). */
-  origin?: Pick<ActionContext, "trustClass" | "sink" | "cycle"> | null,
 ): Promise<ScopedConnectionResult> {
-  if (origin) return credentialAtSink(provider, ctx, origin, () => resolveScopedConnectionResult(provider, ctx, null))
   // 1. New owner-scope cascade (agent → team → brokerage → platform, or vendor/contact → platform).
   for (const owner of scopeCascade(ctx)) {
     const read = await readOwnerCredential(owner.ownerType, owner.ownerId, provider)
@@ -274,6 +271,23 @@ export async function resolveScopedConnectionResult(
  * An internal read (no origin — every caller today) writes NO row: 0 added round trips on the hottest read in the product; the
  * operation the credential unlocks is recorded at ITS sink. A stated origin with no tenant has nothing to record against → refused.
  */
+/**
+ * THE STATED-ORIGIN DOOR (wave 155). A credential asked for by anything that is not the caller's own deterministic code — a
+ * model proposal, an inbound message, a document — comes through HERE, so the sink rule decides before a credential row is read
+ * and one decision record is written. It is a separate function on purpose: a plain internal read (resolveScopedConnectionResult /
+ * resolveScopedConnection) writes no row and must not be able to reach the record, so a read-only caller is read-only in the
+ * source as well as at run time. As an optional parameter on the plain door, every reader of a connection looked like a writer
+ * of the action ledger (two read-only server actions were counted as unowned writes by the arbitration census).
+ * No production caller states an origin today; the record is proven by test:arbitration-sinks.
+ */
+export async function resolveScopedConnectionForOrigin(
+  provider: string,
+  ctx: ScopeContext & { agentId?: string | null },
+  origin: Pick<ActionContext, "trustClass" | "sink" | "cycle">,
+): Promise<ScopedConnectionResult> {
+  return credentialAtSink(provider, ctx, origin, () => resolveScopedConnectionResult(provider, ctx))
+}
+
 async function credentialAtSink(
   provider: string,
   ctx: ScopeContext & { agentId?: string | null },

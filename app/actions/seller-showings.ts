@@ -27,13 +27,29 @@ export async function resolveShowingMode(params: {
   brokerageId: string
   teamId?: string | null
 }): Promise<{ mode: "showingtime" | "manual"; credentialId?: string }> {
+  // GATED (wave 155). This is a "use server" export, so it is a public endpoint: it took the tenant and the agent from
+  // its arguments and answered, for ANY brokerage, whether ShowingTime is connected and under which credential row.
+  // Now: a signed-in caller, the SESSION's tenant (params.brokerageId is ignored), and a listing of that tenant. A caller
+  // who is refused gets the manual mode with no credential id — the mode that reads no connection.
+  const auth = await requireCaller()
+  if (!auth.ok) return { mode: "manual" }
+  if (!isValidUUID(params.listingId)) return { mode: "manual" }
+  const supabase = await createClient()
+  const { data: ownListing, error: listingError } = await supabase
+    .from("listings")
+    .select("id")
+    .eq("id", params.listingId)
+    .eq("brokerage_id", auth.brokerageId)
+    .maybeSingle()
+  if (listingError || !ownListing) return { mode: "manual" }
+
   // Unified ownership cascade (agent → team → brokerage → platform, legacy fallback) so a
   // ShowingTime connection from the Connection Center resolves at any tier — including TEAM,
   // which the old agent/brokerage-only read skipped.
   const conn = await resolveScopedConnection("showingtime", {
     agentUserId: params.agentUserId,
     teamId: params.teamId ?? null,
-    brokerageId: params.brokerageId,
+    brokerageId: auth.brokerageId,
   })
   if (conn) return { mode: "showingtime", credentialId: conn.credentialId }
 
