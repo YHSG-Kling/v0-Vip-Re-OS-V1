@@ -259,13 +259,15 @@ const DEFAULT_WINDOW = { expiresDays: 21, maxSourceAgeDays: 365 }
  * start a Refurbish (local facts, look-alike briefs, citations, manual notes, internal theme intelligence).
  * "competitor_watch" still needs the trigger's own watchlist authorization — the mapping grants nothing.
  */
-const REFURBISH_TRIGGER_BY_TOPIC_SOURCE: Readonly<Record<string, "google_trend" | "public_chatter" | "competitor_watch" | "own_underperformer">> = Object.freeze({
+const REFURBISH_TRIGGER_BY_TOPIC_SOURCE: Readonly<Record<string, "google_trend" | "public_chatter" | "competitor_watch" | "own_underperformer" | "first_party_question">> = Object.freeze({
   google_trends: "google_trend", search_demand_search_console: "google_trend", search_demand_first_party: "google_trend", search_demand_keyword_intel: "google_trend",
   community_post: "public_chatter", facebook_group_question: "public_chatter", reddit_thread: "public_chatter", apify_social: "public_chatter", brand_listening: "public_chatter",
   meta_ad_creative: "competitor_watch", competitor_ad: "competitor_watch", competitor_post: "competitor_watch", refurbish_competitor_post: "competitor_watch",
   own_content_outcome: "own_underperformer",
+  // A repeated first-party question (the website / portal question loop) starts content from the tenant's OWN evidence (wave 155, lane 155K).
+  website_question: "first_party_question",
 })
-export function refurbishTriggerKindForTopicSource(kind: string | null | undefined): "google_trend" | "public_chatter" | "competitor_watch" | "own_underperformer" | null {
+export function refurbishTriggerKindForTopicSource(kind: string | null | undefined): "google_trend" | "public_chatter" | "competitor_watch" | "own_underperformer" | "first_party_question" | null {
   return kind && Object.prototype.hasOwnProperty.call(REFURBISH_TRIGGER_BY_TOPIC_SOURCE, kind) ? REFURBISH_TRIGGER_BY_TOPIC_SOURCE[kind] : null
 }
 function topicWindowFor(kind: string): { expiresDays: number; maxSourceAgeDays: number } { return KIND_WINDOWS[kind] ?? DEFAULT_WINDOW }

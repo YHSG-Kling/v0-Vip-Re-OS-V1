@@ -1367,3 +1367,14 @@ ROLLBACK;
 -- undo of §P.1 only if you want the global rule back (the live definition, measured 2026-11-19):
 -- CREATE UNIQUE INDEX uq_competitor_ads_source_provider_id ON public.competitor_ads USING btree (source_platform, provider_ad_id) WHERE (provider_ad_id IS NOT NULL);
 ```
+
+### Q.4 Lane 155K — no new owner SQL; one read-only check after the integrator applies m984
+
+Lane 155K wrote no DROP INDEX / DROP COLUMN / storage policy. `m984` (office circles for shared methods) is integrator-applied (it
+widens the `circle_tactic_shares.circle_kind` CHECK and adds a nullable `location_id`). If you want to see it yourself, this
+reads and writes nothing:
+
+```sql
+-- expect 6 rows: circle_kind CHECK incl. 'office', status, evidence_quality, team_iff, mentorship_iff, office_iff
+select conname, pg_get_constraintdef(oid) from pg_constraint where conrelid = 'public.circle_tactic_shares'::regclass and contype = 'c' order by 1;
+```

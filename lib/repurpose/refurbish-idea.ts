@@ -225,7 +225,7 @@ export function compareLikeWithLike(target: CohortPost, pool: ReadonlyArray<Coho
 /** The shape lane 154C's classifyTopicExclusion exports (lib/content-intel/topic-intake.ts). Injected, never re-implemented. */
 export type RefurbishExcludeFn = (i: { title: string; text?: string; sourceKind?: string }) => { excluded: boolean; reason: string | null }
 
-export type RefurbishTriggerKind = "competitor_watch" | "google_trend" | "public_chatter" | "own_underperformer" | "manual_url"
+export type RefurbishTriggerKind = "competitor_watch" | "google_trend" | "public_chatter" | "own_underperformer" | "first_party_question" | "manual_url"
 
 export interface IdeaSourceInput {
   kind: "competitor_post" | "own_asset" | "google_trend" | "public_chatter" | "external_url"
@@ -425,7 +425,7 @@ export function refurbishTriggerVerdict(t: {
     case "competitor_watch":
       return t.authorized ? { start: true, sourceKind: "competitor_post", rights: "idea_only", reason: "a competitor on this tenant's watchlist" } : { start: false, sourceKind: null, rights: null, reason: "the competitor is not on this tenant's watchlist" }
     case "google_trend":
-      return { start: true, sourceKind: "google_trend", rights: "idea_only", reason: "a rising search topic (a topic, not a person)" }
+      return { start: true, sourceKind: "google_trend", rights: "idea_only", reason: "a search topic (a topic, not a person)" }
     case "public_chatter":
       return { start: true, sourceKind: "public_chatter", rights: "idea_only", reason: "a public conversation topic, reworded" }
     case "own_underperformer": {
@@ -433,6 +433,10 @@ export function refurbishTriggerVerdict(t: {
       if (m == null || b == null) return { start: false, sourceKind: null, rights: null, reason: "the piece's result or the tenant's baseline is unknown — under-performance is not assumed" }
       return m < b ? { start: true, sourceKind: "own_asset", rights: "tenant_owned", reason: "own piece measured below the tenant's baseline — refresh the idea" } : { start: false, sourceKind: null, rights: null, reason: "the piece met its baseline" }
     }
+    // WAVE 155 (lane 155K, directive K3): a question the tenant's OWN customers asked (website chat / portal assistant, counted over the
+    // privacy floor — lib/customer-intelligence/website-question-topics.ts) is first-party education material: no territory, no scrape.
+    case "first_party_question":
+      return { start: true, sourceKind: "own_asset", rights: "tenant_owned", reason: "a question the tenant's own customers asked (first-party, a reworded FAQ)" }
     default:
       return { start: false, sourceKind: null, rights: null, reason: "manual URL runs are started by a person, not a signal" }
   }

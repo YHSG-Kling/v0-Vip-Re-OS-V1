@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 487 tables, 966 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-18
+ * generated: 2026-11-20
  * source: public.live_check_constraints_json()
- * body-sha256: 18d827bbad215ac93683e5b808731b135abc396655a0395a336974411142a9fe
+ * body-sha256: f35da837f3513228dfce04a5dabf40ff1adcdeed96504a6d130b58d2359191e0
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -478,7 +478,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     session_type: ["internal", "internal_assistant", "portal_widget", "voice", "website_widget"],
   },
   circle_tactic_shares: {
-    circle_kind: ["brokerage", "mentorship", "team"],
+    circle_kind: ["brokerage", "mentorship", "office", "team"],
     evidence_quality: ["attributable_comparable", "idea_unknown_conversions", "insufficient_sample", "no_comparable_cohort", "no_measured_lift", "outdated"],
     status: ["revoked", "shared"],
   },

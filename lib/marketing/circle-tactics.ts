@@ -7,8 +7,14 @@
 //   · mentorship  agent_mentor_relationships (status 'active') — the existing coaching / mentoring pairing
 //   · brokerage   the tenant's own active agents (agents.brokerage_id) — the tenant boundary itself
 // Nothing crosses a tenant: every read and write is pinned to the session brokerage, and a circle that does not belong to it
-// is refused. Office (agents.location_id) is NOT a circle here — no existing structure carries an office-scoped share; a
-// published blind spot.
+// is refused.
+//   · office      WAVE 155 (lane 155K, directive K4): the office the agent is seated in (agents.location_id → locations, status
+//                 'active', same tenant) — the existing office structure, read live like the others. m984 lets a share name it
+//                 (circle_kind 'office' iff location_id). An office share reaches only that office's current agents; another office's
+//                 agents never see it, and nothing from another office's campaigns is ever read for it.
+// CALIBRATION (K4): what members adapted is measured back — only provider-acknowledged posts with recorded engagement, only from
+// CURRENT circle members, each against that adopter's OWN baseline — and the result (a count of adopters, never a figure) is shown
+// only once at least CALIBRATION_MIN_MEASURED_ADOPTERS adopters are measured. Below that it reads "not enough measured outcomes".
 //
 // WHAT WAS MISSING, AND THE SMALLEST THING ADDED: nothing in the live schema carries "this producer opted in to share THIS
 // generalized method with THIS circle, until THIS date, revocably" — learning_modules has no consent / expiry / evidence column
@@ -48,7 +54,7 @@ import type { TopicIdea, TopicIntakeResult } from "@/lib/content-intel/topic-int
 
 type Db = { from: (table: string) => any }
 
-const CIRCLE_KINDS = ["team", "mentorship", "brokerage"] as const
+const CIRCLE_KINDS = ["team", "mentorship", "brokerage", "office"] as const
 type CircleKind = (typeof CIRCLE_KINDS)[number]
 const EVIDENCE_QUALITIES = ["attributable_comparable", "insufficient_sample", "no_comparable_cohort", "no_measured_lift", "outdated", "idea_unknown_conversions"] as const
 type EvidenceQuality = (typeof EVIDENCE_QUALITIES)[number]
@@ -119,7 +125,7 @@ function stripTacticBrief(input: { method: string; components: readonly string[]
 
 // ── Membership (live, every read) ─────────────────────────────────────────────────────────────────────────────
 
-interface CircleRef { kind: CircleKind; teamId?: string | null; mentorshipId?: string | null }
+interface CircleRef { kind: CircleKind; teamId?: string | null; mentorshipId?: string | null; locationId?: string | null }
 
 /** The user ids of a circle's CURRENT members, tenant-pinned. A circle outside the tenant resolves to an error. */
 async function circleMemberUserIds(db: Db, brokerageId: string, circle: CircleRef, now: Date): Promise<{ userIds: string[]; error: string | null }> {
@@ -137,9 +143,17 @@ async function circleMemberUserIds(db: Db, brokerageId: string, circle: CircleRe
     const { data, error } = await db.from("agent_mentor_relationships").select("mentor_agent_id, mentee_agent_id").eq("id", circle.mentorshipId).eq("brokerage_id", brokerageId).eq("status", "active")
     if (error) return { userIds: [], error: `agent_mentor_relationships read refused: ${error.message ?? "unknown"}` }
     agentIds = ((data ?? []) as Array<{ mentor_agent_id: string | null; mentee_agent_id: string | null }>).flatMap((r) => [r.mentor_agent_id, r.mentee_agent_id]).filter((x): x is string => !!x)
+  } else if (circle.kind === "office") {
+    if (!circle.locationId) return { userIds: [], error: "no office named" }
+    const { data: loc, error: lErr } = await db.from("locations").select("id, status").eq("id", circle.locationId).eq("brokerage_id", brokerageId)
+    if (lErr) return { userIds: [], error: `locations read refused: ${lErr.message ?? "unknown"}` }
+    const l = ((loc ?? []) as Array<{ status: string | null }>)
+    if (l.length !== 1) return { userIds: [], error: "office_not_in_tenant" }
+    if (l[0].status !== "active") return { userIds: [], error: "office_not_active" }
   } else if (circle.kind !== "brokerage") return { userIds: [], error: "unknown_circle_kind" }
   let q = db.from("agents").select("id, user_id").eq("brokerage_id", brokerageId).eq("is_active", true)
-  if (circle.kind !== "brokerage") { if (agentIds.length === 0) return { userIds: [], error: null }; q = q.in("id", agentIds) }
+  if (circle.kind === "office") q = q.eq("location_id", circle.locationId)
+  else if (circle.kind !== "brokerage") { if (agentIds.length === 0) return { userIds: [], error: null }; q = q.in("id", agentIds) }
   const { data: agents, error: aErr } = await q.limit(500)
   if (aErr) return { userIds: [], error: `agents read refused: ${aErr.message ?? "unknown"}` }
   return { userIds: [...new Set(((agents ?? []) as Array<{ user_id: string | null }>).map((a) => a.user_id).filter((u): u is string => !!u))], error: null }
@@ -226,11 +240,14 @@ export async function shareCircleTactic(db: Db, session: CircleSession, input: S
       if (!roi.complete && evidence.quality === "attributable_comparable") evidence = { ...evidence, quality: "insufficient_sample", rule: `${evidence.rule}; the ROI reader marked its own view incomplete` }
     }
     const sourceLabel = input.sourceKind === "competitor_public_idea" ? "competitor_public_idea" : evidence.quality === "attributable_comparable" ? "measured_by_roi_reader" : input.claimedTitle ? "self_entered_title" : "unmeasured"
-    const key = `circle_share:${session.brokerageId}:${session.userId}:${input.circle.kind}:${input.circle.teamId ?? input.circle.mentorshipId ?? "tenant"}:${strip.brief.method.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60)}`
+    const key = `circle_share:${session.brokerageId}:${session.userId}:${input.circle.kind}:${input.circle.teamId ?? input.circle.mentorshipId ?? input.circle.locationId ?? "tenant"}:${strip.brief.method.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60)}`
     return await ledgerOf(db, deps)({ brokerageId: session.brokerageId, userId: session.userId, action: "marketing.circle_tactic.share", key, reason: `a producer opted in to share a generalized method with their ${input.circle.kind}`, detail: { circle: input.circle, quality: evidence.quality, sourceLabel } }, async (): Promise<ShareResult> => {
       const { data: ins, error } = await db.from("circle_tactic_shares").insert({
         brokerage_id: session.brokerageId, producer_user_id: session.userId, circle_kind: input.circle.kind,
         team_id: input.circle.kind === "team" ? input.circle.teamId : null, mentorship_id: input.circle.kind === "mentorship" ? input.circle.mentorshipId : null,
+        // m984: location_id is named ONLY for an office share, so a team / mentorship / tenant share never names a column that is absent
+        // before the integrator applies it (PGRST204 refuses a whole row naming an absent column — CLAUDE.md §3).
+        ...(input.circle.kind === "office" ? { location_id: input.circle.locationId } : {}),
         status: "shared", evidence_quality: evidence.quality, source_label: sourceLabel,
         brief: { ...strip.brief, source_kind: input.sourceKind, claimed_title: input.claimedTitle ? "self-entered title (not verified)" : null },
         evidence: { quality: evidence.quality, rule: evidence.rule, window_days: evidence.windowDays, tactic_campaigns: evidence.tacticCampaigns, cohort_campaigns: evidence.cohortCampaigns, direction: evidence.direction },
@@ -239,7 +256,7 @@ export async function shareCircleTactic(db: Db, session: CircleSession, input: S
       const id = ((ins ?? []) as Array<{ id: string }>)[0]?.id
       if (error || !id) return { ok: false, reason: `share_not_recorded:${error?.message ?? "no row returned"}` }
       let offered = 0, evaluated = 0
-      const share: ShareRow = { id, brokerage_id: session.brokerageId, producer_user_id: session.userId, circle_kind: input.circle.kind, team_id: input.circle.teamId ?? null, mentorship_id: input.circle.mentorshipId ?? null, status: "shared", evidence_quality: evidence.quality, source_label: sourceLabel, brief: strip.brief as unknown as Record<string, any>, offers: {}, expires_at: new Date(now.getTime() + EVIDENCE_WINDOW_DAYS * DAY_MS).toISOString() }
+      const share: ShareRow = { id, brokerage_id: session.brokerageId, producer_user_id: session.userId, circle_kind: input.circle.kind, team_id: input.circle.teamId ?? null, mentorship_id: input.circle.mentorshipId ?? null, location_id: input.circle.kind === "office" ? input.circle.locationId ?? null : null, status: "shared", evidence_quality: evidence.quality, source_label: sourceLabel, brief: strip.brief as unknown as Record<string, any>, offers: {}, expires_at: new Date(now.getTime() + EVIDENCE_WINDOW_DAYS * DAY_MS).toISOString() }
       for (const memberId of members.userIds.filter((u) => u !== session.userId).slice(0, MAX_FANOUT)) {
         const d = await evaluateForMember(db, share, memberId, deps)
         if (d.recorded) { evaluated++; if (d.decision === "offer" || d.decision === "recommend_adaptation") offered++ }
@@ -253,6 +270,8 @@ export async function shareCircleTactic(db: Db, session: CircleSession, input: S
 
 interface ShareRow {
   id: string; brokerage_id: string; producer_user_id: string; circle_kind: string; team_id: string | null; mentorship_id: string | null
+  /** m984 — present only on an office share; read in a second, office-only select (officeIdsOf) so no pre-m984 read names it. */
+  location_id?: string | null
   status: string; evidence_quality: string; source_label: string; brief: Record<string, any>; offers: Record<string, any> | null; expires_at: string
   /** The basis recorded at share time (rule, window, counts, direction) — the PRODUCER's own figures; shown only to the producer. */
   evidence?: Record<string, any> | null
@@ -310,20 +329,113 @@ async function evaluateForMember(db: Db, share: ShareRow, memberUserId: string, 
 
 // ── Read, revoke, evaluate, adapt ─────────────────────────────────────────────────────────────────────────────
 
-interface CircleTacticView { shareId: string; circleKind: string; method: string; components: string[]; explanation: string; evidenceQuality: string; sourceLabel: string; decision: MemberDecision | null; rationale: string | null; adaptedTopicId: string | null; expiresAt: string }
+interface CircleTacticView { shareId: string; circleKind: string; method: string; components: string[]; explanation: string; evidenceQuality: string; sourceLabel: string; decision: MemberDecision | null; rationale: string | null; adaptedTopicId: string | null; expiresAt: string; calibration?: AdopterCalibration | null }
 
-async function liveCirclesOf(db: Db, brokerageId: string, userId: string, now: Date): Promise<{ teams: Set<string>; mentorships: Set<string>; agentId: string | null; error: string | null }> {
-  const { data: ag, error: aErr } = await db.from("agents").select("id").eq("brokerage_id", brokerageId).eq("user_id", userId).eq("is_active", true).limit(1)
-  if (aErr) return { teams: new Set(), mentorships: new Set(), agentId: null, error: `agents read refused: ${aErr.message ?? "unknown"}` }
-  const agentId = ((ag ?? []) as Array<{ id: string }>)[0]?.id ?? null
-  if (!agentId) return { teams: new Set(), mentorships: new Set(), agentId: null, error: null }
+type LiveCircles = { teams: Set<string>; mentorships: Set<string>; agentId: string | null; office: string | null; error: string | null }
+async function liveCirclesOf(db: Db, brokerageId: string, userId: string, now: Date): Promise<LiveCircles> {
+  const { data: ag, error: aErr } = await db.from("agents").select("id, location_id").eq("brokerage_id", brokerageId).eq("user_id", userId).eq("is_active", true).limit(1)
+  if (aErr) return { teams: new Set(), mentorships: new Set(), agentId: null, office: null, error: `agents read refused: ${aErr.message ?? "unknown"}` }
+  const agentRow = ((ag ?? []) as Array<{ id: string; location_id?: string | null }>)[0]
+  const agentId = agentRow?.id ?? null
+  if (!agentId) return { teams: new Set(), mentorships: new Set(), agentId: null, office: null, error: null }
+  // The seat's office counts only while that office is ACTIVE in this tenant (an archived office shares nothing).
+  let office: string | null = null
+  if (agentRow?.location_id) {
+    const { data: loc, error: lErr } = await db.from("locations").select("id, status").eq("id", agentRow.location_id).eq("brokerage_id", brokerageId)
+    if (lErr) return { teams: new Set(), mentorships: new Set(), agentId, office: null, error: `locations read refused: ${lErr.message ?? "unknown"}` }
+    office = ((loc ?? []) as Array<{ status: string | null }>)[0]?.status === "active" ? agentRow.location_id : null
+  }
   const [tm, mr] = await Promise.all([
     db.from("team_members").select("team_id, effective_to").eq("brokerage_id", brokerageId).eq("agent_id", agentId).eq("is_active", true),
     db.from("agent_mentor_relationships").select("id, mentor_agent_id, mentee_agent_id").eq("brokerage_id", brokerageId).eq("status", "active").or(`mentor_agent_id.eq.${agentId},mentee_agent_id.eq.${agentId}`),
   ])
-  if (tm.error || mr.error) return { teams: new Set(), mentorships: new Set(), agentId, error: `membership read refused: ${(tm.error ?? mr.error).message ?? "unknown"}` }
+  if (tm.error || mr.error) return { teams: new Set(), mentorships: new Set(), agentId, office: null, error: `membership read refused: ${(tm.error ?? mr.error).message ?? "unknown"}` }
   const teams = new Set(((tm.data ?? []) as Array<{ team_id: string; effective_to: string | null }>).filter((m) => !m.effective_to || Date.parse(m.effective_to) > now.getTime()).map((m) => m.team_id))
-  return { teams, mentorships: new Set(((mr.data ?? []) as Array<{ id: string }>).map((m) => m.id)), agentId, error: null }
+  return { teams, mentorships: new Set(((mr.data ?? []) as Array<{ id: string }>).map((m) => m.id)), agentId, office, error: null }
+}
+
+/** Is this live membership inside the share's circle? (One rule for the viewer AND the producer.) */
+function inCircleOf(r: ShareRow, c: LiveCircles): boolean {
+  if (r.circle_kind === "brokerage") return !!c.agentId
+  if (r.circle_kind === "team") return !!r.team_id && c.teams.has(r.team_id)
+  if (r.circle_kind === "mentorship") return !!r.mentorship_id && c.mentorships.has(r.mentorship_id)
+  if (r.circle_kind === "office") return !!r.location_id && c.office === r.location_id
+  return false
+}
+
+/** m984: the office of each OFFICE share, in a second select that only runs when an office share exists. Refused = none visible. */
+async function officeIdsOf(db: Db, brokerageId: string, rows: ShareRow[]): Promise<void> {
+  const office = rows.filter((r) => r.circle_kind === "office")
+  if (!office.length) return
+  const { data, error } = await db.from("circle_tactic_shares").select("id, location_id").eq("brokerage_id", brokerageId).in("id", office.map((r) => r.id))
+  const byId = new Map(((error ? [] : data ?? []) as Array<{ id: string; location_id: string | null }>).map((x) => [x.id, x.location_id]))
+  for (const r of office) r.location_id = byId.get(r.id) ?? null
+}
+
+// ── Calibration from adopters (K4) ────────────────────────────────────────────────────────────────────────────
+
+/** The fewest MEASURED adopters before an adopter result is shown at all — the ROI reader's own comparable minimum, reused. */
+export const CALIBRATION_MIN_MEASURED_ADOPTERS = ROI_MIN_COMPARABLE_CAMPAIGNS
+export interface AdopterOutcome { adopterUserId: string; adaptedEngagement: number | null; baselineEngagements: number[] }
+export interface AdopterCalibration { status: "calibrated" | "not_enough_measured_outcomes" | "no_adopters"; adopters: number; measuredAdopters: number; aboveOwnBaseline: number | null; rule: string }
+
+/**
+ * PURE. An adopter is MEASURED only when their adapted post has recorded engagement AND they have at least
+ * ROI_MIN_COMPARABLE_CAMPAIGNS of their own other measured posts to compare it with. Below CALIBRATION_MIN_MEASURED_ADOPTERS measured
+ * adopters, `aboveOwnBaseline` is null — never 0 and never a guess. Only counts of adopters leave here: no engagement figure.
+ */
+export function classifyAdopterCalibration(outcomes: readonly AdopterOutcome[]): AdopterCalibration {
+  const rule = `an adopter counts once their adapted post has recorded engagement and ≥ ${ROI_MIN_COMPARABLE_CAMPAIGNS} of their own other measured posts in ${EVIDENCE_WINDOW_DAYS} days exist; shown after ≥ ${CALIBRATION_MIN_MEASURED_ADOPTERS} such adopters; compared with the adopter's own median`
+  if (outcomes.length === 0) return { status: "no_adopters", adopters: 0, measuredAdopters: 0, aboveOwnBaseline: null, rule }
+  const measured = outcomes.filter((o) => o.adaptedEngagement != null && o.baselineEngagements.length >= ROI_MIN_COMPARABLE_CAMPAIGNS)
+  if (measured.length < CALIBRATION_MIN_MEASURED_ADOPTERS) return { status: "not_enough_measured_outcomes", adopters: outcomes.length, measuredAdopters: measured.length, aboveOwnBaseline: null, rule }
+  const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
+  return { status: "calibrated", adopters: outcomes.length, measuredAdopters: measured.length, aboveOwnBaseline: measured.filter((o) => (o.adaptedEngagement as number) > median(o.baselineEngagements)).length, rule }
+}
+
+/** Recorded engagement of a provider-acknowledged post, or null when nothing was measured (an absent field is not a zero). */
+function measuredEngagement(p: { external_post_id: string | null; engagement_data: Record<string, unknown> | null }): number | null {
+  if (!p.external_post_id || !p.engagement_data || typeof p.engagement_data !== "object") return null
+  const vals = ["likes", "comments", "shares", "reactions"].map((k) => p.engagement_data![k]).filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+  return vals.length ? vals.reduce((a, b) => a + b, 0) : null
+}
+
+/**
+ * The adopter outcomes of ONE share: only CURRENT members of its circle (a member who left — e.g. moved to another office — drops
+ * out, so another office's posts are never folded in), only their own posts for the topic they adapted (content_topic_uses), tenant-
+ * pinned. Any refused read returns null (the caller shows "unknown", never a count).
+ */
+async function loadAdopterOutcomes(db: Db, share: ShareRow, now: Date): Promise<AdopterOutcome[] | null> {
+  const adopted = Object.entries(share.offers ?? {}).filter(([, o]) => typeof (o as { adapted_topic_id?: unknown })?.adapted_topic_id === "string").map(([uid, o]) => ({ uid, topicId: (o as { adapted_topic_id: string }).adapted_topic_id }))
+  if (!adopted.length) return []
+  const members = await circleMemberUserIds(db, share.brokerage_id, { kind: share.circle_kind as CircleKind, teamId: share.team_id, mentorshipId: share.mentorship_id, locationId: share.location_id ?? null }, now)
+  if (members.error) return null
+  const current = adopted.filter((a) => members.userIds.includes(a.uid) && a.uid !== share.producer_user_id)
+  if (!current.length) return []
+  const { data: uses, error: uErr } = await db.from("content_topic_uses").select("topic_id, asset_id").eq("brokerage_id", share.brokerage_id).eq("asset_type", "social_post").in("topic_id", current.map((a) => a.topicId))
+  if (uErr) return null
+  const since = new Date(now.getTime() - EVIDENCE_WINDOW_DAYS * DAY_MS).toISOString()
+  const { data: posts, error: pErr } = await db.from("social_posts").select("id, user_id, external_post_id, engagement_data").eq("brokerage_id", share.brokerage_id).in("user_id", current.map((a) => a.uid)).gte("created_at", since).limit(1000)
+  if (pErr) return null
+  const postRows = (posts ?? []) as Array<{ id: string; user_id: string | null; external_post_id: string | null; engagement_data: Record<string, unknown> | null }>
+  const useRows = (uses ?? []) as Array<{ topic_id: string; asset_id: string | null }>
+  return current.map((a) => {
+    const adaptedIds = new Set(useRows.filter((u) => u.topic_id === a.topicId && u.asset_id).map((u) => u.asset_id as string))
+    const own = postRows.filter((p) => p.user_id === a.uid)
+    const adapted = own.filter((p) => adaptedIds.has(p.id)).map(measuredEngagement).filter((v): v is number => v != null)
+    const baseline = own.filter((p) => !adaptedIds.has(p.id)).map(measuredEngagement).filter((v): v is number => v != null)
+    return { adopterUserId: a.uid, adaptedEngagement: adapted.length ? Math.max(...adapted) : null, baselineEngagements: baseline }
+  })
+}
+
+/** Calibrate up to `max` shares that have adaptations (bounded reads per page). A refused read = calibration null ("unknown"). */
+async function calibrationsOf(db: Db, rows: ShareRow[], now: Date, max = 10): Promise<Map<string, AdopterCalibration | null>> {
+  const out = new Map<string, AdopterCalibration | null>()
+  for (const r of rows.filter((x) => Object.values(x.offers ?? {}).some((o: any) => typeof o?.adapted_topic_id === "string")).slice(0, max)) {
+    const o = await loadAdopterOutcomes(db, r, now).catch(() => null)
+    out.set(r.id, o ? classifyAdopterCalibration(o) : null)
+  }
+  return out
 }
 
 /**
@@ -331,32 +443,33 @@ async function liveCirclesOf(db: Db, brokerageId: string, userId: string, now: D
  * left the circle takes their share with them); revoked or expired shares, and those the arbiter ignored for this member, are
  * never returned. No producer identity and no figure are in the view. `mine` lists the viewer's own shares with their state.
  */
-export async function listCircleTacticsForViewer(db: Db, session: CircleSession, opts: { now?: Date } = {}): Promise<{ visible: CircleTacticView[]; mine: Array<{ shareId: string; circleKind: string; method: string; status: string; evidenceQuality: string; expiresAt: string; offered: number; evidenceBasis: { rule: string | null; windowDays: number | null; tacticCampaigns: number | null; cohortCampaigns: number | null; direction: string | null } | null; revokedAt: string | null }>; error: string | null }> {
+export async function listCircleTacticsForViewer(db: Db, session: CircleSession, opts: { now?: Date } = {}): Promise<{ visible: CircleTacticView[]; mine: Array<{ shareId: string; circleKind: string; method: string; status: string; evidenceQuality: string; expiresAt: string; offered: number; evidenceBasis: { rule: string | null; windowDays: number | null; tacticCampaigns: number | null; cohortCampaigns: number | null; direction: string | null } | null; revokedAt: string | null; calibration: AdopterCalibration | null }>; error: string | null }> {
   const now = opts.now ?? new Date()
   if (!session.userId || !session.brokerageId) return { visible: [], mine: [], error: "not signed in" }
   const { data, error } = await db.from("circle_tactic_shares").select(SHARE_COLS).eq("brokerage_id", session.brokerageId).order("opted_in_at", { ascending: false }).limit(200)
   if (error) return { visible: [], mine: [], error: `circle_tactic_shares read refused: ${error.message ?? "unknown"}` }
   const rows = (data ?? []) as ShareRow[]
+  await officeIdsOf(db, session.brokerageId, rows)
+  const calibration = await calibrationsOf(db, rows.filter((r) => r.status === "shared"), now)
   const mine = rows.filter((r) => r.producer_user_id === session.userId).map((r) => ({ shareId: r.id, circleKind: r.circle_kind, method: String(r.brief?.method ?? ""), status: r.status === "shared" && Date.parse(r.expires_at) <= now.getTime() ? "expired" : r.status, evidenceQuality: r.evidence_quality, expiresAt: r.expires_at, offered: Object.values(r.offers ?? {}).filter((o: any) => o?.decision === "offer" || o?.decision === "recommend_adaptation").length,
     // The producer reads back the basis of THEIR OWN share (their own campaigns — never shown to a member) and when they revoked it.
     evidenceBasis: r.evidence && typeof r.evidence === "object" ? { rule: typeof r.evidence.rule === "string" ? r.evidence.rule : null, windowDays: typeof r.evidence.window_days === "number" ? r.evidence.window_days : null, tacticCampaigns: typeof r.evidence.tactic_campaigns === "number" ? r.evidence.tactic_campaigns : null, cohortCampaigns: typeof r.evidence.cohort_campaigns === "number" ? r.evidence.cohort_campaigns : null, direction: typeof r.evidence.direction === "string" ? r.evidence.direction : null } : null,
-    revokedAt: r.revoked_at ?? null }))
+    revokedAt: r.revoked_at ?? null, calibration: calibration.get(r.id) ?? null }))
   const live = rows.filter((r) => r.producer_user_id !== session.userId && r.status === "shared" && Date.parse(r.expires_at) > now.getTime())
   if (live.length === 0) return { visible: [], mine, error: null }
   const viewer = await liveCirclesOf(db, session.brokerageId, session.userId, now)
   if (viewer.error) return { visible: [], mine, error: viewer.error }
   if (!viewer.agentId) return { visible: [], mine, error: null }
-  const producerOk = new Map<string, Awaited<ReturnType<typeof liveCirclesOf>>>()
+  const producerOk = new Map<string, LiveCircles>()
   const visible: CircleTacticView[] = []
   for (const r of live) {
-    const inCircle = (c: { teams: Set<string>; mentorships: Set<string>; agentId: string | null }) => r.circle_kind === "brokerage" ? !!c.agentId : r.circle_kind === "team" ? !!r.team_id && c.teams.has(r.team_id) : r.circle_kind === "mentorship" ? !!r.mentorship_id && c.mentorships.has(r.mentorship_id) : false
-    if (!inCircle(viewer)) continue
+    if (!inCircleOf(r, viewer)) continue
     if (!producerOk.has(r.producer_user_id)) producerOk.set(r.producer_user_id, await liveCirclesOf(db, session.brokerageId, r.producer_user_id, now))
     const p = producerOk.get(r.producer_user_id)!
-    if (p.error || !inCircle(p)) continue
+    if (p.error || !inCircleOf(r, p)) continue
     const o = (r.offers ?? {})[session.userId] as { decision?: string; rationale?: string; adapted_topic_id?: string | null } | undefined
     if (o?.decision === "ignore_different_audience") continue
-    visible.push({ shareId: r.id, circleKind: r.circle_kind, method: String(r.brief?.method ?? ""), components: Array.isArray(r.brief?.components) ? r.brief.components : [], explanation: String(r.brief?.explanation ?? ""), evidenceQuality: r.evidence_quality, sourceLabel: r.source_label, decision: (o?.decision as MemberDecision) ?? null, rationale: o?.rationale ?? null, adaptedTopicId: o?.adapted_topic_id ?? null, expiresAt: r.expires_at })
+    visible.push({ shareId: r.id, circleKind: r.circle_kind, method: String(r.brief?.method ?? ""), components: Array.isArray(r.brief?.components) ? r.brief.components : [], explanation: String(r.brief?.explanation ?? ""), evidenceQuality: r.evidence_quality, sourceLabel: r.source_label, decision: (o?.decision as MemberDecision) ?? null, rationale: o?.rationale ?? null, adaptedTopicId: o?.adapted_topic_id ?? null, expiresAt: r.expires_at, calibration: calibration.get(r.id) ?? null })
   }
   return { visible, mine, error: null }
 }
@@ -384,6 +497,7 @@ async function visibleShare(db: Db, session: CircleSession, shareId: string, now
   const { data, error } = await db.from("circle_tactic_shares").select(SHARE_COLS).eq("id", shareId).eq("brokerage_id", session.brokerageId).limit(1)
   const share = ((data ?? []) as ShareRow[])[0]
   if (error || !share) return { error: "not_visible_to_you" }
+  await officeIdsOf(db, session.brokerageId, [share])
   return { share, view }
 }
 

@@ -36,6 +36,7 @@ import {
   completeFinalWalkthroughAction,
   requestRepairAction,
   completeRepairAction,
+  sendAppraiserPacketAction,
 } from "@/app/actions/transaction-milestones"
 import {
   scheduleInspectionAction,
@@ -787,6 +788,23 @@ export function TransactionDetailClient({
   const [walkthroughDialogOpen, setWalkthroughDialogOpen] = useState(false)
   const [walkthroughDate, setWalkthroughDate] = useState("")
   const [walkthroughError, setWalkthroughError] = useState<string | null>(null)
+  // wave 155 (155K, K6): the agent names the appraiser; the packet goes as a 7-day secure link through the governed send.
+  const [packetSendOpen, setPacketSendOpen] = useState(false)
+  const [packetEmail, setPacketEmail] = useState("")
+  const [packetConfirmed, setPacketConfirmed] = useState(false)
+  const [packetNote, setPacketNote] = useState("")
+  const [packetError, setPacketError] = useState<string | null>(null)
+  function submitPacketSend() {
+    setPacketError(null)
+    startTransition(async () => {
+      const res = await sendAppraiserPacketAction({ transactionId: transaction.id, recipientEmail: packetEmail, confirmRecipient: packetConfirmed, note: packetNote || null })
+      if (res.success) {
+        setPacketSendOpen(false)
+        toast.success(`Packet sent to ${res.deliveredTo} — the secure link opens until ${String(res.linkValidUntil ?? "").slice(0, 10)}`)
+        router.refresh()
+      } else setPacketError(res.error ?? "The packet was not sent")
+    })
+  }
 
   /** Milestones whose completion runs a real lifecycle, not just a status flip. */
   const LIFECYCLE_MILESTONES = new Set([
@@ -2634,6 +2652,19 @@ export function TransactionDetailClient({
                               <AlertTriangle className="h-3 w-3 mr-1" />
                               Overridden
                             </Badge>
+                          )}
+
+                          {/* wave 155 (155K): the composed appraiser packet goes to the appraiser only when the agent names them. */}
+                          {m.milestone_name === "appraisal_ordered" && m.status === "completed" && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs px-2"
+                              disabled={isPending}
+                              onClick={() => { setPacketEmail(""); setPacketConfirmed(false); setPacketNote(""); setPacketError(null); setPacketSendOpen(true) }}
+                            >
+                              Send packet to appraiser
+                            </Button>
                           )}
 
                           {/* Schedule — only the final walkthrough carries a
@@ -5332,6 +5363,42 @@ export function TransactionDetailClient({
             <Button onClick={submitWalkthroughSchedule} disabled={isPending}>
               {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Schedule
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={packetSendOpen} onOpenChange={setPacketSendOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Send the appraiser packet</DialogTitle>
+            <DialogDescription>
+              The appraiser receives a secure link to the packet (valid 7 days) in a fixed message with your optional note —
+              nothing in it is AI-written, and it carries no opinion of value.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {packetError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{packetError}</div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="packet-email">Appraiser&apos;s email</Label>
+              <Input id="packet-email" type="email" value={packetEmail} onChange={(e) => setPacketEmail(e.target.value)} />
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={packetConfirmed} onChange={(e) => setPacketConfirmed(e.target.checked)} />
+              This is the appraiser assigned to this order
+            </label>
+            <div className="space-y-1.5">
+              <Label htmlFor="packet-note">Note (optional, in your own words)</Label>
+              <Input id="packet-note" value={packetNote} onChange={(e) => setPacketNote(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPacketSendOpen(false)}>Cancel</Button>
+            <Button onClick={submitPacketSend} disabled={isPending || !packetEmail}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Send
             </Button>
           </DialogFooter>
         </DialogContent>

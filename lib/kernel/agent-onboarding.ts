@@ -517,6 +517,20 @@ type QuizQuestion = {
   [key: string]: unknown
 }
 
+/**
+ * PURE — the SHAPE ADAPTER onto the one grader (lib/academy/quiz.ts gradeQuiz). Each onboarding question becomes a one-choice
+ * module question whose correct index is 0; the learner's answer becomes 0 when it is `===` the stored correct answer (the
+ * comparison this file always used), else -1 (wrong). A missing answer is wrong. Nothing about which answer is right is inferred.
+ */
+export function onboardingQuizAsModuleQuiz(questions: readonly QuizQuestion[], answers: Record<string, unknown>): { questions: Array<{ q: string; choices: string[]; correct_idx: number }>; answers: Record<number, number> } {
+  const out: Record<number, number> = {}
+  const qs = questions.map((question, i) => {
+    out[i] = Object.prototype.hasOwnProperty.call(answers, question.id) && answers[question.id] === question.correctAnswer ? 0 : -1
+    return { q: String(question.id), choices: ["correct"], correct_idx: 0 }
+  })
+  return { questions: qs, answers: out }
+}
+
 type QuizRow = {
   id: string
   step_id: string
@@ -595,17 +609,20 @@ export async function submitQuizAttempt(params: {
 
   const questions = (quiz.questions as QuizQuestion[]) ?? []
 
-  // Score: count correct answers
-  let correctCount = 0
-  for (const question of questions) {
-    if (params.answers[question.id] === question.correctAnswer) {
-      correctCount++
-    }
-  }
-  const score = questions.length > 0
-    ? Math.round((correctCount / questions.length) * 100)
-    : 0
-  const passed = score >= quiz.passing_score
+  // ONE GRADER (wave 155, lane 155K — carry-in from 155C; CLAUDE.md §6). TOMBSTONE: this file's own scorer
+  // (`answers[q.id] === q.correctAnswer`, counted here, `score >= quiz.passing_score`) is GONE. SURVIVOR: lib/academy/quiz.ts
+  // gradeQuiz, through onboardingQuizAsModuleQuiz below (the shape adapter: an onboarding question is keyed by id and its
+  // correct answer is any value; the adapter keeps that exact `===` comparison per question and hands gradeQuiz the result),
+  // with the threshold from resolveCoursePassingScore (the quiz row's own passing_score when it is a real rule, else 80).
+  // Two behaviors move, both STRICTER: a quiz with no questions never passes (it passed before when passing_score <= 0), and an
+  // out-of-range passing_score (≤ 0, > 100) no longer passes everything — it falls back to the canonical 80.
+  const { gradeQuiz, resolveCoursePassingScore } = await import("@/lib/academy/quiz")
+  const adapted = onboardingQuizAsModuleQuiz(questions, params.answers)
+  const passingScore = resolveCoursePassingScore(quiz)
+  const grade = gradeQuiz(adapted.questions, adapted.answers, passingScore)
+  const correctCount = grade.correct
+  const score = grade.score
+  const passed = grade.passed
 
   // THE STORED LEDGER IS THE SURVIVOR (§1.1 merge-then-tombstone, w26 lane C8).
   //
@@ -672,9 +689,9 @@ export async function submitQuizAttempt(params: {
     correctCount,
     totalQuestions: questions.length,
     attemptNumber,
-    passingScore: quiz.passing_score,
+    passingScore,
     message: passed
       ? `Congratulations! You passed with ${score}%`
-      : `Score: ${score}%. Need ${quiz.passing_score}% to pass. Review and try again.`,
+      : `Score: ${score}%. Need ${passingScore}% to pass. Review and try again.`,
   }
 }

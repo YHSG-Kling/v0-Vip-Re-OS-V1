@@ -20,6 +20,14 @@ const circleBasisText = (b: unknown): string => {
   if (typeof e.tacticCampaigns !== "number" || typeof e.cohortCampaigns !== "number") return ""
   return ` (your ${e.tacticCampaigns} campaign${e.tacticCampaigns === 1 ? "" : "s"} with this method against ${e.cohortCampaigns} comparable${typeof e.windowDays === "number" ? `, last ${e.windowDays} days` : ""})`
 }
+/** wave 155 (155K, K4): what adopters measured — a count of people, never a figure; "not enough" until the minimum is met. */
+const calibrationText = (c: unknown): string => {
+  if (!c || typeof c !== "object") return ""
+  const k = c as { status?: string; adopters?: number; measuredAdopters?: number; aboveOwnBaseline?: number | null }
+  if (k.status === "calibrated" && typeof k.aboveOwnBaseline === "number") return ` · adopters: ${k.aboveOwnBaseline} of ${k.measuredAdopters} measured beat their own usual results`
+  if (k.status === "not_enough_measured_outcomes") return ` · adopters: ${k.adopters} adapted it, ${k.measuredAdopters} measured so far — not enough measured outcomes to judge`
+  return ""
+}
 const input = "border rounded px-2 py-1 text-sm"
 const btn = "text-xs px-2 py-1 border rounded hover:bg-gray-100 disabled:opacity-50"
 
@@ -91,13 +99,13 @@ export function EventsAndCirclesPanel() {
           <select className={input} value={share.sourceKind} onChange={(e) => setShare({ ...share, sourceKind: e.target.value as "producer_outcome" | "competitor_public_idea" })}><option value="producer_outcome">From my own campaign results</option><option value="competitor_public_idea">A public idea I saw elsewhere</option></select>
           {share.sourceKind === "producer_outcome" && <input className={input} placeholder="Campaign ids that used it (comma separated)" value={share.campaigns} onChange={(e) => setShare({ ...share, campaigns: e.target.value })} />}
           {COMPONENTS.map((c) => <label key={c} className="text-xs"><input type="checkbox" checked={share.components.includes(c)} onChange={(e) => setShare({ ...share, components: e.target.checked ? [...share.components, c] : share.components.filter((x) => x !== c) })} /> {label(c)}</label>)}
-          <button className={btn} disabled={pending} onClick={() => { const [kind, id] = share.circle.split(":"); run(() => shareCircleTacticAction({ circleKind: kind as "team" | "mentorship" | "brokerage", circleId: id || null, method: share.method, explanation: share.explanation, components: share.components, sourceKind: share.sourceKind, tacticCampaignIds: share.campaigns.split(",").map((x) => x.trim()).filter(Boolean), claimedTitle: share.claimedTitle || null }), "Shared — each member's fit is decided individually") }}>Share</button>
+          <button className={btn} disabled={pending} onClick={() => { const [kind, id] = share.circle.split(":"); run(() => shareCircleTacticAction({ circleKind: kind as "team" | "mentorship" | "brokerage" | "office", circleId: id || null, method: share.method, explanation: share.explanation, components: share.components, sourceKind: share.sourceKind, tacticCampaignIds: share.campaigns.split(",").map((x) => x.trim()).filter(Boolean), claimedTitle: share.claimedTitle || null }), "Shared — each member's fit is decided individually") }}>Share</button>
         </div>
-        <ul className="text-sm">{data?.mine.map((m) => <li key={String(m.shareId)}>{String(m.method)} · {label(m.circleKind)} · {label(m.evidenceQuality)}{circleBasisText(m.evidenceBasis)} · {String(m.status)}{m.revokedAt ? ` on ${String(m.revokedAt).slice(0, 10)}` : ""} {m.status === "shared" && <button className={btn} disabled={pending} onClick={() => run(() => revokeCircleTacticAction(String(m.shareId)), "Sharing stopped")}>Stop sharing</button>}</li>)}</ul>
+        <ul className="text-sm">{data?.mine.map((m) => <li key={String(m.shareId)}>{String(m.method)} · {label(m.circleKind)} · {label(m.evidenceQuality)}{circleBasisText(m.evidenceBasis)}{calibrationText(m.calibration)} · {String(m.status)}{m.revokedAt ? ` on ${String(m.revokedAt).slice(0, 10)}` : ""} {m.status === "shared" && <button className={btn} disabled={pending} onClick={() => run(() => revokeCircleTacticAction(String(m.shareId)), "Sharing stopped")}>Stop sharing</button>}</li>)}</ul>
         <h3 className="font-medium">Methods shared with you</h3>
         <ul className="text-sm space-y-1">{data?.tactics.map((t) => (
           <li key={String(t.shareId)}>
-            <strong>{String(t.method)}</strong> — {(t.components as string[]).map(label).join(" + ")} · evidence: {label(t.evidenceQuality)} ({label(t.sourceLabel)})
+            <strong>{String(t.method)}</strong> — {(t.components as string[]).map(label).join(" + ")} · evidence: {label(t.evidenceQuality)} ({label(t.sourceLabel)}){calibrationText(t.calibration)}
             {t.decision ? <> · {label(t.decision)}</> : <button className={btn} disabled={pending} onClick={() => run(() => evaluateCircleTacticAction(String(t.shareId)), "Evaluated for you")}>Does this fit my market?</button>}
             {(t.decision === "offer" || t.decision === "recommend_adaptation") && !t.adaptedTopicId && <button className={btn} disabled={pending} onClick={() => run(() => adaptCircleTacticAction(String(t.shareId)), "Added to your topics — your writers produce it in your voice")}>Adapt in my voice</button>}
           </li>

@@ -41,7 +41,14 @@ export async function GET(req: NextRequest) {
   await recordCronStartAction({ context_id: contextId }).catch(() => {})
 
   try {
-    const result = await runLocalIntelSweep(createServiceClient())
+    const svc = createServiceClient()
+    const swept = await runLocalIntelSweep(svc)
+    // WAVE 155 (lane 155K, directive K3): marketing EDUCATION is not person ACQUISITION — a live tenant WITHOUT an acquisition
+    // territory still gets content started from its own first-party topics (third-party research stays territory-gated inside the
+    // starter). The territory sweep above is unchanged; this pass makes no pull and no spend before the creative's own entitlement gate.
+    const { runFirstPartyTopicSweep } = await import("@/lib/repurpose/refurbish-run")
+    const firstParty = await runFirstPartyTopicSweep(svc as never)
+    const result = { ...swept, firstParty: { ...firstParty, errors: firstParty.errors.slice(0, 10) } }
     // A refused subscription / territory read is a FAILURE (the gate failed closed), never an idle day.
     if (/_query_failed$/.test(result.reason)) {
       await recordCronFailureAction({ context_id: contextId, error: new Error(`pull gate unreadable: ${result.reason} ${result.errors[0] ?? ""}`), stage: "pull-gate" }).catch(() => {})

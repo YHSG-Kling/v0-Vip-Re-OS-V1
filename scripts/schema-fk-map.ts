@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1955 of 2037 pairs) — storing them would be
+ * overwhelming majority (1956 of 2038 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 3 columns are in that state.
  *
- * MEASURED AT GENERATION: 2144 edges across 759 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 2037 unordered
+ * MEASURED AT GENERATION: 2145 edges across 759 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 2038 unordered
  * table pairs carry at least one FK; 82
  * carry more than one and are listed below. 22 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-18
+ * generated: 2026-11-20
  * source: public.live_foreign_keys_json()
- * body-sha256: 2533a32f02f5969524bc4e5893858851879ebe8a96769cc866fa01f0f87975ea
+ * body-sha256: a10dfe7eea0832b4f2258f971e10c212ad16d1e440533e55f44cebde5bf3199e
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -275,7 +275,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "chat_messages": { "session_id": "chat_sessions" },
   "chat_sessions": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "lead_id": "leads" },
   "chat_templates": { "agent_id": "agents", "brokerage_id": "brokerages" },
-  "circle_tactic_shares": { "brokerage_id": "brokerages", "mentorship_id": "agent_mentor_relationships", "producer_user_id": "users", "team_id": "teams" },
+  "circle_tactic_shares": { "brokerage_id": "brokerages", "location_id": "locations", "mentorship_id": "agent_mentor_relationships", "producer_user_id": "users", "team_id": "teams" },
   "client_agreement_fees": { "agent_id": "agents", "amendment_document_id": "documents", "brokerage_id": "brokerages", "buyer_broker_agreement_id": "buyer_broker_agreements", "entered_by": "users", "listing_agreement_id": "listing_agreements", "supersedes_fee_id": "client_agreement_fees", "verified_by": "users" },
   "client_detailed_personas": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "client_documents": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions", "uploaded_by": "users", "verified_by": "users" },

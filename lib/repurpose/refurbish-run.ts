@@ -102,8 +102,32 @@ export async function abstractIdeaFromUntrusted(deps: RefurbishDraftDeps, untrus
 // ledger (its idempotency key is the dedup). The creative step is executeTopicRefurbishDefault (lane 154H2).
 
 export type TopicRefurbishRoute = "refurbish" | "omnipresence" | "both" | "research" | "hold" | "close"
-type TopicTriggerKind = "google_trend" | "public_chatter" | "competitor_watch" | "own_underperformer"
+type TopicTriggerKind = "google_trend" | "public_chatter" | "competitor_watch" | "own_underperformer" | "first_party_question"
 type Svc = { from: (t: string) => any }
+
+// ══ WAVE 155 (lane 155K — directive K3, owner R14): MARKETING EDUCATION IS NOT PERSON ACQUISITION ═══════════════════════════════
+// MEASURED AT BASE d2d6468c: the only production caller of runTopicRefurbishPass is lib/content-intel/local-intel.ts
+// runLocalIntelSweep, which iterates ONLY tenants with an active pull territory (resolveActivePullGate). A live tenant that buys no
+// acquisition territory therefore never had a creative started — not even from questions its OWN customers asked (website_question,
+// which also had no trigger mapping at all, so it was held for every tenant). The split, by the topic's SOURCE KIND:
+//   first-party   — material the tenant already owns or measured itself (its customers' questions over the privacy floor, its own
+//                   search console / first-party demand, its own content outcomes and observations, the OS's own theme intelligence):
+//                   needs NO territory. runFirstPartyTopicSweep (below) reaches every live tenant WITHOUT a territory.
+//   third-party   — anything a paid / scraped / researched pull produced (community posts, Facebook-group questions, Reddit, Apify,
+//                   web research, news, Ad Library, competitor posts, brand listening, keyword intel, Google Trends pulls): KEEPS the
+//                   territory requirement. A tenant without one is HELD with that reason (fail closed: an unknown kind is third-party).
+// The territory check on the pull itself (resolveActivePullGate on every scrape / paid geography pull) is untouched.
+export const FIRST_PARTY_TOPIC_SOURCE_KINDS: ReadonlySet<string> = new Set([
+  "website_question", "search_demand_first_party", "search_demand_search_console", "own_content_outcome", "own_observation", "own_asset", "producer_outcome", "topic_intelligence",
+])
+/** PURE — does this pool topic's source need an acquisition territory? Unknown / empty kinds are third-party (fail closed). */
+export function topicAcquisitionClass(sourceKind: string | null | undefined): "first_party" | "third_party" {
+  return sourceKind && FIRST_PARTY_TOPIC_SOURCE_KINDS.has(sourceKind) ? "first_party" : "third_party"
+}
+// TOMBSTONE (wave 155): FIRST_PARTY_TRIGGER_FALLBACK lived here — a second, local mapping for `website_question`, consulted
+// when the one published mapping returned null. SURVIVOR: lib/content-intel/topic-intake.ts REFURBISH_TRIGGER_BY_TOPIC_SOURCE
+// (read through refurbishTriggerKindForTopicSource), which now carries that row.
+const topicTriggerKindDefault = (kind: string): TopicTriggerKind | null => refurbishTriggerKindForTopicSource(kind)
 
 /** The creative step's seams. Production defaults are the SAME survivors the session path uses (named at each default). */
 export interface TopicCreativeDeps {
@@ -142,7 +166,7 @@ export interface TopicRefurbishDeps {
 
 export interface TopicRefurbishResult { route: TopicRefurbishRoute; trigger: string | null; reason: string; duplicate: boolean; started: boolean }
 
-const TRIGGER_KINDS: ReadonlySet<string> = new Set(["google_trend", "public_chatter", "competitor_watch", "own_underperformer"])
+const TRIGGER_KINDS: ReadonlySet<string> = new Set(["google_trend", "public_chatter", "competitor_watch", "own_underperformer", "first_party_question"])
 const ledgerRecord = async (s: Svc, r: Record<string, unknown>) => (await import("@/lib/kernel/action-ledger")).recordNonAction(r as never, { client: s as never })
 
 /**
@@ -167,7 +191,7 @@ async function competitorOnWatchlist(svc: Svc, brokerageId: string, rd: Record<s
 }
 
 /** @proofSeam the per-topic door the proofs drive directly (scripts/next-action-follow-on-guard.ts §I); production reaches it through runTopicRefurbishPass. */
-export async function startTopicRefurbish(svc: Svc, a: { brokerageId: string; topicId: string; now: Date }, deps: TopicRefurbishDeps = {}): Promise<TopicRefurbishResult> {
+export async function startTopicRefurbish(svc: Svc, a: { brokerageId: string; topicId: string; now: Date; territory?: "active" | "none" }, deps: TopicRefurbishDeps = {}): Promise<TopicRefurbishResult> {
   const out = (route: TopicRefurbishRoute, reason: string, trigger: string | null = null, extra: Partial<TopicRefurbishResult> = {}): TopicRefurbishResult => ({ route, trigger, reason, duplicate: false, started: false, ...extra })
   const { data: row, error } = await svc.from("content_topic_bank").select("id, brokerage_id, topic_title, expires_at, status, raw_data").eq("id", a.topicId).eq("brokerage_id", a.brokerageId).maybeSingle()
   if (error) return out("hold", `the topic could not be read (${error.message})`)
@@ -179,8 +203,11 @@ export async function startTopicRefurbish(svc: Svc, a: { brokerageId: string; to
   const sourceKind = String(rd.intake?.source_kind ?? (Array.isArray(rd.provenance) ? rd.provenance[0]?.source_kind : "") ?? "")
   // The intake STAMPS the trigger it computed with the one mapping; the stamp wins when it is a trigger kind, else the mapping decides.
   const stamped = rd.intake?.refurbish_trigger_kind
-  const trigger: TopicTriggerKind | null = typeof stamped === "string" && TRIGGER_KINDS.has(stamped) ? (stamped as TopicTriggerKind) : (deps.kindToTrigger ?? refurbishTriggerKindForTopicSource)(sourceKind)
+  const trigger: TopicTriggerKind | null = typeof stamped === "string" && TRIGGER_KINDS.has(stamped) ? (stamped as TopicTriggerKind) : (deps.kindToTrigger ?? topicTriggerKindDefault)(sourceKind)
   if (!trigger) return out("hold", `source kind '${sourceKind || "unknown"}' has no Refurbish trigger mapping — held, not dropped`)
+  // K3: without an acquisition territory only FIRST-PARTY material may start a creative; a researched / scraped / purchased source keeps
+  // the territory requirement (the caller says which; absent = the territory sweep, the pre-155 behavior).
+  if (a.territory === "none" && topicAcquisitionClass(sourceKind) !== "first_party") return out("hold", `source kind '${sourceKind || "unknown"}' is third-party research — it needs an active acquisition territory, which this tenant has none of`, trigger)
   const rights = String(rd.creative_brief?.source_rights ?? (Array.isArray(rd.provenance) ? rd.provenance[0]?.rights : "") ?? "unknown")
   if (!rights || rights === "unknown") return out("hold", "the topic's source rights are unknown — no refurbish without a recorded basis", trigger)
   const gate = classifyTopicExclusion({ title: String(t.topic_title ?? ""), sourceKind })
@@ -386,7 +413,7 @@ export async function executeTopicRefurbishDefault(svc: Svc, a: { brokerageId: s
     if (!ent.allowed) return hold(`not entitled: ${ent.reason}`, { outcome: "refused_entitlement" })
     // THE BRIEF from the STORED reworded topic (never a source's wording — the pool stores none).
     const question = String(rd.creative_brief?.consumer_question ?? t.topic_title ?? "").trim()
-    const kind: IdeaSourceInput["kind"] = a.trigger === "own_underperformer" ? "own_asset" : a.trigger === "competitor_watch" ? "competitor_post" : a.trigger === "google_trend" ? "google_trend" : "public_chatter"
+    const kind: IdeaSourceInput["kind"] = a.trigger === "own_underperformer" || a.trigger === "first_party_question" ? "own_asset" : a.trigger === "competitor_watch" ? "competitor_post" : a.trigger === "google_trend" ? "google_trend" : "public_chatter"
     const topics = [...(t.categories ?? []).filter((c) => c && c !== "competitor_intel"), ...String(t.topic_title ?? "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 4)].slice(0, 3)
     const ev = String(rd.evidence?.kind ?? rd.popularity_evidence_type ?? "unknown")
     const built = buildRefurbishIdeaBrief({ exclude: refurbishExcludeDefault }, {
@@ -492,7 +519,7 @@ function rec(r: { recorded: boolean; error?: string }): "fresh" | "duplicate" | 
  * opportunity is already ledgered for the same freshness window, starts at most `max` (bounded per run), then hands approved masters
  * to the variant producer. Every start is ledgered by the starter itself.
  */
-export async function runTopicRefurbishPass(svc: Svc, brokerageId: string, opts: { now?: Date; max?: number } = {}, deps: TopicRefurbishDeps = {}): Promise<{ considered: number; started: number; held: number; skipped: number; variants: number; errors: string[] }> {
+export async function runTopicRefurbishPass(svc: Svc, brokerageId: string, opts: { now?: Date; max?: number; territory?: "active" | "none" } = {}, deps: TopicRefurbishDeps = {}): Promise<{ considered: number; started: number; held: number; skipped: number; variants: number; errors: string[] }> {
   const now = opts.now ?? new Date()
   const out = { considered: 0, started: 0, held: 0, skipped: 0, variants: 0, errors: [] as string[] }
   try {
@@ -507,7 +534,7 @@ export async function runTopicRefurbishPass(svc: Svc, brokerageId: string, opts:
         if (done.has(`${t.id}:${t.expires_at}`)) { out.skipped++; continue }
         if (out.considered >= (opts.max ?? 3)) break
         out.considered++
-        const r = await startTopicRefurbish(svc, { brokerageId, topicId: t.id, now }, deps)
+        const r = await startTopicRefurbish(svc, { brokerageId, topicId: t.id, now, territory: opts.territory }, deps)
         if (r.started) out.started++
         else out.held++
       }
@@ -517,6 +544,58 @@ export async function runTopicRefurbishPass(svc: Svc, brokerageId: string, opts:
     out.errors.push(...v.errors.slice(0, 5))
   } catch (e) {
     out.errors.push(`topic refurbish pass threw: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  return out
+}
+
+/**
+ * WAVE 155 (lane 155K, directive K3): THE FIRST-PARTY SWEEP — the same daily cron tick (/api/cron/local-intel, owner
+ * campaign_orchestrator) reaches every LIVE tenant WITHOUT an active acquisition territory, which runLocalIntelSweep never visits.
+ * Per tenant: the topic-intelligence pass (reads this OS's own survivors — customer questions, own outcomes; no provider call, no
+ * spend) and the refurbish pass with territory "none", so only FIRST-PARTY topics may start a creative (startTopicRefurbish holds a
+ * third-party one). Nothing here searches, scrapes or buys. A refused subscription read = nobody is visited (a live tenant cannot be
+ * told from a lapsed one — fail closed); a refused TERRITORY read treats every live tenant as territory-less, the STRICTER branch
+ * (first-party only), and the starter's ledger key still stops a double start for a tenant the territory sweep also reached.
+ */
+export async function runFirstPartyTopicSweep(svc: Svc, opts: { now?: Date; maxTenants?: number; budgetMs?: number } = {}, deps: {
+  /** @proofSeam — production: resolveActiveScrapeTerritories (lib/lead-pipeline/scrape-territories.ts), the pull gate's own resolution. */
+  resolve?: (svc: Svc) => Promise<{ activeBrokerageIds: string[]; territories: Array<{ brokerage_id: string | null }>; noOp: boolean; reason: string; error?: string }>
+  /** @proofSeam — production: runTopicIntelligencePass (lib/content-intel/topic-intelligence.ts). */
+  intel?: (svc: Svc, brokerageId: string, now: Date) => Promise<{ inserted: number; refreshed: number; errors: string[] }>
+  /** @proofSeam — production: runTopicRefurbishPass (this file), always with territory "none". */
+  pass?: typeof runTopicRefurbishPass
+  refurbish?: TopicRefurbishDeps
+} = {}): Promise<{ tenants: number; withoutTerritory: number; visited: number; started: number; held: number; topicIntel: number; reason: string; errors: string[] }> {
+  const now = opts.now ?? new Date()
+  const begun = Date.now()
+  const out = { tenants: 0, withoutTerritory: 0, visited: 0, started: 0, held: 0, topicIntel: 0, reason: "ok", errors: [] as string[] }
+  try {
+    const res = deps.resolve ? await deps.resolve(svc) : await (await import("@/lib/lead-pipeline/scrape-territories")).resolveActiveScrapeTerritories(svc as never)
+    if (res.reason === "subscription_query_failed") { out.reason = res.reason; if (res.error) out.errors.push(res.error); return out }
+    const live = [...new Set(res.activeBrokerageIds)]
+    out.tenants = live.length
+    const territoryUnreadable = res.reason === "territory_query_failed"
+    if (territoryUnreadable) out.errors.push(`territories unreadable (${res.error ?? "refused"}) — every live tenant treated as territory-less (first-party only)`)
+    const withTerritory = new Set(territoryUnreadable ? [] : res.territories.map((t) => t.brokerage_id).filter((b): b is string => !!b))
+    const targets = live.filter((b) => !withTerritory.has(b))
+    out.withoutTerritory = targets.length
+    for (const b of targets) {
+      if (out.visited >= (opts.maxTenants ?? 50) || Date.now() - begun > (opts.budgetMs ?? 60_000)) { out.reason = "bounded"; break }
+      out.visited++
+      try {
+        const intel = deps.intel ? await deps.intel(svc, b, now) : await (await import("@/lib/content-intel/topic-intelligence")).runTopicIntelligencePass(svc as never, b, { now })
+        out.topicIntel += intel.inserted + intel.refreshed
+        for (const e of intel.errors.slice(0, 2)) out.errors.push(`${b}: topic intelligence: ${e}`)
+        const r = await (deps.pass ?? runTopicRefurbishPass)(svc, b, { now, territory: "none" }, deps.refurbish ?? {})
+        out.started += r.started
+        out.held += r.held
+        for (const e of r.errors.slice(0, 2)) out.errors.push(`${b}: topic refurbish: ${e}`)
+      } catch (e) {
+        out.errors.push(`${b}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+  } catch (e) {
+    out.errors.push(`first-party topic sweep threw: ${e instanceof Error ? e.message : String(e)}`)
   }
   return out
 }

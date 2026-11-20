@@ -165,6 +165,29 @@ re-run**); m855 and m875 read WRITTEN, NOT APPLIED. These two are yours.
 - **Correction:** WAVE154 action sheet item 16 says ten-year stored signed URLs remain. They were removed in 154M (tombstone
   `lib/storage/signed-doc-url.ts:25`). Signed links now live at most one hour and a view link 5 minutes.
 
+## 9. Added by lane 155K (batch 2) — what the four P0 areas above did not yet say
+
+Nothing here is new SQL, a new secret name or a destructive step; each line names what an existing P0 now also unblocks.
+
+- **P0-5 also unblocks the appraiser packet send (NEW, lane 155K).** The transaction's agent can now send the composed packet to
+  the appraiser they name (transaction page → appraisal-ordered milestone → "Send packet to appraiser"). It goes only as a
+  7-day share-grant link (purpose `appraiser_packet`) through the governed email egress. Without `SECRETS_ENCRYPTION_KEY` the
+  send is refused with "a secure link could not be created — nothing was sent". **Preview check (after P0-4 + P0-5):** send a
+  packet to your own address marked as the appraiser; the link opens the PDF with no session; one changed character → 404.
+- **The email egress is a second dependency of every outside send** (appraiser, outside listing agent, lead magnet). P0-4
+  leaves the email provider key unset "until you decide to send" — until then each of those sends is refused by the egress
+  with its reason, never queued as sent. Deciding to send is yours; no lane sets it.
+- **A packet with AI-web-search comparables is refused on purpose** (CLAUDE.md §5). On a preview with no RentCast / IDX key,
+  every comparable may come from the labelled web search, so the send says so. That is the rule working, not a defect: the
+  fix is a licensed comparable source (LICENSE-HELD), or handing the appraiser your own verified comparables.
+- **P0-4 first cron tick: one more line to read.** `/api/cron/local-intel` now also visits live tenants WITHOUT an acquisition
+  territory (first-party topics only; no pull, no spend before the draft's own entitlement gate). The cron run's metadata
+  carries `firstParty: { tenants, withoutTerritory, visited, started, held }`. Expected on the showcase tenant: a number,
+  not an error; `started` stays 0 until a tenant has a connected text channel and an approver.
+- **Integrator, not owner:** `supabase/migrations/m984-circle-tactic-shares-office-circle.sql` (office circles) is WRITTEN, NOT
+  APPLIED — it widens a CHECK and adds a nullable column; it needs no owner role. Listed here only so it is not mistaken
+  for an owner step.
+
 ## Decisions · owners · next steps
 
 | # | Decision / action | Owner | Next step | Read-back that closes it |

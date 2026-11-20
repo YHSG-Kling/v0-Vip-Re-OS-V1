@@ -460,6 +460,51 @@ export async function markAppraisalOrderedAction(
   return { success: true, packet }
 }
 
+// ─── Appraiser packet → the appraiser (wave 155, lane 155K — directive K6) ───
+// The packet the coaching moment composed reaches the appraiser ONLY when the transaction's agent names the recipient here. The
+// tenant and the person come from the SESSION (CLAUDE.md §4); the packet is this transaction's newest appraiser_packet row. All the
+// rules (agent of the deal, appraiser recipient, no AI-sourced comparable, share grant, governed egress, ledger) live in
+// lib/vendors/appraiser-independence.ts sendAppraiserPacket.
+
+export interface SendAppraiserPacketParams {
+  transactionId:      string
+  /** An appraiser on the agent's bench (vendors.category 'appraiser'), or … */
+  vendorId?:          string | null
+  /** … the address of the appraiser the lender / AMC assigned, which the agent CONFIRMS. */
+  recipientEmail?:    string | null
+  confirmRecipient?:  boolean
+  note?:              string | null
+}
+
+export async function sendAppraiserPacketAction(
+  params: SendAppraiserPacketParams,
+): Promise<{ success: boolean; error?: string; deliveredTo?: string; linkValidUntil?: string }> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.userId || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data: doc, error } = await svc
+    .from("generated_documents")
+    .select("id")
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("transaction_id", String(params.transactionId ?? ""))
+    .eq("document_type", "appraiser_packet")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) return { success: false, error: "The appraiser packet could not be read — nothing was sent." }
+  if (!doc) return { success: false, error: "No appraiser packet exists for this transaction yet — mark the appraisal ordered first." }
+  const { sendAppraiserPacket } = await import("@/lib/vendors/appraiser-independence")
+  const r = await sendAppraiserPacket(svc, { userId: ctx.userId, brokerageId: ctx.brokerageId, impersonating: ctx.isImpersonating === true }, {
+    transactionId: String(params.transactionId), documentId: (doc as { id: string }).id,
+    vendorId: params.vendorId ?? null, recipientEmail: params.recipientEmail ?? null, confirmRecipient: params.confirmRecipient === true, note: params.note ?? null,
+  })
+  if (!r.ok) return { success: false, error: r.message }
+  revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+  return { success: true, deliveredTo: r.deliveredTo, linkValidUntil: r.expiresAt }
+}
+
 // ─── Final walkthrough scheduling + completion ───────────────────────────────
 
 export interface ScheduleFinalWalkthroughParams extends ScopedParams {

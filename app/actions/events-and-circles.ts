@@ -37,9 +37,16 @@ export async function listEventsAndCirclesAction(): Promise<{ success: true; eve
     const [{ loadEventOpportunities, loadEventSources, authorizeEventSource }, { listCircleTacticsForViewer }] = await Promise.all([import("@/lib/newsletter/local-events"), import("@/lib/marketing/circle-tactics")])
     const [ev, src, ct] = await Promise.all([loadEventOpportunities(svc, s.ctx.brokerageId), loadEventSources(svc, s.ctx.brokerageId), listCircleTacticsForViewer(svc, s.ctx)])
     const notes = [ev.error, src.error, ct.error].filter((e): e is string => !!e).map(() => "Part of this page could not be read just now; what is shown is incomplete.")
-    const { data: ag } = await svc.from("agents").select("id").eq("brokerage_id", s.ctx.brokerageId).eq("user_id", s.ctx.userId).limit(1)
-    const agentId = ((ag ?? []) as Array<{ id: string }>)[0]?.id ?? null
+    const { data: ag } = await svc.from("agents").select("id, location_id").eq("brokerage_id", s.ctx.brokerageId).eq("user_id", s.ctx.userId).limit(1)
+    const agentRow = ((ag ?? []) as Array<{ id: string; location_id: string | null }>)[0]
+    const agentId = agentRow?.id ?? null
     const circles: Array<{ kind: string; id: string | null; label: string }> = [{ kind: "brokerage", id: null, label: "Everyone in my brokerage" }]
+    // wave 155 (155K, K4): the office the agent is seated in, while it is active in this tenant — the only office they may share with.
+    if (agentRow?.location_id) {
+      const { data: loc } = await svc.from("locations").select("id, name, status").eq("id", agentRow.location_id).eq("brokerage_id", s.ctx.brokerageId).maybeSingle()
+      const l = loc as { id: string; name: string | null; status: string | null } | null
+      if (l && l.status === "active") circles.push({ kind: "office", id: l.id, label: `My office: ${l.name ?? "my office"}` })
+    }
     if (agentId) {
       const { data: tm } = await svc.from("team_members").select("team_id, teams(name)").eq("brokerage_id", s.ctx.brokerageId).eq("agent_id", agentId).eq("is_active", true)
       for (const t of (tm ?? []) as unknown as Array<{ team_id: string; teams: { name: string | null } | null }>) circles.push({ kind: "team", id: t.team_id, label: `Team: ${t.teams?.name ?? "my team"}` })
@@ -127,13 +134,13 @@ export async function refreshEventSourcesAction(): Promise<{ success: true; veri
 
 // ── Circle tactics (G9) ────────────────────────────────────────────────────────────────────────────────────────
 
-export async function shareCircleTacticAction(input: { circleKind: "team" | "mentorship" | "brokerage"; circleId?: string | null; method: string; components: string[]; explanation: string; caption?: string | null; sourceKind: "producer_outcome" | "competitor_public_idea"; tacticCampaignIds?: string[]; claimedTitle?: string | null }): Promise<{ success: true; shareId: string; quality: string; sourceLabel: string; offered: number; evaluated: number } | Fail> {
+export async function shareCircleTacticAction(input: { circleKind: "team" | "mentorship" | "brokerage" | "office"; circleId?: string | null; method: string; components: string[]; explanation: string; caption?: string | null; sourceKind: "producer_outcome" | "competitor_public_idea"; tacticCampaignIds?: string[]; claimedTitle?: string | null }): Promise<{ success: true; shareId: string; quality: string; sourceLabel: string; offered: number; evaluated: number } | Fail> {
   const s = await session({ ownAct: true })
   if ("error" in s) return s.error!
   try {
     const { shareCircleTactic } = await import("@/lib/marketing/circle-tactics")
     const r = await shareCircleTactic(createServiceClient(), s.ctx, {
-      circle: { kind: input.circleKind, teamId: input.circleKind === "team" ? input.circleId ?? null : null, mentorshipId: input.circleKind === "mentorship" ? input.circleId ?? null : null },
+      circle: { kind: input.circleKind, teamId: input.circleKind === "team" ? input.circleId ?? null : null, mentorshipId: input.circleKind === "mentorship" ? input.circleId ?? null : null, locationId: input.circleKind === "office" ? input.circleId ?? null : null },
       method: input.method, components: input.components, explanation: input.explanation, caption: input.caption ?? null, sourceKind: input.sourceKind, tacticCampaignIds: input.tacticCampaignIds ?? [], claimedTitle: input.claimedTitle ?? null,
     })
     if (!r.ok) return fail(r.reason.startsWith("brief_refused") ? "The method still carries something that cannot be shared (a link, a figure, a handle, contact details or your caption) — describe the method in general words" : r.reason === "producer_not_a_member_of_circle" ? "You can only share with a circle you belong to" : "The method was not shared", r.reason.startsWith("brief_refused") || r.reason === "producer_not_a_member_of_circle" ? undefined : r.reason)

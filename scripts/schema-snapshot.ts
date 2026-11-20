@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-18
+ * generated: 2026-11-20
  * source: public.live_schema_json()
- * body-sha256: b2d9a6e036f8688516a07e721b29d2a48de66eac26b0a8e84d76f18c1c8c971e
+ * body-sha256: be1b364341b9dd3f59da1ce327560de171ce5e8dd6b88c6d14e750b027934c3f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -195,7 +195,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   chat_messages: ["content", "created_at", "id", "metadata", "role", "session_id"],
   chat_sessions: ["agent_id", "brokerage_id", "capture_state", "contact_id", "created_at", "id", "lead_id", "metadata", "session_type", "source", "status", "updated_at", "visitor_fingerprint", "widget_session_token"],
   chat_templates: ["agent_id", "allowed_lead_types", "brokerage_id", "compliance_approved", "created_at", "id", "is_active", "template_body", "template_category", "template_name", "updated_at", "usage_count"],
-  circle_tactic_shares: ["brief", "brokerage_id", "circle_kind", "created_at", "evidence", "evidence_quality", "expires_at", "id", "mentorship_id", "offers", "opted_in_at", "producer_user_id", "revoked_at", "source_label", "status", "team_id"],
+  circle_tactic_shares: ["brief", "brokerage_id", "circle_kind", "created_at", "evidence", "evidence_quality", "expires_at", "id", "location_id", "mentorship_id", "offers", "opted_in_at", "producer_user_id", "revoked_at", "source_label", "status", "team_id"],
   client_agreement_fees: ["agent_id", "amendment_document_id", "brokerage_id", "brokerage_policy_permits", "brokerage_policy_ref", "buyer_broker_agreement_id", "created_at", "effective_date", "entered_at", "entered_by", "fee_kind", "id", "included_in_commission", "listing_agreement_id", "notes", "payable_at_closing", "payer", "receiver", "status", "supersedes_fee_id", "updated_at", "value", "value_type", "verified_at", "verified_by"],
   client_detailed_personas: ["agent_id", "ai_summary", "behavioural_evidence", "brokerage_id", "buying_triggers", "contact_id", "created_at", "demographics", "derivation", "derived_at", "id", "inferred_interests", "marketing_persona", "marketing_safe", "pain_points", "persona_name", "persona_type", "psychographics", "research_layer", "service_profile", "stated_needs", "updated_at"],
   client_documents: ["ai_metadata", "brokerage_id", "client_visible", "contact_id", "content", "created_at", "doc_category", "document_name", "document_type", "document_url", "dotloop_document_id", "dotloop_folder_name", "dotloop_loop_id", "expiration_date", "id", "is_financial_verification", "listing_id", "metadata", "notes", "signature_provider", "signature_status", "signed_at", "status", "transaction_id", "uploaded_by", "verification_amount", "verification_lender", "verified_at", "verified_by"],
