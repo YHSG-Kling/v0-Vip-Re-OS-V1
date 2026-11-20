@@ -66,7 +66,8 @@ import { readFileSync, writeFileSync, existsSync, mkdtempSync, mkdirSync, rmSync
 import { join, dirname, normalize } from "node:path"
 import { tmpdir } from "node:os"
 import { registerHooks } from "node:module"
-import { blankComments, blankStrings, stringLiterals } from "./strip-comments"
+import { blankComments, blankStrings, stringLiterals, stripComments } from "./strip-comments"
+import { EVENT_OWNER_HELD, conditionalAuditVerified } from "./event-claims-ledger"
 import { runtimeFiles } from "./runtime-roots"
 import { SESSION_TOKENS, hasUseServerDirective } from "./session-tokens"
 import { LIVE_TABLES } from "./live-tables"
@@ -713,6 +714,9 @@ interface Draft {
   elsewhere?: string[]
   /** assistant tool: lib/ai-isa/persona-tool-policy.ts riskClassForTool */
   toolRisk?: string
+  /** WAVE 155 (lane 155R22): a hold DERIVED from a ledger another guard on the chain keeps (scripts/event-claims-ledger.ts
+   *  EVENT_OWNER_HELD), applied by the population only where its own row has the shape the ledger holds — never typed here */
+  heldWhy?: string
 }
 
 // TABLE_MANAGER (imported below) gives the steward of each written table; the owner of a path is the steward of what it writes.
@@ -749,6 +753,92 @@ function ownerOfAuditedRead(own: Facts, path: Facts): { owner: string | null; wh
   const best = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
   if (!best.length || (best.length > 1 && best[0][1] === best[1][1])) return null
   return { owner: best[0][0], why: `steward of what its own span reads (${[...own.reads].filter((t) => TABLE_MANAGER[t] === best[0][0] && !ACTOR_IDENTITY_READS.has(t)).slice(0, 2).join(", ")}); its only writes are carriers / logs` }
+}
+
+// WAVE 155 (lane 155R22; the rule of scripts/owner-resolution-guard.ts §D, lane 155R18) — THE WORKER HOP. A log-only action is
+// very often a gate plus ONE delegated call (exportFinancialReportAction = getFinancialActorContext() + exportFinancialReport()):
+// its OWN span reads nothing, so the own-span rule above resolved nothing and 44 rows read "log-only owner" while §D named their
+// steward one hop away. The rule reaches exactly that hop and no further:
+//   · it applies ONLY where the own-span rule found NO stewarded read at all (a tie stays a tie) and the path writes no stewarded
+//     non-generic log (that log's steward already answers) — and, like the rule above, only while every write is a carrier / log;
+//   · the WORKERS are the callees the action's own span calls (an imported function, `NS.member(`, an inline dynamic import's
+//     member, or a same-file top-level function) MINUS every gate / identity / ledger / carrier helper (isNotAWorker: the
+//     census's own decision, gate and ledger-door tokens, plus the require*/gate*/assert*/check*/can*… and get*Context /
+//     resolve*Actor / audit* / emit* / notify* … name shapes) — their reads say WHO acts and WHERE the record goes, not the subject;
+//   · a worker's reads are its body and its same-file callees (minus the same helpers) — ONE hop: the worker's own imports
+//     are not followed (the facts walk does that for writes; for ownership a second hop is a guess);
+//   · the owner is the steward of the workers' stewarded reads (identity and carriers excluded) when EXACTLY ONE steward appears
+//     across every worker — two stewards, from one worker or two, resolve NOTHING (stricter than the own-span majority:
+//     a majority over a delegated module's reads is arithmetic, not evidence). Never a typed owner. Controls: section G (G9).
+const NOT_A_WORKER_RE = /^(?:require|gate|assert|ensure|authori[sz]e|guard|verify|check|can|is|has|allow|decide|enforce|refuse|seat)(?:[A-Z_]|$)|^evaluate(?:Outbound|Compliance|Consent|Policy|Authority|Approval)\w*$|^\w+(?:Can|Allowed|Gate)$|^(?:get|resolve|load|read|fetch|current|lookup)\w*(?:Context|Actor|Session|Caller|Identity|Role|Seat|Staff|Tenant|User|UserType|Brokerage|BrokerageId|Membership|Permissions?)$|^(?:withActionLedger|ledger\w*|audit\w*|\w+Audit|emit\w*|publish\w*|notify\w*|raise\w*Notification\w*|create\w*Notification\w*|insert\w*Notification\w*|record\w*Event\w*|log\w*Event\w*|sentinelWrite|resultFamily|track\w*|create\w*Client|revalidatePath|revalidateTag|redirect|notFound|cookies|headers)$/
+function isNotAWorker(name: string): boolean {
+  const call = `${name}(`
+  return NOT_A_WORKER_RE.test(name) || GATE_EXTRA_RE.test(call) || DOOR_RE.test(call) || OUTCOME_RE.test(call)
+    || PLANE_RES.some(([p, re]) => DECISION_PLANES.has(p) && new RegExp(re.source, re.flags.replace("g", "")).test(call))
+}
+/** PURE — a span that RESOLVES the signed-in identity (auth.getUser, requireCaller, getAgentContext … — not the cookie-client
+ *  constructor or cookies(), which are only the transport a data worker uses), or asks an authority (plane A) or policy
+ *  (GATE_EXTRA) gate, says WHO may act. */
+function actsAsGate(f: Facts): boolean {
+  return (!!f.session && !/^(?:createClient\(\)|cookies\(\)|createServerClient)/.test(f.session.token)) || f.gates.some((g) => g.token.startsWith("authority:") || g.token.startsWith("policy:"))
+}
+interface DelegatedWorker { name: string; at: string; reads: string[] }
+/** PURE — the worker-hop owner (rule above). `own` = the action's own span, `path` = its whole path, `workers` = its delegates. */
+function ownerOfDelegatedRead(own: Facts, path: Facts, workers: DelegatedWorker[]): { owner: string | null; why: string } | null {
+  if (!path.writes.size || [...path.writes.keys()].some((t) => !CARRIER_TABLES.has(t) && !isLogTable(t))) return null
+  if ([...path.writes.keys()].some((t) => !CARRIER_TABLES.has(t) && !GENERIC_TELEMETRY.has(t) && !!TABLE_MANAGER[t])) return null
+  if ([...own.reads].some((t) => !ACTOR_IDENTITY_READS.has(t) && !CARRIER_TABLES.has(t) && !!TABLE_MANAGER[t])) return null
+  const by = new Map<string, Array<{ table: string; worker: DelegatedWorker }>>()
+  for (const w of workers) for (const t of w.reads) {
+    if (ACTOR_IDENTITY_READS.has(t) || CARRIER_TABLES.has(t)) continue
+    const m = TABLE_MANAGER[t]; if (!m) continue
+    if (!by.has(m)) by.set(m, []); by.get(m)!.push({ table: t, worker: w })
+  }
+  if (by.size !== 1) return null
+  const [owner, hits] = [...by.entries()][0]
+  const w0 = hits[0].worker
+  return { owner, why: `steward of what the worker it delegates to reads (${w0.name} @ ${w0.at} reads ${[...new Set(hits.map((h) => h.table))].slice(0, 2).join(", ")}); its only writes are carriers / logs` }
+}
+const CALLEE_RE = /\b([A-Za-z_$][\w$]*)\s*(?:<[^<>()]*>)?\s*\(/g
+/** The delegates of the span [from, to) of `file` (rule above). `fns` / `v` are passed so a planted fixture walks too. */
+function delegatedWorkers(file: string, v: Views, fns: FnSpan[], from: number, to: number, self?: string): DelegatedWorker[] {
+  const ids = v.ids.slice(from, to)
+  const out = new Map<string, DelegatedWorker>()
+  const add = (tFile: string, tv: Views | null, tfns: FnSpan[], fnName: string, localName: string, depth = 0): void => {
+    if (!tv || isNotAWorker(localName) || isNotAWorker(fnName)) return
+    const key = `${tFile}#${fnName}`; if (out.has(key)) return
+    const fn = tfns.find((x) => x.name === fnName)
+    if (!fn) {
+      // a name the target only RE-EXPORTS is followed to the module it comes from (once) — never a whole-file fallback
+      const via = depth ? undefined : edgesOf(tFile).find((e) => e.target !== tFile && e.pairs.some((p) => p.local === "" && p.name === fnName))
+      if (via) add(via.target, views(via.target), fnsOf(via.target), fnName, localName, 1)
+      return
+    }
+    const byName = new Map(tfns.map((f) => [f.name, f]))
+    const reads = new Set<string>(); const seen = new Set([fn.name]); const queue = [fn]
+    while (queue.length) {
+      const cur = queue.pop()!
+      const cf = factsOfSpan(tFile, tv, cur.start, cur.end)
+      // …and STRUCTURALLY: a helper whose own body resolves the session or asks an authority / policy gate is an identity / gate
+      // helper whatever its name (app/actions/open-house-kernel.ts resolveOpenHouseScope: getAgentContext + the tenant proof)
+      if (actsAsGate(cf)) { if (cur === fn) return; continue }
+      for (const t of cf.reads) reads.add(t)
+      for (const m of tv.ids.slice(cur.start, cur.end).matchAll(CALLEE_RE)) { const c = byName.get(m[1]); if (c && !seen.has(c.name) && !isNotAWorker(c.name)) { seen.add(c.name); queue.push(c) } }
+    }
+    out.set(key, { name: fnName, at: `${tFile}:${fn.line}`, reads: [...reads] })
+  }
+  const called = new Set([...ids.matchAll(CALLEE_RE)].map((m) => m[1]))
+  for (const n of called) if (n !== self && fns.some((x) => x.name === n)) add(file, v, fns, n, n)
+  for (const e of edgesOf(file)) {
+    if (e.target === file) continue
+    const inSpan = e.at >= from && e.at < to
+    for (const p of e.pairs) {
+      if (!p.local) { if (inSpan && p.name !== "*" && p.name !== "default") add(e.target, views(e.target), fnsOf(e.target), p.name, p.name); continue }
+      if (p.name === "*") { for (const m of ids.matchAll(new RegExp(`\\b${reEsc(p.local)}\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*\\(`, "g"))) add(e.target, views(e.target), fnsOf(e.target), m[1], m[1]); continue }
+      if (p.name !== "default" && called.has(p.local)) add(e.target, views(e.target), fnsOf(e.target), p.name, p.local)
+    }
+  }
+  return [...out.values()]
 }
 function finish(d: Draft): Row {
   const f = d.facts
@@ -789,7 +879,8 @@ function finish(d: Draft): Row {
     if (!readback) missing.push("readback")
   }
   if (notLive.length) missing.push("schema")
-  const st: State = OWNER_HELD[d.id] ? "owner-held" : stateOf(missing)
+  const heldWhy = OWNER_HELD[d.id] ?? d.heldWhy
+  const st: State = heldWhy ? "owner-held" : stateOf(missing)
   const planes = planesOf(d, d.lensTables ?? written)
   const surfaces = surfacesOf(d, d.lensTables ?? written)
   const effects = effectsOf(d)
@@ -799,7 +890,7 @@ function finish(d: Draft): Row {
   const domain_b2 = domainOf(planes, text)
   const risk_class = riskOf(text, effects.egress, d.toolRisk, consequential, domain_b2)
   const cls = classify({ id: d.id, kind: d.kind, state: st, missing, consequential, worker: !!d.worker, effects, auditOnlyEmits: d.auditOnlyEmits, elsewhere: d.elsewhere,
-    providerRoute: d.kind !== "server_action" && PROVIDER_ROUTES.has("/" + d.entry.split(":")[0].replace(/^app\//, "").replace(/\/route\.tsx?$/, "")), ownerHeldWhy: OWNER_HELD[d.id] })
+    providerRoute: d.kind !== "server_action" && PROVIDER_ROUTES.has("/" + d.entry.split(":")[0].replace(/^app\//, "").replace(/\/route\.tsx?$/, "")), ownerHeldWhy: heldWhy })
   const sourceTrust = f.session ? "authenticated session" : d.kind === "webhook" || (d.kind === "http" && decision?.startsWith("provider of record")) ? (f.signature ? "provider (signature-verified)" : "provider (UNVERIFIED)")
     : d.kind === "cron" ? "scheduler (CRON_SECRET)" : ["kernel_event", "orchestrator_event", "manager_signal"].includes(d.kind) ? "internal bus (trusted emitter)"
     : decision?.startsWith("internal caller") ? "platform internal caller (fail-closed shared secret)"
@@ -839,7 +930,7 @@ function finish(d: Draft): Row {
     operator_surface: uiReader ? `${uiReader}` : U(written.length ? "no UI-side reader of what it writes" : "no persisted state"),
     test: testsFor(d.entry.split(":")[0], d.action),
     consequential, state: st, missing,
-    why: OWNER_HELD[d.id] ?? (missing.length ? `missing: ${missing.join(", ")}` : consequential ? "trigger → worker → owner → decision → evidence → readback" : "read / decide surface: trigger → worker"),
+    why: heldWhy ?? (missing.length ? `missing: ${missing.join(", ")}` : consequential ? "trigger → worker → owner → decision → evidence → readback" : "read / decide surface: trigger → worker"),
     ...row0, root_cause_group: null,
   }
   out.root_cause_group = groupOf(out)
@@ -1100,6 +1191,51 @@ function auditOnlyAt(ids: string, sites: number[], calls: Array<[number, number,
     if (audit === null) unprovable = true
   }
   return !any ? undefined : unprovable ? null : true
+}
+/** PURE (wave 155, lane 155R22) — a file's local ALIASES of an emit door: `const NAME = <one statement that NAMES a door as a
+ *  value>` (lib/kernel/brokerage-identity.ts `const emit = deps.emit ?? (await import("@/lib/kernel/emit")).emitKernelEvent`;
+ *  lib/ai-isa/lead-action-plan.ts `const emit = deps.emit ?? (async (input) => (…).emitKernelEvent(input))`). A call through the
+ *  alias IS a door call, judged by its OWN arguments exactly like the door (scripts/event-claims-guard.ts counts every `emit(`
+ *  as a door; this is narrower: only a binding whose initializer names one). An initializer that CALLS the door at its head
+ *  (`const r = await emitKernelEvent(…)`) binds a result, not a door. `spans` = the initializers: the forwarding call inside
+ *  one is the alias's body, not an emission. Blind spot: file-level, not scope-aware (a same-named binding elsewhere in the
+ *  file is read as the alias too). Controls: section G (G10). */
+function doorAliases(ids: string, doors: string[]): { names: string[]; spans: Array<[number, number]> } {
+  const names: string[] = []; const spans: Array<[number, number]> = []
+  if (!doors.length) return { names, spans }
+  const doorRe = new RegExp(`\\b(?:${doors.map(reEsc).join("|")})\\b`)
+  const headCall = new RegExp(`^\\s*(?:await\\s+)?(?:[\\w$]+\\s*\\.\\s*)*(?:${doors.map(reEsc).join("|")})\\s*(?:<[^<>()]*>)?\\s*\\(`)
+  for (const m of ids.matchAll(/(?:^|[\n;{])\s*(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=(?![=>])/g)) {
+    const s = m.index! + m[0].length
+    let depth = 0, e = s
+    for (; e < ids.length; e++) { const c = ids[e]; if (c === "(" || c === "[" || c === "{") depth++; else if (c === ")" || c === "]" || c === "}") { if (depth === 0) break; depth-- } else if ((c === ";" || c === "\n") && depth === 0) break }
+    const init = ids.slice(s, e)
+    if (!doors.includes(m[1]) && doorRe.test(init) && !headCall.test(init)) { names.push(m[1]); spans.push([s, e]) }
+  }
+  return { names: [...new Set(names)], spans }
+}
+/** PURE (wave 155, lane 155R22; the literal rule of scripts/event-claims-guard.ts classify()) — a quoted event VALUE is an
+ *  emission site only when it sits inside a door call, or is keyed as an event (`event: "x"`, `event_type:`, `eventType:`).
+ *  Anything else is not this event: lib/kernel/crm.ts `activity_type: "contact_archived"` on an `activities` insert fell to the
+ *  file-level fallback and charged CONTACT_ARCHIVED (emitted `auditOnly: true`) with the file's other fan-out. A KernelEvent.X
+ *  reference is not filtered (the map-value shape stays the census's). Controls: section G (G10). */
+function literalEventSite(code: string, i: number, calls: Array<[number, number, boolean | null]>): boolean {
+  return calls.some(([s, e]) => i > s && i < e) || /\bevent(?:_type|Type)?\s*:\s*$/.test(code.slice(Math.max(0, i - 40), i))
+}
+/** PURE (wave 155, lane 155R22) — THE EVENT LEDGER'S HOLD. scripts/event-claims-guard.ts (on the chain) holds each fan-out
+ *  event no reactor case claims with ONE owner question, in scripts/event-claims-ledger.ts EVENT_OWNER_HELD. The census applies
+ *  that hold — the question VERBATIM — only to a row with exactly the shape the ledger holds: emitted, no consumer, and not
+ *  proven audit-only by the census itself. Any other row is not held (a consumed or audit-proven event in the list is STALE —
+ *  staleEventHolds — never a reason to hide a row). An event in neither list keeps its classification (EXECUTABLE_GAP). */
+function eventLedgerHold(value: string, row: { worker: boolean; emitted: boolean; auditOnlyEmits: boolean | null | undefined }, held: Record<string, string>): string | undefined {
+  const q = held[value]
+  if (!q || row.worker || !row.emitted || row.auditOnlyEmits === true) return undefined
+  return `owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): ${q}`
+}
+/** PURE — the ledger entries the census cannot honor: no kernel_event row (the event left the enum), or a row the hold did not
+ *  apply to (it has a consumer, no emitter, or is proven audit-only). A stale list holds nothing; this list must be empty. */
+function staleEventHolds(held: Record<string, string>, rowById: (id: string) => { state: State } | undefined): string[] {
+  return Object.keys(held).filter((v) => { const r = rowById(`kernel_event:${v}`); return !r || r.state !== "owner-held" })
 }
 /** PURE — the direct `lifecycle_events` inserts in a file: [start, end] of each `.insert(` argument list whose `.from(` is a real
  *  call (present in the string-blanked view) of the literal `lifecycle_events` (read on the comment-blanked view). */
@@ -1627,13 +1763,15 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
     // a signal whose own row names a decision (signalDecision); a block that also writes a domain table, sends, runs
     // outside the reactor, or publishes an unregistered / unhandled type keeps its gap. Controls: section F.
     const link = routingLink({ signals: [...signals], writes: [...facts.writes.keys()], egress: facts.egress.length, outsideReactor, decisionOf: signalDecision })
+    const auditOnlyEmits = emitters.length && !worker ? auditOnlyEmission(key, value, emitters) : undefined
     drafts.push({
       id: `kernel_event:${value}`, kind: "kernel_event", entry: worker ?? "lib/kernel/events.ts", action: `kernel.${value}`, source_event: `KernelEvent.${key}`,
       trigger: emitters.length ? `emitted by ${emitters[0]}${emitters.length > 1 ? ` (+${emitters.length - 1})` : ""}` : null,
       worker, owner: ow.owner, ownerWhy: ow.why, facts, actorHint: "kernel event bus",
       decisionHint: link ? `routed to ${link.map(([, dcs]) => dcs).join("; ")} — the decision is judged on manager_signal:${link[0][0]}` : undefined,
       evidenceHint: link ? `manager_signals row (publishManagerSignal, signal "${link.map(([s]) => s).join(", ")}") @ ${worker}` : undefined,
-      auditOnlyEmits: emitters.length && !worker ? auditOnlyEmission(key, value, emitters) : undefined,
+      auditOnlyEmits,
+      heldWhy: eventLedgerHold(value, { worker: !!worker, emitted: emitters.length > 0, auditOnlyEmits }, EVENT_OWNER_HELD),
       elsewhere: emitters.length ? [] : [...new Set([...(kernelRefs.get(key) ?? []), ...(LIT_FILES.get(value) ?? [])]
         .filter((f) => f !== "lib/kernel/events.ts" && !reactorFiles.includes(f) && !(consumerSites.get(key) ?? []).some((s) => s.file === f))
         .concat(inSql(value) ? ["supabase/migrations (SQL)"] : []))],
@@ -1646,8 +1784,14 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
   function fileDoorCalls(f: string): Array<[number, number, boolean | null]> {
     const hit = callsCache.get(f); if (hit) return hit
     const v = views(f)!; const code = emitCode.get(f) ?? codeOf(f)
-    const w = localWrappers(v.ids, code, emitDoors, sharedAudit)
-    const calls = doorCallSpans(v.ids, code, [...emitDoors, ...w.doors], new Set([...sharedAudit, ...w.audit]))
+    // WAVE 155 (lane 155R22): a local alias of a door (doorAliases) is a door in this file — before the wrappers are read, so a
+    // wrapper whose body calls the alias (lib/kernel/brokerage-transfer.ts emitTransferEvent → `emit({ …, auditOnly: true })`)
+    // is an audit wrapper; the forwarding call INSIDE an alias's initializer is its body, not an emission
+    const al = doorAliases(v.ids, emitDoors)
+    const doors = [...emitDoors, ...al.names]
+    const w = localWrappers(v.ids, code, doors, sharedAudit)
+    const calls = doorCallSpans(v.ids, code, [...doors, ...w.doors], new Set([...sharedAudit, ...w.audit]))
+      .filter(([s]) => !al.spans.some(([a, b]) => s >= a && s < b))
     callsCache.set(f, calls)
     return calls
   }
@@ -1655,11 +1799,16 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
     let any = false
     for (const f of files) {
       const v = views(f)!; const code = emitCode.get(f) ?? codeOf(f)
+      const calls = fileDoorCalls(f)
       const sites = [...v.ids.matchAll(new RegExp(`\\bKernelEvent\\.${key}\\b`, "g"))].map((m) => m.index!)
-        .concat([...code.matchAll(new RegExp(`["'\`]${reEsc(value)}["'\`]`, "g"))].map((m) => m.index!))
+        .concat([...code.matchAll(new RegExp(`["'\`]${reEsc(value)}["'\`]`, "g"))].map((m) => m.index!).filter((i) => literalEventSite(code, i, calls)))
         .filter((i) => !/(?:===\s*|case\s+)$/.test(v.ids.slice(Math.max(0, i - 8), i)))
-      const r = auditOnlyAt(v.ids, sites, fileDoorCalls(f))
+      let r = auditOnlyAt(v.ids, sites, calls)
       if (r === undefined) continue // this file carries the value without riding a door (not an emission here)
+      // WAVE 155 (lane 155R22): an `auditOnly: <expression>` the event-claims ledger names for THIS event and file, re-verified
+      // against the file's comment-stripped code (scripts/event-claims-ledger.ts CONDITIONAL_AUDIT) — commission_calculated's
+      // `auditOnly: nextStatus !== "approved"` is the audit branch exactly. File-level (a blind spot, stated). Control: G10.
+      if (r === null && conditionalAuditVerified(value, f, stripComments(rawOf(f)))) r = true
       if (r !== true) return r // a fan-out (false) or an unprovable auditOnly expression (null)
       any = true
     }
@@ -1864,7 +2013,8 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
     if (!hook && !mutating.length) continue
     const facts = pathFacts(file)
     const callers = hook ? [] : apiCallers(file)
-    const ow = ((o) => (o.owner ? o : ownerOfAuditedRead(factsOfSpan(file, v, 0, v.ids.length), facts) ?? o))(ownerFromWrites(facts))
+    // WAVE 155 (lane 155R22): …then the worker hop (ownerOfDelegatedRead) where the own span read no stewarded table at all
+    const ow = ((o) => { if (o.owner) return o; const own = factsOfSpan(file, v, 0, v.ids.length); return ownerOfAuditedRead(own, facts) ?? ownerOfDelegatedRead(own, facts, delegatedWorkers(file, v, fnsOf(file), 0, v.ids.length)) ?? o })(ownerFromWrites(facts))
     const at = v.ids.search(/export\s+(?:async\s+)?(?:function|const)\s+(?:POST|PUT|PATCH|DELETE|GET)\b/)
     drafts.push({
       id: `${hook ? "webhook" : "http"}:${url}`, kind: hook ? "webhook" : "http", entry: `${file}:${lineAt(v, at >>> 0)}`, action: `${methods.join("/")} ${url}`,
@@ -1892,7 +2042,8 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
       const facts = fixture ? factsOfSpan(file, v, fn.start, fn.end) : exportFacts(file, v, fns, fn)
       if (!facts.writes.size && !facts.egress.length) { readOnlyExports++; continue }
       const callers = [...(importers?.get(fn.name) ?? []), ...(importers?.get("*") ?? [])]
-      const ow = ((o) => (o.owner ? o : ownerOfAuditedRead(factsOfSpan(file, v, fn.start, fn.end), facts) ?? o))(ownerFromWrites(facts))
+      // WAVE 155 (lane 155R22): …then the worker hop (ownerOfDelegatedRead) where the own span read no stewarded table at all
+      const ow = ((o) => { if (o.owner) return o; const own = factsOfSpan(file, v, fn.start, fn.end); return ownerOfAuditedRead(own, facts) ?? ownerOfDelegatedRead(own, facts, delegatedWorkers(file, v, fns, fn.start, fn.end, fn.name)) ?? o })(ownerFromWrites(facts))
       // WAVE 155 (lane 155B1) — A SIBLING CALL IS A CALLER. An export that no file imports may still run: another export of the
       // SAME module that IS imported calls it (closureSpans — the exact same-file call graph the facts already walk). The
       // census read only importers, so such an export read as "no trigger". Controls: section F (a sibling-called export
@@ -1946,6 +2097,9 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
   blind.push("the walk follows an imported FUNCTION (its body + same-file callees + the members it calls of a same-file object literal, e.g. defaultDeps.ledger), a re-export to its module, and nothing for a type / interface / enum / data constant; a class, a call result or a wrapped function still falls back to the target's whole-file facts (over-reports); a write gated by a data flag (`markUsed: false`) is credited as if the flag were true")
   blind.push(`kernel-event consumers: \`=== / case / [X]:\` (any file), a reactor array tested with \`.includes(params.event\`, or an L6 award rule while the reactor calls awardLifecycleMilestones — the last two only for an event with no structural consumer; a map key in a non-reactor file (notification-engine's title map) still counts as a consumer; emitters include every exported (emit|publish|fire|record|log)…Event door in lib/kernel + lib/events (${emitDoorsOut.length} doors) and direct lifecycle_events inserts (audit records)`)
   blind.push("decision doors: an INTERNAL caller (a fail-closed shared-secret refusal on the entry file — an http route or a secret-held server action) is credited as the counterpart of a session actor: it AUTHENTICATES the platform's own process; a verified grant token = a lookup by a token column + a refusal + an expiry comparison (a token column named otherwise, or an expiry kept elsewhere, is invisible)")
+  // WAVE 155 (lane 155R22) — the blind spots of this lane's rules, published beside the numbers (CLAUDE.md §2)
+  blind.push("owner by the WORKER HOP (ownerOfDelegatedRead): only a log-only path whose own span read no stewarded table; the workers are the callees its own span calls minus gate / identity / ledger / carrier helpers — by NAME (isNotAWorker: the census's decision, gate and ledger-door tokens plus require*/gate*/check*/can*/evaluateOutbound*, get*Context, audit*/emit*/notify* … shapes) or by STRUCTURE (the helper's own body resolves the signed-in identity or asks an authority / policy gate). A gate named like a worker and doing neither is read as a worker; a worker that resolves the identity itself is dropped (its row stays open). ONE hop: a worker's own imports, a worker reached through a call result or a class, and a dynamic `.from(variable)` are invisible; exactly ONE steward across all workers resolves, two resolve nothing")
+  blind.push("kernel-event holds DERIVED from scripts/event-claims-ledger.ts EVENT_OWNER_HELD apply only to an emitted, unconsumed, not-audit-proven row; audit-only proof also reads a local door ALIAS (`const emit = … emitKernelEvent`, file-level — not scope-aware), refuses a quoted event value that is neither inside a door call nor keyed `event:` (an activity_type of the same spelling), and accepts a CONDITIONAL_AUDIT entry re-verified against its named file (file-level: one verified expression covers every site of that event in that file)")
   return { rows: rowsOut, denominators, blind, cronDrift, readOnlyExports, emitDoors: emitDoorsOut }
 }
 
@@ -2274,7 +2428,23 @@ async function main(): Promise<void> {
   // WAVE 155 (lane 155R16): a planted "use server" ROUTE file — its POST is the http population's row, its helper is a server action
   const FX_ROUTE = "app/api/__os_coverage_route_fixture__/route.ts"
   const fxRouteRaw = [`"use server"`, `export async function POST(req: Request) { await svc.from("deals").update({}) }`, `export async function plantedRouteHelper() { await svc.from("deals").update({}) }`].join("\n")
-  const c = await census([], [{ file: FX, raw: fxRaw }, { file: FX_ROUTE, raw: fxRouteRaw }])
+  // WAVE 155 (lane 155R22): the worker-hop fixture (section G, G9) — tables chosen from TABLE_MANAGER at run time, never typed
+  const FX_HOP = "app/actions/__os_coverage_hop_fixture__.ts"
+  const TM0 = (await import("../lib/kernel/manager-registry")).TABLE_MANAGER as Record<string, string> // census() sets TABLE_MANAGER from the same import
+  const hopA = Object.keys(TM0).find((t) => !ACTOR_IDENTITY_READS.has(t) && !CARRIER_TABLES.has(t) && !EVIDENCE_TABLE_RE.test(t) && LIVE.has(t))!
+  const hopB = Object.keys(TM0).find((t) => !ACTOR_IDENTITY_READS.has(t) && !CARRIER_TABLES.has(t) && !EVIDENCE_TABLE_RE.test(t) && LIVE.has(t) && TM0[t] !== TM0[hopA])!
+  const sel = (t: string) => `const { data } = await createServiceClient().from("${t}").select("*").eq("id", id); return data`
+  const logW = `await createServiceClient().from("self_heal_events").insert({ subject: id })`
+  const fxHopRaw = [`"use server"`, `import { createServiceClient } from "@/lib/supabase/service"`,
+    `async function requireSeat(id: string) { ${sel(hopA)} }`,
+    `async function loadScope(id: string) { const ctx = await getAgentContext(); ${sel(hopA)} }`,
+    `async function loadThing(id: string) { ${sel(hopA)} }`,
+    `async function loadOther(id: string) { ${sel(hopB)} }`,
+    `export async function plantedWorkerRead(id: string) { await requireSeat(id); await loadThing(id); ${logW} }`,
+    `export async function plantedGateOnlyRead(id: string) { await requireSeat(id); ${logW} }`,
+    `export async function plantedStructuralGateRead(id: string) { await loadScope(id); ${logW} }`,
+    `export async function plantedTwoWorkers(id: string) { await loadThing(id); await loadOther(id); ${logW} }`].join("\n")
+  const c = await census([], [{ file: FX, raw: fxRaw }, { file: FX_ROUTE, raw: fxRouteRaw }, { file: FX_HOP, raw: fxHopRaw }])
   const isFixtureRow = (id: string) => id.includes("__os_coverage_")
   const fxRows = c.rows.filter((r) => r.id.startsWith(`server_action:${FX}`))
   const realRows = c.rows.filter((r) => !isFixtureRow(r.id))
@@ -2311,6 +2481,10 @@ async function main(): Promise<void> {
   check("…and a frozen gap that WIDENS fails too", judge([{ ...fx("plantedUnledgered")!, missing: ["evidence", "readback"] }], { [fx("plantedUnledgered")!.id]: "evidence" }, {}).some((x) => x.includes("WIDENED")))
   check("…and an OWNER_HELD row with its reason does not fail", judge([fx("plantedUnledgered")!], {}, { [fx("plantedUnledgered")!.id]: "owner reason" }).length === 0)
   check("every OWNER_HELD entry is a real row with a reason", Object.entries(OWNER_HELD).every(([id, why]) => why.length > 10 && realRows.some((r) => r.id === id)))
+  // WAVE 155 (lane 155R22): the holds a population DERIVED from another guard's ledger (eventLedgerHold) count exactly like the
+  // static ones for the judge and the baseline prune — one held map, built from the rows, never typed
+  const HELD: Record<string, string> = { ...OWNER_HELD }
+  for (const r of realRows) if (r.state === "owner-held" && !HELD[r.id]) HELD[r.id] = r.why
   // WAVE 155 (lane 155B1, B4): the frozen P0 EXECUTABLE_GAP list. Created ONCE from the measured rows (it adds a constraint,
   // it allows nothing new: every id in it is already a frozen gap); afterwards --write-baseline only PRUNES it.
   const baselineDoc = baselineExists ? JSON.parse(rawOf(BASELINE_FILE)) as { p0ExecutableGaps?: string[] } : {}
@@ -2318,7 +2492,7 @@ async function main(): Promise<void> {
   const isP0Gap = (r: Row) => r.classification === "EXECUTABLE_GAP" && r.risk_class === "P0"
   if (WRITE_BASELINE) {
     const next: Baseline = {}
-    for (const r of realRows) if (r.missing.length && !OWNER_HELD[r.id]) {
+    for (const r of realRows) if (r.missing.length && !HELD[r.id]) {
       if (!baselineExists) next[r.id] = sig(r.missing)
       else if (baseline[r.id] !== undefined) { const allowed = new Set(baseline[r.id].split(",")); const keep = r.missing.filter((m) => allowed.has(m)); if (keep.length) next[r.id] = sig(keep) }
     }
@@ -2326,7 +2500,7 @@ async function main(): Promise<void> {
     writeFileSync(join(ROOT, BASELINE_FILE), JSON.stringify({ note: "Frozen gaps of scripts/os-coverage-ledger.ts (wave 154, lane 154A1). --write-baseline only PRUNES once this file exists: a closed gap leaves, a new gap is red. Never add by hand. p0ExecutableGaps (wave 155, lane 155B1): the P0 EXECUTABLE_GAP rows at the freeze — a P0 executable gap outside it is red; prune-only.", gaps: next, p0ExecutableGaps: p0 }, null, 1) + "\n")
     console.log(`  · ${baselineExists ? "pruned" : "created"} ${BASELINE_FILE}: ${Object.keys(next).length} frozen gaps (was ${Object.keys(baseline).length}); ${p0.length} frozen P0 executable gaps (was ${p0Frozen ? p0Frozen.size : "absent"})`)
   }
-  const live = judge(realRows, WRITE_BASELINE ? JSON.parse(rawOf(BASELINE_FILE)).gaps : baseline, OWNER_HELD)
+  const live = judge(realRows, WRITE_BASELINE ? JSON.parse(rawOf(BASELINE_FILE)).gaps : baseline, HELD)
   check(`no registered executable path has an UNFROZEN gap (${realRows.filter((r) => r.missing.length).length} gapped rows, ${Object.keys(baseline).length} frozen)`, live.length === 0, live.slice(0, 12).join("\n      ") + (live.length > 12 ? `\n      … ${live.length - 12} more` : ""))
   const stale = Object.keys(baseline).filter((id) => { const r = realRows.find((x) => x.id === id); return !r || !r.missing.length })
   console.log(`  · ${stale.length} frozen gap(s) have closed or left the tree — run --write-baseline to tighten (informational, never red)`)
@@ -2339,6 +2513,13 @@ async function main(): Promise<void> {
   check("autonomyDecision: a halt or approval_required HOLDS; autonomous RUNS", send["platform halted (god switch)"].startsWith("HELD") && send["posture approval_required"].startsWith("HELD") && send["posture autonomous"].startsWith("RUNS"))
   const ap = matrix.json.assetApprover as Record<string, string[]>
   check("approverFor: the owner approves their own asset; a tenant policy moves it to the brokerage", Object.values(ap).every((r) => r[0].startsWith("owner_agent") && r[3].startsWith("tenant_admin")))
+  // WAVE 155 (lane 155R22): the PUBLISHED denominators count real rows only. They were counted over every row the census built,
+  // fixtures included (at 15d212bf: server_action 1918 printed vs 1914 real rows; "use-server modules scanned" 668 with the 2
+  // planted files) — a planted control moved a published number. Recounted here from realRows; the fixture files are subtracted.
+  const realDen: Record<string, number> = { ...c.denominators }
+  for (const k of Object.keys(realDen)) if (c.rows.some((r) => r.trigger_kind === k)) realDen[k] = realRows.filter((r) => r.trigger_kind === k).length
+  realDen["use-server modules scanned"] = (c.denominators["use-server modules scanned"] ?? 0) - [FX, FX_ROUTE, FX_HOP].length
+  c.denominators = realDen
   const out = render({ ...c, rows: realRows }, matrix)
   const mapSection = out.md.slice(out.md.indexOf("## 2."), out.md.indexOf("## 3."))
   check("every component on the kernel-to-customer map resolves to live code (a function token in stripped source)", !!mapSection && !mapSection.includes("MISSING"), mapSection.match(/MISSING[^|]*/g)?.join("; "))
@@ -2618,6 +2799,68 @@ async function main(): Promise<void> {
     const sess = (s: string) => { const v = views("app/api/__os_coverage_sess__/route.ts", s)!; return factsOfSpan("app/api/__os_coverage_sess__/route.ts", v, 0, v.ids.length).session }
     check("G8 F1 POSITIVE: a door whose only session-shaped token is headers() (publicCallerIp) has NO session — NEGATIVE: auth.getUser still is one",
       sess(`export async function publicCallerIp() { const h = await headers(); return h.get("x-forwarded-for") }`) === null && sess(`const { data } = await supabase.auth.getUser()`)?.token === "auth.getUser")
+
+    // G9 — lane 155R22: THE WORKER HOP (ownerOfDelegatedRead / delegatedWorkers). Each control can fail: the planted fixture rows
+    // come from the SAME census run as the real rows (section C), tables chosen from TABLE_MANAGER at run time.
+    const hop = (n: string) => c.rows.find((r) => r.id === `server_action:${FX_HOP}#${n}`)
+    check(`G9 POSITIVE: a log-only action whose WORKER reads a stewarded table (${hopA}) is owned by that table's steward (${TABLE_MANAGER[hopA]}) — the gate it also calls adds nothing`,
+      hop("plantedWorkerRead")?.registered_manager === TABLE_MANAGER[hopA], hop("plantedWorkerRead")?.registered_manager)
+    check("G9 NEGATIVE: the same action whose only stewarded read is inside its GATE helper (named requireSeat) is owned by NOBODY",
+      !!hop("plantedGateOnlyRead") && hop("plantedGateOnlyRead")!.missing.includes("owner"), hop("plantedGateOnlyRead")?.registered_manager)
+    check("G9 NEGATIVE (structural): a helper whose own body resolves the signed-in identity (getAgentContext) is a gate whatever its name (loadScope) — owned by NOBODY",
+      !!hop("plantedStructuralGateRead") && hop("plantedStructuralGateRead")!.missing.includes("owner"), hop("plantedStructuralGateRead")?.registered_manager)
+    check(`G9 NEGATIVE: two workers reading two stewards' tables (${hopA} → ${TABLE_MANAGER[hopA]}, ${hopB} → ${TABLE_MANAGER[hopB]}) resolve NOTHING`,
+      !!hop("plantedTwoWorkers") && hop("plantedTwoWorkers")!.missing.includes("owner"), hop("plantedTwoWorkers")?.registered_manager)
+    const w9 = (reads: string[]): DelegatedWorker => ({ name: "w", at: `${FX}:1`, reads })
+    check("G9 PURE: the rule applies only where the own span read no stewarded table and every write is a carrier / generic log — NEGATIVE: an own-span stewarded read, a domain write, a stewarded log written, identity-only worker reads and a worker with two stewards resolve nothing",
+      ownerOfDelegatedRead(fx8([]), fx8(["audit_log"]), [w9([hopA, "users"])])?.owner === TABLE_MANAGER[hopA]
+      && ownerOfDelegatedRead(fx8([], [hopA]), fx8(["audit_log"]), [w9([hopA])]) === null
+      && ownerOfDelegatedRead(fx8([]), fx8([hopA]), [w9([hopA])]) === null
+      && ownerOfDelegatedRead(fx8([]), fx8([stewardedLog]), [w9([hopA])]) === null
+      && ownerOfDelegatedRead(fx8([]), fx8(["audit_log"]), [w9(["users", "agents", "teams"])]) === null
+      && ownerOfDelegatedRead(fx8([]), fx8(["audit_log"]), [w9([hopA, hopB])]) === null)
+    check("G9 PURE: gate / identity / ledger helpers are not workers (getFinancialActorContext, gateStaffAction, requireCallerTenant, withActionLedger, evaluateOutbound, auditStaffAction, emitKernelEvent, platformStaffCan) — NEGATIVE: real workers are (exportFinancialReport, loadOnboardingRoster, runGoLiveReadiness)",
+      ["getFinancialActorContext", "gateStaffAction", "requireCallerTenant", "withActionLedger", "evaluateOutbound", "auditStaffAction", "emitKernelEvent", "platformStaffCan"].every(isNotAWorker)
+      && !["exportFinancialReport", "loadOnboardingRoster", "runGoLiveReadiness"].some(isNotAWorker))
+    check("G9 PURE: a span that resolves the identity or asks an authority / policy gate acts as a gate — NEGATIVE: a span that only uses the cookie client does not",
+      actsAsGate({ ...emptyFacts(), session: { token: "getAgentContext", at: `${FX}:1` } }) && actsAsGate({ ...emptyFacts(), gates: [{ token: "policy:autonomyGate", at: `${FX}:1` }] })
+      && !actsAsGate({ ...emptyFacts(), session: { token: 'createClient() from "@/lib/supabase/server"', at: `${FX}:1` } }) && !actsAsGate({ ...emptyFacts(), gates: [{ token: "resource/spend:meterVendorSpend", at: `${FX}:1` }] }))
+
+    // G10 — lane 155R22: THE EVENT-CLAIMS LEDGER (scripts/event-claims-ledger.ts, one copy read by test:event-claims and here)
+    const kev = (heldWhy: string | undefined) => finish({ id: "planted:kernel_event", kind: "kernel_event", entry: "lib/kernel/events.ts", action: "kernel.planted", source_event: "KernelEvent.PLANTED", trigger: "emitted by lib/x.ts", worker: null, owner: null, facts: emptyFacts(), actorHint: "kernel event bus", auditOnlyEmits: false, heldWhy })
+    const q10 = "record or consumer? a planted question"
+    const held10 = kev(eventLedgerHold("planted_event", { worker: false, emitted: true, auditOnlyEmits: false }, { planted_event: q10 }))
+    const neither10 = kev(eventLedgerHold("planted_event", { worker: false, emitted: true, auditOnlyEmits: false }, {}))
+    check("G10 POSITIVE: a fan-out event with no consumer that the ledger HOLDS is OWNER_HELD carrying the ledger's question VERBATIM — NEGATIVE: the same event in NEITHER list stays an EXECUTABLE_GAP in G01",
+      held10.state === "owner-held" && held10.classification === "OWNER_HELD" && held10.why.includes(q10) && held10.classification_evidence.includes(q10)
+      && neither10.classification === "EXECUTABLE_GAP" && neither10.root_cause_group === "G01-event-no-consumer", JSON.stringify([held10.classification, neither10.classification, neither10.root_cause_group]))
+    check("G10 NEGATIVE: a held event that HAS a consumer, has no emitter, or is proven audit-only is NOT held (the ledger never hides a row of another shape)",
+      eventLedgerHold("planted_event", { worker: true, emitted: true, auditOnlyEmits: undefined }, { planted_event: q10 }) === undefined
+      && eventLedgerHold("planted_event", { worker: false, emitted: false, auditOnlyEmits: undefined }, { planted_event: q10 }) === undefined
+      && eventLedgerHold("planted_event", { worker: false, emitted: true, auditOnlyEmits: true }, { planted_event: q10 }) === undefined)
+    const rowOf = (id: string) => realRows.find((r) => r.id === id)
+    check("G10 POSITIVE CONTROL: a ledger key whose event no longer exists is STALE (a stale list cannot hold a row)", staleEventHolds({ __os_coverage_no_such_event__: q10 }, rowOf).length === 1)
+    const staleHolds = staleEventHolds(EVENT_OWNER_HELD, rowOf)
+    check(`G10 every EVENT_OWNER_HELD entry holds a real kernel_event row of the held shape (${Object.keys(EVENT_OWNER_HELD).length - staleHolds.length}/${Object.keys(EVENT_OWNER_HELD).length})`, staleHolds.length === 0, `stale: ${staleHolds.join(", ")}`)
+    const doors10 = ["emitKernelEvent", "processKernelEvent"]
+    const alias10 = (src: string, ev = "PLANTED") => { const ids = blankStrings(src); const al = doorAliases(ids, doors10); const calls = doorCallSpans(ids, blankComments(src), [...doors10, ...al.names], new Set()).filter(([s]) => !al.spans.some(([a, b]) => s >= a && s < b)); return auditOnlyAt(ids, [...ids.matchAll(new RegExp(`KernelEvent\\.${ev}\\b`, "g"))].map((m) => m.index!), calls) }
+    check("G10 POSITIVE: a call through a local ALIAS of a door (`const emit = deps.emit ?? …emitKernelEvent`) is judged by its own arguments — auditOnly: true → a record; without it → fan-out",
+      alias10(`const emit = deps.emit ?? (await import("@/lib/kernel/emit")).emitKernelEvent\nawait emit({ event: KernelEvent.PLANTED, auditOnly: true })`) === true
+      && alias10(`const emit = deps.emit ?? (async (i) => (await import("@/lib/kernel/emit")).emitKernelEvent(i))\nawait emit({ event: KernelEvent.PLANTED })`) === false)
+    check("G10 NEGATIVE: a binding that does not name a door, or binds a door's RESULT, is not an alias (the site rides nothing)",
+      alias10(`const emit = (x) => console.log(x)\nawait emit({ event: KernelEvent.PLANTED, auditOnly: true })`) === undefined
+      && doorAliases(blankStrings(`const r = await emitKernelEvent({ event: KernelEvent.PLANTED })`), doors10).names.length === 0)
+    const lit10 = `await emitKernelEvent({ event: KernelEvent.OTHER })\nawait svc.from("activities").insert({ activity_type: "planted_value" })\nawait processKernelEvent({ event: "planted_value", auditOnly: true })`
+    const lcalls = doorCallSpans(blankStrings(lit10), blankComments(lit10), doors10, new Set())
+    const litAt = (n: number) => [...lit10.matchAll(/"planted_value"/g)][n].index!
+    check("G10 POSITIVE: a quoted event value inside a door call, or keyed `event:`, is an emission site — NEGATIVE: the same value as an `activity_type:` on another table's insert is not",
+      literalEventSite(lit10, litAt(1), lcalls) && literalEventSite(`const x = { event: "planted_value" }`, `const x = { event: "planted_value" }`.indexOf(`"planted_value"`), []) && !literalEventSite(lit10, litAt(0), lcalls))
+    const fin = stripComments(rawOf("lib/kernel/financial.ts"))
+    check("G10 POSITIVE: a CONDITIONAL_AUDIT entry verifies against its named file's comment-stripped code — NEGATIVE: another file, or the code without the expression, does not",
+      conditionalAuditVerified("commission_calculated", "lib/kernel/financial.ts", fin) && !conditionalAuditVerified("commission_calculated", "lib/kernel/crm.ts", fin)
+      && !conditionalAuditVerified("commission_calculated", "lib/kernel/financial.ts", fin.replace(/auditOnly:\s*nextStatus !== "approved"/g, "auditOnly: false")) && !conditionalAuditVerified("contact_archived", "lib/kernel/financial.ts", fin))
+    check("G10 POSITIVE CONTROL (the alias finder still sees its shape in the tree): some runtime file binds a local alias of a kernel emit door",
+      FILES.some((f) => { const v = views(f); return !!v && v.ids.includes("emitKernelEvent") && doorAliases(v.ids, c.emitDoors ?? ["emitKernelEvent"]).names.length > 0 }))
   }
 
   const st = { working: 0, partial: 0, missing: 0, "owner-held": 0 } as Record<State, number>
@@ -2630,4 +2873,5 @@ async function main(): Promise<void> {
 }
 // Run only when invoked as the guard, so a probe can import the extractor.
 if (/os-coverage-ledger\.ts$/.test(process.argv[1] ?? "")) main().catch((e) => { console.error(e); process.exit(1) })
-export { topLevelFns, factsOfSpan, pathFacts, exportFacts, views, judge, stateOf, census, classify, groupOf, ratchet, auditOnlyAt, siblingCaller, routingLink, caseSpanEnd }
+export { topLevelFns, factsOfSpan, pathFacts, exportFacts, views, judge, stateOf, census, classify, groupOf, ratchet, auditOnlyAt, siblingCaller, routingLink, caseSpanEnd,
+  delegatedWorkers, ownerOfDelegatedRead, isNotAWorker, eventLedgerHold, staleEventHolds }

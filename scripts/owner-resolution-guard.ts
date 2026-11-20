@@ -21,7 +21,7 @@
  * RED AT ce4200fa: A cannot import voiceToolOwnerForCall; B's results carry no ownerManager; C's repaired rows read
  * `unresolved` (measured: 19 rows partial at the base — see $S/lane155R7-notes.md).
  */
-import { census } from "./os-coverage-ledger" // registers the `server-only` / service-client stubs before the imports below run
+import { census, views, topLevelFns, exportFacts, pathFacts } from "./os-coverage-ledger" // registers the `server-only` / service-client stubs before the imports below run
 import { memSupabase } from "./in-memory-supabase"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -170,7 +170,12 @@ async function main(): Promise<void> {
     "server_action:app/actions/dispatch-showing.ts#dispatchStopScheduling": { via: "read:tour_stops" },
     "server_action:app/actions/dotloop-integration.ts#accessSharedDocument": { via: "log:document_access_log" },
     "server_action:app/actions/dotloop-integration.ts#logDocumentAccess": { via: "log:document_access_log" },
-    "server_action:app/actions/financial-kernel.ts#exportFinancialReportAction": { via: "read:financial_reports" },
+    // CORRECTED (wave 155, lane 155R22 — a finding of the row-by-row agreement check below, not an edit to make it pass): the
+    // census's worker hop reads the code — exportFinancialReport (lib/kernel/financial.ts:1866), the one worker this action
+    // delegates to, reads agent_commissions and agent_earnings (finance_manager); financial_reports is not on this path at all
+    // (only app/actions/ai-financial-management.ts and app/dashboard/financials/reports/page.tsx read it). The path-read check
+    // below now fails any `read:<table>` that names a table the row's path does not read.
+    "server_action:app/actions/financial-kernel.ts#exportFinancialReportAction": { via: "read:agent_commissions" },
     "server_action:app/actions/onboarding/tech-stack.ts#getIntegrationStatus": { via: "read:integration_credentials" },
     "server_action:app/actions/onboarding/tech-stack.ts#getMaskedCredentials": { via: "read:integration_credentials" },
     "server_action:app/actions/superadmin/ai-ops.ts#runCredentialRefreshAction": { via: "read:integration_credentials" },
@@ -271,6 +276,32 @@ async function main(): Promise<void> {
   if (leftRule.length) console.log(`  · left the audited-read rule (now writes a domain table; owned by that write): ${leftRule.join(", ")}`)
   const disagree = Object.entries(G09).filter(([id, d]) => { const r = byId.get(id); const o = ownerOf(d); return !!r && logOnlyPath(r) && !!o && !r.registered_manager.startsWith("unresolved") && r.registered_manager !== o })
   check("the census never credits a LOG-ONLY G09 row to a DIFFERENT manager than the one derived here (unresolved, or exactly this owner)", disagree.length === 0, disagree.map(([id]) => `${id}: census ${byId.get(id)!.registered_manager}`).join(" | "))
+  // WAVE 155 (lane 155R22) — THE CENSUS NOW DERIVES THESE OWNERS ITSELF (scripts/os-coverage-ledger.ts ownerOfDelegatedRead, the
+  // worker hop) — so §D and the census are compared ROW BY ROW: every log-only row §D names (read: / log: / domain / per-call
+  // with an owner) is either credited by the census to EXACTLY §D's owner, or left unresolved and printed with the census's own
+  // reason (what would close it). A disagreement is a finding (exportFinancialReportAction was one — corrected above with its
+  // evidence), never edited away.
+  const agreeRows = Object.entries(G09).filter(([id, d]) => { const r = byId.get(id); return !!r && logOnlyPath(r) && !!ownerOf(d) && r.registered_manager === ownerOf(d) }).map(([id]) => id)
+  const openNamed = Object.entries(G09).filter(([id, d]) => { const r = byId.get(id); return !!r && logOnlyPath(r) && !!ownerOf(d) && r.registered_manager.startsWith("unresolved") })
+  console.log(`  · §D vs census, log-only rows with a named owner: ${agreeRows.length} AGREE · ${openNamed.length} still unresolved by the census · ${disagree.length} disagree`)
+  for (const [id, d] of openNamed) console.log(`      open  ${id} — §D ${d.via} → ${ownerOf(d)}; census: ${byId.get(id)!.registered_manager.slice(0, 110)}`)
+  check(`the census credits the worker-hop owners §D derived (positive: ≥ 1 log-only row AGREES by derivation — ${agreeRows.length})`, agreeRows.length > 0)
+  // …and a `read:<table>` SHOULD name a table the row's PATH reads (the census's own walk: the export + same-file callees + the
+  // members it calls, to MAX_HOPS). PRINTED, NOT RED: the walk not finding a read is not proof of absence (a `.from(variable)`,
+  // a read past MAX_HOPS, an RPC are invisible — CLAUDE.md §2), so each listed entry is a finding to verify by hand, never a
+  // reason to edit §D blind. exportFinancialReportAction was verified (financial_reports is read by two files, neither on the
+  // path) and corrected above; the control below keeps the finder honest in both directions.
+  const pathReads = (id: string): Set<string> | null => {
+    const m = /^server_action:(.+)#(\w+)$/.exec(id); const h = /^http:(\/api\/.+)$/.exec(id)
+    if (m) { const v = views(m[1]); if (!v) return null; const fns = topLevelFns(v); const fn = fns.find((x) => x.name === m[2]); return fn ? exportFacts(m[1], v, fns, fn).reads : null }
+    if (h) { for (const f of [`app${h[1]}/route.ts`, `app${h[1]}/route.tsx`]) if (views(f)) return pathFacts(f).reads }
+    return null
+  }
+  const staleRead = Object.entries(G09).filter(([id, d]) => d.via.startsWith("read:") && byId.has(id)).filter(([id, d]) => { const r = pathReads(id); return !!r && !r.has(d.via.slice(5)) }).map(([id, d]) => `${id} (${d.via})`)
+  console.log(`  · "read:<table>" entries the census walk does not see on the path (${staleRead.length}; verify by hand — unseen is not absent):`)
+  for (const s of staleRead) console.log(`      unseen  ${s}`)
+  check("CONTROL: the path-read finder sees a table a path reads and refuses one it does not (exportFinancialReportAction reads agent_commissions, not financial_reports)",
+    !!pathReads("server_action:app/actions/financial-kernel.ts#exportFinancialReportAction")?.has("agent_commissions") && !pathReads("server_action:app/actions/financial-kernel.ts#exportFinancialReportAction")?.has("financial_reports"))
   check("CONTROL: the log-only precondition is the rule's (a carrier/log-only path is in it; a domain write is not)", logOnlyPath({ path_effects: { writes: ["notifications", "audit_log"] } }) && !logOnlyPath({ path_effects: { writes: ["compliance_flags", "agent_action_ledger"] } }))
   check("POSITIVE CONTROL: a planted log-only path still has NO census owner (the derivation is named here, not credited behind the census's back)", !!logOnly && logOnly.missing.includes("owner"))
 

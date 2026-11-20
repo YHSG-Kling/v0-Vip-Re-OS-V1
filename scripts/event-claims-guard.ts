@@ -35,6 +35,7 @@ import { join } from "node:path"
 import { registerHooks } from "node:module"
 import { stripComments } from "./strip-comments"
 import { memSupabase, type Row, type MemClient } from "./in-memory-supabase"
+import { EVENT_OWNER_HELD, CONDITIONAL_AUDIT, conditionalAuditVerified } from "./event-claims-ledger"
 
 const STUB_BY_SPEC: Record<string, string> = {
   "server-only": "export{}",
@@ -58,40 +59,10 @@ function check(label: string, cond: boolean, detail?: string) {
 const ROOT = process.cwd()
 const raw = (p: string) => { try { return readFileSync(join(ROOT, p), "utf8") } catch { return "" } }
 
-// ─── the owner-held list: fan-out events no reactor case claims, each waiting on ONE owner question ───────────────────
-// "record?" = is the lifecycle_events row the whole point (auditOnly: true at the emit site), or must a registered manager
-// act (a consumer)? Lane 155R6 does not decide that (brief: "do NOT decide that yourself"). Shrink-only.
-export const OWNER_HELD: Record<string, string> = {
-  brand_compliance_passed:        "record? brand scan passed (lib/kernel/brand-compliance.ts); nothing must act on a pass",
-  brand_compliance_failed:        "record or consumer? a failed brand scan — compliance_officer could hold the piece; no signal fits today",
-  buyer_disengaged:               "record? a buyer lifecycle state (lib/kernel/lifecycle.ts map); BUYER_STATE_CHANGED already reaches the concierges",
-  buyer_search_executed:          "record? a buyer lifecycle state echo (same as above)",
-  cda_generated:                  "record? a CDA row was generated (app/actions/cda-portal.ts); approval is the CDA portal's own door",
-  contact_enrichment_completed:   "record? enrichment landed (lib/lead-pipeline/enrichment-orchestrator.ts); failure already routes (contact_enrichment_failed → ai_isa)",
-  credit_status_updated:          "TWO BODIES (lib/orchestrator/internal.ts): the switch's handleCreditStatusUpdated (suggestion card only on 'target_reached', a free-text status) vs EVENT_HANDLERS reactToCreditPartnerStatus (bell + kickoff task on 'approved', never reached); and logCreditStatusUpdated writes the underscore spelling the dotted handler never sees",
-  deal_on_hold:                   "record? a buyer lifecycle state echo (lib/kernel/lifecycle.ts)",
-  enrichment_completed:           "record? lead enrichment landed (enrichment-orchestrator.ts)",
-  integration_failed:             "record? an admin's own integration TEST failed (app/api/integrations/test) — the admin is looking at the result",
-  marketing_campaign_approved:    "record? the approval is decided by decideMarketingApproval (lib/kernel/approval-authority.ts); the event is its echo",
-  offer_eligible:                 "record? a buyer lifecycle state echo (lib/kernel/lifecycle.ts)",
-  property_recommended:           "record? a buyer FAVORITED one of our listings (lib/kernel/forms.ts); the preference learner already runs inline",
-  referral_advanced:              "record or consumer? a referral moved stage (app/actions/referrals) — sphere_of_influence has referral_received / referral_reciprocity, neither is this moment",
-  report_generated:               "record? a report was generated (lib/kernel/reporting.ts emitEvent fans out)",
-  report_emailed:                 "record? a report was EMAILED (lib/kernel/reporting.ts emitEvent fans out; the financial.ts copy is already audit-only) — the send is the act",
-  report_exported_csv:            "record? a report was exported (lib/kernel/reporting.ts emitEvent fans out; the financial.ts copy is already audit-only)",
-  report_exported_pdf:            "record? a report was exported (lib/kernel/reporting.ts emitEvent fans out; the financial.ts copy is already audit-only)",
-  seller_declined:                "record or consumer? a seller DECLINED to list (app/actions/seller-listing/execution-engine.ts recordSellerDecision) — the Listing Concierge could close out the seller journey; no signal fits",
-  subscription_reminder_sent:"record? a reminder was SENT (lib/billing/stripe-subscription-ops.ts) — the send is the act",
-  tour_eligible:                  "record? a buyer lifecycle state echo (lib/kernel/lifecycle.ts)",
-  tour_planned:                   "record? a buyer lifecycle state echo (lib/kernel/lifecycle.ts)",
-  user_account_incomplete:        "record? self-heal finding on dashboard load (app/dashboard/page.tsx)",
-  user_account_repaired:          "record? self-heal outcome (lib/kernel/users.ts)",
-  user_brokerage_assigned:        "record? provisioning step (lib/kernel/users.ts)",
-  user_domain_records_created:    "record? provisioning step (lib/kernel/users.ts)",
-  user_domain_records_repaired:   "record? provisioning step (lib/kernel/users.ts)",
-  user_invited:                   "record? an invite was sent (app/actions/admin/invite-user.ts) — the send is the act",
-  user_onboarding_started:        "record? onboarding started (lib/kernel/onboarding.ts); the onboarding-health sweep already watches stalls",
-}
+// ─── the owner-held list and the conditional-audit exceptions: ONE copy, in scripts/event-claims-ledger.ts (wave 155, lane
+// 155R22), read by this guard AND by the census (scripts/os-coverage-ledger.ts) — never retyped (CLAUDE.md §6). This guard
+// keeps the ratchet over it: an entry that is no longer fan-out-and-unclaimed is RED ("stale — remove it"). Shrink-only.
+export const OWNER_HELD: Record<string, string> = EVENT_OWNER_HELD
 
 // ─── the classifier (pure over sources, so the controls can plant defects) ──────────────────────────────────────────────
 export interface Sources { files: Record<string, string>; events: Record<string, string> }
@@ -122,6 +93,11 @@ function doorCalls(code: string, re: RegExp, auditWrappers: Set<string>): Array<
     const name = /([A-Za-z_$][\w$]*)\s*\($/.exec(m[0])?.[1] ?? ""
     out.push([m.index!, end, /\bauditOnly\s*:\s*true\b/.test(span) || DIRECT_AUDIT.test(span) || auditWrappers.has(name)])
   }
+  // WAVE 155 (lane 155R22): a DIRECT `.from("lifecycle_events").insert(…)` is itself a call a site can RIDE — the record the
+  // header already names as audit-only. Without it a site on a direct insert rode nothing, fell to the file-level fallback and
+  // inherited the file's OTHER fan-out door: enrichment_completed (lib/lead-pipeline/enrichment-orchestrator.ts — a direct
+  // insert, beside processKernelEvent for the contact variant) read as fan-out and was held. Control: §A "direct insert".
+  for (const m of code.matchAll(new RegExp(DIRECT_AUDIT.source, "g"))) out.push([m.index!, matchParen(code, m.index! + m[0].length - 1), true])
   return out
 }
 /** Same-file wrappers (function or const arrow) whose body calls a base door with auditOnly / writes lifecycle_events. */
@@ -146,14 +122,11 @@ function localWrappers(code: string): { doors: string[]; audit: Set<string> } {
   return { doors, audit }
 }
 
-/** An `auditOnly: <expression>` whose TRUE branch is exactly this event — named, and re-verified against the file's code. */
-export const CONDITIONAL_AUDIT: Record<string, { file: string; expr: RegExp }> = {
-  // a REOPENED dispute is an audit echo; only the APPROVED branch fans out (wave 154, lane 154A3), and that one is claimed
-  commission_calculated: { file: "lib/kernel/financial.ts", expr: /event:\s*nextStatus === "approved" \? KernelEvent\.COMMISSION_APPROVED : KernelEvent\.COMMISSION_CALCULATED,[\s\S]{0,400}?auditOnly:\s*nextStatus !== "approved"/ },
-}
+// CONDITIONAL_AUDIT (an `auditOnly: <expression>` whose TRUE branch is exactly that event) lives in scripts/event-claims-ledger.ts
+// with its verifier; re-exported so this guard's public surface is unchanged.
+export { CONDITIONAL_AUDIT }
 function CONDITIONAL_AUDIT_OK(value: string, f: string, c: string): boolean {
-  const x = CONDITIONAL_AUDIT[value]
-  return !!x && x.file === f && x.expr.test(c)
+  return conditionalAuditVerified(value, f, c)
 }
 
 export function classify(src: Sources): Verdict[] {
@@ -299,6 +272,10 @@ async function main() {
   const v6 = planted({ "lib/kernel/event-reactor.ts": `awardLifecycleMilestones(svc, {})`, "lib/gamification/award-points.ts": `export const LIFECYCLE_AWARD_RULES = [\n { event: KernelEvent.FOO, reason: "X" },\n]` }, { FOO: "foo" })[0]
   check("POSITIVE CONTROL: an L6 award rule is a claim only while the reactor calls awardLifecycleMilestones", v6.claimed.includes("L6 award rule (LIFECYCLE_AWARD_RULES)") &&
     !planted({ "lib/gamification/award-points.ts": `export const LIFECYCLE_AWARD_RULES = [\n { event: KernelEvent.FOO },\n]` }, { FOO: "foo" })[0].claimed.length)
+  // WAVE 155 (lane 155R22) — a direct lifecycle_events insert is a RECORD even beside a fan-out door in the same file
+  const v7 = planted({ "lib/x.ts": `await sentinelWrite(svc, svc.from("lifecycle_events").insert({ event_type: KernelEvent.FOO }))\nawait emitKernelEvent({ event: KernelEvent.BAR, brokerageId })` }, { FOO: "foo", BAR: "bar" })
+  check("POSITIVE CONTROL (direct insert): an event written ONLY by a direct lifecycle_events insert is an emitted RECORD, even when the same file fans out another event — NEGATIVE: that other event still fans out",
+    v7[0].emitters.length === 1 && !v7[0].fanOut && v7[1].fanOut, JSON.stringify(v7))
   check("POSITIVE CONTROL: the retired-name finder catches a live literal emit of a retired name, and not its tombstone",
     reEmitted({ "lib/y.ts": `await emitKernelEvent({ event: "buyer_fatigue_alert" as never })` }, ["buyer_fatigue_alert"]).length === 1 &&
     reEmitted({ "lib/y.ts": `// await emitKernelEvent({ event: "buyer_fatigue_alert" })` }, ["buyer_fatigue_alert"]).length === 0)
