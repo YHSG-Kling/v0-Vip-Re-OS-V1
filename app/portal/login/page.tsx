@@ -13,6 +13,16 @@ function PortalLoginContent() {
   const searchParams = useSearchParams()
   const contactId = searchParams.get('contactId') ?? ''
   const expired = searchParams.get('expired') === '1'
+  // Sent here by the invite door (app/portal/invite/route.ts). TWO states, and the
+  // difference between them is deliberate:
+  //   from=invite          — the caller was not signed in. This is said for a GOOD
+  //                          token and a garbage one alike, so it reveals nothing.
+  //   error=invite_invalid — a SIGNED-IN caller's token did not open. Every failure
+  //                          class (unknown, revoked, expired, already used, issued
+  //                          to another address, unreadable) collapses to this one
+  //                          sentence, so the page is never an enumeration oracle.
+  const fromInvite = searchParams.get('from') === 'invite'
+  const inviteInvalid = searchParams.get('error') === 'invite_invalid'
 
   const [email, setEmail] = useState('')
   const [sent, setSent] = useState(false)
@@ -84,6 +94,21 @@ function PortalLoginContent() {
           {expired && (
             <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
               This link has expired. Contact your agent for a new one.
+            </div>
+          )}
+
+          {inviteInvalid && (
+            <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              That invitation link can&apos;t be used. Invitation links work once, expire, and only
+              open for the address your agent invited. Send yourself a secure login link below, or
+              ask your agent for a new invitation.
+            </div>
+          )}
+
+          {fromInvite && !inviteInvalid && (
+            <div className="mb-4 rounded-md border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+              Sign in first, then open your invitation link again — invitations open your portal for
+              the address your agent invited, so we need to know it&apos;s you.
             </div>
           )}
 

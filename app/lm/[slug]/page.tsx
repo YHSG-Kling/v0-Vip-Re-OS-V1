@@ -2,35 +2,60 @@ import { notFound } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { HomeValueForm } from "@/app/components/lead-magnet-forms/HomeValueForm"
 import { GenericCaptureForm } from "@/app/components/lead-magnet-forms/GenericCaptureForm"
+import { parseLeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
+import { LandingVideo } from "@/app/components/public-site/LandingVideo"
 import type { Metadata } from "next"
+
+type SearchParams = Record<string, string | string[] | undefined>
 
 interface PageProps {
   params: Promise<{ slug: string }>
+  searchParams?: Promise<SearchParams>
 }
 
 // ── Server-side: fetch form by slug ──────────────────────────────────────────
-async function getFormBySlug(slug: string) {
+// Wave 141 (lane 141E): the row is read by slug alone and the ACTIVE rule is applied in code — the
+// public page serves active forms only (as before); a tenant member previewing a DRAFT (?preview=1,
+// proven below to belong to their own brokerage) sees the inactive row. Submissions on an inactive
+// form are refused by the kernel regardless (captureFormSubmission checks is_active) — the preview
+// shows the page, never captures through it.
+async function getFormBySlug(slug: string, opts: { includeInactive?: boolean } = {}) {
   const supabase = createServiceClient()
   const { data, error } = await supabase
     .from("lead_capture_forms")
     .select(
-      "id, name, slug, fields, is_active, brokerage_id, agent_id, tcpa_disclosure_text, thank_you_message, redirect_url, landing_content"
+      "id, name, slug, fields, is_active, brokerage_id, agent_id, tcpa_disclosure_text, thank_you_message, redirect_url, landing_content, settings"
     )
     .eq("slug", slug)
-    .eq("is_active", true)
     .maybeSingle()
 
   if (error || !data) return null
+  if (!data.is_active && !opts.includeInactive) return null
   return data
+}
+
+/** A draft is previewable ONLY by a member of the brokerage that owns it — the session's tenant, never a
+ *  query parameter (CLAUDE.md §4). Anyone else gets the public answer: not found. */
+async function viewerMayPreview(formBrokerageId: string): Promise<boolean> {
+  try {
+    const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+    const ctx = await getAgentContext()
+    return !!ctx.brokerageId && ctx.brokerageId === formBrokerageId
+  } catch {
+    return false
+  }
 }
 
 type LandingContent = import("@/lib/marketing/lead-magnet-copy").LandingContent
 
-/** Narrow the persisted jsonb to the LandingContent we render (defensive — old rows have none). */
-function landingOf(form: { landing_content?: unknown }): LandingContent | null {
-  const lc = form.landing_content as Partial<LandingContent> | null | undefined
+/** Narrow the persisted jsonb to the LandingContent we render (defensive — old rows have none).
+ *  `videoProjectId` rides beside it: app/api/cron/poll-did-videos writes it with videoUrl, and it
+ *  is how the page finds the reel's poster frame (wave 142, lane 142F). */
+function landingOf(form: { landing_content?: unknown }): (LandingContent & { videoProjectId: string | null }) | null {
+  const lc = form.landing_content as (Partial<LandingContent> & { videoProjectId?: unknown }) | null | undefined
   if (!lc || typeof lc !== "object" || !lc.headline) return null
   return {
+    videoProjectId: typeof lc.videoProjectId === "string" ? lc.videoProjectId : null,
     headline:   String(lc.headline),
     subhead:    String(lc.subhead ?? ""),
     cta:        String(lc.cta ?? ""),
@@ -40,6 +65,7 @@ function landingOf(form: { landing_content?: unknown }): LandingContent | null {
     faqJsonLd:  lc.faqJsonLd ? String(lc.faqJsonLd) : null,
     fromTopics: !!lc.fromTopics,
     generatedAt: String(lc.generatedAt ?? ""),
+    videoUrl:   typeof lc.videoUrl === "string" ? lc.videoUrl : null,
   }
 }
 
@@ -53,18 +79,84 @@ function detectMagnetType(
 }
 
 // ── Metadata ──────────────────────────────────────────────────────────────────
+
+/**
+ * The newest COMPLETED LeadMagnetCard render for this form — read at render
+ * time (no schema change): the producer (lib/kernel/lead-magnets.ts
+ * enqueueLeadMagnetCard, fired from publishLeadMagnet) queues the 1200×630
+ * still keyed on the magnet's identity; this reader picks up whichever finished
+ * last. {error} is READ — a refused read returns null and the openGraph block
+ * is simply omitted (never a placeholder image).
+ */
+async function getLeadMagnetCardUrl(formId: string, brokerageId: string): Promise<string | null> {
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("remotion_composition_renders")
+    .select("output_url")
+    .eq("brokerage_id", brokerageId)
+    .eq("entity_type", "lead_capture_form")
+    .eq("entity_id", formId)
+    .eq("composition_id", "LeadMagnetCard")
+    .eq("render_status", "succeeded")
+    .not("output_url", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) return null
+  return (data as { output_url?: string | null } | null)?.output_url ?? null
+}
+
+/**
+ * The poster frame for the landing video (wave 142, lane 142F): the reel's own thumbnail,
+ * read IN THE FORM'S TENANT. Null when there is none — the player then opens on its first
+ * frame, and the fallback (a source that cannot play) shows the still or a text line, never
+ * the browser's broken-media box. {error} is READ; a refused read is simply no poster.
+ */
+async function getLandingVideoPoster(videoProjectId: string | null, brokerageId: string): Promise<string | null> {
+  if (!videoProjectId) return null
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("ai_video_projects")
+    .select("thumbnail_url")
+    .eq("id", videoProjectId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (error) return null
+  return (data as { thumbnail_url?: string | null } | null)?.thumbnail_url ?? null
+}
+
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { slug } = await params
   const form = await getFormBySlug(slug)
-  if (!form) return { title: "Not Found" }
+  if (!form) return { title: "Not Found", robots: { index: false, follow: false } }
   const landing = landingOf(form)
   // A page with AI-built copy + a GEO FAQ is meant to be FOUND and cited by AI search — index it.
   // A bare capture form stays noindex (nothing to surface, avoids thin-content pages).
+  //
+  // ONE PREDICATE, TWO ENFORCEMENT POINTS: `landing` (real landing_content) is
+  // the same condition that gates the card producer's headline/subhead contract
+  // (enqueueLeadMagnetCard refuses without them) — so the no-landing branch
+  // below skips the card lookup entirely: nothing can have rendered, and the
+  // page is noindex anyway.
   if (landing) {
+    const cardUrl = await getLeadMagnetCardUrl(form.id, form.brokerage_id)
+    // Ruling 12 (wave 149Z — lane 149J D1): the canonical home of this page is INSIDE the tenant's website
+    // (/site/<slug>/lm/<form> — the route that proves the form is that tenant's); this bare route declares it so search and
+    // AI search index one URL. No site slug (or a refused read) → no canonical claimed.
+    const { data: site, error: siteErr } = await createServiceClient().from("brokerages").select("slug").eq("id", form.brokerage_id).maybeSingle()
+    if (siteErr) console.warn("[lm] tenant site slug not read — no canonical declared:", siteErr.message)
+    const siteSlug = String((site as { slug?: string | null } | null)?.slug ?? "").trim()
+    const { siteUrl } = await import("@/lib/platform/site-url")
+    const { tenantLandingPagePath } = await import("@/lib/kernel/tenant-creation")
+    const origin = siteUrl()
     return {
       title: landing.headline || form.name,
       description: (landing.subhead || `Get started — ${form.name}`).slice(0, 300),
       robots: { index: true, follow: true },
+      ...(siteSlug && origin ? { alternates: { canonical: `${origin}${tenantLandingPagePath(siteSlug, slug)}` } } : {}),
+      // When no completed card exists, the openGraph block is omitted entirely —
+      // no placeholder image is ever claimed.
+      ...(cardUrl ? { openGraph: { images: [cardUrl] } } : {}),
     }
   }
   return {
@@ -75,9 +167,21 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 }
 
 // ── Page component ────────────────────────────────────────────────────────────
-export default async function LeadMagnetLandingPage({ params }: PageProps) {
+export default async function LeadMagnetLandingPage({ params, searchParams }: PageProps) {
   const { slug } = await params
-  const form = await getFormBySlug(slug)
+  const sp: SearchParams = (await searchParams) ?? {}
+  const wantsPreview = sp.preview === "1"
+
+  // The public read first; the draft read only for a proven tenant member.
+  let form = await getFormBySlug(slug)
+  let isDraftPreview = false
+  if (!form && wantsPreview) {
+    const draft = await getFormBySlug(slug, { includeInactive: true })
+    if (draft && (await viewerMayPreview(draft.brokerage_id))) {
+      form = draft
+      isDraftPreview = !draft.is_active
+    }
+  }
 
   if (!form) {
     notFound()
@@ -86,28 +190,51 @@ export default async function LeadMagnetLandingPage({ params }: PageProps) {
   const fields = (form.fields as any[]) ?? []
   const magnetType = detectMagnetType(fields)
   const landing = landingOf(form)
+  // ATTRIBUTION (wave 141): the ad / QR / utm parameters the URL carried, sanitized here, posted with the
+  // submission, VERIFIED by the kernel against this magnet's own tenant before anything is stamped.
+  const attribution = parseLeadMagnetAttribution(sp)
+  const videoPoster = landing?.videoUrl ? await getLandingVideoPoster(landing.videoProjectId, form.brokerage_id) : null
+  // C15 (wave 148): the consent names the magnet's agent / brokerage — THE one rule the kernel re-renders the wording with.
+  const { leadMagnetConsentBrand } = await import("@/lib/kernel/lead-magnets")
+  const consentBrandName = await leadMagnetConsentBrand(createServiceClient(), form.brokerage_id, (form as { agent_id?: string | null }).agent_id ?? null)
+  // WAVE 148 (148Z — lane 148G Outside-lane, C21 → C15): a funnel's form DECLARES its consent (settings.funnel.consent —
+  // lib/lead-magnets/magnet-funnel.ts FunnelConsentSpec, `wording: "rendered_by_c15"`) and never authors words; the ONE
+  // component renders them. The declared channels become the boxes offered — direct mail only where the form asks for an
+  // address (a mail box with nothing to mail to would promise a channel the door cannot use).
+  const funnelConsent = ((form as { settings?: { funnel?: { consent?: { contract?: string; wording?: string; channels?: unknown } } } | null }).settings?.funnel?.consent) ?? null
+  const funnelChannels = funnelConsent?.contract === "C15" && funnelConsent.wording === "rendered_by_c15" && Array.isArray(funnelConsent.channels)
+    ? (funnelConsent.channels as string[]).filter((c): c is "email" | "sms" | "voice" | "direct_mail" =>
+        (c === "email" || c === "sms" || c === "voice" || c === "direct_mail")
+        && (c !== "direct_mail" || fields.some((f: { name?: string }) => f?.name === "property_address")))
+    : null
 
   return (
     <main className="min-h-screen bg-background flex items-start justify-center py-10 px-4">
       {/* GEO / AI-visibility: schema.org FAQPage so AI search can CITE this page, not just index it. */}
-      {landing?.faqJsonLd && (
+      {landing?.faqJsonLd && !isDraftPreview && (
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: landing.faqJsonLd }} />
       )}
       <div className="w-full max-w-lg">
+        {isDraftPreview && (
+          <div role="status" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-900">
+            Draft preview — this page is not public yet and does not accept submissions until you publish it.
+          </div>
+        )}
         {/* AI-built hero (headline + subhead + value bullets), grounded in real demand topics. */}
         {landing && (
           <header className="mb-6 text-center">
             <h1 className="text-2xl font-semibold tracking-tight">{landing.headline}</h1>
             {landing.subhead && <p className="mt-2 text-muted-foreground">{landing.subhead}</p>}
             {/* Auto-rendered avatar presentation (playbook installs) — the agent
-                explains, in their own cloned voice, why the visitor should care. */}
+                explains, in their own cloned voice, why the visitor should care.
+                ONE video slot (wave 142, lane 142F): poster from the reel's own
+                thumbnail, and a functional fallback when the source cannot play. */}
             {landing.videoUrl && (
-              <video
-                controls
-                playsInline
-                preload="metadata"
-                className="mt-4 w-full rounded-xl border shadow-sm"
+              <LandingVideo
                 src={landing.videoUrl}
+                poster={videoPoster}
+                title={landing.headline}
+                className="mt-4 w-full rounded-xl border shadow-sm"
               />
             )}
             {landing.bullets.length > 0 && (
@@ -127,8 +254,10 @@ export default async function LeadMagnetLandingPage({ params }: PageProps) {
               formId={form.id}
               brokerageId={form.brokerage_id}
               source="landing_page"
-              tcpaText={form.tcpa_disclosure_text ?? undefined}
+              consentBrandName={consentBrandName}
               thankYouMessage={form.thank_you_message ?? undefined}
+              ctaText={landing?.cta || undefined}
+              attribution={attribution}
             />
           ) : (
             <GenericCaptureForm
@@ -137,8 +266,11 @@ export default async function LeadMagnetLandingPage({ params }: PageProps) {
               fields={fields}
               source="landing_page"
               headline={form.name}
-              tcpaText={form.tcpa_disclosure_text ?? undefined}
+              ctaText={landing?.cta || undefined}
+              consentBrandName={consentBrandName}
+              consentChannels={funnelChannels ?? undefined}
               thankYouMessage={form.thank_you_message ?? undefined}
+              attribution={attribution}
             />
           )}
         </div>

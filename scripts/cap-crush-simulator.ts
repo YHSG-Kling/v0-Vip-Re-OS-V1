@@ -36,7 +36,13 @@ function sourceLayer() {
   console.log("\n[wiring — caught at the cap-ledger update, celebrates agent + recruiting proof]")
   const persist = src("lib/commission/waterfall/11-validate-persist.ts")
   check("the crush is detected where the cap ledger updates (final calc)", /detectCapCrush[\s\S]*?celebrateCapCrush/.test(persist))
-  check("it passes paidBefore (old cap_paid_to_date) + paidAfter (new)", /paidBefore:\s*capTracking\.cap_paid_to_date,\s*paidAfter:\s*newPaidToDate/.test(persist))
+  // WAVE 144 (lane 144D) — the RULE, not the variable names: stage 11 now advances the cap ledger by a compare-and-swap claim
+  // (claimCapCycle) BEFORE posting, so the crush is judged on that claim's before / after (the old fetch-add-update and its
+  // `capTracking` / `newPaidToDate` locals are tombstoned). Asserted: the claim records the paid-to-date before and after the
+  // swap, and detectCapCrush is handed exactly those two figures.
+  check("it passes paidBefore (old cap_paid_to_date) + paidAfter (new)",
+    /paidBeforeCents:\s*before,\s*paidAfterCents:\s*after/.test(persist)
+    && /detectCapCrush\(\{[^}]*paidBefore:\s*capClaim\.paidBeforeCents\s*\/\s*100,\s*paidAfter:\s*capClaim\.paidAfterCents\s*\/\s*100/.test(persist))
   check("best-effort — never blocks the calc", /try\s*\{[\s\S]*?celebrateCapCrush[\s\S]*?\}\s*catch/.test(persist))
 
   const cc = src("lib/finance/cap-crush.ts")

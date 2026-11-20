@@ -1,9 +1,12 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { ShieldCheck, ShieldAlert, Send, Ban, Clock } from "lucide-react"
+import { ShieldCheck, ShieldAlert, Send, Ban, Clock, Download } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { generateAiDisclosureLedger } from "@/lib/compliance/ai-disclosure-ledger"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+// THE tenant roster, defined once — see the gate below.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -29,10 +32,21 @@ export default async function AiDisclosureLedgerPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!profile?.brokerage_id) return <div className="p-6 text-red-600">Brokerage not configured</div>
-  if (!["broker", "broker_admin", "admin", "superadmin", "team_lead", "compliance_officer"].includes(profile.user_type ?? "")) {
+  // THE tenant roster, asked once (§6). This was the six-role literal that
+  // became a byte-for-byte copy of TENANT_ADMIN_USER_TYPES when the owner's
+  // 2026-09-04 ruling added `compliance_officer` to it — same membership, one
+  // definition. Survivor: lib/auth/resolve-user-role.ts:isAdminOrBroker.
+  if (!isAdminOrBroker({ user_type: profile.user_type })) {
     return <div className="p-6 text-red-600">Forbidden</div>
   }
 
@@ -41,14 +55,24 @@ export default async function AiDisclosureLedgerPage() {
 
   return (
     <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold flex items-center gap-2">
-          <ShieldCheck className="h-6 w-6 text-green-600" /> AI Disclosure Ledger
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Every AI-generated client message in the last 30 days — the Claude manager that produced it,
-          the human who approved it, and the recipient&apos;s consent state. Proof of human oversight.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold flex items-center gap-2">
+            <ShieldCheck className="h-6 w-6 text-green-600" /> AI Disclosure Ledger
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Every AI-generated client message in the last 30 days — the Claude manager that produced it,
+            the human who approved it, and the recipient&apos;s consent state. Proof of human oversight.
+          </p>
+        </div>
+        {/* The exportable record counsel/regulators ask for — a real file. */}
+        <a
+          href="/api/admin/compliance/ai-disclosures/export"
+          className="shrink-0 inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium hover:bg-muted"
+          download
+        >
+          <Download className="h-4 w-4" /> Export CSV
+        </a>
       </div>
 
       {/* Governance headline — the invariant that makes this lawsuit-safe. */}

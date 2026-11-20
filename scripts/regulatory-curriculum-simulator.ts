@@ -32,9 +32,21 @@ async function pureLayer() {
   // agent_own → keeps the presenter (agent) voice, no DB read needed.
   check("contact-facing (agent_own) → the agent's own presenter voice", await resolveVideoVoiceId({ voiceKind: "agent_own", presenterVoiceId: "agent-voice-1", brokerageId: "b" }, {} as any) === "agent-voice-1")
   // assistant → reads default_isa_voice_id via a stub svc.
-  const stub = { from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { default_isa_voice_id: "assistant-voice-9" } }) }) }) }) }
+  // CHAINABLE stub. resolveAssistantVoiceId chains .eq(...).eq(...) on
+  // ai_identity_profiles before falling back to brokerages; the old stub's first
+  // .eq() returned an object carrying only maybeSingle, so the second .eq() was
+  // "not a function" and this simulator CRASHED before asserting anything. A
+  // harness defect rather than a product one — but a proof that crashes proves
+  // nothing, and it sat unwired so nobody saw it fail.
+  const chainable = (row: Record<string, unknown>) => {
+    const node: any = { maybeSingle: async () => ({ data: row }) }
+    node.eq = () => node
+    node.select = () => node
+    return { from: () => node }
+  }
+  const stub = chainable({ default_isa_voice_id: "assistant-voice-9" })
   check("agent-facing (assistant) → the brokerage assistant voice", await resolveVideoVoiceId({ voiceKind: "assistant", presenterVoiceId: "agent-voice-1", brokerageId: "b" }, stub as any) === "assistant-voice-9")
-  const stubNull = { from: () => ({ select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { default_isa_voice_id: null } }) }) }) }) }
+  const stubNull = chainable({ default_isa_voice_id: null })
   check("assistant voice unset → honest fallback to the presenter voice", await resolveVideoVoiceId({ voiceKind: "assistant", presenterVoiceId: "agent-voice-1", brokerageId: "b" }, stubNull as any) === "agent-voice-1")
 }
 

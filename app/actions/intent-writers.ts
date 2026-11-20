@@ -16,6 +16,21 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
+import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
+
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
 
 /**
  * ROUND-TRIP RECEIPT: after every write, the row is read back FRESH from the
@@ -62,6 +77,36 @@ export async function requestDocument(input: {
     .select("id, document_name, status, due_date, created_at")
     .eq("id", data.id).maybeSingle()
   if (!fresh) return { success: false, error: "write_not_verifiable" }
+
+  // THE PRODUCER OF KernelEvent.DOCUMENT_REQUESTED. The portal template ("Action
+  // needed: document requested" — lib/kernel/event-fanout.ts) and the staff-bell
+  // path both existed with no emitter; this is the ONE writer of document_requests,
+  // so the fact becomes true exactly here. Best-effort: the request row is the
+  // record; a fan-out failure must not fail the voice command that placed it.
+  // The card posts only when the request names a contact (no contact → no portal).
+  try {
+    await emitKernelEvent({
+      event:         KernelEvent.DOCUMENT_REQUESTED,
+      brokerageId:   ctx.brokerageId,
+      entityType:    "document_request",
+      entityId:      fresh.id as string,
+      contactId:     input.contactId ?? undefined,
+      transactionId: input.transactionId ?? undefined,
+      actorUserId:   ctx.userId,
+      source:        "ui",
+      metadata: {
+        document_request_id: fresh.id,
+        document_name:       (fresh as any).document_name,
+        document_type:       input.documentType ?? null,
+        due_date:            (fresh as any).due_date ?? null,
+        contact_id:          input.contactId ?? null,
+        transaction_id:      input.transactionId ?? null,
+      },
+    })
+  } catch (err) {
+    console.error("[intent-writers] DOCUMENT_REQUESTED emit failed (request recorded):", err)
+  }
+
   revalidatePath("/dashboard/transactions")
   return {
     success: true,
@@ -101,6 +146,7 @@ export async function assignVendorToContact(input: {
   if (!vendor || ((vendor.brokerage_id as string | null) && (vendor.brokerage_id as string) !== ctx.brokerageId)) {
     return { success: false, error: "vendor_not_in_brokerage" }
   }
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "contact.vendor_link.assign", subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", detail: { vendor_id: input.vendorId, transaction_id: input.transactionId ?? null } }, async () => {
   const row = {
     brokerage_id: ctx.brokerageId,
     contact_id: input.contactId,
@@ -153,6 +199,7 @@ export async function assignVendorToContact(input: {
       },
     },
   }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /** Record a property upgrade on a listing (feeds the seller CMA's valuation
@@ -170,6 +217,7 @@ export async function logPropertyUpgrade(input: {
   const svc = createServiceClient()
   const { data: listing } = await svc.from("listings").select("brokerage_id").eq("id", input.listingId).maybeSingle()
   if (!listing || (listing.brokerage_id as string) !== ctx.brokerageId) return { success: false, error: "listing_not_in_brokerage" }
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "listing.property_upgrade.log", subject: { type: "listing", id: input.listingId }, riskClass: "LOW_RISK_WRITE", detail: { status: input.status ?? "completed" } }, async () => {
   const { data, error } = await svc.from("property_upgrades").insert({
     listing_id: input.listingId,
     brokerage_id: ctx.brokerageId,
@@ -198,6 +246,7 @@ export async function logPropertyUpgrade(input: {
       },
     },
   }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /** Set which milestones a contact sees in their portal (the kernel portal read
@@ -206,21 +255,31 @@ export async function setPortalMilestonePreferences(input: {
   contactId: string
   /** e.g. { inspection: false, appraisal: true } — milestone key → visible */
   milestoneOverrides: Record<string, boolean>
-  notificationSettings?: Record<string, unknown> | null
+  // TOMBSTONE (wave H5): `notificationSettings` was removed from this input and
+  // its write to contact_portal_preferences.notification_settings deleted. It
+  // was a SECOND SPELLING of the contact's notification choices with no reader
+  // — the surviving one is contacts.metadata.notification_preferences, resolved
+  // and enforced by lib/notifications/buyer-preferences.ts:40
+  // (resolveBuyerNotificationPreferences) and consulted by every buyer-facing
+  // send path; it is written by app/components/portal/PortalSettingsPage.tsx:180.
+  // Nothing was merged onto the survivor because nothing was missing: the twin
+  // was an untyped blob, never read, and the only caller of this action
+  // (app/actions/voice-assistant.ts:322) never passed it. Live check on
+  // hrvaqgvukzxfskkcrwbt 2026-08-28: 0 rows in the table, 0 carrying a non-empty
+  // value, so no data is stranded. Column drop written as
+  // supabase/migrations/m584 (WRITTEN, NOT APPLIED).
 }): Promise<{ success: boolean; receipt?: LedgerReceipt; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const svc = createServiceClient()
   const { data: contact } = await svc.from("contacts").select("brokerage_id").eq("id", input.contactId).maybeSingle()
   if (!contact || (contact.brokerage_id as string) !== ctx.brokerageId) return { success: false, error: "contact_not_in_brokerage" }
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "contact.portal_milestones.set", subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", detail: { overrides: Object.keys(input.milestoneOverrides ?? {}).length } }, async () => {
   const row: Record<string, unknown> = {
     contact_id: input.contactId,
     brokerage_id: ctx.brokerageId,
     milestone_overrides: input.milestoneOverrides ?? {},
     updated_at: new Date().toISOString(),
-  }
-  if (input.notificationSettings !== undefined && input.notificationSettings !== null) {
-    row.notification_settings = input.notificationSettings
   }
   const { error } = await svc.from("contact_portal_preferences").upsert(row, { onConflict: "contact_id" })
   if (error) return { success: false, error: error.message }
@@ -244,4 +303,5 @@ export async function setPortalMilestonePreferences(input: {
       },
     },
   }
+  }, (error) => ({ success: false as const, error }))
 }

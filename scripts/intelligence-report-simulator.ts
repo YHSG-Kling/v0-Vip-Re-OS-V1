@@ -151,7 +151,8 @@ async function main() {
   attr.attribution.current = { attributedGciCents: 84_000_000, attributedDeals: 3 }
   attr.attribution.prior = { attributedGciCents: 52_000_000, attributedDeals: 2 }
   const attrSection = composeIntelligenceReport(attr).sections.find((s) => s.id === "attribution")!
-  check("attribution headline: measured, not claimed", /\$840K closed volume/.test(attrSection.headline) && /measured by the attribution engine/.test(attrSection.headline))
+  // Wave 152 (lane 152K): the figure is COMMISSION (GCI), never sale price — the label says so (it said "closed volume").
+  check("attribution headline: measured, not claimed — and named commission, never 'closed volume'", /\$840K closed commission/.test(attrSection.headline) && !/closed volume/.test(attrSection.headline) && /measured by the attribution engine/.test(attrSection.headline))
   check("attribution volume line carries prior-month money delta", attrSection.lines.some((l) => l.delta === "↑ from $520K last month"))
 
   console.log("\n[Layer 1 · seller-driven reach — earned distribution]")

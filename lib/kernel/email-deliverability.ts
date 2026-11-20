@@ -50,11 +50,15 @@ export async function probeSendgridDomainAuth(): Promise<
   const key = process.env.SENDGRID_API_KEY
   if (!key) return { status: "not_configured", detail: "SENDGRID_API_KEY unset — email sends and domain auth are both unavailable" }
   try {
-    const res = await fetch("https://api.sendgrid.com/v3/whitelabel/domains", {
-      headers: { Authorization: `Bearer ${key}` },
+    // Through the ONE egress (wave 139, lane 139B: was a raw fetch) — the platform SendGrid account's
+    // domain list; the gateway's outcome row feeds SendGrid's derived health. Platform scope.
+    const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+    const res = await callConnector<Array<{ domain?: string; valid?: boolean }>>({
+      connector: "sendgrid", baseUrl: "https://api.sendgrid.com/v3", path: "whitelabel/domains",
+      auth: { style: "bearer", token: key },
     })
-    if (!res.ok) return { status: "broken", detail: `SendGrid domain list failed (${res.status})` }
-    const domains = (await res.json()) as Array<{ domain?: string; valid?: boolean }>
+    if (!res.ok) return { status: "broken", detail: res.status ? `SendGrid domain list failed (${res.status})` : `SendGrid unreachable (${res.error})` }
+    const domains = (Array.isArray(res.data) ? res.data : []) as Array<{ domain?: string; valid?: boolean }>
     const valid = (domains ?? []).filter((x) => x.valid === true)
     if (valid.length > 0) return { status: "ready", detail: `Authenticated sender domain: ${valid.map((v) => v.domain).join(", ")} (SPF/DKIM valid — mail is signed, the junk-folder's #1 cause eliminated)` }
     if ((domains ?? []).length > 0) return { status: "broken", detail: "Sender domain exists but DNS is NOT validated — finish the CNAME records or mail lands in spam" }

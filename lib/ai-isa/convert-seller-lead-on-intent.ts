@@ -112,6 +112,8 @@ export async function convertSellerLeadOnIntent(
     leadId: params.leadId,
     brokerageId: params.brokerageId,
     actorUserId: "system",
+    // Lane 86E: the system caller must PRESENT the secret (env presence alone was a public door).
+    internalSecret: process.env.CRON_SECRET,
   })
   if (!handoff.success || !handoff.contactId) {
     return { success: false, error: handoff.error ?? "Conversion failed" }

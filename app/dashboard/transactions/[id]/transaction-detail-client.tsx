@@ -1,10 +1,14 @@
 "use client"
 
+import { LEGAL_FORMS_PROVIDER_LABEL } from "@/lib/integrations/providers/catalog"
 import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { ClosingCostActualInput } from "./closing-cost-actual-input"
+import { TaxProrationCard } from "./tax-proration-card"
 import { RepairCoPilotPanel } from "@/app/components/features/transactions/repair-copilot-panel"
 import { resolveInterventionAction, rescanDealHealthAction } from "@/app/actions/deal-health-actions"
+import { analyzeTransactionHealth } from "@/app/actions/ai-transaction-coordinator"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -12,11 +16,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Input } from "@/components/ui/input"
+import { ClosingDatesPanel } from "./closing-dates-panel"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import { TransactionStage, TRANSACTION_STAGES, STAGE_TRANSITIONS } from "@/lib/transactions/transaction-stages"
+import { TransactionStage, STAGE_TRANSITIONS } from "@/lib/transactions/transaction-stages"
 import {
   checkStageAdvancement,
   advanceTransactionStage,
@@ -25,17 +30,24 @@ import {
 import {
   completeMilestoneAction,
   overrideMilestoneAction,
+  markAppraisalOrderedAction,
+  markAppraisalCompleteAction,
+  scheduleFinalWalkthroughAction,
+  completeFinalWalkthroughAction,
+  requestRepairAction,
+  completeRepairAction,
+  sendAppraiserPacketAction,
 } from "@/app/actions/transaction-milestones"
 import {
   scheduleInspectionAction,
   approveInspectionQuoteAction,
+  declineInspectionQuoteAction,
   markInspectionCompleteAction,
   uploadInspectionReportAction,
   requestInsuranceQuoteAction,
   submitInsuranceQuoteApprovalAction,
   approveInsuranceQuoteAction,
   updateEarnestMoneyAction,
-  getPendingQuoteApprovalsAction,
 } from "@/app/actions/transaction-inspections"
 import {
   CheckCircle2,
@@ -45,13 +57,10 @@ import {
   FileText,
   Users,
   Sparkles,
-  ChevronDown,
   Loader2,
   Home,
   DollarSign,
-  CalendarDays,
   Building2,
-  Scale,
   ClipboardList,
   PenLine,
   ArrowLeft,
@@ -73,6 +82,7 @@ import {
   Share2,
   ChevronRight,
   XCircle,
+  Trash2,
 } from "lucide-react"
 import { format } from "date-fns"
 import { createClient } from "@/lib/supabase/client"
@@ -82,6 +92,7 @@ import { predictDealCloseProbability } from "@/app/actions/ai-predictions"
 import {
   logTransactionDelay,
   getTransactionDelays,
+  markDelaysCommunicated,
 } from "@/app/actions/transaction-transparency"
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Slider } from "@/components/ui/slider"
@@ -103,11 +114,16 @@ import {
   checkTransactionDisclosures,
   shareDocumentAnalysisWithClient,
 } from "@/app/actions/ai-transaction-documents"
+// Lane E2 2026-08-28: deleteDocument WIRED — the delete verb for
+// transaction_documents had no surface anywhere (session-gated + tenancy-
+// checked inside the action; removes the storage object with the row).
+import { deleteDocument } from "@/app/actions/documents"
 import {
   resolveFormsProviderAction,
   loadAvailableFormsAction,
 } from "@/app/actions/forms-kernel"
-import { detectTransactionIssues, detectTransactionDelays } from "@/app/actions/transactions"
+import { detectTransactionIssues, detectTransactionDelays, setMilestoneClientVisibility, setDocumentClientVisibility } from "@/app/actions/transactions"
+import { isClientHiddenDealDocType } from "@/lib/kernel/deal-document-visibility"
 import {
   TransactionFormEsignFlow,
   type FormTemplate,
@@ -186,6 +202,8 @@ interface TransactionDetailClientProps {
     rejection_reason: string | null
     extracted_data: Record<string, unknown> | null
     classification_confidence: number | null
+    /** m690 — staff marked this visible in the client portal (wave 98). */
+    client_visible?: boolean | null
   }>
   documentCountsByStatus: Record<string, number>
   // Uses actual Supabase deal_health_scores table columns
@@ -250,6 +268,21 @@ interface TransactionDetailClientProps {
     title_issues: string | null
     closing_scheduled_date: string | null
     closing_location: string | null
+  } | null
+  /**
+   * Parsed title-issue triage from trackTitleIssues (multi-persona).
+   * transaction_title_escrow.title_issues is a TEXT column that the platform
+   * writes as a JSON array of { text, status, severity } — the card below used
+   * to render that whole blob inside one red badge, so a resolved issue looked
+   * identical to a critical open one and the closing-blocking question ("are
+   * there open CRITICAL issues?") was never asked. Null when the server-side
+   * triage could not run.
+   */
+  titleIssueSummary: {
+    critical: Array<Record<string, unknown>>
+    moderate: Array<Record<string, unknown>>
+    totalUnresolved: number
+    canClose: boolean
   } | null
   // Uses actual Supabase transaction_inspections table columns
   inspections: Array<{
@@ -351,6 +384,19 @@ interface TransactionDetailClientProps {
     status: string
     paid_date: string | null
   }>
+  // READER (orphan doctrine §1.2) for cost_breakdown_tracking — the AI-generated
+  // closing-cost line items generateCostBreakdown() writes
+  // (lib/application/transactions.ts) and no surface ever showed. Uses the
+  // live columns (schema-snapshot.ts:260).
+  closingCosts?: Array<{
+    id: string
+    item_name: string
+    cost_category: string
+    party: string
+    estimated_amount: number | null
+    actual_amount: number | null
+    status: string
+  }>
   stages: TransactionStage[]
   currentStageIndex: number
   // Contact details for e-sign
@@ -367,7 +413,9 @@ interface TransactionDetailClientProps {
     esign_completed_at?: string | null
     buyer_signed_at?: string | null
   } | null
-  // Existing contract_signatures rows for this brokerage — keyed by contract_type
+  // contract_signatures rows scoped to THIS transaction's signable doc_types
+  // (app/actions/transaction-document-signatures.ts:getTransactionSignatureStatuses)
+  // — keyed by contract_type, most recent wins.
   contractSignatures?: Record<string, {
     id: string
     esign_status: string
@@ -375,6 +423,18 @@ interface TransactionDetailClientProps {
     sent_at: string | null
     agent_signed_at: string | null
     fully_signed_at: string | null
+  }>
+  /** Signable documents ON THIS TRANSACTION that are not fully signed — the
+   *  readiness blockers, from
+   *  app/actions/transaction-document-signatures.ts:getUnsignedDocumentBlockers.
+   *  Keyed off transaction_documents, so it names the real document (label + id)
+   *  rather than a bare doc_type, and never shows another deal's paperwork. */
+  unsignedDocBlockers?: Array<{
+    docId: string
+    docLabel: string
+    docType: string
+    signatureId: string | null
+    esignStatus: string | null
   }>
   // TC assignment
   currentCoordinatorId?: string | null
@@ -416,6 +476,55 @@ const LOAN_STAGES = [
 
 type LoanStage = typeof LOAN_STAGES[number]
 
+// ── THE DEAL DOORS' UI HALF (wave 155, lane 155R30 — CLAUDE.md §1 "BUILD the missing half") ─────────────────────────────────
+// addTitleEscrow / updateTitleEscrow / updateParticipant / removeParticipant / updateDeadline (app/actions/transactions.ts) were
+// gated and receipted by lane 155R28 with nothing in the product calling them. These are the fields the dialogs below send —
+// each one a key the door's own whitelist admits (TITLE_ESCROW_FIELDS / PARTICIPANT_FIELDS / updateDeadline's list there).
+// The earnest-money fields are NOT here: they have their own editor (updateEarnestMoneyAction). title_issues is NOT here: it
+// is the JSON triage trackTitleIssues writes. The door is the gate; the page shows its refusal text and never says "saved"
+// unless the door returned success.
+const TITLE_ESCROW_EDIT_FIELDS = [
+  { key: "title_company_name", label: "Title company", type: "text" },
+  { key: "title_officer_name", label: "Title officer", type: "text" },
+  { key: "title_officer_email", label: "Title officer email", type: "email" },
+  { key: "title_officer_phone", label: "Title officer phone", type: "tel" },
+  { key: "escrow_company_name", label: "Escrow company", type: "text" },
+  { key: "escrow_officer_name", label: "Escrow officer", type: "text" },
+  { key: "escrow_officer_email", label: "Escrow officer email", type: "email" },
+  { key: "escrow_officer_phone", label: "Escrow officer phone", type: "tel" },
+  { key: "escrow_number", label: "Escrow number", type: "text" },
+  { key: "closing_scheduled_date", label: "Closing appointment date", type: "date" },
+  { key: "closing_location", label: "Closing location", type: "text" },
+] as const
+type TitleEscrowEditKey = typeof TITLE_ESCROW_EDIT_FIELDS[number]["key"]
+type TitleEscrowForm = Record<TitleEscrowEditKey, string>
+
+function titleEscrowFormFrom(record: TransactionDetailClientProps["titleEscrow"]): TitleEscrowForm {
+  const form = {} as TitleEscrowForm
+  for (const f of TITLE_ESCROW_EDIT_FIELDS) {
+    const v = record?.[f.key] ?? ""
+    // A date input holds YYYY-MM-DD; a stored timestamp is shown by its date part (and is only re-sent if it is changed).
+    form[f.key] = f.type === "date" ? String(v).slice(0, 10) : String(v)
+  }
+  return form
+}
+
+/** The participant roles the Add form and the Edit dialog both offer — one list, so the two cannot drift (CLAUDE.md §6). */
+const PARTICIPANT_ROLE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "cooperating_agent", label: "Cooperating Agent" },
+  { value: "listing_agent", label: "Listing Agent" },
+  { value: "buyer", label: "Buyer" },
+  { value: "seller", label: "Seller" },
+  { value: "lender", label: "Lender" },
+  { value: "escrow_officer", label: "Escrow Officer" },
+  { value: "inspector", label: "Inspector" },
+  { value: "attorney", label: "Attorney" },
+  { value: "other", label: "Other" },
+]
+
+/** What a deal door returns, as far as this page reads it: did it succeed, and if not, its own refusal sentence. */
+type DealDoorResult = { success?: boolean; error?: string | null } | null | undefined
+
 function deriveLoanStatus(info: TransactionDetailClientProps["lenderInfo"]): LoanStage | "no_lender_assigned" {
   if (!info) return "no_lender_assigned"
   if (info.clear_to_close_date) return "clear_to_close"
@@ -447,6 +556,7 @@ export function TransactionDetailClient({
   tasks,
   timeline,
   titleEscrow,
+  titleIssueSummary,
   inspections,
   pendingQuoteApprovals,
   vendorServices,
@@ -455,6 +565,7 @@ export function TransactionDetailClient({
   lenderInfo,
   complianceLogs,
   commissions,
+  closingCosts = [],
   stages,
   currentStageIndex,
   contactEmail,
@@ -462,6 +573,7 @@ export function TransactionDetailClient({
   connectedEsignProvider,
   linkedOffer,
   contractSignatures = {},
+  unsignedDocBlockers = [],
   currentCoordinatorId = null,
   availableTCs = [],
   currentLenderUserId = null,
@@ -473,6 +585,7 @@ export function TransactionDetailClient({
 
   // Deal Health interactive state — rescan + intervention resolve
   const [rescanning, setRescanning] = useState(false)
+  const [aiAnalyzing, setAiAnalyzing] = useState(false)
   const [resolvingId, setResolvingId] = useState<string | null>(null)
 
   async function handleRescan() {
@@ -490,6 +603,38 @@ export function TransactionDetailClient({
       toast.error(e instanceof Error ? e.message : "Rescan failed")
     } finally {
       setRescanning(false)
+    }
+  }
+
+  // THE AI READ, alongside the deterministic rescan above.
+  //
+  // rescanDealHealthAction scores components; this runs the transaction through
+  // the model for a win probability + narrative risk read. It is also the ONLY
+  // writer of transactions.win_probability — which lib/kernel/commission-forecaster
+  // and the partners-meeting brief both READ. With nothing calling it, the
+  // forecaster fell back to its by-stage default for every deal forever, and the
+  // round-36 accuracy flywheel (captureWinProbabilitySnapshot → ai_predictions)
+  // had no claims to grade. The button is the missing producer.
+  async function handleAiAnalysis() {
+    if (aiAnalyzing) return
+    setAiAnalyzing(true)
+    try {
+      const r = await analyzeTransactionHealth({
+        transactionId: transaction.id,
+        agentId: transaction.agent_id,
+      })
+      if (r.success && r.analysis) {
+        toast.success(
+          `AI read: ${r.analysis.healthScore}/100 · ${r.analysis.winProbability}% win probability (${r.analysis.riskLevel} risk)`,
+        )
+        router.refresh()
+      } else {
+        toast.error(r.error ?? "AI analysis failed")
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "AI analysis failed")
+    } finally {
+      setAiAnalyzing(false)
     }
   }
 
@@ -531,6 +676,8 @@ export function TransactionDetailClient({
   const canOverrideStage = OVERRIDE_USER_TYPES.has(userType?.toLowerCase?.() ?? "")
   const [showOverridePanel, setShowOverridePanel] = useState(false)
   const [overrideReason, setOverrideReason] = useState("")
+  // C23 (wave 148, lane 148I): closing a deal by hand needs PROOF — the settlement statement / closing file reference.
+  const [overrideEvidenceRef, setOverrideEvidenceRef] = useState("")
   const [overrideError, setOverrideError] = useState<string | null>(null)
 
   // Milestone override dialog state — separate from stage override so both
@@ -587,11 +734,13 @@ export function TransactionDetailClient({
         targetStage,
         reason: advanceReason || undefined,
         overrideReason: overrideReason.trim(),
+        overrideEvidence: targetStage === "CLOSED" && overrideEvidenceRef.trim() ? { kind: "external_reference", ref: overrideEvidenceRef.trim() } : null,
       })
       if (result.success) {
         setShowBlockersModal(false)
         setShowOverridePanel(false)
         setOverrideReason("")
+        setOverrideEvidenceRef("")
         setAdvanceReason("")
         router.refresh()
       } else {
@@ -614,6 +763,17 @@ export function TransactionDetailClient({
   const [inspectorPhone, setInspectorPhone] = useState("")
   const [inspectionDate, setInspectionDate] = useState("")
   const [inspectionCost, setInspectionCost] = useState("")
+  // ATTACHING THE INSPECTION REPORT. The card already renders a link when
+  // `report_url` is set and there was no way to set it: uploadInspectionReportAction
+  // (app/actions/transaction-inspections.ts:253) was imported by this file and
+  // called by nothing, so every inspection report reached the transaction by
+  // email and never reached the file. The action also files the report as a
+  // `transaction_documents` row of type `inspection_report`, which is what the
+  // documents tab and the closing checklist read — so the missing wire cost the
+  // paperwork trail, not just a link.
+  const [attachingReportFor, setAttachingReportFor] = useState<string | null>(null)
+  const [reportUrlDraft, setReportUrlDraft] = useState("")
+  const [reportNameDraft, setReportNameDraft] = useState("")
 
   // Insurance form state
   const [showInsuranceForm, setShowInsuranceForm] = useState(false)
@@ -651,6 +811,148 @@ export function TransactionDetailClient({
   const [newParticipantPhone, setNewParticipantPhone] = useState("")
   const [newParticipantCompany, setNewParticipantCompany] = useState("")
 
+  // ─── THE DEAL DOORS' UI HALF (wave 155, lane 155R30 — see TITLE_ESCROW_EDIT_FIELDS above) ─────────────────────────────────
+  // Title & escrow: ONE dialog. The deal's record id decides the door — addTitleEscrow when the page loaded NO record, else
+  // updateTitleEscrow(record.id, …). "No company on file" is not "no record": the earnest-money editor can create the row
+  // first, and the add door refuses a second record per deal.
+  const [titleEscrowDialogOpen, setTitleEscrowDialogOpen] = useState(false)
+  const [titleEscrowForm, setTitleEscrowForm] = useState<TitleEscrowForm>(() => titleEscrowFormFrom(titleEscrow))
+  const [titleEscrowError, setTitleEscrowError] = useState<string | null>(null)
+
+  function openTitleEscrowDialog() {
+    setTitleEscrowForm(titleEscrowFormFrom(titleEscrow))
+    setTitleEscrowError(null)
+    setTitleEscrowDialogOpen(true)
+  }
+
+  function handleSaveTitleEscrow() {
+    const company = titleEscrowForm.title_company_name.trim()
+    if (!company) { setTitleEscrowError("The title company is required."); return }
+    const before = titleEscrowFormFrom(titleEscrow)
+    setTitleEscrowError(null)
+    startTransition(async () => {
+      const { addTitleEscrow, updateTitleEscrow } = await import("@/app/actions/transactions")
+      let result: DealDoorResult
+      if (titleEscrow?.id) {
+        // Only what changed, a cleared field as null — never a key outside the door's whitelist.
+        const changes: Record<string, string | null> = {}
+        for (const f of TITLE_ESCROW_EDIT_FIELDS) {
+          const next = titleEscrowForm[f.key].trim()
+          if (next !== before[f.key].trim()) changes[f.key] = next === "" ? null : next
+        }
+        if (Object.keys(changes).length === 0) { setTitleEscrowDialogOpen(false); return }
+        result = await updateTitleEscrow(titleEscrow.id, changes)
+      } else {
+        const payload: Parameters<typeof addTitleEscrow>[0] = { transaction_id: transaction.id, title_company_name: company }
+        for (const f of TITLE_ESCROW_EDIT_FIELDS) {
+          const v = titleEscrowForm[f.key].trim()
+          if (v && f.key !== "title_company_name") Object.assign(payload, { [f.key]: v })
+        }
+        result = await addTitleEscrow(payload)
+      }
+      if (!result?.success) {
+        const message = result?.error || "The title & escrow details were not saved."
+        setTitleEscrowError(message)
+        toast.error(message)
+        return
+      }
+      toast.success(titleEscrow?.id ? "Title & escrow updated" : "Title & escrow added")
+      setTitleEscrowDialogOpen(false)
+      router.refresh()
+    })
+  }
+
+  // Participants: edit (updateParticipant) and remove (removeParticipant, after a confirmation) — keyed on the row's own id.
+  const [editingParticipantId, setEditingParticipantId] = useState<string | null>(null)
+  const [participantForm, setParticipantForm] = useState({ name: "", role: "", email: "", phone: "", company: "" })
+  const [participantError, setParticipantError] = useState<string | null>(null)
+  const editingParticipant = participants.find((p) => p.id === editingParticipantId) ?? null
+
+  function openParticipantDialog(p: TransactionDetailClientProps["participants"][number]) {
+    setParticipantForm({ name: p.name ?? "", role: p.role ?? "", email: p.email ?? "", phone: p.phone ?? "", company: p.company ?? "" })
+    setParticipantError(null)
+    setEditingParticipantId(p.id)
+  }
+
+  function handleSaveParticipant() {
+    const p = editingParticipant
+    if (!p) return
+    const name = participantForm.name.trim()
+    if (!name) { setParticipantError("The participant's name is required."); return }
+    const changes: Record<string, string | null> = {}
+    const was = { name: p.name ?? "", role: p.role ?? "", email: p.email ?? "", phone: p.phone ?? "", company: p.company ?? "" }
+    for (const key of ["name", "role", "email", "phone", "company"] as const) {
+      const next = participantForm[key].trim()
+      if (next !== was[key].trim()) changes[key] = next === "" ? null : next
+    }
+    if (Object.keys(changes).length === 0) { setEditingParticipantId(null); return }
+    setParticipantError(null)
+    startTransition(async () => {
+      const { updateParticipant } = await import("@/app/actions/transactions")
+      const result: DealDoorResult = await updateParticipant(p.id, changes as Parameters<typeof updateParticipant>[1])
+      if (!result?.success) {
+        const message = result?.error || "The participant was not updated."
+        setParticipantError(message)
+        toast.error(message)
+        return
+      }
+      toast.success("Participant updated")
+      setEditingParticipantId(null)
+      router.refresh()
+    })
+  }
+
+  function handleRemoveParticipant(p: TransactionDetailClientProps["participants"][number]) {
+    if (!window.confirm(`Remove ${p.name} (${p.role.replace(/_/g, " ")}) from this deal?`)) return
+    startTransition(async () => {
+      const { removeParticipant } = await import("@/app/actions/transactions")
+      const result: DealDoorResult = await removeParticipant(p.id)
+      if (!result?.success) {
+        toast.error(result?.error || "The participant was not removed.")
+        return
+      }
+      toast.success("Participant removed")
+      router.refresh()
+    })
+  }
+
+  // Deadlines: edit the date and label (updateDeadline) — keyed on the row's own id. Completion stays completeDeadline.
+  const [editingDeadlineId, setEditingDeadlineId] = useState<string | null>(null)
+  const [deadlineForm, setDeadlineForm] = useState({ deadline_date: "", notes: "" })
+  const [deadlineError, setDeadlineError] = useState<string | null>(null)
+  const editingDeadline = deadlines.find((d) => d.id === editingDeadlineId) ?? null
+
+  function openDeadlineDialog(d: TransactionDetailClientProps["deadlines"][number]) {
+    setDeadlineForm({ deadline_date: (d.deadline_date ?? "").slice(0, 10), notes: d.notes ?? "" })
+    setDeadlineError(null)
+    setEditingDeadlineId(d.id)
+  }
+
+  function handleSaveDeadline() {
+    const d = editingDeadline
+    if (!d) return
+    const date = deadlineForm.deadline_date.trim()
+    if (!date) { setDeadlineError("The deadline needs a date."); return }
+    const changes: { deadline_date?: string; notes?: string } = {}
+    if (date !== (d.deadline_date ?? "").slice(0, 10)) changes.deadline_date = date
+    if (deadlineForm.notes.trim() !== (d.notes ?? "").trim()) changes.notes = deadlineForm.notes.trim()
+    if (Object.keys(changes).length === 0) { setEditingDeadlineId(null); return }
+    setDeadlineError(null)
+    startTransition(async () => {
+      const { updateDeadline } = await import("@/app/actions/transactions")
+      const result: DealDoorResult = await updateDeadline(d.id, changes)
+      if (!result?.success) {
+        const message = result?.error || "The deadline was not updated."
+        setDeadlineError(message)
+        toast.error(message)
+        return
+      }
+      toast.success("Deadline updated")
+      setEditingDeadlineId(null)
+      router.refresh()
+    })
+  }
+
   // Add Commission form
   const [showAddCommission, setShowAddCommission] = useState(false)
   const [newCommRecipientName, setNewCommRecipientName] = useState("")
@@ -659,6 +961,136 @@ export function TransactionDetailClient({
   const [newCommRate, setNewCommRate] = useState("")
 
   // Submit Repair Request form
+  // ── MILESTONES WITH A LIFECYCLE BEHIND THEM ────────────────────────────────
+  // Three milestones are not just a status flip. transaction-milestones.ts has a
+  // dedicated action for each, and every one of them was unreachable — so the
+  // generic "Complete" button below silently skipped:
+  //   appraisal_ordered   → the appraiser-packet coaching moment (be present,
+  //                         bring the packet) + the APPRAISAL_ORDERED portal card
+  //   appraisal_completed → the appraisal-GAP detector: compares the value to the
+  //                         contract price and, on a shortfall, fires
+  //                         APPRAISAL_GAP_DETECTED, convenes the deal-save huddle,
+  //                         and hands the agent the three priced negotiation plays
+  //   final_walkthrough   → schedule (sets the date + fans out) and complete
+  // A low appraisal was being recorded as a tick in a checklist.
+  const [appraisalDialogOpen, setAppraisalDialogOpen] = useState(false)
+  const [appraisalValue, setAppraisalValue] = useState("")
+  const [appraisalError, setAppraisalError] = useState<string | null>(null)
+  const [walkthroughDialogOpen, setWalkthroughDialogOpen] = useState(false)
+  const [walkthroughDate, setWalkthroughDate] = useState("")
+  const [walkthroughError, setWalkthroughError] = useState<string | null>(null)
+  // wave 155 (155K, K6): the agent names the appraiser; the packet goes as a 7-day secure link through the governed send.
+  const [packetSendOpen, setPacketSendOpen] = useState(false)
+  const [packetEmail, setPacketEmail] = useState("")
+  const [packetConfirmed, setPacketConfirmed] = useState(false)
+  const [packetNote, setPacketNote] = useState("")
+  const [packetError, setPacketError] = useState<string | null>(null)
+  function submitPacketSend() {
+    setPacketError(null)
+    startTransition(async () => {
+      const res = await sendAppraiserPacketAction({ transactionId: transaction.id, recipientEmail: packetEmail, confirmRecipient: packetConfirmed, note: packetNote || null })
+      if (res.success) {
+        setPacketSendOpen(false)
+        toast.success(`Packet sent to ${res.deliveredTo} — the secure link opens until ${String(res.linkValidUntil ?? "").slice(0, 10)}`)
+        router.refresh()
+      } else setPacketError(res.error ?? "The packet was not sent")
+    })
+  }
+
+  /** Milestones whose completion runs a real lifecycle, not just a status flip. */
+  const LIFECYCLE_MILESTONES = new Set([
+    "appraisal_ordered",
+    "appraisal_completed",
+    "final_walkthrough_scheduled",
+  ])
+
+  function markMilestoneDone(m: { id: string; milestone_name: string }) {
+    startTransition(async () => {
+      let res: { success: boolean; error?: string }
+      if (m.milestone_name === "appraisal_ordered") {
+        res = await markAppraisalOrderedAction({
+          transactionId: transaction.id,
+          brokerageId,
+        })
+      } else if (m.milestone_name === "final_walkthrough_scheduled") {
+        res = await completeFinalWalkthroughAction({
+          transactionId: transaction.id,
+          brokerageId,
+        })
+      } else {
+        res = await completeMilestoneAction({
+          transactionId: transaction.id,
+          brokerageId,
+          milestoneName: m.milestone_name,
+        })
+      }
+      if (res.success) {
+        const now = new Date().toISOString()
+        setLocalMilestones((prev) =>
+          prev.map((row) => (row.id === m.id ? { ...row, status: "completed", completed_at: now } : row)),
+        )
+        toast.success("Milestone marked complete")
+        router.refresh()
+      } else {
+        toast.error(res.error ?? "Failed to update milestone")
+      }
+    })
+  }
+
+  function submitAppraisalComplete() {
+    const value = Number(appraisalValue)
+    if (!appraisalValue.trim() || !Number.isFinite(value) || value <= 0) {
+      setAppraisalError("Enter the appraised value — the gap check needs a real number to compare against the contract price.")
+      return
+    }
+    setAppraisalError(null)
+    startTransition(async () => {
+      const res = await markAppraisalCompleteAction({
+        transactionId: transaction.id,
+        brokerageId,
+        appraisalValue: value,
+      })
+      if (res.success) {
+        setAppraisalDialogOpen(false)
+        setAppraisalValue("")
+        setLocalMilestones((prev) =>
+          prev.map((row) =>
+            row.milestone_name === "appraisal_completed"
+              ? { ...row, status: "completed", completed_at: new Date().toISOString() }
+              : row,
+          ),
+        )
+        toast.success("Appraisal recorded — gap check run against the contract price")
+        router.refresh()
+      } else {
+        setAppraisalError(res.error ?? "Could not record the appraisal")
+      }
+    })
+  }
+
+  function submitWalkthroughSchedule() {
+    if (!walkthroughDate) {
+      setWalkthroughError("Pick a date for the final walkthrough.")
+      return
+    }
+    setWalkthroughError(null)
+    startTransition(async () => {
+      const res = await scheduleFinalWalkthroughAction({
+        transactionId: transaction.id,
+        brokerageId,
+        walkthroughDate,
+      })
+      if (res.success) {
+        setWalkthroughDialogOpen(false)
+        setWalkthroughDate("")
+        toast.success("Final walkthrough scheduled")
+        router.refresh()
+      } else {
+        setWalkthroughError(res.error ?? "Could not schedule the walkthrough")
+      }
+    })
+  }
+
   const [showRepairForm, setShowRepairForm] = useState(false)
   const [newRepairItem, setNewRepairItem] = useState("")
   const [newRepairCost, setNewRepairCost] = useState("")
@@ -796,6 +1228,8 @@ export function TransactionDetailClient({
 
   // AI Document Intelligence state
   const [analyzingDocId, setAnalyzingDocId] = useState<string | null>(null)
+  const [deletingDocId, setDeletingDocId] = useState<string | null>(null)
+  const [togglingDocId, setTogglingDocId] = useState<string | null>(null)
   const [docAnalysisResults, setDocAnalysisResults] = useState<Record<string, Record<string, unknown>>>({})
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
   const [disclosureResult, setDisclosureResult] = useState<{
@@ -1012,33 +1446,104 @@ export function TransactionDetailClient({
 
   async function handleApproveQuote(activityId: string, vendorName: string, quoteType: string) {
     startTransition(async () => {
-      if (quoteType === "inspector") {
-        await approveInspectionQuoteAction({
-          activityId,
-          transactionId: transaction.id,
-          brokerageId,
-          vendorName,
-        })
-      } else {
-        await approveInsuranceQuoteAction({
-          activityId,
-          serviceId: activityId,
-          transactionId: transaction.id,
-          brokerageId,
-          vendorName,
-        })
+      // The action reports failure BY RETURN ({ success:false, error }) — it checks
+      // authorisation and that the transaction belongs to this brokerage. Discarding
+      // it meant the screen refreshed as though the quote had been approved when it
+      // had not, and the broker was never told.
+      const res = quoteType === "inspector"
+        ? await approveInspectionQuoteAction({
+            activityId,
+            transactionId: transaction.id,
+            brokerageId,
+            vendorName,
+          })
+        : await approveInsuranceQuoteAction({
+            activityId,
+            serviceId: activityId,
+            transactionId: transaction.id,
+            brokerageId,
+            vendorName,
+          })
+      if (!res?.success) {
+        toast.error((res as any)?.error ?? "The approval did not go through.")
+        return
       }
+      router.refresh()
+    })
+  }
+
+  // The other half of the quote-approval decision. The alert offered ONLY
+  // "Approve": a client who did not want that inspector's price had no way to
+  // say so, and the pending activity row sat in the queue forever because
+  // nothing in the app could resolve it any other way. declineQuote is the
+  // same workflow's decline path (lib/transactions/vendor-quote-workflow.ts).
+  async function handleDeclineQuote(activityId: string) {
+    const reason = window.prompt("Why is this quote being declined? (optional — shown to the agent)")
+    if (reason === null) return
+    startTransition(async () => {
+      const res = await declineInspectionQuoteAction({
+        activityId,
+        transactionId: transaction.id,
+        brokerageId,
+        reason: reason.trim() || undefined,
+      })
+      if (!res?.success) {
+        toast.error((res as any)?.error ?? "The decline did not go through.")
+        return
+      }
+      toast.success("Quote declined.")
       router.refresh()
     })
   }
 
   async function handleMarkInspectionComplete(inspectionId: string) {
     startTransition(async () => {
-      await markInspectionCompleteAction({
+        // The action reports failure BY RETURN ({ success:false, error }) — it
+        // checks authorisation and that the transaction is in this brokerage.
+        // Discarding it meant the screen refreshed as though the approval had
+        // happened when it had not, with nothing shown to the broker.
+        const res = await markInspectionCompleteAction({
+          inspectionId,
+          transactionId: transaction.id,
+          brokerageId,
+        })
+        if (!res?.success) {
+          toast.error((res as any)?.error ?? "Could not mark the inspection complete.")
+          return
+        }
+      router.refresh()
+    })
+  }
+
+  async function handleAttachInspectionReport(inspectionId: string) {
+    const url = reportUrlDraft.trim()
+    if (!url) {
+      toast.error("Paste the report's link first.")
+      return
+    }
+    // The action stores this on transaction_inspections.report_url AND as a
+    // transaction document; a non-http value would render as a broken link in
+    // both places, so it is refused here rather than filed.
+    if (!/^https?:\/\//i.test(url)) {
+      toast.error("The report link must start with http:// or https://")
+      return
+    }
+    startTransition(async () => {
+      const res = await uploadInspectionReportAction({
         inspectionId,
         transactionId: transaction.id,
         brokerageId,
+        reportUrl: url,
+        fileName: reportNameDraft.trim() || "Inspection report",
       })
+      if (!res?.success) {
+        toast.error((res as any)?.error ?? "Could not attach the inspection report.")
+        return
+      }
+      setAttachingReportFor(null)
+      setReportUrlDraft("")
+      setReportNameDraft("")
+      toast.success("Report attached and filed with the transaction documents.")
       router.refresh()
     })
   }
@@ -1071,13 +1576,21 @@ export function TransactionDetailClient({
     if (!insuranceQuoteAmount) return
 
     startTransition(async () => {
-      await submitInsuranceQuoteApprovalAction({
-        serviceId,
-        transactionId: transaction.id,
-        brokerageId,
-        vendorName,
-        quoteAmount: parseFloat(insuranceQuoteAmount),
-      })
+        // The action reports failure BY RETURN ({ success:false, error }) — it
+        // checks authorisation and that the transaction is in this brokerage.
+        // Discarding it meant the screen refreshed as though the approval had
+        // happened when it had not, with nothing shown to the broker.
+        const res = await submitInsuranceQuoteApprovalAction({
+          serviceId,
+          transactionId: transaction.id,
+          brokerageId,
+          vendorName,
+          quoteAmount: parseFloat(insuranceQuoteAmount),
+        })
+        if (!res?.success) {
+          toast.error((res as any)?.error ?? "The quote was not submitted.")
+          return
+        }
       setInsuranceQuoteAmount("")
       router.refresh()
     })
@@ -1087,14 +1600,22 @@ export function TransactionDetailClient({
 
   async function handleUpdateEarnestMoney() {
     startTransition(async () => {
-      await updateEarnestMoneyAction({
-        transactionId: transaction.id,
-        brokerageId,
-        titleEscrowId: titleEscrow?.id,
-        earnestMoneyAmount: emAmount ? parseFloat(emAmount) : undefined,
-        earnestMoneyHeldBy: emHeldBy || undefined,
-        earnestMoneyReceivedDate: emReceivedDate || undefined,
-      })
+        // The action reports failure BY RETURN ({ success:false, error }) — it
+        // checks authorisation and that the transaction is in this brokerage.
+        // Discarding it meant the screen refreshed as though the approval had
+        // happened when it had not, with nothing shown to the broker.
+        const res = await updateEarnestMoneyAction({
+          transactionId: transaction.id,
+          brokerageId,
+          titleEscrowId: titleEscrow?.id,
+          earnestMoneyAmount: emAmount ? parseFloat(emAmount) : undefined,
+          earnestMoneyHeldBy: emHeldBy || undefined,
+          earnestMoneyReceivedDate: emReceivedDate || undefined,
+        })
+        if (!res?.success) {
+          toast.error((res as any)?.error ?? "Earnest money was not updated.")
+          return
+        }
       router.refresh()
     })
   }
@@ -1153,7 +1674,7 @@ export function TransactionDetailClient({
       {/* AI Warnings Panel */}
       {txWarnings.length > 0 && (
         <Alert className="rounded-none border-x-0 border-t-0 border-yellow-300 bg-yellow-50">
-          <AlertTriangle className="h-4 w-4 text-yellow-600" />
+          <AlertTriangle className="h-4 w-4 text-yellow-700" />
           <AlertTitle className="text-yellow-800">Transaction Warnings</AlertTitle>
           <AlertDescription>
             <ul className="list-disc list-inside space-y-0.5 mt-1">
@@ -1189,6 +1710,23 @@ export function TransactionDetailClient({
                 ${transaction.purchase_price?.toLocaleString()} | {transaction.deal_type ?? "Purchase"}
               </p>
             </div>
+            {/* ── ORPHAN-ROUTE SWEEP (lane G) — THE LINK THIS HEADER OWED. ─────
+                /dashboard/transactions/[id]/milestones is the ad-hoc milestone
+                surface `createTransactionMilestone` (app/actions/copilot.ts) was
+                written for — the only lane in the product for adding ONE
+                milestone by hand; everything else writes a SET. The page's own
+                docblock recorded the debt: "There is no LINK into this route yet…
+                The one line still owed on the parent (a link to this route from
+                the deal header) is REPORTED, not written here." The lane boundary
+                that deferred it has since closed. This is that line.
+                Unconditional, unlike CDA Workflow above it: a deal has
+                milestones at every stage, not only in CLOSING_PREP. */}
+            <Link href={`/dashboard/transactions/${transaction.id}/milestones`}>
+              <Button variant="outline" size="sm">
+                <FileText className="h-4 w-4 mr-2" />
+                Milestones
+              </Button>
+            </Link>
             {currentStage === "CLOSING_PREP" && (
               <Link href={`/dashboard/transactions/${transaction.id}/cda`}>
                 <Button variant="outline" size="sm">
@@ -1248,9 +1786,9 @@ export function TransactionDetailClient({
                         className={cn(
                           "h-6 w-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0",
                           item.completed
-                            ? "bg-emerald-500 text-white"
+                            ? "bg-emerald-700 text-white"
                             : item.overdue
-                            ? "bg-red-500 text-white"
+                            ? "bg-red-600 text-white"
                             : "bg-muted border-2 border-border text-muted-foreground"
                         )}
                       >
@@ -1267,7 +1805,7 @@ export function TransactionDetailClient({
                             item.overdue
                               ? "text-red-600 font-semibold"
                               : item.completed
-                              ? "text-emerald-600"
+                              ? "text-emerald-700"
                               : "text-muted-foreground"
                           )}
                         >
@@ -1301,10 +1839,10 @@ export function TransactionDetailClient({
             {/* Compliance flags strip */}
             <div className="container pb-2 flex items-center gap-4 flex-wrap text-[10px]">
               <span className="text-muted-foreground font-medium uppercase tracking-wide">Compliance:</span>
-              <span className={cn("flex items-center gap-1", tridSent ? "text-emerald-600" : "text-amber-600")}>
+              <span className={cn("flex items-center gap-1", tridSent ? "text-emerald-700" : "text-amber-700")}>
                 {tridSent ? "✓" : "⚠"} TRID Disclosure
               </span>
-              <span className={cn("flex items-center gap-1", hasAllDocs ? "text-emerald-600" : "text-amber-600")}>
+              <span className={cn("flex items-center gap-1", hasAllDocs ? "text-emerald-700" : "text-amber-700")}>
                 {hasAllDocs ? "✓" : "⚠"} All Docs Uploaded
               </span>
               <Link
@@ -1339,7 +1877,7 @@ export function TransactionDetailClient({
                       <div
                         className={cn(
                           "w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium shrink-0",
-                          isCompleted && "bg-green-500 text-white",
+                          isCompleted && "bg-green-700 text-white",
                           isCurrent && !isLost && "bg-primary text-primary-foreground",
                           isCurrent && isLost && "bg-destructive text-destructive-foreground",
                           !isCompleted && !isCurrent && "bg-muted text-muted-foreground"
@@ -1509,9 +2047,9 @@ export function TransactionDetailClient({
                     <p className="text-muted-foreground">Compliance</p>
                     <p className="font-medium">
                       {transaction.compliance_passed_at ? (
-                        <span className="text-green-600">Passed</span>
+                        <span className="text-green-700">Passed</span>
                       ) : (
-                        <span className="text-amber-600">Pending</span>
+                        <span className="text-amber-700">Pending</span>
                       )}
                     </p>
                   </div>
@@ -1530,6 +2068,9 @@ export function TransactionDetailClient({
                 </div>
               </CardContent>
             </Card>
+
+            {/* Closing dates — contract (on / on or before) vs expected vs actual (wave 148, lane 148I — owner ruling 21) */}
+            <ClosingDatesPanel transactionId={transaction.id} />
 
             {/* Health Card */}
             <Card>
@@ -1592,7 +2133,7 @@ export function TransactionDetailClient({
 
                     {/* No flags but has score */}
                     {(!healthScore.flags || healthScore.flags.length === 0) && (
-                      <p className="text-xs text-green-600 font-medium">No risk flags detected</p>
+                      <p className="text-xs text-green-700 font-medium">No risk flags detected</p>
                     )}
                   </div>
                 ) : (
@@ -1605,7 +2146,7 @@ export function TransactionDetailClient({
                       {typeof healthScore.score_delta === "number" && healthScore.score_delta !== 0 ? (
                         <span className={cn(
                           "inline-flex items-center gap-0.5 font-medium",
-                          healthScore.score_delta > 0 ? "text-emerald-600" : "text-red-600",
+                          healthScore.score_delta > 0 ? "text-emerald-700" : "text-red-600",
                         )}>
                           {healthScore.score_delta > 0 ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
                           {healthScore.score_delta > 0 ? "+" : ""}{healthScore.score_delta}
@@ -1630,6 +2171,17 @@ export function TransactionDetailClient({
                       >
                         <RefreshCw className={cn("h-3 w-3", rescanning && "animate-spin")} />
                         Refresh
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[11px] gap-1"
+                        disabled={aiAnalyzing}
+                        onClick={handleAiAnalysis}
+                        title="Run the AI read: win probability, narrative risks and next best actions"
+                      >
+                        <Sparkles className={cn("h-3 w-3", aiAnalyzing && "animate-pulse")} />
+                        AI read
                       </Button>
                       <Link
                         href={`/dashboard/transactions/${transaction.id}/health`}
@@ -1717,9 +2269,9 @@ export function TransactionDetailClient({
                       <span className="text-xs text-muted-foreground">Close Probability</span>
                       <span className={`text-sm font-bold ${
                         (dealPrediction.close_probability ?? 0) >= 70
-                          ? "text-green-600"
+                          ? "text-green-700"
                           : (dealPrediction.close_probability ?? 0) >= 40
-                          ? "text-amber-600"
+                          ? "text-amber-700"
                           : "text-red-600"
                       }`}>
                         {dealPrediction.close_probability ?? 0}%
@@ -1733,7 +2285,7 @@ export function TransactionDetailClient({
                       <div className="pt-1 space-y-1">
                         {dealPrediction.risk_factors.slice(0, 2).map((r: string, i: number) => (
                           <div key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
-                            <TrendingDown className="h-3 w-3 text-red-400 mt-0.5 shrink-0" />
+                            <TrendingDown className="h-3 w-3 text-red-500 mt-0.5 shrink-0" />
                             {r}
                           </div>
                         ))}
@@ -1752,26 +2304,34 @@ export function TransactionDetailClient({
               </CardContent>
             </Card>
 
-            {/* Pending Signatures Blocker — shown when contract_signatures rows are not yet fully signed */}
-            {Object.values(contractSignatures).some(s => s.esign_status !== "fully_signed") && (
+            {/* Unsigned-document blockers for THIS transaction.
+                Source: getUnsignedDocumentBlockers (transaction_documents ⋈
+                contract_signatures), not the brokerage-wide signature map this
+                card used to iterate. Two things change for the agent:
+                  · doc types belonging to OTHER deals no longer appear here; and
+                  · a signable document that was NEVER sent for signature now
+                    raises a blocker — the old card could only ever list
+                    documents that already had a signature row, so "never sent"
+                    read as "nothing pending". */}
+            {unsignedDocBlockers.length > 0 && (
               <Card className="border-amber-200 bg-amber-50/30">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm flex items-center gap-2 text-amber-800">
                     <PenLine className="h-4 w-4" />
-                    Signatures Pending
+                    Signatures Pending ({unsignedDocBlockers.length})
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-1.5">
-                  {Object.entries(contractSignatures)
-                    .filter(([, s]) => s.esign_status !== "fully_signed")
-                    .map(([docType, s]) => (
-                      <div key={docType} className="flex items-center justify-between text-xs">
-                        <span className="capitalize text-amber-900">{docType.replace(/_/g, " ")}</span>
-                        <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-700 border-amber-200">
-                          {s.esign_status?.replace(/_/g, " ") ?? "pending"}
-                        </Badge>
-                      </div>
-                    ))}
+                  {unsignedDocBlockers.map((b) => (
+                    <div key={b.docId} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="text-amber-900 truncate">{b.docLabel}</span>
+                      <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-700 border-amber-200 shrink-0">
+                        {b.signatureId
+                          ? (b.esignStatus?.replace(/_/g, " ") ?? "pending")
+                          : "not sent"}
+                      </Badge>
+                    </div>
+                  ))}
                   <p className="text-xs text-amber-700 pt-1">
                     Go to the Documents tab to send or resend for signatures.
                   </p>
@@ -1910,10 +2470,10 @@ export function TransactionDetailClient({
                   <div className="text-2xl font-bold">{documents.length}</div>
                   <div className="text-xs text-muted-foreground space-x-2">
                     {documentCountsByStatus.approved && (
-                      <span className="text-green-600">{documentCountsByStatus.approved} approved</span>
+                      <span className="text-green-700">{documentCountsByStatus.approved} approved</span>
                     )}
                     {documentCountsByStatus.pending && (
-                      <span className="text-amber-600">{documentCountsByStatus.pending} pending</span>
+                      <span className="text-amber-700">{documentCountsByStatus.pending} pending</span>
                     )}
                   </div>
                 </CardContent>
@@ -1987,7 +2547,7 @@ export function TransactionDetailClient({
                     {!delays.communicated_to_client ? (
                       <Button
                         size="sm"
-                        className="mt-2 bg-amber-600 hover:bg-amber-700 text-white"
+                        className="mt-2 bg-amber-700 hover:bg-amber-800 text-white"
                         disabled={isLoggingDelay}
                         onClick={async () => {
                           setIsLoggingDelay(true)
@@ -2010,12 +2570,54 @@ export function TransactionDetailClient({
                         {isLoggingDelay ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
                         Notify Client Now
                       </Button>
+                    ) : null}
+                    {/* Already told them by phone / in person? Record the
+                        disclosure WITHOUT re-sending a portal notice —
+                        markDelaysCommunicated flips only the flag, and refuses
+                        (rather than claiming success) when no delay row exists. */}
+                    {!delays.communicated_to_client ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="mt-1 text-xs text-amber-700 dark:text-amber-300"
+                        disabled={isLoggingDelay}
+                        onClick={async () => {
+                          const res = await markDelaysCommunicated(transaction.id)
+                          if (res.success) {
+                            toast.success("Marked as communicated to client")
+                            setDelays({ ...delays, communicated_to_client: true })
+                          } else {
+                            toast.error(res.error ?? "Could not mark as communicated")
+                          }
+                        }}
+                      >
+                        Already communicated outside the app — mark as told
+                      </Button>
                     ) : (
-                      <p className="text-xs text-green-600 dark:text-green-400">Client has been notified</p>
+                      <p className="text-xs text-green-700 dark:text-green-400">Client has been notified</p>
                     )}
                   </div>
                 ) : (
                   <p className="text-sm text-green-700 dark:text-green-300">On track — no delays recorded</p>
+                )}
+                {/* transparency_updates history — fetched alongside `delays`
+                    but never rendered (unread-state-census). The audit trail
+                    of what this client was actually told, and when. */}
+                {transparencyUpdates.length > 0 && (
+                  <div className="mt-3 pt-3 border-t space-y-1.5">
+                    <p className="text-xs font-medium text-muted-foreground">Update history</p>
+                    {transparencyUpdates.map((u: any) => (
+                      <div key={u.id} className="text-xs flex items-start justify-between gap-2">
+                        <span className={u.is_visible_to_client ? "" : "text-muted-foreground italic"}>
+                          {u.message}
+                          {!u.is_visible_to_client && " (internal only)"}
+                        </span>
+                        <span className="text-muted-foreground whitespace-nowrap">
+                          {new Date(u.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -2222,7 +2824,7 @@ export function TransactionDetailClient({
                           {/* Date — red if overdue, green if complete */}
                           <span className={cn(
                             "text-sm",
-                            m.completed_at ? "text-green-600 font-medium" : isOverdue ? "text-red-600 font-semibold" : "text-muted-foreground"
+                            m.completed_at ? "text-green-700 font-medium" : isOverdue ? "text-red-600 font-semibold" : "text-muted-foreground"
                           )}>
                             {m.completed_at
                               ? `Completed ${format(new Date(m.completed_at), "MMM d")}`
@@ -2243,10 +2845,45 @@ export function TransactionDetailClient({
                             </Badge>
                           )}
 
-                          {/* Mark Complete — uses canonical completeMilestone
-                              so deadline mirror + fan-out to portals + audit
-                              event all fire (Gap #8 wiring). Previously
-                              raw-insert bypassed all that. */}
+                          {/* wave 155 (155K): the composed appraiser packet goes to the appraiser only when the agent names them. */}
+                          {m.milestone_name === "appraisal_ordered" && m.status === "completed" && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-9 text-xs px-3"
+                              disabled={isPending}
+                              onClick={() => { setPacketEmail(""); setPacketConfirmed(false); setPacketNote(""); setPacketError(null); setPacketSendOpen(true) }}
+                            >
+                              Send packet to appraiser
+                            </Button>
+                          )}
+
+                          {/* Schedule — only the final walkthrough carries a
+                              date the agent sets ahead of completing it. */}
+                          {m.milestone_name === "final_walkthrough_scheduled" &&
+                            m.status !== "completed" && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-xs px-2"
+                              disabled={isPending}
+                              onClick={() => {
+                                setWalkthroughDate("")
+                                setWalkthroughError(null)
+                                setWalkthroughDialogOpen(true)
+                              }}
+                            >
+                              {m.target_date ? "Reschedule" : "Schedule"}
+                            </Button>
+                          )}
+
+                          {/* Mark Complete — routes to the milestone's own
+                              lifecycle action where one exists (appraisal
+                              ordered / completed, final walkthrough), otherwise
+                              the canonical completeMilestone. The generic path
+                              alone flipped a status and skipped the appraisal
+                              gap detector, the appraiser-packet coaching and the
+                              portal fan-out those milestones own. */}
                           {m.status !== "completed" && (
                             <Button
                               size="sm"
@@ -2254,27 +2891,21 @@ export function TransactionDetailClient({
                               className="h-7 text-xs px-2"
                               disabled={isPending}
                               onClick={() => {
-                                startTransition(async () => {
-                                  const res = await completeMilestoneAction({
-                                    transactionId: transaction.id,
-                                    brokerageId,
-                                    milestoneName: m.milestone_name,
-                                  })
-                                  if (res.success) {
-                                    const now = new Date().toISOString()
-                                    setLocalMilestones((prev) =>
-                                      prev.map((row) =>
-                                        row.id === m.id
-                                          ? { ...row, status: "completed", completed_at: now }
-                                          : row,
-                                      ),
-                                    )
-                                    toast.success("Milestone marked complete")
-                                  } else {
-                                    toast.error(res.error ?? "Failed to update milestone")
-                                  }
-                                })
+                                if (m.milestone_name === "appraisal_completed") {
+                                  // Needs the appraised value — the gap check has
+                                  // nothing to compare without it.
+                                  setAppraisalValue("")
+                                  setAppraisalError(null)
+                                  setAppraisalDialogOpen(true)
+                                  return
+                                }
+                                markMilestoneDone(m)
                               }}
+                              title={
+                                LIFECYCLE_MILESTONES.has(m.milestone_name)
+                                  ? "Runs this milestone's full lifecycle, not just a status change"
+                                  : undefined
+                              }
                             >
                               Complete
                             </Button>
@@ -2313,18 +2944,23 @@ export function TransactionDetailClient({
                                     row.id === m.id ? { ...row, is_client_visible: visible } : row
                                   )
                                 )
-                                const supabase = createClient()
-                                const { error } = await supabase
-                                  .from("transaction_milestones")
-                                  .update({ is_client_visible: visible })
-                                  .eq("id", m.id)
-                                if (error) {
+                                // This toggle decides what a CLIENT sees in their portal, so it
+                                // goes through the server action written for it —
+                                // app/actions/transactions.ts:setMilestoneClientVisibility —
+                                // not a raw browser-side update. Two things the inline version
+                                // could not do: validate the milestone id, and revalidate the
+                                // server-rendered surfaces (the portal journey and the
+                                // transactions list read this flag), which left the portal
+                                // showing the old visibility until something else happened to
+                                // revalidate it.
+                                const res = await setMilestoneClientVisibility(m.id, visible)
+                                if (!res.success) {
                                   setLocalMilestones((prev) =>
                                     prev.map((row) =>
                                       row.id === m.id ? { ...row, is_client_visible: !visible } : row
                                     )
                                   )
-                                  toast.error("Failed to update milestone visibility")
+                                  toast.error(res.error ?? "Failed to update milestone visibility")
                                 } else {
                                   toast.success(
                                     visible
@@ -2443,7 +3079,19 @@ export function TransactionDetailClient({
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="h-6 w-6 p-0 text-green-600 hover:text-green-700"
+                            className="h-9 w-9 p-0"
+                            title="Edit deadline"
+                            aria-label={`Edit ${d.deadline_type.replace(/_/g, " ")}`}
+                            onClick={() => openDeadlineDialog(d)}
+                          >
+                            <PenLine className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        {d.status !== "completed" && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0 text-green-700 hover:text-green-700"
                             title="Mark complete"
                             onClick={() => {
                               startTransition(async () => {
@@ -2501,15 +3149,9 @@ export function TransactionDetailClient({
                             value={newParticipantRole}
                             onChange={(e) => setNewParticipantRole(e.target.value)}
                           >
-                            <option value="cooperating_agent">Cooperating Agent</option>
-                            <option value="listing_agent">Listing Agent</option>
-                            <option value="buyer">Buyer</option>
-                            <option value="seller">Seller</option>
-                            <option value="lender">Lender</option>
-                            <option value="escrow_officer">Escrow Officer</option>
-                            <option value="inspector">Inspector</option>
-                            <option value="attorney">Attorney</option>
-                            <option value="other">Other</option>
+                            {PARTICIPANT_ROLE_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
                           </select>
                         </div>
                         <div className="space-y-1">
@@ -2584,9 +3226,32 @@ export function TransactionDetailClient({
                           <p className="text-sm font-medium">{p.name}</p>
                           <p className="text-xs text-muted-foreground capitalize">{p.role.replace(/_/g, " ")} {p.company ? `at ${p.company}` : ""}</p>
                         </div>
-                        <div className="text-xs text-muted-foreground text-right">
-                          {p.email && <p>{p.email}</p>}
-                          {p.phone && <p>{p.phone}</p>}
+                        <div className="flex items-center gap-2">
+                          <div className="text-xs text-muted-foreground text-right">
+                            {p.email && <p>{p.email}</p>}
+                            {p.phone && <p>{p.phone}</p>}
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-9 w-9 p-0"
+                            title="Edit participant"
+                            aria-label={`Edit ${p.name}`}
+                            onClick={() => openParticipantDialog(p)}
+                          >
+                            <PenLine className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-9 w-9 p-0 text-destructive hover:text-destructive"
+                            title="Remove participant"
+                            aria-label={`Remove ${p.name}`}
+                            disabled={isPending}
+                            onClick={() => handleRemoveParticipant(p)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
                       </div>
                     ))}
@@ -2664,7 +3329,7 @@ export function TransactionDetailClient({
                       )}
                       <div>
                         <p className="text-muted-foreground">Clear to Close</p>
-                        <p className={cn("font-medium", lenderInfo.clear_to_close_date ? "text-green-600" : "text-muted-foreground")}>
+                        <p className={cn("font-medium", lenderInfo.clear_to_close_date ? "text-green-700" : "text-muted-foreground")}>
                           {lenderInfo.clear_to_close_date
                             ? new Date(lenderInfo.clear_to_close_date).toLocaleDateString()
                             : "Pending"}
@@ -2681,8 +3346,14 @@ export function TransactionDetailClient({
             {/* Title & Escrow Tab */}
             <TabsContent value="title" className="mt-4">
               <Card>
-                <CardHeader className="pb-2">
+                <CardHeader className="pb-2 flex flex-row items-center justify-between">
                   <CardTitle className="text-sm">Title & Escrow</CardTitle>
+                  {/* Wave 155, lane 155R30: the one door that writes the company / officers / escrow number / closing
+                      appointment — add when the deal has NO record, edit when it has one (handleSaveTitleEscrow). */}
+                  <Button size="sm" variant="outline" className="text-xs h-9" onClick={openTitleEscrowDialog}>
+                    {titleEscrow?.id ? <PenLine className="h-3 w-3 mr-1" /> : <Plus className="h-3 w-3 mr-1" />}
+                    {titleEscrow?.id ? "Edit title & escrow" : "Add title & escrow"}
+                  </Button>
                 </CardHeader>
                 <CardContent>
                   {/* Title/Escrow Company Info (read-only display) */}
@@ -2692,6 +3363,21 @@ export function TransactionDetailClient({
                       <p className="font-medium">{titleEscrow.title_company_name ?? "Not set"}</p>
                       <p className="text-sm text-muted-foreground">Escrow Company</p>
                       <p className="font-medium">{titleEscrow.escrow_company_name ?? "Not set"}</p>
+                      {titleEscrow.escrow_number && (
+                        <>
+                          <p className="text-sm text-muted-foreground">Escrow Number</p>
+                          <p className="font-medium">{titleEscrow.escrow_number}</p>
+                        </>
+                      )}
+                      {titleEscrow.closing_scheduled_date && (
+                        <>
+                          <p className="text-sm text-muted-foreground">Closing Appointment</p>
+                          <p className="font-medium">
+                            {new Date(titleEscrow.closing_scheduled_date).toLocaleDateString()}
+                            {titleEscrow.closing_location ? ` · ${titleEscrow.closing_location}` : ""}
+                          </p>
+                        </>
+                      )}
                     </div>
                   )}
 
@@ -2762,6 +3448,8 @@ export function TransactionDetailClient({
                   </div>
                 </CardContent>
               </Card>
+              {/* WAVE 145 (lane 145Z — m873): the settlement agent's proration instruction and the line it produces. */}
+              <TaxProrationCard transactionId={transaction.id} />
             </TabsContent>
 
             {/* Deposits Tab */}
@@ -2839,7 +3527,7 @@ export function TransactionDetailClient({
                                 {dep.check_number && ` · Check #${dep.check_number}`}
                               </p>
                               {dep.delivered_to_escrow_at && (
-                                <p className="text-xs text-green-600">
+                                <p className="text-xs text-green-700">
                                   Delivered {format(new Date(dep.delivered_to_escrow_at), "MMM d, yyyy h:mm a")}
                                 </p>
                               )}
@@ -2931,10 +3619,17 @@ export function TransactionDetailClient({
                                     onClick={async () => {
                                       const supabase = createClient()
                                       const now = new Date().toISOString()
-                                      await supabase
+                                      // Read + count: an RLS-filtered update resolves with zero
+                                      // rows and no error — never flip the task on a refusal.
+                                      const { data: doneRows, error: doneErr } = await supabase
                                         .from("compliance_tasks")
                                         .update({ status: "complete", completed_at: now, completed_by: userId })
                                         .eq("id", task.id)
+                                        .select("id")
+                                      if (doneErr || (doneRows ?? []).length === 0) {
+                                        toast.error(`Could not complete the task: ${doneErr?.message ?? "not permitted"}`)
+                                        return
+                                      }
                                       setComplianceTasks((prev) =>
                                         prev.map((t) =>
                                           t.id === task.id
@@ -2953,10 +3648,15 @@ export function TransactionDetailClient({
                                     className="h-7 text-xs"
                                     onClick={async () => {
                                       const supabase = createClient()
-                                      await supabase
+                                      const { data: waivedRows, error: waiveErr } = await supabase
                                         .from("compliance_tasks")
                                         .update({ status: "waived" })
                                         .eq("id", task.id)
+                                        .select("id")
+                                      if (waiveErr || (waivedRows ?? []).length === 0) {
+                                        toast.error(`Could not waive the task: ${waiveErr?.message ?? "not permitted"}`)
+                                        return
+                                      }
                                       setComplianceTasks((prev) =>
                                         prev.map((t) =>
                                           t.id === task.id ? { ...t, status: "waived" } : t
@@ -2997,7 +3697,7 @@ export function TransactionDetailClient({
                   {/* Pending Quote Approvals */}
                   {pendingQuoteApprovals.filter(a => (a.metadata as Record<string,unknown>)?.quote_type === "inspector").length > 0 && (
                     <Alert className="mb-4 border-amber-500 bg-amber-50">
-                      <AlertTriangle className="h-4 w-4 text-amber-500" />
+                      <AlertTriangle className="h-4 w-4 text-amber-600" />
                       <AlertTitle className="text-amber-800">Quote Approval Needed</AlertTitle>
                       <AlertDescription className="text-amber-700">
                         {pendingQuoteApprovals
@@ -3007,13 +3707,24 @@ export function TransactionDetailClient({
                             return (
                               <div key={a.id} className="flex items-center justify-between mt-2">
                                 <span>{meta.vendor_name as string} - ${(meta.quote_amount as number)?.toLocaleString()}</span>
-                                <Button
-                                  size="sm"
-                                  onClick={() => handleApproveQuote(a.id, meta.vendor_name as string, "inspector")}
-                                  disabled={isPending}
-                                >
-                                  {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Approve"}
-                                </Button>
+                                <span className="flex items-center gap-2">
+                                  <Button
+                                    size="sm"
+                                    onClick={() => handleApproveQuote(a.id, meta.vendor_name as string, "inspector")}
+                                    disabled={isPending}
+                                  >
+                                    {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Approve"}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="text-red-700 border-red-300 hover:bg-red-50"
+                                    onClick={() => handleDeclineQuote(a.id)}
+                                    disabled={isPending}
+                                  >
+                                    Decline
+                                  </Button>
+                                </span>
                               </div>
                             )
                           })}
@@ -3171,8 +3882,57 @@ export function TransactionDetailClient({
                                   </a>
                                 </Button>
                               )}
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() =>
+                                  setAttachingReportFor(attachingReportFor === insp.id ? null : insp.id)
+                                }
+                                disabled={isPending}
+                              >
+                                {insp.report_url ? "Replace report" : "Attach report"}
+                              </Button>
                             </div>
                           </div>
+                          {attachingReportFor === insp.id && (
+                            <div className="mt-3 grid gap-2 rounded-md border bg-muted/30 p-3">
+                              <Label htmlFor={`report-url-${insp.id}`} className="text-xs">
+                                Report link
+                              </Label>
+                              <Input
+                                id={`report-url-${insp.id}`}
+                                value={reportUrlDraft}
+                                onChange={(e) => setReportUrlDraft(e.target.value)}
+                                placeholder="https://…"
+                              />
+                              <Label htmlFor={`report-name-${insp.id}`} className="text-xs">
+                                File name shown in documents
+                              </Label>
+                              <Input
+                                id={`report-name-${insp.id}`}
+                                value={reportNameDraft}
+                                onChange={(e) => setReportNameDraft(e.target.value)}
+                                placeholder="Home inspection report"
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleAttachInspectionReport(insp.id)}
+                                  disabled={isPending}
+                                >
+                                  {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Attach"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setAttachingReportFor(null)}
+                                  disabled={isPending}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -3210,7 +3970,7 @@ export function TransactionDetailClient({
                   {/* Pending Insurance Quote Approvals */}
                   {pendingQuoteApprovals.filter(a => (a.metadata as Record<string,unknown>)?.quote_type === "insurance").length > 0 && (
                     <Alert className="mb-4 border-amber-500 bg-amber-50">
-                      <AlertTriangle className="h-4 w-4 text-amber-500" />
+                      <AlertTriangle className="h-4 w-4 text-amber-600" />
                       <AlertTitle className="text-amber-800">Quote Approval Needed</AlertTitle>
                       <AlertDescription className="text-amber-700">
                         {pendingQuoteApprovals
@@ -3296,7 +4056,7 @@ export function TransactionDetailClient({
                                   <p className="text-xs text-muted-foreground">{v.vendor_email}</p>
                                 )}
                                 {v.cost && (
-                                  <p className="text-xs font-medium text-green-600">
+                                  <p className="text-xs font-medium text-green-700">
                                     ${v.cost.toLocaleString()}/yr
                                   </p>
                                 )}
@@ -3472,6 +4232,31 @@ export function TransactionDetailClient({
                                 </div>
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
+                                {/* WAVE 98 — the staff writer of transaction_documents.client_visible
+                                    (app/actions/transactions.ts setDocumentClientVisibility). A denied
+                                    type (CDA / disbursement / internal) never offers the switch. */}
+                                {isClientHiddenDealDocType(d.doc_type) ? (
+                                  <span className="text-xs text-muted-foreground whitespace-nowrap">Never shown to client</span>
+                                ) : (
+                                  <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                                    <Switch
+                                      checked={d.client_visible === true}
+                                      disabled={togglingDocId === d.id}
+                                      onCheckedChange={async (visible) => {
+                                        setTogglingDocId(d.id)
+                                        const res = await setDocumentClientVisibility(d.id, visible)
+                                        setTogglingDocId(null)
+                                        if (!res.success) {
+                                          toast.error(res.error ?? "Failed to update document visibility")
+                                        } else {
+                                          toast.success(visible ? "Document now visible in client portal" : "Document hidden from client portal")
+                                          router.refresh()
+                                        }
+                                      }}
+                                    />
+                                    {d.client_visible ? "Client sees this" : "Staff only"}
+                                  </label>
+                                )}
                                 <Badge
                                   variant={
                                     d.status === "approved"
@@ -3516,6 +4301,31 @@ export function TransactionDetailClient({
                                     AI Analyze
                                   </Button>
                                 )}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-xs h-7 gap-1 text-destructive hover:bg-destructive/10"
+                                  disabled={deletingDocId === d.id}
+                                  title="Delete document"
+                                  onClick={async () => {
+                                    if (!window.confirm(`Delete "${d.doc_label ?? d.doc_type}"? The file is removed from storage as well.`)) return
+                                    setDeletingDocId(d.id)
+                                    const res = await deleteDocument(d.id)
+                                    setDeletingDocId(null)
+                                    if ((res as any)?.success) {
+                                      toast.success("Document deleted")
+                                      router.refresh()
+                                    } else {
+                                      toast.error((res as any)?.error?.message ?? (res as any)?.error ?? "Delete failed")
+                                    }
+                                  }}
+                                >
+                                  {deletingDocId === d.id ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  )}
+                                </Button>
                               </div>
                             </div>
 
@@ -3636,6 +4446,7 @@ export function TransactionDetailClient({
                                       ? [{ name: contactName ?? "Contact", email: contactEmail, role: "signer" }]
                                       : []
                                   }
+                                  onSent={() => router.refresh()}
                                 />
                               </div>
                             )}
@@ -3742,7 +4553,7 @@ export function TransactionDetailClient({
                             {contractReview.keyDates.map((kd:any,idx:number)=>(
                               <div key={idx} className="flex justify-between text-xs p-2 bg-muted/40 rounded mb-1">
                                 <span>{kd.event}</span>
-                                <span className={kd.daysRemaining<=7?'text-red-600 font-semibold':kd.daysRemaining<=14?'text-amber-600':'text-green-600'}>
+                                <span className={kd.daysRemaining<=7?'text-red-600 font-semibold':kd.daysRemaining<=14?'text-amber-700':'text-green-700'}>
                                   {kd.date}{kd.daysRemaining!==undefined?` (${kd.daysRemaining}d)`:''}
                                 </span>
                               </div>
@@ -3826,21 +4637,30 @@ export function TransactionDetailClient({
                         onClick={() => {
                           if (!newRepairItem) return
                           startTransition(async () => {
-                            const { submitRepairRequest } = await import("@/app/actions/transactions")
-                            const result = await submitRepairRequest({
-                              transaction_id: transaction.id,
-                              requested_by: "buyer",
-                              item_description: newRepairItem,
-                              estimated_cost: newRepairCost ? Number(newRepairCost) : undefined,
+                            // requestRepairAction, NOT the application-layer
+                            // submitRepairRequest this form used to call: that one
+                            // inserts an UNTENANTED row (no brokerage_id, no scope
+                            // check) and fires no kernel event, so the other side
+                            // of the deal never learned a repair had been asked
+                            // for. This path verifies the transaction is in the
+                            // caller's brokerage, stamps brokerage_id, and emits
+                            // LISTING_REPAIR_REQUIRED so the buyer/seller portals
+                            // fan out.
+                            const result = await requestRepairAction({
+                              transactionId: transaction.id,
+                              brokerageId,
+                              requestedBy: "buyer",
+                              itemDescription: newRepairItem,
+                              estimatedCost: newRepairCost ? Number(newRepairCost) : undefined,
                             })
-                            if (result?.success) {
+                            if (result.success) {
                               toast.success("Repair request submitted")
                               setShowRepairForm(false)
                               setNewRepairItem("")
                               setNewRepairCost("")
                               router.refresh()
                             } else {
-                              toast.error("Failed to submit repair request")
+                              toast.error(result.error ?? "Failed to submit repair request")
                             }
                           })
                         }}
@@ -3879,6 +4699,36 @@ export function TransactionDetailClient({
                                 Accept
                               </Button>
                             )}
+                            {/* The end of the repair story — completeRepairAction
+                                emits LISTING_REPAIR_COMPLETED so both portals see
+                                the item close. Nothing used to call it, so an
+                                approved repair stayed "approved" forever. */}
+                            {(r.status === "approved" || r.status === "countered") && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs h-6 px-2"
+                                disabled={isPending}
+                                onClick={() => {
+                                  startTransition(async () => {
+                                    const res = await completeRepairAction({
+                                      transactionId: transaction.id,
+                                      brokerageId,
+                                      repairId: r.id,
+                                      actualCost: r.estimated_cost ?? undefined,
+                                    })
+                                    if (res.success) {
+                                      toast.success("Repair marked complete")
+                                      router.refresh()
+                                    } else {
+                                      toast.error(res.error ?? "Could not complete repair")
+                                    }
+                                  })
+                                }}
+                              >
+                                Mark Complete
+                              </Button>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -3902,9 +4752,9 @@ export function TransactionDetailClient({
                             className={cn(
                               "h-4 w-4 mt-0.5 shrink-0",
                               a.status === "fail" && "text-red-500",
-                              a.status === "pending" && "text-amber-500",
-                              a.status === "needs_review" && "text-orange-500",
-                              a.status === "pass" && "text-green-500",
+                              a.status === "pending" && "text-amber-600",
+                              a.status === "needs_review" && "text-orange-600",
+                              a.status === "pass" && "text-green-600",
                               a.status === "waived" && "text-slate-500"
                             )}
                           />
@@ -3914,7 +4764,7 @@ export function TransactionDetailClient({
                               {a.check_type} | {a.status}{a.is_blocking ? " (Blocking)" : ""}
                             </p>
                             {a.failure_reason && (
-                              <p className="text-xs text-red-500 mt-1">{a.failure_reason}</p>
+                              <p className="text-xs text-red-600 mt-1">{a.failure_reason}</p>
                             )}
                           </div>
                         </div>
@@ -4136,6 +4986,54 @@ export function TransactionDetailClient({
                   )}
                 </CardContent>
               </Card>
+
+              {/* READER (orphan doctrine §1.2) for cost_breakdown_tracking —
+                  generateCostBreakdown()'s AI-estimated closing-cost line
+                  items had no reader anywhere before this lane. */}
+              {closingCosts.length > 0 && (
+                <Card className="mt-4">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <DollarSign className="h-4 w-4" />
+                      Closing Cost Estimate
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {(["buyer", "seller"] as const).map((party) => {
+                      const rows = closingCosts.filter((c) => c.party === party)
+                      if (rows.length === 0) return null
+                      const total = rows.reduce((s, c) => s + (c.actual_amount ?? c.estimated_amount ?? 0), 0)
+                      return (
+                        <div key={party} className="mb-4 last:mb-0">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                            {party} — {rows[0]?.cost_category?.replace(/_/g, " ") ?? "closing costs"}
+                          </p>
+                          <div className="space-y-1.5">
+                            {rows.map((c) => (
+                              <div key={c.id} className="flex items-center justify-between text-sm py-1 border-b last:border-0">
+                                <span className="capitalize">{c.item_name.replace(/_/g, " ")}</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium">
+                                    ${(c.actual_amount ?? c.estimated_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                  </span>
+                                  <ClosingCostActualInput itemId={c.id} actual={c.actual_amount ?? null} />
+                                  <Badge variant={c.status === "paid" || c.status === "actual" ? "default" : "secondary"} className="text-[10px] px-1 h-4">
+                                    {c.status}
+                                  </Badge>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="flex items-center justify-between text-sm font-semibold pt-2 mt-1 border-t">
+                            <span>Total</span>
+                            <span>${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </CardContent>
+                </Card>
+              )}
             </TabsContent>
 
           {/* Partners Tab */}
@@ -4245,9 +5143,29 @@ export function TransactionDetailClient({
                         {titleEscrow.title_issues && (
                           <>
                             <span className="text-muted-foreground">Issues</span>
-                            <Badge variant="destructive" className="w-fit text-[10px] px-1.5 py-0">
-                              {titleEscrow.title_issues}
-                            </Badge>
+                            {titleIssueSummary ? (
+                              <span className="flex flex-wrap items-center gap-1">
+                                {titleIssueSummary.critical.length > 0 && (
+                                  <Badge variant="destructive" className="w-fit text-[10px] px-1.5 py-0">
+                                    {titleIssueSummary.critical.length} critical
+                                  </Badge>
+                                )}
+                                {titleIssueSummary.moderate.length > 0 && (
+                                  <Badge variant="secondary" className="w-fit text-[10px] px-1.5 py-0">
+                                    {titleIssueSummary.moderate.length} moderate
+                                  </Badge>
+                                )}
+                                {titleIssueSummary.totalUnresolved === 0 && (
+                                  <Badge variant="outline" className="w-fit text-[10px] px-1.5 py-0">
+                                    all resolved
+                                  </Badge>
+                                )}
+                              </span>
+                            ) : (
+                              <Badge variant="destructive" className="w-fit text-[10px] px-1.5 py-0">
+                                {titleEscrow.title_issues}
+                              </Badge>
+                            )}
                           </>
                         )}
                         {titleEscrow.earnest_money_amount && (
@@ -4257,6 +5175,21 @@ export function TransactionDetailClient({
                           </>
                         )}
                       </div>
+                      {/* The closing-blocking verdict the triage produces. An open
+                          CRITICAL title issue stops a closing; nothing on this page
+                          said so before. */}
+                      {titleIssueSummary && !titleIssueSummary.canClose && (
+                        <p className="text-[11px] text-destructive">
+                          Cannot close — {titleIssueSummary.critical.length} critical title issue
+                          {titleIssueSummary.critical.length === 1 ? "" : "s"} unresolved.
+                        </p>
+                      )}
+                      {titleIssueSummary && titleIssueSummary.canClose && titleIssueSummary.totalUnresolved > 0 && (
+                        <p className="text-[11px] text-amber-700">
+                          {titleIssueSummary.totalUnresolved} unresolved title issue
+                          {titleIssueSummary.totalUnresolved === 1 ? "" : "s"} — none closing-blocking.
+                        </p>
+                      )}
                     </>
                   ) : (
                     <p className="text-xs text-muted-foreground">No title/escrow info assigned.</p>
@@ -4340,7 +5273,7 @@ export function TransactionDetailClient({
                   <CardHeader className="pb-3">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <Building2 className="h-4 w-4" />
-                      Transaction Forms Provider
+                      {LEGAL_FORMS_PROVIDER_LABEL}
                       {formsProvider && (
                         <Badge
                           variant={formsProvider.is_configured ? "default" : "secondary"}
@@ -4386,12 +5319,12 @@ export function TransactionDetailClient({
                   </CardContent>
                 </Card>
 
-                {/* Available Transaction Forms */}
+                {/* Available legal forms */}
                 <Card>
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
                       <CardTitle className="text-sm">
-                        Available Transaction Forms
+                        Available legal forms
                       </CardTitle>
                       <Badge variant="secondary" className="text-xs">
                         {availableForms.length} form{availableForms.length !== 1 ? "s" : ""}
@@ -4498,7 +5431,7 @@ export function TransactionDetailClient({
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              <AlertTriangle className="h-5 w-5 text-amber-600" />
               Cannot Advance Stage
             </DialogTitle>
             <DialogDescription>
@@ -4529,8 +5462,9 @@ export function TransactionDetailClient({
                 Force advance with override
               </Button>
               <p className="text-[11px] text-muted-foreground mt-1.5">
-                Requires broker / admin / compliance role. Bypasses the blockers above and
-                writes an audit row with your reason.
+                Requires broker / admin / compliance role. Passes PROCESS blockers only (a deadline not yet marked, the
+                contract date not keyed) and writes an audit row with your reason. Compliance, signatures, TRID and the
+                CDA are never overridden — they are cleared at their own gate.
               </p>
             </div>
           )}
@@ -4548,8 +5482,22 @@ export function TransactionDetailClient({
                 rows={3}
                 className="text-sm"
               />
+              {targetStage === "CLOSED" && (
+                <div className="space-y-1">
+                  <Label htmlFor="override_evidence" className="text-xs font-medium text-amber-700">
+                    Proof of closing (required) — the settlement statement or title / escrow / attorney file number
+                  </Label>
+                  <Input
+                    id="override_evidence"
+                    placeholder="e.g. ALTA statement doc id, or title file #12345"
+                    value={overrideEvidenceRef}
+                    onChange={(e) => setOverrideEvidenceRef(e.target.value)}
+                    className="text-sm"
+                  />
+                </div>
+              )}
               {overrideError && (
-                <p className="text-xs text-red-600">{overrideError}</p>
+                <p className="text-xs text-red-700">{overrideError}</p>
               )}
               <p className="text-[11px] text-muted-foreground">
                 This action is logged as <code className="text-[10px]">transaction.stage_overridden</code>
@@ -4566,11 +5514,268 @@ export function TransactionDetailClient({
               <Button
                 onClick={handleForceAdvance}
                 disabled={isPending || overrideReason.trim().length < 10}
-                className="bg-amber-600 hover:bg-amber-700 text-white"
+                className="bg-amber-700 hover:bg-amber-800 text-white"
               >
                 {isPending ? "Overriding..." : "Force Advance"}
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Appraisal completion — the value is required, because the gap detector
+          compares it to transactions.purchase_price. */}
+      {/* Wave 155, lane 155R30 — the title & escrow door (addTitleEscrow / updateTitleEscrow). */}
+      <Dialog open={titleEscrowDialogOpen} onOpenChange={setTitleEscrowDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{titleEscrow?.id ? "Edit title & escrow" : "Add title & escrow"}</DialogTitle>
+            <DialogDescription>
+              The title company, officers, escrow number and closing appointment for this deal. The closing date
+              feeds the deal&apos;s closing dates and tells the deal team the closing is scheduled. Earnest money is
+              recorded in its own section.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2 max-h-[60vh] overflow-y-auto">
+            {titleEscrowError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {titleEscrowError}
+              </div>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {TITLE_ESCROW_EDIT_FIELDS.map((f) => (
+                <div key={f.key} className="space-y-1.5">
+                  <Label htmlFor={`te-${f.key}`}>{f.label}{f.key === "title_company_name" ? " *" : ""}</Label>
+                  <Input
+                    id={`te-${f.key}`}
+                    type={f.type}
+                    value={titleEscrowForm[f.key]}
+                    onChange={(e) => setTitleEscrowForm((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTitleEscrowDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleSaveTitleEscrow} disabled={isPending || !titleEscrowForm.title_company_name.trim()}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {titleEscrow?.id ? "Save changes" : "Add title & escrow"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Wave 155, lane 155R30 — edit one participant (updateParticipant). */}
+      <Dialog open={editingParticipantId !== null} onOpenChange={(open) => { if (!open) setEditingParticipantId(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit participant</DialogTitle>
+            <DialogDescription>Correct this participant&apos;s name, role or contact details on the deal.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {participantError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {participantError}
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="pe-name">Name *</Label>
+                <Input id="pe-name" value={participantForm.name} onChange={(e) => setParticipantForm((prev) => ({ ...prev, name: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pe-role">Role</Label>
+                <select
+                  id="pe-role"
+                  className="w-full h-9 text-sm border rounded px-2 bg-background"
+                  value={participantForm.role}
+                  onChange={(e) => setParticipantForm((prev) => ({ ...prev, role: e.target.value }))}
+                >
+                  {/* A role this list does not name (an older row) stays selectable rather than being silently rewritten. */}
+                  {editingParticipant && !PARTICIPANT_ROLE_OPTIONS.some((o) => o.value === editingParticipant.role) && (
+                    <option value={editingParticipant.role}>{editingParticipant.role.replace(/_/g, " ")}</option>
+                  )}
+                  {PARTICIPANT_ROLE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pe-email">Email</Label>
+                <Input id="pe-email" type="email" value={participantForm.email} onChange={(e) => setParticipantForm((prev) => ({ ...prev, email: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pe-phone">Phone</Label>
+                <Input id="pe-phone" type="tel" value={participantForm.phone} onChange={(e) => setParticipantForm((prev) => ({ ...prev, phone: e.target.value }))} />
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label htmlFor="pe-company">Company</Label>
+                <Input id="pe-company" value={participantForm.company} onChange={(e) => setParticipantForm((prev) => ({ ...prev, company: e.target.value }))} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingParticipantId(null)}>Cancel</Button>
+            <Button onClick={handleSaveParticipant} disabled={isPending || !participantForm.name.trim()}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Save participant
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Wave 155, lane 155R30 — edit one deadline's date and label (updateDeadline). */}
+      <Dialog open={editingDeadlineId !== null} onOpenChange={(open) => { if (!open) setEditingDeadlineId(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit deadline</DialogTitle>
+            <DialogDescription>
+              {editingDeadline ? `${editingDeadline.deadline_type.replace(/_/g, " ")} — ` : ""}change the date or the label.
+              Marking it complete stays on the deadline&apos;s check button.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {deadlineError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {deadlineError}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="de-date">Date *</Label>
+              <Input id="de-date" type="date" value={deadlineForm.deadline_date} onChange={(e) => setDeadlineForm((prev) => ({ ...prev, deadline_date: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="de-notes">Label</Label>
+              <Input id="de-notes" value={deadlineForm.notes} onChange={(e) => setDeadlineForm((prev) => ({ ...prev, notes: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingDeadlineId(null)}>Cancel</Button>
+            <Button onClick={handleSaveDeadline} disabled={isPending || !deadlineForm.deadline_date.trim()}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Save deadline
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={appraisalDialogOpen} onOpenChange={setAppraisalDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Record the appraisal</DialogTitle>
+            <DialogDescription>
+              The appraised value is compared to the contract price. If it comes in short, the
+              buyer and seller portals get the explanation, the deal team is convened, and you get
+              the three priced negotiation plays.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {appraisalError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {appraisalError}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="appraisal-value">Appraised value</Label>
+              <Input
+                id="appraisal-value"
+                type="number"
+                min="0"
+                placeholder="e.g. 495000"
+                value={appraisalValue}
+                onChange={(e) => setAppraisalValue(e.target.value)}
+              />
+              {transaction.purchase_price ? (
+                <p className="text-xs text-muted-foreground">
+                  Contract price on file: ${Number(transaction.purchase_price).toLocaleString()}
+                </p>
+              ) : (
+                <p className="text-xs text-amber-700">
+                  No contract price on this transaction — the gap check has nothing to compare
+                  against and will not run.
+                </p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAppraisalDialogOpen(false)}>Cancel</Button>
+            <Button onClick={submitAppraisalComplete} disabled={isPending}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Record appraisal
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Final walkthrough scheduling */}
+      <Dialog open={walkthroughDialogOpen} onOpenChange={setWalkthroughDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Schedule the final walkthrough</DialogTitle>
+            <DialogDescription>
+              Sets the milestone date and fans the walkthrough out to the buyer, seller, lender and
+              title portals.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {walkthroughError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {walkthroughError}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="walkthrough-date">Walkthrough date</Label>
+              <Input
+                id="walkthrough-date"
+                type="date"
+                value={walkthroughDate}
+                onChange={(e) => setWalkthroughDate(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setWalkthroughDialogOpen(false)}>Cancel</Button>
+            <Button onClick={submitWalkthroughSchedule} disabled={isPending}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Schedule
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={packetSendOpen} onOpenChange={setPacketSendOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Send the appraiser packet</DialogTitle>
+            <DialogDescription>
+              The appraiser receives a secure link to the packet (valid 7 days) in a fixed message with your optional note —
+              nothing in it is AI-written, and it carries no opinion of value.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {packetError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">{packetError}</div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="packet-email">Appraiser&apos;s email</Label>
+              <Input id="packet-email" type="email" value={packetEmail} onChange={(e) => setPacketEmail(e.target.value)} />
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={packetConfirmed} onChange={(e) => setPacketConfirmed(e.target.checked)} />
+              This is the appraiser assigned to this order
+            </label>
+            <div className="space-y-1.5">
+              <Label htmlFor="packet-note">Note (optional, in your own words)</Label>
+              <Input id="packet-note" value={packetNote} onChange={(e) => setPacketNote(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPacketSendOpen(false)}>Cancel</Button>
+            <Button onClick={submitPacketSend} disabled={isPending || !packetEmail}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Send
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -4629,7 +5834,7 @@ export function TransactionDetailClient({
             <Button
               onClick={handleMilestoneOverride}
               disabled={isPending || milestoneOverrideReason.trim().length < 10}
-              className="bg-amber-600 hover:bg-amber-700 text-white"
+              className="bg-amber-700 hover:bg-amber-800 text-white"
             >
               {isPending ? "Overriding..." : "Override Milestone"}
             </Button>

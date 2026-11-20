@@ -9,10 +9,10 @@ export {
   MILESTONE_STATUS,
   CLIENT_VISIBLE_MILESTONES,
   ROLES,
-  STAGE_TRANSITION_ROLES,
+  // STAGE_TRANSITION_ROLES / MARK_LOST_ROLES removed (lane 93A) — survivor
+  // lib/transactions/role-guard.ts stageTransitionTier / canTransitionStage.
   MILESTONE_OVERRIDE_ROLES,
   MILESTONE_EDIT_ROLES,
-  MARK_LOST_ROLES,
 } from './transaction-stages'
 export type {
   TransactionStage,
@@ -33,11 +33,13 @@ export type { StageProgressionResult } from './stage-progression'
 // ─── ROLE GUARD ───────────────────────────────────────────────────────────────
 export {
   canTransitionStage,
-  canOverrideMilestone,
-  canEditMilestoneDate,
+  // canOverrideMilestone / canEditMilestoneDate removed (wave 155) — role-only predicates with no caller; see the tombstone in
+  // lib/transactions/role-guard.ts. The gate that runs is decideDealDesk there.
   canViewFinancials,
-  canActAsExternalParty,
-  assertUserHasRole,
+  // canActAsExternalParty removed — see the tombstone at
+  // lib/transactions/role-guard.ts:171. The external-party gate is
+  // lib/kernel/portal-auth.ts requireLenderVendorActor / requireTitleVendorActor (both on the vendor rail).
+
 } from './role-guard'
 export type { UserRole, RoleContext } from './role-guard'
 
@@ -56,7 +58,10 @@ export type {
 } from './milestone-service'
 
 // ─── CDA WORKFLOW ─────────────────────────────────────────────────────────────
-export { generateCDAPreview, submitCDA, approveCDA } from './cda-workflow'
+// CDA workflow: ONE rail — app/actions/cda-portal.ts. cda-workflow.ts was a second
+// implementation over the same table with weaker gates and a broken create path; its
+// unique capabilities (the final document-compliance gate, the kernel lifecycle events,
+// the discrepancy activity) were folded into the portal rail and the file deleted.
 
 // ─── VENDOR QUOTE WORKFLOW ────────────────────────────────────────────────────
 export { requestQuoteApproval, approveQuote, declineQuote } from './vendor-quote-workflow'
@@ -71,7 +76,9 @@ export { setContractDate, assertAdjustmentsUnlocked } from './contract-governanc
 export { checkTransactionDeadlines } from './deadline-monitor'
 
 // ─── GIFT ORDER TRIGGER ───────────────────────────────────────────────────────
-export { checkAndTriggerGiftOrder } from './gift-order-trigger'
+// TOMBSTONE (wave 150, lane 150Z — orphan doctrine §1.1): checkAndTriggerGiftOrder (./gift-order-trigger, 0 live
+// callers) duplicated the close command's closing-gift task. SURVIVOR: lib/kernel/transactions.ts closeTransaction step 5
+// (activity_type "closing_gift_due"), which absorbed its at-most-once check.
 
 // ─── STAGE AUTO TASKS ─────────────────────────────────────────────────────────
 export { seedStageAutoTasks } from './stage-auto-tasks'

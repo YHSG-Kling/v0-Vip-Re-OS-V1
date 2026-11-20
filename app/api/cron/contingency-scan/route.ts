@@ -11,15 +11,19 @@
  * Schedule (vercel.json): "0 13 * * *"  (08:00 ET / 13:00 UTC)
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scanContingenciesNearingDeadline } from "@/lib/workflow/intelligence/proactive-checks"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   // Cron auth — see lib/cron-auth.ts
   const unauth = verifyCronAuth(req)
   if (unauth) return unauth
+  const cronDoor = await decideCronRun({ cron_name: "contingency-scan", cron_path: "/app/api/cron/contingency-scan/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const findings = await scanContingenciesNearingDeadline({ withinDays: 3 })
   if (findings.length === 0) {
@@ -53,7 +57,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     if ((alreadyNotified ?? 0) > 0) continue
 
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: agentUserId,
       brokerage_id: brokerageId,
       type: `contingency_${f.contingencyType}_expiring`,
@@ -61,11 +65,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       body: f.contractAddress
         ? `On ${f.contractAddress} — deadline is ${new Date(f.deadline).toLocaleDateString()}. One-tap to send a removal addendum.`
         : `Deadline ${new Date(f.deadline).toLocaleDateString()}. One-tap to send removal.`,
-      priority: f.daysUntil <= 1 ? "high" : "normal",
+      // notifications.priority CHECK: critical | high | low | medium (wave 152, 152K — row 45 census): "normal" refused
+      // the whole insert, so every contingency more than a day out expired with no bell.
+      priority: f.daysUntil <= 1 ? "high" : "medium",
       entity_type: "transaction",
       entity_id: f.transactionId,
       channel: "in_app",
-    })
+    }), { table: "notifications", flow: "route_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     notified++
   }
 

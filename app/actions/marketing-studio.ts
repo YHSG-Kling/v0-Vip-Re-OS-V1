@@ -27,9 +27,9 @@ import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
-  canAccessFeature,
   incrementFeatureUsage,
 } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
@@ -37,8 +37,22 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import type { ActorRole, Persona, MessageType } from "@/lib/kernel/types"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks } from "@/lib/marketing/qr-asset-linker"
-import { getCampaignRegistry, registerCampaignSource } from "@/lib/marketing/campaign-registry"
+import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance } from "@/lib/marketing/qr-asset-linker"
+// ★ ACT-AS SEAM ★ resolveWriteContext mints QR rows (createQrCodeAction). The
+// reader-seam import (resolveActingContext) left with renderQrImageAction —
+// see the tombstone below getMarketingStudioDashboard's predecessor block.
+import { resolveWriteContext, decideClaimedTenant } from "@/lib/platform/acting-context"
+import {
+  renderQrPng,
+  isQrDestinationType,
+  isQrPurpose,
+  type QrDestinationType,
+  type QrPurpose,
+} from "@/lib/marketing/tracked-qr"
+// WAVE 152 (152J): the studio's two QR doors mint through lane 152C's GOVERNED mint — destination safety (https, the
+// tenant's verified hosts + the allow-list, no loop, no personal data), the session creator, a tenant check on the
+// campaign, an idempotency key and ledger evidence (marketing.qr.mint) — instead of the raw registry writer.
+import { mintGovernedQr, type QrActor } from "@/lib/marketing/qr-governance"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -46,7 +60,51 @@ export type CampaignStatus = "draft" | "pending_approval" | "approved" | "live" 
 export type AssetApprovalStatus = "pending" | "approved" | "rejected"
 export type VisibilityScope = "agent" | "team" | "brokerage"
 
-export interface CreateCampaignParams {
+/**
+ * THE CAMPAIGN'S AUDIENCE, in the spelling the resolver actually reads.
+ *
+ * `marketing_campaigns` carries the same idea TWICE and the two halves point in
+ * opposite directions:
+ *
+ *   · `target_audience` (jsonb) — WRITTEN here and at app/crm/page.tsx:2130, and
+ *     read by NOTHING that resolves an audience. A free-form blob.
+ *   · `audience_personas` / `audience_generations` / `audience_age_segs` /
+ *     `audience_lead_source_tags` / `audience_buyer_stages` /
+ *     `audience_contact_ids` (scripts/1046-marketing-audience-and-customer-
+ *     onboarding.sql:31-38, GIN-indexed at :55-57) — READ by the launch gate
+ *     (lib/marketing/campaign-publisher.ts:47-67) and by the touchpoint recorder
+ *     (lib/kernel/marketing.ts:1141), and written by NOBODY.
+ *
+ * The typed set is the SURVIVOR: it has the readers, the index and the resolver
+ * (lib/marketing/audience-resolver.ts). `target_audience` is kept because it is
+ * still a human-readable note on the row, but it is no longer the only thing a
+ * campaign author's audience choice lands in.
+ *
+ * WHY THIS IS NOT COSMETIC. resolveCampaignAudience treats an EMPTY criteria
+ * array as "no filter" (lib/marketing/audience-resolver.ts:64) — so with all six
+ * columns writerless, every campaign resolved to EVERY CONTACT IN THE BROKERAGE,
+ * capped only by that resolver's `.limit(5000)`. publishMarketingCampaignSafe
+ * then measured deliverability against that whole book and flipped the campaign
+ * to `live`, and distributeVideoAsset recorded a touchpoint against every one of
+ * them. An audience filter nothing can write is not a dormant feature; it is a
+ * blast radius.
+ */
+export interface CampaignAudienceParams {
+  /** contacts.contact_persona */
+  audiencePersonas?: string[]
+  /** generational cohort, post-filtered from contacts.age_range */
+  audienceGenerations?: string[]
+  /** contacts.age_range */
+  audienceAgeSegs?: string[]
+  /** contacts.source_family */
+  audienceLeadSourceTags?: string[]
+  /** contacts.buyer_stage */
+  audienceBuyerStages?: string[]
+  /** Explicit pinned list — overrides every criterion above in the resolver. */
+  audienceContactIds?: string[]
+}
+
+export interface CreateCampaignParams extends CampaignAudienceParams {
   campaignName: string
   campaignType: "listing" | "brand" | "recruitment" | "event" | "seasonal"
   listingId?: string
@@ -57,13 +115,47 @@ export interface CreateCampaignParams {
   visibilityScope?: VisibilityScope
 }
 
-export interface UpdateCampaignParams {
+export interface UpdateCampaignParams extends CampaignAudienceParams {
   campaignId: string
   campaignName?: string
   targetAudience?: Record<string, unknown>
   budgetTotal?: number
   scheduledStartAt?: string
   scheduledEndAt?: string
+}
+
+/**
+ * Map the audience params onto the six live columns.
+ *
+ * `"use server"` files export only async functions (CLAUDE.md §4), so this is a
+ * module-local helper and deliberately NOT exported — an exported sync helper
+ * here would be a public HTTP endpoint that cannot be one.
+ *
+ * `mode: "insert"` writes a floor for the five text[] columns, which are
+ * `NOT NULL DEFAULT '{}'` — passing `undefined` would be fine, but writing `[]`
+ * makes the row say plainly "no criterion", which is what the resolver reads.
+ * `mode: "patch"` writes ONLY what the caller named, so an update that touches
+ * the budget cannot silently clear the audience.
+ */
+function audienceColumns(
+  params: CampaignAudienceParams,
+  mode: "insert" | "patch",
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const put = (column: string, value: string[] | undefined, floor: unknown) => {
+    if (value !== undefined) out[column] = value
+    else if (mode === "insert") out[column] = floor
+  }
+  put("audience_personas", params.audiencePersonas, [])
+  put("audience_generations", params.audienceGenerations, [])
+  put("audience_age_segs", params.audienceAgeSegs, [])
+  put("audience_lead_source_tags", params.audienceLeadSourceTags, [])
+  put("audience_buyer_stages", params.audienceBuyerStages, [])
+  // audience_contact_ids is NULLABLE uuid[] and the resolver reads
+  // `?? undefined` — an empty array would read as "pinned to nobody", so the
+  // floor for this one is NULL, not [].
+  put("audience_contact_ids", params.audienceContactIds, null)
+  return out
 }
 
 export interface CreateAssetParams {
@@ -77,11 +169,23 @@ export interface CreateAssetParams {
   previewText?: string
   tags?: string[]
   visibilityScope?: VisibilityScope
+  /** assetType "qr" only: the SEMANTIC destination the code stands for. The
+   *  action mints a TRACKED code in the QR registry (qr_codes) for it and
+   *  stores that code's PNG as the asset — never a raw-URL QR (wave 81D). */
+  qrTargetUrl?: string
+  /** WAVE 155 (155D, D4): the piece SPEAKS FOR the brokerage or a team — the actor needs a delegated marketing grant (or the
+   *  natural authority: an in-scope admin / the team's lead); the brand, sender and return address are the principal's
+   *  (resolveActingSender), never the platform's or another office's. */
+  actsFor?: "brokerage" | "team"
+  teamId?: string
 }
 
 export interface CreateCalendarEventParams {
   campaignId?: string
-  eventType: "publish" | "review" | "deadline" | "meeting" | "go_live"
+  /** campaign_calendar.event_type — exactly the column's CHECK. This used to
+   *  include "meeting" and "go_live", which the column has never accepted, so
+   *  the type vouched for an INSERT that could only fail. */
+  eventType: "publish" | "send" | "launch" | "review" | "deadline" | "podcast_release" | "mail_drop"
   channel?: string
   title: string
   scheduledAt: string
@@ -106,7 +210,7 @@ export interface CreateTaskParams {
 // ─── FEATURE GATE HELPER ──────────────────────────────────────────────────────
 
 async function assertMarketingStudioAccess(userId: string): Promise<{ allowed: boolean; reason?: string }> {
-  const access = await canAccessFeature(userId, "marketing_studio")
+  const access = await mayUseFeature(userId, "marketing_studio")
   if (!access.allowed) {
     const reason = access.reason === "Feature does not exist"
       ? "Marketing Studio is not yet enabled for your account. Contact your administrator to enable it."
@@ -125,6 +229,8 @@ export async function createCampaign(params: CreateCampaignParams) {
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign.create", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { campaign_type: params.campaignType, listing_id: params.listingId ?? null } }, async () => {
 
     const supabase = await createClient()
 
@@ -138,6 +244,7 @@ export async function createCampaign(params: CreateCampaignParams) {
         campaign_type: params.campaignType,
         listing_id: params.listingId ?? null,
         target_audience: params.targetAudience ?? {},
+        ...audienceColumns(params, "insert"),
         budget_total: params.budgetTotal ?? 0,
         budget_spent: 0,
         scheduled_start_at: params.scheduledStartAt || null,
@@ -164,6 +271,7 @@ export async function createCampaign(params: CreateCampaignParams) {
     await incrementFeatureUsage(userId, "marketing_studio")
 
     return { success: true, campaign }
+    }))
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create campaign"
     console.error("[MarketingStudio] createCampaign error:", message)
@@ -234,8 +342,8 @@ export async function getCampaignById(campaignId: string) {
       *,
       listing:listings(id, address, city, state, list_price, mls_number),
       assets:marketing_assets(*),
-      tasks:marketing_campaign_tasks(*),
-      comments:marketing_campaign_comments(*, author:users(id, first_name, last_name)),
+      tasks:marketing_campaign_tasks(id, campaign_id, title, description, status, assigned_user_id, due_at, created_at, updated_at),
+      comments:marketing_campaign_comments(id, campaign_id, comment_body, author_user_id, created_at, author:users(id, first_name, last_name)),
       calendar_events:campaign_calendar(*)
     `)
     .eq("id", campaignId)
@@ -256,6 +364,8 @@ export async function updateCampaign(params: UpdateCampaignParams) {
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign.update", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -265,6 +375,7 @@ export async function updateCampaign(params: UpdateCampaignParams) {
   if (params.budgetTotal !== undefined) updateData.budget_total = params.budgetTotal
   if (params.scheduledStartAt !== undefined) updateData.scheduled_start_at = params.scheduledStartAt || null
   if (params.scheduledEndAt !== undefined) updateData.scheduled_end_at = params.scheduledEndAt || null
+  Object.assign(updateData, audienceColumns(params, "patch"))
 
   const { error } = await supabase
     .from("marketing_campaigns")
@@ -278,6 +389,7 @@ export async function updateCampaign(params: UpdateCampaignParams) {
   }
 
   return { success: true }
+  })
 }
 
 export async function transitionCampaignStatus(
@@ -389,10 +501,11 @@ export async function transitionCampaignStatus(
   if (toStatus === "live") updateData.launched_at = new Date().toISOString()
   if (toStatus === "ended") updateData.completed_at = new Date().toISOString()
 
-  await supabase
+  const { error: campaignStatusErr } = await supabase
     .from("marketing_campaigns")
     .update(updateData)
     .eq("id", campaignId)
+  if (campaignStatusErr) return { success: false, error: `Could not update the campaign status: ${campaignStatusErr.message}` }
 
   return { success: true, activityId: result.activityId }
 }
@@ -401,13 +514,58 @@ export async function transitionCampaignStatus(
 
 export async function createAsset(params: CreateAssetParams) {
   try {
-    const { userId, agentId, brokerageId } = await getAgentContext()
+    const { userId, agentId, brokerageId, userType: ctxUserType } = await getAgentContext()
     const access = await assertMarketingStudioAccess(userId)
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
     }
 
     const supabase = await createClient()
+
+    // D4 (wave 155, lane 155D): a brokerage-voice piece (or an explicit team-voice one) needs authority to speak for that
+    // principal and carries the principal's brand — at 9d9626b9 any seat could stamp visibility_scope 'brokerage' from the
+    // request body and publish in the brokerage's name.
+    const actsFor: "brokerage" | "team" | null = params.actsFor ?? (params.visibilityScope === "brokerage" ? "brokerage" : null)
+    let actingBrand: Record<string, unknown> | null = null
+    if (actsFor) {
+      if (!brokerageId || !userId) return { success: false, error: "Your workspace couldn't be confirmed. Sign in again." }
+      const { resolveActingSender } = await import("@/lib/kernel/approval-authority")
+      const sender = await resolveActingSender(undefined, { brokerageId, actorUserId: userId, actorUserType: ctxUserType ?? null, actsFor, teamId: params.teamId ?? null })
+      if (!sender.ok) return { success: false, error: sender.reason }
+      actingBrand = { level: sender.level, team_id: sender.teamId, brand_name: sender.brandName, return_address: sender.returnAddress, voice_sources: sender.voiceSources, signature_source: sender.signatureSource, acted_by: userId, basis: sender.basis }
+    }
+
+    // A QR ASSET IS A REGISTERED CODE (wave 81D — owner: "any qrcode that gets
+    // created for assets are added to the qrcode management"). The studio used
+    // to encode the typed URL straight into a PNG on the client, so the asset's
+    // QR existed nowhere but the image: no slug, no scan tracking, invisible to
+    // both QR boards. Now the ONE minter records it (idempotent per asset name
+    // within the tenant, purpose 'general', destination 'other'), the PNG stored
+    // on the asset encodes the TRACKED scan URL, and the code is linked to the
+    // asset row through marketing_asset_qr_links so the board can name it.
+    let assetUrl = params.assetUrl ?? null
+    let mintedQrId: string | null = null
+    if (params.assetType === "qr") {
+      const target = (params.qrTargetUrl ?? "").trim()
+      if (!target) return { success: false, error: "A QR asset needs the page it should open. Paste the destination link, then create it again." }
+      if (!brokerageId || !userId) return { success: false, error: "QR codes are registered to an account, and yours couldn't be confirmed. Sign in again, then create the asset." }
+      const assetName = params.assetName.trim().replace(/\s+/g, " ").slice(0, 120)
+      // One asset name = one code in this account (the earlier per-name idempotency, now a ledger key — the person's
+      // label is the asset's name, never a `studio_asset:` system namespace, which the governed mint reserves).
+      const minted = await mintStudioQr({
+        idempotencyKey: `studio_asset.${studioKeyDigest(assetName.toLowerCase())}`,
+        label: assetName,
+        targetUrl: target,
+        destinationType: "other",
+        purpose: "general",
+        marketingCampaignId: params.campaignId ?? null,
+        channel: "marketing_studio",
+        source: "studio_asset",
+      }, { brokerageId, userId, agentId: agentId ?? null, userType: ctxUserType })
+      if (!minted.ok) return { success: false, error: minted.message }
+      assetUrl = minted.imageDataUrl
+      mintedQrId = minted.id
+    }
 
     const { data: asset, error } = await supabase
       .from("marketing_assets")
@@ -420,11 +578,13 @@ export async function createAsset(params: CreateAssetParams) {
         asset_name: params.assetName,
         source_table: params.sourceTable ?? null,
         source_id: params.sourceId ?? null,
-        asset_url: params.assetUrl ?? null,
+        asset_url: assetUrl,
         thumbnail_url: params.thumbnailUrl ?? null,
         preview_text: params.previewText ?? null,
         tags: params.tags ?? [],
-        visibility_scope: params.visibilityScope ?? "agent",
+        visibility_scope: actsFor === "brokerage" ? "brokerage" : actsFor === "team" ? "team" : params.visibilityScope ?? "agent",
+        ...(actsFor === "team" ? { team_id: params.teamId ?? null } : {}),
+        ...(actingBrand ? { brand: actingBrand } : {}),
         approval_status: "pending",
       })
       .select("id")
@@ -435,7 +595,20 @@ export async function createAsset(params: CreateAssetParams) {
       return { success: false, error: error.message }
     }
 
-    return { success: true, asset }
+    // Link the registered code to its asset (the board resolves the asset name
+    // through this row). Read the error: a refused link is reported, not lost.
+    // placement_type is the LIVE CHECK vocabulary (scripts/check-vocabularies.ts
+    // marketing_asset_qr_links: flyer | listing_asset | mailer | podcast_landing |
+    // social_landing | video_endcard) — a studio QR asset is print material, so
+    // 'flyer'. (qr-asset-linker's QrPlacementType now IS this vocabulary — wave 82D.)
+    if (mintedQrId && asset?.id) {
+      const { error: linkError } = await supabase
+        .from("marketing_asset_qr_links")
+        .insert({ brokerage_id: brokerageId, marketing_asset_id: asset.id, qr_code_id: mintedQrId, placement_type: "flyer" })
+      if (linkError) console.error("[MarketingStudio] QR asset registered but the asset link was refused:", linkError.message)
+    }
+
+    return { success: true, asset, qrCodeId: mintedQrId }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create asset"
     console.error("[MarketingStudio] createAsset error:", message)
@@ -486,15 +659,26 @@ export async function getAssets(filters?: {
     return { success: false, error: error.message, assets: [] }
   }
 
-  return { success: true, assets: assets ?? [] }
+  // Wave 106 (106C integration): the studio is an AGENT-FACING surface — cost_usd / generation_model /
+  // performance cost never reach it (CLAUDE.md §5); admins read cost on the Command Center allocation card.
+  const { redactForAudience } = await import("@/lib/kernel/media-intelligence")
+  return { success: true, assets: (assets ?? []).map((a: any) => redactForAudience(a, "agent")) }
 }
 
 export async function approveAsset(assetId: string) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId, userType } = await getAgentContext()
   const access = await assertMarketingStudioAccess(userId)
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  if (!brokerageId || !userId) return { success: false, error: "No workspace on your session; nothing was approved." }
+
+  // WHO MAY APPROVE (wave 155, lane 155D — owner R7): the ONE marketing rule (lib/kernel/approval-authority.ts
+  // decideMarketingApproval) — owner, team lead, assigned compliance / TC, an in-scope admin, a delegated office. At
+  // 9d9626b9 any seat with the studio feature approved any asset in the tenant (another office's included).
+  const { requireMarketingApprover, marketingAssetFingerprint, marketingScopeKey } = await import("@/lib/kernel/approval-authority")
+  const authority = await requireMarketingApprover({ brokerageId, approverUserId: userId, approverUserType: userType ?? null, table: "marketing_assets", id: assetId, authority: "content_brand" })
+  if (!authority.ok) return { success: false, error: authority.reason }
 
   const supabase = await createClient()
 
@@ -518,6 +702,7 @@ export async function approveAsset(assetId: string) {
     .from("marketing_assets")
     .select("asset_type, preview_text")
     .eq("id", assetId)
+    .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
   if (asset?.preview_text) {
@@ -541,53 +726,119 @@ export async function approveAsset(assetId: string) {
     }
   }
 
-  const { error } = await supabase
+  // COUNTED (CLAUDE.md §3): an update that matches nothing resolves exactly like one that
+  // worked, so a wrong-tenant or already-gone asset would report "approved". .select() the
+  // update and treat zero rows as the refusal it is.
+  // THE APPROVAL STAMP: the version approved (fingerprint of the substantive fields) + its scope. A later substantive edit
+  // changes the fingerprint and the catalog re-opens the approval (inheritance only on identical scope AND version).
+  const row = authority.row as Record<string, unknown>
+  const priorMeta = row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? (row.metadata as Record<string, unknown>) : {}
+  const nowIso = new Date().toISOString()
+  const { data: approved, error } = await supabase
     .from("marketing_assets")
     .update({
       approval_status: "approved",
-      updated_at: new Date().toISOString(),
+      metadata: { ...priorMeta, approval: { fingerprint: marketingAssetFingerprint(row), scope_key: marketingScopeKey(authority.scope), approved_by: userId, approved_at: nowIso, authority: "content_brand", basis: authority.decision.basis } },
+      updated_at: nowIso,
     })
     .eq("id", assetId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) {
     console.error("[v0] Error approving asset:", error)
     return { success: false, error: error.message }
+  }
+  if (!approved || approved.length === 0) {
+    return { success: false, error: "That asset is not in your brokerage (or no longer exists); nothing was approved." }
   }
 
   return { success: true }
 }
 
 export async function rejectAsset(assetId: string, reason?: string) {
-  const { userId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId, userType } = await getAgentContext()
   const access = await assertMarketingStudioAccess(userId)
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
 
+  if (!brokerageId) {
+    return { success: false, error: "No brokerage on your session; nothing was rejected." }
+  }
+  // the same authority decides a rejection (a rejection is an approval decision — wave 155, lane 155D)
+  const { requireMarketingApprover } = await import("@/lib/kernel/approval-authority")
+  const authority = await requireMarketingApprover({ brokerageId, approverUserId: userId, approverUserType: userType ?? null, table: "marketing_assets", id: assetId, authority: "content_brand" })
+  if (!authority.ok) return { success: false, error: authority.reason }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.asset.reject", actor: { type: "user", userId: userId }, subject: { type: "marketing_asset", id: assetId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
+
   const supabase = await createClient()
 
-  const { error } = await supabase
+  // MERGE, NEVER REPLACE. marketing_assets.metadata carries the row's provenance — asset_kind,
+  // estimate_source, address, source_url, captured_at, customer_facing_value:false — written by
+  // lib/assets/screenshot-capture.ts, the estimate-comparison composer and the web-searched
+  // estimate stager. Replacing the jsonb with { rejection_reason } erased the audit trail of every
+  // rejected third-party capture and hid the row from asset_kind-scoped reads (including the
+  // URL+day screenshot cache). Read it under the SAME tenant predicate, then merge.
+  const { data: current, error: readErr } = await supabase
+    .from("marketing_assets")
+    .select("metadata")
+    .eq("id", assetId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (readErr) {
+    console.error("[v0] Error reading asset before rejection:", readErr)
+    return { success: false, error: readErr.message }
+  }
+  if (!current) {
+    return { success: false, error: "That asset is not in your brokerage (or no longer exists); nothing was rejected." }
+  }
+
+  const existing =
+    current.metadata && typeof current.metadata === "object" && !Array.isArray(current.metadata)
+      ? (current.metadata as Record<string, unknown>)
+      : {}
+  const nowIso = new Date().toISOString()
+  const merged = {
+    ...existing,
+    rejection_reason: reason ?? "Not specified",
+    rejected_by: userId ?? null,
+    rejected_at: nowIso,
+  }
+
+  // COUNTED (CLAUDE.md §3): zero rows back is a refusal, not a success.
+  const { data: rejected, error } = await supabase
     .from("marketing_assets")
     .update({
       approval_status: "rejected",
-      metadata: { rejection_reason: reason ?? "Not specified" },
-      updated_at: new Date().toISOString(),
+      metadata: merged,
+      updated_at: nowIso,
     })
     .eq("id", assetId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) {
     console.error("[v0] Error rejecting asset:", error)
     return { success: false, error: error.message }
   }
+  if (!rejected || rejected.length === 0) {
+    return { success: false, error: "That asset is not in your brokerage (or no longer exists); nothing was rejected." }
+  }
 
   return { success: true }
+  })
 }
 
 // ─── QR LINKING (delegated to qr-asset-linker) ────────────────────────────────
 
-export { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks }
+// getQrCodePerformance was an ORPHAN EXPORT: the only reader of qr_scan_events' per-code detail
+// (unique scans + the recent-scan list) with nothing calling it. Its capability is not
+// represented anywhere else — listAvailableQrCodes returns only the rolled-up counters — so it
+// was WIRED, not deleted. The studio's QR tab now opens it per code.
+export { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance }
 
 // ─── CALENDAR ACTIONS ─────────────────────────────────────────────────────────
 
@@ -598,6 +849,8 @@ export async function createCalendarEvent(params: CreateCalendarEventParams) {
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.calendar_event.create", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { event_type: params.eventType } }, async () => {
 
     const supabase = await createClient()
 
@@ -625,6 +878,7 @@ export async function createCalendarEvent(params: CreateCalendarEventParams) {
     }
 
     return { success: true, event }
+    }))
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create calendar event"
     console.error("[MarketingStudio] createCalendarEvent error:", message)
@@ -685,6 +939,8 @@ export async function updateCalendarEventStatus(
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.calendar_event.update_status", actor: { type: "user", userId: userId }, subject: { type: "campaign_calendar", id: eventId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status } }, async () => {
 
   const supabase = await createClient()
 
@@ -700,6 +956,7 @@ export async function updateCalendarEventStatus(
   }
 
   return { success: true }
+  })
 }
 
 // ─── COMMENT ACTIONS ──────────────────────────────────────────────────────────
@@ -710,6 +967,8 @@ export async function addCampaignComment(params: CreateCommentParams) {
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign_comment.add", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -730,26 +989,16 @@ export async function addCampaignComment(params: CreateCommentParams) {
   }
 
   return { success: true, comment }
+  }))
 }
 
-export async function getCampaignComments(campaignId: string) {
-  const { brokerageId } = await getAgentContext()
-  const supabase = await createClient()
-
-  const { data: comments, error } = await supabase
-    .from("marketing_campaign_comments")
-    .select("*, author:users(id, first_name, last_name)")
-    .eq("campaign_id", campaignId)
-    .eq("brokerage_id", brokerageId)
-    .order("created_at", { ascending: true })
-
-  if (error) {
-    console.error("[v0] Error fetching comments:", error)
-    return { success: false, error: error.message, comments: [] }
-  }
-
-  return { success: true, comments: comments ?? [] }
-}
+// getCampaignComments REMOVED — TOMBSTONE.
+// SURVIVOR: `getCampaignById` in this file, whose bundle already carries the
+// campaign's comments, which is why the studio client reads them from there.
+// This was a "use server" export, so it was a PUBLIC HTTP ENDPOINT with no
+// caller — an unreferenced server action is reachable by anyone who knows its
+// id, not dead code. Its last importer went in the dead-import tranche; the
+// endpoint is going with it rather than being left addressable.
 
 // ─── TASK ACTIONS ─────────────────────────────────────────────────────────────
 
@@ -759,6 +1008,8 @@ export async function createCampaignTask(params: CreateTaskParams) {
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign_task.create", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -782,26 +1033,13 @@ export async function createCampaignTask(params: CreateTaskParams) {
   }
 
   return { success: true, task }
+  }))
 }
 
-export async function getCampaignTasks(campaignId: string) {
-  const { brokerageId } = await getAgentContext()
-  const supabase = await createClient()
-
-  const { data: tasks, error } = await supabase
-    .from("marketing_campaign_tasks")
-    .select("*, assignee:users(id, first_name, last_name)")
-    .eq("campaign_id", campaignId)
-    .eq("brokerage_id", brokerageId)
-    .order("due_at", { ascending: true, nullsFirst: false })
-
-  if (error) {
-    console.error("[v0] Error fetching tasks:", error)
-    return { success: false, error: error.message, tasks: [] }
-  }
-
-  return { success: true, tasks: tasks ?? [] }
-}
+// getCampaignTasks REMOVED — TOMBSTONE.
+// SURVIVOR: `getCampaignById` in this file, whose bundle already carries the
+// campaign's tasks. Same reasoning as getCampaignComments above: a "use server"
+// export with no caller is still a live public endpoint.
 
 export async function updateTaskStatus(
   taskId: string,
@@ -812,6 +1050,8 @@ export async function updateTaskStatus(
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign_task.update_status", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign_task", id: taskId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status } }, async () => {
 
   const supabase = await createClient()
 
@@ -827,11 +1067,19 @@ export async function updateTaskStatus(
   }
 
   return { success: true }
+  })
 }
 
-// ─── CONTENT REGISTRY (delegated to campaign-registry) ───────────────────────
-
-export { getCampaignRegistry, registerCampaignSource }
+// TOMBSTONE (hidden-wire census, category b — orphan doctrine §1.3) — this file
+// used to re-export getCampaignRegistry and registerCampaignSource, importing
+// them from lib/marketing/campaign-registry.ts for the sole purpose of passing
+// them back through. Nothing imported this door: every caller (measured —
+// app/dashboard/marketing/studio/marketing-studio-client.tsx) already imports
+// both directly `from "@/lib/marketing/campaign-registry"`, which is ITSELF a
+// `"use server"` file and so was already a public server action on its own —
+// this re-export was a second, unused public HTTP door onto the identical
+// function (CLAUDE.md §4). Survivor: lib/marketing/campaign-registry.ts
+// (getCampaignRegistry, registerCampaignSource) — import from there.
 
 // ─── AI CONTENT GENERATION WITH BRAND VOICE ──────────────────────────────────
 
@@ -846,46 +1094,47 @@ export async function generateCampaignContent(params: {
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign_content.generate", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.contentType } }, async () => {
 
   const supabase = await createClient()
 
   // Get campaign context
-  const { data: campaign } = await supabase
+  const { data: campaign, error: campaignError } = await supabase
     .from("marketing_campaigns")
-    .select("campaign_name, campaign_type, listing:listings(address, city)")
+    .select("campaign_name, campaign_type, audience_personas, listing:listings(address, city)")
     .eq("id", params.campaignId)
     .maybeSingle()
 
-  // Load brand voice profile for this brokerage
-  const { data: aiIdentity } = await supabase
-    .from("brand_voice_profile")
-    .select("tone, formality_level, key_brand_messages, prohibited_words, preferred_words, mission_statement, custom_instructions")
-    .eq("brokerage_id", brokerageId)
-    .maybeSingle()
+  // WAVE 153 (lane 153R — owner B11, census row email): THE READER'S PERSONA BEFORE THE FIRST DRAFT. The campaign's own
+  // audience_personas (the column the audience resolver reads) is the recipient persona; params.persona is used only when the
+  // campaign names none. lib/marketing/them-first-draft-brief.ts turns it into the them-first brief through the authored arc's ONE
+  // CRM bridge — a mixed, absent, un-authored or unreadable persona is written GENERIC-SAFE, never guessed.
+  const { themFirstDraftBrief, renderThemFirstDraftBrief, complianceGatePersona, themFirstBasisRecord } = await import("@/lib/marketing/them-first-draft-brief")
+  const campaignPersonas = Array.isArray((campaign as any)?.audience_personas) ? ((campaign as any).audience_personas as string[]) : []
+  const readerBrief = themFirstDraftBrief({
+    personas: campaignPersonas.length > 0 ? campaignPersonas : params.persona ?? null,
+    side: null, // a broadcast's side is not known (a listing campaign markets the home TO buyers) — the arc's own default applies
+    readError: campaignError ? campaignError.message : !campaign ? "the campaign was not readable in this tenant" : null,
+    source: campaignPersonas.length > 0 ? "marketing_campaigns.audience_personas" : params.persona ? "the requested persona" : "none",
+  })
 
-  const systemPrompt = [
-    `You are ${aiIdentity?.tone ? `a ${aiIdentity.tone}` : "a professional"} real estate marketing AI.`,
-    aiIdentity?.formality_level === "formal"
-      ? "Use formal, professional language."
-      : aiIdentity?.formality_level === "casual"
-      ? "Use approachable, conversational language."
-      : "Use semi-formal, warm language.",
-    aiIdentity?.key_brand_messages?.length
-      ? `Brand pillars: ${aiIdentity.key_brand_messages.join(", ")}.`
-      : "",
-    aiIdentity?.prohibited_words?.length
-      ? `Never use these words or phrases: ${aiIdentity.prohibited_words.join(", ")}.`
-      : "",
-    aiIdentity?.preferred_words?.length
-      ? `Prefer these words and phrases: ${aiIdentity.preferred_words.join(", ")}.`
-      : "",
-    aiIdentity?.mission_statement
-      ? `Brand mission: ${aiIdentity.mission_statement}`
-      : "",
-    aiIdentity?.custom_instructions ?? "",
-  ]
+  // WAVE 151 (lane 151I, integrator fold — LAW 2): THE ONE sender-voice reader compiles the signed-in agent's VERSIONED brief
+  // (words, tagline, tone, formality, mission, key messages, signature, their own sentences) at agent → team → brokerage scope
+  // and LEADS the system prompt, so the first draft is written in the sender's voice. TOMBSTONE: the private
+  // brokerage-scope `.from("brand_voice_profile")` read that lived here is DELETED — SURVIVOR: lib/kernel/brand-voice.ts
+  // loadSenderVoiceBrief (rendered by renderSenderVoiceBrief). The session client keeps the read inside the caller's tenant.
+  let senderVoiceBlock = ""
+  try {
+    const { loadSenderVoiceBrief, renderSenderVoiceBrief } = await import("@/lib/kernel/brand-voice")
+    const brief = await loadSenderVoiceBrief(supabase as never, { brokerageId: brokerageId ?? "", agentUserId: userId ?? null, agentId: agentId ?? null })
+    senderVoiceBlock = renderSenderVoiceBrief(brief)
+  } catch (e) {
+    console.error("[marketing-studio] sender-voice brief unavailable — the copy is written without it:", e instanceof Error ? e.message : String(e))
+  }
+  const systemPrompt = [senderVoiceBlock, "You are the sender's real estate marketing writer: write AS the sender described above, in their words and tone, from the first line.", renderThemFirstDraftBrief(readerBrief)]
     .filter(Boolean)
-    .join(" ")
+    .join("\n\n")
 
   const listing = (campaign as any)?.listing
   const contentPrompt = [
@@ -940,7 +1189,7 @@ export async function generateCampaignContent(params: {
     actorUserId: userId,
     actorRole: "agent" as ActorRole,
     journeyType: campaign?.campaign_type === "listing" ? "seller" : "buyer",
-    persona: params.persona ?? "other",
+    persona: complianceGatePersona(readerBrief),
     messageType: params.contentType === "email_body" ? "email" : "social",
     content: generatedContent,
   })
@@ -950,7 +1199,10 @@ export async function generateCampaignContent(params: {
     content: generatedContent,
     brandVoiceViolations: brandVoiceResult.violations,
     brandVoiceNotes: brandVoiceResult.notes,
+    /** What conditioned the draft on its reader, or why nothing did (wave 153, 153R). */
+    readerPersona: themFirstBasisRecord(readerBrief),
   }
+  }))
 }
 
 // ─── DASHBOARD AGGREGATIONS ───────────────────────────────────────────────────
@@ -958,72 +1210,143 @@ export async function generateCampaignContent(params: {
 // ─── QR CODE CREATION ────────────────────────────────────────────────────────
 
 /**
- * Creates a new QR code record in qr_codes.
- * Called from the marketing studio QR tab create dialog.
+ * createQrCodeAction — the SESSION-GATED browser door to the one QR minter.
  *
- * Input contract:
- *   brokerageId: string (required, UUID)
- *   agentId: string (required, UUID)
- *   label: string (display label)
- *   targetUrl: string (full URL the QR code points to)
- *   purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture"
- *   listingId?: string (optional link to a listing)
+ * MERGED-THEN-DELETED: this function's own `qr_codes` insert is gone. It was one of nine rival
+ * creation paths — NOT idempotent (every click of "Create QR Code" minted another row), and it
+ * never set destination_type, so its codes were invisible to every destination-bucketed analytic.
+ * The write now goes through lib/marketing/tracked-qr.ts:mintTrackedQr, which is idempotent per
+ * label, stamps destination_type / listing_id / marketing_campaign_id / expires_at, and is the
+ * single writer of the table. The slug recipe this function owned lives on in the survivor.
  *
- * Output contract:
- *   { success: true, qrCode: { id, slug, label, target_url, purpose } }
+ * GATE-THEN-SERVICE: mintTrackedQr writes with the SERVICE client, so this action's own gate is
+ * the ONLY gate. `brokerageId` / `agentId` used to be taken from the caller's params and written
+ * verbatim — and a "use server" export is reachable by any browser, so that let a caller mint
+ * into ANY brokerage. The tenant now comes from the session; a supplied brokerageId is only ever
+ * checked against it, never trusted.
+ *
+ * NOT CALLABLE WITHOUT A SESSION. Server-side/cron minters (workflow adapters, orchestrator
+ * handlers, kernel commands) must call mintTrackedQr directly with their own resolved tenant —
+ * see lib/workflow/qr-modifier.ts for the pattern.
+ *
+ * WAVE 152 (152J — QR across assets): THE GOVERNED MINT. This door used to write the person's typed URL
+ * through the raw writer: no destination check (http, a loop through another code, personal data in the
+ * link were all saved), no creator, no evidence, a BODY-supplied agentId written as the code's agent, and
+ * one code per LABEL (two different codes a person named alike collapsed into one). It now mints through
+ * lib/marketing/qr-governance.ts mintGovernedQr — the same door as the QR board (app/api/admin/qr-codes):
+ * the tenant, creator and agent from the SESSION; the destination validated; the campaign checked against
+ * the tenant; ONE code per request key (the studio form draws one; a double click returns the same code);
+ * ledgered as marketing.qr.mint. Refusals are the governed mint's own sentences (what to do, nothing saved).
+ *
+ * Output contract (unchanged for existing callers, plus the tracked fields):
+ *   { success: true, qrCode: { id, slug, label, target_url, purpose, destination_type,
+ *                             scan_url, image_url }, replayed }
  *   { success: false, error: string }
- *
- * Tables written: qr_codes
  */
 export async function createQrCodeAction(params: {
-  brokerageId: string
-  agentId: string
+  brokerageId?: string
+  /** IGNORED — the code's agent is the session's (a body-supplied agents.id is never trusted). Kept for callers. */
+  agentId?: string
   label: string
-  targetUrl: string
-  purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture"
+  /** SEMANTIC destination. Omit → the code's own public /qr/<slug> landing. */
+  targetUrl?: string
+  purpose: QrPurpose
   listingId?: string
+  destinationType?: QrDestinationType
+  /** ★ TRACKING LINKED TO CAMPAIGN ★ marketing_campaigns.id — stamps qr_codes.marketing_campaign_id. */
+  campaignId?: string
+  /** qr_codes.expires_at (ISO timestamptz). */
+  expiresAt?: string
+  /** The request's idempotency key: the studio form draws one per create; an automated installer passes a deterministic
+   *  one (same key → the same code, never a second). Required — a create without one is refused, nothing written. */
+  idempotencyKey?: string
 }) {
   try {
-    if (!params.brokerageId || !params.agentId) {
-      return { success: false, error: "brokerageId and agentId are required" }
-    }
     if (!params.label?.trim()) {
-      return { success: false, error: "Label is required" }
+      return { success: false, error: "Give the code a name so you can find it later." }
     }
-    if (!params.targetUrl?.trim()) {
-      return { success: false, error: "Target URL is required" }
+    if (params.purpose && !isQrPurpose(params.purpose)) {
+      return { success: false, error: "Choose what this code is for." }
+    }
+    if (params.destinationType && !isQrDestinationType(params.destinationType)) {
+      return { success: false, error: "Choose where scanners should land." }
     }
 
-    const supabase = await createClient()
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    if (!ctx.brokerageId) return { success: false, error: "QR codes are registered to an account, and yours couldn't be confirmed. Sign in again, then create the code." }
+    if (!decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy.
+      return { success: false, error: "That QR code belongs to another account." }
+    }
 
-    // Generate a unique slug from label + timestamp
-    const slug = `${params.label.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").slice(0, 40)}-${Date.now().toString(36)}`
+    const minted = await mintStudioQr({
+      idempotencyKey: (params.idempotencyKey ?? "").trim(),
+      label: params.label.trim(),
+      purpose: params.purpose,
+      destinationType: params.destinationType ?? null,
+      targetUrl: params.targetUrl?.trim() || null,
+      listingId: params.listingId ?? null,
+      marketingCampaignId: params.campaignId ?? null,
+      expiresAt: params.expiresAt ?? null,
+      channel: "marketing_studio",
+      source: "studio_create",
+    }, { brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId ?? null, userType: ctx.userType })
+    if (!minted.ok) return { success: false, error: minted.message }
 
-    const { data: qrCode, error } = await supabase
-      .from("qr_codes")
-      .insert({
-        brokerage_id: params.brokerageId,
-        agent_id: params.agentId,
-        label: params.label.trim(),
-        target_url: params.targetUrl.trim(),
+    return {
+      success: true,
+      replayed: minted.replayed,
+      qrCode: {
+        id: minted.id,
+        slug: minted.slug,
+        label: minted.label,
+        target_url: minted.targetUrl,
         purpose: params.purpose,
-        slug,
-        listing_id: params.listingId ?? null,
-        is_active: true,
-        scan_count: 0,
-        lead_count: 0,
-      })
-      .select("id, slug, label, target_url, purpose")
-      .maybeSingle()
-
-    if (error) throw error
-
-    return { success: true, qrCode }
+        destination_type: minted.destinationType,
+        scan_url: minted.scanUrl,
+        image_url: minted.imageDataUrl,
+      },
+    }
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Failed to create QR code"
-    return { success: false, error: message }
+    console.error("[marketing-studio] createQrCodeAction failed:", err)
+    return { success: false, error: "The QR code wasn't created because of a problem on our side. Nothing was saved; try again, and contact support if it keeps happening." }
   }
 }
+
+/**
+ * Module-private (a "use server" file's exports are endpoints): the studio's ONE way to mint — lane 152C's governed
+ * mint, plus the print image on a REPLAY (the governed mint re-reads the record; the PNG of the same tracked link is
+ * rendered by the ONE image source, renderQrPng). The input is the governed mint's own instruction shape.
+ */
+async function mintStudioQr(
+  input: Parameters<typeof mintGovernedQr>[0],
+  actor: QrActor,
+): Promise<
+  | { ok: true; replayed: boolean; id: string; slug: string; label: string; scanUrl: string; targetUrl: string; destinationType: string | null; imageDataUrl: string | null }
+  | { ok: false; message: string }
+> {
+  const r = await mintGovernedQr(input, actor)
+  if (!r.ok) return { ok: false, message: r.message }
+  const imageDataUrl = r.code.imageDataUrl ?? (await renderQrPng(r.code.scanUrl).catch(() => null))
+  return { ok: true, replayed: r.replayed, id: r.code.id, slug: r.code.slug, label: r.code.label, scanUrl: r.code.scanUrl, targetUrl: r.code.targetUrl, destinationType: r.code.destinationType, imageDataUrl }
+}
+
+/** PURE, module-private — a short stable digest for a deterministic studio key (FNV-1a; a grouping key, not a secret). */
+function studioKeyDigest(text: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0
+  return `${h.toString(16).padStart(8, "0")}${text.length.toString(16)}`
+}
+
+// TOMBSTONE (§1.3, wave 81D, 2026-09-24): `renderQrImageAction(url, size)` lived here — a
+// "use server" endpoint that rendered a PNG for ANY typed URL. It existed so the studio's
+// asset-create dialog could preview a QR without api.qrserver.com, but the image it produced was
+// a QR that existed nowhere but the picture: no qr_codes row, no slug, no scan tracking, invisible
+// to both QR boards — the exact "created for an asset but not in the QR management" the owner
+// ruled out. Survivor: createAsset above (assetType "qr" → lib/marketing/tracked-qr.ts
+// mintTrackedQr, the ONE minter, then marketing_asset_qr_links). The only QR image source in the
+// tree remains lib/marketing/tracked-qr.ts renderQrPng, and every caller of it now encodes a
+// REGISTERED code's /api/qr/scan?slug= link (scripts/qr-registry-guard.ts is the sweep).
 
 export async function getMarketingStudioDashboard() {
   try {

@@ -4,13 +4,14 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { loadSubscriptionOversight, type SubscriptionOversight } from "@/lib/platform/subscription-oversight"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 async function requireSuperadmin(): Promise<{ ok: true } | { ok: false; error: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
+  const isSuper = isPlatformSuperadminIdentity((data as any)?.user_type, (data as any)?.platform_role)
   return isSuper ? { ok: true } : { ok: false, error: "Forbidden — superadmin only" }
 }
 

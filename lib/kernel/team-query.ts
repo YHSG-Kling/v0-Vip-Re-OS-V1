@@ -22,6 +22,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -102,7 +103,7 @@ export async function runTeamQuery(
     supabase.from("showings").select("id, scheduled_date").eq("contact_id", contact.id).gte("scheduled_date", now.toISOString().slice(0, 10)).limit(5),
     supabase.from("transactions").select("id, deal_name, stage, listing_id, inspection_deadline, appraisal_deadline, financing_deadline")
       .or(`buyer_contact_id.eq.${contact.id},seller_contact_id.eq.${contact.id},contact_id.eq.${contact.id}`)
-      .in("status", ["active", "under_contract", "closing"]).is("deleted_at", null).limit(5),
+      .in("status", [...TRANSACTION_STATUSES_OPEN]).is("deleted_at", null).limit(5),
     supabase.from("agent_client_messages").select("id, subject").eq("recipient_contact_id", contact.id).eq("status", "proposed").limit(5),
     supabase.from("agent_client_messages").select("sent_at").eq("recipient_contact_id", contact.id).eq("status", "sent").not("sent_at", "is", null).order("sent_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("manager_signals").select("message, from_manager").eq("contact_id", contact.id).order("created_at", { ascending: false }).limit(2),
@@ -159,17 +160,18 @@ export async function runTeamQuery(
     c.push({ manager: "sphere_of_influence", line: `this relationship is WITHDRAWN — every channel revoked; the team recommends no outreach unless they come to us.` })
   }
 
-  // Marketing Manager — campaign touches + active sequences (the FULL bench answers).
+  // Campaign Orchestrator (m618: survivor of the retired marketing_agent seat) —
+  // campaign touches + active sequences (the FULL bench answers).
   const touchRows = (touches.data ?? []) as any[]
   if (touchRows.length > 0) {
-    c.push({ manager: "marketing_agent", line: `marketing has touched them ${touchRows.length} time${touchRows.length === 1 ? "" : "s"} recently, last via ${touchRows[0].channel ?? "a campaign"}.` })
+    c.push({ manager: "campaign_orchestrator", line: `marketing has touched them ${touchRows.length} time${touchRows.length === 1 ? "" : "s"} recently, last via ${touchRows[0].channel ?? "a campaign"}.` })
   }
   const enrRows = (enrollments.data ?? []) as any[]
   if (enrRows.length > 0) {
     const seqName = (enrRows[0].campaign_sequences as { name?: string | null } | null)?.name ?? "a campaign sequence"
-    c.push({ manager: "marketing_agent", line: `they're running in "${seqName}" at step ${enrRows[0].current_step ?? 0}.` })
+    c.push({ manager: "campaign_orchestrator", line: `they're running in "${seqName}" at step ${enrRows[0].current_step ?? 0}.` })
   } else if ((contact as any).nurture_status !== "withdrawn") {
-    c.push({ manager: "marketing_agent", line: `no campaign is running for them — say "start marketing" and I'll enroll them.` })
+    c.push({ manager: "campaign_orchestrator", line: `no campaign is running for them — say "start marketing" and I'll enroll them.` })
   }
 
   // Data Steward — hygiene: what we're MISSING (so the team can fix it, not guess).

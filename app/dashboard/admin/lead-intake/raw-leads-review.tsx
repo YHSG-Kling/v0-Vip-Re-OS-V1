@@ -1,12 +1,14 @@
 "use client"
 
+import { useState } from "react"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Inbox } from "lucide-react"
+import { Inbox, RotateCcw } from "lucide-react"
 import type { RawLeadReviewRow } from "@/app/actions/lead-promotion/promote-lead"
 import { rawLeadReviewStatus, type RawLeadReviewTone } from "@/lib/lead-promotion/review-status"
+import { DedupeReasons } from "./dedupe-reasons"
 
 const TONE: Record<RawLeadReviewTone, string> = {
   promoted: "bg-emerald-100 text-emerald-700 border-emerald-200",
@@ -22,9 +24,56 @@ const TONE: Record<RawLeadReviewTone, string> = {
  * automatic (the lead-scraping cron's processRawRecord pass: enrich + dedup +
  * territory/identity gates). This panel shows where each raw record stands in
  * that automatic pipeline; there is no manual promote action.
+ *
+ * "RESET FOR RETRY" — the missing IN-TREE caller for PATCH /api/leads/raw
+ * (lane 64D, route-no-caller 6b → 0). That route's own header names itself
+ * "the only state-repair verb on raw rows" and says the read-only survivor
+ * here must NOT grow a write verb of its own — this button is that repair
+ * verb's caller, not a second promotion door: it flips an `error` row back to
+ * `pending` (clearing error_message) so the EXISTING automatic pipeline
+ * (processRawRecord) picks it back up on its next pass. No lead is created
+ * here, no processing_status other than "pending" is ever sent — that keeps
+ * round-37's "no manual promote" intact while giving platform staff the one
+ * thing the automatic pipeline cannot do for itself: un-stick a row stuck in
+ * `error` from a transient upstream failure (skip-trace timeout, provider
+ * 5xx). Platform-only, same as the panel's own render gate.
  */
+function ResetToPendingButton({ id, onDone }: { id: string; onDone: (nextStatus: string) => void }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function handleReset() {
+    setBusy(true)
+    setErr(null)
+    try {
+      const res = await fetch("/api/leads/raw", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, processing_status: "pending", error_message: null }),
+      })
+      const body = await res.json() as { data?: { processing_status?: string }; error?: string }
+      if (!res.ok) { setErr(body.error ?? `HTTP ${res.status}`); return }
+      onDone(body.data?.processing_status ?? "pending")
+    } catch (e) {
+      setErr(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <Button size="sm" variant="outline" disabled={busy} onClick={handleReset} className="h-7 gap-1 text-xs">
+        <RotateCcw className="h-3 w-3" />
+        {busy ? "Resetting…" : "Reset for retry"}
+      </Button>
+      {err && <span className="text-[11px] text-red-600">{err}</span>}
+    </div>
+  )
+}
+
 export function RawLeadsReviewPanel({ initialRows }: { initialRows: RawLeadReviewRow[] }) {
-  const rows = initialRows
+  const [rows, setRows] = useState(initialRows)
   const name = (r: RawLeadReviewRow) => [r.firstName, r.lastName].filter(Boolean).join(" ") || "(no name)"
 
   return (
@@ -52,14 +101,15 @@ export function RawLeadsReviewPanel({ initialRows }: { initialRows: RawLeadRevie
                   <th className="py-2 pr-4 font-medium">Location</th>
                   <th className="py-2 pr-4 font-medium">Source</th>
                   <th className="py-2 pr-4 font-medium">Pipeline status</th>
-                  <th className="py-2 font-medium text-right">Lead</th>
+                  <th className="py-2 pr-4 font-medium text-right">Lead</th>
+                  <th className="py-2 font-medium text-right">Repair</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
                   const review = rawLeadReviewStatus({
                     lead_id: r.leadId, processing_status: r.processingStatus,
-                    dedupe_status: r.dedupeStatus, promotion_attempts: r.promotionAttempts, error_message: r.errorMessage,
+                    promotion_attempts: r.promotionAttempts, error_message: r.errorMessage,
                   })
                   return (
                     <tr key={r.id} className="border-b last:border-0 align-top">
@@ -70,12 +120,33 @@ export function RawLeadsReviewPanel({ initialRows }: { initialRows: RawLeadRevie
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">{[r.city, r.state].filter(Boolean).join(", ") || "—"}</td>
                       <td className="py-2 pr-4 text-muted-foreground">{r.source ?? r.sourceFamily ?? "—"}</td>
-                      <td className="py-2 pr-4"><Badge className={TONE[review.tone]}>{review.label}</Badge></td>
-                      <td className="py-2 text-right">
+                      <td className="py-2 pr-4">
+                        <Badge className={TONE[review.tone]}>{review.label}</Badge>
+                        {/* The WHY behind the status: this record's gate log, fetched on demand
+                            from the (session-gated) deduplication-log route. */}
+                        <DedupeReasons rawRecordId={r.id} />
+                      </td>
+                      <td className="py-2 pr-4 text-right">
                         {r.leadId ? (
                           <Button size="sm" variant="ghost" asChild>
                             <Link href={`/leads/${r.leadId}`}>View lead</Link>
                           </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="py-2 text-right">
+                        {r.processingStatus === "error" ? (
+                          <ResetToPendingButton
+                            id={r.id}
+                            onDone={(nextStatus) =>
+                              setRows((prev) =>
+                                prev.map((row) =>
+                                  row.id === r.id ? { ...row, processingStatus: nextStatus, errorMessage: null } : row,
+                                ),
+                              )
+                            }
+                          />
                         ) : (
                           <span className="text-xs text-muted-foreground">—</span>
                         )}

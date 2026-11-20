@@ -1,0 +1,190 @@
+{
+ "generator": "scripts/os-coverage-ledger.ts --write (wave 155, lane 155B1) — GENERATED, do not edit; per-row ledger: coverage/os-arbitration-coverage.json (on demand)",
+ "states": {
+  "working": 2880,
+  "owner-held": 72,
+  "missing": 59
+ },
+ "classification": {
+  "OWNER_HELD": 72,
+  "DECLARATIVE_READ_ONLY": 54,
+  "SIMULATED_ONLY": 4,
+  "UNKNOWN": 1
+ },
+ "classificationByDomain": {
+  "recovery": {
+   "OWNER_HELD": 4,
+   "UNKNOWN": 1
+  },
+  "customer-facing": {
+   "SIMULATED_ONLY": 1,
+   "OWNER_HELD": 8,
+   "DECLARATIVE_READ_ONLY": 6
+  },
+  "platform": {
+   "SIMULATED_ONLY": 1,
+   "DECLARATIVE_READ_ONLY": 25,
+   "OWNER_HELD": 30
+  },
+  "finance": {
+   "SIMULATED_ONLY": 1,
+   "OWNER_HELD": 4,
+   "DECLARATIVE_READ_ONLY": 5
+  },
+  "education": {
+   "SIMULATED_ONLY": 1,
+   "OWNER_HELD": 3
+  },
+  "marketing": {
+   "DECLARATIVE_READ_ONLY": 2,
+   "OWNER_HELD": 7
+  },
+  "transaction": {
+   "OWNER_HELD": 14
+  },
+  "acquisition": {
+   "OWNER_HELD": 2,
+   "DECLARATIVE_READ_ONLY": 16
+  }
+ },
+ "executableGapRisk": {},
+ "groups": [],
+ "residue": {
+  "DECLARATIVE_READ_ONLY": {
+   "rows": 54,
+   "byKind": {
+    "kernel_event": 54
+   },
+   "evidenceClass": {
+    "every emission site passes `auditOnly: true` (lib/kernel/emit.ts shouldFanOut skips the reactor): the lifecycle_events row IS the record; no": 54
+   },
+   "sample": [
+    "kernel_event:ad_campaign_created",
+    "kernel_event:ad_campaign_launched",
+    "kernel_event:brokerage_affiliation_declared",
+    "kernel_event:brokerage_archived",
+    "kernel_event:brokerage_transfer_cancelled"
+   ]
+  },
+  "LEGACY_ORPHAN": {
+   "rows": 0,
+   "byKind": {},
+   "evidenceClass": {},
+   "sample": []
+  },
+  "SIMULATED_ONLY": {
+   "rows": 4,
+   "byKind": {
+    "http": 4
+   },
+   "evidenceClass": {
+    "fully linked in code; its caller is outside the app by design: a tenant's external MCP client holding a tenant-minted agent credential — rec": 1,
+    "fully linked in code; its caller is outside the app by design: a tenant's own integration holding a tenant-minted API credential (the endpoi": 1,
+    "fully linked in code; its caller is outside the app by design: inbound provider webhooks registered in the provider's own console with the w": 1,
+    "fully linked in code; its caller is outside the app by design: the relay companion process (tools/relay-companion), deployed beside the tele": 1
+   },
+   "sample": [
+    "http:/api/agentic-os/mcp",
+    "http:/api/v1/[resource]",
+    "http:/api/voice/relay/plan",
+    "http:/api/workflow/trigger"
+   ]
+  },
+  "OWNER_HELD": {
+   "rows": 72,
+   "byKind": {
+    "kernel_event": 38,
+    "server_action": 31,
+    "orchestrator_event": 2,
+    "http": 1
+   },
+   "evidenceClass": {
+    "OWNER_HELD entry: owner-held by the event-claims ledger (scripts/event-claims-ledger.ts EVENT_OWNER_HELD, ratcheted by test:event-claims): r": 28,
+    "OWNER_HELD entry: owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RUL": 9,
+    "OWNER_HELD entry: owner-held pending owner ruling (lane 155R22 part 3 — the census could not derive an accountable manager, and none is type": 4,
+    "OWNER_HELD entry: owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/ai-ops.ts:32): Platform-staff acts: on": 2,
+    "OWNER_HELD entry: @ownerRuled documented-hold — manual counterpart of the send-email-campaigns cron, waiting on an email-campaign management": 1,
+    "OWNER_HELD entry: owner-held (own record: notifications @ app/actions/notifications.ts:127): The seat's own record (lane 155R18 owner decisi": 1,
+    "OWNER_HELD entry: owner-held (own record: notifications @ app/actions/notifications.ts:96): The seat's own record (lane 155R18 owner decisio": 1,
+    "OWNER_HELD entry: owner-held (platform-staff door: gateStaffAction @ app/actions/admin/create-subscriber.ts:229): Platform-staff acts: only ": 1,
+    "OWNER_HELD entry: owner-held (platform-staff door: gateStaffAction @ app/actions/superadmin/secret-migration.ts:18): Platform-staff acts: on": 1,
+    "OWNER_HELD entry: owner-held (platform-staff door: platformStaffCan @ app/actions/superadmin/stripe-webhook-events.ts:32): Platform-staff ac": 1,
+    "OWNER_HELD entry: owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/platform-announcements.ts:23): Platfor": 1,
+    "OWNER_HELD entry: owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/platform-social.ts:38): Platform-staff": 1,
+    "OWNER_HELD entry: owner-held (platform-staff door: requirePlatformCapability @ app/actions/superadmin/provider-posture.ts:55): Platform-staf": 1,
+    "OWNER_HELD entry: owner-held (platform-staff door: requireProviders @ app/actions/superadmin/platform-reception.ts:36): Platform-staff acts:": 1,
+    "OWNER_HELD entry: owner-held (platform-staff door: requireSuperadminAuth @ app/api/admin/system/providers/test/route.ts:110): Platform-staff": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lane 155R24): build or retire? A closing gift (closing_gifts.price_cents) is spend; the": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lane 155R24): build or retire? Nothing produces the moment — no writer of transactions.": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lane 155R29, Q1): WIRE OR RETIRE? A staff re-match of one stored visitor signal to a co": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lane 155R29, Q2): WIRE (a recalculate control on the past-clients / referrals screen, o": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lane 155R29, Q3): ROUTE THE LISTING-CONSULTATION SCHEDULER THROUGH IT (stage → APPOINTM": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lane 155R29, Q4; the wave-146 money_legal ruling still holds): WIRE draft → submit besi": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lanes 155R28 / 155R30): WIRE OR RETIRE? The only door that corrects a deal's own detail": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lanes 155R28 / 155R30): WIRE, REPLACE OR RETIRE? The only writer of cost_breakdown_trac": 1,
+    "OWNER_HELD entry: owner-held pending owner decision 2 (does a registered manager's deterministic evidence rule count as the decision owner?)": 1,
+    "OWNER_HELD entry: owner-held pending owner decision 3 (lane 155R18), the same question as its sibling draftTeamAnnouncementAction: a princip": 1,
+    "OWNER_HELD entry: owner-held pending owner decision 3 (lane 155R18): a model draft returned to the composer, writing only api_response_logs ": 1,
+    "OWNER_HELD entry: owner-held pending owner decision: compliance_events is GENERIC for ownership (lane 155R16) so a gated draft is not compli": 1,
+    "OWNER_HELD entry: owner-held pending owner ruling (lane 155R27): a broker/admin overrides the argued winner of a cross-manager deliberation,": 1,
+    "OWNER_HELD entry: owner-held pending owner ruling (lane 155R27): the yearly regional closing-cost convention review is typed as the Finance ": 1,
+    "OWNER_HELD entry: owner-held pending the own-record ruling (lane 155R18 owner decision 3 / rule C): the seat's OWN session-start row in the ": 1,
+    "OWNER_HELD entry: owner-held pending the own-span rule: it writes only its own evidence row; the twin it projects is read inside the same-fi": 1,
+    "OWNER_HELD entry: owner-held pending the same owner decision as evaluateCompliance (an explicit compliance evaluation; reference owner compl": 1,
+    "OWNER_HELD entry: owner-held pending the wave-146 owner decision, unchanged (lane 155R29, Q5): should contact notes still sync to the extern": 1
+   },
+   "sample": [
+    "http:/api/admin/system/providers/test",
+    "kernel_event:agent_work_anniversary",
+    "kernel_event:brand_compliance_failed",
+    "kernel_event:brand_compliance_passed",
+    "kernel_event:buyer_broker_agreement_signed"
+   ]
+  },
+  "UNKNOWN": {
+   "rows": 1,
+   "byKind": {
+    "http": 1
+   },
+   "evidenceClass": {
+    "http: the caller may be outside the repo (provider console, external client, another scheduler) — unreferenced is not dead (CLAUDE.md §1)": 1
+   },
+   "sample": [
+    "http:/api/errors/collect"
+   ]
+  }
+ },
+ "blindSpots": {
+  "evidenceCreditedByAnEventsDomainTable": {
+   "rows": 0,
+   "note": "a record-suffixed table that runtime code REWRITES (a domain table: calendar_events, open_house_events, voice_calls …) taken as evidence — 0 by construction since lane 155R16 (isLogTable); a non-zero count means the predicate was bypassed",
+   "sample": []
+  },
+  "evidenceCreditedByAnAppendOnlySuffixTable": {
+   "rows": 86,
+   "note": "evidence is a write to a record-suffixed table that is not a log BY NAME but that no runtime code rewrites (append-only: compliance_events, contact_consent_events, usage_events …). Taken as a ledger by rule; a gate's own ledger (compliance_events) evidences the decision on the path, not the action's outcome",
+   "byTable": {
+    "compliance_events": 53,
+    "phone_number_events": 10,
+    "mission_events": 8,
+    "contact_consent_events": 5,
+    "usage_events": 5,
+    "video_engagement_events": 2,
+    "platform_dunning_events": 1,
+    "podcast_analytics_events": 1,
+    "workflow_webhook_events": 1
+   },
+   "sample": [
+    "assistant_tool:book_studio_session",
+    "assistant_tool:send_portal_message",
+    "cron:/api/cron/billing-dunning",
+    "cron:/api/cron/open-house-reminder",
+    "cron:/api/cron/refresh-market-rates"
+   ]
+  },
+  "autonomousConsequentialWithoutRecovery": {
+   "rows": 323,
+   "note": "recovery is REPORTED per row but is not a judged link (ECC agent-architecture-audit layer 12 cross-check): a failed autonomous run with no retry / sweep / escalation on its path"
+  }
+ }
+}

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { escapeHtmlBasic as escapeHtml } from "@/lib/format/html"
 
 /**
  * Public, embeddable podcast player.
@@ -106,13 +107,9 @@ function playerNotFoundHtml(theme: "light" | "dark") {
 </html>`
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-}
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts escapeHtmlBasic
+// (imported above as `escapeHtml`) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 function escapeAttr(s: string): string {
   return escapeHtml(s).replace(/'/g, "&#39;")
 }

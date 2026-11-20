@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Calculator, Loader2, DollarSign, TrendingUp, AlertCircle } from "lucide-react"
+import { Calculator, Loader2, TrendingUp, AlertCircle } from "lucide-react"
 import { generateSellerNetSheet } from "@/app/actions/ai-listing-presentation"
 
 interface SellerNetSheetCardProps {

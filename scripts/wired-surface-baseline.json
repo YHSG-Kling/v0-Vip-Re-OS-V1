@@ -1,0 +1,7 @@
+{
+  "inertByFile": {},
+  "orphanActions": [
+    "app/actions/email-campaigns.ts:sendEmailCampaign",
+    "app/actions/listings.ts:getListingById"
+  ]
+}

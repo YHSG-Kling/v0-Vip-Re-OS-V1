@@ -65,7 +65,7 @@ export function HomeMaintenanceCard({
                 <p className="font-medium text-sm text-foreground">{s.title}</p>
                 <p className="text-xs text-muted-foreground mt-1 flex-1">{s.why}</p>
                 {isDone ? (
-                  <p className="text-xs font-medium text-emerald-600 mt-2 flex items-center gap-1.5">
+                  <p className="text-xs font-medium text-emerald-700 mt-2 flex items-center gap-1.5">
                     <CheckCircle2 className="h-3.5 w-3.5" />Your agent is connecting you
                   </p>
                 ) : haveVendor ? (

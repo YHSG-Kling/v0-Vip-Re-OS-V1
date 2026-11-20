@@ -220,7 +220,7 @@ console.log("\n── SOURCE: demo-tenant-only refusal + guard before any write 
   check("seed is idempotent — it tears its own previous story down first",
     seedBody.indexOf("teardownDealRoomStory") !== -1 && seedBody.indexOf("teardownDealRoomStory") < baselineIdx)
   check("provisioning + baseline ride the CANONICAL round-21 module (no forked provisioning)",
-    seedBody.includes('import("@/lib/platform/demo-tenant")') && seedBody.includes("ensureDemoTenant"))
+    seedBody.includes('import("@/lib/platform/demo-tenant-provisioning")') && seedBody.includes("ensureDemoTenant"))
   check("teardown re-checks the demo flag too",
     lib.slice(lib.indexOf("export async function teardownDealRoomStory")).includes("assertDealRoomDemoTenant"))
   check("teardown residue-sweeps every predicate and fails on survivors",

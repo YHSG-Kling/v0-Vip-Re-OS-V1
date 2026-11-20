@@ -114,14 +114,18 @@ export function composeOnboardingDecisions(f: OnboardingDecisionFacts): Onboardi
         key: "first_approvals", title: "Your first approvals are staged", state: "ready",
         evidence: `${f.pendingApprovals} AI-staged draft${f.pendingApprovals === 1 ? "" : "s"} wait${f.pendingApprovals === 1 ? "s" : ""} in the queue.`,
         recommendation: "Approve or reject each — every decision teaches the team your taste, and a spotless record lets it EARN standing autonomy.",
-        action: { label: "Review the queue", href: "/dashboard/marketing/approvals" },
+        // /dashboard/marketing/approvals has no page.tsx. `pendingApprovals` is counted
+        // from social_posts + newsletter_campaigns below; the unified queue that surfaces
+        // newsletter_campaigns to the agent/broker who is reading this card is
+        // app/approvals/page.tsx (lib/kernel/approval-queue-aggregator.ts).
+        action: { label: "Review the queue", href: "/approvals" },
       }
     : f.socialConnected
       ? {
           key: "first_approvals", title: "First content is on its way", state: "waiting",
           evidence: "Channels connected — the cadence stages your first drafts on its next pass.",
           recommendation: "Nothing to do; your approval queue fills on its own.",
-          action: { label: "Open the queue", href: "/dashboard/marketing/approvals" },
+          action: { label: "Open the queue", href: "/approvals" },
         }
       : {
           key: "first_approvals", title: "Connect a channel", state: "waiting",

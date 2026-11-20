@@ -3,11 +3,9 @@
 import { useState, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { Badge } from "@/components/ui/badge"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
-import { Phone, MessageSquare, Clock, FileText, Navigation, User } from "lucide-react"
+import { Phone, MessageSquare, Clock, FileText, User } from "lucide-react"
 import { toast } from "sonner"
 import { logActivity } from "@/app/actions/activities"
 
@@ -142,7 +140,7 @@ export function FieldQuickActions({ agentId, contacts = [] }: FieldQuickActionsP
                           size="icon"
                           variant="ghost"
                           className="h-7 w-7"
-                          onClick={() => handleCall(contact.phone!)}
+                          aria-label="Call" onClick={() => handleCall(contact.phone!)}
                         >
                           <Phone className="h-3 w-3 text-green-600" />
                         </Button>
@@ -150,7 +148,7 @@ export function FieldQuickActions({ agentId, contacts = [] }: FieldQuickActionsP
                           size="icon"
                           variant="ghost"
                           className="h-7 w-7"
-                          onClick={() => handleText(contact.phone!)}
+                          aria-label="Text" onClick={() => handleText(contact.phone!)}
                         >
                           <MessageSquare className="h-3 w-3 text-blue-600" />
                         </Button>
@@ -162,7 +160,7 @@ export function FieldQuickActions({ agentId, contacts = [] }: FieldQuickActionsP
                           size="icon"
                           variant="ghost"
                           className="h-7 w-7"
-                          onClick={() => setSelectedContact(contact.id)}
+                          aria-label="Open contact" onClick={() => setSelectedContact(contact.id)}
                         >
                           <Clock className="h-3 w-3 text-orange-600" />
                         </Button>

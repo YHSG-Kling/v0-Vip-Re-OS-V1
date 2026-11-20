@@ -19,7 +19,15 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import { applyBrandVoice } from "./brand-voice"
+
+/** The client evaluateOutbound reads and audits through (cookie or service) — structural, so
+ *  the session client, the service client and lib/video/script-compliance's QueryableClient
+ *  all satisfy it. */
+type ComplianceGateClient = Pick<SupabaseClient, "from"> | { from: (table: string) => any }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 import { hasActiveRepresentation } from "./compliance/active-representation"
 import type { EvaluateOutboundParams, ComplianceResult } from "./types"
 import { KernelEvent } from "./events"
@@ -30,12 +38,12 @@ import { processKernelEvent } from "./notification-engine"
 
 import {
   evaluateRegulatoryCompliance,
+  calculateThemFirstScore,
 } from "@/lib/compliance-rules/rule-evaluators"
 
 // Them-first check — reuse the prohibited phrase list from the validator.
 // We call the synchronous helpers only; we do not call validateThemFirstContent
 // (that spawns an LLM call which is not appropriate inside a synchronous gate).
-import type { ContentType } from "@/lib/them-first/validator"
 
 // ─── INTERNAL: FAIR HOUSING ───────────────────────────────────────────────────
 // The FAIR_HOUSING_VIOLATIONS array is not exported from rule-evaluators,
@@ -61,23 +69,36 @@ const THEM_FIRST_PROHIBITED: Array<{ phrase: string; category: string }> = [
   { phrase: "you'll make money", category: "investment_advice" },
 ]
 
-function calculatePronounRatio(content: string): number {
-  const buyerWords = (content.match(/\b(you|your|yours|imagine|feel|enjoy|benefit|discover|experience)\b/gi) || []).length
-  const agentWords = (content.match(/\b(i|me|my|mine|we|us|our|ours)\b/gi) || []).length
-  const total = buyerWords + agentWords
-  if (total === 0) return 0.5
-  return buyerWords / total
-}
+/**
+ * DELETED — this was a byte-identical copy of
+ * lib/compliance-rules/rule-evaluators.ts::calculateThemFirstScore: same two
+ * word lists, same 0.5 no-pronoun neutral, same ratio. The survivor is exported
+ * from there and imported above; this module already depended on that one, so
+ * that is the only non-circular direction.
+ *
+ * Two copies of a compliance threshold is how the enforced gate and the
+ * compliance report begin disagreeing about the same content the moment someone
+ * tunes one word list and not the other.
+ */
 
-// ─── RESTRICTED CONTACT STATES ────────────────────────────────────────────────
-// States where non-ISA actors are blocked from outbound messaging.
+// ─── REPRESENTATION-LOCKED CONTACT STATES ─────────────────────────────────────
+// contacts.status values where non-ISA actors are blocked from outbound
+// messaging because the contact is under active representation.
+//
+// Renamed from RESTRICTED_STATES 2026-09-01 (§6 one-vocabulary): the kernel's
+// other module, lib/kernel/communication-compliance.ts:71, exports a
+// RESTRICTED_STATES that is a DIFFERENT subject entirely — US geographic
+// states ("CA"/"NY"/"DC") requiring TCPA consent, tested against
+// contact.state. This set is representation LIFECYCLE states tested against
+// contact.status. Same identifier over two subjects invited an accidental
+// merge; the rename makes that impossible.
 
 // Stored lower-case only; callers MUST normalize contact.status with
 // .toLowerCase() before checking. A previous version listed mixed-case
 // variants but exact-case Set.has() still failed open for any casing not
 // explicitly enumerated (e.g. title-case "Representation" from a UI picker),
 // silently allowing outreach to a represented contact — a compliance breach.
-const RESTRICTED_STATES = new Set([
+const REPRESENTATION_LOCK_STATES = new Set([
   "representation",
   "active_transaction",
   "under_contract",
@@ -92,8 +113,16 @@ const RESTRICTED_STATES = new Set([
  * contact context, logs the result to compliance_events, and returns a
  * ComplianceResult. Throws only on unrecoverable DB errors.
  */
-export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<ComplianceResult> {
-  const supabase = await createClient()
+export async function evaluateOutbound(
+  params: EvaluateOutboundParams,
+  opts?: { client?: ComplianceGateClient },
+): Promise<ComplianceResult> {
+  // No client = the SESSION door (cookie client; RLS holds the caller to its tenant). A
+  // SESSIONLESS caller (cron, webhook, the voice stage creators) passes the service client,
+  // with actorContext.brokerageId read from a verified row: under the anon cookie client Gate 1
+  // read no brand voice, the contact re-read saw no opt-outs, and the compliance_events audit
+  // row was refused (lane 86C; the brand-voice core is lib/kernel/brand-voice.ts).
+  const supabase = (opts?.client ?? (await createClient())) as Awaited<ReturnType<typeof createClient>>
   const violations: string[] = []
   const suggestedFixes: string[] = []
   let correctedContent: string | undefined
@@ -113,7 +142,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
     persona,
     messageType,
     content,
-  })
+  }, { client: supabase })
 
   for (const v of brandResult.violations) {
     violations.push(`BrandVoice: ${v}`)
@@ -131,6 +160,8 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
       .from("contacts")
       .select("tcpa_consent, tcpa_consent_date, dnc_status, email_opt_out, sms_opt_out, phone_opt_out, direct_mail_opt_out")
       .eq("id", contact.id)
+      // Tenant pin: RLS supplied it on the cookie client; the service client (86C) does not.
+      .eq("brokerage_id", actorContext.brokerageId)
       .maybeSingle()
 
     const dncStatus = freshContact?.dnc_status ?? contact.dnc_status ?? false
@@ -176,7 +207,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
   if (contact) {
     const contactStatus: string = (contact.status ?? "").toLowerCase()
 
-    if (RESTRICTED_STATES.has(contactStatus)) {
+    if (REPRESENTATION_LOCK_STATES.has(contactStatus)) {
       if (actorContext.role === "isa") {
         const isaReengageAllowed = contact.isa_reengage_allowed === true
         if (!isaReengageAllowed) {
@@ -220,7 +251,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
     }
   }
 
-  const pronounRatio = calculatePronounRatio(content)
+  const pronounRatio = calculateThemFirstScore(content)
   if (pronounRatio < 0.6) {
     violations.push(
       `ThemFirst: Content is only ${Math.round(pronounRatio * 100)}% contact-focused (target ≥60%). Reduce agent-centric language.`
@@ -246,7 +277,11 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
   //         actor_user_id, message_type, created_at
   // ══════════════════════════════════════════════════════════════════════════
 
-  const { data: complianceEvent } = await supabase
+  // The `data` was captured but the `error` was not, so a refused ledger insert
+  // read here as "no event id" — indistinguishable from a write that worked but
+  // returned nothing. Every refusal then ALSO silently skipped the
+  // COMPLIANCE_VIOLATION notification below, because that is gated on the id.
+  const { data: complianceEvent, error: complianceEventError } = await supabase
     .from("compliance_events")
     .insert({
       brokerage_id: actorContext.brokerageId,
@@ -255,13 +290,26 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
       violations: violations,            // jsonb — array stored as JSON
       blocked_reason: blockedReason ?? null,
       actor_role: actorContext.role,
-      actor_user_id: actorContext.userId,
+      // Both columns are uuid (live). A sessionless caller's actor ("system", "") or a stub
+      // contact id would 22P02 the WHOLE row — the audit a regulator is handed — so a
+      // non-uuid is recorded as unknown (null) instead of losing the row (86C).
+      actor_user_id: UUID_RE.test(actorContext.userId ?? "") ? actorContext.userId : null,
       entity_type: "contact",
-      entity_id: contact?.id ?? null,
+      entity_id: contact?.id && UUID_RE.test(contact.id) ? contact.id : null,
       message_type: messageType,
     })
     .select("id")
     .single()
+
+  if (complianceEventError) {
+    // The gate decision itself still stands — it is computed above and returned
+    // below — but the row a broker would hand a regulator did not land, and the
+    // violation notification will not fire. Say so instead of vanishing.
+    console.error(
+      `[compliance] compliance_events insert REFUSED (gate outbound_compliance, allowed=${allowed}) — this decision is UNRECORDED:`,
+      complianceEventError.message,
+    )
+  }
 
   if (complianceEvent && !allowed) {
     // FAILURE ISOLATION: Notification processing is non-blocking

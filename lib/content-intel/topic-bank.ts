@@ -20,6 +20,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { refurbishTriggerKindForTopicSource } from "./topic-intake"
 
 export interface TopicCandidate {
   id:               string
@@ -33,7 +34,55 @@ export interface TopicCandidate {
   /** When set + matched against the recipient's location, the picker
    *  applied a +20 score boost (Wave 18 location-aware boost). */
   geo_match:        boolean
+  /** WAVE 154 (lane 154G1 — directive G3): the row's OWN evidence, so a consumer can show what the number is (or "unknown").
+   *  measured / proxy / unknown from THE ONE intake (raw_data.evidence); null for a row filed before the intake existed. */
+  evidence_kind?:   "measured" | "proxy" | "unknown" | null
+  /** The metric behind engagement_score (e.g. exa_search_relevance, priority_from_internal_count); null = not labeled. */
+  evidence_metric?: string | null
+  rights?:          string | null
+  /** Distinct observations behind the topic (a repeated article counts once). */
+  independent_observations?: number | null
+  source_kind?:     string | null
+  /** The Refurbish trigger this topic can offer (lib/content-intel/topic-intake.ts refurbishTriggerKindForTopicSource). */
+  refurbish_trigger_kind?: string | null
 }
+
+/**
+ * THE PICKER'S ORDERING POLICY, said plainly (wave 154, lane 154G1 — directive G3 "no invented universal scoring constants").
+ * These lifts are a PRODUCT ORDERING CHOICE made in waves 18–82 (local before national, recent before old, the recipient's
+ * place before elsewhere, in-season before off-season) — none is a measurement and none is presented as one. What IS
+ * evidence enters as the row carries it: engagement_score is each row's own labeled 0–100 evidence (raw_data.evidence — a
+ * proxy or a measure, or 0 when unknown, which then lifts nothing), and performance_score (0–30) is MEASURED from this
+ * tenant's own outcomes by lib/content-intel/performance-aggregator.ts. The office claim ledger removes what this office
+ * already published (difference from the tenant's own inventory); rights and freshness were enforced at intake.
+ */
+const PICKER_POLICY = Object.freeze({
+  /** a topic filed for THIS brokerage over the platform-wide bank */
+  tenantLocalLift: 15,
+  /** a source published within freshWindowDays */
+  freshLift: 10,
+  freshWindowDays: 7,
+  /** per day the ingest crons stopped re-observing it past freshWindowDays, capped (mirrors freshLift) */
+  staleDecayPerDay: 2,
+  staleDecayCap: 10,
+  /** the topic's geo_relevance names the recipient's city / state / ZIP */
+  geoMatchLift: 20,
+  /** an undated topic with no scrape date is treated as this many days old (a stated assumption, not a measurement) */
+  undatedAgeDays: 14,
+  /** fewer persona samples than this and the persona score is noise (read-time re-check of the aggregator's gate) */
+  minReliablePersonaSamples: 5,
+})
+
+/**
+ * How long an office's claim on a topic holds. Long enough that two agents
+ * working the same week cannot both take it; short enough that a genuinely
+ * evergreen topic returns to the pool rather than being burned forever.
+ */
+export const OFFICE_CLAIM_WINDOW_DAYS = 30
+
+/** Wave 82C — the lift an in-season topic gets (below the +10 fresh / +15 local /
+ *  +20 geo boosts: the season nudges ties, it never outranks a local story). */
+export const SEASONAL_BOOST = 8 // part of PICKER_POLICY below: an ordering choice, not a measurement
 
 export interface RecipientLocation {
   city?:     string | null
@@ -69,12 +118,22 @@ export async function pickTopics(args: {
    *  differently for podcast/listing-promo). Defaults to
    *  'newsletter_campaign' so existing callers keep prior behavior. */
   assetType?: string
+  /** agents.id of whoever is generating. Recorded on the claim so the office
+   *  can see WHICH agent took a topic, not merely that someone did. */
+  agentId?: string | null
+  /** Wave 82C — SEASONALITY. Categories in season right now (lib/video/topic-video.ts
+   *  seasonalCategories): a topic overlapping them gets SEASONAL_BOOST. A lift, never a
+   *  filter — an off-season topic that is winning still surfaces. */
+  boostCategories?: string[]
+  /** Wave 142 (lane 142E): the client seam — a caller that already holds the verified client its sweep runs
+   *  on (the lead-magnet suggestion runner, an in-memory proof) passes it; default the service client. */
+  client?: ReturnType<typeof createServiceClient>
 }): Promise<TopicCandidate[]> {
-  const svc   = createServiceClient()
+  const svc   = args.client ?? createServiceClient()
   const limit = Math.min(args.limit ?? 6, 25)
 
   let q = svc.from("content_topic_bank")
-    .select("id, brokerage_id, topic_title, value_angle, source_url, categories, engagement_score, performance_score, topic_posted_at, geo_relevance")
+    .select("id, brokerage_id, topic_title, value_angle, source_url, categories, engagement_score, performance_score, topic_posted_at, scraped_at, geo_relevance, raw_data")
     .eq("status", "fresh")
     .gt("expires_at", new Date().toISOString())
     .or(`brokerage_id.is.null,brokerage_id.eq.${args.brokerageId}`)
@@ -85,8 +144,11 @@ export async function pickTopics(args: {
     q = q.overlaps("categories", args.categoriesAny)
   }
 
-  const { data } = await q
-  const rows = (data ?? []) as Array<{
+  // READ THE REFUSAL (CLAUDE.md §3 — wave 145, lane 145G): a refused pool read used to be indistinguishable from an empty
+  // bank, so every writer silently fell back to evergreen copy. It is said now; the fallback stays (a writer still writes).
+  const { data, error: poolErr } = await q
+  if (poolErr) console.error(`[topic-bank] content_topic_bank read REFUSED for ${args.brokerageId} — writers fall back to evergreen topics:`, poolErr.message)
+  let rows = (data ?? []) as Array<{
     id:               string
     brokerage_id:     string | null
     topic_title:      string
@@ -96,8 +158,71 @@ export async function pickTopics(args: {
     engagement_score: number
     performance_score: number
     topic_posted_at:  string | null
+    /** Last time an ingest cron SAW this topic (every content-intel-* route
+     *  re-stamps it on re-observation; promote-to-topic-bank stamps it at
+     *  promotion). Distinct from topic_posted_at, which is when the SOURCE
+     *  published it and never moves. */
+    scraped_at:       string | null
     geo_relevance:    { cities?: string[]; states?: string[]; zip_codes?: string[] } | null
+    raw_data:         { evidence?: { kind?: string; metric?: string | null } | null; intake?: { rights?: string; source_kind?: string } | null; independent_observations?: number } | null
   }>
+
+  // ── A CIRCLE ADAPTATION BELONGS TO ITS MEMBER (wave 154, lane 154H2 — carrying lane 154G3's request) ──
+  // lib/marketing/circle-tactics.ts files a member's adaptation of a shared tactic as a NEW topic whose raw_data.circle_adaptation
+  // names the member (for_agent_id = agents.id, for_agent_user_id = users.id) and whose brand owner is that member. It is their
+  // piece in their voice: another agent's picks skip it, and an asker with no agents.id cannot take it (fail closed).
+  rows = rows.filter((r) => {
+    const ad = (r.raw_data as { circle_adaptation?: { for_agent_id?: string | null } | null } | null)?.circle_adaptation
+    if (!ad || typeof ad !== "object") return true
+    return !!args.agentId && ad.for_agent_id === args.agentId
+  })
+
+  // ── THE OFFICE CLAIM (m357) ────────────────────────────────────────────
+  // Owner's rule: an agent in the same office cannot write an article from a
+  // topic another agent there already took. The claim ledger for that already
+  // existed — content_topic_uses records (topic, brokerage, asset) — and the
+  // picker NEVER READ IT. The only de-duplication was
+  // content_topic_bank.status='used', a flag on the topic ROW, which is wrong
+  // in both directions: it does not know which office claimed the topic, and
+  // for a PLATFORM-WIDE row (brokerage_id IS NULL, shared by every brokerage)
+  // one office's use removed it from everyone else's pool permanently.
+  //
+  // Excluding on the ledger fixes both: the claim is per office, it expires,
+  // and one brokerage can never drain another's bank.
+  if (rows.length > 0) {
+    const since = new Date(Date.now() - OFFICE_CLAIM_WINDOW_DAYS * 86_400_000).toISOString()
+    const { data: claimed, error: claimErr } = await svc
+      .from("content_topic_uses")
+      .select("topic_id, agent_id, asset_type")
+      .eq("brokerage_id", args.brokerageId)
+      .gte("used_at", since)
+      .in("topic_id", rows.map((r) => r.id))
+    if (claimErr) {
+      // Do NOT silently fall through to "nothing is claimed" — that is the
+      // failure mode where two agents in one office publish the same article
+      // and nobody can tell why. Say so, and keep the safer behaviour.
+      console.error("[topic-bank] office claim lookup failed, topics may repeat:", claimErr.message)
+    } else {
+      // THE CLAIM SAYS WHO (m357), and this is where WHO is read. The owner's
+      // rule is that ANOTHER agent in the office cannot take a topic this one
+      // took. The asking agent's OWN claim on a DIFFERENT asset type is not
+      // that conflict — it is the omnipresence fan-out (one topic → blog →
+      // podcast → postcard by the same author) that lib/agents/marketing-agent.ts
+      // explicitly asks for. Blocking it made an agent's own article poison
+      // their own podcast for 30 days. Everything else still blocks: a claim
+      // by another agent, a claim with no recorded agent (fail closed — an
+      // anonymous claim is treated as someone else's), the same agent
+      // repeating the same asset type, or an asker with no agents.id.
+      const askerAgent    = args.agentId ?? null
+      const askedAssetType = args.assetType ?? "newsletter_campaign"
+      const taken = new Set<string>()
+      for (const c of (claimed ?? []) as Array<{ topic_id: string; agent_id: string | null; asset_type: string | null }>) {
+        const ownCrossFormat = askerAgent !== null && c.agent_id === askerAgent && c.asset_type !== askedAssetType
+        if (!ownCrossFormat) taken.add(c.topic_id)
+      }
+      if (taken.size > 0) rows = rows.filter((r) => !taken.has(r.id))
+    }
+  }
 
   // Wave 23 — per-persona performance score lookup. ONE query over the
   // candidate set instead of per-topic round-trips inside the scoring map.
@@ -109,7 +234,7 @@ export async function pickTopics(args: {
   // shrinks below the floor would otherwise outrank reliable global
   // scores). Keeps the picker's reliability contract independent of
   // aggregator history.
-  const MIN_RELIABLE_SAMPLES = 5
+  const MIN_RELIABLE_SAMPLES = PICKER_POLICY.minReliablePersonaSamples
   const personaPerfMap = new Map<string, number>()
   if (args.recipientPersona && rows.length > 0) {
     try {
@@ -131,11 +256,25 @@ export async function pickTopics(args: {
   const now = Date.now()
   const scored = rows.map((r) => {
     const isLocal = r.brokerage_id !== null
-    const ageDays = r.topic_posted_at ? Math.max(0, (now - Date.parse(r.topic_posted_at)) / 86_400_000) : 14
-    const localBoost = isLocal ? 15 : 0
-    const freshBoost = ageDays <= 7 ? 10 : 0
+    // FRESHNESS DECAY, on the column that actually moves. topic_posted_at is
+    // the source's publish date and never changes; scraped_at is the last time
+    // an ingest cron re-confirmed the topic was still surfacing. A topic the
+    // crons stopped seeing a week ago is a conversation that ended, however
+    // recent its original post — so the scrape age decays the score (2 pts per
+    // day past 7, capped at −10, mirroring the +10 fresh boost). scraped_at is
+    // also the fallback age when the source gave no publish date: the old
+    // hardcoded 14 assumed every undated topic was stale.
+    const scrapeAgeDays = r.scraped_at ? Math.max(0, (now - Date.parse(r.scraped_at)) / 86_400_000) : null
+    const ageDays = r.topic_posted_at
+      ? Math.max(0, (now - Date.parse(r.topic_posted_at)) / 86_400_000)
+      : (scrapeAgeDays ?? PICKER_POLICY.undatedAgeDays)
+    const localBoost = isLocal ? PICKER_POLICY.tenantLocalLift : 0
+    const freshBoost = ageDays <= PICKER_POLICY.freshWindowDays ? PICKER_POLICY.freshLift : 0
+    const staleDecay = scrapeAgeDays !== null && scrapeAgeDays > PICKER_POLICY.freshWindowDays
+      ? -Math.min(PICKER_POLICY.staleDecayCap, Math.round((scrapeAgeDays - PICKER_POLICY.freshWindowDays) * PICKER_POLICY.staleDecayPerDay))
+      : 0
     const geoMatch   = matchesGeo(r.geo_relevance, args.recipientLocation)
-    const geoBoost   = geoMatch ? 20 : 0
+    const geoBoost   = geoMatch ? PICKER_POLICY.geoMatchLift : 0
     // Wave 19 — performance feedback loop. content_topic_uses → engagement
     // signals → aggregator → performance_score (0..30). Winning topics
     // compound; flops decay.
@@ -147,9 +286,11 @@ export async function pickTopics(args: {
     const perfBoost = (args.recipientPersona && personaPerfMap.has(r.id))
       ? personaPerfMap.get(r.id)!
       : (r.performance_score ?? 0)
+    const seasonal = (args.boostCategories ?? []).length > 0 && (r.categories ?? []).some((c) => (args.boostCategories ?? []).includes(c))
+    const seasonBoost = seasonal ? SEASONAL_BOOST : 0
     return {
       ...r,
-      adjusted_score: r.engagement_score + localBoost + freshBoost + geoBoost + perfBoost,
+      adjusted_score: r.engagement_score + localBoost + freshBoost + staleDecay + geoBoost + perfBoost + seasonBoost,
       is_brokerage_local: isLocal,
       geo_match: geoMatch,
     }
@@ -158,9 +299,26 @@ export async function pickTopics(args: {
   .slice(0, limit)
 
   if (args.markUsed && scored.length > 0) {
-    await svc.from("content_topic_bank")
-      .update({ status: "used" })
-      .in("id", scored.map((s) => s.id))
+    // CLAIM, DON'T CONSUME. Flipping status='used' on a PLATFORM-WIDE row
+    // (brokerage_id IS NULL) took the topic away from every other brokerage
+    // forever — a shared bank drained by whoever asked first. Only a row this
+    // brokerage OWNS may be retired outright; a shared one is claimed in the
+    // office-scoped ledger, which is what the exclusion above reads.
+    const ownRows = scored.filter((t) => t.brokerage_id === args.brokerageId).map((t) => t.id)
+    if (ownRows.length > 0) {
+      const { error } = await svc.from("content_topic_bank")
+        .update({ status: "used" })
+        .in("id", ownRows)
+        .eq("brokerage_id", args.brokerageId)
+      if (error) console.error("[topic-bank] markUsed failed:", error.message)
+    }
+    const { logTopicUses } = await import("./performance-aggregator")
+    await logTopicUses({
+      topicIds:    scored.map((t) => t.id),
+      brokerageId: args.brokerageId,
+      assetType:   (args.assetType ?? "newsletter_campaign") as never,
+      agentId:     args.agentId ?? null,
+    })
   }
 
   return scored.map((s) => ({
@@ -173,7 +331,22 @@ export async function pickTopics(args: {
     topic_posted_at:    s.topic_posted_at,
     is_brokerage_local: s.is_brokerage_local,
     geo_match:          s.geo_match,
+    ...evidenceOfRow(s.raw_data),
   }))
+}
+
+/** The row's own evidence fields for a candidate (null where the row predates THE ONE intake — never a guess). */
+function evidenceOfRow(raw: { evidence?: { kind?: string; metric?: string | null } | null; intake?: { rights?: string; source_kind?: string } | null; independent_observations?: number } | null): Pick<TopicCandidate, "evidence_kind" | "evidence_metric" | "rights" | "independent_observations" | "source_kind" | "refurbish_trigger_kind"> {
+  const k = raw?.evidence?.kind
+  const sourceKind = raw?.intake?.source_kind ?? null
+  return {
+    evidence_kind: k === "measured" || k === "proxy" || k === "unknown" ? k : null,
+    evidence_metric: raw?.evidence?.metric ?? null,
+    rights: raw?.intake?.rights ?? null,
+    independent_observations: typeof raw?.independent_observations === "number" ? raw.independent_observations : null,
+    source_kind: sourceKind,
+    refurbish_trigger_kind: refurbishTriggerKindForTopicSource(sourceKind),
+  }
 }
 
 /** Does the topic's geo_relevance match the recipient's location?
@@ -209,6 +382,9 @@ export function renderTopicsForPrompt(topics: TopicCandidate[]): string {
     `${i + 1}. ${t.topic_title}` +
     (t.value_angle ? `\n   Angle: ${t.value_angle}` : "") +
     (t.categories.length > 0 ? `\n   Tags: ${t.categories.join(", ")}` : "") +
-    (t.is_brokerage_local ? `\n   (LOCAL TO THIS BROKERAGE)` : "")
+    (t.is_brokerage_local ? `\n   (LOCAL TO THIS BROKERAGE)` : "") +
+    // Wave 144 (lane 144G): a VERIFIED LOCAL FACT (lib/content-intel/local-intel.ts) carries its
+    // source — the writer credits and links it and never copies the publisher's text.
+    (t.categories.includes("local_intel") && t.source_url ? `\n   Source (credit + link, never copy): ${t.source_url}` : "")
   ).join("\n\n")
 }

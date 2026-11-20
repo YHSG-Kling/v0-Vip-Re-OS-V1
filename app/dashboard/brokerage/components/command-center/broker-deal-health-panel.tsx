@@ -45,19 +45,19 @@ export function BrokerDealHealthPanel({ deals, summary }: BrokerDealHealthPanelP
       badge: "destructive" as const,
       bg: "bg-orange-500/10",
       border: "border-orange-500/30",
-      text: "text-orange-600",
+      text: "text-orange-700",
     },
     watch: {
       badge: "secondary" as const,
       bg: "bg-yellow-500/10",
       border: "border-yellow-500/30",
-      text: "text-yellow-600",
+      text: "text-yellow-700",
     },
     healthy: {
       badge: "outline" as const,
       bg: "bg-green-500/10",
       border: "border-green-500/30",
-      text: "text-green-600",
+      text: "text-green-700",
     },
   }
 

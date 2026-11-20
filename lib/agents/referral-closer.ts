@@ -13,6 +13,7 @@
 // referral already closed is a no-op). No fabricated commissions — uses the
 // referral's own recorded/potential value, else leaves it null.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
 
@@ -88,7 +89,7 @@ export async function closeReferralOnDealClose(
   const commission = referralCommissionFor(r)
 
   // Close the referral (idempotent — only when not already closed).
-  await supabase
+  const { error: referralCloseErr } = await supabase
     .from("referrals")
     .update({
       status: "closed",
@@ -99,6 +100,7 @@ export async function closeReferralOnDealClose(
     })
     .eq("id", r.id)
     .neq("status", "closed")
+  if (referralCloseErr) console.error(`[referral-closer] referral NOT closed: ${referralCloseErr.message}`)
 
   // Credit the referring partner's lifetime value + received count.
   if (r.partner_id && commission != null) {
@@ -108,34 +110,21 @@ export async function closeReferralOnDealClose(
       .eq("id", r.partner_id).maybeSingle()
     const partner = p as { total_value_generated: number | null; total_referrals_received: number | null; partner_name: string | null } | null
     if (partner) {
-      await supabase.from("referral_partners").update({
+      await sentinelWrite(supabase, supabase.from("referral_partners").update({
         total_value_generated: (partner.total_value_generated ?? 0) + commission,
         total_referrals_received: (partner.total_referrals_received ?? 0) + 1,
         updated_at: new Date().toISOString(),
-      }).eq("id", r.partner_id)
+      }).eq("id", r.partner_id), { table: "referral_partners", flow: "referral_partners_write", reason: "partner counters (reporting)" })
     }
   }
 
-  // AGENT-TO-AGENT REFERRAL FEE — if the referring party is an internal AGENT (not an external partner),
-  // book their referral fee on the canonical commission_distributions rail (distribution_type 'referral'),
-  // exactly like revenue share. Idempotent per (referral, transaction). Best-effort.
-  if (r.referring_agent_id) {
-    try {
-      const { computeReferralFee } = await import("@/lib/referrals/agent-referral")
-      const fee = computeReferralFee(t.commission_amount, r.referral_fee_pct)
-      if (fee > 0) {
-        const { data: already } = await supabase.from("commission_distributions").select("id")
-          .eq("transaction_id", transactionId).eq("agent_id", r.referring_agent_id).eq("distribution_type", "referral").limit(1).maybeSingle()
-        if (!already) {
-          await supabase.from("commission_distributions").insert({
-            brokerage_id: brokerageId, transaction_id: transactionId, agent_id: r.referring_agent_id,
-            distribution_type: "referral", calculation_type: "percent", calculation_value: r.referral_fee_pct,
-            calculated_amount: fee, source_of_funds: "agent", status: "pending",
-          })
-        }
-      }
-    } catch (e) { console.error("[referral-closer] agent referral fee booking failed:", e) }
-  }
+  // TOMBSTONE (wave 143, lane 143C) — the AGENT-TO-AGENT REFERRAL FEE is no longer booked here. This block inserted a
+  // free-standing commission_distributions row (distribution_type 'referral', no commission_id) AFTER the close, sized
+  // on transactions.commission_amount and deducted from NOBODY: step 11's conservation identity never saw it, the
+  // receiving agent still netted the full split, and the CDA had no referral line. SURVIVOR:
+  // lib/commission/waterfall/03b-referral-deduction.ts:58 applyReferralDeduction (the fee comes off the top of the adjusted
+  // gross before the split, conserved by step 11, linked to the deal through referrals.transaction_id), wired in
+  // lib/commission/engine.ts. This loop keeps what is its own: closing the referral, crediting the partner, the thank-you.
 
   // Propose a partner thank-you into the gate — unless one was already sent.
   let thankYouProposed = false

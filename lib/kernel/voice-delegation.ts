@@ -72,7 +72,8 @@ export function pickSequence<T extends { id: string; name: string | null; is_act
   return active.find((s) => /nurture|follow|drip/i.test(s.sequence_type ?? "")) ?? active[0]
 }
 
-export interface DelegationResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface DelegationResult {
   ok: boolean
   spoken: string
   messageId?: string
@@ -284,7 +285,8 @@ export async function voiceStartMarketing(
 // tour rows only; nothing client-facing is sent.
 
 /** Pure: a stop's place in the spoken running order — address + whether it was sequenced. */
-export interface SpokenTourStop {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface SpokenTourStop {
   address: string
   /** true when real coordinates placed it; false = kept in entered order, no drive. */
   sequenced: boolean
@@ -314,7 +316,8 @@ export function composeOptimizeTourSpoken(args: {
   return `${buyerName}'s tour is reordered for the shortest drive: ${order}.${driveSentence}${honest}`
 }
 
-export interface OptimizeTourSpokenResult extends DelegationResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface OptimizeTourSpokenResult extends DelegationResult {
   tourId?: string
   totalDriveMinutes?: number
   stopsSequenced?: number
@@ -451,7 +454,8 @@ export function composeClosingsAtRiskSpoken(deals: AtRiskDeal[], skippedNoChain:
   return `${lead} ${lines.join(" ")}`
 }
 
-export interface ClosingsAtRiskResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface ClosingsAtRiskResult {
   ok: boolean
   spoken: string
   deals: AtRiskDeal[]
@@ -513,7 +517,8 @@ export async function voiceClosingsAtRisk(
 // note lands in the GATE (approval queue) exactly like voiceFollowUp. Speak that it's
 // queued for approval; NEVER an autonomous client send. No real valuation → honest skip.
 
-export interface EquityReportSpokenResult extends DelegationResult {
+// Module-private since 2026-09-07 — no importer outside this file (lane Q, re-verified on HEAD).
+interface EquityReportSpokenResult extends DelegationResult {
   proposed?: boolean
   skipReason?: string
 }

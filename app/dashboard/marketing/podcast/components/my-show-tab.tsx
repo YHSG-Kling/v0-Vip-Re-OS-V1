@@ -1,7 +1,6 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import Image from "next/image"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Input } from "@/app/components/ui/input"
@@ -182,7 +181,7 @@ export function MyShowTab({ channels, hasVoiceClone }: Props) {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+        <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
       </div>
     )
   }
@@ -372,7 +371,7 @@ export function MyShowTab({ channels, hasVoiceClone }: Props) {
                             ID: {ch.external_show_id}
                           </span>
                         ) : (
-                          <span className="text-[11px] text-amber-600">No external show ID set</span>
+                          <span className="text-[11px] text-amber-700">No external show ID set</span>
                         )}
                       </div>
                       {result && (

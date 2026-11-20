@@ -75,9 +75,15 @@ export async function runWarmHandoff(
     const brief = composeHandoffBrief(parts)
 
     // Persist the brief on the contact (read-merge-write metadata) — the agent UI reads it.
-    await svc.from("contacts").update({
+    // The error is READ. The agent UI reads the brief from this metadata key and
+    // nowhere else, so a refusal produced a "warm handoff" notification pointing
+    // at a brief that does not exist.
+    const { error: briefWriteError } = await svc.from("contacts").update({
       metadata: { ...(c.metadata ?? {}), warm_handoff: { ...brief, composedAt: new Date().toISOString() } },
     }).eq("id", contactId)
+    if (briefWriteError) {
+      console.error(`[warm-handoff] brief persist REFUSED for contact ${contactId}:`, briefWriteError.message)
+    }
 
     // Route ONE notification to the contact's agent.
     let notificationId: string | undefined
@@ -85,11 +91,12 @@ export async function runWarmHandoff(
       const { data: agentRow } = await svc.from("agents").select("user_id").eq("id", c.agent_id).maybeSingle()
       const agentUserId = (agentRow as any)?.user_id
       if (agentUserId) {
-        const { data: notif } = await svc.from("notifications").insert({
+        const { data: notif, error: notifyError } = await svc.from("notifications").insert({
           user_id: agentUserId, brokerage_id: brokerageId, type: "warm_handoff",
           title: handoffTitle(contactName), body: brief.suggestedFocus,
           entity_type: "contact", entity_id: contactId, priority: "high",
         }).select("id").single()
+        if (notifyError) console.warn("[warm-handoff-runner] notifications insert refused — the handoff bell will not ring:", notifyError.message)
         notificationId = (notif as any)?.id
       }
     }

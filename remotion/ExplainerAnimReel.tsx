@@ -28,17 +28,8 @@
  *   15–18s  CTA       — payoff line + agent name + EHO footer
  */
 import React from "react"
-import {
-  AbsoluteFill,
-  Img,
-  Sequence,
-  Video,
-  interpolate,
-  spring,
-  useCurrentFrame,
-  useVideoConfig,
-  Easing,
-} from "remotion"
+import { AbsoluteFill, Sequence, interpolate, spring, useCurrentFrame, useVideoConfig, Easing } from "remotion"
+import { SafeImg } from "./components/SafeImg"
 import {
   seriesToPoints,
   linePath,
@@ -55,7 +46,11 @@ import type {
 } from "../lib/charts/explainer-diagram"
 import { CaptionLayer } from "./components/CaptionLayer"
 import { QrOutroBadge } from "./components/QrOutroBadge"
+import { AvatarPIP } from "./components/AvatarPIP"
+import { computeAssemblyTimeline } from "../lib/video/assembly-timeline"
+import { compositionBookends } from "../lib/video/duration-model"
 import type { CaptionCue } from "../lib/video/caption-plan"
+import { cinemaBadgeSlot, cinemaDisclosureStyle, cinemaFrame } from "../lib/video/cinema-finish"
 
 export interface ExplainerAnimReelProps {
   /** Short eyebrow above the title. */
@@ -90,62 +85,38 @@ export interface ExplainerAnimReelProps {
   captionsCues?: CaptionCue[] | null
   /** SOUND-OFF CAPTIONS fallback — raw VO script text; timing estimated in-comp. */
   captionScript?: string | null
+  /** D-ID's OWN measured clip length (lib/video/avatar-render-orchestrator.ts merges it) —
+   *  the shared AvatarPIP's freeze/fade guard reads it (wave 89: this reel now mounts the survivor). */
+  avatarDurationSeconds?: number | null
+  /** The avatar clip is a keyed (transparent webm) presenter — see remotion/components/AvatarPIP.tsx. */
+  avatarVideoTransparent?: boolean | null
 }
 
 const FPS     = 30
-const COVER   = 3 * FPS    // 0-3
-const DIAGRAM = 12 * FPS   // 3-15
-const CTA     = 3 * FPS    // 15-18
-const TOTAL   = COVER + DIAGRAM + CTA  // 540
+// THE BODY IS COMPUTED, NOT TYPED (wave 78, lib/video/duration-model.ts):
+// `DIAGRAM = 12 * FPS` stood here. Bookends come from the ONE registry; the
+// diagram window is whatever body the render's durationInFrames leaves.
+const BOOKENDS = compositionBookends("ExplainerAnimReel")
+const COVER   = BOOKENDS.introFrames
+const CTA     = BOOKENDS.outroFrames
 
 const ENTER = Easing.bezier(0.16, 1, 0.3, 1)
 
-/** Avatar PIP — top-left 300×300, brand accent ring; avatar video / photo /
- *  initial-card fallback, identical contract to AgentExplainerReel. */
-const AvatarPIP: React.FC<{
-  avatarVideoUrl: string | null
-  agentPhotoUrl:  string | null
-  agentName:      string
-  accentColor:    string
-  primaryColor:   string
-  startFrame:     number
-  endFrame:       number
-}> = ({ avatarVideoUrl, agentPhotoUrl, agentName, accentColor, primaryColor, startFrame, endFrame }) => {
-  const ring: React.CSSProperties = {
-    position: "absolute", top: 40, left: 40,
-    width: 300, height: 300, borderRadius: 150,
-    boxShadow: `0 0 0 6px ${accentColor}, 0 18px 36px rgba(0,0,0,0.3)`,
-    overflow: "hidden", backgroundColor: primaryColor, zIndex: 5,
-  }
-  if (avatarVideoUrl) {
-    return (
-      <div style={ring}>
-        <Video src={avatarVideoUrl} startFrom={startFrame} endAt={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  if (agentPhotoUrl) {
-    return (
-      <div style={ring}>
-        <Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-      </div>
-    )
-  }
-  return (
-    <div style={{
-      ...ring, backgroundColor: accentColor,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 120, color: primaryColor, fontWeight: 800,
-    }}>
-      {(agentName[0] ?? "A").toUpperCase()}
-    </div>
-  )
-}
+// TOMBSTONE (wave 89, lane 89F — §1.1): the private `AvatarPIP` (top-left
+// 300 px ring at a typed 40 px corner, no freeze guard) that stood here MERGED
+// onto the survivor remotion/components/AvatarPIP.tsx (imported above), which
+// places the ring inside the frame's safe insets (pipCornerStyle), carries the
+// wave-56 avatarDurationSeconds freeze/fade guard and the keyed-presenter
+// path. Call site passes size={300} position="top-left" ringWidth={6}.
 
 // ── diagram canvas geometry ──────────────────────────────────────────────────
 const CANVAS = { x: 90, y: 470, w: 900, h: 470 }   // diagram drawing region
 
+// NOT lib/format/money.ts's `compactCentsMoney` (§1/§6, 2026-09-08): that one
+// takes CENTS and has an M tier; this takes DOLLARS, K-only, no locale
+// commas — the same "compact dollars" shape already documented there as
+// lib/video/director-content.ts:419's `compactMoney`, not a duplicate of it
+// either. Genuinely different unit/contract, recorded rather than merged.
 const fmtMoney = (n: number): string =>
   n >= 1000 ? `$${Math.round(n / 1000)}K` : `$${Math.round(n)}`
 
@@ -170,7 +141,12 @@ const EquityDiagram: React.FC<{ data: EquityOverTimeData; accent: string }> = ({
   const vSlice = valuePts.slice(0, shown)
   const bSlice = balancePts.slice(0, shown)
   // Equity wedge = between the value line (top) and balance line (bottom).
-  const wedge = [...vSlice, ...[...bSlice].reverse()]
+  // Annotated at the CONSTRUCTION site rather than left to inference: the wedge
+  // is the one point array in this file assembled by hand instead of returned by
+  // seriesToPoints (lib/charts/geometry.ts:46), so it is the only one where a
+  // shape mistake would surface as a silently malformed `d` attribute inside
+  // linePath rather than as a type error here.
+  const wedge: Point[] = [...vSlice, ...[...bSlice].reverse()]
   const wedgePath = wedge.length ? `${linePath(wedge)} Z` : ""
 
   const finalOp = interpolate(local, [80, 110], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
@@ -321,53 +297,71 @@ const Diagram: React.FC<{ data: DiagramData; accent: string }> = ({ data, accent
 export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
   eyebrow, title, caption, ctaLabel, hasData, diagram,
   agentName, avatarVideoUrl, agentPhotoUrl, brand,
-  captionsCues, captionScript, qrCodeDataUrl, qrCaption, mlsClean,
+  captionsCues, captionScript, qrCodeDataUrl, qrCaption, mlsClean, avatarDurationSeconds, avatarVideoTransparent,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
+  const { durationInFrames, width, height } = useVideoConfig()
+  // Wave 89 — the frame's safe insets + badge slot (lib/video/cinema-finish.ts):
+  // the assumptions caption sat at a typed 48 px, under the burned-in caption band.
+  const { safe } = cinemaFrame(width, height)
+  const slot = cinemaBadgeSlot(width, height)
+  const timeline = computeAssemblyTimeline({ durationInFrames, introFrames: COVER, outroFrames: CTA })
+  const DIAGRAM = timeline.body.durationInFrames
   return (
     <AbsoluteFill style={{
       background: `radial-gradient(circle at 30% 0%, ${brand.primaryColor} 0%, #0b1220 85%)`,
       fontFamily: "system-ui, -apple-system, sans-serif",
     }}>
-      {/* COVER — 0-3s */}
+      {/* COVER — 0-2s (wave 89: the title card IS the hook; held to the hook
+          window — lib/video/duration-model.ts HOOK_ON_COVER_MAX_SECONDS) */}
       <Sequence from={0} durationInFrames={COVER}>
         <AbsoluteFill style={{
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl && (
-            <Img src={brand.logoUrl} style={{
+            <SafeImg src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 28,
-              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateRight: "clamp" }),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "8px 20px", borderRadius: 4,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase",
-            marginBottom: 28, opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateRight: "clamp" }),
+            marginBottom: 28, opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {eyebrow}
           </div>
           <div style={{
             fontSize: 64, fontWeight: 800, color: "#fff", lineHeight: 1.1, maxWidth: 840,
-            opacity: interpolate(frame, [12, 36], [0, 1], { extrapolateRight: "clamp" }),
-            transform: `translateY(${interpolate(frame, [12, 36], [16, 0], { easing: ENTER, extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px)`,
+            opacity: interpolate(frame, [12, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+            translate: `0 ${interpolate(frame, [12, 36], [16, 0], { easing: ENTER, extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`,
           }}>
             {title}
           </div>
         </AbsoluteFill>
       </Sequence>
 
-      {/* DIAGRAM — 3-15s */}
+      {/* DIAGRAM — 3-15s.
+          AVATAR LEAD-IN FIX (wave 60 realism audit — same defect + fix as
+          MarketUpdateReel/EquityReportReel/AgentExplainerReel). This is the
+          avatar's ONLY window, but it still opens after the silent COVER
+          tile; passing the composition-absolute COVER frame as `<Video
+          trimBefore>` skipped the clip's first COVER seconds of REAL
+          narration. `startFrame: 0` plays the clip from its own beginning
+          the moment it first becomes visible. */}
       <Sequence from={COVER} durationInFrames={DIAGRAM}>
         <AbsoluteFill>
           <AvatarPIP {...{ avatarVideoUrl, agentPhotoUrl, agentName,
             accentColor: brand.accentColor, primaryColor: brand.primaryColor,
-            startFrame: COVER, endFrame: COVER + DIAGRAM }} />
-          {/* Title strip (right of PIP) */}
-          <div style={{ position: "absolute", top: 90, left: 380, right: 60 }}>
+            avatarDurationSeconds, avatarVideoTransparent, fps: FPS, size: 300, position: "top-left", ringWidth: 6,
+            startFrame: 0, endFrame: DIAGRAM }} />
+          {/* Title strip (right of PIP) — wave 89: inside the safe insets and
+              clear of the 300 px ring (it sat at a typed top: 90 / left: 380,
+              7 px into the top UI band and under the ring's own right edge). */}
+          <div style={{ position: "absolute", top: safe.top, left: safe.left + 300 + 40, right: safe.right }}>
             <div style={{ width: 56, height: 6, background: brand.accentColor, borderRadius: 3, marginBottom: 14 }} />
             <div style={{ color: "#fff", fontSize: 40, fontWeight: 800, lineHeight: 1.05 }}>{title}</div>
           </div>
@@ -389,7 +383,7 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
 
           {/* Caption — assumptions, honest about estimates */}
           <div style={{
-            position: "absolute", left: 90, right: 90, bottom: 48,
+            position: "absolute", left: safe.left, right: safe.right, bottom: slot.bottom,
             color: "rgba(255,255,255,0.6)", fontSize: 20, textAlign: "center", lineHeight: 1.35,
           }}>
             {caption}
@@ -405,10 +399,9 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
         }}>
           <div style={{ fontSize: 64, fontWeight: 800, lineHeight: 1.05, marginBottom: 24 }}>{ctaLabel}</div>
           <div style={{ fontSize: 36, color: brand.accentColor, fontWeight: 700 }}>{agentName}</div>
-          <div style={{
-            position: "absolute", bottom: 24, left: 0, right: 0, textAlign: "center",
-            fontSize: 14, opacity: 0.55, letterSpacing: 1, lineHeight: 1.5,
-          }}>
+          {/* Wave 89 — the disclosure on the safe bottom inset at the caption
+              step (cinemaDisclosureStyle); it was 24 px from the edge in 14 px type. */}
+          <div style={{ position: "absolute", ...cinemaDisclosureStyle(width, height) }}>
             {brand.brokerageName}{showEho && " · Equal Housing Opportunity"}
           </div>
           <QrOutroBadge qrCodeDataUrl={qrCodeDataUrl} caption={qrCaption ?? "Scan to book a consult"}
@@ -416,11 +409,15 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
         </AbsoluteFill>
       </Sequence>
 
-      <Sequence from={TOTAL - 1} durationInFrames={1}>
+      <Sequence from={durationInFrames - 1} durationInFrames={1}>
         <AbsoluteFill />
       </Sequence>
 
-      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor} />
+      {/* NO CAPTION OVER BRANDING (wave 57) — clip before the CTA/QR tile.
+          NO CAPTION OVER SILENCE (wave 59) — the avatar's baked-in audio
+          starts at COVER, not frame 0; see CaptionLayer.visibleFromFrame. */}
+      <CaptionLayer cues={captionsCues} script={captionScript} accentColor={brand.accentColor}
+        visibleFromFrame={COVER} hiddenFromFrame={COVER + DIAGRAM} />
     </AbsoluteFill>
   )
 }

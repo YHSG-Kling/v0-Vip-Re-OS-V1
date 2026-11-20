@@ -1,0 +1,126 @@
+-- m463 — agents.cap_amount and agents.cap_progress are dropped.
+--
+-- m461 created the ledger and backfilled it, and said plainly why these two
+-- columns were NOT dropped in the same migration:
+--
+--   "dropping a column out from under live code is how a migration turns a data
+--    problem into an outage. The repoint lands in this same wave; the DROP is
+--    written only after the repoint is verified, so the two facts stay separable
+--    if either has to be reverted."
+--
+-- The repoint has landed. This is that DROP. (m461's note says "m462"; that
+-- number was taken by the territory work in the same wave, so the drop is m463.
+-- Nothing else about the plan changed.)
+--
+-- ══ WHY THEY WERE NEVER SAFE TO KEEP ═══════════════════════════════════════
+--
+-- Not merely redundant. Both were WRONG, in two distinct ways, and the screens
+-- that read them looked entirely plausible:
+--
+--   · `cap_amount` on the agents row was never read by the commission engine.
+--     lib/commission/waterfall/07-apply-cap.ts reads `agent_cap_tracking` and
+--     nothing else. MEASURED before m461: four agents carried a cap here and
+--     THREE had no ledger row at all — so a broker set a cap, every screen
+--     showed it back, and it had never once been applied to a cheque.
+--
+--   · `cap_progress` MEASURED THE WRONG SIDE OF THE SPLIT. Its only writer
+--     (app/actions/agents.ts:updateAgentYTDStats) computed
+--     `min(ytd_gci / cap_amount * 100, 100)`, and `ytd_gci` is the sum of
+--     `agent_commissions.agent_commission` — what the AGENT KEPT. A cap is a
+--     ceiling on what the BROKERAGE COLLECTS (07-apply-cap.ts's own header:
+--     "Cap tracks brokerage's cumulative earnings, NOT agent's"). On a 70/30
+--     split an agent read as capped while the brokerage had taken roughly 43%
+--     of the cap.
+--
+-- The clamp in that formula had a second casualty. The brokerage P&L page tested
+-- `cap_progress >= 101` to count post-cap agents — a threshold a value clamped
+-- to 100 can never cross — so that card and the "High Post-Cap Agent Ratio"
+-- priority behind it read zero for every brokerage, always.
+--
+-- ══ EVERY READER AND WRITER, AND WHERE IT WENT ═════════════════════════════
+--
+-- WRITERS (both removed before this migration):
+--   app/actions/agents.ts:createAgent            → seeds agent_cap_tracking via
+--                                                  lib/commission/cap-resolver.ts
+--   app/actions/agents.ts:updateAgentYTDStats    → stopped computing cap_progress;
+--                                                  the engine advances
+--                                                  cap_paid_to_date on disbursement
+--   app/actions/agents.ts:updateAgent            → no longer accepts cap_amount,
+--                                                  and re-sanitizes the spread so a
+--                                                  smuggled key cannot reach the column
+--
+-- READERS (all repointed onto agent_cap_tracking):
+--   app/actions/admin/agent-360.ts               → cap_paid_to_date / cap_amount
+--   app/dashboard/transactions/[id]/cda/         → the CDA rendered cap_progress
+--     page.tsx + cda-workflow-client.tsx            through formatCurrency, so a
+--                                                   closing document printed
+--                                                   "$43.00 / $100,000.00". Now
+--                                                   dollars over dollars.
+--   app/dashboard/financials/brokerage/page.tsx  → the whole cap card, including
+--                                                   "Cap Revenue", which was a
+--                                                   percentage multiplied back out
+--   app/dashboard/financials/agent/page.tsx      → the fallback chain mixed dollars
+--                                                   and percent in one `??`
+--   app/api/internal/ai-chat/route.ts            → dropped from the broker's AI
+--                                                   context rather than approximated
+--   lib/kernel/commission-forecaster.ts          → resolveCap preferred this column
+--                                                   OVER the ledger; now ledger-only
+--
+-- TEST DATA: scripts/commission-forecaster-simulator.ts and
+-- scripts/recruiter-agent-management-simulator.ts configured their caps by
+-- writing agents.cap_amount. Both now seed agent_cap_tracking — borrowing an
+-- existing window and restoring it, or creating one and deleting it — so they
+-- prove what the engine does rather than what a dead column says.
+--
+-- ══ WHAT REPLACES THEM ═════════════════════════════════════════════════════
+--
+--   agent_cap_tracking.cap_amount / cap_paid_to_date   the ledger stage 07 reads
+--   agent_commission_profiles.cap_amount               the per-agent override
+--   brokerages.default_cap_amount                      the brokerage-wide default (m461)
+--
+-- lib/commission/cap-resolver.ts resolves between the last two and materialises
+-- the answer into the first. A cap that is only CONFIGURED is not a cap.
+--
+-- ══ WHAT IS IN THE COLUMNS RIGHT NOW, MEASURED ═════════════════════════════
+--
+--   agent    agents.cap_amount   agents.cap_progress   ledger cap / paid
+--   …0002        150000.00              0              150000.00 /     0.00
+--   …0004        100000.00              0              100000.00 /     0.00
+--   …0005        100000.00              0               80000.00 / 72500.00
+--   …0007        100000.00              0              100000.00 /     0.00
+--
+-- Every capped agent has a ledger row covering today, so the enforcement path is
+-- whole. `cap_progress` is 0 on all four and is a derived percentage anyway —
+-- nothing there is a fact.
+--
+-- ONE NUMBER IS GENUINELY LOST, AND IT IS NAMED HERE RATHER THAN GLOSSED.
+-- Agent …0005's agents row says 100000 while its ledger says 80000, against
+-- which 72500 has already been collected. m461's backfill only filled GAPS — it
+-- did not overwrite a ledger carrying real paid-to-date history — so the
+-- disagreement was left standing and REPORTED, because picking one of the two
+-- would be inventing a fact about somebody's compensation.
+--
+-- Dropping the column removes the 100000 side of that disagreement from the
+-- database. That is acceptable and it is not the same as resolving it:
+--
+--   · the 80000 the ledger holds is the number the commission engine has been
+--     applying and the number 72500 was collected against, so the drop changes
+--     no cheque, past or future;
+--   · the 100000 was never enforceable — it lived in a column nothing read;
+--   · the figure is preserved in writing, here and in m461, so the question can
+--     still be asked and answered.
+--
+-- WHAT IS STILL OPEN: whether …0005's cap is 80000 or 100000 is an owner's
+-- question, not a migration's. If the answer is 100000, the correction is an
+-- UPDATE to that ledger row's cap_amount — a deliberate administrative act on
+-- the canonical record, which is exactly where such a correction belongs.
+
+alter table public.agents drop column if exists cap_amount;
+alter table public.agents drop column if exists cap_progress;
+
+do $$
+begin
+  raise notice 'm463: agents.cap_amount and agents.cap_progress are gone. A cap now lives only where the commission engine can act on it — % agents carry a live cap ledger row.',
+    (select count(*) from public.agent_cap_tracking
+      where anniversary_start <= current_date and anniversary_end >= current_date);
+end $$;

@@ -2,8 +2,10 @@
 
 // Subscriber referral fees — who referred each paying tenant and what the platform
 // owes them. Data rides the growth-funnel rail (platform_prospects "referral:" source
-// + converted_brokerage_id); payments are read from / written to the append-only
-// superadmin_audit_log ledger. Billing-gated server-side (superadmin + platform admin).
+// + converted_brokerage_id); "Mark paid" POSTS to the referral_payouts ledger (m573;
+// idempotent per referral+month; tenant-referrers see + confirm it on their billing
+// page), with superadmin_audit_log as the audit trail (and the legacy record while
+// m573 is unapplied). Billing-gated server-side (superadmin + platform admin).
 import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -14,17 +16,22 @@ import {
   listSubscriberReferralsAction, recordSubscriberReferralAction,
   linkReferralConversionAction, markReferralFeePaidAction,
 } from "@/app/actions/superadmin/subscriber-referrals"
-import type { SubscriberReferralRow } from "@/lib/platform/subscriber-referrals"
+import { describeReferralFeeTerms, type SubscriberReferralRow } from "@/lib/platform/subscriber-referrals"
+import type { ReferralFeeTerms } from "@/lib/platform/referral-payouts"
 
 const fmt = (c: number) => `$${(c / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-export function SubscriberReferralsCard({ initialRows, feePercent, brokerageOptions }: {
+export function SubscriberReferralsCard({ initialRows, feePercent, terms, brokerageOptions }: {
   initialRows: SubscriberReferralRow[]
   feePercent: number
+  /** The full configured terms (m576) — shown so staff see exactly what the
+   *  platform will compute, and whether it is configured or a reported default. */
+  terms?: ReferralFeeTerms | null
   brokerageOptions: Array<{ id: string; name: string }>
 }) {
   const [rows, setRows] = useState(initialRows)
   const [options, setOptions] = useState(brokerageOptions)
+  const [liveTerms, setLiveTerms] = useState<ReferralFeeTerms | null>(terms ?? null)
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ referrer: "", email: "", name: "", company: "" })
   const [linkSel, setLinkSel] = useState<Record<string, string>>({})
@@ -33,7 +40,7 @@ export function SubscriberReferralsCard({ initialRows, feePercent, brokerageOpti
 
   function reload() {
     listSubscriberReferralsAction().then((r) => {
-      if (r.ok) { setRows(r.rows); setOptions(r.brokerageOptions) }
+      if (r.ok) { setRows(r.rows); setOptions(r.brokerageOptions); setLiveTerms(r.terms) }
     })
   }
   function run(fn: () => Promise<{ ok: boolean; error?: string }>, okMsg: string) {
@@ -53,7 +60,10 @@ export function SubscriberReferralsCard({ initialRows, feePercent, brokerageOpti
           <HandCoins className="h-4 w-4 text-primary" />
           Subscriber referral fees
           <span className="text-xs font-normal text-muted-foreground">
-            {feePercent}% of the referred tenant&apos;s MRR · {fmt(owedNow)}/mo across {rows.length} referral{rows.length === 1 ? "" : "s"}
+            {/* The TERMS drive this line (m576) — basis, rate and duration are
+                configured, never assumed; a code default is labeled as such. */}
+            {liveTerms ? describeReferralFeeTerms(liveTerms) : `${feePercent}% of the referred tenant's MRR`}
+            {" · "}{fmt(owedNow)}{liveTerms?.basis === "flat" ? "" : "/mo"} across {rows.length} referral{rows.length === 1 ? "" : "s"}
           </span>
         </CardTitle>
         <Button size="sm" variant="outline" disabled={pending} onClick={() => setShowAdd((s) => !s)}>
@@ -120,7 +130,17 @@ export function SubscriberReferralsCard({ initialRows, feePercent, brokerageOpti
                     <td className="px-3 py-2 text-right tabular-nums font-medium">{r.feeCents > 0 ? fmt(r.feeCents) : "—"}</td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">
                       {r.lastPaidAt
-                        ? <>{fmt(r.lastPaidCents ?? 0)} on {new Date(r.lastPaidAt).toLocaleDateString()}<span className="block">{fmt(r.totalPaidCents)} lifetime</span></>
+                        ? <>
+                            {fmt(r.lastPaidCents ?? 0)} on {new Date(r.lastPaidAt).toLocaleDateString()}
+                            <span className="block">{fmt(r.totalPaidCents)} lifetime</span>
+                            {r.ledgerPostedCents > 0 && (
+                              <span className="block">
+                                {fmt(r.ledgerPostedCents)} posted · {fmt(r.ledgerReceivedCents)} confirmed received
+                                {!r.recipientBrokerageId &&
+                                  ` · non-tenant referrer${r.recipientEmail ? ` — pay ${r.recipientEmail}` : ""}`}
+                              </span>
+                            )}
+                          </>
                         : "Never"}
                     </td>
                     <td className="px-3 py-2 text-right">
@@ -137,7 +157,7 @@ export function SubscriberReferralsCard({ initialRows, feePercent, brokerageOpti
           </div>
         )}
         <p className="text-[11px] text-muted-foreground">
-          Payments are recorded in the append-only platform action ledger (superadmin_audit_log · referral_fee.paid) — full history in <a className="underline" href="/dashboard/superadmin/audit">Audit</a>.
+          &ldquo;Mark paid&rdquo; POSTS the payout to the referral_payouts ledger (one row per referral per month — a repeat post for the same month is refused, and a post beyond the configured duration is refused with the term named); a referrer who is a tenant sees it on their own billing page and confirms receipt there. The audit trail (referral_payout.posted, plus legacy referral_fee.paid lines) stays in <a className="underline" href="/dashboard/superadmin/audit">Audit</a>.
         </p>
       </CardContent>
     </Card>

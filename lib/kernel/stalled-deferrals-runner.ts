@@ -5,6 +5,7 @@
 // deferred-to manager ("act or release") + the contact's agent. Idempotent (one nudge per stalled
 // pair per window). Never throws.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { detectStalledDeferrals, DEFAULT_STALL_THRESHOLD } from "./stalled-deferrals"
@@ -78,12 +79,12 @@ export async function runStalledDeferralNudges(
       }
       if (agentId) {
         const name = `${(c as any).first_name ?? ""} ${(c as any).last_name ?? ""}`.trim() || "A contact"
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id: agentId, brokerage_id: brokerageId, type: "deferral_stall",
           title: `${name} is stuck in limbo`,
           body: `${name} has been deferred between managers ${s.count} times with no outreach. A personal touch from you may be the unlock.`,
           entity_type: "contact", entity_id: s.contactId, priority: "medium", is_read: false,
-        })
+        }), { table: "notifications", flow: "stalled_deferrals_runner_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
     } catch { /* best-effort */ }
 

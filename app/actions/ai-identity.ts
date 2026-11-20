@@ -9,7 +9,10 @@ import { revalidatePath } from "next/cache"
 // and never verified caller auth. Any signed-in user could read or
 // overwrite another brokerage's assistant identity (the system prompt
 // applied to all customer-facing AI calls).
-const SAVE_ROLES = ["admin", "super_admin", "superadmin", "broker", "broker_owner", "broker_admin", "team_lead", "team_leader", "agent"]
+// SCOPE LADDER (kept inline — admits agent/team_lead tiers, not an admin gate):
+// 'superadmin'/'super_admin' removed — tested against users.user_type, where 0
+// live rows store either spelling (platform staff carry platform_role).
+const SAVE_ROLES = ["admin", "broker", "broker_owner", "broker_admin", "team_lead", "team_leader", "agent"]
 
 async function requireCaller(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string; teamId: string | null }
@@ -225,13 +228,13 @@ export async function saveAIIdentityProfile(
 
     // THE TOGGLE MADE REAL: saving ai_answer_calls=ON now actually wires the
     // AI receptionist — assistant created/updated from this profile + the
-    // scope's numbers imported into Vapi bound to the authoritative webhook.
-    // Best-effort + honest: without VAPI creds the save succeeds and the
+    // scope's numbers bound to the authoritative Twilio voice webhook.
+    // Best-effort + honest: without voice credentials the save succeeds and the
     // binding status says exactly why nothing was wired.
     let bindingNote: string | undefined
     if (input.aiAnswerCalls === true && data?.id) {
       try {
-        const { applyInboundCallBinding } = await import("@/lib/voice/vapi-numbers")
+        const { applyInboundCallBinding } = await import("@/lib/voice/inbound-number-binding")
         const b = await applyInboundCallBinding(svc, data.id)
         bindingNote = b.ok
           ? (b.applied ? `AI receptionist live — ${b.numbersBound ?? 0} number(s) bound to the assistant.` : undefined)
@@ -242,7 +245,9 @@ export async function saveAIIdentityProfile(
     }
 
     // Revalidate relevant pages
-    revalidatePath("/settings/admin/ai-identity")
+    // /settings/admin/ai-identity has no page.tsx — the brokerage-scope editor is
+    // app/dashboard/admin/ai-identity, the third of the three scope pages below.
+    revalidatePath("/dashboard/admin/ai-identity")
     revalidatePath("/dashboard/team/ai-identity")
     revalidatePath("/dashboard/agent/ai-identity")
 
@@ -261,6 +266,8 @@ export async function generateIdentityPreview(input: {
   // Auth gate — preview burns paid AI inference
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "assistant.identity_preview.generate", actor: { type: "user", userId: auth.userId }, subject: { type: "ai_tool_usage", ref: "identity_preview" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   try {
     const { generateTextRouted } = await import("@/lib/ai/models")
@@ -276,6 +283,7 @@ export async function generateIdentityPreview(input: {
   } catch (err) {
     return { success: false, error: "Preview generation failed — check AI configuration" }
   }
+  })
 }
 
 /** Generate the assistant HEADSHOT GALLERY (owner rule: real OPTIONS for the
@@ -288,8 +296,11 @@ export async function generateAssistantFaceOptionsAction(): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthenticated" }
   try {
+    // Wave 139 (139C): the gallery's image spend books under the SESSION tenant (requireCaller), or —
+    // for a signed-in seat with no brokerage — under the user alone (ai_tool_usage admits a user row).
+    const auth = await requireCaller()
     const { generateAssistantFaceOptions } = await import("@/lib/video/assistant-faces")
-    const options = await generateAssistantFaceOptions(3)
+    const options = await generateAssistantFaceOptions(3, { brokerageId: auth.ok ? auth.brokerageId : null, userId: user.id })
     if (options.length === 0) return { success: false, error: "Image generation unavailable — add a photo URL instead" }
     return { success: true, options }
   } catch (e) {
@@ -306,15 +317,23 @@ export async function previewAssistantVoiceAction(voiceId: string): Promise<
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
   if (!voiceId || voiceId.length > 64) return { success: false, error: "Invalid voice" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const voiced = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "assistant.voice_preview.synthesize", actor: { type: "user", userId: auth.userId }, subject: { type: "vendor_usage_tracking", ref: "voice_preview" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { voice_id: voiceId } }, async (): Promise<{ success: true; audioDataUrl: string } | { success: false; error: string }> => {
   try {
     const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
+    // The preview is rendered on the SAME model the briefs and narration
+    // lanes use (lane 77C) — a sample on a different model than the product
+    // would be a sample of nothing.
+    const { elevenLabsModelForLane } = await import("@/lib/video/realism-profile")
     const tts = await synthesizeSpeech({
       text: "Hi, this is your AI assistant. I answer your calls, brief your mornings, and present your numbers.",
-      voiceId, brokerageId: auth.brokerageId,
+      voiceId, modelId: elevenLabsModelForLane("voice_preview"), brokerageId: auth.brokerageId,
     })
     if (!tts.success || !tts.audioBuffer) return { success: false, error: tts.error ?? "Synthesis failed" }
     return { success: true, audioDataUrl: `data:audio/mpeg;base64,${tts.audioBuffer.toString("base64")}` }
   } catch (e) {
     return { success: false, error: (e as Error).message }
   }
+  })
+  return "audioDataUrl" in voiced ? voiced : { success: false, error: voiced.error ?? "Synthesis failed" }
 }

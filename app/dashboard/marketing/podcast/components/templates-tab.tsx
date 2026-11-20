@@ -42,13 +42,16 @@ interface TemplatesTabProps {
   onUpdate: () => void
 }
 
+// podcast_templates.template_type admits exactly: interview | solo |
+// educational | market_update | listing_spotlight. Two of the six offered here
+// were not admitted — "property_spotlight" (the column says listing_spotlight)
+// and "qa" (no such value) — so creating either template failed.
 const TEMPLATE_TYPES = [
   { value: "interview", label: "Interview" },
   { value: "solo", label: "Solo Host" },
   { value: "educational", label: "Educational" },
   { value: "market_update", label: "Market Update" },
-  { value: "property_spotlight", label: "Property Spotlight" },
-  { value: "qa", label: "Q&A" },
+  { value: "listing_spotlight", label: "Listing Spotlight" },
 ]
 
 export function TemplatesTab({ templates, loading, onUpdate }: TemplatesTabProps) {
@@ -149,7 +152,7 @@ export function TemplatesTab({ templates, loading, onUpdate }: TemplatesTabProps
       {templates.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <div className="p-4 bg-gray-100 rounded-full mb-4">
-            <FileText className="h-8 w-8 text-gray-400" />
+            <FileText className="h-8 w-8 text-gray-500" />
           </div>
           <h3 className="text-lg font-semibold text-gray-900 mb-2">No templates yet</h3>
           <p className="text-sm text-gray-500 max-w-sm mb-4">

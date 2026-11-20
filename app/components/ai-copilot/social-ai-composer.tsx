@@ -17,9 +17,9 @@ import {
 } from "@/components/ui/select"
 import { Sparkles, Loader2, Copy, Check, Calendar, Send, Wand2, RefreshCw } from "lucide-react"
 import { scheduleSocialPost } from "@/app/actions/social-media-automation"
-import { generateSocialPostContent } from "@/app/actions/social/generate-social-post"
+import { generateSocialPostContent, stampPostBrandCompliance } from "@/app/actions/social/generate-social-post"
 import { toast } from "sonner"
-import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
+// TOMBSTONE (wave 153, lane 153I): `awardPointsForAction(...)` — a client call into app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door that awarded on a click with no verified outcome and no once-key — is retired. SURVIVOR: lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES via the event reactor (lib/gamification/lifecycle-awards.ts awardLifecycleMilestones) — awarded once per post on SOCIAL_POST_PUBLISHED by the publisher.
 
 interface SocialAiComposerProps {
   agentId: string
@@ -28,6 +28,12 @@ interface SocialAiComposerProps {
   /** Full account objects so we can look up the account ID for the selected platform */
   accounts?: Array<{ id: string; platform: string; account_name: string }>
   onPostScheduled?: () => void
+  /** The brokerage's "posts need broker approval" setting — the SAME flag the Create Post dialog passes. This
+   *  composer scheduled posts WITHOUT it, so a post written here skipped the approval queue the dialog's posts
+   *  entered (wave 146, lane 146H; owner ruling 9). */
+  requiresBrokerApproval?: boolean
+  /** Who approves this person's post — the C5 answer (lib/kernel/approval-authority.ts approverFor), worded. */
+  approverLine?: string | null
 }
 
 const CONTENT_TYPES = [
@@ -55,6 +61,8 @@ export function SocialAiComposer({
   connectedPlatforms,
   accounts = [],
   onPostScheduled,
+  requiresBrokerApproval = false,
+  approverLine = null,
 }: SocialAiComposerProps) {
   const [contentType, setContentType] = useState("")
   const [tone, setTone] = useState("professional")
@@ -130,20 +138,45 @@ export function SocialAiComposer({
         return
       }
 
-      await scheduleSocialPost({
-        agentId,
+      // No agentId / userId from here (wave 146, lane 146H). `agentId` in this component is the session USER id
+      // (generateSocialPostContent and the points award read it as one); scheduleSocialPost verifies a supplied
+      // agentId as an AGENTS id (agents.id and users.id are disjoint — CLAUDE.md §3), so every post scheduled
+      // here was refused "Forbidden". Omitted, the action uses the session's own agents row.
+      const scheduled = await scheduleSocialPost({
         brokerageId,
-        userId: agentId,
         platform,
         postType: contentType || "custom",
         content: contentWithHashtags,
         hashtags,
         scheduledFor: scheduledTime || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
         socialAccountId: account.id,
+        requiresBrokerApproval,
       })
+      // THE SERVER'S VERDICT, not an optimistic one: scheduleSocialPost RESOLVES
+      // with success:false on a compliance block or a refused insert.
+      if (!scheduled.success) {
+        toast.error(scheduled.error ?? "Failed to schedule post")
+        return
+      }
+
+      // COMPLIANCE-FIRST STAMP (wired 2026-09-03). brand_compliance_passed is the
+      // flag app/actions/social-share.ts refuses to share without, and the
+      // publisher cron only stamps it at publish time — AFTER a human approved
+      // the post. Stamping here, the moment the row exists, puts hashtag /
+      // prohibited-word / logo findings in front of the AGENT first, so the
+      // approver and the publisher see a post that was already checked.
+      const postId = (scheduled as { data?: { id?: string } | null }).data?.id
+      if (postId) {
+        const stamp = await stampPostBrandCompliance({ postId })
+        if (!stamp.passed) {
+          toast.warning(
+            `Scheduled, but brand compliance flagged it: ${stamp.violations.slice(0, 2).join("; ")}${stamp.violations.length > 2 ? "…" : ""}. Fix it before it publishes.`,
+          )
+        }
+      }
 
       toast.success("Post scheduled successfully!")
-      awardPointsForAction(agentId, "social_posted").catch(() => {})
+      // TOMBSTONE (wave 153, lane 153I): `awardPointsForAction(...)` — a client call into app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door that awarded on a click with no verified outcome and no once-key — is retired. SURVIVOR: lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES via the event reactor (lib/gamification/lifecycle-awards.ts awardLifecycleMilestones). Points come when the post actually PUBLISHES (app/api/cron/publish-social-posts), never at scheduling.
 
       // Reset form
       setGeneratedContent("")

@@ -26,13 +26,13 @@ export function BrokerProviderPressurePanel({ providers }: BrokerProviderPressur
     healthy: {
       icon: CheckCircle2,
       badge: "outline" as const,
-      text: "text-green-600",
+      text: "text-green-700",
       label: "Healthy",
     },
     degraded: {
       icon: AlertTriangle,
       badge: "secondary" as const,
-      text: "text-yellow-600",
+      text: "text-yellow-700",
       label: "Degraded",
     },
     down: {

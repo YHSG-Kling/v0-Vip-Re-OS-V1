@@ -1,3 +1,4 @@
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -43,7 +44,7 @@ export async function POST(request: NextRequest) {
     // Rebuild the settings-driven identity from the caller's OWN call (the To
     // number the caller dialed) — assistant name/agent/brokerage all live in
     // the tenant-editable AI identity profile.
-    const { data: call } = await svc.from("voice_calls").select("phone_to").eq("vapi_call_id", callerSid).maybeSingle()
+    const { data: call } = await svc.from("voice_calls").select("phone_to").eq("vendor_call_id", callerSid).maybeSingle()
     const ctx = (call as any)?.phone_to ? await resolveInboundContext(svc, (call as any).phone_to) : null
     const briefing = composeWhisperBriefing(ctx?.identity ?? {}, label, topic)
     const joinUrl = `${url.origin}${url.pathname}?${new URLSearchParams({ token: given, step: "join", conf, caller: callerSid, vc: voiceCallId ?? "", b: brokerageId }).toString()}`
@@ -55,8 +56,8 @@ export async function POST(request: NextRequest) {
     const digit = String(form?.get("Digits") ?? "")
     if (digit !== "1") return xml('<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna-Neural">No problem — I\'ll take a message.</Say><Hangup/></Response>')
     if (voiceCallId) {
-      await svc.from("voice_calls").update({ outcome: "warm_transferred", status: "completed", ended_at: new Date().toISOString() })
-        .eq("id", voiceCallId).then(undefined, () => {})
+      await sentinelWrite(svc, svc.from("voice_calls").update({ outcome: "warm_transferred", status: "completed", ended_at: new Date().toISOString() })
+        .eq("id", voiceCallId), { table: "voice_calls", flow: "voice_warm_transferred", reason: "the bridge proceeds regardless; a lost outcome stamp is ledgered" })
     }
     return xml(twimlJoinConference(conf))
   }
@@ -87,8 +88,8 @@ export async function POST(request: NextRequest) {
       }
     } catch { /* the caller's own hangup remains the worst case */ }
     if ((vc as any)?.id) {
-      await svc.from("voice_calls").update({ outcome: "warm_bridge_missed", status: "completed", ended_at: new Date().toISOString() })
-        .eq("id", (vc as any).id).then(undefined, () => {})
+      await sentinelWrite(svc, svc.from("voice_calls").update({ outcome: "warm_bridge_missed", status: "completed", ended_at: new Date().toISOString() })
+        .eq("id", (vc as any).id), { table: "voice_calls", flow: "voice_warm_bridge_missed", reason: "the agent is notified below regardless; a lost outcome stamp is ledgered" })
     }
     // The agent hears about the miss immediately.
     if (bId) {
@@ -96,12 +97,12 @@ export async function POST(request: NextRequest) {
       if ((call as any)?.agent_id) {
         const { data: a } = await svc.from("agents").select("user_id").eq("id", (call as any).agent_id).maybeSingle()
         if ((a as any)?.user_id) {
-          await svc.from("notifications").insert({
+          await sentinelWrite(svc, svc.from("notifications").insert({
             user_id: (a as any).user_id, brokerage_id: bId, type: "warm_bridge_missed",
             title: "You missed a live warm transfer",
             body: `${label} was holding for you${topic ? ` about ${topic}` : ""} — they were told you'll call right back. Transcript on the call record.`,
             entity_type: "voice_call", entity_id: voiceCallId, priority: "high", channel: "in_app", is_read: false,
-          }).then(undefined, () => {})
+          }), { table: "notifications", flow: "route_notify", brokerageId: bId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
         }
       }
     }

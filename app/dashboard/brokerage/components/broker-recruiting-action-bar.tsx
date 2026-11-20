@@ -15,8 +15,9 @@ import { TrendingUp, DollarSign, ExternalLink, Loader2, BarChart3 } from "lucide
 import { getBreakEvenAnalysis, getRecruitingCostBreakdown } from "@/app/actions/recruiting-roi"
 import Link from "next/link"
 
+// `brokerageId` prop REMOVED (2026-09-03): the two actions derive the tenant from
+// the session (app/actions/recruiting-roi.ts, §4), so nothing here needs it.
 interface Props {
-  brokerageId: string
   breakEvenAnalysis: {
     avgBreakEvenMonth: number
     breakEvenMonths: { recruitId?: string; months: number }[]
@@ -31,7 +32,7 @@ interface Props {
   }
 }
 
-export function BrokerRecruitingActionBar({ brokerageId, breakEvenAnalysis, costBreakdown }: Props) {
+export function BrokerRecruitingActionBar({ breakEvenAnalysis, costBreakdown }: Props) {
   const [sheet, setSheet] = useState<"break-even" | "cost" | null>(null)
   const [liveBreakEven, setLiveBreakEven] = useState(breakEvenAnalysis)
   const [liveCost, setLiveCost] = useState(costBreakdown)
@@ -40,7 +41,7 @@ export function BrokerRecruitingActionBar({ brokerageId, breakEvenAnalysis, cost
   function openBreakEven() {
     setSheet("break-even")
     startTransition(async () => {
-      const result = await getBreakEvenAnalysis(brokerageId).catch(() => liveBreakEven)
+      const result = await getBreakEvenAnalysis().catch(() => liveBreakEven)
       setLiveBreakEven(result as any)
     })
   }
@@ -48,7 +49,7 @@ export function BrokerRecruitingActionBar({ brokerageId, breakEvenAnalysis, cost
   function openCostBreakdown() {
     setSheet("cost")
     startTransition(async () => {
-      const result = await getRecruitingCostBreakdown(brokerageId).catch(() => liveCost)
+      const result = await getRecruitingCostBreakdown().catch(() => liveCost)
       setLiveCost(result)
     })
   }

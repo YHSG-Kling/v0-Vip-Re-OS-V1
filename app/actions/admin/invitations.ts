@@ -14,8 +14,9 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { advanceBrokerageOnboarding } from "@/lib/onboarding/state-machine"
 import { revalidatePath } from "next/cache"
-
-const ADMIN_ROLES = new Set(["broker","broker_admin","admin","superadmin","team_lead"])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { bestEffort } from "@/lib/db/best-effort"
+import { redispatchInvitation } from "@/lib/kernel/users"
 
 async function requireBrokerageAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -30,7 +31,7 @@ async function requireBrokerageAdmin(): Promise<
     .eq("id", user.id)
     .maybeSingle()
   if (!data?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
-  if (!ADMIN_ROLES.has(data.user_type ?? "")) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: data.user_type ?? "" })) return { ok: false, error: "Forbidden" }
   return { ok: true, userId: user.id, brokerageId: data.brokerage_id, userType: data.user_type }
 }
 
@@ -40,7 +41,8 @@ export interface InvitationRow {
   first_name:       string | null
   last_name:        string | null
   user_type:        string
-  status:           "pending" | "accepted" | "expired" | "revoked"
+  /** `failed` (wave 141B, m779) = the invite email could not be dispatched in the creating request — Resend re-attempts it. */
+  status:           "pending" | "accepted" | "expired" | "revoked" | "failed"
   invited_by_name:  string | null
   invited_at:       string
   accepted_at:      string | null
@@ -98,21 +100,77 @@ export async function listPendingInvitationsAction(): Promise<
   }
 }
 
+/**
+ * RESEND a pending / expired / revoked / failed invitation — THE ONE resend semantic across tiers
+ * (lib/kernel/users.ts redispatchInvitation, shared with the god console's resendTenantInviteAction):
+ * the invite email is re-attempted IN THIS REQUEST and its result READ (wave 141B); the 7-day window is
+ * re-armed only when the dispatch did not fail. Before, "resend" only re-opened the window and no email
+ * ever left. Scoped to the caller's brokerage; accepted invites are immutable.
+ */
+export async function resendInvitationAction(
+  invitationId: string,
+): Promise<{ ok: boolean; error?: string; dispatched?: boolean; note?: string }> {
+  const auth = await requireBrokerageAdmin()
+  if (!auth.ok) return auth
+  const svc = createServiceClient()
+  const r = await redispatchInvitation(svc, { invitationId, brokerageId: auth.brokerageId, actorUserId: auth.userId })
+  if (!r.ok) return { ok: false, error: r.error, dispatched: r.dispatched }
+  // Audit on the tenant activity rail — same shape inviteUser writes
+  // (activities has agent_user_id, NOT user_id; entity_type is required).
+  await bestEffort(
+    svc.from("activities").insert({
+      activity_type: "admin.invitation.resent",
+      agent_user_id: auth.userId,
+      brokerage_id: auth.brokerageId,
+      entity_type: "invitation",
+      entity_id: invitationId,
+      title: `Invitation resent (${r.dispatched ? "email sent" : "window re-opened"})`,
+      metadata: { invitation_id: invitationId, dispatched: r.dispatched, resent_by: auth.userId },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }),
+    "the invitation was already re-dispatched above and the error checked; this audit echo must not turn a resend that happened into a failure the admin sees",
+  )
+  revalidatePath("/dashboard/admin/users/invitations")
+  return { ok: true, dispatched: r.dispatched, note: r.note }
+}
+
 export async function revokeInvitationAction(
   invitationId: string,
 ): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireBrokerageAdmin()
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: boolean; error?: string }>({ brokerageId: auth.brokerageId, action: "tenant.invitation.revoke", actor: { type: "user", userId: auth.userId }, subject: { type: "user_invitation", id: invitationId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const svc = createServiceClient()
-  const { error } = await svc
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNT what the update changed. An update that matches nothing resolves exactly like one
+  // that worked, so a wrong id, another tenant's invitation or an already-accepted one reported "Invitation revoked." Zero rows
+  // now re-reads the invitation IN THIS TENANT: already `revoked` is this caller's desired outcome (ok — a double click, or a
+  // second admin got there first); absent is a failure ("not found"); any other status is a failure that names it.
+  const { data: revoked, error } = await svc
     .from("user_invitations")
     .update({ status: "revoked" })
     .eq("id", invitationId)
     .eq("brokerage_id", auth.brokerageId)
     .eq("status", "pending")
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if ((revoked ?? []).length === 0) {
+    const { data: current, error: readErr } = await svc
+      .from("user_invitations")
+      .select("status")
+      .eq("id", invitationId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+    if (readErr) return { ok: false, error: `Could not confirm the invitation: ${readErr.message}` }
+    if (!current) return { ok: false, error: "Invitation not found in your workspace" }
+    const status = (current as { status?: string | null }).status ?? "unknown"
+    if (status !== "revoked") return { ok: false, error: `This invitation is no longer pending (status: ${status})` }
+  }
   revalidatePath("/dashboard/admin/users/invitations")
   return { ok: true }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }
 
 export async function markBrokerageSetupCompleteAction(): Promise<
@@ -121,7 +179,7 @@ export async function markBrokerageSetupCompleteAction(): Promise<
   const auth = await requireBrokerageAdmin()
   if (!auth.ok) return auth
   // Only admin tier should be able to declare "we're done setting up"
-  if (!["broker","broker_admin","admin","superadmin"].includes(auth.userType)) {
+  if (!isAdminOrBroker({ user_type: auth.userType })) {
     return { ok: false, error: "Forbidden — only admin or broker can mark setup complete" }
   }
   const r = await advanceBrokerageOnboarding(auth.brokerageId, "completed")

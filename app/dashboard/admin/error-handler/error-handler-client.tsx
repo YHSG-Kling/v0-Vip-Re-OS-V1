@@ -3,16 +3,14 @@
 import { useState } from "react"
 import {
   getErrorGroups,
-  getErrorGroupDetails,
   dismissErrorGroup,
   resolveErrorGroup,
 } from "@/app/actions/error-handler"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { ErrorGroupRow } from "@/app/components/admin/errors/ErrorGroupRow"
 import { ErrorDetailsPanel } from "@/app/components/admin/errors/ErrorDetailsPanel"
-import { AlertTriangle, ChevronRight } from "lucide-react"
+import { AlertTriangle } from "lucide-react"
 
 export default function ErrorHandlerClient() {
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null)

@@ -31,6 +31,8 @@ export default async function SuperadminAuditPage() {
         </div>
         <div className="flex items-center gap-2">
           <Link href="/dashboard/superadmin/audit-trail" className="rounded-md border px-3 py-1 text-sm">Event audit trail</Link>
+          <Link href="/dashboard/superadmin/tenant-transitions" className="rounded-md border px-3 py-1 text-sm">Tenant transitions</Link>
+          <Link href="/dashboard/superadmin/tos-acceptances" className="rounded-md border px-3 py-1 text-sm">ToS acceptances</Link>
           <Link href="/dashboard/superadmin/platform" className="rounded-md border px-3 py-1 text-sm">Platform</Link>
         </div>
       </div>
@@ -61,7 +63,21 @@ export default async function SuperadminAuditPage() {
                   <td className="p-2 whitespace-nowrap text-xs text-muted-foreground">
                     {new Date(r.created_at).toLocaleString()}
                   </td>
-                  <td className="p-2 text-xs">{r.actor_email ?? "—"}</td>
+                  {/* Chain of custody: the seat id, source IP and client are part
+                      of the record — hover the actor for the full trace. */}
+                  <td
+                    className="p-2 text-xs"
+                    title={[
+                      r.actor_user_id ? `user ${r.actor_user_id}` : null,
+                      r.ip_address ? `from ${r.ip_address}` : null,
+                      r.user_agent ?? null,
+                    ].filter(Boolean).join(" · ") || undefined}
+                  >
+                    <span>{r.actor_email ?? (r.actor_user_id ? `${r.actor_user_id.slice(0, 8)}…` : "—")}</span>
+                    {r.ip_address && (
+                      <span className="block text-[10px] text-muted-foreground font-mono">{r.ip_address}</span>
+                    )}
+                  </td>
                   <td className="p-2">
                     <Badge variant="outline" className="text-xs font-mono">{r.action}</Badge>
                   </td>

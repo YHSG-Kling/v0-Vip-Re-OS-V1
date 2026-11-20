@@ -71,18 +71,23 @@ export async function downloadSignedPackage(
           .maybeSingle()
         actorUserId = (agentRow?.user_id as string | undefined) ?? undefined
       }
+      // Lane 89A: the resolver no longer iterates "whatever is connected" — it resolves the
+      // tenant's SELECTION or the DocuSign default. The webhook knows which vendor SENT this
+      // envelope, so that vendor is named explicitly: the sync must reach the account that holds
+      // the envelope even if the tenant has since selected another e-sign provider.
       resolved = await resolveESignProviderForActor({
         brokerageId: matchedOffer.brokerage_id,
         userId:      actorUserId,
+        provider,
       })
     } catch (err: any) {
       return { success: false, documents_synced: 0, documents_stored: 0, error: err?.message ?? "provider unresolved" }
     }
 
-    // The resolved provider's actual name should match what the webhook says;
-    // tolerate mismatch (some brokerages have multiple creds), but log it.
+    // The resolved client is the webhook's vendor by construction (provider hint above); a
+    // mismatch would mean the hint was ignored — loud, never silent.
     if (resolved.providerName && resolved.providerName !== provider) {
-      console.warn(`[download-signed-package] webhook=${provider} resolved=${resolved.providerName} — using resolved client`)
+      console.error(`[download-signed-package] webhook=${provider} resolved=${resolved.providerName} — the provider hint was not honoured`)
     }
 
     const syncResult = await resolved.provider.syncDocuments({

@@ -20,7 +20,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 // Search actions burn paid AI inference + read contact context. Was
 // unauthenticated previously — any caller could probe contacts by UUID.
 async function requireContactAccess(contactId: string): Promise<
-  | { ok: true; brokerageId: string }
+  | { ok: true; brokerageId: string; userId: string }
   | { ok: false; error: string }
 > {
   if (!isValidUUID(contactId)) return { ok: false, error: 'Invalid contact ID' }
@@ -38,7 +38,7 @@ async function requireContactAccess(contactId: string): Promise<
   const isSelf =
     contact.contact_user_id === user.id ||
     !!(contact.email && user.email && contact.email.toLowerCase() === user.email.toLowerCase())
-  if (isSelf) return { ok: true, brokerageId: contact.brokerage_id }
+  if (isSelf) return { ok: true, brokerageId: contact.brokerage_id, userId: user.id }
   // Otherwise must be staff in the same brokerage (matches the portal layout whitelist).
   const { data: callerRow } = await svc
     .from('users')
@@ -47,9 +47,11 @@ async function requireContactAccess(contactId: string): Promise<
     .maybeSingle()
   if (
     callerRow?.brokerage_id === contact.brokerage_id &&
-    ["agent","team_lead","tc","admin","broker","superadmin"].includes(((callerRow as any)?.user_type) ?? "")
+    // SCOPE LADDER (staff roster): 'superadmin' removed — dead as users.user_type
+    // (0 live rows); broker_owner added — storable same-tenant seat that owns the brokerage.
+    ["agent","team_lead","tc","admin","broker","broker_owner"].includes(((callerRow as any)?.user_type) ?? "")
   ) {
-    return { ok: true, brokerageId: contact.brokerage_id }
+    return { ok: true, brokerageId: contact.brokerage_id, userId: user.id }
   }
   return { ok: false, error: 'Forbidden' }
 }
@@ -72,7 +74,9 @@ export async function searchPropertiesWithNaturalLanguage(params: {
 }) {
   const gate = await requireContactAccess(params.contactId)
   if (!gate.ok) return { success: false, error: gate.error }
-  return searchPropertiesCore(params)
+  // WAVE 155 (lane 155R19): the search writes (signals on the contact, the comp cache, the model's cost row) — ONE receipt, session user, the contact's tenant.
+  const { ledgerSessionAction, resultFamily } = await import('@/lib/kernel/action-ledger')
+  return resultFamily(await ledgerSessionAction({ brokerageId: gate.brokerageId, action: 'buyer.property_search.run', actor: { type: 'user', userId: gate.userId }, subject: { type: 'contact', id: params.contactId }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'HUMAN_REQUESTED' }, async () => searchPropertiesCore(params)))
 }
 
 export async function explainPropertyMatchForBuyer(params: {

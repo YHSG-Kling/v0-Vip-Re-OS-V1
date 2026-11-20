@@ -33,6 +33,9 @@ export async function submitNpsAction(params: {
   if (!ctx.isAuthenticated) return { ok: false, error: "Not authenticated" }
   if (!ctx.brokerageId) return { ok: false, error: "Only tenant workspace members can respond" }
   if (ctx.isImpersonating) return { ok: false, error: "Impersonating staff cannot submit NPS for a tenant" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const sctx = { ...ctx, brokerageId: ctx.brokerageId }
+  const lr = await ledgerSessionAction<{ ok: true; alreadySubmitted?: boolean } | { ok: false; error: string }>({ brokerageId: ctx.brokerageId, action: "platform.nps_response.submit", actor: { type: "user", userId: ctx.userId }, subject: { type: "user", id: ctx.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { score: params.score } }, async (ctx = sctx) => {
 
   const r = await submitNps({
     userId: ctx.userId,
@@ -42,4 +45,6 @@ export async function submitNpsAction(params: {
   })
   if (!r.ok) return { ok: false, error: r.error ?? "Failed to record response" }
   return { ok: true, alreadySubmitted: r.alreadySubmitted }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "Your response was not recorded — please try again" }
 }

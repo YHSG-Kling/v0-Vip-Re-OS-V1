@@ -95,8 +95,16 @@ export async function setPlatformControls(svc: Svc, patch: Partial<PlatformContr
   if (patch.showBrokerageBudgetWarning !== undefined) row.show_brokerage_budget_warning = patch.showBrokerageBudgetWarning
 
   const { data: existing } = await svc.from("platform_settings").select("id").order("created_at", { ascending: true }).limit(1).maybeSingle()
-  if (existing) await svc.from("platform_settings").update(row).eq("id", (existing as any).id)
-  else await svc.from("platform_settings").insert(row)
+  // THE PLATFORM HALT SWITCH (AI kill / emergency mode). A refused write used to
+  // fall through to a re-read that returned the OLD controls as if saved — an
+  // operator pulling the brake would see it pulled while nothing stopped.
+  if (existing) {
+    const { error: controlsUpdErr } = await svc.from("platform_settings").update(row).eq("id", (existing as any).id)
+    if (controlsUpdErr) throw new Error(`Platform controls NOT saved: ${controlsUpdErr.message}`)
+  } else {
+    const { error: controlsInsErr } = await svc.from("platform_settings").insert(row)
+    if (controlsInsErr) throw new Error(`Platform controls NOT saved: ${controlsInsErr.message}`)
+  }
 
   __clearPlatformHaltCache()
   return getPlatformControls(svc)

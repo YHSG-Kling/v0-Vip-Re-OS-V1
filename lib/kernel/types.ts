@@ -37,12 +37,16 @@ export type LeadLifecycleStage =
   | 'representation' // Contract signed — all ISA blocked
 
 // ── Contact Pipeline Stages (Layer 2, Track B) ───────────────────────────
-export type ContactPipelineStage =
-  | 'captured'           // Contact row created/merged
-  | 'dedup_merged'       // Merged into existing contact
-  | 'enrichment_queued'  // Queued in lead_enrichment_queue
-  | 'enriched'           // PeopleData enrichment complete
-  | 'scored'             // Scored into lead_score_history
+//
+// TOMBSTONE (orphan doctrine §1.3, 2026-08-31): ContactPipelineStage deleted — a documentary
+// union ('captured' | 'dedup_merged' | 'enrichment_queued' | 'enriched' | 'scored') that no
+// column stores and no code ever compared against. The Track-B process it narrated is LIVE
+// under a different vocabulary: the kernel trigger_event names contact_captured /
+// contact_dedup_merged / contact_enrichment_queued / contact_enrichment_completed /
+// contact_scored (notification_rules.trigger_event CHECK — see
+// scripts/check-vocabularies.ts:1028), emitted by lib/contact-pipeline/contact-capture.ts.
+// Merging the spellings was refused: the CHECK-constrained event names are the enforced truth,
+// and a second, unprefixed spelling of them is exactly the §6 defect.
 
 // ─── BUYER LIFECYCLE STAGES ───────────────────────────────────────────────────
 
@@ -149,7 +153,32 @@ export type Persona =
   | "senior"
   | "expired"
   | "foreclosure"
+  // Owner ruling, wave 20, verbatim: "investor is a persona and not a contact
+  // type." An investor is a SITUATION — how you speak to them, which lessons and
+  // copy fit — not which side of a transaction they stand on. m589 widened the
+  // live CHECK to match; every Record<Persona, …> map below and beside this
+  // union owes the member a key, which is exactly how the compiler found them.
+  | "investor"
   | "other"
+
+// ─── PERSONA JOURNEY TOOLS (wave 153, lane 153N — owner ruling B6) ───────────
+// Owner, verbatim: "you built something for after a person is a contact which that should be added on inside the kernel
+// persona types since the portal view has persona related widgets". A journey tool is a POST-CONTACT capability a persona's
+// portal journey carries — never an acquisition door (a Raw Lead / Lead has no persona journey; only a Contact's portal does).
+// The portal persona layouts (lib/portal/persona-config.ts PersonaConfig.journeyTools) read THIS map — one source, no
+// parallel persona system. Keyed by the STORED persona vocabulary (contacts.contact_persona).
+//   · pcs_move_plan — the PCS / relocation planner's person mode (lib/relocation/pcs-portal-door.ts, wave 153 lane 153K row 61):
+//     the person's own volunteered move facts, consent first, the stated report date through the canonical movement writer.
+export type PersonaJourneyTool = "pcs_move_plan"
+
+export const PERSONA_JOURNEY_TOOLS: Readonly<Partial<Record<Persona, readonly PersonaJourneyTool[]>>> = Object.freeze({
+  military: ["pcs_move_plan"],
+})
+
+/** PURE — the journey tools a STORED persona carries (none for an unknown / absent persona). */
+export function personaJourneyTools(persona: string | null | undefined): readonly PersonaJourneyTool[] {
+  return (PERSONA_JOURNEY_TOOLS as Record<string, readonly PersonaJourneyTool[] | undefined>)[String(persona ?? "").trim()] ?? []
+}
 
 // ─── EDUCATION FORMAT ─────────────────────────────────────────────────────────
 
@@ -171,7 +200,11 @@ export interface KernelContact {
   phone?: string
 
   // Classification
-  contact_type: "buyer" | "seller" | "both" | "investor" | "vendor" | "lender"
+  // `investor` removed from this union 2026-08-31 — the other half of the owner
+  // ruling above the Persona union ("…and not a contact type"): an investor is a
+  // buyer whose contact_persona is 'investor'. m593 (written, not applied)
+  // retires it from contacts_contact_type_check; live rows carrying it: zero.
+  contact_type: "buyer" | "seller" | "both" | "vendor" | "lender"
   persona?: Persona
 
   // State & Lifecycle
@@ -206,29 +239,24 @@ export interface KernelContact {
 }
 
 // ─── CONTACT SUB-INTERFACES ───────────────────────────────────────────────────
-
-/** ISA re-engagement override — explicit interface for compliance checks */
-export interface ContactISAOverride {
-  isa_reengage_allowed: boolean
-  isa_reengage_set_at?: string
-  isa_reengage_marked_by?: string
-}
-
-/** TCPA compliance tracking */
-export interface ContactTCPAInfo {
-  tcpa_consent: boolean
-  tcpa_consent_date?: string
-  tcpa_marked_by?: string
-  tcpa_marked_at?: string
-}
-
-/** Contact stop / DNC status */
-export interface ContactStopStatus {
-  dnc_status: boolean
-  stop_comment?: string
-  stop_contact_date?: string
-  stop_contact_by?: string
-}
+//
+// TOMBSTONE (orphan doctrine §1.3, 2026-08-31): ContactISAOverride, ContactTCPAInfo and
+// ContactStopStatus are no longer exported here. Each was a field-for-field documentary slice
+// of KernelContact (above, this file — the survivor carrying every one of those fields), and
+// the "compliance checks" they announced themselves for run on their own deliberately-partial
+// contracts instead: the ContactData interface in
+// lib/kernel/compliance/outbound-predicates.ts (with OutboundSuppressionFields, the
+// narrower shape the pure predicates take), which accepts a partially-loaded row — a
+// shape these required-boolean slices could not describe. Nothing was merged because
+// the survivors already carry everything; nothing imported the three names.
+//
+// (Moved 2026-09-01: ContactData used to be declared at
+// lib/kernel/communication-compliance.ts:17 and is still importable from that path via
+// a re-export, but the declaration now lives in the pure leaf so a "use client" file
+// can use the predicates without dragging createServiceClient into the browser bundle.
+// The client twin lib/kernel/communication-compliance-helpers.ts was deleted the same
+// day — its tombstone is in communication-compliance.ts. A line number is cited nowhere
+// here on purpose; §2 forbids pinning to a waypoint.)
 
 // ─── ACTOR CONTEXT ────────────────────────────────────────────────────────────
 
@@ -296,24 +324,27 @@ export interface FeatureAccessCheck {
 }
 
 // ─── PROVIDER TYPES ───────────────────────────────────────────────────────────
-
-/** Provider choice result — resolved from hierarchy */
-export interface ProviderChoice {
-  providerType: ProviderType
-  providerKey: string           // e.g. 'sendgrid', 'twilio', 'dotloop'
-  config: Record<string, any>
-  scope?: string                // 'user' | 'team' | 'brokerage' | 'superadmin_personal' | 'system_default'
-}
+//
+// TOMBSTONE (orphan doctrine §1.1, 2026-08-31): ProviderChoice deleted — it was the documentary
+// twin of the LIVE resolution result, ResolvedProvider in lib/kernel/providers.ts:28 (the
+// survivor, returned by resolveProvider). The one capability the survivor lacked — `scope`,
+// which tier of the cascade answered — was MERGED onto it first, on the DB's own scope_type
+// vocabulary ('superadmin', not the 'superadmin_personal' this twin guessed; that value exists
+// nowhere in provider_overrides). `providerType` was not merged: every caller passes it in and
+// echoing an input back is not a capability.
 
 // ─── EDUCATION & PORTAL ───────────────────────────────────────────────────────
 
-/** Delivery configuration resolved from age-segment matrix */
-export interface EducationDeliveryConfig {
-  preferredChannel: MessageType
-  format: EducationFormat
-  readability: "simple" | "standard" | "detailed"
-  estimatedMinutes: number
-}
+// TOMBSTONE (orphan doctrine §1.3, 2026-08-31): EducationDeliveryConfig deleted — the
+// age-segment delivery matrix it documented lived in lib/kernel/education.ts as
+// DeliveryConfig. Wave 145 (lane 145H, owner ruling 18): the age matrix is itself tombstoned — the survivor is now
+// DEFAULT_DELIVERY + applyStatedAccessibility (lib/kernel/education.ts) reading the person's STATED preferences, with a
+// richer, different shape (primaryFormat/secondaryFormat, readingLevel 'simplified' not
+// 'simple', maxLessonMinutes, autoPlay, quiz gating). Its one extra idea, preferredChannel,
+// was NOT merged: the live system deliberately answers the channel from the CONTACT's own
+// preference (lib/agents/education-delivery-producer.ts honorsChannelPreference over
+// preferred_channel), not from the age matrix — an age-derived channel is the assumption
+// that module exists to avoid.
 
 /** A single education lesson */
 export interface EducationLesson {
@@ -331,13 +362,10 @@ export interface EducationPlan {
   lessons: EducationLesson[]
 }
 
-/** A single portal milestone derived from lifecycle_events */
-export interface PortalMilestone {
-  eventType: string
-  description: string
-  date: string
-  metadata: Record<string, any>
-}
+// TOMBSTONE (orphan doctrine §1.1, 2026-08-31): PortalMilestone deleted — a byte-identical
+// duplicate of the LIVE interface of the same name in lib/kernel/portal.ts:570 (the survivor,
+// built by getPortalMilestones and re-exported through lib/kernel/index.ts). Nothing to merge;
+// nothing imported this copy.
 
 // ─── DATABASE ROW TYPES ───────────────────────────────────────────────────────
 

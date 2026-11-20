@@ -137,7 +137,7 @@ async function main() {
     const lastName = r.last_name ?? r.normalized_preview?.lastName ?? r.raw_data?.lastName ?? null
     const elig = evaluateCanonicalLeadEligibility({
       first_name: firstName, last_name: lastName,
-      email: r.email, phone: r.phone, mailing_address_verified: r.mailing_address_verified,
+      email: r.email, phone: r.phone,
     })
     if (!elig.eligible) return { action: "skipped" }
     const { data: newLead } = await svc.from("leads").insert({

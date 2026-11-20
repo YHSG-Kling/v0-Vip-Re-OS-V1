@@ -23,8 +23,16 @@ function sourceLayer() {
   console.log("\n[wiring — voice EXECUTE + shared save-play helper]")
   const route = src("app/api/internal/voice-command/route.ts")
   check("new query intents wired (flight risk, coverage, referral income)", /query_flight_risk/.test(route) && /query_vendor_coverage/.test(route) && /query_referral_income/.test(route))
-  check("EXECUTE intent draft_save_plays is classified + handled", /- draft_save_plays:/.test(route) && /intent === "draft_save_plays"/.test(route))
-  check("draft_save_plays is authority + tier gated (broker/admin or solo)", /broker", "broker_admin", "admin", "superadmin"[\s\S]*?plan_tier === "solo_agent"/.test(route))
+  // RULE, NOT WAYPOINT (wave 148D): "classified" = declared in THE ONE intent catalogue (C17,
+  // lib/voice-admin/intent-interface.ts) with the brain as executor — the route's own prompt is retired.
+  const catalogue = src("lib/voice-admin/intent-interface.ts")
+  check("EXECUTE intent draft_save_plays is classified + handled",
+    /\["draft_save_plays",[^\n]{0,400}DRAFT retention SAVE-PLAYS/.test(catalogue) && /intent === "draft_save_plays"/.test(route))
+  // Authority now comes from the shared roster rather than a local four-value
+  // literal; the solo-tier fallback is unchanged. Both halves still asserted —
+  // dropping either would open the command to any agent in a team brokerage.
+  check("draft_save_plays is authority + tier gated (broker/admin or solo)",
+    /isAdminOrBroker\(\{\s*user_type[\s\S]{0,400}?plan_tier === "solo_agent"/.test(route))
   check("it invokes the on-demand drafter", /draftSavePlaysForAtRiskAgents\(service, \{ brokerageId \}\)/.test(route))
   const radar = src("lib/recruiting/retention-radar.ts")
   check("the save-play proposal is a shared helper (radar + on-demand share it)", /export async function proposeRetentionSavePlay/.test(radar) && /export async function draftSavePlaysForAtRiskAgents/.test(radar))

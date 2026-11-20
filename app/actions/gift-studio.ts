@@ -131,9 +131,11 @@ export async function orderGiftSelectionAction(input: {
     agentId = ((me as any)?.id as string | null) ?? null
   }
   if (!agentId) return { ok: false, error: "No agent to assign the purchase task to — assign an agent to this contact first" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true; taskCreated: boolean } | { ok: false; error: string }>({ brokerageId: m.brokerageId, action: "reputation.gift_selection.order", actor: { type: "user", userId: m.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { gift_key: input.selection.key, occasion: input.occasion ?? "closing" } }, async () => {
 
   // The order row — the studio's ledger (dedupe key for the queue).
-  await svc.from("client_gifts").insert({
+  const { error: giftLedgerErr } = await svc.from("client_gifts").insert({
     brokerage_id: m.brokerageId,
     agent_id: agentId,
     contact_id: input.contactId,
@@ -144,7 +146,8 @@ export async function orderGiftSelectionAction(input: {
     occasion: input.occasion ?? "closing",
     status: "ordered",
     source: "gift_studio",
-  }).then(() => {}, () => {})
+  })
+  if (giftLedgerErr) console.error(`[gift-studio] gift order row NOT recorded (dedupe key lost — may re-queue): ${giftLedgerErr.message}`)
 
   // The purchase task — personalization block + pre-scoped buy links inline.
   const { error } = await svc.from("tasks").insert({
@@ -165,4 +168,6 @@ export async function orderGiftSelectionAction(input: {
     created_at: new Date().toISOString(),
   })
   return { ok: true, taskCreated: !error }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This order was not recorded — nothing was saved" }
 }

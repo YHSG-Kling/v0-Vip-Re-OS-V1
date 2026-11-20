@@ -31,6 +31,30 @@ export function slaDaysForStage(status: string | null | undefined): number | nul
   return s in RECRUIT_STAGE_SLA_DAYS ? RECRUIT_STAGE_SLA_DAYS[s] : null
 }
 
+/**
+ * WAVE 153 (lane 153I — owner ruling 17, "check that … recruitment works properly"): THE recruits.status vocabulary, ONE
+ * spelling (it mirrors the live CHECK, scripts/check-vocabularies.ts recruits.status). app/api/recruiting/advance-stage
+ * kept its own copy (VALID_STATUSES) — now it validates against this.
+ */
+export const RECRUIT_STATUSES = ["prospect", "contacted", "interviewing", "offer_extended", "joined", "declined"] as const
+
+/**
+ * May a recruit's stage move from → to? Every tenant runs its own recruiting process, so the active stages move freely in
+ * either direction (no universal linear flow is imposed). ONE hard rule: a PROVISIONED recruit (recruits.provisioned —
+ * app/api/recruiting/provision-agent made a working, billed seat for them) is an AGENT now, so its stage stays "joined".
+ * Moving it back to prospect / declined made the pipeline report a lost candidate while the seat kept billing and the
+ * person kept working; ending the relationship is the seat's own offboarding (lib/agents/agent-deactivation.ts), never a
+ * recruiting stage. Pure.
+ */
+export function recruitStageChange(input: { from: string | null | undefined; to: string; provisioned: boolean }): { ok: true } | { ok: false; reason: string } {
+  const to = (input.to ?? "").trim()
+  if (!(RECRUIT_STATUSES as readonly string[]).includes(to)) return { ok: false, reason: `"${to}" is not a recruiting stage` }
+  if (input.provisioned && to !== "joined") {
+    return { ok: false, reason: "This person already joined and has a working seat, so their recruiting stage stays Joined. To end their seat, use the agent's offboarding in Team settings." }
+  }
+  return { ok: true }
+}
+
 export function classifyStaleRecruit(input: StaleRecruitInput): StaleRecruitAction {
   const sla = slaDaysForStage(input.status)
   if (sla === null) return "keep" // terminal / unknown stage

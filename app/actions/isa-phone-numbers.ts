@@ -3,23 +3,35 @@
 /**
  * ISA Phone Number Management
  *
- * Server actions for the brokerage's vapi_phone_numbers configuration.
- * Surfaces in Settings → ISA Calling.
+ * Server actions for the brokerage's phone inventory (tenant_phone_numbers — the
+ * ledger the Twilio voice/SMS lane routes by). Surfaces in Settings → ISA
+ * Calling, and registers a number the brokerage ALREADY owns. Buying a new one
+ * is the other path entirely: searchBrokerageNumbersAction →
+ * purchaseBrokerageNumberAction → lib/voice/number-provisioning.provisionNumber.
  *
  * Every export previously trusted a caller-supplied brokerageId and ran
  * with no auth check. Concrete impact: any signed-in user could
- *   - list any brokerage's Vapi/Twilio phone roster (including BYOC
- *     credential refs and IVR routing)
+ *   - list any brokerage's phone roster
  *   - register a new phone number against another brokerage (telecom
- *     billing fraud — calls/SMS get charged to that brokerage's vapi
- *     account)
+ *     billing fraud — calls/SMS get charged to that brokerage's account)
  *   - toggle/delete any brokerage's ISA numbers (DoS the inbound funnel)
- *   - rewrite IVR menus on any brokerage's numbers
+ *
+ * l40-s01 then found this path was ALSO unusable, in two independent ways, both
+ * because it was still speaking a retired provider's vocabulary:
+ *   · it required a "VAPI Phone Number ID" that nothing in the tree reads, so
+ *     the form could not be submitted without an id from a dashboard this OS
+ *     has no account for;
+ *   · it validated the BYOC field by looking it up in platform_credentials,
+ *     but the column it writes holds a TWILIO NUMBER SID — so whenever the
+ *     admin filled that field the lookup missed and the action refused.
+ * Both are gone. What the lane actually needs is the Twilio number SID, which
+ * is what bindNumberToTwilioLane puts in the IncomingPhoneNumbers path.
  */
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireBrokerageAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string }
@@ -31,32 +43,26 @@ async function requireBrokerageAdmin(): Promise<
   const { data: u } = await supabase
     .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  const isAdmin = ["admin", "broker", "broker_owner", "superadmin", "super_admin"]
-    .includes(u.user_type ?? "")
+  const isAdmin = isAdminOrBroker({ user_type: u.user_type ?? "" })
   if (!isAdmin) return { ok: false, error: "Forbidden: brokerage admin only" }
   return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
 }
 
-export interface VapiPhoneNumberRow {
+/** The two sources this OS actually produces — matches the live CHECK. */
+export type PhoneNumberSource = "byoc_twilio" | "ported"
+
+export interface PhoneNumberRow {
   id: string
   brokerage_id: string | null
   team_id: string | null
   agent_user_id: string | null
   scope_type: "platform" | "brokerage" | "team" | "agent"
-  vapi_phone_number_id: string
   phone_number: string
   phone_digits: string | null
-  number_source:
-    | "vapi_native"
-    | "ported"
-    | "byoc_twilio"
-    | "byoc_vonage"
-    | "forwarded"
-  byoc_credential_id: string | null
-  forwarding_target: string | null
+  number_source: PhoneNumberSource
+  /** Twilio IncomingPhoneNumbers .sid — the handle the webhook binding needs. */
+  twilio_number_sid: string | null
   department: string | null
-  ivr_enabled: boolean
-  ivr_menu: Record<string, unknown> | null
   is_active: boolean
   created_at: string
 }
@@ -67,19 +73,19 @@ function digitsOf(phone: string): string {
 
 export async function listIsaPhoneNumbers(
   _brokerageId?: string  // ignored — derived from session
-): Promise<VapiPhoneNumberRow[]> {
+): Promise<PhoneNumberRow[]> {
   const auth = await requireBrokerageAdmin()
   if (!auth.ok) return []
 
   const supabase = createServiceClient()
   const { data, error } = await supabase
-    .from("vapi_phone_numbers")
+    .from("tenant_phone_numbers")
     .select("*")
     .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
 
   if (error || !data) return []
-  return data as VapiPhoneNumberRow[]
+  return data as PhoneNumberRow[]
 }
 
 export async function createIsaPhoneNumber(params: {
@@ -87,14 +93,13 @@ export async function createIsaPhoneNumber(params: {
   scopeType: "brokerage" | "team" | "agent"
   agentUserId?: string
   teamId?: string
-  vapiPhoneNumberId: string
   phoneNumber: string
-  numberSource: "vapi_native" | "ported" | "byoc_twilio" | "byoc_vonage" | "forwarded"
-  byocCredentialId?: string
-  forwardingTarget?: string
+  numberSource: PhoneNumberSource
+  /** Twilio IncomingPhoneNumbers .sid. Optional: a number can be registered
+   *  now and bound later, but until it is present the webhooks cannot be
+   *  registered and the number will not receive calls or texts. */
+  twilioNumberSid?: string
   department?: string
-  ivrEnabled?: boolean
-  ivrMenu?: Record<string, unknown>
 }): Promise<{ success: boolean; id?: string; error?: string }> {
   const auth = await requireBrokerageAdmin()
   if (!auth.ok) return { success: false, error: auth.error }
@@ -116,30 +121,35 @@ export async function createIsaPhoneNumber(params: {
       return { success: false, error: "Forbidden: agent not in your brokerage" }
     }
   }
-  if (params.byocCredentialId) {
-    const { data: cred } = await supabase
-      .from("platform_credentials").select("brokerage_id").eq("id", params.byocCredentialId).maybeSingle()
-    if (!cred || cred.brokerage_id !== auth.brokerageId) {
-      return { success: false, error: "Forbidden: BYOC credential not in your brokerage" }
+  // The SID is an OPAQUE TWILIO identifier, not a row in our tables, so there
+  // is no ownership lookup to do — the previous one pointed at
+  // platform_credentials and could never match. What we can check is its shape,
+  // which catches the common paste error early instead of at bind time.
+  const sid = params.twilioNumberSid?.trim() || null
+  if (sid && !/^PN[0-9a-fA-F]{32}$/.test(sid)) {
+    return {
+      success: false,
+      error: "That does not look like a Twilio number SID — it starts with 'PN' and is 34 characters. Find it on the number's page in the Twilio console.",
     }
   }
 
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt per inventory write through ledgerSessionAction
+  // (lib/kernel/action-ledger.ts, the one helper) — session user + tenant from requireBrokerageAdmin; the number's last four
+  // digits and scope only (never the Twilio SID). NO cycle / idempotencyKey: a re-registration or re-toggle runs and records again.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "voice.phone_number.register", actor: { type: "user", userId: auth.userId }, subject: { type: "tenant_phone_number" }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { scope_type: params.scopeType, team_id: params.teamId ?? null, agent_user_id: params.agentUserId ?? null, number_last4: digitsOf(params.phoneNumber).slice(-4), number_source: params.numberSource, sid_present: !!sid } }, async () => {
   const { data, error } = await supabase
-    .from("vapi_phone_numbers")
+    .from("tenant_phone_numbers")
     .insert({
       brokerage_id: auth.brokerageId,
       team_id: params.teamId ?? null,
       agent_user_id: params.agentUserId ?? null,
       scope_type: params.scopeType,
-      vapi_phone_number_id: params.vapiPhoneNumberId,
       phone_number: params.phoneNumber,
       phone_digits: digitsOf(params.phoneNumber),
       number_source: params.numberSource,
-      byoc_credential_id: params.byocCredentialId ?? null,
-      forwarding_target: params.forwardingTarget ?? null,
+      twilio_number_sid: sid,
       department: params.department ?? null,
-      ivr_enabled: params.ivrEnabled ?? false,
-      ivr_menu: params.ivrMenu ?? null,
       is_active: true,
     })
     .select("id")
@@ -148,6 +158,7 @@ export async function createIsaPhoneNumber(params: {
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/settings/isa-calling")
   return { success: true, id: data?.id }
+  })
 }
 
 export async function toggleIsaPhoneNumber(params: {
@@ -159,15 +170,22 @@ export async function toggleIsaPhoneNumber(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = createServiceClient()
-  const { error } = await supabase
-    .from("vapi_phone_numbers")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "voice.phone_number.toggle", actor: { type: "user", userId: auth.userId }, subject: { type: "tenant_phone_number", id: params.id }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { is_active: params.active } }, async () => {
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNTED. A zero-match update (wrong id, another tenant's number) used to report
+  // success and settle the COMMUNICATION receipt executed. Zero rows is a FAILURE for this caller: the switch snaps back.
+  const { data: toggled, error } = await supabase
+    .from("tenant_phone_numbers")
     .update({ is_active: params.active })
     .eq("id", params.id)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if ((toggled ?? []).length === 0) return { success: false, error: "Phone number not found in your workspace" }
   revalidatePath("/dashboard/settings/isa-calling")
   return { success: true }
+  })
 }
 
 export async function deleteIsaPhoneNumber(params: {
@@ -178,37 +196,21 @@ export async function deleteIsaPhoneNumber(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = createServiceClient()
-  const { error } = await supabase
-    .from("vapi_phone_numbers")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "voice.phone_number.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "tenant_phone_number", id: params.id }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: {} }, async () => {
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNTED. A DELETE that matches nothing resolves like one that worked. Zero rows is a
+  // FAILURE for this caller ("not in your workspace") — inside the tenant predicate an already-gone number and a foreign one
+  // look identical, and neither may read as "removed".
+  const { data: removed, error } = await supabase
+    .from("tenant_phone_numbers")
     .delete()
     .eq("id", params.id)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if ((removed ?? []).length === 0) return { success: false, error: "Phone number not found in your workspace" }
   revalidatePath("/dashboard/settings/isa-calling")
   return { success: true }
-}
-
-export async function updateIsaPhoneIvr(params: {
-  id: string
-  brokerageId?: string  // ignored — derived from session
-  ivrEnabled: boolean
-  ivrMenu: Record<string, unknown> | null
-}): Promise<{ success: boolean; error?: string }> {
-  const auth = await requireBrokerageAdmin()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  const supabase = createServiceClient()
-  const { error } = await supabase
-    .from("vapi_phone_numbers")
-    .update({
-      ivr_enabled: params.ivrEnabled,
-      ivr_menu: params.ivrMenu,
-    })
-    .eq("id", params.id)
-    .eq("brokerage_id", auth.brokerageId)
-
-  if (error) return { success: false, error: error.message }
-  revalidatePath("/dashboard/settings/isa-calling")
-  return { success: true }
+  })
 }

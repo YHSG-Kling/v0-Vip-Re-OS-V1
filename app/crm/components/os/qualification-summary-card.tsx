@@ -112,7 +112,7 @@ export function QualificationSummaryCard(props: Props) {
             <div>
               <CardTitle className="text-base flex items-center gap-2">
                 {contactName}
-                <Badge className="bg-amber-500 hover:bg-amber-600 text-white text-[10px] gap-0.5">
+                <Badge className="bg-amber-700 hover:bg-amber-800 text-white text-[10px] gap-0.5">
                   <Sparkles className="h-2.5 w-2.5" />
                   Qualified
                 </Badge>

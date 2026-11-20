@@ -1,5 +1,6 @@
 'use server'
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from '@/lib/supabase/service'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
@@ -23,23 +24,33 @@ export async function acceptAIISAHandoff(params: {
   leadId: string
   brokerageId: string
   actorUserId: string
+  /** Set ONLY by trusted in-process callers (the intent converters) — CRON_SECRET. */
+  internalSecret?: string
 }): Promise<{ success: boolean; contactId?: string; error?: string }> {
   const service = createServiceClient()
 
   // ── AUTH GATE ────────────────────────────────────────────────────────────
   // Two valid callers:
   //   1. UI (session-authenticated agent/broker) — verify ctx.brokerageId
-  //   2. Trusted server-to-server (e.g. VAPI webhook route, already verified
-  //      via VAPI_WEBHOOK_SECRET) — actorUserId === 'system' AND CRON_SECRET
-  //      is configured (proves we're in a real deploy, not an open endpoint).
+  //   2. Trusted server-to-server (the intent converters reached from the voice
+  //      webhooks, which verify their own signature) — actorUserId === 'system'
+  //      AND the caller PRESENTS the CRON_SECRET (lane 86E).
+  // WAS: `actorUserId === 'system' && !!process.env.CRON_SECRET` — the env var's
+  // mere PRESENCE was the credential, and both halves are free to a browser: this
+  // is a "use server" export (a public endpoint, CLAUDE.md §4), so a POST with
+  // { actorUserId: "system", brokerageId: <any>, leadId: <any> } converted another
+  // tenant's lead on the service client with no session at all. The secret must
+  // now be SUPPLIED and match — the same shape processInboundEmail and
+  // lead-signal-ingest already use.
   const ctx = await getAgentContext()
+  const cronSecret = process.env.CRON_SECRET
   const isSystemCaller =
-    params.actorUserId === 'system' && !!process.env.CRON_SECRET
+    params.actorUserId === 'system' && !!cronSecret && !!params.internalSecret && params.internalSecret === cronSecret
   if (!isSystemCaller) {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: 'Unauthorized' }
     }
-    if (ctx.brokerageId !== params.brokerageId) {
+    if (!params.brokerageId || !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) { // The claimed-tenant rule is the ONE decision table (lane 93A, §6) — not a hand-rolled copy. REQUIRED here (the lead read below is keyed by it): an absent one refuses too.
       return { success: false, error: 'Forbidden' }
     }
   }
@@ -77,10 +88,11 @@ export async function acceptAIISAHandoff(params: {
 
     // 2. Qualified — satisfies Engine 2's gate (lead_stage='qualified' + consented).
     if (lead.lead_stage !== 'qualified') {
-      await service
+      const { error: qualifyErr } = await service
         .from('leads')
         .update({ lead_stage: 'qualified', ai_isa_owner: false, updated_at: new Date().toISOString() })
         .eq('id', lead.id)
+      if (qualifyErr) return { success: false, error: `Could not mark the lead qualified for hand-off: ${qualifyErr.message}` }
     }
 
     // 3. Engine 2 — the ONE assignment path: tier-aware routing (solo/team/brokerage/
@@ -112,7 +124,7 @@ export async function acceptAIISAHandoff(params: {
   // Notify the human actor (UI callers only — 'system' is not a users.id).
   if (!isSystemCaller) {
     try {
-      await service.from('notifications').insert({
+      await sentinelWrite(service, service.from('notifications').insert({
         brokerage_id: lead.brokerage_id,
         user_id: params.actorUserId,
         type: 'ai_handoff_completed',
@@ -121,20 +133,23 @@ export async function acceptAIISAHandoff(params: {
         entity_type: 'contact',
         entity_id: contactId,
         priority: 'high',
-      })
+      }), { table: "notifications", flow: "accept_handoff_notify", brokerageId: lead.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
     } catch { /* non-blocking */ }
   }
 
   try {
-    await service.from('lifecycle_events').insert({
+    await sentinelWrite(service, service.from('lifecycle_events').insert({
       entity_type: 'lead',
       entity_id: lead.id,
       brokerage_id: lead.brokerage_id,
       event_type: 'AI_ISA_HANDOFF_ACCEPTED',
       metadata: { actorUserId: params.actorUserId, contactId, channel: 'voice_or_ui', manager: 'ai_isa' },
       created_at: new Date().toISOString(),
-    })
+    }), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
   } catch { /* non-blocking */ }
 
   return { success: true, contactId }
 }
+
+// Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"

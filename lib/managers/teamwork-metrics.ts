@@ -18,6 +18,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { parseDeliberation } from "@/lib/managers/deliberation"
+import { median } from "@/lib/format/stats"
+export { median }
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -52,13 +54,10 @@ export interface TeamworkMetrics {
   principalOverrides: number
 }
 
-/** PURE: median of a numeric list (average of the middle pair on even counts). */
-export function median(values: number[]): number | null {
-  if (values.length === 0) return null
-  const s = [...values].sort((a, b) => a - b)
-  const mid = Math.floor(s.length / 2)
-  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2
-}
+// TOMBSTONE (§1.1, 2026-09-08): the local `median` lived here; survivor
+// lib/format/stats.ts:median, imported+re-exported below (scripts/manager-deliberation-
+// simulator.ts imports `median` from this file by name and asserts its behavior — the
+// re-export keeps that proof pinned to the RULE, not a duplicated implementation).
 
 /** PURE: fold the referral+deliberation ledger rows into the period's metrics. */
 export function rollupTeamwork(rows: ReferralLedgerRow[], periodDays: number): TeamworkMetrics {

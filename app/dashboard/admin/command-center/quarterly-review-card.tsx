@@ -37,6 +37,7 @@ export function QuarterlyReviewCard({ review, pulse }: { review: QuarterlyReview
         {section("Teamwork", review.teamwork ?? [])}
         {section("Sitting unused", review.gaps)}
         {section("Next moves", review.nextMoves)}
+        {pulse.length === 0 && <p className="md:col-span-2 text-xs text-muted-foreground">Nothing flagged this week — no one on the team shows a stall in the adoption pulse.</p>}
         {pulse.length > 0 && (
           <div className="md:col-span-2 rounded-md border bg-amber-50/50 p-2">
             <p className="text-[11px] font-medium uppercase tracking-wide text-amber-900 flex items-center gap-1">

@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { proposeIsaDialBatch, approveIsaDialBatch } from "@/lib/ai-isa/voice-dial-batch"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 interface Actor { userId: string; brokerageId: string; agentId: string | null; isManager: boolean }
 
@@ -15,7 +16,7 @@ async function requireActor(): Promise<Actor | { error: string }> {
   if (!user) return { error: "Unauthorized" }
   const { data: u } = await supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle()
   if (!u?.brokerage_id) return { error: "Unauthorized" }
-  const isManager = ["broker", "broker_admin", "admin", "superadmin", "team_lead"].includes(u.user_type ?? "")
+  const isManager = isAdminOrBroker({ user_type: u.user_type ?? "" })
   const { data: a } = await supabase.from("agents").select("id").eq("user_id", user.id).eq("brokerage_id", u.brokerage_id).maybeSingle()
   const agentId = (a as { id: string } | null)?.id ?? null
   if (!isManager && !agentId) return { error: "Forbidden" }
@@ -62,10 +63,20 @@ export async function rejectDialBatchAction(batchId: string): Promise<{ ok: bool
   if (!batch) return { ok: false, error: "Batch not found" }
   const ownsIt = (batch as any).proposed_by_agent_id && (batch as any).proposed_by_agent_id === actor.agentId
   if (!ownsIt && !actor.isManager) return { ok: false, error: "Forbidden — not your batch" }
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt through ledgerSessionAction (lib/kernel/action-ledger.ts, the one
+  // helper) — session user + tenant from requireActor, the batch. A refusal (malformed name) maps onto this export's { ok, error }.
+  // NO cycle / idempotencyKey: the update itself only matches a 'proposed' batch, so a repeat reports "not in proposed state".
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "voice.dial_batch.reject", actor: { type: "user", userId: actor.userId }, subject: { type: "ai_isa_call_batch", id: batchId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { as_manager: !ownsIt } }, async (): Promise<{ ok: boolean; error?: string }> => {
+  ran = true
 
-  const { data } = await svc.from("ai_isa_call_batches")
+  const { data, error: rejectErr } = await svc.from("ai_isa_call_batches")
     .update({ status: "rejected", approved_by: actor.userId, approved_at: new Date().toISOString() })
     .eq("id", batchId).eq("brokerage_id", actor.brokerageId).eq("status", "proposed").select("id").maybeSingle()
+  if (rejectErr) return { ok: false, error: `Could not reject the batch: ${rejectErr.message}` }
   revalidatePath("/dashboard/admin/voice-dial-batches")
   return { ok: !!data, error: data ? undefined : "not in proposed state" }
+  })
+  return ran ? (r as { ok: boolean; error?: string }) : { ok: false, error: (r as { error?: string }).error ?? "The rejection was not recorded and did not run." }
 }

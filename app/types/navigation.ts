@@ -1,6 +1,6 @@
 'use strict'
 
-import { UserRole } from './roles'
+import type { UserRole } from './roles'
 
 export interface NavItem {
   id: string

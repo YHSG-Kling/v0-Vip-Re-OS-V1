@@ -23,7 +23,7 @@ try {
   _require.cache[soPath] = { id: soPath, filename: soPath, loaded: true, exports: {} } as any
 } catch { /* nothing to shim */ }
 
-import { recordMatchesTerritory } from "../lib/lead-pipeline/source-intent-map"
+import { recordMatchesTerritory, buildAgentSeekingPhrases } from "../lib/lead-pipeline/source-intent-map"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -41,6 +41,13 @@ function pureLayer(): void {
   check("state-only (partial) ⇒ pass through", recordMatchesTerritory({ state: "TX" }, market) === true)
   check("city-only (partial) ⇒ pass through", recordMatchesTerritory({ city: "Austin" }, market) === true)
   check("zip takes precedence — matching zip even if city differs", recordMatchesTerritory({ zip: "78702", city: "Dallas" }, market) === true)
+
+  console.log("\n[Layer 1b · Wave 65 lanes — query builders never fall back to a global/borderless sweep]")
+  const phrasesReal = buildAgentSeekingPhrases({ city: "Austin", state: "TX" })
+  check("agent_seeking_phrase_intent / reddit_relocation phrase builder is territory-scoped", phrasesReal.phrases.every((p) => p.includes("Austin")))
+  // POSITIVE CONTROL — a lane without a territory gate IS caught here: an empty market must
+  // produce ZERO phrases, never a "search everywhere" fallback.
+  check("POSITIVE CONTROL: no territory ⇒ zero phrases (the gate a missing check would miss)", buildAgentSeekingPhrases({ city: null, state: null }).phrases.length === 0)
 }
 
 async function liveLayer(): Promise<void> {
@@ -62,26 +69,35 @@ async function liveLayer(): Promise<void> {
       id: marketId, brokerage_id: brokerageId, name: `${tag} Austin`, city: "Austin", state: "TX", zip_codes: ["78701"], is_active: true,
     })
 
-    const mkRecord = (city: string, state: string) => ({
-      source: tag, sourceRecordId: `${tag}-${city}`, rawPayload: { tag },
-      firstName: "Test", lastName: city, email: `${tag}-${city}@example.com`.toLowerCase(),
+    const mkRecord = (city: string, state: string, channel: string) => ({
+      source: tag, sourceRecordId: `${tag}-${channel}-${city}`, rawPayload: { tag },
+      firstName: "Test", lastName: city, email: `${tag}-${channel}-${city}@example.com`.toLowerCase(),
       phone: null, city, state, zip: null, propertyAddress: null,
       intentType: "buyer" as const, behaviorType: "social_intent",
     })
 
-    const res = await ingestRawSourceBatch({
-      brokerageId, marketId, source: "social_intent",
-      sourceFamily: "social_intent", sourceChannel: "reddit",
-      records: [mkRecord("Austin", "TX"), mkRecord("Dallas", "TX")] as any,
-      executionId: null,
-    })
+    // The gate is CHANNEL-AGNOSTIC (a positive control that a lane without its own territory
+    // gate is still caught): run the SAME on-territory/off-territory pair through the original
+    // "reddit" channel AND three wave-65 channel names ingestRawSourceBatch has never seen
+    // before this wave. If any one of these skipped the gate, its off-territory row would
+    // survive into raw_scraped_leads and this loop would go red.
+    const channels = ["reddit", "reddit_relocation", "facebook_recommend_realtor", "zillow_chatter"]
+    for (const channel of channels) {
+      const res = await ingestRawSourceBatch({
+        brokerageId, marketId, source: "social_intent",
+        sourceFamily: "social_intent", sourceChannel: channel,
+        records: [mkRecord("Austin", "TX", channel), mkRecord("Dallas", "TX", channel)] as any,
+        executionId: null,
+      })
+      check(`[${channel}] only the on-territory record was inserted`, res.inserted === 1)
+      check(`[${channel}] the off-territory record was dropped at the territory gate`, res.skipped_territory === 1)
+    }
 
-    check("only the on-territory record was inserted", res.inserted === 1)
-    check("the off-territory record was dropped at the territory gate", res.skipped_territory === 1)
-
-    const { data: raws } = await svc.from("raw_scraped_leads").select("city").eq("market_id", marketId)
-    const cities = ((raws ?? []) as Array<{ city: string | null }>).map((r) => r.city)
-    check("raw_scraped_leads holds only the Austin record (no Dallas)", cities.length === 1 && cities[0] === "Austin")
+    const { data: raws } = await svc.from("raw_scraped_leads").select("city, source_channel").eq("market_id", marketId)
+    const rows = (raws ?? []) as Array<{ city: string | null; source_channel: string | null }>
+    check("raw_scraped_leads holds only Austin rows (no Dallas), across every channel", rows.every((r) => r.city === "Austin"))
+    check("every wave-65 channel wrote its OWN sourceChannel (none merged into another)",
+      new Set(rows.map((r) => r.source_channel)).size === channels.length)
   } finally {
     await svc.from("raw_scraped_leads").delete().eq("market_id", marketId)
     await svc.from("scraper_executions").delete().eq("brokerage_id", brokerageId)

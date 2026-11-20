@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-
-const VALID_STATUSES = ["prospect", "contacted", "interviewing", "offer_extended", "joined", "declined"]
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { bestEffort } from "@/lib/db/best-effort"
+// WAVE 153 (lane 153I): ONE stage vocabulary + the one hard transition rule (a provisioned recruit stays Joined).
+// TOMBSTONE: the local VALID_STATUSES copy that stood here — survivor lib/recruiting/stale-recruit-policy.ts RECRUIT_STATUSES.
+import { RECRUIT_STATUSES, recruitStageChange } from "@/lib/recruiting/stale-recruit-policy"
 
 export async function POST(req: Request) {
   try {
@@ -17,7 +20,7 @@ export async function POST(req: Request) {
       .maybeSingle()
 
     const resolvedType = profile?.user_type ?? profile?.role ?? ""
-    if (!["broker", "admin", "superadmin"].includes(resolvedType)) {
+    if (!isAdminOrBroker({ user_type: resolvedType })) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
     }
 
@@ -26,7 +29,7 @@ export async function POST(req: Request) {
     if (!recruitId || !toStatus) {
       return NextResponse.json({ error: "recruitId and toStatus required" }, { status: 400 })
     }
-    if (!VALID_STATUSES.includes(toStatus)) {
+    if (!(RECRUIT_STATUSES as readonly string[]).includes(toStatus)) {
       return NextResponse.json({ error: "Invalid status" }, { status: 400 })
     }
 
@@ -35,7 +38,7 @@ export async function POST(req: Request) {
     // Verify recruit belongs to this brokerage
     const { data: recruit } = await service
       .from("recruits")
-      .select("id, first_name, last_name, email, brokerage_id, status")
+      .select("id, first_name, last_name, email, brokerage_id, status, provisioned")
       .eq("id", recruitId)
       .eq("brokerage_id", profile!.brokerage_id!)
       .maybeSingle()
@@ -43,7 +46,10 @@ export async function POST(req: Request) {
     if (!recruit) {
       return NextResponse.json({ error: "Recruit not found" }, { status: 404 })
     }
+    const allowed = recruitStageChange({ from: recruit.status, to: toStatus, provisioned: (recruit as { provisioned?: boolean | null }).provisioned === true })
+    if (!allowed.ok) return NextResponse.json({ error: allowed.reason }, { status: 409 })
 
+    const write = async () => {
     // Build update payload
     const updatePayload: Record<string, unknown> = {
       status: toStatus,
@@ -62,23 +68,30 @@ export async function POST(req: Request) {
       updatePayload.notes = existing?.notes ? `${existing.notes}\n\n${prefix}` : prefix
     }
 
-    const { error: updateError } = await service
+    // Tenant-pinned and COUNTED (CLAUDE.md §3: an update that matches nothing resolves too).
+    const { data: moved, error: updateError } = await service
       .from("recruits")
       .update(updatePayload)
       .eq("id", recruitId)
+      .eq("brokerage_id", profile!.brokerage_id!)
+      .select("id")
 
     if (updateError) throw updateError
+    if (!moved || moved.length !== 1) return NextResponse.json({ error: "The recruit changed while you were saving — reload and try again." }, { status: 409 })
 
     // Activity log entry
-    await service.from("activities").insert({
-      activity_type: "recruiting.stage_advance",
-      agent_user_id: user.id,
-      brokerage_id: profile!.brokerage_id,
-      title: `Recruit stage: ${recruit.first_name} ${recruit.last_name} → ${toStatus}`,
-      notes: note ?? null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      service.from("activities").insert({
+        activity_type: "recruiting.stage_advance",
+        agent_user_id: user.id,
+        brokerage_id: profile!.brokerage_id,
+        title: `Recruit stage: ${recruit.first_name} ${recruit.last_name} → ${toStatus}`,
+        notes: note ?? null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }),
+      "the recruits row has already advanced above and its error is checked and thrown; this audit echo must not fail a stage change that has taken effect",
+    )
 
     // RECRUITING MANAGER — propose the next stage-appropriate outreach into the gate
     // (skips terminal stages + de-dupes a pending proposal). Best-effort.
@@ -90,6 +103,11 @@ export async function POST(req: Request) {
     }
 
     return NextResponse.json({ success: true, recruitId, toStatus })
+    }
+    // WAVE 155 (155R14): the receipt — the SESSION's user and tenant; the response is returned unchanged (a throw still reaches the catch below).
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const r = await ledgerSessionAction({ brokerageId: profile!.brokerage_id!, action: "recruiting.recruit.advance_stage", actor: { type: "user", userId: user.id }, subject: { type: "recruit", id: recruitId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { from: recruit.status, to: toStatus } }, async () => { const out = await write(); return { success: out.ok, error: out.ok ? undefined : `HTTP ${out.status}`, out } })
+    return "out" in r ? r.out : NextResponse.json({ error: r.error ?? "The stage change was not recorded" }, { status: 500 })
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 })
   }

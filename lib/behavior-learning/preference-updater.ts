@@ -1,6 +1,35 @@
-"use server"
+// NOT a server-action module (2026-09-02, integrator, same fix as its sibling
+// prediction-engine.ts under lane S1). The module-level "use server" that stood
+// here made every export a public HTTP door with no gate: a service client and a
+// caller-supplied brokerageId — section 4's named IDOR shape. Every caller is an
+// in-process server writer (the tombstone below records that the only HTTP door
+// was already deleted onto them), so the directive published nothing anyone
+// needed. `server-only` makes a future client import fail at build time instead
+// of bundling the service credential.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
+
+// ─── TOMBSTONE (orphan doctrine §1.3, lane M3 2026-08-31) ────────────────────
+// POST /api/behavior/signal (app/api/behavior/signal/route.ts) DELETED. It was
+// an HTTP door onto updatePreferencesFromSignal below + an every-10th-signal
+// generateBuyerPredictions kick, authenticated on a Supabase SESSION with an
+// agents-profile gate — so the only possible caller was this app's own UI, and
+// nothing in the tree ever addressed it (opposite-missing census 6b; the same
+// "loop, not a door" test the census records for /api/agentic-os/voice). The
+// FUNCTIONALITY LIVES ELSEWHERE, in the in-process writers that closed the
+// buyer-graph loop:
+//   · lib/kernel/forms.ts:914  — recordBuyerPropertyAction feeds the buyer's own
+//     portal save/favorite/dismiss through interestLevelToLearningSignal into
+//     updatePreferencesFromSignal (lib/behavior-learning/signal-mapping.ts
+//     records that THIS is the strongest signal lane);
+//   · app/actions/smart-insights.ts:807 — post-tour showing feedback, same writer;
+//   · app/actions/buyer-insights.ts:152 — regenerates predictions on demand when
+//     the agent opens buyer insights (the route's every-10th-signal cadence was
+//     a producer-side guess; regeneration keyed to the READER is the survivor).
+// A raw "viewed" emitter was the route's only unshared capability, and
+// signal-mapping.ts rules that raw views are "too weak to act on here" — so no
+// half was left unbuilt by the deletion.
 
 // Signal weights — exact per spec
 const SIGNAL_WEIGHTS: Record<string, number> = {
@@ -73,10 +102,14 @@ export async function updatePreferencesFromSignal(
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
-  // Step 3 — Load all signals for this contact to compute running averages
+  // Step 3 — Load all signals for this contact to compute running averages.
+  // `zip` included (lane M2): the tour-feedback writer records the zip of
+  // every property the buyer reacted to, property_preferences.inferred_zip_codes
+  // is read by the portal search, SmartSearchWidget and the buyer criteria
+  // reader — and the learner between them never carried the value across.
   const { data: allLogs, error: logsErr } = await supabase
     .from("buyer_behavior_log")
-    .select("signal_type, list_price, bedrooms, bathrooms, city, property_type, property_snapshot:metadata")
+    .select("signal_type, list_price, bedrooms, bathrooms, city, zip, property_type, property_snapshot:metadata")
     .eq("contact_id", contactId)
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
@@ -94,6 +127,7 @@ export async function updatePreferencesFromSignal(
 
   // Frequency maps for categoricals
   const cityMap:    Record<string, number>    = {}
+  const zipMap:     Record<string, number>    = {}
   const typeMap:    Record<string, number>    = {}
   const featureMap: Record<string, number>    = {}
 
@@ -108,6 +142,7 @@ export async function updatePreferencesFromSignal(
     if (log.bathrooms)       bathsWeightedSum += Number(log.bathrooms)  * w
 
     if (log.city)            cityMap[log.city]          = (cityMap[log.city]          ?? 0) + w
+    if (log.zip)             zipMap[log.zip]            = (zipMap[log.zip]            ?? 0) + w
     if (log.property_type)   typeMap[log.property_type] = (typeMap[log.property_type] ?? 0) + w
 
     // Features from property_snapshot
@@ -137,6 +172,12 @@ export async function updatePreferencesFromSignal(
       .map(([k]) => k)
 
   const preferred_cities   = topN(cityMap, 5)
+  // Only the tour-feedback writer stamps zip today, so an all-portal history
+  // yields no zips; falling back to the CURRENT value keeps the zips the
+  // AI-ISA intent converter wrote (convert-buyer-lead-on-intent) instead of
+  // blanking them on every re-learn. The KEY stays literal either way — only
+  // the value is conditional (the opaque-write trap is in conditional keys).
+  const preferred_zips     = topN(zipMap, 5)
   const preferred_features = topN(featureMap, 10)
 
   // Confidence = min(1.0, total_positive_signals / 50)
@@ -144,25 +185,40 @@ export async function updatePreferencesFromSignal(
   const confidenceScore  = Math.min(1.0, signalsProcessed / 50)
 
   // Step 4 — UPSERT property_preferences ON CONFLICT (contact_id)
+  //
+  // WAVE 147 (lane 147Z — lane 147C Outside-lane 2, contract C10): THE LEARNER NEVER OVERWRITES WHAT THE BUYER SAID. A field
+  // whose criteria_provenance says `said` keeps its column (an upsert leaves an omitted column untouched); the behaviour behind
+  // it becomes a PROPOSAL with a reason the buyer can accept or reject (learnFromBehaviour → recordCriteriaChanges, the ONE C10
+  // change history). preferred_price_min/max are the EXPLICIT columns the reader prefers — behaviour never writes them (it
+  // writes the inferred_* band). A row whose provenance cannot be read (m895 not applied, or a legacy row) has no said field.
+  const provenance = (current?.criteria_provenance && typeof current.criteria_provenance === "object" && !Array.isArray(current.criteria_provenance))
+    ? (current.criteria_provenance as Record<string, { source?: string } | undefined>) : {}
+  const said = (field: string) => provenance[field]?.source === "said"
+  const learnedColumns: Record<string, { field: string; value: unknown }> = {
+    inferred_min_price:          { field: "minPrice", value: preferred_price_min },
+    inferred_max_price:          { field: "maxPrice", value: preferred_price_max },
+    inferred_beds_min:           { field: "minBeds", value: avgBeds > 0 ? avgBeds : null },
+    inferred_baths_min:          { field: "minBaths", value: avgBaths > 0 ? avgBaths : null },
+    inferred_cities:             { field: "cities", value: preferred_cities },
+    inferred_zip_codes:          { field: "zipCodes", value: preferred_zips.length > 0 ? preferred_zips : (current?.inferred_zip_codes ?? null) },
+    inferred_property_types:     { field: "propertyTypes", value: topN(typeMap, 3) },
+    inferred_must_have_features: { field: "mustHaveFeatures", value: preferred_features },
+  }
+  const learned: Record<string, unknown> = {}
+  const keptSaid: string[] = []
+  for (const [column, l] of Object.entries(learnedColumns)) {
+    if (said(l.field)) keptSaid.push(l.field)
+    else learned[column] = l.value
+  }
   const { error: upsertErr } = await supabase
     .from("property_preferences")
     .upsert(
       {
         contact_id:              contactId,
         brokerage_id:            brokerageId,
-        // Explicit price band (these columns exist). The behavior-INFERRED criteria go into
-        // the inferred_* columns — the live table has NO preferred_bedrooms/bathrooms/cities/
-        // features columns, so writing them errored the ENTIRE upsert and the learned
-        // preferences were never persisted (the root cause of the matcher having no data).
-        preferred_price_min:     preferred_price_min,
-        preferred_price_max:     preferred_price_max,
-        inferred_min_price:      preferred_price_min,
-        inferred_max_price:      preferred_price_max,
-        inferred_beds_min:       avgBeds  > 0 ? avgBeds  : null,
-        inferred_baths_min:      avgBaths > 0 ? avgBaths : null,
-        inferred_cities:         preferred_cities,
-        inferred_property_types: topN(typeMap, 3),
-        inferred_must_have_features: preferred_features,
+        // The behavior-INFERRED criteria go into the inferred_* columns — the live table has NO preferred_bedrooms/bathrooms/
+        // cities/features columns, so writing them errored the ENTIRE upsert and the learned preferences were never persisted.
+        ...learned,
         confidence_score:        confidenceScore,
         signals_processed:       signalsProcessed,
         last_calculated_at:      new Date().toISOString(),
@@ -172,6 +228,33 @@ export async function updatePreferencesFromSignal(
     )
 
   if (upsertErr) return { success: false, error: upsertErr.message }
+
+  // The SAID fields the behaviour disagrees with → proposals the buyer reads (never applied here). Best-effort: the learned
+  // columns above already landed; a refused proposal write is said, never silent.
+  if (keptSaid.length > 0) {
+    try {
+      const [{ loadBuyerCriteria, loadCriteriaChanges, recordCriteriaChanges }, { learnFromBehaviour }] = await Promise.all([
+        import("@/lib/buyer-search/buyer-criteria"), import("@/lib/buyer-search/conversational-search"),
+      ])
+      const criteria = await loadBuyerCriteria(supabase, contactId, { brokerageId })
+      if (criteria) {
+        const KIND: Record<string, "saved" | "dismissed" | "toured" | undefined> = { saved: "saved", love_it: "saved", like_it: "saved", toured: "toured", dismissed: "dismissed", not_for_us: "dismissed" }
+        const history = logs.flatMap((l, i) => {
+          const kind = KIND[String(l.signal_type)]
+          return kind ? [{ kind, price: l.list_price != null ? Number(l.list_price) : null, city: l.city ?? null, propertyType: l.property_type ?? null, listingRef: `behavior_log:${i}` }] : []
+        })
+        const prior = await loadCriteriaChanges(supabase, { brokerageId, contactId, statuses: ["proposed", "rejected"], limit: 50 })
+        const proposals = learnFromBehaviour(criteria, history, { channel: "system", prior: prior.rows.map((r) => ({ field: r.field, proposed: r.proposed, status: r.status })) })
+          .filter((d) => d.status === "proposed" && keptSaid.includes(d.field))
+        if (proposals.length > 0) {
+          const rec = await recordCriteriaChanges(supabase, { brokerageId, contactId, changes: proposals })
+          if (!rec.persisted) console.warn(`[preference-updater] behaviour proposals for ${contactId} not recorded: ${rec.note ?? "unknown"}`)
+        }
+      }
+    } catch (e) {
+      console.warn(`[preference-updater] behaviour proposals threw for ${contactId}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
   return { success: true }
 }
 

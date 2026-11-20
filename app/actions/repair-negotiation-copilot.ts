@@ -24,9 +24,8 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
-import { generateObjectRouted } from "@/lib/ai/models"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// Wave 97 (97C): the reply draft rides the routed lane too (books ai_tool_usage; negotiation_reply_draft = gpt-4o-mini).
+import { generateObjectRouted, generateTextRouted } from "@/lib/ai/models"
 import { z } from "zod"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -102,6 +101,7 @@ export async function repairNegotiationCoPilot(params: {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
+  return ledgered("session", { action: "transaction.repair_negotiation.advise", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", detail: { side: params.side } }, async () => {
 
   // ─── Load transaction + repairs + inspections in parallel ──────────────
   const [txRes, repairsRes, inspectionsRes] = await Promise.all([
@@ -196,6 +196,8 @@ Recommend the negotiation approach for the ${params.side} side. Be direct.`
   let strategy: RepairStrategy | undefined
   try {
     const r = await generateObjectRouted({
+      brokerageId: (tx as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
+      userId: user.id,
       feature: "repair_negotiation_strategy",
       schema: z.object({
         recommendedApproach: z.enum([
@@ -246,6 +248,8 @@ Recommend the negotiation approach for the ${params.side} side. Be direct.`
   let items: RepairItemRec[] = []
   try {
     const r = await generateObjectRouted({
+      brokerageId: (tx as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
+      userId: user.id,
       feature: "repair_negotiation_items",
       schema: z.object({
         items: z.array(z.object({
@@ -315,6 +319,9 @@ Return strictly the items array with one entry per id.`,
 
   // ─── AI: draft response message ─────────────────────────────────────────
   const draftResponse = await draftRepairResponse({
+    // Wave 97 (97C): the booking tenant + actor — the same §4 sources the strategy call above uses.
+    brokerageId: (tx as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
+    userId: user.id,
     side: params.side,
     propertyAddress: tx.property_address ?? "the property",
     strategy,
@@ -334,6 +341,7 @@ Return strictly the items array with one entry per id.`,
       inspectionCount: inspections.length,
     },
   }
+  })
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -346,6 +354,8 @@ function daysFromNowTo(date: string | null | undefined): number | null {
 }
 
 async function draftRepairResponse(input: {
+  brokerageId:     string | null
+  userId:          string
   side:            "buyer" | "seller"
   propertyAddress: string
   strategy:        RepairStrategy | undefined
@@ -395,10 +405,10 @@ Audience: LISTING agent. Tone: professional, collaborative, them-first, no high-
 Respond with JSON only: { "subject": "<email subject ≤ 60 chars>", "body": "<message body>" }`
 
   try {
-    const result = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const result = await generateTextRouted({
+      feature: "negotiation_reply_draft", brokerageId: input.brokerageId, userId: input.userId,
       prompt: input.side === "buyer" ? buyerSidePrompt : sellerSidePrompt,
-      maxOutputTokens: 500,
+      maxTokens: 500,
     })
     const jsonMatch = result.text.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return undefined
@@ -475,4 +485,29 @@ export async function sendRepairResponseAsDraft(params: SendRepairResponseParams
     }
   }
   return { success: true, messageId: result.messageId }
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

@@ -19,6 +19,7 @@ export default async function DirectMailSettingsPage() {
       <DirectMailSettingsClient
         initialConfig={result.config}
         initialWatchlist={result.watchlist}
+        initialSender={result.sender}
       />
       <div className="max-w-4xl mx-auto px-6 pb-8 -mt-4">
         <div className="border-t border-gray-200 pt-6">

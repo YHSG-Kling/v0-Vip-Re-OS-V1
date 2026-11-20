@@ -1,5 +1,6 @@
 "use server"
 
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
@@ -9,10 +10,10 @@ import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { generateObjectRouted } from "@/lib/ai/models"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+import { decryptSecret } from "@/lib/security/secret-crypto"
 
 // ============================================
 // AI OFFER CREATION SYSTEM
@@ -54,24 +55,6 @@ const STATE_OFFER_FORMS: Record<string, { required: string[]; addenda: string[] 
   },
 }
 
-interface OfferCreationParams {
-  agentId: string
-  buyerId: string
-  listingId: string
-  offerPrice: number
-  earnestMoney: number
-  downPaymentPercent: number
-  financingType: "conventional" | "fha" | "va" | "cash" | "usda" | "other"
-  contingencies: string[]
-  closeDate: string
-  escalationClause?: {
-    enabled: boolean
-    maxPrice: number
-    increment: number
-  }
-  additionalTerms?: any
-}
-
 // ============================================
 // 1. AI OFFER STRATEGY ADVISOR
 // ============================================
@@ -96,14 +79,21 @@ export async function aiOfferStrategyAdvisor(params: {
 
     // Shared brain — the SAME core the autonomous offer-strategy producer uses (no drift).
     const { generateBuyerOfferStrategy } = await import("@/lib/offers/offer-strategy-advisor")
-    const strategy = await generateBuyerOfferStrategy({
+    // RECEIPT (wave 155, lane 155R5 — G11): the model call is claimed → run → settled on agent_action_ledger (who asked, under
+    // which risk class); ai_tool_usage stays the cost ledger, written by the same inner call with the same numbers (CLAUDE.md §5).
+    const { ledgerToolCall } = await import("@/lib/kernel/action-ledger")
+    const strategy = await ledgerToolCall({ brokerageId: ctx.brokerageId, action: "ai.offer_strategy.advise", actor: { type: "user", userId: ctx.userId || null, agentId: ctx.agentId }, subject: { type: "listing", id: params.listingId }, reasonCode: "HUMAN_REQUESTED", riskClass: "READ", systemSource: "ai_offer_strategy_advisor", detail: { buyer_id: params.buyerId } }, () => generateBuyerOfferStrategy({
       listPrice: params.listPrice,
       daysOnMarket: params.daysOnMarket,
       competingOffers: params.competingOffers,
       marketConditions: params.marketConditions,
       buyerMotivation: params.buyerMotivation,
       buyerMaxBudget: params.buyerMaxBudget,
-    })
+    }, {
+      // §4 — the session, resolved above; `params.agentId` is ignored here.
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId || null,
+    })) as Awaited<ReturnType<typeof generateBuyerOfferStrategy>>
     if (!strategy) return { success: false, error: "Strategy generation failed" }
     return { success: true, strategy }
   } catch (error) {
@@ -123,7 +113,13 @@ export async function aiCalculateEscalation(params: {
   marketTrend: "appreciating" | "stable" | "declining"
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION (§4).
+    const spendActor = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const receipted = await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "offer.escalation.generate", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "offer_analysis" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const { object: escalation } = await generateObjectRouted({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       feature: "offer_analysis",
       schema: z.object({
         recommended: z.boolean(),
@@ -153,6 +149,8 @@ Determine:
     })
 
     return { success: true, escalation }
+    })
+    return "escalation" in receipted ? receipted : { success: false as const, error: receipted.error ?? "Not done" }
   } catch (error) {
     console.error("[AI Offer Creation] Escalation error:", error)
     return handleError(error, "aiCalculateEscalation")
@@ -170,7 +168,13 @@ export async function aiRecommendContingencies(params: {
   buyerRiskTolerance: "conservative" | "moderate" | "aggressive"
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION (§4).
+    const spendActor = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const receipted = await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "offer.contingencies.recommend", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "offer_contingencies" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const contingencyResult = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Recommend contingencies for this buyer:
 
@@ -215,6 +219,8 @@ Respond with JSON only: { "recommended": [{ "type": string, "duration": number, 
     }
 
     return { success: true, contingencies }
+    })
+    return "contingencies" in receipted ? receipted : { success: false as const, error: receipted.error ?? "Not done" }
   } catch (error) {
     console.error("[AI Offer Creation] Contingency error:", error)
     return handleError(error, "aiRecommendContingencies")
@@ -237,8 +243,13 @@ export async function aiGenerateBuyerLetter(params: {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const receipted = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "offer.buyer_letter.generate", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "buyer_letter" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const { text: letter } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Write a heartfelt, Fair Housing compliant buyer letter.
 
@@ -258,6 +269,8 @@ Write a compelling letter that connects the buyer to the HOME, not the community
     })
 
     return { success: true, letter }
+    })
+    return "letter" in receipted ? { success: receipted.success, letter: receipted.letter } : { success: false as const, error: receipted.error ?? "Not done" }
   } catch (error) {
     console.error("[AI Offer Creation] Letter error:", error)
     return handleError(error, "aiGenerateBuyerLetter")
@@ -275,6 +288,10 @@ export async function getOfferForms(params: {
   isNewConstruction: boolean
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION (§4).
+    const spendActor = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const receipted = await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "offer.forms.recommend", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "offer_forms" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const stateConfig = STATE_OFFER_FORMS[params.state] || STATE_OFFER_FORMS.DEFAULT
 
     const forms = [...stateConfig.required]
@@ -297,6 +314,8 @@ export async function getOfferForms(params: {
 
     // AI enhancement for special circumstances
     const { text: additionalForms } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `As a real estate forms expert for ${params.state}, are there additional forms needed for:
 - Financing: ${params.financingType}
@@ -323,6 +342,8 @@ List only form names, one per line. If none needed, respond "NONE".`,
         aiRecommended,
       },
     }
+    })
+    return "forms" in receipted ? receipted : { success: false as const, error: receipted.error ?? "Not done" }
   } catch (error) {
     console.error("[AI Offer Creation] Forms error:", error)
     return handleError(error, "getOfferForms")
@@ -379,18 +400,19 @@ export async function createOfferDotloop(params: {
         notConfigured: true,
       }
     }
-    const DOTLOOP_API_KEY = dotloopCred.access_token
+    const DOTLOOP_API_KEY = decryptSecret(dotloopCred.access_token) as string
     const DOTLOOP_PROFILE_ID = dotloopCred.account_id
 
     // If existing loop provided, link to it (transaction ownership was
     // already verified above)
     if (params.existingLoopId) {
       if (params.transactionId) {
-        await supabase
+        const { error: loopStampErr } = await supabase
           .from("transactions")
           .update({ external_provider_transaction_id: params.existingLoopId, external_provider_source: "dotloop" })
           .eq("id", params.transactionId)
           .eq("brokerage_id", brokerageId)
+        if (loopStampErr) console.error(`[ai-offer-creation] dotloop loop linked but the transaction provider stamp was refused (document sync will not find it): ${loopStampErr.message}`)
       }
 
       return {
@@ -430,13 +452,14 @@ export async function createOfferDotloop(params: {
     // provider-tracking columns so the provider-agnostic sync helper
     // (lib/transactions/sync-from-provider.ts) can pull documents for this transaction.
     if (params.transactionId && loopId) {
-      await supabase.from("transactions")
+      const { error: loopStampErr } = await supabase.from("transactions")
         .update({
           external_provider_source:         "dotloop",
           external_provider_transaction_id: loopId,
         })
         .eq("id", params.transactionId)
         .eq("brokerage_id", brokerageId)
+      if (loopStampErr) console.error(`[ai-offer-creation] dotloop loop created but the transaction provider stamp was refused (document sync will not find it): ${loopStampErr.message}`)
     }
 
     return {
@@ -463,7 +486,13 @@ export async function aiCounterOfferStrategy(params: {
   negotiationRound: number
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION (§4).
+    const spendActor = await getAgentContext()
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: spendActor.brokerageId ?? "", action: "offer.counter_strategy.generate", actor: { type: "user", userId: spendActor.userId || null, agentId: spendActor.agentId ?? null }, subject: { type: "ai_tool_usage", ref: "counter_offer_strategy" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const strategyResult = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Help strategize response to seller's counter offer.
 
@@ -482,7 +511,13 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
     })
     let strategy: unknown
     try {
-      strategy = JSON.parse(strategyResult.text)
+      // MERGED (§1.1, 2026-09-07) from the deleted
+      // app/actions/ai-marketing-automation.ts:generateCounterOfferStrategy — the
+      // model routinely wraps this JSON in prose or a ```json fence, and a bare
+      // JSON.parse(strategyResult.text) threw on exactly that. Extract the first
+      // brace-delimited object before parsing; fall back to the raw text so an
+      // unfenced, unwrapped response still parses as before.
+      strategy = JSON.parse(strategyResult.text.match(/\{[\s\S]*\}/)?.[0] ?? strategyResult.text)
     } catch {
       return { success: false, error: "AI response was not valid JSON" }
     }
@@ -495,6 +530,7 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
     }
 
     return { success: true, strategy }
+    })
   } catch (error) {
     console.error("[AI Offer Creation] Counter strategy error:", error)
     return handleError(error, "aiCounterOfferStrategy")
@@ -502,138 +538,34 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
 }
 
 // ============================================
-// 8. SUBMIT COMPLETE OFFER
+// 8. SUBMIT COMPLETE OFFER — REMOVED (duplicate writer)
 // ============================================
-export async function submitCompleteOffer(params: OfferCreationParams) {
-  try {
-    // Resolve identity from session — ignore caller-supplied agentId
-    const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.brokerageId) {
-      return { success: false, error: "Unauthorized" }
-    }
+// `submitCompleteOffer` used to live here: a SECOND offer writer that inserted
+// into `transactions` + `offers` directly. The canonical writer is
+// app/actions/buyer-offers.ts:createOffer, which is the one the offer wizard
+// actually uses and is strictly more complete. This copy was not merely
+// redundant, it was unsafe:
+//   · it BYPASSED the financial-verification gate (buyer_financial_profiles
+//     .verified) that createOffer enforces at the API boundary, so any
+//     signed-in agent could bind an unverified buyer to an offer through it;
+//   · it wrote the offers row with NO brokerage_id and NO agent_id, so the
+//     resulting offer was invisible to every tenant-scoped offers surface;
+//   · it minted a status:'active' `transactions` row per SUBMITTED offer,
+//     before any acceptance — one phantom deal in the pipeline per offer;
+//   · its "offer received" activities insert omitted brokerage_id (NOT NULL),
+//     so that notification wrote zero rows while reporting success. The real
+//     listing-side notification lives at the wizard
+//     (offer-form-wizard.tsx:notifyListingSide) and supplies the tenant.
+// Nothing was lost by removing it: the Dotloop step it performed is
+// `createOfferDotloop` above, still exported and still reached through
+// lib/workflow/adapters/send-for-esign.ts.
 
-    if (!isValidUUID(params.buyerId) || !isValidUUID(params.listingId)) {
-      return { success: false, error: "Invalid IDs provided" }
-    }
-
-    const supabase = await createClient()
-
-    // Get listing details — RLS handles cross-brokerage visibility for buyer-side offers
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("*, agent_id, seller_contact_id, address, state")
-      .eq("id", params.listingId)
-      .single()
-
-    if (!listing) {
-      return { success: false, error: "Listing not found" }
-    }
-
-    // Verify the buyer belongs to the caller's brokerage
-    const { data: buyer } = await supabase
-      .from("contacts")
-      .select("brokerage_id")
-      .eq("id", params.buyerId)
-      .maybeSingle()
-    if (!buyer || buyer.brokerage_id !== ctx.brokerageId) {
-      return { success: false, error: "Forbidden" }
-    }
-
-    const effectiveAgentId = ctx.agentId ?? ctx.userId
-
-    // Create transaction record — agent/brokerage from session, not params
-    const { data: transaction, error: txError } = await supabase
-      .from("transactions")
-      .insert({
-        agent_id: effectiveAgentId,
-        brokerage_id: ctx.brokerageId,
-        // Live columns: contact_id (primary client = buyer) + buyer_contact_id;
-        // there is no buyer_id. deal_type ∈ {buyer,seller,dual}; status CHECK has
-        // no "offer_submitted"; close_date (not estimated_close_date). The old
-        // values failed the insert outright.
-        contact_id: params.buyerId,
-        buyer_contact_id: params.buyerId,
-        listing_id: params.listingId,
-        deal_type: "buyer",
-        status: "active",
-        deal_name: listing.address || `Offer ${params.listingId}`, // NOT NULL
-        property_address: listing.address,
-        purchase_price: params.offerPrice,
-        close_date: params.closeDate,
-      })
-      .select()
-      .single()
-
-    if (txError) throw txError
-
-    // Create offer record (using canonical offers table with offer_price)
-    const { data: offer, error: offerError } = await supabase
-      .from("offers")
-      .insert({
-        transaction_id: transaction.id,
-        listing_id: params.listingId,
-        contact_id: params.buyerId,
-        offer_price: params.offerPrice,
-        earnest_money: params.earnestMoney,
-        down_payment_percent: params.downPaymentPercent,
-        financing_type: params.financingType,
-        contingencies: params.contingencies,
-        closing_date: params.closeDate,
-        escalation_clause: params.escalationClause?.enabled || false,
-        escalation_cap: params.escalationClause?.maxPrice,
-        status: "pending",
-        submitted_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
-
-    if (offerError) throw offerError
-
-    // Create Dotloop
-    const dotloopResult = await createOfferDotloop({
-      agentId: effectiveAgentId,
-      buyerId: params.buyerId,
-      propertyAddress: listing.address,
-      transactionId: transaction.id,
-    })
-
-    // Notify listing agent. pass 13: activities.agent_user_id FKs users(id) but
-    // listing.agent_id is agents.id — the raw stamp FK-threw and the "offer
-    // received" activity never landed. Resolve to the agent's auth user id.
-    const { data: listingAgentRow } = await supabase
-      .from("agents").select("user_id").eq("id", listing.agent_id).maybeSingle()
-    await supabase.from("activities").insert({
-      agent_user_id: listingAgentRow?.user_id ?? null,
-      activity_type: "offer_received",
-      entity_type: "offer",
-      entity_id: offer.id,
-      description: `New offer of $${params.offerPrice.toLocaleString()} received on ${listing.address}`,
-      metadata: { priority: "high" },
-    })
-
-    revalidatePath("/offers")
-    revalidatePath(`/listings/${params.listingId}`)
-    revalidatePath("/dashboard/transactions")
-
-    return {
-      success: true,
-      offer,
-      transaction,
-      dotloop: dotloopResult,
-    }
-  } catch (error) {
-    console.error("[AI Offer Creation] Submit error:", error)
-    return handleError(error, "submitCompleteOffer")
-  }
-}
-
-// Backward compatibility aliases — wrapped because "use server" rejects `const = fn`
-export async function aiAnalyzeOfferStrategy(...args: Parameters<typeof aiOfferStrategyAdvisor>) {
-  return aiOfferStrategyAdvisor(...args)
-}
-export async function generateOfferLetter(...args: Parameters<typeof aiGenerateBuyerLetter>) {
-  return aiGenerateBuyerLetter(...args)
-}
+// TOMBSTONE (§6 one-vocabulary, lane E2 2026-08-28) — the "backward
+// compatibility" aliases `aiAnalyzeOfferStrategy` and `generateOfferLetter`
+// were deleted. Duplicate SPELLINGS of the canonical names in this file —
+// SURVIVORS: `aiOfferStrategyAdvisor` (above) and `aiGenerateBuyerLetter`
+// (above). A stripped-source census found zero callers of either alias
+// outside the the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero importers.
 
 // ============================================
 // 9. COMPLETE OFFER CREATION WORKFLOW
@@ -654,7 +586,11 @@ export async function runCompleteOfferWorkflow(params: {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
-    const effectiveAgentId = ctx.agentId ?? ctx.userId
+    // NOT `?? ctx.userId` (m360) — every consumer below is agents-class.
+    const effectiveAgentId = ctx.agentId
+    if (!effectiveAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "offer.workflow.run", actor: { type: "user", userId: ctx.userId, agentId: effectiveAgentId }, subject: { type: "contact", id: isValidUUID(params.buyerId) ? params.buyerId : null, ref: isValidUUID(params.buyerId) ? null : "buyer" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_id: isValidUUID(params.listingId) ? params.listingId : null } }, async () => {
 
     const supabase = await createClient()
 
@@ -767,6 +703,7 @@ export async function runCompleteOfferWorkflow(params: {
         },
       },
     }
+    })
   } catch (error) {
     console.error("[AI Offer Creation] Workflow error:", error)
     return handleError(error, "runCompleteOfferWorkflow")
@@ -815,6 +752,11 @@ export async function generateOfferDraft(params: {
   listingId?: string | null
 }): Promise<{ success: boolean; documentId?: string; error?: string }> {
   try {
+    // WAVE 155 (155R3): a "use server" export is a public endpoint — the tenant is the SESSION's (CLAUDE.md §4), the body's must match it.
+    const sessionCtx = await getAgentContext()
+    if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId || !decideClaimedTenant({ actingBrokerageId: sessionCtx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: sessionCtx.brokerageId, action: "offer.packet.stage", actor: { type: "user", userId: sessionCtx.userId, agentId: sessionCtx.agentId ?? null }, subject: { type: "document", id: params.documentId && isValidUUID(params.documentId) ? params.documentId : null, ref: params.documentId ? null : "offer_packet" }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { state: params.state, contact_id: params.contactId ?? null, listing_id: params.listingId ?? null } }, async () => {
     const supabase = await createClient()
 
     const { getStateForms } = await import("@/lib/state-forms/registry")
@@ -907,11 +849,50 @@ export async function generateOfferDraft(params: {
     }
 
     // ── Persist packet on documents row ──────────────────────────────────
+    //
+    // MERGE, NEVER REPLACE. This update used to assign `content` and `metadata`
+    // wholesale, and it runs immediately AFTER the caller has staged the row —
+    // draft-offer-from-voice.ts writes `content = { filledPacket, intake }` and
+    // `metadata.linked_offer_id`, then calls this function. The wholesale assign
+    // destroyed BOTH:
+    //   · `metadata.linked_offer_id` is the ONLY key
+    //     lib/workflow/intelligence/scan-offer-packet.ts uses to find an offer's
+    //     packet. Losing it makes the packet unfindable, forever.
+    //   · `content.filledPacket` is the ONLY thing that scan reads. The object
+    //     built here has no `filledPacket` key at all, so even a found row
+    //     scanned as empty.
+    // Together those made the completeness scan silently unrunnable on the one
+    // path that stages a packet — which the audit gate then read as "nothing
+    // missing" (wave 9, D1). With the gate now failing closed, an un-merged
+    // write here would refuse EVERY offer instead, so this is load-bearing in
+    // both directions.
+    //
+    // The two shapes share no keys, so a top-level merge is lossless: the scan
+    // keeps `filledPacket` + `intake`, packet consumers keep theirs.
     if (params.documentId) {
+      const { data: existingDoc, error: existingErr } = await supabase
+        .from("documents")
+        .select("content, metadata")
+        .eq("id", params.documentId)
+        .eq("brokerage_id", params.brokerageId)
+        .maybeSingle()
+      if (existingErr) {
+        console.error("[AI Offer Creation] Could not read the staged document before merging the packet — refusing to overwrite it blind:", existingErr.message)
+        return handleError(existingErr, "generateOfferDraft")
+      }
+
+      let priorContent: Record<string, unknown> = {}
+      try {
+        const parsed = JSON.parse((existingDoc?.content as string | null) ?? "{}")
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) priorContent = parsed
+      } catch { /* unparseable prior content is replaced, not merged */ }
+      const priorMetadata = (existingDoc?.metadata ?? {}) as Record<string, unknown>
+
       const packetUpdate = {
-        content: JSON.stringify(packet, null, 2),
+        content: JSON.stringify({ ...priorContent, ...packet }, null, 2),
         status: "needs_agent_input",         // NOT draft_ready — packet awaits human finalization
         metadata: {
+          ...priorMetadata,                  // keeps linked_offer_id and anything else staged
           state,
           packet_type: "offer",
           required_forms: forms.required,
@@ -923,17 +904,25 @@ export async function generateOfferDraft(params: {
         },
         updated_at: new Date().toISOString(),
       }
-      await supabase
+      // CHECKED: a silently-dropped update here is what produced the unfindable
+      // packet in the first place, and supabase-js RESOLVES a refused write.
+      const { error: packetWriteErr } = await supabase
         .from("documents")
         .update(packetUpdate)
         .eq("id", params.documentId)
         // tenant anchor (scope burn-down): document must belong to the workflow's brokerage
         .eq("brokerage_id", params.brokerageId)
+      if (packetWriteErr) {
+        console.error("[AI Offer Creation] Packet did not persist to the document row:", packetWriteErr.message)
+        return handleError(packetWriteErr, "generateOfferDraft")
+      }
     }
 
     // ── Notify agent that the packet is ready for review ─────────────────
     if (params.agentUserId) {
-      void Promise.resolve(supabase.from("notifications").insert({
+      // Awaited and error-read (lane 76C): the fire-and-forget `.catch(() => {})`
+      // made an RLS/CHECK refusal indistinguishable from a delivered bell.
+      const { error: notifyError } = await supabase.from("notifications").insert({
         user_id: params.agentUserId,
         brokerage_id: params.brokerageId,
         type: "offer_packet_ready",
@@ -943,10 +932,12 @@ export async function generateOfferDraft(params: {
         entity_type: "document",
         entity_id: params.documentId ?? null,
         channel: "in_app",
-      })).catch(() => {})
+      })
+      if (notifyError) console.warn("[ai-offer-creation] notifications insert refused — the bell will not ring:", notifyError.message)
     }
 
     return { success: true, documentId: params.documentId ?? undefined }
+    })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     return { success: false, error: msg }

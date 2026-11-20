@@ -1,33 +1,87 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateAIResponse } from "@/lib/ai"
 import { NextResponse } from "next/server"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 
 export async function POST(request: Request) {
   try {
     const { contactId, message, persona, isBuyer, isSeller, conversationHistory } = await request.json()
-    
-    // Get actor context for governance
-    const agentCtx = await getAgentContext()
-    const actorContext = agentCtx
-      ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
-      : undefined
+
+    // ── AUTHORIZATION (added lane G5 2026-08-28) ──────────────────────────────
+    // This handler had NO auth of any kind. It took `contactId` from the request
+    // BODY and returned that contact's whole row embedded with their listings,
+    // transactions, offers and showing requests — to anyone who could POST to
+    // the URL, from any tenant or none, while billing the AI to the platform.
+    // A route file is reachable by URL whether or not the app addresses it, so
+    // "nothing calls it" was never the mitigation it looked like.
+    //
+    // The gate is the shared one whose own header says it exists so that portal
+    // server actions AND portal API routes "cannot be called for an arbitrary
+    // contactId": it admits the contact themselves (linked user id, matching
+    // email, or an accepted unexpired invite) and same-brokerage staff, and it
+    // FAILS CLOSED on a refused read rather than reporting "not found".
+    //
+    // It also replaces getAgentContext() for the actor context. That resolves an
+    // AGENT identity, and the caller here is normally the CONTACT — so on the
+    // ordinary portal turn it produced no actor at all, and the AI governance
+    // rails received `undefined`. The gate returns the caller's real users.id
+    // and the contact's tenant, which is what the ledger needs to bill.
+    if (!contactId || typeof contactId !== "string") {
+      return NextResponse.json({ error: "contactId is required" }, { status: 400 })
+    }
+    const access = await requireContactAccess(contactId)
+    if (!access.ok) {
+      const status = access.error === "Unauthorized" ? 401
+        : access.error === "Contact not found" ? 404
+        : access.error === "Forbidden" ? 403
+        : 500
+      return NextResponse.json({ error: access.error }, { status })
+    }
+    const actorContext = { userId: access.userId, brokerageId: access.brokerageId }
 
     const supabase = await createClient()
 
-    // Fetch contact context
-    const { data: contact } = await supabase
+    // Fetch contact context.
+    //
+    // TWO AMBIGUOUS PAIRS lived in this one select, and either alone made PostgREST
+    // refuse the WHOLE request (PGRST201) — not just the offending embed:
+    //   • contacts ↔ listings carries TWO FKs (listings_contact_id_fkey,
+    //     listings_seller_contact_id_fkey). Named seller_contact_id: a listing attached
+    //     to a portal client is the home THEY are selling, and seller_contact_id is the
+    //     column the listing rails actually write (listing-lifecycle-core.ts,
+    //     kernel-bridges.ts, present-to-seller.ts); legacy listings.contact_id is unset.
+    //   • contacts ↔ transactions carries THREE FKs (contact_id, buyer_contact_id,
+    //     seller_contact_id). Named contact_id — the client on the deal, matching how
+    //     every other portal page reads a client's deals (see the calendar page's
+    //     .eq("contact_id", contactId)); the side-specific links would hide a deal
+    //     whenever this client sits on the other side.
+    // Because supabase-js RESOLVES the refusal, `contact` was simply null and this
+    // route quietly fed the model an EMPTY context block on every single turn — the
+    // assistant answered every client as if it knew nothing about them.
+    //
+    // Embeds now name the columns this route reads (no `select("*")` inside an embed,
+    // defect #214). Doing so exposed three phantom reads below, fixed with them:
+    // offers.offer_amount → offer_price, showing_requests.confirmed_date →
+    // requested_date, and listings.property_address / listings.price, which do not
+    // exist at all (the real ones are address / list_price).
+    const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select(`
         *,
-        listings (*),
-        transactions (*, transaction_milestones (*)),
-        offers (*),
-        showing_requests (*),
-        saved_properties (*)
+        listings!listings_seller_contact_id_fkey (id, address, list_price, status),
+        transactions!transactions_contact_id_fkey (id, property_address, status, transaction_milestones (id, milestone_name, status)),
+        offers (id, offer_price, status),
+        showing_requests (id, status, requested_date),
+        saved_properties (id)
       `)
       .eq("id", contactId)
       .single()
+
+    if (contactError) {
+      // Check the error: an unchecked read reports a refusal as an absence, which is
+      // how the ambiguity above survived. The catch below returns the honest fallback.
+      throw contactError
+    }
 
     // Build context for AI
     const contextParts: string[] = []
@@ -56,15 +110,19 @@ export async function POST(request: Request) {
       if (contact.offers?.length > 0) {
         const activeOffer = contact.offers.find((o: any) => o.status !== "closed" && o.status !== "rejected")
         if (activeOffer) {
+          // offers.offer_amount does not exist; offer_price is the canonical column
+          // (same rename the seller portal already made).
           contextParts.push(
-            `Active Offer: $${activeOffer.offer_amount?.toLocaleString()} - Status: ${activeOffer.status}`,
+            `Active Offer: $${activeOffer.offer_price?.toLocaleString()} - Status: ${activeOffer.status}`,
           )
         }
       }
 
       if (contact.showing_requests?.length > 0) {
+        // showing_requests.confirmed_date does not exist — requested_date is the real
+        // column, so `new Date(undefined)` was NaN and this filter could never be true.
         const upcomingShowings = contact.showing_requests.filter(
-          (s: any) => s.status === "confirmed" && new Date(s.confirmed_date) > new Date(),
+          (s: any) => s.status === "confirmed" && new Date(s.requested_date) > new Date(),
         )
         if (upcomingShowings.length > 0) {
           contextParts.push(`Upcoming Showings: ${upcomingShowings.length}`)
@@ -77,10 +135,10 @@ export async function POST(request: Request) {
 
       if (contact.listings?.length > 0) {
         const listing = contact.listings[0]
-        contextParts.push(`Listing Address: ${listing.address || listing.property_address}`)
-        contextParts.push(
-          `Listing Price: $${listing.price?.toLocaleString() || listing.asking_price?.toLocaleString()}`,
-        )
+        // listings has no property_address / price / asking_price column — address and
+        // list_price are the real ones, so the old fallbacks were unreachable.
+        contextParts.push(`Listing Address: ${listing.address}`)
+        contextParts.push(`Listing Price: $${listing.list_price?.toLocaleString()}`)
         contextParts.push(`Listing Status: ${listing.status}`)
       }
     }
@@ -133,33 +191,49 @@ User: ${message}
 
 Please respond as the AI assistant.`
 
-    const response = await generateAIResponse({
-      prompt: fullPrompt,
-      metadata: {
-        userId: actorContext?.userId ?? "",
-        brokerageId: actorContext?.brokerageId,
-        feature: "portal_message",
-      },
-    })
-    const text = response.text
-
-    // Parse response for suggestions and actions
-    let responseText = text
+    // THE ONE ANSWER DECISION (wave 155, lanes 155F / 155F2). This is the portal assistant's live "Something else" door, and
+    // it sent the model's text to a client UNSCREENED: a closing date, a lender status or a figure the model made up reached
+    // the client as an answer. Now the question is classified first; a deal fact is answered from the tenant's own records
+    // or not at all; and a general answer is the model's draft with every figure, date and status it cannot source removed
+    // (the client context this route already loaded counts as a source). When the answer is not enough, the responsible
+    // agent gets one task — the same decision and the same task the tutor, the home assistant and the widget use.
     let suggestions: string[] = []
     let actions: { label: string; action: string }[] = []
-
-    // Try to extract JSON from the response
-    const jsonMatch = text.match(/\{[\s\S]*"suggestions"[\s\S]*\}/)
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0])
-        suggestions = parsed.suggestions || []
-        actions = parsed.actions || []
-        responseText = text.replace(jsonMatch[0], "").trim()
-      } catch {
-        // JSON parsing failed, use text as-is
-      }
-    }
+    const qad = await import("@/lib/portal/question-answer-decision")
+    const svc = (await import("@/lib/supabase/service")).createServiceClient()
+    const question = String(message ?? "")
+    const decision = await qad.decidePortalAnswer(svc, {
+      brokerageId: access.brokerageId, contactId, question, agentName: null, extraSourceText: contextParts.join("\n"),
+      generalAnswer: async () => {
+        const raw = (await generateAIResponse({
+          prompt: fullPrompt,
+          metadata: { userId: actorContext?.userId ?? "", brokerageId: actorContext?.brokerageId, feature: "portal_message" },
+        })).text
+        // The model appends its follow-up chips as a JSON block. Split it off BEFORE the screen: only the prose is an
+        // answer, and a screen that edits prose must not be handed JSON to edit.
+        const jsonMatch = raw.match(/\{[\s\S]*"suggestions"[\s\S]*\}/)
+        if (!jsonMatch) return raw
+        try {
+          const parsed = JSON.parse(jsonMatch[0])
+          suggestions = Array.isArray(parsed.suggestions) ? parsed.suggestions.filter((x: unknown) => typeof x === "string").slice(0, 3) : []
+          actions = Array.isArray(parsed.actions) ? parsed.actions.filter((x: any) => x && typeof x.label === "string" && typeof x.action === "string").slice(0, 3) : []
+        } catch {
+          // not parseable — drop the block rather than show a client raw JSON
+        }
+        return raw.replace(jsonMatch[0], "").trim()
+      },
+    })
+    const responseText = decision.text
+    // Follow-up chips belong to a model answer that survived as written. A deterministic, held or refused answer shows none.
+    if (decision.modelCalls === 0 || decision.answered !== "sourced") { suggestions = []; actions = [] }
+    const { data: assigned, error: assignedError } = await svc.from("contacts").select("agent_id").eq("id", contactId).eq("brokerage_id", access.brokerageId).maybeSingle()
+    if (assignedError) console.error("[portal/ai-assistant] the contact's agent could not be read — no task routed:", assignedError.message)
+    const ding = await qad.fileQuestionDing(svc, {
+      brokerageId: access.brokerageId, contactId, sessionId: null,
+      agentId: (assigned as { agent_id?: string | null } | null)?.agent_id ?? null,
+      question, decision, surface: "buyer_assistant",
+    })
+    if (decision.plan.notify && !ding.filed && !ding.deduped && ding.notified === 0) console.error("[portal/ai-assistant] question task not filed:", ding.reason)
 
     return NextResponse.json({
       response: responseText,

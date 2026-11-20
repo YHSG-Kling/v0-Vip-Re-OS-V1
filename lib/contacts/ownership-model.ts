@@ -2,12 +2,16 @@
 // Single source of truth for how contacts, properties, and offers relate.
 // Import getOfferContext everywhere cross-side logic is needed — never inline it.
 
-export type ContactSide = 'buyer' | 'seller' | 'both' | 'investor'
-
-export type PropertyConnection =
-  | { type: 'brokerage_listing'; listingId: string }  // property is in our system
-  | { type: 'external_property'; mlsNumber: string }  // IDX / MLS only
-  | { type: 'none' }
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `ContactSide` and `PropertyConnection`
+// deleted — modeling types no code ever carried. The facts they described live
+// elsewhere, in the shapes the code actually reads:
+//   · a contact's side is contacts.contact_type (buyer/seller/…, the CHECK
+//     vocabulary) — and 'investor', which only this union offered as a side,
+//     is A PERSONA, not a contact type (owner ruling 2026-08-31, m589; an
+//     investor's transaction side is 'buyer');
+//   · a property connection is offers.listing_id nullable-or-set, which
+//     getOfferContext below turns into the live OfferContext union (in-system
+//     listing vs external IDX/MLS property).
 
 export type OfferContext =
   | { isCrossSide: true;  listingId: string; isSameAgent: boolean }  // brokerage listing → both sides tracked

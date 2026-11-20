@@ -1,4 +1,7 @@
 "use server"
+import { resolveAgentId, resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
+import { resolveAgreedCommission, resolveClosingCosts } from "@/lib/offers/net-sheet-calc"
+import { deriveNetSheetClosingCostSection, disclosedBuyerAgentCommissionNote } from "@/lib/offers/seller-closing-costs"
 
 /**
  * System 5.3: CMA & Listing Presentation Engine
@@ -13,6 +16,19 @@ import { isValidUUID } from "@/lib/validations"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { getFinancialDefaults } from "@/lib/brokerage/get-brokerage-settings"
 import { computeNetSheetScenario } from "@/lib/cma/net-sheet-math"
+
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
 
 export interface NetSheetInput {
   listingId: string
@@ -45,6 +61,11 @@ export interface NetSheetResult {
   scenarios?: NetSheetScenario[]
   expiresAt?: string
   error?: string
+  /** Post-NAR-settlement disclosure for the SELLER's sheet: the buyer-agent share
+   *  disclosed on the accepted offer, when that offer names the seller as its
+   *  payer. Null when no accepted offer discloses one — never an assumed co-op
+   *  split (lib/offers/seller-closing-costs.ts:disclosedBuyerAgentCommissionNote). */
+  disclosedBuyerAgentCommissionNote?: string | null
 }
 
 export interface NetSheetScenario {
@@ -92,6 +113,9 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
     }
 
     const supabase = await createClient()
+    // WAVE 155 (lane 155R12): no session gate stood here (a public endpoint); the siblings' exact gate (the session user).
+    const { data: { user: sessionUser } } = await supabase.auth.getUser()
+    if (!sessionUser) return { success: false, error: "Not authenticated" }
 
     // pass 13: callers pass MIXED id classes (the presentation tab sends
     // listing.agent_id = agents.id; direct actions send users.id). Resolve both
@@ -115,6 +139,8 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       return { success: false, error: "Agent brokerage not found" }
     }
 
+    // The tenant here is the one the caller's RLS-scoped reads above resolved for that agent (finding: from an argument, not the session).
+    return await withReceipt({ brokerageId: brokerageId as string, userId: sessionUser.id, action: "seller.net_sheet.generate", subject: { type: "listing", id: input.listingId }, riskClass: "LOW_RISK_WRITE", detail: { contact_id: input.contactId } }, async (): Promise<NetSheetResult> => {
     // Fetch brokerage commission structure and financial defaults in parallel
     const [commissionStructure, financialDefaults] = await Promise.all([
       getDefaultCommissionStructure(brokerageId),
@@ -123,8 +149,93 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 
     const closingCostPercent = financialDefaults.closing_cost_percent
 
-    // Emit start event
-    await supabase.from("activities").insert({
+    // ── Money correctness: this sheet used to price NOTHING the seller agreed to.
+    // It charged the brokerage's DEFAULT commission rates, defaulted closing costs
+    // to a flat brokerage percent, and had no transaction-fee line at all — so a
+    // flat-fee listing or a $395 brokerage fee simply did not appear. The three
+    // other net sheets already resolve these; this one now shares their resolvers.
+    const [{ data: nsListing }, { data: nsAgreement }] = await Promise.all([
+      supabase.from("listings").select("state, commission_rate").eq("id", input.listingId).maybeSingle(),
+      supabase
+        .from("listing_agreements")
+        .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_value_type")
+        .eq("listing_id", input.listingId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ])
+
+    const nsAgreed = resolveAgreedCommission({
+      agreement: nsAgreement ?? null,
+      listingCommissionRatePercent: (nsListing?.commission_rate as number | null) ?? null,
+      referencePrice: input.salePrice,
+    })
+    // The AGREED seller transaction fee — a flat dollar charge that does not scale.
+    const nsTransactionFee = Number(nsAgreement?.seller_transaction_fee ?? 0) || 0
+    const nsListingState = (nsListing?.state as string | null) ?? null
+
+    // ── POST-NAR-SETTLEMENT DISCLOSURE ON THE SELLER'S OWN SHEET (wave 26) ────
+    // §5 keeps commission off the AGENT-facing display. This is a SELLER
+    // document about the SELLER's money: where the accepted offer records the
+    // seller as the payer of the buyer-agent share, that share is a cost the
+    // seller bears, and omitting it makes the net-proceeds headline wrong by
+    // exactly that amount. Disclosing it here is the seller's own figure, not a
+    // commission readout for an agent.
+    //
+    // HONEST BY CONSTRUCTION — disclosedBuyerAgentCommissionNote returns null
+    // unless disclosed_commission_payer is literally 'seller' AND a real pct or
+    // flat figure is on the offer. It never derives an assumed co-op split, so a
+    // pre-listing CMA net sheet (no accepted offer) simply carries no note.
+    // disclosed_commission_payer's CHECK admits buyer|either|split|seller, so
+    // the payer test is exhaustive over the live vocabulary.
+    let nsDisclosedBuyerAgentNote: string | null = null
+    {
+      const { data: nsAcceptedOffer, error: nsOfferErr } = await supabase
+        .from("offers")
+        .select("disclosed_buyer_commission_pct, disclosed_buyer_commission_flat, disclosed_commission_payer")
+        .eq("listing_id", input.listingId)
+        .eq("status", "accepted")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      // supabase-js RESOLVES refusals. A refused read is not "nothing was
+      // disclosed" — say so rather than silently dropping a disclosure.
+      if (nsOfferErr) {
+        console.error("[net-sheet] accepted-offer disclosure read refused — the buyer-agent disclosure line is NOT on this sheet:", nsOfferErr.message)
+      } else if (nsAcceptedOffer) {
+        nsDisclosedBuyerAgentNote = disclosedBuyerAgentCommissionNote(nsAcceptedOffer)
+      }
+    }
+
+    // Emit start event.
+    //
+    // TENANT — AND WHY THE TRIGGER COULD NOT SUPPLY IT HERE.
+    //
+    // `activities` carries `activities_set_brokerage` (BEFORE INSERT), so this
+    // table reads as netted. But the trigger is **SECURITY INVOKER**
+    // (`prosecdef = false`): each of its lookups runs under the RLS of whoever is
+    // inserting, and `supabase` here is the SESSION client. Its first matching
+    // branch is `contact_id → contacts`, and `contacts` RLS gives a
+    // `user_type = 'agent'` caller `agent_read_own_contacts` ONLY — the contacts
+    // assigned to their own `agents.id`. This action never reads `contacts` at
+    // all, so nothing establishes that the caller can see the seller it is
+    // writing about.
+    //
+    // The chain is ELSIF, which is what makes it sharp: `contact_id IS NOT NULL`
+    // MATCHES, the SELECT returns no row, and the chain STOPS — it never falls
+    // through to `agent_user_id`, which this row also carries and which the same
+    // caller *could* have read (`users_same_brokerage_select`). Proven live: a
+    // row carrying both anchors, inserted by a caller who cannot read the
+    // contact, is refused 23502 while the identical row with an explicit stamp
+    // lands.
+    //
+    // And `activities.brokerage_id` is NOT NULL, so this was never a hidden row —
+    // the net sheet's start/completion events were REFUSED, silently, for every
+    // agent working a colleague's seller. `brokerageId` is already resolved 40
+    // lines above from the acting agent's `users.brokerage_id`, which is the
+    // exact expression the readers of this table compare.
+    const { error: nsStartError } = await supabase.from("activities").insert({
+      brokerage_id: brokerageId,
       activity_type: "seller.net_sheet.started",
       listing_id: input.listingId,
       contact_id: input.contactId,
@@ -134,23 +245,29 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
         alternate_price: input.alternatePrice
       }
     })
+    // Destructured: supabase-js RESOLVES a refused insert, so the bare `await`
+    // this replaced reported success over a row that was never written.
+    if (nsStartError) {
+      console.error("[net-sheet] seller.net_sheet.started NOT recorded:", nsStartError.message)
+    }
 
     // Calculate scenarios
     const scenarios: NetSheetScenario[] = []
     
     // Primary scenario
-    scenarios.push(calculateScenario("Primary Scenario", input.salePrice, input, commissionStructure, closingCostPercent))
+    const nsCtx = { agreed: nsAgreed, transactionFee: nsTransactionFee, state: nsListingState, brokeragePercent: closingCostPercent }
+    scenarios.push(calculateScenario("Primary Scenario", input.salePrice, input, commissionStructure, closingCostPercent, nsCtx))
     
     // Alternate scenario if provided
     if (input.alternatePrice && input.alternatePrice > 0) {
-      scenarios.push(calculateScenario("Alternate Scenario", input.alternatePrice, input, commissionStructure, closingCostPercent))
+      scenarios.push(calculateScenario("Alternate Scenario", input.alternatePrice, input, commissionStructure, closingCostPercent, nsCtx))
     }
     
     // Conservative scenario (-5%)
-    scenarios.push(calculateScenario("Conservative (-5%)", input.salePrice * 0.95, input, commissionStructure, closingCostPercent))
+    scenarios.push(calculateScenario("Conservative (-5%)", input.salePrice * 0.95, input, commissionStructure, closingCostPercent, nsCtx))
     
     // Optimistic scenario (+5%)
-    scenarios.push(calculateScenario("Optimistic (+5%)", input.salePrice * 1.05, input, commissionStructure, closingCostPercent))
+    scenarios.push(calculateScenario("Optimistic (+5%)", input.salePrice * 1.05, input, commissionStructure, closingCostPercent, nsCtx))
 
     // Calculate expiration (90 days)
     const expiresAt = new Date()
@@ -158,8 +275,9 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 
     const netSheetId = crypto.randomUUID()
 
-    // Emit completion event
-    await supabase.from("activities").insert({
+    // Emit completion event. Same tenant, same reason — see the start event above.
+    const { error: nsDoneError } = await supabase.from("activities").insert({
+      brokerage_id: brokerageId,
       activity_type: "seller.net_sheet.completed",
       listing_id: input.listingId,
       contact_id: input.contactId,
@@ -172,13 +290,43 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
         validity_days: NET_SHEET_VALIDITY_DAYS
       }
     })
+    if (nsDoneError) {
+      console.error("[net-sheet] seller.net_sheet.completed NOT recorded:", nsDoneError.message)
+    }
+
+    // GOVERNANCE VOCABULARY. The row above says `seller.net_sheet.completed`, but
+    // the net-sheet validator that gates the seller's decision reads
+    // `seller.net_sheet.generated` / `.regenerated` and nothing else. Nothing wrote
+    // either one, so deriveNetSheetValidityFromEvents always came back null and
+    // every listing reported "Net sheet not yet generated" no matter how many net
+    // sheets had been produced. logNetSheetActivity is the canonical writer of that
+    // vocabulary; this is its call site. Best-effort — the net sheet is already
+    // built, and a missing governance row must not fail it.
+    try {
+      const { logNetSheetActivity } = await import("@/app/actions/seller-decision-governance")
+      const gov = await logNetSheetActivity({
+        listing_id: input.listingId,
+        event_type: "generated",
+        validity_days: NET_SHEET_VALIDITY_DAYS,
+        metadata: { net_sheet_id: netSheetId, expires_at: expiresAt.toISOString() },
+      })
+      if (!gov.success) {
+        console.error("[net-sheet] governance row NOT written:", gov.error)
+      }
+    } catch (err) {
+      console.error("[net-sheet] governance row NOT written:", err)
+    }
 
     return {
       success: true,
       netSheetId,
       scenarios,
-      expiresAt: expiresAt.toISOString()
+      expiresAt: expiresAt.toISOString(),
+      // Null when nothing real is disclosed — the sheet then carries no line,
+      // which is the honest state, not a missing feature.
+      disclosedBuyerAgentCommissionNote: nsDisclosedBuyerAgentNote,
     }
+    }, (error) => ({ success: false as const, error }))
   } catch (error: any) {
     console.error("[System 5.3] Net sheet generation error:", error)
     return {
@@ -198,14 +346,35 @@ function calculateScenario(
   input: NetSheetInput,
   commissionStructure: Awaited<ReturnType<typeof getDefaultCommissionStructure>>,
   closingCostPercent: number,
+  ctx?: {
+    agreed: ReturnType<typeof resolveAgreedCommission>
+    transactionFee: number
+    state: string | null
+    brokeragePercent: number
+  },
 ): NetSheetScenario {
   // Commission Engine 8.0 will compute final values.
   // Pure arithmetic lives in @/lib/cma/net-sheet-math (computeNetSheetScenario).
+  //
+  // Closing costs are tiered by the canonical resolver, recomputed PER SCENARIO so
+  // the regional band tracks the scenario price instead of being scaled after the
+  // fact: entered figure → brokerage percent (only when actually configured) →
+  // county-customary band → 2% house default.
+  const resolvedClosing = ctx
+    ? resolveClosingCosts({
+        explicitAmount: input.closingCosts,
+        brokerageClosingCostPercent: ctx.brokeragePercent,
+        regionalMidpoint: deriveNetSheetClosingCostSection(salePrice, ctx.state)?.midpoint ?? null,
+        salePrice,
+      })
+    : null
+
   return computeNetSheetScenario(
     scenarioName,
     salePrice,
     {
-      closingCosts: input.closingCosts,
+      closingCosts: resolvedClosing ? resolvedClosing.amount : input.closingCosts,
+      transactionFee: ctx?.transactionFee ?? 0,
       mortgagePayoffAmount: input.mortgagePayoffAmount,
       mortgageBalance: input.mortgageBalance,
       propertyTaxes: input.propertyTaxes,
@@ -213,9 +382,15 @@ function calculateScenario(
       repairCredits: input.repairCredits,
       sellerConcessions: input.sellerConcessions,
     },
-    commissionStructure?.agentListingSideRate ?? 0,
-    commissionStructure?.agentBuyerSideRate ?? 0,
+    // An executed agreement outranks the brokerage's default rates.
+    ctx && !ctx.agreed.isEstimate && !ctx.agreed.isFlatFee
+      ? ctx.agreed.rate
+      : commissionStructure?.agentListingSideRate ?? 0,
+    ctx && !ctx.agreed.isEstimate && !ctx.agreed.isFlatFee
+      ? 0
+      : commissionStructure?.agentBuyerSideRate ?? 0,
     closingCostPercent,
+    ctx?.agreed.isFlatFee ? ctx.agreed.flatAmount : null,
   )
 }
 
@@ -291,7 +466,17 @@ export async function shareNetSheetToPortal(params: {
       .select("brokerage_id")
       .eq("id", user.id)
       .maybeSingle()
+    const brokerageId = (agent as { brokerage_id: string | null } | null)?.brokerage_id ?? null
 
+    // Scoped whenever the tenant is known — one agents row per (user, brokerage).
+    const agentRecordId = brokerageId
+      ? await resolveAgentIdInBrokerage(supabase, user.id, brokerageId)
+      : await resolveAgentId(supabase, user.id)
+    if (!agentRecordId) {
+      return { success: false, error: "No agent profile for this user — the net sheet was not shared to the portal." }
+    }
+
+    return await withReceipt({ brokerageId, userId: user.id, agentId: agentRecordId, action: "seller.net_sheet.share_to_portal", subject: { type: "contact", id: params.contactId }, riskClass: "COMMUNICATION", detail: { listing_id: params.listingId } }, async () => {
     const message =
       `Based on a sale price of ${formatCurrency(params.netSheetData.estimatedSalePrice)}, ` +
       `your estimated net proceeds are ${formatCurrency(params.netSheetData.estimatedNet)}. ` +
@@ -303,7 +488,7 @@ export async function shareNetSheetToPortal(params: {
     const { error } = await supabase.from("transparency_updates").insert({
       listing_id: params.listingId,
       contact_id: params.contactId,
-      agent_id: user.id,
+      agent_id: agentRecordId,
       update_type: "net_sheet",
       title: "Your Estimated Net Proceeds",
       message,
@@ -316,17 +501,23 @@ export async function shareNetSheetToPortal(params: {
 
     if (error) return { success: false, error: error.message }
 
-    // Log an activity so the timeline reflects this action
-    await supabase.from("activities").insert({
+    // Log an activity so the timeline reflects this action. The portal message
+    // above already checked its error; this row is what the agent and the AI
+    // read back as "the net sheet was shared", so it checks its own too.
+    const { error: netSheetActivityError } = await supabase.from("activities").insert({
       activity_type: "net_sheet_shared_to_portal",
       contact_id: params.contactId,
-      agent_id: user.id,
-      brokerage_id: agent?.brokerage_id ?? null,
+      agent_id: agentRecordId,
+      brokerage_id: brokerageId,
       title: "Net sheet shared to seller portal",
       description: `Estimated net: ${formatCurrency(params.netSheetData.estimatedNet)}`,
     })
+    if (netSheetActivityError) {
+      console.error("[shareNetSheetToPortal] net_sheet_shared_to_portal activity REJECTED — the seller sees the net sheet but the timeline does not:", netSheetActivityError.message)
+    }
 
     return { success: true }
+    }, (error) => ({ success: false as const, error }))
   } catch (err: any) {
     console.error("[System 5.3] shareNetSheetToPortal error:", err)
     return { success: false, error: err.message || "Failed to share net sheet" }
@@ -385,6 +576,7 @@ export async function saveNetSheetEmailDraft(params: {
       .eq("id", user.id)
       .maybeSingle()
 
+    return await withReceipt({ brokerageId: agent?.brokerage_id ?? null, userId: user.id, action: "seller.net_sheet.save_email_draft", subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", detail: { listing_id: params.listingId } }, async () => {
     const { error } = await supabase.from("ai_message_drafts").insert({
       agent_user_id: user.id,
       contact_id: params.contactId,
@@ -400,6 +592,7 @@ export async function saveNetSheetEmailDraft(params: {
 
     if (error) return { success: false, error: error.message }
     return { success: true }
+    }, (error) => ({ success: false as const, error }))
   } catch (err: any) {
     return { success: false, error: err.message || "Failed to save draft" }
   }

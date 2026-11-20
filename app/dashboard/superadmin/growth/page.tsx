@@ -6,7 +6,7 @@ import { getProductBrandAction, listTopicsAction } from "@/app/actions/superadmi
 import { DEFAULT_PRODUCT_BRAND } from "@/lib/platform/product-brand"
 import { BrandTopicsCard } from "./brand-topics-card"
 import { ImageLibraryCard } from "./image-library-card"
-import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 import { PlatformGrowthBoard } from "./platform-growth-board"
 import { ProductContentBoard } from "./product-content-board"
 import { listSubscriberReferralsAction } from "@/app/actions/superadmin/subscriber-referrals"
@@ -24,7 +24,7 @@ export default async function PlatformGrowthPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
   const { data } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const role = (data as any)?.platform_role ?? ((data as any)?.user_type === "superadmin" ? "superadmin" : null)
+  const role = resolvePlatformRoleIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!platformStaffCan(role, "marketing")) return <div className="p-6 text-red-600">Forbidden: platform marketing access required</div>
 
   // Referral fees are a MONEY surface — billing capability (superadmin + platform admin),
@@ -69,7 +69,7 @@ export default async function PlatformGrowthPage() {
       )}
       {/* Subscriber referral fees — who referred each tenant + what's owed (billing roles only) */}
       {referralsRes && referralsRes.ok && (
-        <SubscriberReferralsCard initialRows={referralsRes.rows} feePercent={referralsRes.feePercent} brokerageOptions={referralsRes.brokerageOptions} />
+        <SubscriberReferralsCard initialRows={referralsRes.rows} feePercent={referralsRes.feePercent} terms={referralsRes.terms} brokerageOptions={referralsRes.brokerageOptions} />
       )}
       {/* Brand kit (configurable product name) + watched-topic pool */}
       <BrandTopicsCard initialBrand={brandRes.ok ? brandRes.brand : DEFAULT_PRODUCT_BRAND} initialTopics={topicsRes.ok ? topicsRes.topics : []} />

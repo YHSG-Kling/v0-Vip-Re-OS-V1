@@ -1,7 +1,8 @@
 // ─── CANONICAL ROLE DEFINITIONS (single source of truth) ─────────────────────
 //
 // System catalog: superadmin | admin | broker | team_lead | agent | isa |
-//                 tc | compliance_officer | vendor | lender | title_agent | contact
+//                 tc | compliance_officer | vendor | lender | title_agent |
+//                 contact
 //
 // All other files in this codebase MUST import UserRole from here (or from
 // @/lib/security which re-exports it).  No file may declare its own UserRole.
@@ -21,6 +22,23 @@ export type CanonicalRole =
   | 'lender'
   | 'title_agent'
   | 'contact'
+  //
+  // ─── THERE IS NO SEAT BELOW THE SEAT ───────────────────────────────────────
+  // A `member` value was added here and then REMOVED, on the owner's ruling:
+  // "you introduced member awhile back and we don't need it. user is introduced
+  // with the usertype and then role just adds more capability."
+  //
+  // The model needs no bare seat. A user is CREATED WITH a user_type — that IS
+  // their seat and it already carries what they can see — and a grant in
+  // user_role_assignments ADDS capability on top of it. `member` was an extra
+  // rung invented under that model, not part of it. Nothing was lost by
+  // removing it: 0 live rows ever held it (measured at the time it was added
+  // and again at the time it was dropped), no policy or boolean helper in the
+  // schema ever named it, and it was in neither STAFF_NAV_PRECEDENCE nor
+  // EXTERNAL_NAV_ROLES, so it contributed nothing to any workspace.
+  //
+  // Do NOT re-add it. `team_member` below is UNRELATED — it is a legacy string
+  // that means a producing agent on a team, and it maps to `agent`.
 
 /** Public alias — use `UserRole` everywhere in application code. */
 export type UserRole = CanonicalRole
@@ -43,6 +61,7 @@ export type LegacyRole =
   | 'super_admin'              // → superadmin
   | 'broker_admin'             // → broker (brokerage-admin user_type in older rows)
   | 'solo_agent'               // → agent (plan-tier string leaked into role fields)
+  | 'team_member'              // → agent (the TEAM-tier twin of solo_agent)
 
 /** Any raw string that could arrive from the database or a JWT claim. */
 export type RawRole = CanonicalRole | LegacyRole | string
@@ -61,9 +80,52 @@ const LEGACY_ROLE_MAP: Record<string, CanonicalRole> = {
   // grouped with 'broker' at brokerage-wide scope (see lib/kernel/egress-scope.ts),
   // so it maps to 'broker', NOT the default fallback ('agent' in most callers).
   broker_admin: 'broker',
+  // broker_owner is NOT legacy — it is one of the fourteen STORABLE user_type
+  // values (users_user_type_check) and it is in the owner's admin-class roster
+  // verbatim: "broker, broker admin, broker owner, team lead, admin". It sat in
+  // NEITHER CanonicalRole NOR this map, so toCanonicalRole('broker_owner')
+  // returned null and toCanonicalRoleOrDefault(…, 'agent') — the form used at 52
+  // call sites, and 'agent' is the default at nearly all of them — DEMOTED THE
+  // PERSON WHO OWNS THE BROKERAGE TO AN AGENT. Every scope, navigation and
+  // permission decision downstream then treated them as a producing agent.
+  //
+  // Mapped to 'broker' rather than added to CanonicalRole, and the choice is
+  // deliberate: broker_owner and broker are the SAME brokerage-wide scope
+  // everywhere this codebase already decides scope — public.is_brokerage_admin()
+  // admits {admin, broker, broker_owner} as one tier, and lib/kernel/egress-scope.ts
+  // groups them. A thirteenth CanonicalRole would have to be given its own row in
+  // every Record<UserRole, …> permission and navigation table, and inventing those
+  // rows is minting a new vocabulary — the exact thing the ruling forbids — where
+  // an alias states the truth: an owner IS a broker, with a title.
+  broker_owner: 'broker',
   // solo_agent is a PLAN TIER string that leaked into role fields in early rows;
   // a solo-tier user is an agent.
   solo_agent: 'agent',
+  // team_member is solo_agent's TEAM-TIER TWIN, and it maps the same way.
+  //
+  // AUDITED, because it was named in three places and existed in no vocabulary —
+  // not in CanonicalRole, not in this map, not in users_user_type_check (14
+  // values, none of them this). No account could hold it, so all three
+  // references were dead. What they SAY it is, though, is unanimous:
+  //
+  //   lib/kernel/0.1-feature-access.ts  USER_TYPE_TO_TIER — `team_member: "team"`,
+  //     sitting beside `team_lead: "team"` and `agent: "solo_agent"`. It is a
+  //     BILLING-TIER classification of a producing seat.
+  //   lib/kernel/helpers.ts:309         grouped with agent + team_lead as the
+  //     `isAgent` test, which is what grants canEdit and canCreate.
+  //   lib/kernel/helpers.ts:63          in STAFF_ROLES.
+  //   app/components/layout/app-shell.tsx  in STAFF_AI_ROLES.
+  //
+  // All four give it PRODUCING, STAFF capability. That is the exact opposite of
+  // the rights-less seat, so it is NOT an alias for `member`. It is "an agent
+  // who is on a team" — and this schema already holds team membership as a FACT
+  // in four places (teams.team_lead_id, users.team_id, team_members,
+  // agents.team_id; see m431/m444, "leading a team is a fact, not a role"), so
+  // the role half of it is a duplicate of `agent` and the team half is a
+  // team_id. Mapped, not deleted: the four references above now agree with the
+  // canonicaliser instead of being unreachable, and a legacy JWT or an imported
+  // row carrying 'team_member' resolves to the producing seat it always meant.
+  team_member: 'agent',
 
   // Old enum key strings (stored verbatim in some early rows)
   TC: 'tc',
@@ -114,6 +176,36 @@ export function toCanonicalRoleOrDefault(
   defaultRole: CanonicalRole,
 ): CanonicalRole {
   return toCanonicalRole(raw) ?? defaultRole
+}
+
+/**
+ * Every RAW string that resolves to `canonical` — the canonical value itself
+ * plus every legacy alias that maps to it.
+ *
+ * This exists because a Postgres filter cannot call toCanonicalRole(). A query
+ * like `.in("user_type", ["TC"])` is an exact, CASE-SENSITIVE comparison, and
+ * live rows store 'tc'. That filter matched nothing and — since a query with no
+ * matches is a perfectly successful query — it failed silently: notifyComplianceFlag
+ * had never once reached a transaction coordinator, on any flag, while its own
+ * comment said the TC would see it.
+ *
+ * So: canonicalize on the way IN (toCanonicalRole), and expand on the way OUT
+ * (this). Both derive from the same table, so a new alias is picked up by both
+ * without anyone remembering to update a hand-typed list.
+ *
+ * @example rawRoleVariants('tc') // → ['tc', 'transaction_coordinator', 'TC']
+ */
+export function rawRoleVariants(canonical: CanonicalRole): string[] {
+  const out = [canonical as string]
+  for (const [raw, mapped] of Object.entries(LEGACY_ROLE_MAP)) {
+    if (mapped === canonical) out.push(raw)
+  }
+  return out
+}
+
+/** rawRoleVariants for several canonical roles at once, de-duplicated. */
+export function rawRoleVariantsFor(canonicals: CanonicalRole[]): string[] {
+  return Array.from(new Set(canonicals.flatMap(rawRoleVariants)))
 }
 
 /**
@@ -236,6 +328,22 @@ export interface UserContext {
   teamId?: string
   agentId?: string
   vendorId?: string
+  /**
+   * The caller's EFFECTIVE platform staff role, or null for tenant users —
+   * resolved by lib/platform/platform-staff-roster.ts:resolvePlatformRoleIdentity
+   * from users.platform_role (+ the legacy user_type='superadmin' marker, which
+   * no live row carries; CLAUDE.md §4: platform staff live in platform_role).
+   *
+   * ADDITIVE, deliberately: this does NOT participate in `roles` or in
+   * navigation/role resolution — the live superadmin's users row is
+   * (user_type='admin', platform_role='superadmin'), and their workspace nav
+   * comes from the 'admin' seat exactly as before. Client code that needs
+   * "is this person platform staff?" reads THIS field instead of hunting for a
+   * 'superadmin' string in `roles`, which can never appear there for any live
+   * account. Optional so demo/fallback contexts stay valid; absent means
+   * "not platform staff" (fail closed).
+   */
+  platformRole?: import('@/lib/platform/platform-staff-roster').PlatformStaffRole | null
 }
 
 // Permission groups (functional areas)
@@ -356,8 +464,9 @@ export interface AuthorizedUser {
   platformRole: string
 }
 
-export interface SubscriptionContext {
-  brokerageId?: string
-  teamId?: string
-  agentId?: string
-}
+// TOMBSTONE: `SubscriptionContext` is deleted. Its only consumers were the four
+// subscription-admin gates in ./authorization.ts, which had zero callers and are
+// deleted with it; the evidence it carried about the unmatchable team_id /
+// agent_id arms is preserved in that file's tombstone at :39.
+// Survivor for "may this user administer the tenant's subscription":
+// app/actions/billing.ts:46 requireTenantBillingAdmin.

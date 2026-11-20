@@ -9,6 +9,10 @@ interface NewListingPageClientProps {
   contactId:   string
   brokerageId: string
   agentUserId: string
+  /** Resolved server-side via lib/kernel/resolve-user-team.ts (THE ONE answer
+   *  for "which team is this agent on") — scopes FormWizard's e-sign
+   *  template/provider resolution to the agent's team. */
+  teamId:      string | null
   agentName:   string
   agentEmail:  string
   sellerName:  string
@@ -22,6 +26,7 @@ export function NewListingPageClient({
   contactId,
   brokerageId,
   agentUserId,
+  teamId,
   agentName,
   agentEmail,
   sellerName,
@@ -64,6 +69,7 @@ export function NewListingPageClient({
           contact={contactFull}
           brokerageId={brokerageId}
           agentUserId={agentUserId}
+          teamId={teamId}
           agentName={agentName}
           agentEmail={agentEmail}
           open={wizardOpen}

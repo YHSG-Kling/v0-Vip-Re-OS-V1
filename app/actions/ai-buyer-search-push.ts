@@ -16,9 +16,16 @@
  * Different from alerts (cron-driven): this is an on-demand agent action.
  */
 
-import { createClient } from "@/lib/supabase/server"
+// TOMBSTONE (§1.3) — the `createClient` import that stood here is removed. Its
+// capability is not lost: the act-as seam merge routed this file's writes through
+// `ctx.db` from resolveWriteContextForTenant (lib/platform/acting-context.ts:212),
+// which hands back a SERVICE client under an active full grant and the caller's own
+// RLS-scoped client otherwise. A self-made cookie client here was the shape that
+// silently refused every support write under act-as. The import outlived its last
+// call site by one commit.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { searchPropertiesCore, type BuyerSearchResult } from "@/lib/buyer-search/search-engine"
 
 export interface SearchPushResult {
@@ -48,12 +55,12 @@ export async function searchAndPushToBuyer(params: {
 }): Promise<SearchPushResult> {
   const { contactId, searchQuery, agentNote, maxResults = 10 } = params
 
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || (!ctx.agentId && ctx.userType !== "admin" && ctx.userType !== "superadmin")) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || (!ctx.agentId && ctx.userType !== "admin" && ctx.userType !== "superadmin")) {
     return { success: false, matchCount: 0, topMatches: [], error: "Unauthorized" }
   }
 
-  const supabase = await createClient()
+  const supabase = ctx.db
   const svc = createServiceClient()
 
   // Verify the contact belongs to this agent's brokerage
@@ -99,8 +106,10 @@ export async function searchAndPushToBuyer(params: {
     .filter(Boolean)
     .join(" · ")
 
-  // Log as activity on the contact record
-  await svc.from("activities").insert({
+  // Log as activity on the contact record. This row IS the record that the
+  // agent pushed these properties — the AI reads it back as outreach that
+  // happened, so a lost row is a false memory, not a missing log line.
+  const { error: pushActivityError } = await svc.from("activities").insert({
     contact_id: contactId,
     brokerage_id: ctx.brokerageId,
     agent_user_id: ctx.userId,
@@ -113,6 +122,9 @@ export async function searchAndPushToBuyer(params: {
       listing_ids: results.map((r) => r.listing_id),
     },
   })
+  if (pushActivityError) {
+    console.error("[aiBuyerSearchPush] agent_property_push activity REJECTED — the contact timeline will not show this push:", pushActivityError.message)
+  }
 
   // Create in-app notification for the buyer (via their portal user_id if set)
   if (contact.user_id) {
@@ -121,7 +133,7 @@ export async function searchAndPushToBuyer(params: {
       ? `Your agent says: "${agentNote}". ${results[0]?.headline ?? ""}`
       : results[0]?.headline ?? `Your agent found properties matching: ${searchQuery}`
 
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id: contact.user_id,
       brokerage_id: ctx.brokerageId,
       title: noteTitle,
@@ -131,7 +143,7 @@ export async function searchAndPushToBuyer(params: {
       entity_type: "property_search",
       entity_id: contactId,
       priority: "medium",
-    })
+    }), { table: "notifications", flow: "ai_buyer_search_push_notify", brokerageId: ctx.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   const topMatches = results.slice(0, 5).map((r) => ({

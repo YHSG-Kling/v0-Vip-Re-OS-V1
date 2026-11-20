@@ -3,6 +3,7 @@
 // Cron job to detect stalled onboarding and create smart assistant suggestions
 // Schedule: Daily via Vercel Cron
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import {
 NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
@@ -15,6 +16,7 @@ import {
   recordCronFailureAction,
 } from '@/app/actions/cron-kernel'
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 // Vercel Cron config
 export const runtime = 'nodejs'
@@ -33,6 +35,7 @@ export async function GET(request: NextRequest) {
     cron_name: 'onboarding-health',
     cron_path: '/app/api/cron/onboarding-health/route.ts',
   })
+  if (contextResult.data?.held) return NextResponse.json({ success: true, held: true, decision: contextResult.data.decision }) // cron decision door (155R1): held before any domain write
   if (!contextResult.success || !contextResult.data) {
     return NextResponse.json({ error: 'Failed to create cron context' }, { status: 500 })
   }
@@ -101,12 +104,16 @@ export async function GET(request: NextRequest) {
     if (lastActivityDate < stalledThreshold) {
       stalledAgents.push(onboarding.agent_id)
 
-      // Get agent name for personalized suggestion
+      // Get agent name for personalized suggestion.
+      // IDENTITY CLASS. onboarding.agent_id is agent_onboarding.agent_id,
+      // which FKs agents(id) — reading `users` by it matched nothing, so the
+      // "personalized" nudge went out with an empty name every time.
       const { data: agent } = await supabase
-        .from('users')
-        .select('first_name, last_name')
+        .from('agents')
+        .select('users(first_name, last_name)')
         .eq('id', onboarding.agent_id)
         .single()
+        .then((r) => ({ data: (r.data as { users?: { first_name?: string; last_name?: string } } | null)?.users ?? null }))
 
       const agentName = agent 
         ? `${agent.first_name || ''} ${agent.last_name || ''}`.trim() 
@@ -137,10 +144,10 @@ export async function GET(request: NextRequest) {
         .from('users')
         .select('id')
         .eq('brokerage_id', onboarding.brokerage_id)
-        .in('user_type', ['admin', 'broker'])
+        .in('user_type', [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
 
       for (const admin of admins || []) {
-        await supabase.from('notifications').insert({
+        await sentinelWrite(supabase, supabase.from('notifications').insert({
           user_id: admin.id,
           brokerage_id: onboarding.brokerage_id,
           type: 'onboarding_stalled',
@@ -150,9 +157,7 @@ export async function GET(request: NextRequest) {
           body: `${agentName} has not made onboarding progress in ${STALLED_DAYS_THRESHOLD}+ days (currently on Day ${onboarding.current_day}).`,
           is_read: false,
           priority: 'high',
-        }).then(() => {}, (err: unknown) => {
-          console.error('[OnboardingHealth] Failed to create admin notification:', err)
-        })
+        }), { table: "notifications", flow: "route_notify", brokerageId: onboarding.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
       }
     }
   }

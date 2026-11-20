@@ -1,8 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import {
-  assignResource,
-  recordCompletion,
   getProgressDashboard,
 } from "@/lib/kernel/education"
 import { NextRequest, NextResponse } from "next/server"
@@ -32,29 +30,14 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST(request: NextRequest) {
-  const supabase = await createClient()
-  const auth = await requireAuth(supabase)
-  if (!auth.ok) return auth.response
-
-  try {
-    const body = await request.json()
-    const { action, ...input } = body
-
-    if (action === "assign") {
-      const result = await assignResource(supabase, { ...input, brokerageId: auth.brokerageId })
-      return NextResponse.json(result, { status: 201 })
-    } else if (action === "complete") {
-      const result = await recordCompletion(supabase, {
-        ...input,
-        brokerageId: auth.brokerageId,
-        completedAt: new Date().toISOString(),
-      })
-      return NextResponse.json(result)
-    }
-
-    return NextResponse.json({ error: "Invalid action" }, { status: 400 })
-  } catch (error) {
-    return NextResponse.json({ error: "Failed to update progress" }, { status: 500 })
-  }
-}
+// TOMBSTONE (§1.3 orphan doctrine — scripts/handler-parity-census.ts,
+// 2026-09-11): POST used to live here (action: "assign" | "complete" over
+// assignResource/recordCompletion) — zero in-tree callers. The Client
+// Learning panel (app/dashboard/education/client-learning-panel.tsx) drives
+// both moments through app/actions/education-kernel.ts's
+// assignResourceAction / recordCompletionAction instead, which call the SAME
+// lib/kernel/education.ts functions this POST wrapped but additionally
+// assert tenant ownership of both the contact and the resource
+// (assertTenantOwnsAll) before writing — a check this route never had. Two
+// spellings of "assign/complete a lesson," and the unreached one was the
+// weaker gate.

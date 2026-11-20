@@ -23,6 +23,7 @@
 import "server-only"
 import { generateTextRouted } from "@/lib/ai/models"
 import { ALL_US_STATES } from "@/lib/state-forms/registry"
+import { CONTRACT_SUBTYPES, CONTRACT_SUBTYPE_LABEL, platformContractSubtype, type ContractSubtype } from "@/lib/compliance/checklist-dimensions"
 
 // ─── Confidence scoring ────────────────────────────────────────────────────
 
@@ -61,18 +62,17 @@ export interface OfferIntake {
   downPaymentPercent: IntakeField<number>
   financingType:      IntakeField<"conventional" | "fha" | "va" | "cash" | "usda" | "other">
   /**
-   * Contract template the agent specified. Required for form selection —
-   * the state-forms registry has multiple variants per state (as-is vs
-   * standard residential vs new-construction etc.) and the agent MUST
-   * speak which one during the call. Without this, the AI can't pick
-   * the correct contract template.
-   *   - residential       : standard buyer's contract (most common)
-   *   - as_is             : seller-as-is variant — buyer waives most repair contingencies
-   *   - new_construction  : builder contract (separate state form usually)
-   *   - land              : raw-land variant
-   *   - commercial        : commercial real estate contract
+   * The CONTRACT TYPE the agent spoke — THE ONE contract-type vocabulary, CONTRACT_SUBTYPES
+   * (lib/compliance/checklist-dimensions.ts: standard | new_construction | short_sale | reo_bank_owned |
+   * probate_estate | lease_option), the same list the required-document checklist matches.
+   * WAVE 145 (lane 145H, CLAUDE.md §6): this field spoke a SECOND list (residential | as_is |
+   * new_construction | land | commercial) that nothing downstream could read. A spoken legacy spelling is
+   * normalized through platformContractSubtype (residential → standard); land / commercial (property types)
+   * and as_is (a jurisdictional condition / state form — a brokerage adds it as a cited vocabulary term)
+   * resolve to nothing, so the assistant asks for the contract type — see the tombstone at
+   * CONTRACT_SUBTYPE_ALIASES.
    */
-  contractType:       IntakeField<"residential" | "as_is" | "new_construction" | "land" | "commercial">
+  contractType:       IntakeField<ContractSubtype>
   closeDate:          IntakeField<string>            // ISO date
   inspectionDays:     IntakeField<number>
   appraisalDays:      IntakeField<number>
@@ -168,7 +168,7 @@ const FIELD_QUESTIONS: Partial<Record<keyof OfferIntake, string>> = {
   earnestMoneyAmount:     "Earnest money — dollar amount or percent?",
   downPaymentPercent:     "How much down — and is that conventional, FHA, VA, or cash?",
   financingType:          "Cash or financed? If financed, what loan type — FHA, VA, conventional, or USDA?",
-  contractType:           "Is this an as-is contract, a standard residential purchase, new construction, land, or commercial?",
+  contractType:           `Which purchase contract is this — ${CONTRACT_SUBTYPES.map((k) => CONTRACT_SUBTYPE_LABEL[k].toLowerCase()).join(", ")}?`,
   closeDate:              "Target close date?",
   inspectionDays:         "Inspection contingency window — how many days?",
   appraisalDays:          "Appraisal contingency window?",
@@ -196,6 +196,12 @@ const FIELD_QUESTIONS: Partial<Record<keyof OfferIntake, string>> = {
 export async function extractOfferIntake(input: {
   text:  string
   prior?: OfferIntake
+  /** Tenant + actor for the AI cost ledger. Every caller resolves both
+   *  server-side — the assistant tool-call route from its session row, the
+   *  voice-assistant actions and the workflow route from `users.brokerage_id`
+   *  for the authenticated user. Never a request body (CLAUDE.md §4). */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<VoiceToOfferResult> {
   const intake = input.prior ? structuredClone(input.prior) : emptyIntake()
 
@@ -232,7 +238,7 @@ Return ONLY valid JSON matching this exact shape (no prose, no markdown):
   "earnestMoneyPercent": { "value": number|null, ... },
   "downPaymentPercent": { "value": number|null, ... },
   "financingType": { "value": "conventional|fha|va|cash|usda|other|null", ... },
-  "contractType":  { "value": "residential|as_is|new_construction|land|commercial|null", ... },
+  "contractType":  { "value": "${CONTRACT_SUBTYPES.join("|")}|null", ... },
   "closeDate": { "value": "YYYY-MM-DD|null", ... },
   "inspectionDays": { "value": number|null, ... },
   "appraisalDays": { "value": number|null, ... },
@@ -254,6 +260,8 @@ JSON ONLY:`
   let extracted: Partial<OfferIntake> = {}
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId ?? null,
+      userId: input.userId ?? null,
       feature: "offer_intake_extraction",
       messages: [{ role: "user", content: prompt }],
     })
@@ -284,6 +292,17 @@ JSON ONLY:`
     if (newRank > oldRank || (newField as IntakeField<unknown>).value !== null) {
       ;(intake as any)[key] = newField
     }
+  }
+
+  // THE ONE contract-type vocabulary (wave 145): a spoken legacy spelling is normalized (residential → standard); a value
+  // that is not a contract type (as_is, land, commercial, anything else) is NOT kept — it becomes "missing" so the
+  // assistant asks, with the spoken word kept in the note for the agent.
+  if (intake.contractType.value !== null && intake.contractType.value !== undefined) {
+    const spoken = intake.contractType.value as unknown
+    const canonical = platformContractSubtype(spoken)
+    intake.contractType = canonical
+      ? { ...intake.contractType, value: canonical }
+      : { value: null, confidence: "missing", note: `"${String(spoken)}" is not a contract type here (as-is is a condition or a state form; land / commercial are property types) — ask which purchase contract` }
   }
 
   // Compute earnestMoneyAmount from percent if needed

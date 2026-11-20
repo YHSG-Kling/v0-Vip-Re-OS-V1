@@ -26,7 +26,13 @@ export interface PreApprovalReengageRunResult {
   callsRouted: number
 }
 
-const ACTIVE_DEAL_STATUSES = ["active", "under_contract", "pending", "closing"]
+// Canonical, not a local copy. This list used to end in `closing` — a value
+// transactions.status cannot hold (it was dropped as "a scheduling word, not a
+// milestone") — and omitted `clear_to_close`. So a buyer whose lender had already
+// issued CTC counted as having NO active deal, and could be re-engaged as a stale
+// pre-approval days before funding.
+import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+const ACTIVE_DEAL_STATUSES: readonly string[] = TRANSACTION_STATUSES_OPEN
 
 export async function runStalePreApprovalReengage(input: PreApprovalReengageRunInput, client?: Svc): Promise<PreApprovalReengageRunResult> {
   const svc = client ?? createServiceClient()

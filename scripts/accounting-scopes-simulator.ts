@@ -256,8 +256,9 @@ check("field-spec: QuickBooks OAuth is owner-scoped for ANY owner-capable actor 
   isConnectSupported("financial", "quickbooks", { canOwn: true, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }).available === true)
 check("field-spec: no ownership anchor → no connect",
   isConnectSupported("financial", "quickbooks", { canOwn: false, hasAgentId: false, isBrokerageManager: false, hasBrokerage: true }).available === false)
-check("role → scope mapping covers all five levels",
-  connectionScopeForUserType("superadmin").scope === "platform"
+check("role → scope mapping covers all five levels (platform = the live identity user_type 'admin' + platform_role 'superadmin')",
+  connectionScopeForUserType("admin", "superadmin").scope === "platform"
+  && connectionScopeForUserType("superadmin").scope !== "platform" // legacy user_type alone FAILS CLOSED toward the tenant scopes (CLAUDE.md §4)
   && connectionScopeForUserType("broker").scope === "brokerage"
   && connectionScopeForUserType("team_lead").scope === "team"
   && connectionScopeForUserType("agent").scope === "agent"

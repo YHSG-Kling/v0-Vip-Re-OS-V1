@@ -104,9 +104,10 @@ export async function loadOpenSignal(
 }
 
 export async function consumeSignal(svc: Svc, signalId: string, action: string): Promise<void> {
-  await svc.from("manager_signals")
+  const { error: consumeErr } = await svc.from("manager_signals")
     .update({ status: "consumed", consumed_at: new Date().toISOString(), consumed_action: action })
     .eq("id", signalId)
+  if (consumeErr) console.error(`[kernel-review] signal NOT marked consumed (it may be handled again): ${consumeErr.message}`)
 }
 
 export async function resolveDeadlineConflictCore(

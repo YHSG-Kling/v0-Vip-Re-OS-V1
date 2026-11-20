@@ -15,16 +15,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogCancel,
-  AlertDialogAction,
-} from "@/components/ui/alert-dialog"
+import { StatusChangeDialog, type StatusChange } from "@/components/status/status-change-dialog"
+import { OPEN_HOUSE_EVENT_STATUSES, statusLabel, type OpenHouseEventStatus } from "@/lib/kernel/status-override"
 import {
   Select,
   SelectTrigger,
@@ -43,11 +35,21 @@ import {
   getOpenHouseFeedback,
   sendOpenHouseInvites,
   cancelOpenHouse,
-  recordAttendee,
+  getAgentListings,
+  approveEventMarketing,
+  setEventReplay,
+  setEventHandout,
   type OpenHouseEvent,
   type OpenHouseAttendee,
   type OpenHouseFeedback,
 } from "@/app/actions/open-house"
+import {
+  resolveOrCreateOpenHouseContactAction,
+  createOpenHouseAttendeeFromContactAction,
+  attachOpenHouseSourceAttributionAction,
+  notifyAssignedAgentForOpenHouseLeadAction,
+  generateOpenHouseFollowupNextActionAction,
+} from "@/app/actions/open-house-kernel"
 import { useToast } from "@/hooks/use-toast"
 import { toast as sonnerToast } from "sonner"
 
@@ -56,18 +58,45 @@ interface Props {
   fetchError?: string
 }
 
-const STATUS_STYLES: Record<string, string> = {
+// "IF A STATUS IS OFFERED THE UI HAS TO SHOW IT" (wave 148, lane 148I — owner ruling 14). Typed over the live CHECK's
+// vocabulary (lib/kernel/status-override.ts OPEN_HOUSE_EVENT_STATUSES), so every status has a style and a label. It was
+// keyed on `invitations_sent` (no such status) and missed `draft` and `marketing`, which rendered unstyled as raw words.
+const STATUS_STYLES: Record<OpenHouseEventStatus, string> = {
+  draft: "bg-muted text-muted-foreground border-border",
   scheduled: "bg-blue-100 text-blue-700 border-blue-200",
-  active: "bg-green-100 text-green-700 border-green-200",
-  completed: "bg-slate-100 text-slate-600 border-slate-200",
+  marketing: "bg-purple-100 text-purple-700 border-purple-200",
+  active: "bg-green-100 text-green-800 border-green-200",
+  completed: "bg-slate-100 text-slate-700 border-slate-200",
   cancelled: "bg-red-100 text-red-700 border-red-200",
-  invitations_sent: "bg-purple-100 text-purple-700 border-purple-200",
 }
+/** Every event status, rendered (the census reads this). */
+const EVENT_STATUS_BADGES = OPEN_HOUSE_EVENT_STATUSES.map((s) => ({ value: s, label: statusLabel("open_house_event", s), style: STATUS_STYLES[s] }))
+const eventBadge = (status: string) => EVENT_STATUS_BADGES.find((b) => b.value === status) ?? { value: status, label: statusLabel("open_house_event", status), style: "bg-muted" }
+
+// open_house_attendees.interest_level is CHECK-constrained (verified live in
+// pg_constraint):
+//   open_house_attendees_interest_level_check → hot | warm | cold | no_interest
+// This map and the Add-Attendee picker below both used high|medium|low, which is
+// storable nowhere. Stored rows (hot/warm/…) therefore rendered with no badge
+// style, and every value the picker could produce was refused by the column.
+const INTEREST_LEVELS = [
+  { value: "hot",         label: "Hot",         numeric: 5 },
+  { value: "warm",        label: "Warm",        numeric: 3 },
+  { value: "cold",        label: "Cold",        numeric: 2 },
+  { value: "no_interest", label: "No interest", numeric: 1 },
+] as const
 
 const INTEREST_STYLES: Record<string, string> = {
-  high: "bg-green-100 text-green-700 border-green-200",
-  medium: "bg-yellow-100 text-yellow-700 border-yellow-200",
-  low: "bg-slate-100 text-slate-600 border-slate-200",
+  hot: "bg-green-100 text-green-700 border-green-200",
+  warm: "bg-yellow-100 text-yellow-700 border-yellow-200",
+  cold: "bg-slate-100 text-slate-600 border-slate-200",
+  no_interest: "bg-slate-100 text-slate-600 border-slate-200",
+}
+
+/** The kernel commands take the 1-5 numeric scale and map it back to the text
+ *  enum themselves; this is the one place the two scales meet. */
+function interestNumeric(value: string): number {
+  return INTEREST_LEVELS.find((l) => l.value === value)?.numeric ?? 3
 }
 
 function formatDate(dateStr: string) {
@@ -95,7 +124,7 @@ function StarRating({ rating }: { rating: number | null }) {
       {Array.from({ length: 5 }).map((_, i) => (
         <Star
           key={i}
-          className={`h-3.5 w-3.5 ${i < rating ? "text-yellow-400 fill-yellow-400" : "text-muted-foreground/30"}`}
+          className={`h-3.5 w-3.5 ${i < rating ? "text-yellow-700 fill-yellow-400" : "text-muted-foreground/30"}`}
         />
       ))}
       <span className="text-xs text-muted-foreground ml-1">{rating}/5</span>
@@ -129,34 +158,162 @@ function AttendeesTab({ eventId }: { eventId: string }) {
 
   const [showAddForm, setShowAddForm] = useState(false)
   const [addForm, setAddForm] = useState({
-    name: "",
+    firstName: "",
+    lastName: "",
     email: "",
-    interestLevel: "",
+    phone: "",
+    tcpaConsent: false,
+    interestLevel: "warm",
+    notes: "",
   })
   const [addPending, startAddTransition] = useTransition()
+  const [addError, setAddError] = useState<string | null>(null)
+  const [addWarning, setAddWarning] = useState<string | null>(null)
+
+  // ── WALK-IN CHECK-IN ──────────────────────────────────────────────────────
+  //
+  // This control used to call app/actions/open-house.ts:recordAttendee, whose
+  // insert omits contact_id. open_house_attendees.contact_id is NOT NULL
+  // (verified live; probed with the exact insert shape and refused with
+  // SQLSTATE 23502), so the button has never been able to record anybody — and
+  // its interest_level picker offered high|medium|low, three values the column's
+  // CHECK also refuses. Two independent reasons it could not work.
+  //
+  // The kernel commands are what makes it work, in the order the rail is
+  // defined in: a walk-in is a CONTACT first, an ATTENDEE second, and an
+  // attributed lead third. Each step reports the SERVER's verdict and the chain
+  // stops at the first refusal, so a half-written check-in is never presented as
+  // a whole one.
+  const refreshAttendees = async () => {
+    const refresh = await getOpenHouseAttendees(eventId)
+    if (refresh.success) {
+      setAttendees(refresh.attendees ?? [])
+      setLoadError(null)
+    } else {
+      // A failed re-read must not look like "the event emptied out".
+      setLoadError(refresh.error ?? "Failed to reload attendees")
+    }
+  }
 
   const handleAdd = () => {
-    if (!addForm.name.trim()) {
-      sonnerToast.error("Name is required")
+    setAddError(null)
+    setAddWarning(null)
+    if (!addForm.firstName.trim()) {
+      setAddError("First name is required")
       return
     }
     startAddTransition(async () => {
-      const res = await recordAttendee(eventId, {
-        name: addForm.name.trim(),
+      // 1. Resolve or create the contact this walk-in belongs to.
+      const contactRes = await resolveOrCreateOpenHouseContactAction({
+        open_house_id: eventId,
+        first_name: addForm.firstName.trim(),
+        last_name: addForm.lastName.trim() || undefined,
         email: addForm.email.trim() || undefined,
-        interestLevel: addForm.interestLevel || undefined,
+        phone: addForm.phone.trim() || undefined,
       })
-      if (res.success) {
-        sonnerToast.success("Attendee recorded")
-        setAddForm({ name: "", email: "", interestLevel: "" })
-        setShowAddForm(false)
-        // Refresh attendee list
-        const refresh = await getOpenHouseAttendees(eventId)
-        if (refresh.success) setAttendees(refresh.attendees ?? [])
-      } else {
-        sonnerToast.error(res.error ?? "Failed to record attendee")
+      if (!contactRes.success || !contactRes.contact_id) {
+        setAddError(contactRes.error ?? "Could not resolve a contact for this visitor")
+        return
       }
+
+      // 2. Record the attendee against that contact.
+      const attendeeRes = await createOpenHouseAttendeeFromContactAction({
+        open_house_id: eventId,
+        contact_id: contactRes.contact_id,
+        first_name: addForm.firstName.trim(),
+        last_name: addForm.lastName.trim() || undefined,
+        email: addForm.email.trim() || undefined,
+        phone: addForm.phone.trim() || undefined,
+        check_in_method: "manual",
+        interest_level: interestNumeric(addForm.interestLevel),
+        notes: addForm.notes.trim() || undefined,
+        tcpa_consent: addForm.tcpaConsent,
+      })
+      if (!attendeeRes.success || !attendeeRes.attendee_id) {
+        setAddError(
+          `${attendeeRes.error ?? "Could not record the attendee"} (the contact was saved and is in your CRM).`,
+        )
+        await refreshAttendees()
+        return
+      }
+
+      // 3. Attribute the contact to this open house. Non-fatal — the person IS
+      //    checked in — but the failure is shown, never swallowed.
+      const attributionRes = await attachOpenHouseSourceAttributionAction({
+        open_house_id: eventId,
+        contact_id: contactRes.contact_id,
+        attendee_id: attendeeRes.attendee_id,
+      })
+      if (!attributionRes.success) {
+        setAddWarning(`Checked in, but the source attribution was not recorded: ${attributionRes.error}`)
+      }
+
+      sonnerToast.success(
+        contactRes.was_created
+          ? "Checked in — new contact created"
+          : "Checked in — matched an existing contact",
+      )
+      setAddForm({ firstName: "", lastName: "", email: "", phone: "", tcpaConsent: false, interestLevel: "warm", notes: "" })
+      setShowAddForm(false)
+      await refreshAttendees()
     })
+  }
+
+  // ── FOLLOW-UP QUEUE ───────────────────────────────────────────────────────
+  //
+  // Attendees captured by the public kiosk (app/api/open-house/attend) get an
+  // instant greeting but NO entry in the agent's next-actions feed. These two
+  // commands are what puts one there: the notification the assigned agent reads
+  // on /dashboard/agent, and the AI-drafted follow-up scheduled by interest
+  // level. Both write ai_autopilot_actions only — nothing is sent to the
+  // attendee here, so no consent or channel-preference gate is involved.
+  const [followUpFor, setFollowUpFor] = useState<string | null>(null)
+  const [followUpResult, setFollowUpResult] = useState<Record<string, { ok: boolean; text: string }>>({})
+
+  const handleQueueFollowUp = async (attendee: OpenHouseAttendee) => {
+    if (!attendee.contact_id) return
+    setFollowUpFor(attendee.id)
+    try {
+      const firstName = (attendee.name ?? "").trim().split(/\s+/)[0] || "Visitor"
+      const numeric = interestNumeric(attendee.interest_level ?? "warm")
+
+      const notifyRes = await notifyAssignedAgentForOpenHouseLeadAction({
+        open_house_id: eventId,
+        contact_id: attendee.contact_id,
+        attendee_id: attendee.id,
+        first_name: firstName,
+        email: attendee.email ?? undefined,
+        interest_level: numeric,
+      })
+      if (!notifyRes.success) {
+        setFollowUpResult((p) => ({
+          ...p,
+          [attendee.id]: { ok: false, text: notifyRes.error ?? "The assigned agent could not be notified." },
+        }))
+        return
+      }
+
+      const followRes = await generateOpenHouseFollowupNextActionAction({
+        open_house_id: eventId,
+        contact_id: attendee.contact_id,
+        attendee_id: attendee.id,
+        first_name: firstName,
+        interest_level: numeric,
+      })
+      setFollowUpResult((p) => ({
+        ...p,
+        [attendee.id]: followRes.success
+          ? {
+              ok: true,
+              text:
+                (followRes as { message?: string }).message ??
+                "Follow-up scheduled in your next-actions feed.",
+            }
+          : { ok: false, text: (followRes as { error?: string }).error ?? "Follow-up could not be scheduled." },
+      }))
+    } finally {
+      setFollowUpFor(null)
+    }
   }
 
   if (isPending && !loaded) {
@@ -182,32 +339,81 @@ function AttendeesTab({ eventId }: { eventId: string }) {
         <p className="text-xs text-muted-foreground">{attendees?.length ?? 0} attendee{attendees?.length !== 1 ? "s" : ""}</p>
         <Button size="sm" variant="outline" className="gap-1.5 h-7 text-xs" onClick={() => setShowAddForm((v) => !v)}>
           <Plus className="h-3.5 w-3.5" />
-          Add Attendee
+          Check In Walk-In
         </Button>
       </div>
 
       {showAddForm && (
         <div className="rounded-lg border bg-muted/30 p-3 space-y-3">
-          <p className="text-xs font-medium">New Attendee</p>
-          <div>
-            <Label className="text-xs">Name *</Label>
-            <Input
-              value={addForm.name}
-              onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
-              placeholder="Full name"
-              className="h-7 text-xs mt-1"
-            />
+          <p className="text-xs font-medium">Walk-In Check-In</p>
+          <p className="text-[11px] text-muted-foreground">
+            Creates or matches a contact in your CRM, records the attendance and attributes the
+            contact to this open house.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-xs">First name *</Label>
+              <Input
+                value={addForm.firstName}
+                onChange={(e) => setAddForm((f) => ({ ...f, firstName: e.target.value }))}
+                placeholder="Jane"
+                className="h-7 text-xs mt-1"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Last name</Label>
+              <Input
+                value={addForm.lastName}
+                onChange={(e) => setAddForm((f) => ({ ...f, lastName: e.target.value }))}
+                placeholder="Smith"
+                className="h-7 text-xs mt-1"
+              />
+            </div>
           </div>
-          <div>
-            <Label className="text-xs">Email (optional)</Label>
-            <Input
-              type="email"
-              value={addForm.email}
-              onChange={(e) => setAddForm((f) => ({ ...f, email: e.target.value }))}
-              placeholder="email@example.com"
-              className="h-7 text-xs mt-1"
-            />
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-xs">Email</Label>
+              <Input
+                type="email"
+                value={addForm.email}
+                onChange={(e) => setAddForm((f) => ({ ...f, email: e.target.value }))}
+                placeholder="email@example.com"
+                className="h-7 text-xs mt-1"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Phone</Label>
+              <Input
+                type="tel"
+                value={addForm.phone}
+                onChange={(e) => setAddForm((f) => ({ ...f, phone: e.target.value }))}
+                placeholder="(555) 000-0000"
+                className="h-7 text-xs mt-1"
+              />
+            </div>
           </div>
+          {/* TCPA CONSENT — the control that governs the field above it.
+              This moved off app/actions/open-house.ts:recordAttendee, which
+              gated phone storage on consent and is now retired. Unchecked, the
+              kernel still records the check-in and the contact; it just keeps
+              no phone number, because a number the OS may not dial or text is
+              a liability rather than a lead. */}
+          <label className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-2">
+            <input
+              type="checkbox"
+              checked={addForm.tcpaConsent}
+              onChange={(e) => setAddForm((f) => ({ ...f, tcpaConsent: e.target.checked }))}
+              className="mt-0.5 h-3.5 w-3.5 shrink-0"
+            />
+            <span className="text-[11px] leading-snug text-amber-900">
+              This visitor gave permission to be called or texted at the number above.
+              {!addForm.tcpaConsent && addForm.phone.trim() ? (
+                <strong className="block font-semibold">
+                  Without this, the check-in is still recorded — the phone number is not kept.
+                </strong>
+              ) : null}
+            </span>
+          </label>
           <div>
             <Label className="text-xs">Interest Level</Label>
             <Select
@@ -218,22 +424,53 @@ function AttendeesTab({ eventId }: { eventId: string }) {
                 <SelectValue placeholder="Select level…" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="high">High</SelectItem>
-                <SelectItem value="medium">Medium</SelectItem>
-                <SelectItem value="low">Low</SelectItem>
+                {INTEREST_LEVELS.map((l) => (
+                  <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
+          <div>
+            <Label className="text-xs">Notes</Label>
+            <Textarea
+              value={addForm.notes}
+              onChange={(e) => setAddForm((f) => ({ ...f, notes: e.target.value }))}
+              placeholder="What did they say about the property?"
+              rows={2}
+              className="text-xs mt-1 resize-none"
+            />
+          </div>
+
+          {addError && (
+            <p className="flex items-start gap-1.5 text-xs text-destructive">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-px" />
+              {addError}
+            </p>
+          )}
+          {addWarning && (
+            <p className="flex items-start gap-1.5 text-xs text-yellow-700">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-px" />
+              {addWarning}
+            </p>
+          )}
+
           <div className="flex gap-2">
             <Button size="sm" className="h-7 text-xs gap-1" onClick={handleAdd} disabled={addPending}>
               {addPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
-              Save
+              Check In
             </Button>
             <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowAddForm(false)}>
               Cancel
             </Button>
           </div>
         </div>
+      )}
+
+      {addWarning && !showAddForm && (
+        <p className="flex items-start gap-1.5 text-xs text-yellow-700">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-px" />
+          {addWarning}
+        </p>
       )}
 
       {attendees && attendees.length === 0 && !showAddForm && (
@@ -266,11 +503,43 @@ function AttendeesTab({ eventId }: { eventId: string }) {
                 <p className="text-[11px] text-muted-foreground mt-0.5">
                   Check-in: {formatCheckInTime(a.check_in_time)}
                 </p>
+
+                {/* Queue the assigned agent's notification + the AI follow-up.
+                    Disabled without a contact_id: the next-action rows key off
+                    a contacts.id and an attendee id is a different id space. */}
+                <div className="mt-1.5 flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[11px] gap-1"
+                    disabled={!a.contact_id || followUpFor === a.id}
+                    onClick={() => handleQueueFollowUp(a)}
+                  >
+                    {followUpFor === a.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Send className="h-3 w-3" />
+                    )}
+                    Queue follow-up
+                  </Button>
+                  {!a.contact_id && (
+                    <span className="text-[10px] text-muted-foreground">No linked contact yet</span>
+                  )}
+                </div>
+                {followUpResult[a.id] && (
+                  <p
+                    className={`mt-1 text-[11px] ${
+                      followUpResult[a.id].ok ? "text-muted-foreground" : "text-destructive"
+                    }`}
+                  >
+                    {followUpResult[a.id].text}
+                  </p>
+                )}
               </div>
               {a.ai_lead_score != null && (
                 <div className="text-right shrink-0">
                   <div className="text-[10px] text-muted-foreground">AI Score</div>
-                  <div className={`text-sm font-semibold ${a.ai_lead_score >= 70 ? "text-green-600" : a.ai_lead_score >= 40 ? "text-yellow-600" : "text-red-500"}`}>
+                  <div className={`text-sm font-semibold ${a.ai_lead_score >= 70 ? "text-green-700" : a.ai_lead_score >= 40 ? "text-yellow-700" : "text-red-600"}`}>
                     {a.ai_lead_score}
                   </div>
                 </div>
@@ -344,13 +613,13 @@ function FeedbackTab({ eventId }: { eventId: string }) {
           </div>
           {f.liked_most && (
             <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
-              <ThumbsUp className="h-3.5 w-3.5 mt-0.5 shrink-0 text-green-500" />
+              <ThumbsUp className="h-3.5 w-3.5 mt-0.5 shrink-0 text-green-600" />
               <span>{f.liked_most}</span>
             </div>
           )}
           {f.concerns && (
             <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
-              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-yellow-500" />
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0 text-yellow-700" />
               <span>{f.concerns}</span>
             </div>
           )}
@@ -392,7 +661,45 @@ function ActionsTab({
   const [cancelPending, startCancelTransition] = useTransition()
   const [showCancelConfirm, setShowCancelConfirm] = useState(false)
 
-  const canCancel = event.status === "scheduled" || event.status === "active" || event.status === "invitations_sent"
+  // C23 (wave 148, lane 148I): `invitations_sent` is not an open_house_events.status (the live CHECK) — it never matched, and
+  // a MARKETING event (invitations out) had no cancel at all. Every not-yet-finished state may be cancelled, with a reason.
+  const canCancel = event.status === "draft" || event.status === "scheduled" || event.status === "marketing" || event.status === "active"
+
+  // C22 (wave 148, lane 148H): the kinds that register attendees carry an AI-drafted page held for approval, and a recording.
+  const needsRegistration = event.event_type === "virtual_open_house" || event.event_type === "webinar" || event.event_type === "education_session" || event.event_type === "client_event"
+  const marketing = (event.marketing_assets ?? {}) as Record<string, unknown>
+  const [approvePending, startApproveTransition] = useTransition()
+  const [replayPending, startReplayTransition] = useTransition()
+  const [replayDraft, setReplayDraft] = useState(event.replay_url ?? "")
+  // Wave 149 (149F): the promised session handout (webinars / education sessions) and the published page's QR (ruling 11).
+  const promisesHandout = event.event_type === "webinar" || event.event_type === "education_session"
+  const [handoutPending, startHandoutTransition] = useTransition()
+  const [handoutDraft, setHandoutDraft] = useState("")
+  const [qr, setQr] = useState<{ imageUrl: string; targetUrl: string } | null>(null)
+  const handleApprove = () => {
+    startApproveTransition(async () => {
+      const res = await approveEventMarketing(event.id)
+      if (res.success) {
+        sonnerToast.success("Registration page approved and published")
+        if (res.qr) setQr({ imageUrl: res.qr.imageUrl, targetUrl: res.qr.targetUrl })
+        else if (res.qrError) sonnerToast.error(`QR code not created: ${res.qrError}`)
+      } else sonnerToast.error(res.error ?? "Could not approve")
+    })
+  }
+  const handleHandout = () => {
+    startHandoutTransition(async () => {
+      const res = await setEventHandout(event.id, handoutDraft.trim())
+      if (res.success) sonnerToast.success(`Handout saved — sent to ${res.delivered ?? 0} registrant${res.delivered === 1 ? "" : "s"}`)
+      else sonnerToast.error(res.error ?? "Could not save the handout")
+    })
+  }
+  const handleReplay = () => {
+    startReplayTransition(async () => {
+      const res = await setEventReplay(event.id, replayDraft.trim())
+      if (res.success) sonnerToast.success(`Recording saved — sent to ${res.delivered ?? 0} registrant${res.delivered === 1 ? "" : "s"}`)
+      else sonnerToast.error(res.error ?? "Could not save the recording")
+    })
+  }
 
   const handleSendInvites = () => {
     startInviteTransition(async () => {
@@ -409,9 +716,9 @@ function ActionsTab({
     })
   }
 
-  const handleCancel = () => {
+  const handleCancel = (change: StatusChange) => {
     startCancelTransition(async () => {
-      const res = await cancelOpenHouse(event.id)
+      const res = await cancelOpenHouse(event.id, { reason: change.reason })
       if (res.success) {
         sonnerToast.success("Event cancelled")
         setShowCancelConfirm(false)
@@ -444,6 +751,51 @@ function ActionsTab({
         </Button>
       </div>
 
+      {needsRegistration && (
+        <div className="rounded-lg border p-4 space-y-2">
+          <p className="text-sm font-medium">Registration page</p>
+          <p className="text-xs text-muted-foreground">
+            {event.is_published
+              ? "Approved and live. Registrants receive their own join link; attendance is recorded only when it can be verified."
+              : `Drafted by AI and waiting for your approval — nothing is public until you approve. Status: ${String(marketing.status ?? "not drafted")}.`}
+          </p>
+          {Array.isArray(marketing.fair_housing) && (marketing.fair_housing as unknown[]).length > 0 && (
+            <p className="text-xs text-muted-foreground">Fair-housing notes: {(marketing.fair_housing as Array<{ phrase?: string; field?: string }>).map((f) => `"${f.phrase}" (${f.field})`).join(", ")}</p>
+          )}
+          {!event.is_published && (
+            <Button size="sm" onClick={handleApprove} disabled={approvePending} className="gap-1.5">
+              {approvePending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+              Approve and publish
+            </Button>
+          )}
+          {event.is_published && (
+            <a className="text-xs underline" href={`/open-house/${event.id}/register`} target="_blank" rel="noreferrer">Open the registration page</a>
+          )}
+          <div className="flex gap-2 pt-2">
+            <Input placeholder="https:// recording link" value={replayDraft} onChange={(e) => setReplayDraft(e.target.value)} className="h-8 text-sm" />
+            <Button size="sm" variant="outline" onClick={handleReplay} disabled={replayPending || !replayDraft.trim()}>
+              {replayPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Send recording"}
+            </Button>
+          </div>
+          <p className="text-[10px] text-muted-foreground">The recording goes once to each registrant — a thank-you to those who joined, a "sorry we missed you" to those who couldn't.</p>
+          {promisesHandout && (
+            <div className="flex gap-2 pt-2">
+              <Input placeholder="https:// handout link" value={handoutDraft} onChange={(e) => setHandoutDraft(e.target.value)} className="h-8 text-sm" />
+              <Button size="sm" variant="outline" onClick={handleHandout} disabled={handoutPending || !handoutDraft.trim()}>
+                {handoutPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Send handout"}
+              </Button>
+            </div>
+          )}
+          {qr && (
+            <div className="flex items-center gap-3 pt-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={qr.imageUrl} alt="QR code to the registration page" className="h-24 w-24 rounded border border-border bg-white p-1" />
+              <a className="text-xs underline break-all" href={qr.targetUrl} target="_blank" rel="noreferrer">{qr.targetUrl}</a>
+            </div>
+          )}
+        </div>
+      )}
+
       {canCancel && (
         <div className="rounded-lg border border-destructive/20 p-4 space-y-2 bg-destructive/5">
           <div className="flex items-center gap-2">
@@ -466,28 +818,16 @@ function ActionsTab({
         </div>
       )}
 
-      <AlertDialog open={showCancelConfirm} onOpenChange={setShowCancelConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Cancel this open house?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The event will be marked as cancelled and will appear in your past events.
-              This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={cancelPending}>Keep Event</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleCancel}
-              disabled={cancelPending}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {cancelPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> : null}
-              Yes, Cancel Event
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* C23: the cancel carries its reason (it lands on the event's cancellation_reason and the action ledger). */}
+      <StatusChangeDialog
+        entity="open_house_event"
+        from={event.status}
+        to="cancelled"
+        open={showCancelConfirm}
+        pending={cancelPending}
+        onOpenChange={setShowCancelConfirm}
+        onConfirm={handleCancel}
+      />
     </div>
   )
 }
@@ -510,7 +850,7 @@ function EventDetailSheet({
   const listing = event.listing
   const address = listing
     ? [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
-    : "Unlisted property"
+    : (event.title ?? "Unlisted property")
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -518,8 +858,8 @@ function EventDetailSheet({
         <SheetHeader className="pb-2">
           <SheetTitle className="text-base leading-snug pr-6">{address}</SheetTitle>
           <div className="flex items-center gap-2 flex-wrap">
-            <Badge className={`text-[10px] px-1.5 py-0 border ${STATUS_STYLES[event.status] ?? "bg-muted"}`}>
-              {event.status}
+            <Badge className={`text-[10px] px-1.5 py-0 border ${eventBadge(event.status).style}`}>
+              {eventBadge(event.status).label}
             </Badge>
             <span className="text-xs text-muted-foreground flex items-center gap-1">
               <Calendar className="h-3 w-3" />{formatDate(event.event_date)}
@@ -589,7 +929,28 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
     maxAttendees: "",
     publicDescription: "",
     agentNotes: "",
+    // wave 147 (lane 147Z): the event kind (the live open_house_events.event_type CHECK) and, for a virtual one, its https link.
+    eventType: "open_house",
+    joinUrl: "",
+    // wave 148 (lane 148H — C22): a webinar / education session's title (no listing) and an online event's host.
+    title: "",
+    virtualProvider: "zoom",
   })
+  const kindNeedsListing = form.eventType === "open_house" || form.eventType === "broker_open" || form.eventType === "virtual_open_house"
+  const kindIsOnline = form.eventType === "virtual_open_house" || form.eventType === "webinar" || (form.eventType === "education_session" && form.virtualProvider !== "in_person")
+
+  // The dialog used to demand a pasted listing UUID ("Find the ID from your
+  // Listings page"). getAgentListings existed for exactly this picker and was
+  // never wired — load the agent's active listings when the dialog opens.
+  const [myListings, setMyListings] = useState<
+    Array<{ id: string; address: string; city: string | null; state: string | null; status: string }>
+  >([])
+  useEffect(() => {
+    if (!open) return
+    getAgentListings().then((res) => {
+      if (res.success && res.listings) setMyListings(res.listings)
+    }).catch(() => { /* picker degrades to manual entry below */ })
+  }, [open])
 
   const now = new Date().toLocaleDateString("en-CA") // YYYY-MM-DD in local timezone
   const upcoming = events.filter((e) => e.event_date >= now && e.status !== "cancelled" && e.status !== "completed")
@@ -602,8 +963,12 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
   })()
 
   const handleCreate = () => {
-    if (!form.listingId.trim() || !form.date) {
-      toast({ title: "Listing ID and date are required", variant: "destructive" })
+    if ((kindNeedsListing && !form.listingId.trim()) || !form.date) {
+      toast({ title: kindNeedsListing ? "Listing and date are required" : "Date is required", variant: "destructive" })
+      return
+    }
+    if (!kindNeedsListing && !form.title.trim()) {
+      toast({ title: "Give the session a title", variant: "destructive" })
       return
     }
     if (form.startTime && form.endTime) {
@@ -616,8 +981,12 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
     }
     startTransition(async () => {
       try {
+        const online = kindIsOnline
+        const host = online ? (form.virtualProvider === "in_person" ? "zoom" : form.virtualProvider) : undefined
         const res = await createOpenHouse({
-          listingId: form.listingId.trim(),
+          listingId: kindNeedsListing ? form.listingId.trim() : null,
+          title: form.title.trim() || undefined,
+          virtualProvider: host,
           date: form.date,
           startTime: form.startTime,
           endTime: form.endTime,
@@ -626,12 +995,15 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
             : undefined,
           agentNotes: form.agentNotes || undefined,
           publicDescription: form.publicDescription || undefined,
+          eventType: form.eventType,
+          joinUrl: online && host !== "zoom" ? form.joinUrl.trim() : undefined,
         })
         if (res.success && res.event) {
-          toast({ title: "Open house scheduled" })
+          const warn = ("warnings" in res && Array.isArray(res.warnings) ? res.warnings : []) as string[]
+          toast({ title: online ? "Event scheduled — review and approve its registration page in Actions" : "Open house scheduled", description: warn.length ? warn.join(" · ") : undefined })
           setEvents((prev) => [res.event as OpenHouseEvent, ...prev])
           setOpen(false)
-          setForm({ listingId: "", date: "", startTime: "10:00", endTime: "12:00", maxAttendees: "", publicDescription: "", agentNotes: "" })
+          setForm({ listingId: "", date: "", startTime: "10:00", endTime: "12:00", maxAttendees: "", publicDescription: "", agentNotes: "", eventType: "open_house", joinUrl: "", title: "", virtualProvider: "zoom" })
         } else {
           toast({ title: res.error ?? "Failed to schedule open house", variant: "destructive" })
         }
@@ -672,15 +1044,81 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
               <DialogTitle>Schedule Open House</DialogTitle>
             </DialogHeader>
             <div className="space-y-4 pt-2">
+              <div className={kindNeedsListing ? "" : "hidden"}>
+                <Label className="text-xs">Listing</Label>
+                {myListings.length > 0 ? (
+                  <Select
+                    value={form.listingId}
+                    onValueChange={(v) => setForm((f) => ({ ...f, listingId: v }))}
+                  >
+                    <SelectTrigger className="h-8 text-sm mt-1">
+                      <SelectValue placeholder="Choose one of your listings..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {myListings.map((l) => (
+                        <SelectItem key={l.id} value={l.id}>
+                          {l.address}{l.city ? `, ${l.city}` : ""}{l.state ? `, ${l.state}` : ""} ({l.status})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <>
+                    <Input
+                      placeholder="Paste listing UUID..."
+                      value={form.listingId}
+                      onChange={(e) => setForm((f) => ({ ...f, listingId: e.target.value }))}
+                      className="h-8 text-sm mt-1"
+                    />
+                    <p className="text-[10px] text-muted-foreground mt-1">Find the ID from your Listings page</p>
+                  </>
+                )}
+              </div>
               <div>
-                <Label className="text-xs">Listing ID</Label>
-                <Input
-                  placeholder="Paste listing UUID..."
-                  value={form.listingId}
-                  onChange={(e) => setForm((f) => ({ ...f, listingId: e.target.value }))}
-                  className="h-8 text-sm mt-1"
-                />
-                <p className="text-[10px] text-muted-foreground mt-1">Find the ID from your Listings page</p>
+                <Label className="text-xs">Kind</Label>
+                <Select value={form.eventType} onValueChange={(v) => setForm((f) => ({ ...f, eventType: v }))}>
+                  <SelectTrigger className="h-8 text-sm mt-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="open_house">Open house (public)</SelectItem>
+                    <SelectItem value="broker_open">Broker open (agents only)</SelectItem>
+                    <SelectItem value="virtual_open_house">Virtual open house</SelectItem>
+                    <SelectItem value="webinar">Webinar</SelectItem>
+                    <SelectItem value="education_session">Education session</SelectItem>
+                    {/* wave 148Z: the sixth kind (m926) — a client appreciation / holiday gathering, in person, no listing */}
+                    <SelectItem value="client_event">Client appreciation event</SelectItem>
+                  </SelectContent>
+                </Select>
+                {!kindNeedsListing && (
+                  <Input
+                    placeholder="Title — e.g. First-time buyer basics"
+                    value={form.title}
+                    onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+                    className="h-8 text-sm mt-2"
+                  />
+                )}
+                {(form.eventType === "virtual_open_house" || form.eventType === "webinar" || form.eventType === "education_session") && (
+                  <Select value={form.virtualProvider} onValueChange={(v) => setForm((f) => ({ ...f, virtualProvider: v }))}>
+                    <SelectTrigger className="h-8 text-sm mt-2">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {form.eventType === "education_session" && <SelectItem value="in_person">In person (sign-in kiosk)</SelectItem>}
+                      <SelectItem value="zoom">Zoom — personal links, verified attendance</SelectItem>
+                      <SelectItem value="youtube">YouTube Live — registration + replay (attendance not verifiable)</SelectItem>
+                      <SelectItem value="external_link">Other meeting link (attendance not verifiable)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
+                {kindIsOnline && form.virtualProvider !== "zoom" && form.virtualProvider !== "in_person" && (
+                  <Input
+                    placeholder={form.virtualProvider === "youtube" ? "https:// YouTube Live link" : "https:// meeting link"}
+                    value={form.joinUrl}
+                    onChange={(e) => setForm((f) => ({ ...f, joinUrl: e.target.value }))}
+                    className="h-8 text-sm mt-2"
+                  />
+                )}
               </div>
               <div>
                 <Label className="text-xs">Event Date</Label>
@@ -865,7 +1303,7 @@ function EventRow({ event, onClick }: { event: OpenHouseEvent; onClick: () => vo
   const listing = event.listing
   const address = listing
     ? [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
-    : "Unlisted property"
+    : (event.title ?? "Unlisted property")
 
   return (
     <button
@@ -879,8 +1317,8 @@ function EventRow({ event, onClick }: { event: OpenHouseEvent; onClick: () => vo
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <p className="text-sm font-medium truncate">{address}</p>
-          <Badge className={`text-[10px] px-1.5 py-0 border ${STATUS_STYLES[event.status] ?? "bg-muted"}`}>
-            {event.status}
+          <Badge className={`text-[10px] px-1.5 py-0 border ${eventBadge(event.status).style}`}>
+            {eventBadge(event.status).label}
           </Badge>
         </div>
         <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">

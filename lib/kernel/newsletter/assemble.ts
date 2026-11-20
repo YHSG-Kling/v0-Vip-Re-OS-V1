@@ -23,7 +23,8 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { normalizeSectionType, defaultOrderFor, type NewsletterSectionType } from "./section-types"
+import { defaultOrderFor, type NewsletterSectionType } from "./section-types"
+import { escapeHtmlBasic as escapeHtml } from "@/lib/format/html"
 
 export interface NewsletterSection {
   id:              string
@@ -134,6 +135,9 @@ function matchesRecipient(s: NewsletterSection, persona: string | null, loc: Rec
 export function assembleNewsletterHtml(args: {
   context:  CampaignAssemblyContext
   sections: NewsletterSection[]
+  /** WAVE 155 (155E) — the ONE optional QR slot, resolved by lib/marketing/tracked-qr.ts resolveArtifactQrSlot (slot
+   *  `email_link` for the email body, `print_footer` for the print / PDF form). Absent → nothing is added. */
+  qr?:      NewsletterQrSlot | null
 }): AssembledNewsletter {
   const { context, sections } = args
 
@@ -148,7 +152,8 @@ export function assembleNewsletterHtml(args: {
     ].filter(Boolean).join("")
   }).filter(Boolean)
 
-  const html = [intro, ...sectionBlocks].filter(Boolean).join("\n")
+  const qrBlock = newsletterQrBlock(args.qr)
+  const html = [intro, ...sectionBlocks, qrBlock.html].filter(Boolean).join("\n")
 
   // Plaintext fallback — strip tags conservatively for clients without HTML.
   const text = [intro, ...sections.map(s => {
@@ -156,7 +161,7 @@ export function assembleNewsletterHtml(args: {
     const c = (s.content ?? "").trim()
     if (!c) return ""
     return [t ? `## ${t}` : "", stripHtml(c)].filter(Boolean).join("\n")
-  })].filter(Boolean).join("\n\n")
+  }), qrBlock.text].filter(Boolean).join("\n\n")
 
   return {
     subject: (context.campaignSubject ?? "Your Newsletter").trim() || "Your Newsletter",
@@ -166,13 +171,42 @@ export function assembleNewsletterHtml(args: {
   }
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
+/**
+ * WAVE 155 (lane 155E) — the newsletter's QR slot. Owner: "qr code is missing from remotion, blogs, newsletter, etc."
+ * Inside an EMAIL a QR is the wrong form (the reader is already on the device): the email carries the code's tracked
+ * scan URL as a CLICKABLE link, so a click is counted on the same code. The PRINT / PDF form carries the QR image at
+ * 1 in (96 CSS px) on an opaque white plate — above the 0.8 in minimum (qr-contract.ts QR_PLACEMENT_MINIMUMS). Both
+ * sit AFTER the sections and BEFORE the signature / unsubscribe / disclosures assembleEmail() appends downstream, so
+ * the slot never covers readable content or a legal disclosure. The URL is always the tracked /api/qr/scan URL.
+ */
+export interface NewsletterQrSlot {
+  form:          "email" | "print"
+  scanUrl:       string
+  /** Required for the print form (the image); ignored for email. */
+  qrCodeDataUrl?: string | null
+  caption?:      string | null
 }
+
+export function newsletterQrBlock(slot: NewsletterQrSlot | null | undefined): { html: string; text: string } {
+  if (!slot || !/\/api\/qr\/scan\?slug=/.test(slot.scanUrl)) return { html: "", text: "" }
+  const caption = (slot.caption ?? "").trim() || (slot.form === "email" ? "See what's new near you" : "Scan to see what's new near you")
+  const href = escapeHtml(slot.scanUrl)
+  if (slot.form === "email") {
+    return {
+      html: `<p data-qr-slot="email_link" style="margin:24px 0 8px 0"><a href="${href}" style="font-weight:600">${escapeHtml(caption)}</a></p>`,
+      text: `${caption}: ${slot.scanUrl}`,
+    }
+  }
+  if (!slot.qrCodeDataUrl) return { html: "", text: "" }
+  return {
+    html: `<div data-qr-slot="print_footer" style="margin:24px 0 8px 0;display:flex;align-items:center;gap:12px"><div style="background:#ffffff;padding:4px;line-height:0"><img src="${escapeHtml(slot.qrCodeDataUrl)}" width="96" height="96" alt="QR code: ${escapeHtml(caption)}" style="width:1in;height:1in" /></div><div style="font-size:14px;line-height:1.4">${escapeHtml(caption)}</div></div>`,
+    text: `${caption}: ${slot.scanUrl}`,
+  }
+}
+
+// TOMBSTONE: local escapeHtml merged onto lib/format/html.ts escapeHtmlBasic
+// (imported above as `escapeHtml`) — §1/§6 SAME BODY census round 3,
+// 2026-09-09.
 
 function stripHtml(s: string): string {
   return s.replace(/<\/?[^>]+>/g, "").replace(/\s+\n/g, "\n").trim()

@@ -16,6 +16,7 @@
 
 import { tavilySearch } from "@/lib/external/tavily-client"
 import { exaSearch } from "@/lib/external/exa-client"
+import { meterVendorSpend } from "@/lib/vendor-governance/meter-vendor"
 
 export type WebSearchMode = "intent" | "research"
 
@@ -23,6 +24,14 @@ export interface WebSearchHit {
   title: string | null
   url: string | null
   snippet: string | null
+  /** Wave 139H (brand listening) — the fields both engines already return and this mapper used to
+   *  drop: WHO wrote it (Exa `author`), WHEN it was published (Exa `publishedDate` / Tavily
+   *  `published_date`) and the engine's own relevance score 0..1. Null when the engine gave none —
+   *  never guessed. Read by lib/competitive-intel/brand-listening.ts (mention author / published_at /
+   *  reach index). */
+  author?: string | null
+  publishedAt?: string | null
+  score?: number | null
 }
 
 export interface WebSearchResult {
@@ -31,30 +40,52 @@ export interface WebSearchResult {
   hits: WebSearchHit[]
   provider: "tavily" | "exa" | "none"
   cost: number
+  /** final = the provider reported the charge (Exa costDollars); estimated = credits × list price. */
+  costBasis?: "final" | "estimated"
+  /** true when `spend` was given and the search's cost landed on vendor_usage_tracking. */
+  booked?: boolean
+}
+
+/**
+ * WHO THE SEARCH'S SPEND BELONGS TO (wave 139, lane 139C). Six callers reached Exa / Tavily through
+ * this helper and booked NOTHING (the agentic-API invoke + MCP routes, the AI-search citation monitor,
+ * the capability radar, content topics); the two that did book (perplexity-enrichment,
+ * regulatory-watcher's caller) metered the returned cost themselves and still do — they omit `spend`.
+ * Search / listening / research is PLATFORM-COVERED (owner, wave 139): tenant-attributed when a tenant
+ * exists, `platformPaid` when none does (m750). Never billed to the tenant separately.
+ */
+interface WebSearchSpend {
+  brokerageId: string | null
+  systemSource: string
+  platformPaid?: boolean
+  idempotencyKey?: string | null
 }
 
 type TavilyFn = typeof tavilySearch
 type ExaFn = typeof exaSearch
 
-async function viaExa(exa: ExaFn, query: string, max: number): Promise<WebSearchResult | null> {
-  const e = await exa({ query, numResults: max })
+async function viaExa(exa: ExaFn, query: string, max: number, withinDays?: number): Promise<WebSearchResult | null> {
+  const startPublishedDate = withinDays && withinDays > 0 ? new Date(Date.now() - withinDays * 86_400_000).toISOString() : undefined
+  const e = await exa({ query, numResults: max, ...(startPublishedDate ? { startPublishedDate } : {}) })
   if ((e.results?.length ?? 0) === 0) return null
   return {
     answer: null,
-    hits: e.results.map((r) => ({ title: r.title, url: r.url, snippet: r.text })),
+    hits: e.results.map((r) => ({ title: r.title, url: r.url, snippet: r.text, author: r.author ?? null, publishedAt: r.publishedDate ?? null, score: r.score ?? null })),
     provider: "exa",
     cost: e.cost ?? 0,
+    costBasis: e.costBasis ?? "estimated",
   }
 }
 
-async function viaTavily(tavily: TavilyFn, query: string, max: number, deep: boolean): Promise<WebSearchResult | null> {
-  const t = await tavily({ query, maxResults: max, searchDepth: deep ? "advanced" : "basic", includeAnswer: true })
+async function viaTavily(tavily: TavilyFn, query: string, max: number, deep: boolean, withinDays?: number): Promise<WebSearchResult | null> {
+  const t = await tavily({ query, maxResults: max, searchDepth: deep ? "advanced" : "basic", includeAnswer: true, ...(withinDays && withinDays > 0 ? { days: withinDays } : {}) })
   if ((t.results?.length ?? 0) === 0 && !t.answer) return null
   return {
     answer: t.answer,
-    hits: (t.results ?? []).map((r) => ({ title: r.title, url: r.url, snippet: r.content })),
+    hits: (t.results ?? []).map((r) => ({ title: r.title, url: r.url, snippet: r.content, author: null, publishedAt: r.publishedDate ?? null, score: r.score ?? null })),
     provider: "tavily",
     cost: t.cost ?? 0,
+    costBasis: "estimated",
   }
 }
 
@@ -64,22 +95,24 @@ async function viaTavily(tavily: TavilyFn, query: string, max: number, deep: boo
  *   mode "research" → Tavily primary (synthesized answer), Exa fallback.
  */
 export async function runWebSearch(
-  params: { query: string; maxResults?: number; deep?: boolean; mode?: WebSearchMode },
+  params: { query: string; maxResults?: number; deep?: boolean; mode?: WebSearchMode; withinDays?: number },
   deps: { tavily: TavilyFn; exa: ExaFn },
 ): Promise<WebSearchResult> {
   const max = params.maxResults ?? 8
   const deep = params.deep ?? false
   const mode = params.mode ?? "intent"
+  // Recency window (wave 139H): unset → both engines search exactly as before.
+  const days = params.withinDays
 
   if (mode === "research") {
-    const primary = await viaTavily(deps.tavily, params.query, max, deep)
+    const primary = await viaTavily(deps.tavily, params.query, max, deep, days)
     if (primary) return primary
-    const fallback = await viaExa(deps.exa, params.query, max)
+    const fallback = await viaExa(deps.exa, params.query, max, days)
     if (fallback) return fallback
   } else {
-    const primary = await viaExa(deps.exa, params.query, max)
+    const primary = await viaExa(deps.exa, params.query, max, days)
     if (primary) return primary
-    const fallback = await viaTavily(deps.tavily, params.query, max, deep)
+    const fallback = await viaTavily(deps.tavily, params.query, max, deep, days)
     if (fallback) return fallback
   }
 
@@ -96,8 +129,36 @@ export async function webSearch(params: {
   maxResults?: number
   deep?: boolean
   mode?: WebSearchMode
-}): Promise<WebSearchResult> {
-  return runWebSearch(params, { tavily: tavilySearch, exa: exaSearch })
+  /** Only content published in the last N days (Exa startPublishedDate / Tavily days). */
+  withinDays?: number
+  spend?: WebSearchSpend
+}, deps: { tavily?: TavilyFn; exa?: ExaFn; meter?: typeof meterVendorSpend } = {}): Promise<WebSearchResult> {
+  // deps: injectable searchers + meter for the proof (scripts/cost-completeness-guard.ts) — never set in production.
+  const res = await runWebSearch(params, { tavily: deps.tavily ?? tavilySearch, exa: deps.exa ?? exaSearch })
+  if (!params.spend) return res
+  return { ...res, booked: await bookWebSearchSpend(res, params.spend, { meter: deps.meter }) }
+}
+
+/** Book ONE search's spend under the provider that SERVED it (a "none" result spent nothing). */
+async function bookWebSearchSpend(
+  res: Pick<WebSearchResult, "provider" | "cost" | "costBasis">,
+  spend: WebSearchSpend,
+  deps: { meter?: typeof meterVendorSpend } = {},
+): Promise<boolean> {
+  if (res.provider === "none" || !(res.cost > 0)) return false
+  return (deps.meter ?? meterVendorSpend)({
+    vendorName: res.provider,
+    usageType: "web_search",
+    cost: res.cost,
+    unitCount: 1,
+    brokerageId: spend.brokerageId,
+    platformPaid: spend.platformPaid,
+    systemSource: spend.systemSource,
+    priceState: "variable",
+    costBasis: res.costBasis ?? "estimated",
+    coverage: "platform_covered",
+    idempotencyKey: spend.idempotencyKey ?? null,
+  })
 }
 
 /** Compact text block suitable for grounding an LLM prompt (answer + sources). */

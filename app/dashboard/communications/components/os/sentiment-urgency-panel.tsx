@@ -42,9 +42,9 @@ export function SentimentUrgencyPanel({
   const getSentimentIcon = (sentiment: string) => {
     switch (sentiment) {
       case "very_positive": return <Heart className="h-4 w-4 text-green-600" />
-      case "positive": return <Smile className="h-4 w-4 text-green-500" />
+      case "positive": return <Smile className="h-4 w-4 text-green-600" />
       case "neutral": return <Meh className="h-4 w-4 text-gray-500" />
-      case "negative": return <Frown className="h-4 w-4 text-amber-500" />
+      case "negative": return <Frown className="h-4 w-4 text-amber-600" />
       case "very_negative": return <AlertTriangle className="h-4 w-4 text-destructive" />
       default: return <Meh className="h-4 w-4" />
     }

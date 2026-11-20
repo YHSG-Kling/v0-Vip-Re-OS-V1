@@ -12,6 +12,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 async function resolveCaller(): Promise<{ userId: string; brokerageId: string } | null> {
   const supabase = await createClient()
@@ -28,6 +29,7 @@ export async function flagCallForCompliance(input: {
 }): Promise<{ success: boolean; error?: string }> {
   const caller = await resolveCaller()
   if (!caller) return { success: false, error: "Not authenticated" }
+  return ledgered(caller, { action: "compliance.call.flag", subject: { type: "voice_call", ref: input.callId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const svc = createServiceClient()
   const note = (input.note ?? "").trim().slice(0, 500)
@@ -44,6 +46,7 @@ export async function flagCallForCompliance(input: {
   })
   if (error) return { success: false, error: "Could not record the flag — try again." }
   return { success: true }
+  })
 }
 
 export async function shareCallWithCoach(input: {
@@ -51,13 +54,22 @@ export async function shareCallWithCoach(input: {
 }): Promise<{ success: boolean; error?: string; notified?: number }> {
   const caller = await resolveCaller()
   if (!caller) return { success: false, error: "Not authenticated" }
+  // WAVE 155 (lane 155R27): the share names ONE call, so it proves that call first — the same row the review page opens
+  // (app/dashboard/voice/review/[callId]/page.tsx reads voice_calls by id AND the session's brokerage). Before this, any
+  // callId — another tenant's, or none at all — fanned a "shared for coaching" notice out to every leader. One receipt per
+  // share through the file's ledgered helper (session tenant, no key: a second share is a second act).
+  const svcForCall = createServiceClient()
+  const { data: call, error: callErr } = await svcForCall.from("voice_calls").select("id").eq("id", String(input.callId ?? "")).eq("brokerage_id", caller.brokerageId).maybeSingle()
+  if (callErr) return { success: false, error: "Could not read the call — try again." }
+  if (!call) return { success: false, error: "That call is not in your brokerage." }
+  return ledgered(caller, { action: "coaching.call_review.share", subject: { type: "voice_call", id: (call as { id: string }).id }, riskClass: "LOW_RISK_WRITE" }, async (): Promise<{ success: boolean; error?: string; notified?: number }> => {
 
-  const svc = createServiceClient()
+  const svc = svcForCall
   // The coaching audience the coaching loop already targets: broker / team leads.
   const { data: leaders } = await svc.from("users")
     .select("id, user_type")
     .eq("brokerage_id", caller.brokerageId)
-    .in("user_type", ["broker", "broker_admin", "admin", "team_lead"])
+    .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES, "team_lead"])
     .limit(20)
 
   const targets = ((leaders ?? []) as Array<{ id: string }>).filter((u) => u.id !== caller.userId)
@@ -78,4 +90,30 @@ export async function shareCallWithCoach(input: {
     if (!error) notified++
   }
   return notified > 0 ? { success: true, notified } : { success: false, error: "Could not notify — try again." }
+  })
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

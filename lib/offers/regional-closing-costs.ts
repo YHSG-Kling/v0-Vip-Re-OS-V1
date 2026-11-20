@@ -236,6 +236,7 @@ const NAME_TO_CODE: Record<string, string> = Object.fromEntries(
   Object.values(CONVENTIONS).map((c) => [c.stateName.toLowerCase(), c.state]),
 )
 
+/** @proofSeam runtime resolves ONE state through normalizeStateCode/getRegionalConventions (membership in CONVENTIONS); the full code list exists so scripts/regional-closing-costs-simulator.ts and scripts/seller-closing-costs-simulator.ts can sweep all 51 conventions and prove every one yields buyer and seller shares that never double-claim a cost. */
 export const ALL_REGION_CODES = Object.keys(CONVENTIONS) // 50 states + DC
 
 /** "CA" | "ca" | "California" → "CA"; anything unknown → null (honest absence). */
@@ -304,27 +305,31 @@ export function lenderTitleConvention(conv: RegionalConventions): {
   return { pctOfLoanLow: 0.15, pctOfLoanHigh: 0.3, note: "typical lender's-policy band" }
 }
 
-// ─── AI refinement (pure clamp — the deterministic model is the floor) ──────
+// ─── AI EXPLANATION (the deterministic model calculates; the model only explains) ──────
 //
-// The AI layer (app/actions/buyer-closing-costs.ts → generateObjectRouted) may
-// propose per-line adjustments grounded in the deal's real facts, but THIS
-// function is the only way they land, and it enforces the honesty bounds:
-//   - lender-fact lines are untouchable (real records beat any model)
-//   - pending lines are untouchable (no loan terms → nothing to refine)
-//   - each adjustment is clamped within [0.5×, 1.5×] of the regional band
-//   - every adjustment must carry a stated reason, which travels into the label
+// WAVE 144 (lane 144C, owner ruling 9 via lane 144D Outside-lane 3): "AI explains, deterministic engine calculates — remove any
+// LLM-computed money." This step used to APPLY the model's own low/high figures to a buyer's closing-cost line (clamped to
+// 0.5×–1.5× of the regional band) and relabel it ai_refined — a model-authored dollar range shown to a consumer as the estimate.
+// It no longer changes a single figure. The model's one-sentence reason, grounded in the deal facts and the regional model, is
+// attached to the deterministic line as an EXPLANATION (`note`); any figure the model returns is IGNORED and counted.
+// The honesty bounds that remain: lender-fact lines are not annotated (real records explain themselves), pending lines are not
+// annotated (no loan terms → nothing to explain yet), and an explanation must state a reason.
 
 export interface AiLineAdjustment {
   label: string
-  low: number
-  high: number
   reason: string
+  /** Ignored if present (ruling 9) — a figure from the model is never applied. Kept optional so an old prompt shape is still read safely. */
+  low?: number
+  high?: number
 }
 
 export interface AiRefineOutcome {
   lines: BuyerCostLine[]
+  /** Lines that received an explanation. */
   applied: string[]
   rejected: Array<{ label: string; why: string }>
+  /** Lines for which the model also returned figures — never applied, named so the drift is visible. */
+  figuresIgnored: string[]
 }
 
 export function applyAiRefinements(
@@ -335,30 +340,20 @@ export function applyAiRefinements(
   const out = lines.map((l) => ({ ...l }))
   const applied: string[] = []
   const rejected: Array<{ label: string; why: string }> = []
+  const figuresIgnored: string[] = []
 
   for (const adj of adjustments) {
     const line = out.find((l) => l.label === adj.label)
     if (!line) { rejected.push({ label: adj.label, why: "no such line" }); continue }
-    if (line.source === "lender_fact") { rejected.push({ label: adj.label, why: "lender-fact line — real records are never AI-adjusted" }); continue }
-    if (line.pending) { rejected.push({ label: adj.label, why: "pending the lender's terms — nothing to refine yet" }); continue }
-    const reason = String(adj.reason ?? "").trim()
-    if (!reason) { rejected.push({ label: adj.label, why: "no reason stated — unexplained adjustments are refused" }); continue }
-    if (!Number.isFinite(adj.low) || !Number.isFinite(adj.high) || adj.low < 0 || adj.high < adj.low) {
-      rejected.push({ label: adj.label, why: "not a sane range" }); continue
-    }
-    if (line.high <= 0) { rejected.push({ label: adj.label, why: "no regional band to refine within (customarily not a buyer cost here)" }); continue }
-
-    // Clamp into [0.5×low, 1.5×high] of the deterministic band — the floor holds.
-    const boundLow = Math.floor(line.low * 0.5)
-    const boundHigh = Math.ceil(line.high * 1.5)
-    const clampedLow = Math.min(Math.max(adj.low, boundLow), boundHigh)
-    const clampedHigh = Math.min(Math.max(adj.high, boundLow), boundHigh)
-    line.low = Math.min(clampedLow, clampedHigh)
-    line.high = Math.max(clampedLow, clampedHigh)
-    line.source = "ai_refined"
-    line.sourceLabel = `AI-refined within the ${conv.stateName} regional band — ${reason}`
+    if (line.source === "lender_fact") { rejected.push({ label: adj.label, why: "lender-fact line — real records are never AI-annotated" }); continue }
+    if (line.pending) { rejected.push({ label: adj.label, why: "pending the lender's terms — nothing to explain yet" }); continue }
+    const reason = String(adj.reason ?? "").replace(/\s+/g, " ").trim().slice(0, 300)
+    if (!reason) { rejected.push({ label: adj.label, why: "no reason stated — an explanation must say why" }); continue }
+    if (adj.low !== undefined || adj.high !== undefined) figuresIgnored.push(adj.label)
+    // The FIGURES are the regional model's, untouched (low / high / source / sourceLabel). Only the explanation is added.
+    line.note = line.note ? `${line.note} · Why (${conv.stateName}): ${reason}` : `Why (${conv.stateName}): ${reason}`
     applied.push(adj.label)
   }
 
-  return { lines: out, applied, rejected }
+  return { lines: out, applied, rejected, figuresIgnored }
 }

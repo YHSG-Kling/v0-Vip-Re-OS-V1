@@ -29,6 +29,56 @@ import {
   type RequiredBrandElement,
 } from "@/lib/brand-template-registry"
 
+/** Upper bound on one batch — these are synchronous CPU loops on caller input. */
+const BATCH_MAX = 500
+
+/**
+ * Session gate. NOT EXPORTED — this module is `"use server"`, so exporting it
+ * would mint another public endpoint.
+ *
+ * The two batch actions below are pure computation with no database access, so
+ * there is no tenant scope to enforce and none is claimed here. What they DID
+ * expose was an unauthenticated, unbounded synchronous loop over a caller-supplied
+ * array: `batchClassifyTemplates` / `batchGetBrandRequirements` run in-process
+ * with no yield, so one request with a large enough array occupies a server
+ * worker for as long as it takes. Requiring a session and capping the array is
+ * the whole fix; the single-item siblings in this file are naturally bounded and
+ * are left as they are.
+ */
+async function requireSession(): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  return ctx.isAuthenticated ? { ok: true } : { ok: false, error: "Not authenticated" }
+}
+
+/**
+ * THE AUDIT WRITE'S DOOR (wave 155, lane 155R20, G10). NOT EXPORTED (see above). The three single-item actions below are
+ * public endpoints; their COMPUTATION is pure and stays open, but `logActivity` WRITES an activities row onto a brand
+ * template — and that write used to run for ANY caller, onto ANY tenant's template, stamped with a caller-supplied
+ * `userId`. Now the write runs only for a signed-in seat whose SESSION tenant owns the template (the template row's tenant
+ * is the claim — decideClaimedTenant, lib/platform/acting-context.ts), is stamped with the SESSION user (never the
+ * argument), and leaves ONE receipt (ledgerSessionAction). Fail closed: an unreadable or unknown template refuses.
+ */
+async function logTemplateEvaluation(
+  contentId: string,
+  action: string,
+  write: (sessionUserId: string) => Promise<{ success: boolean; error?: string }>,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return { ok: false, error: "Not authenticated" }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { resolveBrandTemplateBrokerageId } = await import("@/lib/activities/activity-tenant")
+  const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+  const owner = await resolveBrandTemplateBrokerageId(createServiceClient(), contentId)
+  if (!owner.ok || !owner.brokerageId) return { ok: false, error: "Template not found" }
+  const tenant = decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: owner.brokerageId })
+  if (!tenant.ok) return { ok: false, error: "Not authorized for that template" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  await ledgerSessionAction({ brokerageId: tenant.brokerageId, action, actor: { type: "user", userId: ctx.userId }, subject: { type: "brand_template", id: contentId }, riskClass: "LOW_RISK_WRITE" }, () => write(ctx.userId))
+  return { ok: true }
+}
+
 // ============================================
 // TEMPLATE CLASSIFICATION ACTIONS
 // ============================================
@@ -68,7 +118,9 @@ export async function classifyTemplateAction(
 
     // Optional: Log to activities table
     if (options?.logActivity && options.contentId) {
-      await logTemplateClassification(options.contentId, classification, options.userId)
+      const contentId = options.contentId
+      const door = await logTemplateEvaluation(contentId, "brand.template.classify", (userId) => logTemplateClassification(contentId, classification, userId))
+      if (!door.ok) return { success: false, error: door.error }
     }
 
     return { success: true, data: classification }
@@ -92,8 +144,14 @@ export async function batchClassifyTemplatesAction(
   error?: string
 }> {
   try {
+    const gate = await requireSession()
+    if (!gate.ok) return { success: false, error: gate.error }
+
     if (!Array.isArray(metadataList) || metadataList.length === 0) {
       return { success: false, error: "metadataList must be a non-empty array" }
+    }
+    if (metadataList.length > BATCH_MAX) {
+      return { success: false, error: `Classify at most ${BATCH_MAX} templates per call` }
     }
 
     const classifications = batchClassifyTemplates(metadataList)
@@ -187,7 +245,9 @@ export async function getBrandRequirementsAction(
 
     // Optional: Log to activities table
     if (options?.logActivity && options.contentId) {
-      await logBrandRequirements(options.contentId, requirements, options.userId)
+      const contentId = options.contentId
+      const door = await logTemplateEvaluation(contentId, "brand.template.evaluate_requirements", (userId) => logBrandRequirements(contentId, requirements, userId))
+      if (!door.ok) return { success: false, error: door.error }
     }
 
     return { success: true, data: requirements }
@@ -211,8 +271,14 @@ export async function batchGetBrandRequirementsAction(
   error?: string
 }> {
   try {
+    const gate = await requireSession()
+    if (!gate.ok) return { success: false, error: gate.error }
+
     if (!Array.isArray(contexts) || contexts.length === 0) {
       return { success: false, error: "contexts must be a non-empty array" }
+    }
+    if (contexts.length > BATCH_MAX) {
+      return { success: false, error: `Resolve at most ${BATCH_MAX} contexts per call` }
     }
 
     const requirements = batchGetBrandRequirements(contexts)
@@ -269,7 +335,9 @@ export async function validateBrandComplianceAction(
 
     // Optional: Log to activities table
     if (options?.logActivity && options.contentId) {
-      await logBrandCompliance(options.contentId, validation, options.userId)
+      const contentId = options.contentId
+      const door = await logTemplateEvaluation(contentId, "brand.template.validate_compliance", (userId) => logBrandCompliance(contentId, validation, userId))
+      if (!door.ok) return { success: false, error: door.error }
     }
 
     return { success: true, data: validation }

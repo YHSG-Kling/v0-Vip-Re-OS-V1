@@ -13,7 +13,8 @@ import { buildPersonaContext, CONTACT_PERSONA_COLUMNS, LEAD_PERSONA_COLUMNS, typ
 type Svc = ReturnType<typeof createServiceClient>
 
 /** Load the persona + safe facts for a contact or lead from its OWNING table. */
-export async function loadEntityPersonaContext(svc: Svc, entity: PersonaEntity, id: string, now: Date = new Date()): Promise<PersonaContext> {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+async function loadEntityPersonaContext(svc: Svc, entity: PersonaEntity, id: string, now: Date = new Date()): Promise<PersonaContext> {
   const table = entity === "lead" ? "leads" : "contacts"
   const cols = entity === "lead" ? LEAD_PERSONA_COLUMNS : CONTACT_PERSONA_COLUMNS
   const { data } = await svc.from(table).select(cols).eq("id", id).maybeSingle()
@@ -41,8 +42,18 @@ export interface GenerateEntityStepCopyInput {
  */
 export async function generateEntityStepCopy(input: GenerateEntityStepCopyInput): Promise<CopyDraft> {
   const ctx = await loadEntityPersonaContext(input.svc, input.entity, input.id, input.now ?? new Date())
+  // THE ONE RESOLVER (§6) — "contact" only, matching lib/campaign-sequences/
+  // render-step.ts: resolveContactLanguageFromDb reads the `contacts` table by
+  // id, and a lead's id is not a contacts.id. Best-effort; falls to English.
+  let language: string | undefined
+  if (input.entity === "contact") {
+    try {
+      const { resolveContactLanguageFromDb } = await import("@/lib/video/multilingual-reel")
+      language = await resolveContactLanguageFromDb(input.svc, input.id)
+    } catch { /* falls through to English */ }
+  }
   return generatePersonaCopy(
-    { goal: input.intent, facts: ctx.facts, channel: input.channel, persona: ctx.persona, words: input.words },
+    { goal: input.intent, facts: ctx.facts, channel: input.channel, persona: ctx.persona, words: input.words, language },
     input.fallback,
     { generator: input.generator },
   )

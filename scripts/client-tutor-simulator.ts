@@ -67,13 +67,20 @@ async function liveLayer() {
   if (!url || !key) { console.log("\n[live] ⊘ skipped (no SUPABASE creds) — pure + source layers proved the logic"); return }
   const svc = createClient(url, key)
   console.log("\n[live] a real contact asks (injected generator, no tokens) → answer + logged turn → risky held → clean up")
-  const { data: contact } = await svc.from("contacts").select("id").limit(1).maybeSingle()
+  const { data: contact } = await svc.from("contacts").select("id, brokerage_id").not("brokerage_id", "is", null).limit(1).maybeSingle()
   if (!contact) { console.log("  ⊘ no contact — skipping"); return }
   const contactId = (contact as any).id
+  // Wave 155 (155F): the tutor takes the SESSION's tenant (required); the live layer passes the contact's own.
+  const brokerageId = (contact as any).brokerage_id as string
   const cleanup: Array<{ table: string; id: string }> = []
+  // Wave 155 (155F): a question the help base cannot answer may open ONE agent task / knowledge-repair task / bell — the rows
+  // that exist before the run are remembered, and only rows this run created are removed in cleanup.
+  const idsOf = async (table: string, filter: (q: any) => any): Promise<Set<string>> => new Set<string>(((await filter(svc.from(table).select("id").eq("brokerage_id", brokerageId)).limit(1000)).data ?? []).map((r: any) => r.id as string))
+  const tasksBefore = await idsOf("tasks", (q) => q.in("source", ["portal_question", "knowledge_repair"]))
+  const bellsBefore = await idsOf("notifications", (q) => q.eq("type", "portal_question"))
   const { answerTutorQuestion } = await import("../lib/education/client-tutor")
   try {
-    const good = await answerTutorQuestion(svc as any, { contactId, question: "what does clear to close mean?", generate: async () => "Clear to close means your lender finished underwriting. Ask your agent for your exact date." })
+    const good = await answerTutorQuestion(svc as any, { contactId, brokerageId, question: "what does clear to close mean?", generate: async () => "Clear to close means your lender finished underwriting. Ask your agent for your exact date." })
     check("live: returns the generated answer", /underwriting/.test(good.answer) && !good.held)
     // the logged session (source education_tutor) should exist with 2 messages
     const { data: sess } = await svc.from("chat_sessions").select("id").eq("contact_id", contactId).eq("source", "education_tutor").order("created_at", { ascending: false }).limit(1).maybeSingle()
@@ -87,11 +94,15 @@ async function liveLayer() {
       await svc.from("chat_messages").delete().eq("session_id", sid)
     }
 
-    const risky = await answerTutorQuestion(svc as any, { contactId, question: "is this a good neighborhood?", generate: async () => "This is a good neighborhood for people like you." })
-    check("live: a risky (steering) answer is HELD → safe fallback", risky.held && /best answered by your agent/.test(risky.answer))
+    // Wave 155 (155F): a steering QUESTION no longer reaches the model at all — the fixed fair-housing answer is given (BIAS-001);
+    // the post-hoc hold (tutorAnswerRisky) stays the backstop for a model answer, proved in the pure layer.
+    const risky = await answerTutorQuestion(svc as any, { contactId, brokerageId, question: "is this a good neighborhood?", generate: async () => "This is a good neighborhood for people like you." })
+    check("live: a steering question gets the fixed fair-housing answer — never the model's characterization", !/people like you/.test(risky.answer) && /can't describe a neighborhood/.test(risky.answer))
     const { data: sess2 } = await svc.from("chat_sessions").select("id").eq("contact_id", contactId).eq("source", "education_tutor").order("created_at", { ascending: false }).limit(1).maybeSingle()
     if (sess2) { const sid2 = (sess2 as any).id; cleanup.push({ table: "chat_sessions", id: sid2 }); await svc.from("chat_messages").delete().eq("session_id", sid2) }
   } finally {
+    for (const id of await idsOf("notifications", (q) => q.eq("type", "portal_question"))) if (!bellsBefore.has(id)) cleanup.push({ table: "notifications", id })
+    for (const id of await idsOf("tasks", (q) => q.in("source", ["portal_question", "knowledge_repair"]))) if (!tasksBefore.has(id)) cleanup.push({ table: "tasks", id })
     for (const c of cleanup.reverse()) await svc.from(c.table).delete().eq("id", c.id)
     let left = 0
     for (const c of cleanup) { const { count } = await svc.from(c.table).select("id", { count: "exact", head: true }).eq("id", c.id); left += count ?? 0 }

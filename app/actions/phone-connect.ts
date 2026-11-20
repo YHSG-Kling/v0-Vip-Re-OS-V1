@@ -8,15 +8,18 @@
 //
 // No stub — what this writes is what dispatch (sendSMS/placeCall) actually uses.
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { writeScopeFor } from "@/lib/connections/scope"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 
 export type PhonePlatform = "twilio" | "telnyx" | "bandwidth"
 const PHONE_PLATFORMS: PhonePlatform[] = ["twilio", "telnyx", "bandwidth"]
-const BROKERAGE_ROLES = ["superadmin", "admin", "broker", "broker_owner"]
+// SCOPE LADDER (kept inline — this array decides WHERE credentials are scoped,
+// agent vs brokerage): 'superadmin' removed — dead as users.user_type (0 live
+// rows store it).
+const BROKERAGE_ROLES = ["admin", "broker", "broker_owner"]
 
 interface Member { userId: string; brokerageId: string; agentScoped: boolean }
 
@@ -41,6 +44,8 @@ export async function connectPhoneAction(params: {
   const gate = await requireMember()
   if (!gate.ok) return gate
   const { member } = gate
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: member.brokerageId, action: "platform.phone_connection.connect", actor: { type: "user", userId: member.userId }, subject: { type: "phone_connection", ref: platform }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform, scope: member.agentScoped ? "agent" : "brokerage" } }, async (): Promise<{ ok: true; scope: "agent" | "brokerage" } | { ok: false; error: string }> => {
   const svc = createServiceClient()
 
   // Unified ownership scope (m102): agent line → agent owner, broker line → brokerage owner.
@@ -57,13 +62,27 @@ export async function connectPhoneAction(params: {
     owner_id: owner?.ownerId ?? null,
     platform,
     scope: member.agentScoped ? "agent" : "brokerage",
-    api_key: params.accountSid.trim(),
-    config: { auth_token: params.authToken.trim(), from_number: params.fromNumber.trim() },
+    api_key: encryptSecret(params.accountSid.trim()),
+    // WAVE 155 (lane 155S1, P0): the carrier AUTH TOKEN is the pair's SECRET half and was stored in PLAINTEXT beside the
+    // sealed Account SID. It is sealed through the same envelope (lib/security/secret-crypto.ts encryptSecret — enc:v1,
+    // AES-256-GCM; with no key it REFUSES, never stores plaintext) and read back through the one reader of a config secret,
+    // lib/connections/credential-secret.ts secretFromConfig, which opens it with decryptSecret (a legacy plaintext value
+    // passes through verbatim, so rows stored before this change keep working). Re-sealing those stored rows is the existing
+    // platform-staff job's (app/actions/superadmin/secret-migration.ts resealLegacyPlaintextSecretsAction).
+    config: { auth_token: encryptSecret(params.authToken.trim()), from_number: params.fromNumber.trim() },
     is_active: true,
     updated_at: new Date().toISOString(),
   }
 
-  // Owner-keyed update-or-insert (unique key is (owner_type, owner_id, platform)).
+  // Owner-keyed update-or-insert. The unique key is (owner_type, owner_id,
+  // platform) and it is REAL — VERIFIED LIVE, not assumed: m104 created it as
+  // `platform_credentials_owner_uniq`, a PARTIAL UNIQUE INDEX
+  // `WHERE owner_type IS NOT NULL`, and a duplicate insert is refused with 23505.
+  // It is spelled out here because it lives in pg_index and NOT in pg_constraint:
+  // a check that dumps pg_constraint for this table sees only the two FKs and the
+  // three CHECKs, reads the key as absent, and reports this comment as a lie. It
+  // is not. A concurrent OAuth callback racing this read-then-write cannot
+  // duplicate the credential — the second writer gets 23505, not a second row.
   const ownerType = owner?.ownerType ?? (member.agentScoped ? "agent" : "brokerage")
   const ownerId = owner?.ownerId ?? (member.agentScoped ? member.userId : member.brokerageId)
   const { data: existing } = await svc
@@ -78,12 +97,15 @@ export async function connectPhoneAction(params: {
 
   revalidatePath("/settings/phone")
   return { ok: true, scope: member.agentScoped ? "agent" : "brokerage" }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 export async function disconnectPhoneAction(platform: PhonePlatform = "twilio"): Promise<{ ok: true } | { ok: false; error: string }> {
   const gate = await requireMember()
   if (!gate.ok) return gate
   const { member } = gate
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: member.brokerageId, action: "platform.phone_connection.disconnect", actor: { type: "user", userId: member.userId }, subject: { type: "phone_connection", ref: platform }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform, scope: member.agentScoped ? "agent" : "brokerage" } }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const svc = createServiceClient()
   let q = svc.from("platform_credentials").update({ is_active: false }).eq("brokerage_id", member.brokerageId).eq("platform", platform)
   q = member.agentScoped ? q.eq("agent_user_id", member.userId) : q.is("agent_user_id", null)
@@ -91,6 +113,7 @@ export async function disconnectPhoneAction(platform: PhonePlatform = "twilio"):
   if (error) return { ok: false, error: error.message }
   revalidatePath("/settings/phone")
   return { ok: true }
+  }).then((r) => ("ok" in r ? r : { ok: false as const, error: r.error ?? "Not run" }))
 }
 
 export async function getPhoneStatusAction(): Promise<

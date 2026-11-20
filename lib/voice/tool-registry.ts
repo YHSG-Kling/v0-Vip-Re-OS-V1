@@ -1,3 +1,6 @@
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { CONTACT_STATUSES } from "@/lib/contact-promotion/qualification"
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
 /**
  * Voice tool registry — single source of truth for which tools the voice
  * cockpit (ElevenLabs Conv AI + browser STT in internal-ai-assistant.tsx)
@@ -24,12 +27,30 @@ export type ComplianceGate =
   | "ai_fair_use"       // checkAIFairUse — per-tenant token quota (already wired in generateAIResponse)
   | "dnc_check"         // Direct DNC check (subset of TCPA — used for non-phone channels)
   | "service_role"      // Action runs with service client and skips RLS — must validate brokerage_id manually
+  | "entity_owner"      // Caller's brokerage must OWN the target entity (listing/contact) — the dispatcher
+                        //   loads the row and checks brokerage_id before the tool runs. Ports Stack A's
+                        //   validateListingAccess/validateContactAccess into the canonical dispatch path so a
+                        //   voice session can never read/act on another brokerage's entity by id.
+  | "assigned_party"    // Caller is a vendor/lender USER who must be ASSIGNED to the target contact — the
+                        //   dispatcher resolves user_role_assignments.vendor_id and requires an ACTIVE,
+                        //   unexpired vendor_contact_assignment (with the needed scope) before the tool runs.
+                        //   The cross-brokerage-boundary version of entity_owner: the brokerage owns the
+                        //   contact, the vendor only reaches it through an assignment. (lib/vendor/assignment-access)
 
 export type ToolAuthority =
   | "agent"             // The acting agent only — strictest scope
   | "agent_or_isa"      // Agent or assigned ISA may act
   | "tenant_staff"      // Any agent/admin/team_lead in the brokerage
   | "admin"             // Broker / broker_admin / admin / superadmin
+  | "vendor"            // Vendor / lender platform users (user_type 'vendor'|'lender'). Reachability
+                        //   only — the PER-CONTACT grant is enforced by the assigned_party gate, never
+                        //   by role alone. A vendor can never touch a contact they aren't assigned to.
+  | "financial_staff"  // Deal-handling + oversight staff who may READ and CONFIRM a buyer's financial
+                        //   verification: agent / broker / broker_admin / admin / superadmin /
+                        //   compliance_officer / tc. Distinct from the lender lane (a lender is the
+                        //   authoritative confirmer via the assigned_party gate) — this is the
+                        //   brokerage's own staff, always paired with the entity_owner gate so a
+                        //   staff member only reaches THEIR brokerage's contacts. Excludes isa/team_lead.
   | "any_authenticated" // Read-only utilities (lookup_contact, get_schedule)
 
 export interface VoiceTool {
@@ -520,6 +541,369 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_nar_regulated: false,
     description: "Commission a GATED content calendar batch in one spoken command: plans N reels (which formats, which listings/topics, which dates) and stages them via the Video Director at pending_review. Nothing auto-publishes — every reel awaits human approval in the Content Studio. Example: 'book me a week of content', 'schedule a month of reels'.",
   },
+
+  // ── Phase 2 of the voice-admin consolidation: register the tools the canonical
+  //    dispatcher (agent-assistant/tool-call runTool) already handled but which
+  //    were NOT in this registry — so authorityAllows now gates them too (they
+  //    dispatched UNGATED before). Authorities are set to the full staff set that
+  //    reaches them today (no lockout), while blocking non-staff. Reads are
+  //    any_authenticated (matching the other lookups); the CRM write + content
+  //    staging require staff. Staging drafts land at pending_review — the approval
+  //    pipeline runs the outbound compliance gates downstream, so no gate fires at
+  //    the voice boundary. ──
+  get_contact_details: {
+    name: "get_contact_details",
+    category: "lookup",
+    authority: "any_authenticated",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Read a single contact's full CRM detail (stage, tags, recent touch, owner) by voice — 'tell me about Sarah Chen'. Read-only.",
+  },
+  get_recent_messages: {
+    name: "get_recent_messages",
+    category: "lookup",
+    authority: "any_authenticated",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Read the recent message history for a contact by voice — 'what did we last say to the Garcias?'. Read-only.",
+  },
+  update_contact_status: {
+    name: "update_contact_status",
+    category: "lookup",
+    authority: "agent_or_isa",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    // Wording DERIVES from CONTACT_STATUSES (lib/contact-promotion/
+    // qualification.ts) so the registry cannot re-drift onto values the
+    // dispatcher's canonicalContactStatus gate refuses. The old text coached
+    // 'move Sarah to under contract' — a DEAL fact (transactions/buyer_stage),
+    // not a contacts.status member.
+    description: `Change a contact's lifecycle status by voice — 'mark Sarah inactive'. Valid values are the canonical contacts.status vocabulary (${CONTACT_STATUSES.join(", ")}); the dispatcher refuses anything else. Internal CRM state change; nothing leaves the platform.`,
+  },
+  stage_newsletter_draft: {
+    name: "stage_newsletter_draft",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage an email newsletter DRAFT at pending_review by voice — it enters the content-approval queue; nothing sends until a human approves it there.",
+  },
+  stage_email_campaign: {
+    name: "stage_email_campaign",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage an email campaign DRAFT at pending_review by voice — enters the approval queue; nothing sends until approved.",
+  },
+  stage_blog_draft: {
+    name: "stage_blog_draft",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage a blog post DRAFT (publish_status draft) by voice — enters the approval queue; nothing publishes until approved.",
+  },
+  stage_podcast_episode: {
+    name: "stage_podcast_episode",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage a podcast episode at pending_review by voice — enters the approval queue; the distributor ships only after approval.",
+  },
+  stage_video_project: {
+    name: "stage_video_project",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage an AI video project at pending_review by voice — enters the approval queue; nothing publishes until approved.",
+  },
+  stage_direct_mail_campaign: {
+    name: "stage_direct_mail_campaign",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage a direct-mail campaign (status planning) by voice — enters the approval queue; nothing prints/mails until approved.",
+  },
+  stage_ad_campaign: {
+    name: "stage_ad_campaign",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage a paid-ad campaign draft by voice — the creative enters review; nothing spends until a human approves it.",
+  },
+  stage_open_house: {
+    name: "stage_open_house",
+    category: "stage",
+    authority: "tenant_staff",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Stage an open-house event + its marketing by voice — enters review; promotion awaits human approval.",
+  },
+
+  // ── Phase 4 of the voice-admin consolidation: the FIRST Stack A commands folded
+  //    into the canonical dispatcher. Read-only status queries, gated by
+  //    entity_owner (the dispatcher verifies the session's brokerage owns the
+  //    listing/contact before the read — porting Stack A's entity-access check, so
+  //    a voice session can't read another brokerage's entity by id). ──
+  query_listing_status: {
+    name: "query_listing_status",
+    category: "lookup",
+    authority: "agent",
+    gates: ["entity_owner"],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Read a listing's current lifecycle stage by voice — 'what stage is 44 Birch at?'. Read-only; the listing must belong to your brokerage.",
+  },
+  query_buyer_stage: {
+    name: "query_buyer_stage",
+    category: "lookup",
+    authority: "agent",
+    gates: ["entity_owner"],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Read a buyer contact's journey stage by voice — 'where are the Hendersons in their buyer journey?'. Read-only; the contact must belong to your brokerage.",
+  },
+
+  // ── Vendor / lender lane — the FIRST cross-party voice tool. A lender is a
+  //    vendor-USER role, not a contact; they reach a buyer only through an active
+  //    vendor_contact_assignment. authority 'vendor' gates reachability to
+  //    vendor/lender users; the assigned_party gate enforces the per-contact grant
+  //    (financial scope). Because it flips a financial-readiness gate, the
+  //    dispatcher requires an explicit spoken CONFIRM before it executes
+  //    (human-in-the-loop) — nothing changes state on the first utterance. ──
+  lender_confirm_financials: {
+    name: "lender_confirm_financials",
+    category: "stage",
+    authority: "vendor",
+    gates: ["assigned_party"],
+    is_outbound: false,       // Internal financial-verification state change — nothing leaves the platform.
+    is_telco_initiating: false,
+    is_nar_regulated: true,   // Financing verification is a regulated deal artifact.
+    description: "Lender confirms a buyer's financial verification by voice — 'confirm the Hendersons' pre-approval for 480k'. Authority 'vendor' (lender/vendor users only); the assigned_party gate requires an ACTIVE vendor_contact_assignment to that contact with financial scope. Flips the financing gate, so the dispatcher requires an explicit spoken confirm first — nothing changes on the first utterance.",
+  },
+
+  // ── Staff financial lane — the brokerage's OWN deal-handling + oversight staff
+  //    (agent/broker/admin/superadmin/compliance/tc) read AND record a buyer's
+  //    financial verification for THEIR OWN contacts. Distinct from the lender
+  //    lane above: authority 'financial_staff' + the entity_owner gate (their
+  //    brokerage owns the contact). The read is a status lookup; the confirm
+  //    flips the financing gate, so like the lender path it requires an explicit
+  //    spoken confirm first (human-in-the-loop). ──
+  get_buyer_financials: {
+    name: "get_buyer_financials",
+    category: "report",
+    authority: "financial_staff",
+    gates: ["entity_owner"],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Read a buyer's financial-verification status by voice — 'is the Hendersons' financing verified?'. Returns pre-approval / proof-of-funds / verification status + amount + expiry. Read-only; authority 'financial_staff' (agent/broker/admin/superadmin/compliance/tc) + entity_owner (the contact must belong to your brokerage).",
+  },
+  confirm_buyer_financials: {
+    name: "confirm_buyer_financials",
+    category: "stage",
+    authority: "financial_staff",
+    gates: ["entity_owner"],
+    is_outbound: false,       // Internal financial-verification state change — nothing leaves the platform.
+    is_telco_initiating: false,
+    is_nar_regulated: true,   // Financing verification is a regulated deal artifact.
+    description: "Staff records a buyer's financial verification by voice — 'mark the Hendersons pre-approved for 480k from the pre-approval letter'. For the brokerage's OWN staff (authority 'financial_staff') on THEIR contacts (entity_owner gate) — the agent/TC/compliance path that does NOT require an assigned lender (verifiedBy 'agent', source 'manual'). Flips the financing gate, so the dispatcher requires an explicit spoken confirm first.",
+  },
+
+  // ── The free-text bridge — REGISTERED so the route's role gate can see it. ──
+  //    run_team_command was dispatched (tool-call route), registered with
+  //    ElevenLabs (lib/elevenlabs/conv-ai.ts) and mapped speakable
+  //    (lib/voice/command-coverage.ts) but had NO row here — and the route only
+  //    ran authorityAllows for tools it could find in this registry, so the one
+  //    tool that can reach every team command bypassed the per-intent role gate
+  //    entirely. The downstream backends re-check their own guards (broker
+  //    commands, deal decisions); this row gives the bridge the same first gate
+  //    every other tool has. is_outbound because a parsed voice_followup sends —
+  //    gated per parsed command (GATE_DELEGATED in lib/voice/voice-coverage.ts).
+  run_team_command: {
+    name: "run_team_command",
+    category: "stage",
+    authority: "agent",
+    gates: [],
+    is_outbound: true,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "Free-text bridge: parseTeamCommandText → dispatchTeamCommand (the same parser + dispatcher as the text command bar). Each parsed command dispatches to its own registered tool's backend, which enforces that tool's gate; ambiguous text asks for a rephrase instead of mis-routing.",
+  },
+
+  // ── The whole team, 24/7 (wave 138E — lib/voice-admin/assistant-reach.ts) ──
+  //    Each backend re-checks the tenant-admin roster ITSELF (resolveTenantAdmin) — the
+  //    run_team_command bridge reaches these without this row's authority check.
+  manager_status: {
+    name: "manager_status",
+    category: "report",
+    authority: "admin",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "'What is the ads manager working on — and why?' One manager's open delegations (pendingDelegationsFor) and its latest completed work WITH the rationale (loadManagerActivity), plus what you may ask it; no manager named → the whole bench's open work. Brokerage-wide, so tenant-admin only. Read-only.",
+  },
+  broker_objective: {
+    name: "broker_objective",
+    category: "stage",
+    authority: "admin",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "'Objective: grow listings 10% in <territory> under $2,000 a month.' The SAME kernel path as the Missions card (submitBrokerObjective): an investigation report, an APPROVAL_REQUIRED proposal, or proposed child missions across the managers — nothing runs until a human approves. Tenant-admin only.",
+  },
+  run_skill: {
+    name: "run_skill",
+    category: "stage",
+    authority: "admin",
+    gates: [],
+    is_outbound: false,
+    is_telco_initiating: false,
+    is_nar_regulated: false,
+    description: "'Run skill anniversary note and gift for the Hendersons.' REQUESTS a built-in or tenant-enabled skill through runSkill (entitlement, metering, the owner's authority rung, withActionLedger, one delegation per capability a human accepts). Financial / legal / irreversible skills and money-moving capabilities are refused by voice. Tenant-admin only.",
+  },
+}
+
+/**
+ * THE MANAGER EACH ASSISTANT TOOL ACTS FOR (wave 138E). One answer, read by the voice bus
+ * (lib/voice/voice-bus.ts ownerManagerForVoiceAction — its switch moved here) and by the
+ * assistant reach matrix (lib/voice-admin/assistant-reach.ts). Bench-wide tools (team_query,
+ * morning_standup, manager_status …) are deliberately ABSENT — attributing a bench answer to
+ * one manager would be dishonest; the custom-teammate attribution keeps its own six
+ * (lib/kernel/ai-teammates.ts TEAM_COMMAND_MANAGER — the proof holds the two disjoint).
+ */
+export const VOICE_TOOL_MANAGER = {
+  create_task: "deal_coordinator",          // tasks / ops
+  log_activity: "ai_isa",                   // contact engagement / CRM touch
+  send_portal_message: "campaign_orchestrator", // client message gate owner
+  accept_offer: "deal_coordinator",         // deal decision — the deal file's owner announces it
+  reject_offer: "deal_coordinator",
+  counter_offer: "deal_coordinator",
+  withdraw_offer: "deal_coordinator",
+  convert_lead: "ai_isa",                   // lead pipeline — qualified lead → contact
+  reassign_contact: "data_steward",         // book-of-record move
+  broadcast_announcement: "data_steward",   // principal comms, kept on the record
+  stage_showing: "shopping_agent",          // buyer-side scheduling
+  stage_offer_packet: "shopping_agent",
+  stage_bba_packet: "shopping_agent",
+  query_buyer_stage: "shopping_agent",
+  stage_listing_packet: "listing_concierge",
+  query_listing_status: "listing_concierge",
+  dispatch_transaction_packet: "deal_coordinator",
+  get_transactions_in_progress: "deal_coordinator",
+  stage_newsletter_draft: "campaign_orchestrator",
+  stage_email_campaign: "campaign_orchestrator",
+  stage_blog_draft: "campaign_orchestrator",
+  stage_podcast_episode: "campaign_orchestrator",
+  stage_direct_mail_campaign: "campaign_orchestrator",
+  stage_open_house: "campaign_orchestrator",
+  stage_video_project: "asset_manager",
+  book_studio_session: "asset_manager",
+  stage_ad_campaign: "ads_manager",
+  get_income_truth: "finance_manager",
+  get_buyer_financials: "shopping_agent",   // buyer journey (pre-approval is the Shopping Agent's handoff)
+  confirm_buyer_financials: "shopping_agent",
+  // WAVE 154 (lane 154A3 — coverage-ledger gap rows 16–17): CONSEQUENTIAL tools (they write or send) had no owner here. Each
+  // takes the owner of the existing entry that does the same thing, so one action has one answer (CLAUDE.md §6):
+  lender_confirm_financials: "shopping_agent", // the lender's side of confirm_buyer_financials — the same financing gate
+  update_contact_status: "ai_isa",             // contact engagement / CRM touch, as log_activity
+  // WAVE 155 (155R7 request 3, applied by 155S1): its only writes are chat_sessions / chat_messages — the question log of the
+  // on-demand educator, which TABLE_MANAGER already gives to data_steward (lib/kernel/manager-registry.ts). One owner, fixed.
+  ask_guidance: "data_steward",
+  // voice_followup, start_marketing and cut_promo are NOT listed here: they are team commands and already have their one owner in
+  // lib/kernel/ai-teammates.ts TEAM_COMMAND_MANAGER (the two tables are disjoint by rule — test:voice-kernel-surface RM8; the one
+  // resolver reads this table first, then that one: lib/voice-admin/assistant-reach.ts toolOwner). A second answer here would
+  // give one tool two managers.
+  // Still deliberately unattributed (bench-wide or multi-manager by construction, see above): run_skill (each skill's
+  // delegation names its own capability manager), run_team_command (TEAM_COMMAND_MANAGER keeps its own six), kernel_resolve /
+  // kernel_proposals / standup_action / broker_objective (the bench's exception and objective rails), fill_form_field /
+  // next_unfilled_field / read_form_status (the form's own packet owner decides), and the bench reads.
+  // WAVE 155 (155R7): those decided per call are named, with the fact each resolves, in VOICE_TOOL_PER_CALL_OWNER below.
+} as const satisfies Readonly<Record<string, ManagerKey>>
+
+/**
+ * WAVE 155 (lane 155R7) — THE TOOLS WHOSE OWNER IS DECIDED PER CALL. The ruling above stands: none of these gets a fixed
+ * VOICE_TOOL_MANAGER row, because the manager that acts differs call to call. Each names the fact its handler ALREADY
+ * resolves at run time, and voiceToolOwnerForCall turns that fact into the one manager for THAT call (or null — never a
+ * guess). The handler returns it as `ownerManager`, so the per-call audit row (agent_assistant_tool_calls.tool_output)
+ * carries it; scripts/os-coverage-ledger.ts credits a tool here only when its handler path really calls the resolver.
+ *   skill        — run_skill: the requested skill's declared manager_owner (lib/kernel/skill-marketplace.ts resolveRunnableSkill);
+ *                  runSkill's own ledger row already carries it as policy `authority_level:<manager_owner>`.
+ *   mission      — broker_objective: the mission it created, missions.owner_manager (lib/kernel/broker-objectives.ts
+ *                  submitBrokerObjective → resolveOwnership), read back by the Missions card.
+ *   standup_item — standup_action: the acted stand-up item's manager (lib/kernel/morning-standup.ts StandupItem.manager).
+ *   team_command — run_team_command: the parsed command's OWN owner (this table, then VOICE_TOOL_MANAGER, then the
+ *                  team-command table); a bench read it routes to has none, and acts on nothing.
+ *   form_packet  — fill_form_field: "the form's own packet owner decides" — the document's mode → the packet tool that
+ *                  stages it (FORM_MODE_PACKET_TOOL) → that tool's VOICE_TOOL_MANAGER row.
+ */
+export const VOICE_TOOL_PER_CALL_OWNER = {
+  run_skill: "skill",
+  broker_objective: "mission",
+  standup_action: "standup_item",
+  run_team_command: "team_command",
+  fill_form_field: "form_packet",
+} as const satisfies Readonly<Record<string, "skill" | "mission" | "standup_item" | "team_command" | "form_packet">>
+
+/** The packet tool that stages each fillable form mode (app/api/agent-assistant/tool-call/route.ts inferModeFromDocumentType). */
+export const FORM_MODE_PACKET_TOOL = {
+  offer: "stage_offer_packet",
+  listing: "stage_listing_packet",
+  bba: "stage_bba_packet",
+} as const satisfies Readonly<Record<string, keyof typeof VOICE_TOOL_MANAGER>>
+
+/**
+ * PURE — the one manager accountable for THIS call of `tool`, from the fact its handler resolved (`resolved.manager` for
+ * skill / mission / standup_item / team_command, `resolved.formMode` for form_packet). A fixed VOICE_TOOL_MANAGER row wins.
+ * Fails closed: a key that is not in `registry` (pass MANAGERS — this module takes no value import of the manager
+ * registry), an unknown form mode, or a tool not listed in either table resolves to null.
+ */
+export function voiceToolOwnerForCall(
+  tool: string,
+  resolved: { manager?: string | null; formMode?: string | null },
+  registry: Readonly<Record<string, unknown>>,
+): ManagerKey | null {
+  const known = (k: string | null | undefined): ManagerKey | null => (k && Object.prototype.hasOwnProperty.call(registry, k) ? (k as ManagerKey) : null)
+  const fixed = (VOICE_TOOL_MANAGER as Readonly<Record<string, string>>)[tool]
+  if (fixed) return known(fixed)
+  const kind = (VOICE_TOOL_PER_CALL_OWNER as Readonly<Record<string, string>>)[tool]
+  if (!kind) return null
+  if (kind === "form_packet") {
+    const packet = resolved.formMode ? (FORM_MODE_PACKET_TOOL as Readonly<Record<string, string>>)[resolved.formMode] : undefined
+    return packet ? known((VOICE_TOOL_MANAGER as Readonly<Record<string, string>>)[packet]) : null
+  }
+  return known(resolved.manager)
 }
 
 /**
@@ -546,10 +930,17 @@ export function authorityAllows(toolName: string, userType: string): boolean {
   if (!tool) return false
   switch (tool.authority) {
     case "any_authenticated": return true
-    case "agent":             return userType === "agent" || userType === "broker" || userType === "broker_admin" || userType === "admin" || userType === "superadmin" || userType === "team_lead"
-    case "agent_or_isa":      return ["agent", "isa", "team_lead", "broker", "broker_admin", "admin", "superadmin"].includes(userType)
-    case "tenant_staff":      return ["agent", "isa", "tc", "team_lead", "broker", "broker_admin", "admin", "superadmin"].includes(userType)
-    case "admin":             return ["broker", "broker_admin", "admin", "superadmin"].includes(userType)
+    // SCOPE LADDERS (kept inline — each tier admits a different non-admin mix, so
+    // they must not collapse into one predicate). 'superadmin' removed from every
+    // tier: tested against users.user_type, where 0 live rows store it (platform
+    // staff carry platform_role). 'broker_owner' added: storable, owns the
+    // brokerage, and was wrongly refused tools its own broker seat can use.
+    case "agent":             return ["agent", "broker", "broker_owner", "broker_admin", "admin", "team_lead"].includes(userType)
+    case "agent_or_isa":      return ["agent", "isa", "team_lead", "broker", "broker_owner", "broker_admin", "admin"].includes(userType)
+    case "tenant_staff":      return ["agent", "isa", "tc", "team_lead", "broker", "broker_owner", "broker_admin", "admin"].includes(userType)
+    case "admin":             return isAdminOrBroker({ user_type: userType })
+    case "vendor":            return ["vendor", "lender", "title"].includes(userType)  // reachability only — assigned_party gate enforces the per-contact grant
+    case "financial_staff":   return ["agent", "broker", "broker_owner", "broker_admin", "admin", "compliance_officer", "tc", "transaction_coordinator"].includes(userType)  // entity_owner gate enforces brokerage ownership
     default:                  return false
   }
 }

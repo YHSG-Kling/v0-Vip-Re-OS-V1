@@ -1,6 +1,6 @@
 import { Suspense } from "react"
 import { AddressSearchForm } from "@/app/components/home-value/AddressSearchForm"
-import { getAgentBySlug, getPageConfigByAgentId, type HomeValuePageConfig } from "@/app/actions/home-value"
+import { getAgentBySlug, getHomeValueConsentBrand, getPageConfigByAgentId, type HomeValuePageConfig } from "@/app/actions/home-value"
 import { Card } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Home, Shield, TrendingUp, Clock } from "lucide-react"
@@ -32,6 +32,8 @@ export default async function HomeValuePage({ searchParams }: PageProps) {
   const params = await searchParams
   const agentSlug = params.agent
   const brokerageId = params.brokerage
+  // C15 (wave 148): the consent names the same agent / brokerage the submission door re-renders it with.
+  const consentBrand = await getHomeValueConsentBrand({ agentSlug, brokerageId })
   const utmSource = params.utm_source
 
   // Personalization + config if agent slug provided
@@ -119,6 +121,7 @@ export default async function HomeValuePage({ searchParams }: PageProps) {
         <div className="mx-auto max-w-2xl">
           <Suspense fallback={<FormSkeleton />}>
             <AddressSearchForm
+              consentBrandName={consentBrand.brandName}
               agentSlug={agentSlug}
               brokerageId={brokerageId ?? agent?.brokerage_id ?? undefined}
               utmSource={utmSource}

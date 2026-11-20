@@ -54,6 +54,10 @@ export const CANONICAL_MILESTONE_IDS = [
   "funding_confirmed",
   "inspector_approved",
   "insurance_quote_approved",
+  // The buyer's HAZARD / HOMEOWNER'S policy is actually BOUND and the binder is
+  // on file (m385). Distinct from insurance_quote_approved: a client approving a
+  // quote is not coverage in force, and a lender will not fund on the former.
+  "hazard_insurance_bound",
   "gift_ordered",
   // seller-side identities
   "listing_live",
@@ -137,6 +141,12 @@ const KEYWORD_RULES: Array<{ test: (n: string) => boolean; id: CanonicalMileston
   { test: (n) => n.includes("inspection") && n.includes("schedul"), id: "inspection_scheduled" },
   { test: (n) => n.includes("inspection") || n.includes("repair"), id: "inspection_deadline" },
   { test: (n) => n.includes("earnest"), id: "earnest_money_due" },
+  // Insurance, most-specific first: a QUOTE step resolves to the quote identity,
+  // anything else insurance/hazard-shaped resolves to the bound-policy identity.
+  // Both sit above the generic financing/offer rules because neither of those
+  // matches an insurance name today and ordering here documents the intent.
+  { test: (n) => n.includes("insurance") && (n.includes("quote") || n.includes("bid") || n.includes("estimate")), id: "insurance_quote_approved" },
+  { test: (n) => n.includes("insurance") || n.includes("hazard"), id: "hazard_insurance_bound" },
   { test: (n) => (n.includes("loan") || n.includes("mortgage") || n.includes("financ")) && n.includes("approv"), id: "loan_approved" },
   { test: (n) => n.includes("financ") || n.includes("underwrit"), id: "financing_deadline" },
   { test: (n) => n.includes("offer") && n.includes("accept"), id: "offer_accepted" },

@@ -6,16 +6,28 @@
  * Mirrors the Deal Health Radar UX (commit 193895c) but for the listing
  * lifecycle stage. Reads server-pre-loaded data:
  *
- *   - healthScore       : latest row from listing_health_scores
- *   - openInterventions : unresolved listing_health_interventions
- *   - scoreHistory      : recent 7 scores for trend context
+ *   - healthScore         : latest row from listing_health_scores
+ *   - openInterventions   : unresolved listing_health_interventions
+ *   - scoreHistory        : recent 7 scores for trend context
+ *   - resolvedInterventions (OPTIONAL, additive): interventions already CLEARED,
+ *     with who cleared them and the note they wrote
  *
  * Provides:
  *   - Trend (delta + ▲/▼)
  *   - Refresh button (POST /api/cron/listing-health-scan via action)
  *   - Open interventions list (top 3) with severity chips + Mark resolved
+ *   - Resolved history — see below
  *   - "See all → /health" link when there are more (links to a per-listing
  *     deep-dive route if/when one is added)
+ *
+ * RESOLVED HISTORY. `resolved`, `resolved_at`, `resolved_by` and `resolution_note`
+ * are all stamped by app/actions/listing-health-actions.ts:88, and every reader in
+ * the product filtered those rows OUT (`.eq("resolved", false)` — this page's
+ * source, app/dashboard/listings/health/actions.ts:113, and
+ * app/actions/listing-risk-agent.ts:124). A cleared `seller_impacted` flag was
+ * therefore unauditable: a broker could never ask who cleared it or on what
+ * grounds. `resolvedInterventions` is OPTIONAL so existing callers keep working
+ * unchanged; the OPEN list stays open-only and is not touched.
  */
 
 import { useState } from "react"
@@ -27,6 +39,7 @@ import {
   TrendingUp,
   TrendingDown,
   AlertTriangle,
+  History,
 } from "lucide-react"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
@@ -57,12 +70,33 @@ interface ListingHealthIntervention {
   created_at: string
 }
 
+/** A CLEARED intervention plus the accountability record attached to clearing it.
+ *  `resolved_by` is a users.id (scripts/schema-fk-map.ts:458 —
+ *  `listing_health_interventions.resolved_by → users`), resolved to a name by the
+ *  server. `resolvedByName` null with `resolvedBy` set means the account did not
+ *  resolve inside this brokerage; both null means nobody was recorded. */
+interface ResolvedListingHealthIntervention extends ListingHealthIntervention {
+  seller_impacted: boolean | null
+  resolved_at: string | null
+  resolved_by: string | null
+  resolvedByName: string | null
+  resolution_note: string | null
+}
+
 interface Props {
   listingId: string
   healthScore: ListingHealthScore | null
   openInterventions: ListingHealthIntervention[]
   scoreHistory: Array<{ overall_score: number; risk_level: string; scored_at: string }>
+  /** Additive — omitted by callers that have not wired the history read. */
+  resolvedInterventions?: ResolvedListingHealthIntervention[]
+  /** What the history read covered, so the section can state its own bounds
+   *  instead of implying it shows everything. */
+  resolvedWindowDays?: number
+  resolvedLimit?: number
 }
+
+export type { ResolvedListingHealthIntervention }
 
 const RISK_BG: Record<string, string> = {
   healthy:  "bg-green-500",
@@ -82,8 +116,13 @@ export function ListingHealthRadarPanel({
   healthScore,
   openInterventions,
   scoreHistory,
+  resolvedInterventions,
+  resolvedWindowDays,
+  resolvedLimit,
 }: Props) {
   const router = useRouter()
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const resolved = resolvedInterventions ?? []
   const [rescanning, setRescanning] = useState(false)
   const [resolvingId, setResolvingId] = useState<string | null>(null)
 
@@ -144,6 +183,16 @@ export function ListingHealthRadarPanel({
         <p className="text-xs text-muted-foreground">
           No score calculated yet. Run a scan to see DOM, showings, feedback, open-house, price-vs-comps, and activity signals.
         </p>
+        {/* A listing with no CURRENT score can still have interventions someone
+            cleared. Gating the audit trail on "has a score" would put the record
+            back out of sight, which is the defect this section exists to close. */}
+        <ResolvedHistory
+          resolved={resolved}
+          open={historyOpen}
+          onToggle={() => setHistoryOpen((v) => !v)}
+          windowDays={resolvedWindowDays}
+          limit={resolvedLimit}
+        />
       </div>
     )
   }
@@ -280,6 +329,14 @@ export function ListingHealthRadarPanel({
         </div>
       )}
 
+      <ResolvedHistory
+        resolved={resolved}
+        open={historyOpen}
+        onToggle={() => setHistoryOpen((v) => !v)}
+        windowDays={resolvedWindowDays}
+        limit={resolvedLimit}
+      />
+
       {/* Flat health */}
       {riskLevel === "healthy" && openInterventions.length === 0 && (
         <p className="text-xs text-green-700 font-medium inline-flex items-center gap-1">
@@ -288,5 +345,85 @@ export function ListingHealthRadarPanel({
         </p>
       )}
     </div>
+  )
+}
+
+/**
+ * The cleared-flag audit trail. Rendered from BOTH panel states — a listing with
+ * no score yet can still have interventions that someone cleared, and hiding the
+ * trail behind "has a score" would recreate the very invisibility this closes.
+ */
+function ResolvedHistory({
+  resolved, open, onToggle, windowDays, limit,
+}: {
+  resolved: ResolvedListingHealthIntervention[]
+  open: boolean
+  onToggle: () => void
+  windowDays?: number
+  limit?: number
+}) {
+  // The audit trail for cleared flags. Every reader in the product filters
+  // resolved rows out, so "who cleared the seller_impacted flag, when, and why"
+  // existed only in the database. Collapsed by default — the panel's job is still
+  // the OPEN work.
+  if (resolved.length === 0) return null
+  return (
+        <div className="space-y-1.5">
+          <button
+            type="button"
+            onClick={() => onToggle()}
+            className="text-[11px] font-semibold text-foreground inline-flex items-center gap-1 hover:underline"
+          >
+            <History className="h-3 w-3" />
+            {resolved.length} resolved intervention{resolved.length === 1 ? "" : "s"}
+            <span className="text-muted-foreground font-normal">{open ? "— hide" : "— show who cleared them"}</span>
+          </button>
+          {open && (
+            <>
+              <ul className="space-y-1.5">
+                {resolved.map((iv) => (
+                  <li key={iv.id} className="rounded-md border border-input bg-muted/20 p-2 text-[11px] space-y-0.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="font-medium leading-snug">{iv.issue_detected}</p>
+                      <span className="text-[9px] uppercase px-1.5 py-0.5 rounded-full font-medium whitespace-nowrap bg-emerald-100 text-emerald-800">
+                        cleared
+                      </span>
+                    </div>
+                    <p className="text-muted-foreground leading-snug">
+                      {iv.severity}
+                      {iv.category ? ` · ${iv.category}` : ""}
+                      {iv.seller_impacted ? " · seller impacted" : ""}
+                      {` · raised ${new Date(iv.created_at).toLocaleDateString()}`}
+                    </p>
+                    <p className="leading-snug">
+                      {/* WHO. Three distinct states — a missing name is not a
+                          missing actor, and neither is ever "resolved by the system". */}
+                      {iv.resolvedByName
+                        ? <>Cleared by <span className="font-medium">{iv.resolvedByName}</span></>
+                        : iv.resolved_by
+                        ? <>Cleared by an account outside this brokerage</>
+                        : <>Cleared — <span className="text-muted-foreground">resolver not recorded</span></>}
+                      {iv.resolved_at
+                        ? ` on ${new Date(iv.resolved_at).toLocaleString()}`
+                        : " (time not recorded)"}
+                    </p>
+                    {iv.resolution_note
+                      ? <p className="text-muted-foreground leading-snug italic">&ldquo;{iv.resolution_note}&rdquo;</p>
+                      : <p className="text-muted-foreground leading-snug">No resolution note was written.</p>}
+                  </li>
+                ))}
+              </ul>
+              {/* Publish the bounds beside the list — a history that silently
+                  truncates reads as a complete record. */}
+              {(windowDays || limit) && (
+                <p className="text-[10px] text-muted-foreground">
+                  Showing the {limit ? `most recent ${limit}` : "most recent"} resolved
+                  {windowDays ? ` in the last ${windowDays} days` : ""}
+                  {resolved.length === limit ? " — older ones are not shown." : "."}
+                </p>
+              )}
+            </>
+          )}
+        </div>
   )
 }

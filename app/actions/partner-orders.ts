@@ -31,6 +31,7 @@ export async function createLenderApplication(input: {
 }): Promise<{ success: boolean; applicationId?: string; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  return ledgered(ctx, { action: "transaction.lender_application.create", subject: { type: "transaction", id: input.transactionId ?? null, ref: input.transactionId ? null : "lender_application:new" }, riskClass: "LOW_RISK_WRITE", detail: { lender_vendor_id: input.lenderVendorId ?? null } }, async () => {
   if (!input.applicationUrl?.trim() || !/^https?:\/\//.test(input.applicationUrl.trim())) {
     return { success: false, error: "application_url_invalid" }
   }
@@ -51,9 +52,10 @@ export async function createLenderApplication(input: {
     application_url: input.applicationUrl.trim(), // the lender's own application link (l72_s12)
   }).select("id").single()
   if (error) return { success: false, error: error.message }
-  revalidatePath("/lender")
-  revalidatePath("/dashboard/partners")
+  revalidatePath("/lender/dashboard")
+  revalidatePath("/dashboard/vendors")
   return { success: true, applicationId: data.id as string }
+  })
 }
 
 export async function updateLenderApplicationStatus(
@@ -62,9 +64,14 @@ export async function updateLenderApplicationStatus(
 ): Promise<{ success: boolean; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  return ledgered(ctx, { action: "transaction.lender_application.update_status", subject: { type: "lender_application", id: applicationId }, riskClass: "LOW_RISK_WRITE", detail: { status } }, async () => {
   if (!LENDER_APP_STATUSES.includes(status)) return { success: false, error: "invalid_status" }
   const svc = createServiceClient()
-  const { error } = await svc.from("lender_applications")
+  // `.select("id")` PROVES the row moved. Without it a status change aimed at an
+  // application in another brokerage matched zero rows and still returned
+  // { success: true } — the caller was told the lender application had advanced
+  // when nothing had been written.
+  const { data, error } = await svc.from("lender_applications")
     .update({
       status,
       updated_at: new Date().toISOString(),
@@ -72,9 +79,12 @@ export async function updateLenderApplicationStatus(
     })
     .eq("id", applicationId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
   if (error) return { success: false, error: error.message }
-  revalidatePath("/lender")
+  if (!data || data.length === 0) return { success: false, error: "application_not_found_in_brokerage" }
+  revalidatePath("/lender/dashboard")
   return { success: true }
+  })
 }
 
 export async function createTitleOrder(input: {
@@ -89,6 +99,7 @@ export async function createTitleOrder(input: {
 }): Promise<{ success: boolean; orderId?: string; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  return ledgered(ctx, { action: "transaction.title_order.create", subject: { type: "transaction", id: input.transactionId ?? null, ref: input.transactionId ? null : "title_order:new" }, riskClass: "LEGAL", detail: { title_vendor_id: input.titleVendorId ?? null, status: input.status ?? "ordered" } }, async () => {
   if (!input.propertyAddress?.trim()) return { success: false, error: "property_address_required" }
   const status = input.status ?? "ordered"
   if (!TITLE_ORDER_STATUSES.includes(status)) return { success: false, error: "invalid_status" }
@@ -104,8 +115,9 @@ export async function createTitleOrder(input: {
   }).select("id").single()
   if (error) return { success: false, error: error.message }
   revalidatePath("/title/orders")
-  revalidatePath("/dashboard/partners")
+  revalidatePath("/dashboard/vendors")
   return { success: true, orderId: data.id as string }
+  })
 }
 
 export async function updateTitleOrderStatus(
@@ -115,9 +127,16 @@ export async function updateTitleOrderStatus(
 ): Promise<{ success: boolean; error?: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  return ledgered(ctx, { action: "transaction.title_order.update_status", subject: { type: "title_order", id: orderId || null }, riskClass: "LEGAL", detail: { status, search_result_changed: searchResult !== undefined } }, async () => {
   if (!TITLE_ORDER_STATUSES.includes(status)) return { success: false, error: "invalid_status" }
+  if (!orderId) return { success: false, error: "order_id_required" }
   const svc = createServiceClient()
-  const { error } = await svc.from("title_orders")
+  // `.select("id")` PROVES the row moved. Without it, an order id belonging to a
+  // different brokerage matched zero rows and this still returned { success: true },
+  // telling a closing team the title search had been marked clear when nothing was
+  // written. `completed_at` is stamped only for 'completed' — the terminal state —
+  // so turnaround maths in title-operations-panel is not fed an optimistic timestamp.
+  const { data, error } = await svc.from("title_orders")
     .update({
       status,
       updated_at: new Date().toISOString(),
@@ -126,7 +145,35 @@ export async function updateTitleOrderStatus(
     })
     .eq("id", orderId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
   if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) return { success: false, error: "order_not_found_in_brokerage" }
   revalidatePath("/title/orders")
   return { success: true }
+  })
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

@@ -1,3 +1,11 @@
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ DEAD — DO NOT RE-RUN. The `vendor_directory` table this file touches no   ║
+-- ║ longer exists: m355 folded its curation columns onto `vendors` and        ║
+-- ║ dropped it (one vendor system, per the owner's ruling on drift).          ║
+-- ║ vendors_category_check already carries this same 38-value taxonomy.       ║
+-- ║ Kept only as the historical record of how the schema got here.           ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+
 -- ============================================================================
 -- vendor_directory.category — expand allowed values
 -- ============================================================================

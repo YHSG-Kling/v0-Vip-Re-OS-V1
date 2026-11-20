@@ -8,7 +8,8 @@
 // author never manufactures a course nobody needs, and a topic the team already handles well never
 // surfaces.
 
-export type GapSource = "objection_drill" | "compliance" | "question"
+/** "support" (wave 142G) = a recurring SUPPORT TICKET topic (how the OS works) — answered with a help article. */
+export type GapSource = "objection_drill" | "compliance" | "question" | "support"
 
 export interface GapSignal {
   /** Stable slug, e.g. "objection:price_too_high" or "compliance:fair_housing_language". */
@@ -73,6 +74,8 @@ export function detectKnowledgeGaps(signals: GapSignal[], opts: { minRecurrence?
       ? `${s.weakCount} recurring ${s.topicLabel} compliance flags — the roster keeps getting this wrong.`
       : s.source === "question"
       ? `${s.weakCount} people asked about ${s.topicLabel} recently — a recurring question worth a proper lesson.`
+      : s.source === "support"
+      ? `${s.weakCount} support tickets about ${s.topicLabel} recently — a recurring how-to worth a help article.`
       : `${s.weakCount}/${s.totalCount} drills on ${s.topicLabel} scored weak (avg ${Math.round(s.avgScore ?? 0)}/100) — a real, repeated gap.`
 
     gaps.push({

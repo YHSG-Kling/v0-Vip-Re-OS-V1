@@ -31,6 +31,9 @@ export function SyncControlsCard({ brokerageId }: SyncControlsCardProps) {
           title: "Sync Complete",
           description: `Synced ${result.recordsSynced} records${result.recordsFailed > 0 ? `, ${result.recordsFailed} failed` : ""}`,
         })
+      } else if (result.notSent) {
+        // Wave 152 (lane 152K): the bulk door sends nothing — say so plainly (it used to toast a simulated "Sync Complete").
+        toast({ title: "Nothing was sent", description: result.error })
       } else {
         toast({
           title: "Sync Failed",
@@ -54,7 +57,7 @@ export function SyncControlsCard({ brokerageId }: SyncControlsCardProps) {
       <CardHeader>
         <CardTitle>Sync Controls</CardTitle>
         <CardDescription>
-          Manually trigger sync operations with your accounting provider
+          Brokerage expenses and closed commissions are sent to QuickBooks as they are recorded. A bulk re-send is not available here, so these buttons send nothing; use Manual entry for a one-off posting.
         </CardDescription>
       </CardHeader>
       <CardContent>

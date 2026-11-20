@@ -3,9 +3,8 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { isValidUUID } from "@/lib/validations"
-import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 
 // Most actions in this file used to trust caller-supplied userId/userRole.
 // Now: every action derives identity from the session via getAgentContext.
@@ -20,43 +19,67 @@ async function requireCaller(): Promise<
   return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId, userType: ctx.userType ?? "agent" }
 }
 
-function parseAIJsonResponse(text: string) {
-  // Strip markdown code blocks if present
-  let cleanText = text.trim()
-  if (cleanText.startsWith("```json")) {
-    cleanText = cleanText.replace(/^```json\s*/, "").replace(/```\s*$/, "")
-  } else if (cleanText.startsWith("```")) {
-    cleanText = cleanText.replace(/^```\s*/, "").replace(/```\s*$/, "")
-  }
-  return JSON.parse(cleanText.trim())
-}
+// TOMBSTONE: local parseAIJsonResponse merged onto
+// lib/ai/parse-json-response.ts parseAIJsonResponse (imported above) — §1/§6
+// SAME BODY census round 3, 2026-09-09.
 
 function shouldFilterByUser(role: string): boolean {
   // Admin, Broker, and Compliance Officer see all content
-  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "broker_admin", "superadmin", "super_admin", "compliance_officer"]
+  // SCOPE LADDER (kept inline — admits compliance tier; legacy uppercase
+  // spellings retained for old rows): 'superadmin'/'super_admin' removed — dead
+  // as users.user_type (0 live rows store either spelling).
+  const adminRoles = ["ADMIN", "BROKER", "COMPLIANCE_OFFICER", "admin", "broker", "broker_owner", "broker_admin", "compliance_officer"]
   return !adminRoles.includes(role)
 }
 
 // Generate AI Content Ideas based on trends and persona
 export async function generateContentIdeas(persona?: string, _userId?: string, _userRole?: string) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const supabase = createServiceClient()
 
   try {
+    // THE TOPIC BANK FEEDS THE STUDIO (owner ruling 22 — wave 145, lane 145Z; lane 145I open loop): the tenant's live topics (its
+    // own + platform rows, fresh, unexpired) are offered to the model by id; an idea drawn from one names it (content_ideas.topic_id,
+    // m872) so topic → idea → creative attribution joins through the studio board. A refused read is said and the ideas are still
+    // made (from the persona alone, with no lineage) — never a guessed topic.
+    const nowIso = new Date().toISOString()
+    const { data: topicRows, error: topicErr } = await supabase
+      .from("content_topic_bank")
+      .select("id, topic_title, value_angle")
+      .or(`brokerage_id.is.null,brokerage_id.eq.${auth.brokerageId}`)
+      .eq("status", "fresh")
+      .gte("expires_at", nowIso)
+      .order("engagement_score", { ascending: false })
+      .limit(8)
+    if (topicErr) console.error(`[content-studio] topic bank NOT read — ideas made without topic lineage: ${topicErr.message}`)
+    const topics = ((topicRows ?? []) as Array<{ id: string; topic_title: string | null; value_angle: string | null }>).filter((t) => t.id && t.topic_title)
+    const topicIds = new Set(topics.map((t) => t.id))
+    const topicBlock = topics.length
+      ? `\n      Draw each idea from ONE of these topics where it fits, and return that topic's id as "topic_id" (null when the idea is not from a topic — never invent an id):\n${topics.map((t) => `      - ${t.id}: ${t.topic_title}${t.value_angle ? ` (${t.value_angle})` : ""}`).join("\n")}\n`
+      : ""
+
     // Use AI to generate fresh content ideas
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Generate 5 fresh, engaging content ideas for a real estate agent targeting ${persona || "general audience"}. 
       Focus on educational, empathy-driven content that follows the "Them First" philosophy.
-      
+      ${topicBlock}
       IMPORTANT: You must respond with ONLY valid JSON, no explanatory text.
       
       Return exactly this format:
       [
-        {"title": "Content Title", "description": "Brief description", "type": "video"},
-        {"title": "Another Title", "description": "Description text", "type": "social_post"}
+        {"title": "Content Title", "description": "Brief description", "type": "video", "topic_id": null},
+        {"title": "Another Title", "description": "Description text", "type": "social_post", "topic_id": null}
       ]
       
       Types must be one of: video, social_post, blog, tool`,
@@ -65,7 +88,7 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
     const ideas = parseAIJsonResponse(text)
 
     // Save to database — stamp brokerage_id + created_by from session
-    const { data } = await supabase
+    const { data, error: ideasSaveErr } = await supabase
       .from("content_ideas")
       .insert(
         ideas.map((idea: any) => ({
@@ -78,6 +101,23 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
         })),
       )
       .select()
+    if (ideasSaveErr) console.error(`[content-studio] content ideas NOT saved: ${ideasSaveErr.message}`)
+
+    // LINEAGE — each saved idea's topic (only an id the bank OFFERED; anything else is null), in its own tenant-pinned UPDATE so a
+    // database without m872 keeps the ideas (42703 / PGRST204 = not applied, said once).
+    const saved = (data ?? []) as Array<{ id: string }>
+    for (let i = 0; i < saved.length; i++) {
+      const raw = (ideas[i] as { topic_id?: unknown } | undefined)?.topic_id
+      const topicId = typeof raw === "string" && topicIds.has(raw) ? raw : null
+      if (!topicId) continue
+      const { data: stamped, error: lineageErr } = await supabase.from("content_ideas").update({ topic_id: topicId })
+        .eq("id", saved[i].id).eq("brokerage_id", auth.brokerageId).select("id")
+      if (lineageErr) {
+        const code = String((lineageErr as { code?: string }).code ?? "")
+        console.error(`[content-studio] idea ${saved[i].id}: topic lineage NOT recorded${code === "42703" || code === "PGRST204" ? " (m872 not applied)" : ""}: ${lineageErr.message}`)
+        if (code === "42703" || code === "PGRST204") break
+      } else if ((stamped ?? []).length !== 1) console.error(`[content-studio] idea ${saved[i].id}: topic lineage matched no row`)
+    }
 
     revalidatePath("/content-studio")
     return { success: true, ideas: data }
@@ -85,6 +125,9 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
     console.error("Generate content ideas error:", error)
     return { success: false, error: "Failed to generate ideas" }
   }
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.idea.generate", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then(async (r) => (await import("@/lib/kernel/action-ledger")).resultFamily(r as Awaited<ReturnType<typeof ledgered>>))
+  })())
 }
 
 // Research Keywords for SEO
@@ -106,22 +149,30 @@ export async function researchKeywords(topic: string, _userId?: string) {
 
   // Delegate to the full keyword discovery engine (territory auto-resolved from brokerages table)
   const { discoverKeywordsAI } = await import("@/app/actions/blog")
-  const result = await discoverKeywordsAI(auth.userId, {
+  // RECEIPT (wave 155, lane 155R5 — G11): the model call is claimed → run → settled on agent_action_ledger (who asked, under
+  // which risk class); ai_tool_usage stays the cost ledger, written by the same inner call with the same numbers (CLAUDE.md §5).
+  const { ledgerToolCall } = await import("@/lib/kernel/action-ledger")
+  const result = await ledgerToolCall({ brokerageId, action: "ai.keyword_research.generate", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: brokerageId }, reasonCode: "HUMAN_REQUESTED", riskClass: "READ", systemSource: "content_studio_keywords" }, () => discoverKeywordsAI(auth.userId, {
     brokerageId,
     competitorNames: competitorNames.length ? competitorNames : undefined,
     focusArea: topic,
-  })
+  })) as Awaited<ReturnType<typeof discoverKeywordsAI>>
 
   if (!result.success) {
     return { success: false, error: result.error ?? "Keyword research is temporarily unavailable." }
   }
 
-  // Map DiscoveredKeyword to the format the content-studio UI expects
+  // Map DiscoveredKeyword to the format the content-studio UI expects. WAVE 154 (lane 154G1 — directive G1 "no invented
+  // monthly search volume"): popularity_pct is a MODEL-ESTIMATED 0–100 relative score (app/actions/blog.ts DiscoveredKeyword),
+  // not a count of searches — it used to reach the screen ×100 as `searchVolume`, beside an invented `difficulty: 50` and a
+  // "competition" read off that same popularity number. A number nobody measured is null; the screen renders "unknown".
   const keywords = (result.keywords ?? []).map((k) => ({
     keyword: k.keyword,
-    searchVolume: Math.round(k.popularity_pct * 100), // relative score as proxy for volume
-    difficulty: 50, // AI doesn't provide difficulty; use neutral default
-    competition: k.popularity_pct > 70 ? "high" : k.popularity_pct > 40 ? "medium" : "low",
+    searchVolume: null as number | null,
+    relativeIndex: typeof k.popularity_pct === "number" && Number.isFinite(k.popularity_pct) ? Math.max(0, Math.min(100, Math.round(k.popularity_pct))) : null,
+    relativeIndexBasis: "model-estimated relative interest (0–100) — not a count of searches",
+    difficulty: null as number | null,
+    competition: null as string | null,
     keywordType: k.keyword_type,
     competitorUsage: k.competitor_usage,
     rationale: k.rationale,
@@ -138,9 +189,12 @@ export async function getContentIdeas(_userId?: string, _userRole?: string) {
   const supabase = createServiceClient()
 
   try {
+    // The topic behind an idea (m872, owner ruling 22) rides along: the board shows which topic-bank theme an idea
+    // came from, so topic → idea → creative attribution can be read where ideas are chosen. One FK links the two
+    // tables, so the bare embed is unambiguous (PGRST201 needs two).
     let query = supabase
       .from("content_ideas")
-      .select("*")
+      .select("id, brokerage_id, created_by, title, description, content_type, status, created_at, topic_id, topic:content_topic_bank(id, topic_title)")
       .eq("brokerage_id", auth.brokerageId)
       .order("created_at", { ascending: false })
       .limit(50)
@@ -163,51 +217,59 @@ export async function getContentIdeas(_userId?: string, _userRole?: string) {
   }
 }
 
-// Get Competitor Content — uses tracked competitors from the competitors table
+// Get Competitor Content — the tenant's OBSERVED competitor posts (competitor_content, written by
+// lib/competitive-intel/content-intel-scan.ts). WAVE 154 (lane 154G1 — directive G2 "verified competitor ideas with measured
+// or honestly proxy-labeled relative performance"): at the batch-2 base this asked a model to "use realistic metrics for
+// openRate (30-60) and clickRate (5-20)" and returned those invented numbers as competitor data on two screens. Now it reads
+// what was observed; open / click rates of another business's email are unknowable here and are null; hard counts are
+// summed only when present; an Exa row's number is a citation-rank proxy and is labeled so. The post's caption is NOT
+// returned — the theme (detected topics + hook) is what a subscriber builds an original piece from.
 export async function getCompetitorContent(_userId?: string, _userRole?: string) {
   const auth = await requireCaller()
   if (!auth.ok) return []
 
   const supabase = createServiceClient()
-
-  // Fetch the brokerage's tracked competitors for context-specific analysis
-  const { data: competitorRows } = await supabase
-    .from("competitors")
-    .select("competitor_name, competitor_url")
+  const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+  const { data, error } = await supabase
+    .from("competitor_content")
+    .select("id, platform, content_type, content_url, posted_at, observed_at, likes_count, comments_count, shares_count, views_count, raw_engagement_data, detected_topics, hook_type, competitor_profiles(competitor_name)")
     .eq("brokerage_id", auth.brokerageId)
-    .limit(10)
-
-  const competitorList =
-    competitorRows?.map((c) => c.competitor_name).join(", ") ||
-    "top local real estate agents and brokerages"
-
-  try {
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
-      prompt: `Analyze the high-performing content strategy for these local real estate competitors: ${competitorList}.
-
-      IMPORTANT: You must respond with ONLY valid JSON, no explanatory text.
-
-      Return exactly this format (5 items, using the competitor names listed above):
-      [
-        {"competitor_name": "Name from list", "content_summary": "What they post about and why it performs", "content_type": "video|blog|social", "sentToCount": 1500, "openRate": 45.2, "clickRate": 12.8}
-      ]
-
-      Use realistic metrics for openRate (30-60) and clickRate (5-20). Use the actual competitor names.`,
-    })
-
-    const competitorData = parseAIJsonResponse(text)
-    return competitorData
-  } catch (error) {
-    console.log("[v0] Competitor content generation error:", error)
+    .gte("observed_at", since)
+    .order("observed_at", { ascending: false })
+    .limit(20)
+  if (error) {
+    console.error(`[content-studio] competitor_content read refused — no competitor posts shown: ${error.message}`)
     return []
   }
+  return ((data ?? []) as Array<{
+    id: string; platform: string | null; content_type: string | null; content_url: string | null; posted_at: string | null; observed_at: string | null
+    likes_count: number | null; comments_count: number | null; shares_count: number | null; views_count: number | null
+    raw_engagement_data: { source?: string | null } | null; detected_topics: string[] | null; hook_type: string | null
+    competitor_profiles: { competitor_name: string | null } | Array<{ competitor_name: string | null }> | null
+  }>).map((r) => {
+    const profile = Array.isArray(r.competitor_profiles) ? r.competitor_profiles[0] : r.competitor_profiles
+    const counts = [r.likes_count, r.comments_count, r.shares_count, r.views_count].filter((n): n is number => typeof n === "number")
+    const engagement = counts.length ? counts.reduce((s, n) => s + n, 0) : null
+    const topics = (r.detected_topics ?? []).slice(0, 4)
+    const summary = topics.length ? `Theme: ${topics.join(", ")}${r.hook_type ? ` · hook: ${r.hook_type}` : ""}` : (r.hook_type ? `Hook: ${r.hook_type}` : "Theme not detected")
+    const evidenceLabel = engagement !== null
+      ? "measured public interactions (platform counts)"
+      : r.raw_engagement_data?.source === "exa" ? "search-citation rank proxy — not engagement; hard counts unknown" : "engagement unknown"
+    return {
+      id: r.id, competitor_name: profile?.competitor_name ?? "Unknown competitor", title: topics[0] ?? r.hook_type ?? "Competitor post",
+      content: summary, content_summary: summary, platform: r.platform, content_type: r.content_type, content_url: r.content_url,
+      posted_at: r.posted_at, observed_at: r.observed_at, engagement, evidenceLabel,
+      openRate: null as number | null, clickRate: null as number | null, sentToCount: null as number | null,
+    }
+  })
 }
 
 // Add Competitor to Monitor
 export async function addCompetitor(name: string, url?: string) {
   const auth = await requireCaller()
   if (!auth.ok) return { error: auth.error }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const brokerageId = auth.brokerageId
 
   const supabase = createServiceClient()
@@ -238,6 +300,8 @@ export async function addCompetitor(name: string, url?: string) {
   }
 
   return data
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.competitor.add", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // Get Content Calendar - using content_ideas table as substitute
@@ -279,6 +343,8 @@ export async function scheduleContent(params: {
 }) {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
   const brokerageId = auth.brokerageId
   const userId = auth.userId
   const supabase = createServiceClient()
@@ -305,6 +371,8 @@ export async function scheduleContent(params: {
 
   revalidatePath("/dashboard/marketing/studio")
   return data
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.calendar.schedule", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.contentType } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // Get Publishing Stats
@@ -353,6 +421,8 @@ export async function getPublishingStats(_userId?: string, _userRole?: string) {
 export async function saveContentIdea(idea: string, contentType: string, persona?: string) {
   const auth = await requireCaller()
   if (!auth.ok) throw new Error(auth.error)
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const ledgered = async () => {
 
   const supabase = createServiceClient()
 
@@ -373,6 +443,8 @@ export async function saveContentIdea(idea: string, contentType: string, persona
 
   revalidatePath("/content-studio")
   return data
+  }
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.idea.save", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
 // Get Saved Ideas

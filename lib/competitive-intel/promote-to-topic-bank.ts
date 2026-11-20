@@ -22,9 +22,19 @@
  * The competitor's actual creative is NEVER copied verbatim into the
  * AI prompt — the value_angle is a paraphrase. The Fair Housing gate
  * applies on the output regardless.
+ *
+ * WAVE 145 (lane 145G, owner ruling 22 — "extract themes, never copy creative"): the header above said
+ * paraphrase, but the code filed the rival's headline as topic_title and their ad copy as value_angle,
+ * VERBATIM. The row now carries the THEME only — competitorAdTheme (lib/content-intel/topic-themes.ts),
+ * the same theme vocabulary every other intelligence source files under — and an ad whose theme is an
+ * excluded topic (crime, school rank, demographics) or matches no theme is skipped, said, never guessed.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { competitorAdTheme } from "@/lib/content-intel/topic-themes"
+import { intakeTopicIdeas, classifyTopicExclusion, type TopicIdea } from "@/lib/content-intel/topic-intake"
+// WAVE 154 (lane 154C): the direct content_topic_bank insert that lived below is TOMBSTONED — the survivor is THE ONE intake,
+// lib/content-intel/topic-intake.ts intakeTopicIdeas (tenant-pinned, exclusion-gated, provenance-merged, counted writes).
 
 export interface PromoteResult {
   brokerage_id: string
@@ -98,6 +108,17 @@ export async function promoteCompetitorAdsToTopicBank(args: {
     return { brokerage_id: args.brokerageId, considered: 0, promoted: 0, topic_ids: [], skipped: [] }
   }
 
+  // content_topic_bank.source_id is NOT NULL live (m128). This insert carried none, so every
+  // promotion was refused by the database and reported as `insert_failed`. It now files under the
+  // tenant's own system source row (lib/content-intel/system-topic-source.ts) — provenance kept,
+  // and a tenant that switched that row off is not fed.
+  const { resolveSystemTopicSource } = await import("@/lib/content-intel/system-topic-source")
+  const topicSource = await resolveSystemTopicSource(svc, args.brokerageId, "competitor_promotion")
+  if (!topicSource.ok || !topicSource.active) {
+    const reason = !topicSource.ok ? `topic_source_unavailable: ${topicSource.error}` : "topic_source_disabled_by_tenant"
+    return { brokerage_id: args.brokerageId, considered: ads.length, promoted: 0, topic_ids: [], skipped: ads.map((a) => ({ competitor_ad_id: a.id, reason })) }
+  }
+
   // 2. Idempotency check — find which of these have already been
   //    promoted (sentinel in raw_data).
   const adIds = ads.map((a) => a.id)
@@ -114,6 +135,7 @@ export async function promoteCompetitorAdsToTopicBank(args: {
 
   const promoted: string[] = []
   const skipped:  Array<{ competitor_ad_id: string; reason: string }> = []
+  const ideas:    Array<{ adId: string; idea: TopicIdea }> = []
 
   for (const ad of ads) {
     if (promoted.length >= topN) break
@@ -122,66 +144,70 @@ export async function promoteCompetitorAdsToTopicBank(args: {
       continue
     }
 
-    // Title precedence: ad_headline > first chars of body. The Exa/Meta adapter
-    // writes its creative title into ad_headline and body into ad_copy (the live
-    // competitor_ads columns), so a single canonical read is source-agnostic.
-    const title =
-      (ad.ad_headline ?? ad.ad_copy ?? "")
-        .toString()
-        .trim()
-        .slice(0, 120)
-    if (!title) {
+    // THE THEME, NEVER THE CREATIVE (wave 145): the Exa/Meta adapter writes the creative title into
+    // ad_headline and the body into ad_copy (the live competitor_ads columns); both are READ to find the
+    // theme and neither is written. No theme (or an excluded one) → skipped with the reason.
+    if (!(ad.ad_headline ?? ad.ad_copy ?? "").toString().trim()) {
       skipped.push({ competitor_ad_id: ad.id, reason: "no_usable_title" })
       continue
     }
+    const theme = competitorAdTheme(ad.ad_headline, ad.ad_copy)
+    if (!theme) {
+      skipped.push({ competitor_ad_id: ad.id, reason: "no_theme_or_excluded_topic" })
+      continue
+    }
+    const title = theme.title
+    const valueAngle = theme.valueAngle
 
-    const valueAngle =
-      (ad.ad_copy ?? "")
-        .toString()
-        .trim()
-        .slice(0, 400) || null
+    // THE EXCLUSION GATE (wave 154, R9) on the rival's creative BEFORE promotion: a new-hire / joining announcement, a
+    // recruiting pitch, brand self-promotion, a listing brag or an unverified performance claim never enters the pool —
+    // whatever its engagement. (The intake runs the gate again on the theme it stores.)
+    const gate = classifyTopicExclusion({ title: ad.ad_headline ?? "", text: ad.ad_copy ?? null, sourceKind: "competitor_ad" })
+    if (gate.excluded) {
+      skipped.push({ competitor_ad_id: ad.id, reason: `excluded:${gate.reason}` })
+      continue
+    }
 
     const categories = Array.from(
       new Set([...(ad.categories ?? []), "competitor_intel"]),
     )
 
-    const expiresAt = new Date(Date.now() + EXPIRES_DAYS * 86_400_000).toISOString()
+    const nowIso = new Date().toISOString()
+    // THE ONE INTAKE (wave 154, lane 154C): the theme, never the creative. The ad's own campaign is ONE observation (a re-run
+    // is merged, never a second topic); competitor_ads.engagement_score is the SEARCH provider's relevance × recency proxy
+    // (lib/competitive-intel/exa-competitor-ads.ts) — kept as proxy evidence in its own unit, never written into the topic's
+    // engagement column; conversion / CPA / CTR / impressions / spend stay unknown, and a long-running ad proves nothing.
+    ideas.push({ adId: ad.id, idea: {
+      sourceKind: "competitor_ad", sourceId: topicSource.id, title, angle: valueAngle, categories,
+      geo: (ad.geo_relevance as TopicIdea["geo"]) ?? null, sourceUrl: null, publishedAt: null, observedAt: nowIso,
+      expiresAt: new Date(Date.now() + EXPIRES_DAYS * 86_400_000).toISOString(),
+      evidence: { kind: typeof ad.engagement_score === "number" ? "proxy" : "unknown", metric: typeof ad.engagement_score === "number" ? "search_relevance_recency" : null, value: ad.engagement_score ?? null, unit: typeof ad.engagement_score === "number" ? "search_relevance_0_100" : null, note: "a search-ranking proxy, not engagement; ad longevity is not evidence of performance" },
+      rights: "public_read_reworded",
+      dedupKey: `competitor_theme:${theme.themeKeys.slice(0, 2).join("+")}`,
+      brief: {
+        observation_key: `competitor_ad:${(ad.raw_payload?.collation_id as string | undefined) ?? ad.id}`, transport: "competitor_ads",
+        promoted_from_competitor_ad_id: ad.id, promoted_at: nowIso, theme_keys: theme.themeKeys, theme_only: true,
+        competitor_page: (ad.raw_payload?.page_name as string | undefined) ?? null,
+        topic_concept: title, proof_needed: "independent, sourced facts — a competitor ad proves nothing",
+        ad_metrics: { conversion: "unknown", cpa: "unknown", ctr: "unknown", impressions: "unknown", spend: "unknown", longevity_is_not_performance: true },
+      },
+    } })
+    promoted.push(ad.id)
+  }
 
-    const { data: newTopic, error } = await svc
-      .from("content_topic_bank")
-      .insert({
-        brokerage_id:      args.brokerageId,
-        topic_title:       title,
-        value_angle:       valueAngle,
-        source_url:        null,
-        categories,
-        engagement_score:  ad.engagement_score ?? 0,
-        topic_posted_at:   new Date().toISOString(),
-        scraped_at:        new Date().toISOString(),
-        expires_at:        expiresAt,
-        status:            "fresh",
-        geo_relevance:     ad.geo_relevance ?? null,
-        raw_data:          {
-          promoted_from_competitor_ad_id: ad.id,
-          promoted_at:                    new Date().toISOString(),
-          competitor_page:                (ad.raw_payload?.page_name as string | undefined) ?? null,
-        },
-      })
-      .select("id")
-      .single()
-
-    if (error || !newTopic) {
-      skipped.push({ competitor_ad_id: ad.id, reason: `insert_failed: ${error?.message ?? "unknown"}` })
-      continue
-    }
-    promoted.push(newTopic.id as string)
+  if (ideas.length) {
+    const r = await intakeTopicIdeas(svc, { brokerageId: args.brokerageId, ideas: ideas.map((i) => i.idea) })
+    for (const e of r.excluded) skipped.push({ competitor_ad_id: ideas.find((i) => i.idea.title.slice(0, 120) === e.title)?.adId ?? "unknown", reason: `intake_excluded:${e.reason}` })
+    if (!r.ok) for (const i of ideas) skipped.push({ competitor_ad_id: i.adId, reason: `intake_refused: ${r.refused ?? r.errors.slice(0, 2).join("; ")}` })
+    const ids = [...new Set(r.rows.map((x) => x.id))]
+    return { brokerage_id: args.brokerageId, considered: ads.length, promoted: r.ok ? r.inserted + r.merged : r.rows.length, topic_ids: ids, skipped }
   }
 
   return {
     brokerage_id: args.brokerageId,
     considered:   ads.length,
-    promoted:     promoted.length,
-    topic_ids:    promoted,
+    promoted:     0,
+    topic_ids:    [],
     skipped,
   }
 }

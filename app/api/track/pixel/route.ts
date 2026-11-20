@@ -2,6 +2,7 @@
 // Query params: b (brokerage_id), a (agent_id), s (session_id), p (page URL)
 // RULE: Pixel fire = anonymous visit record only. NOT consent. NOT lead creation.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 
@@ -37,7 +38,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const supabase = createServiceClient()
     const now = new Date().toISOString()
 
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from('website_visitors')
       .upsert(
         {
@@ -59,17 +60,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       )
       // On conflict only update last_seen_at — first_seen_at is immutable
       .select('id')
-      .single()
+      .single(), { table: "website_visitors", flow: "website_visitors_write", reason: "pixel must always return the GIF" })
 
     // On conflict update last_seen_at via a separate rpc is not possible with
     // upsert alone when we want to protect first_seen_at. Use merge-defaults approach:
     // Supabase upsert with ignoreDuplicates=false overwrites all columns listed.
     // To protect first_seen_at we do an update after:
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from('website_visitors')
       .update({ last_seen_at: now })
       .eq('session_id', sessionId)
-      .is('identified_at', null)   // only update unidentified sessions
+      .is('identified_at', null), { table: "website_visitors", flow: "website_visitors_write", reason: "pixel must always return the GIF" })   // only update unidentified sessions
   } catch {
     // Non-fatal: pixel must always return the GIF
   }

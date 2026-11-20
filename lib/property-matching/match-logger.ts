@@ -21,13 +21,24 @@ export interface MatchSignalPayload {
 }
 
 /**
+ * WHOSE SIGNAL IS THIS (wave 155; found by lane 155R19, verified against the live database 2026-11-20).
+ * `activities.brokerage_id` is NOT NULL with no default, and neither writer below named it — so every buyer-match signal was
+ * refused by the database (23502) and nothing read the refusal: the feature had never recorded a row. The tenant is REQUIRED
+ * here, not optional, so a caller cannot leave it out again; both callers are gated actions that already hold the session's
+ * tenant (app/actions/property-buyer-matching.ts). `agentId` is an agents.id (activities.agent_id → agents) or null.
+ */
+export interface MatchSignalTenant { brokerageId: string; agentId?: string | null }
+
+/**
  * Log a buyer match signal to activities table
  * Creates an audit record for internal use
  */
 export async function logBuyerMatchSignal(
   listingId: string,
-  match: MatchScore
+  match: MatchScore,
+  tenant: MatchSignalTenant,
 ): Promise<{ success: boolean; error?: string }> {
+  if (!tenant?.brokerageId) return { success: false, error: 'No brokerage for this match signal — not recorded' }
   const supabase = createServiceClient()
 
   const payload: MatchSignalPayload = {
@@ -42,6 +53,8 @@ export async function logBuyerMatchSignal(
   console.log('[MatchLogger] Logging buyer match signal:', listingId, match.contact_id, match.score)
 
   const { error } = await supabase.from('activities').insert({
+    brokerage_id: tenant.brokerageId,
+    agent_id: tenant.agentId ?? null,
     entity_type: 'listing',
     entity_id: listingId,
     activity_type: 'buyer_match_signal',
@@ -65,13 +78,17 @@ export async function logBuyerMatchSignal(
  */
 export async function logBatchMatchSignals(
   listingId: string,
-  matches: MatchScore[]
+  matches: MatchScore[],
+  tenant: MatchSignalTenant,
 ): Promise<{ success: boolean; logged: number; errors?: string[] }> {
+  if (!tenant?.brokerageId) return { success: false, logged: 0, errors: ['No brokerage for these match signals — not recorded'] }
   const supabase = createServiceClient()
   const errors: string[] = []
   let logged = 0
 
   const records = matches.map((match) => ({
+    brokerage_id: tenant.brokerageId,
+    agent_id: tenant.agentId ?? null,
     entity_type: 'listing',
     entity_id: listingId,
     activity_type: 'buyer_match_signal',

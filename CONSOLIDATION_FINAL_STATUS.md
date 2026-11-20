@@ -140,7 +140,7 @@ Complete email/SMS system with:
 1. **Migrate remaining API routes** (58/64 remaining)
    - Generate APIs (social, text, newsletter)
    - CRUD APIs (listings, transactions)
-   - Webhook handlers (GHL, Zapier, Dotloop)
+   - Webhook handlers (GHL, Dotloop; inbound Zapier retired wave 87 — outbound-only)
 
 2. **Complete TODO implementations** (8 remaining)
    - Marketing package automation (2)

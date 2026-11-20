@@ -2,7 +2,10 @@
 //
 // SPEED-TO-LEAD PURE DECISION LOGIC — no I/O, no side effects.
 // Exhaustively testable. The engine (speed-to-lead.ts) imports this and the
-// simulator proves every branch.
+// simulator proves every branch. The one import below is itself pure (no I/O):
+// the follow-up ladder's day constants, read rather than retyped (§6).
+
+import { PHASE1_WINDOW_DAYS, PHASE2_SPACING_DAYS, PHASE3_SPACING_DAYS } from "./reengagement-policy"
 
 export type FirstTouchKind    = "lead" | "contact"
 export type FirstTouchChannel = "email" | "sms" | "phone" | "direct_mail"
@@ -153,12 +156,20 @@ function consent_emailOptedOut(c: FirstTouchConsentInput): boolean {
 // No I/O — unit-testable; the server action just feeds it real rows.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const FIRST_TOUCH_SLA_SECONDS = 5 * 60 // the "speed to lead" promise: under 5 minutes
+const FIRST_TOUCH_SLA_SECONDS = 5 * 60 // the "speed to lead" promise: under 5 minutes
 
 export interface FirstTouchRow {
   createdAt: string | Date | null
   firstTouchedAt: string | Date | null
   channel?: string | null
+}
+
+/** Lane 90C — the SLA meter PER CHANNEL (89D P2-8: "first-response seconds per
+ *  lead per channel"). Same rows, same math, bucketed by first_touch_channel. */
+export interface ChannelLatencySummary {
+  touchedCount: number
+  medianSeconds: number | null
+  pctWithinSla: number | null
 }
 
 export interface FirstTouchLatencySummary {
@@ -167,6 +178,33 @@ export interface FirstTouchLatencySummary {
   /** Share (0..1) of touched rows that met the under-5-min SLA. */
   pctWithinSla: number | null
   channelBreakdown: Record<string, number>
+  /** Lane 90C — median + SLA share per channel (email / sms / phone / direct_mail / unknown). */
+  perChannel: Record<string, ChannelLatencySummary>
+  /** WAVE 153 (153F): how many of the touched rows carry a MEASURED timeline (received → dispatched, off the wall clock at each hop)
+   *  vs the older claim-based inference (first_touched_at − created_at). Set by the metrics reader; absent = not counted. */
+  measuredCount?: number
+  inferredCount?: number
+}
+
+/** WAVE 153 (153F): one measured first response — the speed-to-lead completion's own timeline (lib/ai-isa/speed-to-lead.ts). */
+interface MeasuredFirstResponse { subjectId: string; receivedAt: string | null; dispatchedAt: string | null }
+
+/**
+ * PURE (wave 153, lane 153F). Prefer the MEASURED timeline over the claim-based inference: a touched row whose first-touch decision
+ * recorded both its arrival and its dispatch is timed received → dispatched; every other row keeps first_touched_at − created_at and
+ * is COUNTED as inferred, so the strip can say how much of its number is measured (a count without its basis is not a measurement).
+ */
+export function preferMeasuredFirstTouch(rows: ReadonlyArray<FirstTouchRow & { id?: string | null }>, measured: readonly MeasuredFirstResponse[]): { rows: FirstTouchRow[]; measuredCount: number; inferredCount: number } {
+  const byId = new Map<string, MeasuredFirstResponse>()
+  for (const m of measured) if (m.subjectId && m.receivedAt && m.dispatchedAt) byId.set(m.subjectId, m)
+  let measuredCount = 0
+  const out = rows.map((r) => {
+    const m = r.id ? byId.get(r.id) : undefined
+    if (!m) return { createdAt: r.createdAt, firstTouchedAt: r.firstTouchedAt, channel: r.channel }
+    measuredCount++
+    return { createdAt: m.receivedAt, firstTouchedAt: m.dispatchedAt, channel: r.channel }
+  })
+  return { rows: out, measuredCount, inferredCount: out.length - measuredCount }
 }
 
 function toMsOrNull(d: string | Date | null): number | null {
@@ -175,36 +213,216 @@ function toMsOrNull(d: string | Date | null): number | null {
   return Number.isNaN(t) ? null : t
 }
 
+/** PURE: median of an unsorted list; null on empty. Shared by every summary here (§6). */
+function medianOf(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0 ? Math.round((sorted[mid - 1] + sorted[mid]) / 2) : sorted[mid]
+}
+
+function latencySummary(latencies: number[]): ChannelLatencySummary {
+  if (latencies.length === 0) return { touchedCount: 0, medianSeconds: null, pctWithinSla: null }
+  const withinSla = latencies.filter((s) => s <= FIRST_TOUCH_SLA_SECONDS).length
+  return { touchedCount: latencies.length, medianSeconds: medianOf(latencies), pctWithinSla: withinSla / latencies.length }
+}
+
 export function summarizeFirstTouchLatency(rows: FirstTouchRow[]): FirstTouchLatencySummary {
   const latencies: number[] = []
   const channelBreakdown: Record<string, number> = {}
+  const perChannelLatencies: Record<string, number[]> = {}
 
   for (const r of rows) {
     const created = toMsOrNull(r.createdAt)
     const touched = toMsOrNull(r.firstTouchedAt)
+    const ch = (r.channel ?? "unknown") || "unknown"
     // Only count rows with both timestamps and a non-negative latency (clock-skew guard).
     if (created !== null && touched !== null && touched >= created) {
-      latencies.push(Math.floor((touched - created) / 1000))
+      const secs = Math.floor((touched - created) / 1000)
+      latencies.push(secs)
+      ;(perChannelLatencies[ch] ??= []).push(secs)
     }
-    const ch = (r.channel ?? "unknown") || "unknown"
     channelBreakdown[ch] = (channelBreakdown[ch] ?? 0) + 1
   }
 
-  const touchedCount = latencies.length
-  if (touchedCount === 0) {
-    return { touchedCount: 0, medianSeconds: null, pctWithinSla: null, channelBreakdown }
+  const perChannel: Record<string, ChannelLatencySummary> = {}
+  for (const [ch, secs] of Object.entries(perChannelLatencies)) perChannel[ch] = latencySummary(secs)
+
+  const overall = latencySummary(latencies)
+  return {
+    touchedCount: overall.touchedCount,
+    medianSeconds: overall.medianSeconds,
+    pctWithinSla: overall.pctWithinSla,
+    channelBreakdown,
+    perChannel,
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE THREE PROOF NUMBERS COMPETITORS PUBLISH (lane 90C; 89D §7: Ylopo "48% text
+// response, 30%+ voice connect, 90-day follow-up" — "we record all three and
+// publish none"). Pure math over rows the ISA already writes:
+//   · response rate  — isa_outreach_log: leads with ≥1 reply ÷ leads with ≥1 send,
+//                      overall and per channel (a reply is replied_at set OR
+//                      status='replied' — both spellings the ledger carries).
+//   · connect rate   — voice_calls (call_type ai_isa_call, outbound): calls that
+//                      reached a person ÷ calls that finished dialing.
+//   · days of follow-up — per lead, last send − first send in days; the median
+//                      and the max across leads with ≥2 sends, beside the POLICY
+//                      horizon (reengagement-policy.ts: the ladder never stops —
+//                      phase 3 keeps sending every PHASE3_SPACING_DAYS).
+// No I/O; the server action feeds real rows. A reader with NO rows returns
+// honest nulls, never 0% (a zero here would read as "nobody ever answers").
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** voice_calls.status values that mean a PERSON was reached (a completed call).
+ *  Subset of the live CHECK (scripts/check-vocabularies.ts voice_calls.status) —
+ *  the proof holds it there so a retired spelling cannot sit here unnoticed. */
+export const VOICE_CONNECTED_STATUSES: readonly string[] = ["completed"]
+/** voice_calls.status values that mean the dial FINISHED (answered or not).
+ *  initiated / ringing / in_progress are still live; blocked never dialed. */
+export const VOICE_DIALED_TERMINAL_STATUSES: readonly string[] = ["completed", "no_answer", "voicemail", "failed"]
+
+export interface OutreachLedgerRow {
+  leadId: string | null
+  contactId?: string | null
+  channel: string | null
+  sentAt: string | Date | null
+  repliedAt?: string | Date | null
+  status?: string | null
+}
+
+export interface VoiceCallLedgerRow {
+  status: string | null
+  direction?: string | null
+}
+
+export interface RateNumber {
+  numerator: number
+  denominator: number
+  /** 0..1, or null when the denominator is 0 (never a fabricated 0%). */
+  rate: number | null
+}
+
+export interface IsaProofNumbers {
+  /** Leads replied ÷ leads sent-to (a lead counts once no matter how many touches). */
+  responseRate: RateNumber
+  responseRateByChannel: Record<string, RateNumber>
+  /** AI ISA outbound calls answered by a person ÷ calls that finished dialing. */
+  connectRate: RateNumber
+  followUp: {
+    /** Leads/contacts with ≥ 2 sends in the window. */
+    personsWithFollowUp: number
+    medianDays: number | null
+    maxDays: number | null
+    /** The ladder's own horizon: phase 1 window, then phase 2 / phase 3 spacing. */
+    policy: { phase1WindowDays: number; phase2SpacingDays: number; phase3SpacingDays: number }
+  }
+}
+
+function rate(numerator: number, denominator: number): RateNumber {
+  return { numerator, denominator, rate: denominator > 0 ? numerator / denominator : null }
+}
+
+function personKey(r: OutreachLedgerRow): string | null {
+  if (r.leadId) return `lead:${r.leadId}`
+  if (r.contactId) return `contact:${r.contactId}`
+  return null
+}
+
+export function summarizeIsaProofNumbers(input: { outreach: OutreachLedgerRow[]; calls: VoiceCallLedgerRow[] }): IsaProofNumbers {
+  // ── response rate — per person, per channel ──
+  const sentBy = new Set<string>()
+  const repliedBy = new Set<string>()
+  const sentByChannel: Record<string, Set<string>> = {}
+  const repliedByChannel: Record<string, Set<string>> = {}
+  const sendTimes: Record<string, number[]> = {}
+
+  for (const r of input.outreach) {
+    const key = personKey(r)
+    const sentMs = toMsOrNull(r.sentAt)
+    if (!key || sentMs === null) continue
+    const ch = (r.channel ?? "unknown") || "unknown"
+    sentBy.add(key)
+    ;(sentByChannel[ch] ??= new Set()).add(key)
+    ;(sendTimes[key] ??= []).push(sentMs)
+    const replied = toMsOrNull(r.repliedAt ?? null) !== null || r.status === "replied"
+    if (replied) {
+      repliedBy.add(key)
+      ;(repliedByChannel[ch] ??= new Set()).add(key)
+    }
   }
 
-  latencies.sort((a, b) => a - b)
-  const mid = Math.floor(touchedCount / 2)
-  const medianSeconds =
-    touchedCount % 2 === 0 ? Math.round((latencies[mid - 1] + latencies[mid]) / 2) : latencies[mid]
-  const withinSla = latencies.filter((s) => s <= FIRST_TOUCH_SLA_SECONDS).length
+  const responseRateByChannel: Record<string, RateNumber> = {}
+  for (const [ch, sent] of Object.entries(sentByChannel)) {
+    responseRateByChannel[ch] = rate(repliedByChannel[ch]?.size ?? 0, sent.size)
+  }
+
+  // ── connect rate — outbound AI ISA dials that finished ──
+  let dialed = 0, connected = 0
+  for (const c of input.calls) {
+    if (c.direction && c.direction !== "outbound") continue
+    const st = c.status ?? ""
+    if (!VOICE_DIALED_TERMINAL_STATUSES.includes(st)) continue
+    dialed++
+    if (VOICE_CONNECTED_STATUSES.includes(st)) connected++
+  }
+
+  // ── days of follow-up — last send − first send per person, ≥ 2 sends ──
+  const spans: number[] = []
+  for (const times of Object.values(sendTimes)) {
+    if (times.length < 2) continue
+    const first = Math.min(...times), last = Math.max(...times)
+    spans.push(Math.floor((last - first) / 86_400_000))
+  }
 
   return {
-    touchedCount,
-    medianSeconds,
-    pctWithinSla: withinSla / touchedCount,
-    channelBreakdown,
+    responseRate: rate(repliedBy.size, sentBy.size),
+    responseRateByChannel,
+    connectRate: rate(connected, dialed),
+    followUp: {
+      personsWithFollowUp: spans.length,
+      medianDays: medianOf(spans),
+      maxDays: spans.length > 0 ? Math.max(...spans) : null,
+      policy: { phase1WindowDays: PHASE1_WINDOW_DAYS, phase2SpacingDays: PHASE2_SPACING_DAYS, phase3SpacingDays: PHASE3_SPACING_DAYS },
+    },
+  }
+}
+
+// ─── ARBITRATION RESPONSIVENESS (wave 153, lane 153T — owner ruling B12; lane 153O outside-lane 2) ─────────────────────
+//
+// The reader beside getSpeedToLeadMetrics (app/actions/ai-isa/speed-to-lead-metrics.ts) for the responder's own evidence:
+// each inbound decision (inbound.message.respond) and each late-result settlement (inbound.late_result.settle) on the action
+// ledger, folded by THE one formula (lib/ai-isa/followup-arbiter.ts arbitrationResponsivenessMetrics — never a second
+// spelling here). The client is the CALLER's (the action passes its session client; RLS agent_action_ledger_select admits
+// has_brokerage_access) and the tenant is the caller's. A refused read is { ok: false } — the panel says "could not be
+// loaded", never zeros (CLAUDE.md §3: supabase-js RESOLVES a refusal).
+
+export const ARBITRATION_RESPONSIVENESS_ACTIONS = ["inbound.message.respond", "inbound.late_result.settle"] as const
+/** Rows read per window; a window that fills it is reported `truncated` (its numbers are a floor, said so). */
+export const ARBITRATION_RESPONSIVENESS_ROW_CAP = 5000
+
+export type ArbitrationResponsivenessRead =
+  | { ok: true; metrics: import("./followup-arbiter").ArbitrationResponsiveness; rows: number; truncated: boolean; since: string }
+  | { ok: false; reason: string; since: string }
+
+export async function readArbitrationResponsiveness(
+  client: { from: (t: string) => any },
+  brokerageId: string,
+  since: string,
+  now: Date = new Date(),
+): Promise<ArbitrationResponsivenessRead> {
+  if (!brokerageId) return { ok: false, reason: "no tenant on the read", since }
+  try {
+    const { data, error } = await client.from("agent_action_ledger").select("action, outcome, status, detail, created_at")
+      .eq("brokerage_id", brokerageId).in("action", [...ARBITRATION_RESPONSIVENESS_ACTIONS]).gte("created_at", since)
+      .limit(ARBITRATION_RESPONSIVENESS_ROW_CAP)
+    if (error) return { ok: false, reason: `agent_action_ledger: ${error.message ?? String(error)}`, since }
+    if (!Array.isArray(data)) return { ok: false, reason: "agent_action_ledger: the read returned no row set", since }
+    // Dynamic: the arbiter module is heavy; the panel's page must not carry it in its static graph (test:proxy-graph-budget).
+    const { arbitrationResponsivenessMetrics } = await import("./followup-arbiter")
+    return { ok: true, metrics: arbitrationResponsivenessMetrics(data, now), rows: data.length, truncated: data.length >= ARBITRATION_RESPONSIVENESS_ROW_CAP, since }
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e), since }
   }
 }

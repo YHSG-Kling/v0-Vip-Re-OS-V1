@@ -56,6 +56,7 @@ export function CoverageCard({ agents, active }: { agents: CoverageAgentOption[]
             ))}
           </ul>
         )}
+        {active.length === 0 && <p className="text-xs text-muted-foreground">No one is away right now — set cover below when someone steps out.</p>}
         <div className="flex flex-wrap items-center gap-2">
           <select value={away} onChange={(e) => setAway(e.target.value)} className="h-8 rounded-md border bg-background px-2 text-xs">
             <option value="">Who's away…</option>

@@ -105,6 +105,11 @@ export async function draftNegotiationStrategy(
   }
 }
 
+// NOT lib/format/math.ts's `clamp` (§1/§6, 2026-09-08): this one accepts
+// `unknown` (coerces via Number()), is NaN/non-finite-safe (defaults to 0),
+// and rounds to 2 decimals before clamping — a distinct, stricter contract
+// from the two byte-equivalent `clamp01` copies merged in
+// lib/charts/cma-reel-data.ts and lib/cma/comp-provider.ts. Recorded, not merged.
 function clamp01(v: unknown): number {
   const n = typeof v === "number" ? v : Number(v)
   if (!Number.isFinite(n)) return 0

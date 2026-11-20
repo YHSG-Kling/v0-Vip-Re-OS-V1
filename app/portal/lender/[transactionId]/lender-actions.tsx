@@ -58,7 +58,13 @@ export function LenderActions({
     setError(null)
 
     try {
-      await issueClearToClose({ transactionId, lenderId })
+      // issueClearToClose now also reports a refused lender-record write BY
+      // RETURN (lane 87G) — read it before claiming the CTC landed.
+      const r = await issueClearToClose({ transactionId, lenderId })
+      if (r && "success" in r && r.success === false) {
+        setError(("error" in r && r.error) || "Failed to issue Clear to Close")
+        return
+      }
       setCtcSuccess(true)
       router.refresh()
     } catch (err: any) {
@@ -75,11 +81,19 @@ export function LenderActions({
     setError(null)
 
     try {
-      await flagLenderIssue({
+      // These actions report failure BY RETURN, not by throwing — so the
+      // try/catch below never sees it. The sibling createLenderApplication call
+      // in this same file already checks r.error; these three did not, so a
+      // lender saw "flagged"/"updated" for an update the server refused.
+      const r = await flagLenderIssue({
         transactionId,
         lenderId,
         issueDescription: issueText,
       })
+      if (!r?.success) {
+        setError((r as any)?.error ?? "The issue was not flagged.")
+        return
+      }
       setFlagSuccess(true)
       setIssueText("")
       setTimeout(() => setFlagSuccess(false), 3000)
@@ -95,11 +109,15 @@ export function LenderActions({
     setError(null)
 
     try {
-      await updateLenderLoanStatus({
+      const r = await updateLenderLoanStatus({
         transactionId,
         lenderId,
         newStatus,
       })
+      if (!r?.success) {
+        setError((r as any)?.error ?? "The loan status was not updated.")
+        return
+      }
       router.refresh()
     } catch (err: any) {
       setError(err.message || "Failed to update status")
@@ -155,7 +173,11 @@ export function LenderActions({
               <button
                 className="underline text-emerald-800"
                 onClick={async () => {
-                  await updateLenderApplicationStatus(appId, "processing")
+                  const r = await updateLenderApplicationStatus(appId, "processing")
+                  if (!r?.success) {
+                    setError((r as any)?.error ?? "The application status was not updated.")
+                    return
+                  }
                   router.refresh()
                 }}
               >mark processing</button>
@@ -235,7 +257,7 @@ export function LenderActions({
           <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-center">
             <PartyPopper className="h-8 w-8 mx-auto text-emerald-600 mb-2" />
             <p className="font-medium text-emerald-800">Clear to Close Issued!</p>
-            <p className="text-sm text-emerald-600">Buyer and agent have been notified</p>
+            <p className="text-sm text-emerald-700">Buyer and agent have been notified</p>
           </div>
         )}
 

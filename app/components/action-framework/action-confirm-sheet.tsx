@@ -21,6 +21,10 @@ interface ActionConfirmSheetProps {
   onConfirm: () => Promise<void>
   destructive?: boolean
   confirmingLabel?: string
+  /** optional by design: every current caller confirms with just title +
+   *  description; this is a slot for extra body content (a checklist, a
+   *  warning list) a future confirm dialog can render below the description
+   *  without a second sheet component. */
   children?: React.ReactNode
 }
 

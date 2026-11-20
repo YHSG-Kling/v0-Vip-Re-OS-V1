@@ -4,6 +4,9 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { SocialDashboardClient } from "./social-dashboard-client"
+import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { approverFor } from "@/lib/kernel/approval-authority"
+import { describeApprover } from "./approver-line"
 
 export const metadata = {
   title: "Social Media | Dashboard",
@@ -28,6 +31,13 @@ export default async function SocialDashboardPage({
     redirect("/login")
   }
 
+
+  // Self-healing identity: provision a missing brokerage/agents row IN PLACE before
+  // reading the profile, so an incomplete account renders this page instead of being
+  // bounced away (the "bounce" class in the live walkthrough). The redirect below now
+  // only fires for an account that genuinely cannot self-provision — a pending
+  // brokerage invite, or a staff user whose brokerage comes from their org.
+  await ensureAgentContextInPlace()
   // Get user profile with brokerage
   const { data: profile } = await supabase
     .from("users")
@@ -39,10 +49,13 @@ export default async function SocialDashboardPage({
     redirect("/dashboard/onboarding")
   }
 
-  // Get connected social accounts
+  // Get connected social accounts — the NON-secret projection (wave 140, lane 140P): these rows are
+  // a prop of the client component below, so the sealed tokens must not ride along
+  // (lib/security/credential-projection.ts, one spelling per store).
+  const { publicCredentialSelect, CREDENTIAL_STORES } = await import("@/lib/security/credential-projection")
   const { data: accounts } = await supabase
     .from("social_media_accounts")
-    .select("*")
+    .select(publicCredentialSelect("id, brokerage_id, user_id, agent_id, platform, account_id, account_name, scope, token_expires_at, is_active, created_at, updated_at", CREDENTIAL_STORES.social_media_accounts))
     .eq("brokerage_id", profile.brokerage_id)
     .eq("is_active", true)
     .order("platform")
@@ -71,6 +84,25 @@ export default async function SocialDashboardPage({
   const requiresBrokerApproval =
     (globalSettings?.additional_settings as any)?.social_requires_broker_approval === true
 
+  // CONTRACT C5 (wave 146 — owner ruling 9: "the tenants approve their own ads/posts … assets"): the screen
+  // NAMES who approves this person's post from the real authority hierarchy (lib/kernel/approval-authority.ts
+  // approverFor, lane 146E) instead of assuming the broker. Tenant and seat come from the session above; the
+  // agents row is crossed by user_id inside this tenant (agents.id ≠ users.id, CLAUDE.md §3). A refused read
+  // is worded as a refusal — never as "no approval needed" (fail closed, §4).
+  const { data: viewerAgent, error: viewerAgentErr } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .eq("brokerage_id", profile.brokerage_id)
+    .maybeSingle()
+  if (viewerAgentErr) console.error("[social] viewer agents read refused:", viewerAgentErr.message)
+  const approver = await approverFor({
+    brokerageId: profile.brokerage_id,
+    assetKind: "social_post",
+    scope: { agentId: (viewerAgent as { id?: string } | null)?.id ?? null, agentUserId: user.id },
+  })
+  const approverLine = describeApprover(approver, user.id)
+
   // Get publish logs for failed posts
   const failedPostIds = posts?.filter((p) => p.status === "failed").map((p) => p.id) || []
   let publishLogs: any[] = []
@@ -96,6 +128,7 @@ export default async function SocialDashboardPage({
       publishLogs={publishLogs}
       openCreate={openCreate}
       requiresBrokerApproval={requiresBrokerApproval}
+      approverLine={approverLine}
     />
   )
 }

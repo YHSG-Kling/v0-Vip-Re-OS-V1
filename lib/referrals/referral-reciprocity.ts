@@ -54,7 +54,7 @@ export interface PartnerReciprocity {
 // A relationship has to clear this many referrals on the strong side before we call it
 // one-sided (one stray referral isn't a pattern).
 export const MIN_RECEIVED = 2
-export const MIN_SENT = 2
+const MIN_SENT = 2
 
 function name(p: PartnerReciprocityInput): string {
   return p.partnerName ?? "this partner"

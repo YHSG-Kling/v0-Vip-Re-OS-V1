@@ -21,6 +21,8 @@
  *
  * Run:  npx tsx scripts/command-center-simulator.ts   (npm run test:command-center)
  */
+import { readFileSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 import { loadCommandCenter, evaluateApprovalSla } from "../lib/kernel/command-center"
 
 let passed = 0, failed = 0
@@ -50,6 +52,26 @@ async function main() {
   check("age reported in hours", evaluateApprovalSla("2026-01-01T12:00:00Z", now).ageHours === 12)
   check("null proposedAt → ok (no false escalation)", evaluateApprovalSla(null, now).level === "ok")
   check("custom breach window honored", evaluateApprovalSla("2026-01-01T18:00:00Z", now, { breachHours: 4 }).level === "breached") // 6h ≥ 4h
+
+  // Lane 104F — the Missions card + the twin seams on the Command Center, asserted on STRIPPED
+  // source (a tombstone is not a call site), each with its positive control. Always runs.
+  console.log("\n[Layer 1b · missions card + twin seams (104F)]")
+  const src = (p: string) => stripComments(readFileSync(p, "utf8"))
+  const page = src("app/dashboard/admin/command-center/page.tsx")
+  check("page: the Missions card lists through listMissionsAction, gated to the TENANT-ADMIN roster (isAdminOrBroker ⇔ TENANT_ADMIN_USER_TYPES) under the brokerage scope — agents and platform scope never get it",
+    /brokerageId && !isSuperadmin && isAdminOrBroker\(\{ user_type: userType \}\)\s*\?\s*await listMissionsAction\(\)/.test(page) && page.includes("<MissionsCard"))
+  check("page: a refused listing renders as a refusal, never as an empty all-clear", /missions && !missions\.ok/.test(page) && /Missions could not be listed/.test(page))
+  const card = src("app/dashboard/admin/command-center/missions-card.tsx")
+  check("card: decide (approve / reject) + block / unblock + create go through app/actions/missions.ts only (no service client, no kernel write in the client)",
+    card.startsWith('"use client"') && ["decideMissionAction(", "blockMissionAction(", "createMissionAction("].every((t) => card.includes(t)) && !/createServiceClient|from\("missions"\)/.test(card) && /decision: "approve" \| "cancel"/.test(card))
+  check("card: the owner-manager picker is the REGISTRY handed in by the server page (MANAGERS), the type picker MISSION_TYPES", /MANAGERS\[key\]\.label/.test(page) && /missionTypes=\{MISSION_TYPES\}/.test(page))
+  const door = src("app/actions/missions.ts")
+  check("the door stays a \"use server\" file with tenant from requireCallerTenant() and no claimed id", door.startsWith('"use server"') && door.includes("requireCallerTenant()") && !/requireCallerTenant\(input/.test(door))
+  const cc = src("lib/kernel/command-center.ts")
+  check("loader: economic-graph + missions are loaded (settled, degrading) BEFORE buildBrokerageTwin so their twin seams are registered; the built twin feeds syncMissionProgressFromTwin",
+    cc.indexOf("Promise.allSettled([import(") < cc.indexOf("buildBrokerageTwin(brokerageId") && cc.includes('import("@/lib/kernel/missions")') && cc.includes("syncMissionProgressFromTwin("))
+  const fixture = stripComments(`// listMissionsAction() used to be called here\nconst x = 1\n/* <MissionsCard */`)
+  check("POSITIVE CONTROL: a tombstone naming the action or the card is NOT read as a call site", !fixture.includes("listMissionsAction(") && !fixture.includes("<MissionsCard") && fixture.includes("const x = 1"))
 
   const hasCreds = !!process.env.SUPABASE_SERVICE_ROLE_KEY &&
     !!(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL)

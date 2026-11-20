@@ -22,7 +22,7 @@ function main() {
   const byManager = new Map<ManagerKey, (typeof cards)[number]>(cards.map((c) => [c.manager, c]))
 
   console.log("\n[every accountable manager is scored]")
-  check("one card per manager (all 14)", cards.length === Object.keys(MANAGERS).length && cards.length === 14)
+  check("one card per manager (the whole roster, not a hardcoded count)", cards.length === Object.keys(MANAGERS).length && cards.length > 0)
   check("every card names a real manager + label", cards.every((c) => !!MANAGERS[c.manager] && c.label === MANAGERS[c.manager].label))
 
   console.log("\n[scope creep + privacy apply to EVERY manager (the whole team is bounded)]")
@@ -58,8 +58,12 @@ function main() {
 
   console.log("\n[team roll-up is honest — behaviorally red-teamed dims + structural invariants]")
   const s = summarizeGovernance(cards)
-  check("summary counts all 14 managers", s.totalManagers === 14)
-  check("every manager is currently GOVERNED (all applicable dimensions enforced)", s.governed === 13 && s.gaps === 0)
+  // m618: MANAGERS went 14 -> 13 ("marketing_agent" retired) — derive rather than pin.
+  check("summary counts every registered manager", s.totalManagers === Object.keys(MANAGERS).length)
+  // governed + gaps === totalManagers by construction, so pinning governed to a
+  // literal that is one short of the team size made this unsatisfiable the moment
+  // a 14th manager was added. Assert the invariant, not the headcount.
+  check("every manager is currently GOVERNED (all applicable dimensions enforced)", s.governed === s.totalManagers && s.gaps === 0)
   check("release-blocking dimensions include scope_creep + bias + prompt_injection", ["scope_creep", "bias_fair_housing", "prompt_injection"].every((d) => s.releaseBlockingDimensions.includes(d as any)))
   check("bias/hallucination/injection/privacy are BEHAVIORALLY red-teamed (eval harness verifies them)", ["bias_fair_housing", "hallucination", "prompt_injection", "privacy_leakage"].every((d) => s.behaviorallyVerified.includes(d as any)))
   check("nothing is left un-verified — behavioralEvalPending is empty (drift fixed)", s.behavioralEvalPending.length === 0)

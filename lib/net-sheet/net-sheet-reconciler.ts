@@ -111,8 +111,8 @@ export interface NetSheetReconciliation {
 // agent must lead before the closing table.
 export const MATERIAL_ABS = 2_500
 export const MATERIAL_PCT = 0.02
-export const SEVERE_ABS = 10_000
-export const SEVERE_PCT = 0.05
+const SEVERE_ABS = 10_000
+const SEVERE_PCT = 0.05
 
 function num(v: number | undefined): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null

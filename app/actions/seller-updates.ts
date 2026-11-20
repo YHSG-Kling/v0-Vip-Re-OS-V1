@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 interface GenerateDraftParams {
@@ -23,7 +24,8 @@ interface SendUpdateParams {
  */
 export async function generateSellerUpdateDraft({ listingId, agentId }: GenerateDraftParams) {
   const supabase = await createClient()
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
+  return ledgered({ userId, brokerageId }, { action: "listing.seller_update.generate", subject: { type: "listing", id: listingId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   // Fetch listing data
   const { data: listing, error: listingError } = await supabase
@@ -156,6 +158,8 @@ ${milestones.map(m => `- ${m.milestone_name}: ${m.status} (${m.target_date})`).j
 
   // Call AI to generate draft
   const { text: draftText } = await generateText({
+    brokerageId,
+    userId,
     model: "openai/gpt-4o-mini",
     prompt: `You are a real estate agent writing a weekly update to your seller client.
 Be warm, professional, and specific. Max 200 words.
@@ -181,6 +185,7 @@ ${contextPrompt}`,
       avgRating,
     },
   }
+  })
 }
 
 /**
@@ -226,13 +231,42 @@ export async function sendSellerUpdate({ listingId, agentId, messageBody, approv
     throw new Error(`Failed to send message: ${messageError.message}`)
   }
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "listing",
-    entity_id: listingId,
-    event_type: KernelEvent.SELLER_UPDATE_SENT,
-    actor_user_id: approvedByAgentId,
+  // A draft the agent SAVED for this listing (saveSellerUpdateDraft) is now sent — stamped on the same
+  // row, counted (CLAUDE.md §3). Zero rows is the common case (most sends never had a saved draft), so
+  // it is not a failure here. sent_message_id is NOT written: its FK targets `messages`, and a seller
+  // update lands in client_portal_messages — the portal message id rides in edit_delta as evidence.
+  const { data: sentDrafts, error: draftError } = await supabase
+    .from("ai_message_drafts")
+    .update({
+      status: "sent",
+      final_body: messageBody,
+      acted_at: new Date().toISOString(),
+      edit_delta: { client_portal_message_id: message.id },
+    })
+    .eq("brokerage_id", brokerageId)
+    .eq("listing_id", listingId)
+    .eq("trigger_event", SELLER_UPDATE_DRAFT_TRIGGER)
+    .eq("status", "pending")
+    .select("id")
+  if (draftError) {
+    console.error("[seller-updates] saved draft could not be marked sent:", draftError.message)
+  } else if ((sentDrafts ?? []).length > 1) {
+    console.warn(`[seller-updates] ${sentDrafts!.length} pending drafts marked sent for listing ${listingId} (expected ≤ 1)`)
+  }
+
+  // Emit kernel event — audit row + reactor. This is THE producer of
+  // SELLER_UPDATE_SENT: the portal template in lib/kernel/event-fanout.ts
+  // ("Listing activity update") had no emitter until the bare insert here
+  // became a real emit. The seller is passed explicitly so the card posts to
+  // them without a resolver round-trip.
+  await emitKernelEvent({
+    brokerageId,
+    entityType: "listing",
+    entityId: listingId,
+    event: KernelEvent.SELLER_UPDATE_SENT,
+    listingId,
+    sellerContactId: listing.contact_id,
+    actorUserId: approvedByAgentId,
     metadata: {
       message_id: message.id,
       contact_id: listing.contact_id,
@@ -241,6 +275,99 @@ export async function sendSellerUpdate({ listingId, agentId, messageBody, approv
   })
 
   return { success: true, messageId: message.id }
+}
+
+/** ai_message_drafts.trigger_event of a seller-update draft the agent saved — ONE spelling for the writer and both readers. */
+const SELLER_UPDATE_DRAFT_TRIGGER = "seller_update"
+
+/**
+ * Wave 142 (lane 142H — UI wiring audit): the composer's "Save as Draft" button saved NOTHING — its handler
+ * cleared two flags and a comment admitted "the draft stays in component state". The draft SURVIVOR is
+ * ai_message_drafts (the table the net-sheet explanation and the AI reply coach already persist to):
+ * channel in_app (the seller portal is the delivery channel), status pending, trigger seller_update, keyed
+ * to the listing and its seller contact. Tenant from the session, never the body; one pending draft per
+ * listing is what the composer loads back.
+ */
+export async function loadSellerUpdateDraft(
+  listingId: string,
+): Promise<{ draftId: string | null; body: string | null; savedAt: string | null; error?: string }> {
+  const supabase = await createClient()
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return { draftId: null, body: null, savedAt: null, error: "Not authenticated" }
+
+  const { data, error } = await supabase
+    .from("ai_message_drafts")
+    .select("id, draft_body, created_at")
+    .eq("brokerage_id", brokerageId)
+    .eq("listing_id", listingId)
+    .eq("trigger_event", SELLER_UPDATE_DRAFT_TRIGGER)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) return { draftId: null, body: null, savedAt: null, error: error.message }
+  return { draftId: data?.id ?? null, body: data?.draft_body ?? null, savedAt: data?.created_at ?? null }
+}
+
+export async function saveSellerUpdateDraft({
+  listingId,
+  body,
+  draftId,
+}: {
+  listingId: string
+  body: string
+  /** The pending draft to update; absent → a new row. A stale id (sent / gone) falls through to a new row. */
+  draftId?: string | null
+}): Promise<{ success: boolean; draftId?: string; error?: string }> {
+  const text = body.trim()
+  if (!text) return { success: false, error: "Nothing to save — the update is empty" }
+
+  const supabase = await createClient()
+  const { userId, brokerageId } = await getAgentContext()
+  if (!brokerageId) return { success: false, error: "Not authenticated" }
+  return ledgered({ userId, brokerageId }, { action: "listing.seller_update.save_draft", subject: { type: "listing", id: listingId }, riskClass: "LOW_RISK_WRITE", detail: { draft_id: draftId ?? null } }, async () => {
+
+  // The listing must be this tenant's and have a seller contact — the same gate sendSellerUpdate applies.
+  const { data: listing, error: listingError } = await supabase
+    .from("listings")
+    .select("id, contact_id")
+    .eq("id", listingId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (listingError) return { success: false, error: listingError.message }
+  if (!listing?.contact_id) return { success: false, error: "Listing or seller contact not found" }
+
+  if (draftId) {
+    const { data: updated, error: updateError } = await supabase
+      .from("ai_message_drafts")
+      .update({ draft_body: text })
+      .eq("id", draftId)
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "pending")
+      .select("id")
+    if (updateError) return { success: false, error: updateError.message }
+    if ((updated ?? []).length === 1) return { success: true, draftId }
+    // no row matched (already sent, or not this tenant's) — a fresh draft, never a silent "saved"
+  }
+
+  const { data: inserted, error: insertError } = await supabase
+    .from("ai_message_drafts")
+    .insert({
+      agent_user_id: userId,
+      contact_id: listing.contact_id,
+      listing_id: listingId,
+      brokerage_id: brokerageId,
+      channel: "in_app",
+      draft_body: text,
+      trigger_event: SELLER_UPDATE_DRAFT_TRIGGER,
+      status: "pending",
+      context_summary: "Seller update draft saved by the agent from the listing composer",
+    })
+    .select("id")
+    .single()
+  if (insertError) return { success: false, error: insertError.message }
+  return { success: true, draftId: inserted.id }
+  })
 }
 
 /**
@@ -416,4 +543,29 @@ export async function getPriceRecommendation(listingId: string) {
     reasoning: `This listing has been on the market for ${dom} days with an average feedback rating of ${avgRating?.toFixed(1)}/5. With ${showingsPerWeek.toFixed(1)} showings per week, a price adjustment may help attract more qualified buyers.`,
     label: "AI Insight — for agent review only",
   }
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

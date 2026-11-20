@@ -13,7 +13,9 @@
  *
  * URL params honored by the tracker:
  *   ?p=<persona>     — persona snapshot for per-(topic, persona) attribution
- *   ?c=<contact_id>  — when sent from a tagged newsletter / drip link
+ *   (?c=<contact_id> RETIRED wave 155, lane 155K2: a raw Contact id in a public URL that no writer ever built, stored as the
+ *    viewer by an unauthenticated POST and read back as a movement signal — lib/intent/movement-source-watcher.ts. Views are
+ *    anonymous until a sealed recipient grant exists; see the lane notes.)
  *   ?utm_source=…    — traffic source (newsletter, social, organic, ai_overview)
  */
 import { notFound } from "next/navigation"
@@ -28,7 +30,6 @@ interface PageProps {
   params:       Promise<{ slug: string }>
   searchParams: Promise<{
     p?: string
-    c?: string
     utm_source?: string
   }>
 }
@@ -47,6 +48,7 @@ interface BlogPostRow {
   category:           string | null
   view_count_total:   number
   share_count_total:  number
+  marketing_campaign_id: string | null
 }
 
 interface BrokerageRow {
@@ -67,7 +69,7 @@ async function getPost(slug: string): Promise<{ post: BlogPostRow; brokerage: Br
   const svc = createServiceClient()
   const { data: post } = await svc
     .from("blog_posts")
-    .select("id, brokerage_id, agent_user_id, title, slug, excerpt, content, featured_image_url, publish_status, published_at, category, view_count_total, share_count_total, publish_target")
+    .select("id, brokerage_id, agent_user_id, title, slug, excerpt, content, featured_image_url, publish_status, published_at, category, view_count_total, share_count_total, publish_target, marketing_campaign_id")
     .eq("slug", slug)
     .in("publish_status", ["published", "approved"])
     .in("publish_target", ["hosted", "both"])
@@ -125,7 +127,7 @@ export async function generateMetadata({ params }: PageProps) {
 
 export default async function PublicBlogPage({ params, searchParams }: PageProps) {
   const { slug } = await params
-  const { p: persona, c: contactId, utm_source } = await searchParams
+  const { p: persona, utm_source } = await searchParams
   const r = await getPost(slug)
   if (!r) notFound()
 
@@ -139,6 +141,12 @@ export default async function PublicBlogPage({ params, searchParams }: PageProps
   }
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? ""
   const shareUrl = `${baseUrl}/blog/${post.slug}`
+  // WAVE 155 (lane 155E) — the post's ONE optional QR slot, PRINT-ONLY: a reader on screen taps links; a printed copy
+  // (a handout, an open-house table) carries a tracked code back to this post. The image encodes /api/qr/scan, never
+  // the raw page URL. Resolved through the one minter (lib/marketing/tracked-qr.ts) — the same logical code the
+  // editor's preview showed. Anything but `placed` (held / too small / refused) prints no code.
+  const { resolveArtifactQrSlot, blogPrintQrArgs } = await import("@/lib/marketing/tracked-qr")
+  const qrSlot = await resolveArtifactQrSlot(blogPrintQrArgs(post, baseUrl || null))
 
   return (
     <article className="min-h-screen bg-white">
@@ -206,19 +214,27 @@ export default async function PublicBlogPage({ params, searchParams }: PageProps
             shareUrl={shareUrl}
             title={post.title}
             personaSnapshot={persona ?? null}
-            contactId={contactId ?? null}
           />
         </div>
+        {qrSlot.status === "placed" && qrSlot.qrCodeDataUrl && (
+          <div data-qr-slot="print_footer" className="hidden print:flex items-center gap-3 mt-10 pt-6 border-t border-gray-200">
+            {/* An opaque white plate the size of the quiet zone; 1 in wide (above the 0.8 in minimum). */}
+            <div className="bg-white p-1 leading-none">
+              {/* eslint-disable-next-line @next/next/no-img-element -- a data: URL print asset, not an optimizable remote image */}
+              <img src={qrSlot.qrCodeDataUrl} alt="QR code: scan to read this article online" width={96} height={96} style={{ width: "1in", height: "1in" }} />
+            </div>
+            <div className="text-sm text-gray-700">Scan to read this article online{brand.name ? ` · ${brand.name}` : ""}</div>
+          </div>
+        )}
       </div>
 
       {/* Tracker — fires track-view on mount with the URL-tag persona +
-          contact_id + source. Runs client-side AFTER the page renders so
+          source (never a contact id). Runs client-side AFTER the page renders so
           the view is attributed even if the user closes the tab before
           interacting. */}
       <BlogTracker
         blogPostId={post.id}
         personaSnapshot={persona ?? null}
-        contactId={contactId ?? null}
         utmSource={utm_source ?? null}
       />
     </article>

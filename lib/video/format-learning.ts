@@ -34,6 +34,8 @@
 
 import type { createServiceClient } from "@/lib/supabase/service"
 import type { SelectedFormat, TargetChannel, MusicMood } from "@/lib/video/video-director"
+import { BODY_TREATMENTS, checkRuleOverrideBounds, resolvePurposeRule, type BodyTreatment, type BodyVisualRuleOverride } from "@/lib/video/body-visual-model"
+import type { VideoPurpose } from "@/lib/video/duration-model"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -141,7 +143,7 @@ export interface FormatRecommendation {
 
 /** Deterministic cell key. Lowercased so live-DB casing variance never splits a
  *  cell. */
-export function formatCellKey(
+function formatCellKey(
   kind: string, channel: string, compositionId: string, mood: string,
 ): string {
   return `${kind}|${channel}|${compositionId}|${mood}`.toLowerCase()
@@ -212,7 +214,14 @@ function fmtScore(n: number): string { return n.toFixed(2) }
 export function recommendFormatAdjustment(
   situation: { kind: string; channel: TargetChannel | string },
   scored: ScoredFormats,
-  fallback: { compositionId: string; mood: MusicMood },
+  // The fallback's composition id IS the Director's chosen format id, not a free
+  // string: selectVideoFormatLearned (lib/video/video-director.ts:367) passes
+  // `def.compositionId` straight from selectVideoFormat's SelectedFormat. Spelling
+  // it `string` here let the two drift — rename or retype SelectedFormat's field
+  // and this signature would keep compiling while silently accepting anything.
+  // Pick<> ties them together without dragging the format's render flags
+  // (needsAvatar/needsBroll/…) into a decision that does not use them.
+  fallback: Pick<SelectedFormat, "compositionId"> & { mood: MusicMood },
 ): FormatRecommendation {
   const def: FormatRecommendation = {
     source: "default",
@@ -354,6 +363,137 @@ export async function loadFormatOutcomes(
   }
 
   return scoreFormatOutcomes(rows)
+}
+
+// ============================================================================
+// BODY VISUAL — the "what was on screen" learning dimension (wave 80C)
+// ============================================================================
+//
+// OWNER: "if there is any changes to the registry rule for the purpose
+// allowable autonomous ai can learn." The director stamps
+// video_metadata.body_visual (bodyVisualStamp — purpose, the first beat's
+// treatment, backgrounds, verdict, override ids) on every commissioned row;
+// this dimension scores per (purpose × beat treatment) on the SAME real
+// signals (scans + engagement) and, under the SAME gate (MIN_FORMAT_SAMPLE +
+// FORMAT_MARGIN), PROPOSES one bounded rule change: prefer the winning
+// treatment on beats for that purpose. The BOUNDS are not decided here —
+// lib/video/body-visual-model.ts checkRuleOverrideBounds refuses anything the
+// purpose does not already allow, b-roll on a no-b-roll format, an avatar on
+// a presenter-less purpose — and lib/video/body-visual-rule-ledger.ts applies,
+// logs, signals and can revert.
+
+/** One attributed body-visual outcome: the row's stamp + its measured signal. */
+export interface BodyVisualOutcomeRow {
+  purpose: string
+  beatTreatment: string
+  scans: number
+  engagement: number
+}
+
+export interface BodyVisualCellScore {
+  purpose: string
+  beatTreatment: string
+  sample: number
+  meanSignal: number
+  score: number
+}
+
+export interface ScoredBodyVisuals { cells: Record<string, BodyVisualCellScore>; maxMeanSignal: number }
+
+/** PURE — fold body-visual outcomes into (purpose × beat treatment) cells, max-scaled like scoreFormatOutcomes. */
+export function scoreBodyVisualOutcomes(rows: BodyVisualOutcomeRow[]): ScoredBodyVisuals {
+  const acc: Record<string, BodyVisualCellScore & { total: number }> = {}
+  for (const r of rows) {
+    const key = `${r.purpose}|${r.beatTreatment}`.toLowerCase()
+    const cell = acc[key] ?? { purpose: r.purpose, beatTreatment: r.beatTreatment, sample: 0, meanSignal: 0, score: 0, total: 0 }
+    cell.sample += 1
+    cell.total += Math.max(0, r.scans || 0) + Math.max(0, r.engagement || 0)
+    acc[key] = cell
+  }
+  let maxMeanSignal = 0
+  for (const c of Object.values(acc)) { c.meanSignal = c.sample > 0 ? c.total / c.sample : 0; maxMeanSignal = Math.max(maxMeanSignal, c.meanSignal) }
+  const cells: Record<string, BodyVisualCellScore> = {}
+  for (const [k, c] of Object.entries(acc)) cells[k] = { purpose: c.purpose, beatTreatment: c.beatTreatment, sample: c.sample, meanSignal: c.meanSignal, score: maxMeanSignal > 0 ? c.meanSignal / maxMeanSignal : 0 }
+  return { cells, maxMeanSignal }
+}
+
+/** A bounded proposal for the ledger, or null (keep the expert rule — honestly). */
+export interface BodyVisualRuleProposal {
+  purpose: VideoPurpose
+  change: { kind: "prefer_treatment"; segmentKind: "beat"; treatment: BodyTreatment }
+  why: string
+  sample: number
+  source: "autonomous"
+}
+
+/**
+ * recommendBodyVisualRuleAdjustment — PURE. Keeps the expert rule unless a
+ * DIFFERENT beat treatment for THIS purpose has a real sample
+ * (≥ MIN_FORMAT_SAMPLE) AND beats the rule's current first preference by
+ * ≥ FORMAT_MARGIN; then proposes moving that treatment to the front of the
+ * purpose's beat preference — and ONLY when the bounds admit it (a treatment
+ * the purpose does not allow, b-roll on a no-b-roll format, an avatar on a
+ * presenter-less purpose are refused HERE too, so a proposal is never made
+ * that the ledger would have to refuse).
+ */
+export function recommendBodyVisualRuleAdjustment(
+  purpose: VideoPurpose,
+  scored: ScoredBodyVisuals,
+  overrides: readonly BodyVisualRuleOverride[] = [],
+): BodyVisualRuleProposal | null {
+  const rule = resolvePurposeRule(purpose, overrides)
+  if (!rule) return null
+  const current = rule.prefer.beat[0]
+  const field = Object.values(scored.cells).filter((c) => c.purpose.toLowerCase() === purpose.toLowerCase())
+  if (field.length === 0 || scored.maxMeanSignal <= 0) return null
+  const currentScore = field.filter((c) => c.beatTreatment === current).reduce((m, c) => Math.max(m, c.score), 0)
+  const top = field
+    .filter((c) => c.beatTreatment !== current && c.sample >= MIN_FORMAT_SAMPLE)
+    .filter((c) => (BODY_TREATMENTS as readonly string[]).includes(c.beatTreatment))
+    .sort((a, b) => b.score - a.score)[0]
+  if (!top) return null
+  if (top.score - currentScore < FORMAT_MARGIN) return null
+  const proposal: BodyVisualRuleProposal = {
+    purpose,
+    change: { kind: "prefer_treatment", segmentKind: "beat", treatment: top.beatTreatment as BodyTreatment },
+    why: `Learned from ${top.sample} real ${purpose} videos: beats on ${top.beatTreatment} out-converted ${current} — score ${fmtScore(top.score)} vs ${fmtScore(currentScore)}. Override gate: ≥${MIN_FORMAT_SAMPLE} sample AND ≥${FORMAT_MARGIN} margin met.`,
+    sample: top.sample,
+    source: "autonomous",
+  }
+  const bounds = checkRuleOverrideBounds({ ...proposal, id: "proposal", appliedAt: "" })
+  return bounds.ok ? proposal : null
+}
+
+/** Read the stamped body-visual outcomes for a tenant — the same rows and signals loadFormatOutcomes reads. */
+export async function loadBodyVisualOutcomes(brokerageId: string, client?: Svc): Promise<ScoredBodyVisuals> {
+  if (!brokerageId) return { cells: {}, maxMeanSignal: 0 }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc: Svc = client ?? createServiceClient()
+  const { data: projects, error } = await svc
+    .from("ai_video_projects").select("id, video_url, video_metadata").eq("brokerage_id", brokerageId).not("video_metadata", "is", null).limit(2000)
+  if (error) { console.error(`[format-learning] body-visual outcomes read refused for ${brokerageId}: ${error.message}`); return { cells: {}, maxMeanSignal: 0 } }
+  const rows: BodyVisualOutcomeRow[] = []
+  for (const p of (projects ?? []) as Array<{ video_url: string | null; video_metadata: Record<string, unknown> | null }>) {
+    const meta = p.video_metadata ?? {}
+    const stamp = meta.body_visual as { purpose?: string; beat_treatment?: string | null } | undefined
+    if (!stamp || typeof stamp.purpose !== "string" || typeof stamp.beat_treatment !== "string") continue
+    const qrCodeId = typeof meta.qr_code_id === "string" ? meta.qr_code_id : null
+    let scans = 0
+    if (qrCodeId) {
+      const { count } = await svc.from("qr_scan_events").select("id", { count: "exact", head: true }).eq("brokerage_id", brokerageId).eq("qr_code_id", qrCodeId)
+      scans = count ?? 0
+    }
+    let engagement = 0
+    if (p.video_url) {
+      const { data: posts } = await svc.from("social_posts").select("engagement_data").eq("brokerage_id", brokerageId).contains("media_urls", [p.video_url])
+      for (const post of (posts ?? []) as Array<{ engagement_data: Record<string, number> | null }>) {
+        const m = post.engagement_data ?? {}
+        engagement += (m.views || 0) + (m.engagement || 0) + (m.comments || 0) + (m.shares || 0)
+      }
+    }
+    rows.push({ purpose: stamp.purpose, beatTreatment: stamp.beat_treatment, scans, engagement })
+  }
+  return scoreBodyVisualOutcomes(rows)
 }
 
 // ============================================================================
@@ -568,4 +708,177 @@ export async function loadHookExperiment(
   }
 
   return scoreHookOutcomes(rows)
+}
+
+// ── CROSS-ENTITY HOOK LEARNING (wave 58) — the loop's missing middle ─────────
+//
+// recommendHookWinner crowns a winner PER EXPERIMENT (one entity — one listing,
+// one contact). commissionVideoExperiment's `preferredAngle` (video-director.ts)
+// has existed since the A/B shipped to RECEIVE a learned angle for a brand-new
+// experiment on a DIFFERENT entity — nothing ever called it. The Content Studio
+// (lib/kernel/content-studio.ts) already reads recommendHookWinner to show a
+// crowned winner to a human — a READER with no WRITER back into future
+// commissions. `recommendPreferredAngleForKind` is that writer's data source:
+// tally crowned wins across this brokerage's FINISHED experiments for the SAME
+// SituationKind, and hand the plurality angle back so a new listing's A/B starts
+// from what has already been learned instead of always curiosity-first. Wired at
+// app/actions/listing-video.ts's abTest branch (the one live caller of
+// commissionVideoExperiment) — see that call site.
+
+/** Minimum crowned-winner experiments (recommendHookWinner status:"winner") for
+ *  the SAME SituationKind before generalizing a preferred angle ACROSS ENTITIES.
+ *  One crowned experiment could be a fluke of that particular listing's audience;
+ *  two independent crowns landing on the same angle is the first real cross-entity
+ *  signal. Mirrors this file's honesty posture throughout: thin data = no
+ *  preference asserted, never a guess dressed as a recommendation. */
+export const MIN_CROWNED_HOOK_WINS = 2
+
+export interface PreferredAngleRecommendation {
+  /** "testing" = not enough crowned experiments yet, or no clear plurality angle.
+   *  "learned" = a real, gated cross-entity preference. */
+  status: "testing" | "learned"
+  angle: string | null
+  /** How many crowned wins support `angle`. */
+  supportingWins: number
+  /** How many experiments of this kind have crowned ANY winner so far. */
+  totalCrownedExperiments: number
+  /** Human-readable explanation — rides video_metadata.hook_why via the caller. */
+  why: string
+}
+
+/** Build the "testing" shape — the one honest-refusal constructor every early
+ *  return below shares, so a positive control can assert the SAME shape a real
+ *  thin-data call would produce. `situationKind` is not read here; it exists so
+ *  every call site is forced to pass the kind its `why` string names, catching a
+ *  copy-paste wrong-kind message at the call site instead of in this helper. */
+function stillTestingAngle(_situationKind: string, why: string, crowned = 0): PreferredAngleRecommendation {
+  return { status: "testing", angle: null, supportingWins: 0, totalCrownedExperiments: crowned, why }
+}
+
+/**
+ * pickPluralityAngle — PURE. The tally + gate at the heart of
+ * recommendPreferredAngleForKind, split out so it can be asserted directly
+ * (scripts/hook-ab-simulator.ts) without a database. Given how many times EACH
+ * angle has been CROWNED (recommendHookWinner status:"winner") across this
+ * brokerage's finished experiments for one SituationKind, decides whether a clear
+ * cross-entity preference exists: ≥MIN_CROWNED_HOOK_WINS total crowns AND the top
+ * angle strictly ahead of the runner-up (a tie is still "testing", never a
+ * coin-flip pick). No I/O, no fabrication — empty input is "testing".
+ */
+export function pickPluralityAngle(situationKind: string, winsByAngle: Record<string, number>): PreferredAngleRecommendation {
+  const crownedCount = Object.values(winsByAngle).reduce((s, n) => s + n, 0)
+  if (crownedCount === 0) {
+    return stillTestingAngle(situationKind, `No hook experiments staged yet for "${situationKind}" — nothing to learn from.`)
+  }
+  if (crownedCount < MIN_CROWNED_HOOK_WINS) {
+    return stillTestingAngle(
+      situationKind,
+      `Only ${crownedCount} crowned experiment(s) for "${situationKind}" so far; need ≥${MIN_CROWNED_HOOK_WINS} before generalizing an angle across listings.`,
+      crownedCount,
+    )
+  }
+
+  const ranked = Object.entries(winsByAngle).sort((a, b) => b[1] - a[1])
+  const [topAngle, topWins] = ranked[0]
+  const runnerUpWins = ranked[1]?.[1] ?? 0
+  if (topWins <= runnerUpWins) {
+    return stillTestingAngle(
+      situationKind,
+      `${crownedCount} crowned "${situationKind}" experiments split across angles with no clear leader (top: ${topAngle} ${topWins}, runner-up ${runnerUpWins}) — still testing.`,
+      crownedCount,
+    )
+  }
+
+  return {
+    status: "learned",
+    angle: topAngle,
+    supportingWins: topWins,
+    totalCrownedExperiments: crownedCount,
+    why: `"${topAngle}" won ${topWins} of ${crownedCount} crowned "${situationKind}" hook experiments for this brokerage — preferring it as the opening angle for new experiments.`,
+  }
+}
+
+/**
+ * recommendPreferredAngleForKind — read-only, tenant-scoped. THE CLOSING HALF of
+ * the hook A/B loop (see the section header above).
+ *
+ * Finds every DISTINCT experiment_id this brokerage has staged for `situationKind`
+ * (video_metadata.experiment_id = `hookexp:${kind}:${entity}` —
+ * commissionVideoExperiment's own key shape), scores + crowns each via the SAME
+ * loadHookExperiment + recommendHookWinner gate the Content Studio uses, then
+ * hands the tally to pickPluralityAngle (pure — the gate lives there, asserted
+ * directly by the simulator).
+ */
+export async function recommendPreferredAngleForKind(
+  brokerageId: string,
+  situationKind: string,
+  client?: Svc,
+): Promise<PreferredAngleRecommendation> {
+  if (!brokerageId || !situationKind) {
+    return stillTestingAngle(situationKind, "brokerageId + situationKind required.")
+  }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc: Svc = client ?? createServiceClient()
+
+  // One row per staged variant; we want DISTINCT experiments, not rows.
+  const { data: rows } = await svc
+    .from("ai_video_projects")
+    .select("video_metadata")
+    .eq("brokerage_id", brokerageId)
+    .like("video_metadata->>experiment_id", `hookexp:${situationKind}:%`)
+    .limit(2000)
+
+  const experimentIds = new Set<string>()
+  for (const r of (rows ?? []) as Array<{ video_metadata: Record<string, unknown> | null }>) {
+    const id = r.video_metadata?.experiment_id
+    if (typeof id === "string") experimentIds.add(id)
+  }
+  if (experimentIds.size === 0) {
+    return stillTestingAngle(situationKind, `No hook experiments staged yet for "${situationKind}" — nothing to learn from.`)
+  }
+
+  const winsByAngle: Record<string, number> = {}
+  for (const experimentId of experimentIds) {
+    const scored = await loadHookExperiment(brokerageId, experimentId, svc)
+    const rec = recommendHookWinner(experimentId, scored)
+    if (rec.status === "winner" && rec.winnerAngle) {
+      winsByAngle[rec.winnerAngle] = (winsByAngle[rec.winnerAngle] ?? 0) + 1
+    }
+  }
+
+  return pickPluralityAngle(situationKind, winsByAngle)
+}
+
+
+/**
+ * runBodyVisualRuleLearning — THE AUTONOMOUS LOOP (wave 80 integration; owner:
+ * "if there is any changes to the registry rule for the purpose allowable
+ * autonomous ai can learn"). Rides the daily brokerage-intelligence mine per
+ * tenant: scores the tenant's body-visual outcomes, asks the PURE recommender
+ * for every purpose, and appends any bounded proposal to the ledger (which
+ * refuses out-of-bounds or vetoed changes and tells the humans). Nothing here
+ * decides — the recommender's sample+margin gate and the ledger's bounds do.
+ */
+export async function runBodyVisualRuleLearning(
+  brokerageId: string,
+  client?: Svc,
+): Promise<{ purposesScanned: number; proposed: number; applied: number; refused: string[] }> {
+  const out = { purposesScanned: 0, proposed: 0, applied: 0, refused: [] as string[] }
+  if (!brokerageId) return out
+  const { PURPOSE_DURATION_RULES } = await import("@/lib/video/duration-model")
+  const { listBodyVisualRuleOverrides, applyBodyVisualRuleOverride } = await import("@/lib/video/body-visual-rule-ledger")
+  const scored = await loadBodyVisualOutcomes(brokerageId, client)
+  if (scored.maxMeanSignal <= 0) return out
+  const overrides = await listBodyVisualRuleOverrides(brokerageId, client)
+  for (const purpose of Object.keys(PURPOSE_DURATION_RULES) as VideoPurpose[]) {
+    out.purposesScanned++
+    const proposal = recommendBodyVisualRuleAdjustment(purpose, scored, overrides)
+    if (!proposal) continue
+    out.proposed++
+    const r = await applyBodyVisualRuleOverride(brokerageId, proposal, client)
+    if (r.ok) out.applied++
+    else out.refused.push(`${purpose}: ${r.reason}`)
+  }
+  return out
 }

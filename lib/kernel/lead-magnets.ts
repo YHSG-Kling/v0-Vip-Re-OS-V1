@@ -2,11 +2,84 @@
 // Kernel OS: Canonical Lead Magnet Commands
 // No mocks, stubs, or placeholders. All operations read/write real Supabase data.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
+import { CONTACT_SOURCE_LEAD_MAGNET } from "@/lib/campaigns/contact-sources"
+import { autoEnrollContact } from "@/lib/campaign-sequences/auto-enroll"
+import type { LandingContent } from "@/lib/marketing/lead-magnet-copy"
+// Wave 141 (lane 141E): the attribution contract is PURE and shared with the ad writer and the public
+// page (lib/lead-magnets/attribution.ts) — one spelling of the query string, sanitized here again.
+import { sanitizeLeadMagnetAttribution, sourceChannelFor, touchpointChannelFor, type LeadMagnetAttribution } from "@/lib/lead-magnets/attribution"
+// Wave 142 (lane 142E): the ONE "who fills this form" roster (pure module shared with the builder / review surfaces).
+import { FORM_DECLARABLE_CONTACT_TYPES, declarableContactType } from "@/lib/lead-magnets/form-contact-types"
+// Wave 144 (lane 144H, owner ruling 15 — "ALWAYS a humanized review after the draft"): the pure rule the book publish reads.
+import { humanizedReviewState, humanizedReviewRefusal, type HumanizedReviewRecord } from "@/lib/lead-magnets/book-editorial"
+// Wave 145 (lane 145G, owner ruling 19): a BOOK is its own entity (book_projects, m867); a capture form that DISTRIBUTES one
+// carries settings.book_id only. The publish gate and the delivery read the distributed book through this ONE reader.
+import { loadDistributedBook, saveBookRow } from "@/lib/lead-magnets/book-entity"
+import { leadMagnetPublicText } from "@/lib/lead-magnets/public-text"
+// Wave 147 (lane 147E — owner ruling 5, contract C11): THE ASSET IS CREATED WITH THE MAGNET. createLeadMagnet writes the magnet
+// and its deliverable as one unit; publishLeadMagnet publishes only with a READY deliverable approved by a C5-permitted person.
+import { produceLeadMagnetDeliverable, ensureDeliverableForPublish, recordDeliverableApproval, deliverableSpecFor, type DeliverableDeps, type DeliverableRow } from "@/lib/lead-magnets/deliverable-asset"
+// NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
+// not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
+// `server-only` (it holds the service client and the paid PeopleData/OSINT
+// clients), and a static import here would pull that into every module graph
+// that reaches this file — including the plain `tsx` guard simulators, which are
+// not a server component and crash on `server-only` at load. lib/kernel/crm.ts
+// already used the dynamic form for exactly this reason; these call sites were
+// the inconsistency. The queue call is best-effort and already awaited/voided,
+// so deferring the import costs nothing.
 
 // ============================================================================
 // INPUT / OUTPUT CONTRACTS
 // ============================================================================
+
+type Svc = ReturnType<typeof createServiceClient>
+
+/**
+ * THE CLIENT SEAM (wave 141, lane 141E — the wave-95 lesson: a seam, never a baseline bump). A caller
+ * that already holds the verified client its command writes through (an in-memory proof client, an
+ * injected service client) passes it; the default is the service client, exactly as before.
+ */
+interface LeadMagnetClientOpts {
+  client?: Svc
+  /**
+   * @proofSeam the ONE tracked-QR minter (lib/marketing/tracked-qr.ts mintTrackedQr) is `server-only`;
+   * scripts/lead-magnet-creation-guard.ts injects a fake that writes qr_codes on the same in-memory
+   * client to prove the publish → QR hook. Production never passes it (the real minter is imported).
+   */
+  mintTrackedQr?: LeadMagnetQrMinter
+  /**
+   * @proofSeam wave 147 (C11): the deliverable producers (the guide booklet render, the market-report producer) need the AI
+   * gateway, storage and providers; scripts/lead-magnet-asset-invariant-guard.ts and the publish proofs inject fakes. Production
+   * never passes it (the real producers run).
+   */
+  deliverable?: DeliverableDeps
+}
+
+/** The deliverable a create / publish reports (C11). */
+export interface LeadMagnetDeliverableSummary { id: string; status: string; kind: string; version: number; reason: string | null }
+
+function deliverableSummary(d: DeliverableRow | null | undefined, reason?: string | null): LeadMagnetDeliverableSummary | null {
+  return d ? { id: d.id, status: d.status, kind: d.kind, version: d.version, reason: reason ?? d.error ?? null } : null
+}
+
+/** The slice of mintTrackedQr's contract the lead-magnet paths use (structural — no import of the server-only module). */
+type LeadMagnetQrMinter = (
+  args: { brokerageId: string; agentId: string | null; label: string; destinationType: "landing_page"; targetUrl: string; purpose: "lead_magnet" },
+  svc: Svc,
+) => Promise<{ qrCodeId: string; slug: string; scanUrl: string; targetUrl: string; qrCodeDataUrl: string } | null>
+
+/** One capture-form field — the shape lead_capture_forms.fields stores and the public forms render. */
+export interface LeadMagnetField {
+  name: string
+  label: string
+  type: string
+  required: boolean
+  options?: string[]
+  placeholder?: string
+}
 
 export interface CreateLeadMagnetInput {
   title: string
@@ -15,10 +88,21 @@ export interface CreateLeadMagnetInput {
   brokerageId: string
   agentId: string
   createdBy: string
-  fields?: Array<{ name: string; label: string; type: string; required: boolean }>
+  fields?: LeadMagnetField[]
   tcpaDisclosureText?: string
   thankYouMessage?: string
   redirectUrl?: string
+  /**
+   * Wave 141 (lane 141E): "draft" creates the row INACTIVE — unreachable publicly (/lm/[slug] serves
+   * active forms; a tenant member previews it with ?preview=1), refusing submissions (captureFormSubmission
+   * checks is_active) — until publishLeadMagnet, the human approval, activates it. The default "live" keeps
+   * the programmatic callers (launch war room, playbook installs) byte-for-byte unchanged.
+   */
+  publishState?: "draft" | "live"
+  /** The AI-built landing surface persisted with the row (the shape /lm/[slug] renders). */
+  landingContent?: LandingContent | null
+  /** Merged into lead_capture_forms.settings — authoring (AI vs human), provenance (clone), notify flag. */
+  settings?: Record<string, unknown>
 }
 
 export interface CreateLeadMagnetOutput {
@@ -26,7 +110,34 @@ export interface CreateLeadMagnetOutput {
   magnetId?: string
   slug?: string
   formId?: string
+  lifecycleState?: "draft" | "published"
+  /** Wave 147 (C11): the delivery asset created with the magnet — null for a magnet that promises no asset. */
+  deliverable?: LeadMagnetDeliverableSummary | null
   error?: string
+}
+
+/** What lead_capture_forms.settings.lifecycle records — ONE spelling for the writer (create / publish) and
+ *  the readers (listLeadMagnets, the library, the draft review). */
+interface LeadMagnetLifecycle {
+  state: "draft" | "published"
+  created_at: string
+  published_at: string | null
+  /** users.id of the human who published (the approval authority); null while a draft. */
+  approved_by: string | null
+  channels?: string[]
+}
+
+interface CloneLeadMagnetInput {
+  sourceMagnetId: string
+  brokerageId: string
+  agentId: string
+  createdBy: string
+  /** Optional new name; default "Copy of <source name>". */
+  title?: string
+}
+
+interface CloneLeadMagnetOutput extends CreateLeadMagnetOutput {
+  clonedFromId?: string
 }
 
 export interface PublishLeadMagnetInput {
@@ -49,6 +160,24 @@ export interface PublishLeadMagnetOutput {
   error?: string
 }
 
+/**
+ * Wave 142 (lane 142E — the Forms Manager / lead-magnet merge): the contact types a FORM may DECLARE for
+ * its submitters (lead_capture_forms.settings.default_contact_type). Honoured only when the magnet's own
+ * intent (classifyMagnetIntent) says nothing — a generic form. The roster lives in the pure module
+ * lib/lead-magnets/form-contact-types.ts (shared with the builder / review surfaces); re-exported here so
+ * the kernel's callers read it from the kernel. An unrecognised value is dropped (an INSERT the CHECK
+ * refuses would lose the whole capture).
+ */
+export { FORM_DECLARABLE_CONTACT_TYPES }
+
+/** The book a buyer/seller-guide magnet delivers instead of the 5-chapter booklet (lib/lead-magnets/book-creator.ts). */
+export interface LeadMagnetBookRef {
+  pdfUrl: string
+  documentId: string | null
+  title: string
+  chapters: number
+}
+
 export interface CaptureFormSubmissionInput {
   formId: string
   brokerageId: string
@@ -57,20 +186,46 @@ export interface CaptureFormSubmissionInput {
   userAgent?: string
   tcpaConsentGiven?: boolean
   source?: string
+  /**
+   * Wave 142: the intake-time locale the DOOR resolved (lib/contact-pipeline/contact-capture.ts
+   * resolveCapturedLanguage — the ONE resolver; form field, else Accept-Language, both mapped). Stamped on a
+   * NEW contact as contacts.metadata.captured_language, the same place captureContact writes it; never
+   * overwrites an existing contact's.
+   */
+  language?: string | null
+  /**
+   * Wave 141 (lane 141E): where the visitor came from (campaign / ad campaign / creative / QR / utm).
+   * Sanitized again here; `campaignId` is VERIFIED against the magnet's own tenant before anything is
+   * stamped — a query-string id never vouches for itself (CLAUDE.md §4).
+   */
+  attribution?: LeadMagnetAttribution | null
+  /**
+   * THE ONE CONSENT COMPONENT's submission (C15 — wave 148, lane 148B). When present it is the consent record (the wording
+   * re-rendered server-side from the door key + the magnet owner's name); `tcpaConsentGiven` is then derived from it. Absent
+   * (an older client / the public API) → the legacy single box with the form's own disclosure text.
+   */
+  consent?: unknown
+  /** Which C15 door rendered the component (the /forms page renders 'web_form'; magnet landings 'lead_magnet'). */
+  consentDoor?: "lead_magnet" | "web_form"
 }
 
 export interface CaptureFormSubmissionOutput {
   success: boolean
   submissionId?: string
   contactId?: string
+  /** The person behind the capture (wave 102.1 identity layer), null when nothing anchored one. */
+  personId?: string | null
   capturedAt?: string
+  /** What was actually kept: the verified campaign (or null when it was not this tenant's) + the rest. */
+  attribution?: (LeadMagnetAttribution & { campaignVerified: boolean; touchpointId: string | null }) | null
   error?: string
 }
 
 export interface GenerateQRCodeInput {
   magnetId: string
   brokerageId: string
-  agentId: string
+  /** agents.id (qr_codes.agent_id FK → agents.id) — nullable for brokerage-level magnets. */
+  agentId: string | null
   label: string
   targetUrl: string
 }
@@ -78,15 +233,47 @@ export interface GenerateQRCodeInput {
 export interface GenerateQRCodeOutput {
   success: boolean
   qrCodeId?: string
+  /** data:image/png;base64,… rendered by the vendored `qrcode` package (no third-party host). */
   qrImageUrl?: string
+  /** The tracked /api/qr/scan?slug= URL the PNG encodes. */
+  scanUrl?: string
+  /** The SEMANTIC landing URL the code stands for. */
   targetUrl?: string
   slug?: string
   error?: string
 }
 
+/** THE single idempotency key for every lead-magnet QR path. Keyed on the magnet's identity, not
+ *  on its (movable) landing URL — see the note on generateQRCode. */
+export function leadMagnetQrLabel(magnetId: string): string {
+  return `lead_magnet:${magnetId}`
+}
+
+/**
+ * PURE (wave 142): the FINISHED book a magnet distributes, read from `{ book: project }` — since wave 145 the project is the
+ * distributed book's own record (book_projects.project, read through lib/lead-magnets/book-entity.ts loadDistributedBook); only a
+ * project that reached ready_for_review with a hosted PDF counts; anything earlier is null (the booklet
+ * path stands in). One reader for the capture (delivery) and the review surface. @proofSeam asserted directly.
+ */
+export function leadMagnetBookRefOf(settings: Record<string, unknown> | null | undefined): LeadMagnetBookRef | null {
+  const book = ((settings ?? {}) as Record<string, unknown>).book as Record<string, unknown> | null | undefined
+  if (!book || typeof book !== "object") return null
+  if (book.stage !== "ready_for_review" || typeof book.pdf_url !== "string" || !book.pdf_url) return null
+  const chapters = Array.isArray(book.chapters) ? book.chapters.length : 0
+  return { pdfUrl: book.pdf_url, documentId: typeof book.document_id === "string" ? book.document_id : null, title: String(book.title ?? "Your guide"), chapters }
+}
+
 export interface TrackMagnetEventInput {
   magnetId: string
-  brokerageId: string
+  /**
+   * OPTIONAL, and NEVER the tenant authority. The tenant an event is stamped
+   * to is derived from the magnet's own lead_capture_forms row (§4: the caller's
+   * parameter cannot vouch for itself). When supplied it must AGREE with that
+   * row or the event is refused — it exists so a caller that already validated
+   * the pair (captureFormSubmission did) can assert it, not so an anonymous
+   * scan reporter can choose which brokerage's ledger it writes into.
+   */
+  brokerageId?: string
   eventType: "view" | "form_start" | "form_submit" | "qr_scan" | "link_click"
   metadata?: Record<string, unknown>
   contactId?: string
@@ -116,27 +303,10 @@ export interface GetMagnetPerformanceOutput {
     conversionRate: number
     submissionsByDay: Array<{ date: string; count: number }>
     topSources: Array<{ source: string; count: number }>
+    /** Ad-ATTRIBUTED conversions (wave 141E): touchpoints this magnet converted, read from
+     *  marketing_campaign_touchpoints.converted_at — the campaign the capture was verified against. */
+    attributedConversions: { total: number; byCampaign: Array<{ campaignId: string; count: number; lastConvertedAt: string }> }
   }
-  error?: string
-}
-
-export interface UpdateMagnetSettingsInput {
-  magnetId: string
-  brokerageId: string
-  actorUserId: string
-  updates: {
-    name?: string
-    fields?: Array<{ name: string; label: string; type: string; required: boolean }>
-    tcpaDisclosureText?: string
-    thankYouMessage?: string
-    redirectUrl?: string
-    isActive?: boolean
-  }
-}
-
-export interface UpdateMagnetSettingsOutput {
-  success: boolean
-  updatedAt?: string
   error?: string
 }
 
@@ -161,6 +331,13 @@ export interface ListLeadMagnetsOutput {
     formId: string
     qrCodeId?: string
     landingUrl?: string
+    /** Wave 141: draft (never published) vs published (may still be paused via isActive=false). */
+    lifecycleState: "draft" | "published"
+    /** "ai" when draftLeadMagnetFromConcept authored it, "human" otherwise. */
+    authoredBy: "ai" | "human"
+    /** Clone provenance — the magnet this one was cloned from (same tenant), else null. */
+    clonedFromId: string | null
+    clonedFromName: string | null
   }>
   count?: number
   error?: string
@@ -179,9 +356,12 @@ function generateSlug(title: string): string {
     .substring(0, 60) + "-" + Date.now().toString(36)
 }
 
-function defaultFieldsForType(
+/** The canonical fields per magnet type — the identity fields every capture needs plus the type's own
+ *  qualifiers. Exported (wave 141) for the AI draft composer (lib/lead-magnets/ai-draft.ts) and the
+ *  builder action, which ADD a tenant's extra questions on top and never remove these. */
+export function defaultFieldsForType(
   magnetType: CreateLeadMagnetInput["magnetType"]
-): Array<{ name: string; label: string; type: string; required: boolean }> {
+): LeadMagnetField[] {
   const base = [
     { name: "first_name", label: "First Name", type: "text", required: true },
     { name: "last_name",  label: "Last Name",  type: "text", required: true },
@@ -214,20 +394,48 @@ function defaultFieldsForType(
   return base
 }
 
+/**
+ * Wave 149 (lane 149D, m942): the creating USER for lead_capture_forms.created_by_user_id. `createdBy` IS a users.id in this
+ * tenant (every caller passes the session user). Unresolvable / a refused read → null (said), never a guess.
+ *
+ * TOMBSTONE (wave 149Z, lane 149D Outside-lane 3): a second read here crossed an agents.id handed as `createdBy` via
+ * agents.user_id — one value read as two identities (identity-class guard). Its one caller, the launch war room
+ * (lib/kernel/launch-war-room.ts createLeadMagnet call), now passes the agent's users.id, so the crossing is gone.
+ */
+async function resolveCreatorUserId(supabase: Svc, brokerageId: string, createdBy: string): Promise<string | null> {
+  const { data: u, error: uErr } = await supabase.from("users").select("id").eq("id", createdBy).eq("brokerage_id", brokerageId).maybeSingle()
+  if (uErr) { console.warn("[createLeadMagnet] creator users read refused — created_by_user_id left null:", uErr.message); return null }
+  if (!u?.id) console.warn("[createLeadMagnet] createdBy is not a user in this tenant — created_by_user_id left null")
+  return (u?.id as string | undefined) ?? null
+}
+
 // ============================================================================
 // KERNEL COMMAND 1: createLeadMagnet
 // ============================================================================
 
 export async function createLeadMagnet(
-  input: CreateLeadMagnetInput
+  input: CreateLeadMagnetInput,
+  opts: LeadMagnetClientOpts = {},
 ): Promise<CreateLeadMagnetOutput> {
   if (!input.title || !input.brokerageId || !input.agentId || !input.createdBy) {
     return { success: false, error: "Missing required fields: title, brokerageId, agentId, createdBy" }
   }
 
-  const supabase = createServiceClient()
+  const supabase = opts.client ?? createServiceClient()
   const slug = generateSlug(input.title)
   const fields = input.fields?.length ? input.fields : defaultFieldsForType(input.magnetType)
+  const isDraft = input.publishState === "draft"
+  const nowIso = new Date().toISOString()
+  // C11 (wave 147): a magnet that PROMISES an asset is never inserted live — it activates only once its deliverable is ready
+  // (below, and m898's trigger refuses any other way). A magnet that promises nothing keeps the old live insert byte-for-byte.
+  const spec = deliverableSpecFor(input.magnetType, input.settings ?? null)
+  const liveAtInsert = !isDraft && !spec
+  // ONE lifecycle record (settings.lifecycle) — the draft/published fact a paused (is_active=false)
+  // published magnet and a never-published draft would otherwise share.
+  const lifecycle: LeadMagnetLifecycle = { state: liveAtInsert ? "published" : "draft", created_at: nowIso, published_at: liveAtInsert ? nowIso : null, approved_by: liveAtInsert ? input.createdBy : null }
+  const settings: Record<string, unknown> = { ...(input.settings ?? {}), lifecycle }
+  const authoredBy = (settings.authoring as { by?: string } | undefined)?.by === "ai" ? "ai" : "human"
+  const creatorUserId = await resolveCreatorUserId(supabase, input.brokerageId, input.createdBy)
 
   // 1. Create the lead_capture_form
   const { data: form, error: formError } = await supabase
@@ -238,11 +446,17 @@ export async function createLeadMagnet(
       fields,
       brokerage_id: input.brokerageId,
       agent_id: input.agentId,
+      // Wave 149 (lane 149D, owner ruling 10 — m942): the USER who created the magnet (users.id; agents.id is disjoint, §3).
+      // A solo agent, a team or a brokerage — the creator owns what they create; assignment follows agent_id. Resolved, never
+      // trusted raw: a caller that passes an agents.id (launch-war-room does) is crossed via agents.user_id, so the FK holds.
+      created_by_user_id: creatorUserId,
       tcpa_disclosure_text: input.tcpaDisclosureText ?? "By submitting this form, you consent to receive communications from us. You may opt out at any time.",
       thank_you_message: input.thankYouMessage ?? "Thank you! We'll be in touch shortly.",
       redirect_url: input.redirectUrl ?? null,
       magnet_type: input.magnetType,
-      is_active: true,
+      landing_content: input.landingContent ?? null,
+      settings,
+      is_active: liveAtInsert,
       submission_count: 0,
     })
     .select("id, slug")
@@ -252,22 +466,168 @@ export async function createLeadMagnet(
     return { success: false, error: formError?.message ?? "Failed to create form" }
   }
 
-  // 2. Log lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "lead_capture_form",
-    entity_id: form.id,
-    event_type: "lead_magnet_created",
-    actor_user_id: input.createdBy,
-    brokerage_id: input.brokerageId,
-    metadata: { magnetType: input.magnetType, title: input.title },
-  })
+  // 1b. THE DELIVERY ASSET, CREATED WITH THE MAGNET (wave 147, lane 147E — owner ruling 5, contract C11). One unit: if not even
+  // the deliverable RECORD can be written, the magnet is deleted again (counted) — a magnet never exists without its record. A
+  // produced-and-validated asset is `ready`; an async render is `staged`; a failed one is recorded with its reason (the magnet
+  // stays an unpublishable draft — the publish re-produces it). A "live" create activates only on a ready asset whose publisher
+  // the C5 authority permits.
+  let deliverable: DeliverableRow | null = null
+  let deliverableReason: string | null = null
+  if (spec) {
+    const d = await produceLeadMagnetDeliverable(supabase as never, {
+      brokerageId: input.brokerageId, formId: form.id, magnetType: input.magnetType, title: input.title,
+      agentId: input.agentId, settings: input.settings ?? null, actorUserId: input.createdBy,
+    }, opts.deliverable)
+    if (!d.ok && !d.recorded) {
+      const { data: gone, error: delErr } = await supabase.from("lead_capture_forms").delete().eq("id", form.id).eq("brokerage_id", input.brokerageId).select("id")
+      const removed = !delErr && (gone ?? []).length === 1
+      return { success: false, error: `${d.error} — ${removed ? "the lead magnet was not kept (a magnet never exists without its delivery asset)" : `the lead magnet is left as an unpublishable draft (cleanup refused: ${delErr?.message ?? "matched no row"})`}` }
+    }
+    deliverable = d.ok ? (d.required ? d.deliverable : null) : (d.deliverable ?? null)
+    deliverableReason = d.ok ? null : d.error
+    if (!isDraft && deliverable?.status === "ready") {
+      const activated = await activateWithReadyDeliverable(supabase, { brokerageId: input.brokerageId, formId: form.id, agentId: input.agentId, approverUserId: input.createdBy, deliverable, settings, lifecycle, at: new Date().toISOString() })
+      if (activated.ok) { lifecycle.state = "published"; lifecycle.published_at = activated.at; lifecycle.approved_by = input.createdBy }
+      else deliverableReason = activated.error
+    } else if (!isDraft) deliverableReason = deliverableReason ?? `the delivery asset is ${deliverable?.status ?? "missing"} — the magnet stays unpublished until it is ready`
+  }
+
+  // 2. Log lifecycle event (on the SAME client the row landed on — the 101C seam)
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "lead_capture_form",
+    entityId: form.id,
+    event: "lead_magnet_created",
+    actorUserId: input.createdBy,
+    brokerageId: input.brokerageId,
+    metadata: { magnetType: input.magnetType, title: input.title, lifecycleState: lifecycle.state, authoredBy, clonedFromId: (settings.provenance as { cloned_from_id?: string } | undefined)?.cloned_from_id ?? null, deliverableId: deliverable?.id ?? null, deliverableStatus: deliverable?.status ?? null },
+    client: supabase,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return {
     success: true,
     magnetId: form.id,
     slug: form.slug,
     formId: form.id,
+    lifecycleState: lifecycle.state,
+    deliverable: spec ? deliverableSummary(deliverable, deliverableReason) : null,
   }
+}
+
+/**
+ * C11 + C5 (wave 147): activate a magnet whose deliverable is READY, by a person the C5 authority permits to approve the asset
+ * (lib/kernel/approval-authority.ts approverFor, assetKind "asset", scope = the magnet's agent). The approval lands on the
+ * deliverable's own row first (counted), then the magnet activates (counted) — m898's trigger re-checks the ready deliverable.
+ */
+async function activateWithReadyDeliverable(supabase: Svc, a: { brokerageId: string; formId: string; agentId: string | null; approverUserId: string; deliverable: DeliverableRow; settings: Record<string, unknown>; lifecycle: LeadMagnetLifecycle; at: string }): Promise<{ ok: true; at: string } | { ok: false; error: string }> {
+  const gate = await deliverableApprover(supabase, { brokerageId: a.brokerageId, agentId: a.agentId, approverUserId: a.approverUserId })
+  if (!gate.ok) return gate
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  return withActionLedger<{ ok: true; at: string } | { ok: false; error: string }>(
+    {
+      brokerageId: a.brokerageId,
+      action: "marketing.lead_magnet.publish",
+      actor: { type: "user", userId: a.approverUserId },
+      subject: { type: "lead_capture_form", id: a.formId },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: `live create: lead magnet activated with its ready delivery asset (deliverable v${a.deliverable.version})`,
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "lead_magnets",
+      detail: { deliverable_id: a.deliverable.id, deliverable_version: a.deliverable.version, deliverable_kind: a.deliverable.kind, approver_basis: gate.decision.basis },
+    },
+    async () => {
+      const rec = await recordDeliverableApproval(supabase as never, { brokerageId: a.brokerageId, deliverableId: a.deliverable.id, approverUserId: a.approverUserId, decision: gate.decision, at: a.at })
+      if (!rec.ok) return { ok: false as const, error: `the asset's approval was not recorded — not activated: ${rec.error}` }
+      const lifecycle: LeadMagnetLifecycle = { ...a.lifecycle, state: "published", published_at: a.at, approved_by: a.approverUserId }
+      const { data, error } = await supabase.from("lead_capture_forms").update({ is_active: true, settings: { ...a.settings, lifecycle }, updated_at: a.at }).eq("brokerage_id", a.brokerageId).eq("id", a.formId).select("id")
+      if (error) return { ok: false as const, error: `Could not activate the lead magnet: ${error.message}` }
+      if ((data ?? []).length !== 1) return { ok: false as const, error: "Could not activate the lead magnet: no row matched this brokerage + id" }
+      return { ok: true as const, at: a.at }
+    },
+    {
+      settle: (r) => r.ok ? { status: "executed", outcome: "published", providerRef: a.deliverable.id } : { status: "failed", outcome: "activate_refused", error: r.error },
+      replay: (claim) => ({ ok: false as const, error: `ledger refused the activation: ${claim.kind}` }),
+    },
+    { client: supabase as never },
+  )
+}
+
+/** C5: may THIS person approve the asset this magnet delivers? Fails closed on an undecidable authority. */
+async function deliverableApprover(supabase: Svc, a: { brokerageId: string; agentId: string | null; approverUserId: string }): Promise<{ ok: true; decision: { basis: string; tier: string | null; reason: string; permittedUserIds: string[] } } | { ok: false; error: string }> {
+  const { approverFor } = await import("@/lib/kernel/approval-authority")
+  const decision = await approverFor({ brokerageId: a.brokerageId, assetKind: "asset", scope: { agentId: a.agentId }, client: supabase as never })
+  if (!decision.ok) return { ok: false, error: `nobody can approve this page's delivery asset yet: ${decision.reason}` }
+  if (!decision.permittedUserIds.includes(a.approverUserId)) return { ok: false, error: `you are not an approver of this page's delivery asset — ${decision.reason}` }
+  return { ok: true, decision: { basis: decision.basis, tier: decision.tier, reason: decision.reason, permittedUserIds: decision.permittedUserIds } }
+}
+
+// ============================================================================
+// KERNEL COMMAND 1b: cloneLeadMagnet — tenants clone / customize an approved magnet (provenance kept)
+// ============================================================================
+
+/**
+ * Wave 141 (lane 141E, owner: "tenants clone/customize approved assets"). A clone is a NEW DRAFT row
+ * (the human edits, then publishes it — the same approval as any draft) carrying the source's fields,
+ * landing copy, consent text and thank-you, with provenance recorded on settings.provenance
+ * (cloned_from_id / cloned_from_slug / cloned_by / cloned_at). TENANT-PINNED: the source is read by id AND
+ * brokerage_id — another tenant's magnet is simply absent (refused, never copied across).
+ */
+export async function cloneLeadMagnet(
+  input: CloneLeadMagnetInput,
+  opts: LeadMagnetClientOpts = {},
+): Promise<CloneLeadMagnetOutput> {
+  if (!input.sourceMagnetId || !input.brokerageId || !input.agentId || !input.createdBy) {
+    return { success: false, error: "Missing required fields: sourceMagnetId, brokerageId, agentId, createdBy" }
+  }
+  const supabase = opts.client ?? createServiceClient()
+  const { data: source, error: srcErr } = await supabase
+    .from("lead_capture_forms")
+    .select("id, name, slug, fields, magnet_type, tcpa_disclosure_text, thank_you_message, redirect_url, landing_content, settings")
+    .eq("id", input.sourceMagnetId)
+    .eq("brokerage_id", input.brokerageId)
+    .maybeSingle()
+  if (srcErr) return { success: false, error: `Source magnet unreadable: ${srcErr.message}` }
+  if (!source) return { success: false, error: "Source magnet not found in this brokerage" }
+
+  const src = source as { id: string; name: string; slug: string; fields: LeadMagnetField[] | null; magnet_type: string | null; tcpa_disclosure_text: string | null; thank_you_message: string | null; redirect_url: string | null; landing_content: LandingContent | null; settings: Record<string, unknown> | null }
+  const srcSettings = (src.settings ?? {}) as Record<string, unknown>
+  const magnetType = (src.magnet_type ?? "generic_form") as CreateLeadMagnetInput["magnetType"]
+  const landing = src.landing_content && typeof src.landing_content === "object"
+    ? ({ ...src.landing_content, videoUrl: null, videoProjectId: null } as LandingContent) // the source's rendered video is its own asset, never inherited
+    : null
+  const created = await createLeadMagnet({
+    title: input.title?.trim() || `Copy of ${src.name}`,
+    description: "",
+    magnetType,
+    brokerageId: input.brokerageId,
+    agentId: input.agentId,
+    createdBy: input.createdBy,
+    fields: Array.isArray(src.fields) && src.fields.length > 0 ? src.fields : undefined,
+    tcpaDisclosureText: src.tcpa_disclosure_text ?? undefined,
+    thankYouMessage: src.thank_you_message ?? undefined,
+    redirectUrl: src.redirect_url ?? undefined,
+    publishState: "draft",
+    landingContent: landing,
+    settings: {
+      // The notify preference travels with the clone; lifecycle is re-minted by createLeadMagnet.
+      ...(typeof srcSettings.notify_on_submission === "boolean" ? { notify_on_submission: srcSettings.notify_on_submission } : {}),
+      authoring: { by: "human", cloned: true, source_authoring: srcSettings.authoring ?? null },
+      provenance: { cloned_from_id: src.id, cloned_from_slug: src.slug, cloned_from_name: src.name, cloned_by: input.createdBy, cloned_at: new Date().toISOString() },
+    },
+  }, { client: supabase })
+  if (!created.success || !created.magnetId) return created
+
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "lead_capture_form",
+    entityId: created.magnetId!,
+    event: "lead_magnet_cloned",
+    actorUserId: input.createdBy,
+    brokerageId: input.brokerageId,
+    metadata: { clonedFromId: src.id, clonedFromSlug: src.slug, magnetType },
+    auditOnly: true,
+    client: supabase,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
+
+  return { ...created, clonedFromId: src.id }
 }
 
 // ============================================================================
@@ -275,18 +635,24 @@ export async function createLeadMagnet(
 // ============================================================================
 
 export async function publishLeadMagnet(
-  input: PublishLeadMagnetInput
+  input: PublishLeadMagnetInput,
+  opts: LeadMagnetClientOpts = {},
 ): Promise<PublishLeadMagnetOutput> {
   if (!input.magnetId || !input.brokerageId || !input.baseUrl) {
     return { success: false, error: "Missing required fields: magnetId, brokerageId, baseUrl" }
   }
+  if (!input.actorUserId) {
+    // Publishing is the HUMAN APPROVAL of a draft (wave 141): a public page goes live and starts
+    // accepting submissions. An approval with no approver is not evidence — refused, never assumed.
+    return { success: false, error: "Publishing needs an approving user (actorUserId)" }
+  }
 
-  const supabase = createServiceClient()
+  const supabase = opts.client ?? createServiceClient()
 
   // Fetch the form to get slug
   const { data: form, error: fetchError } = await supabase
     .from("lead_capture_forms")
-    .select("id, slug, agent_id")
+    .select("id, slug, agent_id, settings, magnet_type, name")
     .eq("id", input.magnetId)
     .eq("brokerage_id", input.brokerageId)
     .maybeSingle()
@@ -299,54 +665,249 @@ export async function publishLeadMagnet(
   const publishedAt = new Date().toISOString()
   let qrCodeId: string | undefined
   let qrImageUrl: string | undefined
+  let shareCardUrl: string | undefined
 
-  // Activate the form
-  await supabase
-    .from("lead_capture_forms")
-    .update({ is_active: true })
-    .eq("id", input.magnetId)
+  // EVIDENCE (LAW 5): the approval leaves a ledger row — who published, which channels, what URL —
+  // recorded around the activation itself (recording-only claim: a re-publish is a new record, not a replay).
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const curSettings = (((form as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>)
 
-  // Create QR code if requested
-  if (input.channels.includes("qr_code")) {
-    const qrSlug = `lm-${form.slug}`
-    const { data: qr, error: qrError } = await supabase
-      .from("qr_codes")
-      .insert({
-        brokerage_id: input.brokerageId,
-        agent_id: form.agent_id,
-        label: `Lead Magnet: ${form.slug}`,
-        slug: qrSlug,
-        target_url: landingUrl,
-        purpose: "lead_magnet",
-        scan_count: 0,
-        lead_count: 0,
-        is_active: true,
-      })
-      .select("id, slug")
+  // THE HUMAN'S PUBLISH IS THE LAST FAIR-HOUSING GATE (wave 142, lane 142E). Whatever the reviewer edited the
+  // public copy into is scanned once more here — the ONE pattern list + the public gate's blockers — and a
+  // hard flag REFUSES the publish naming the findings. Warnings pass through (CLAUDE.md §5). A magnet with
+  // no landing copy has nothing public to scan beyond its name and thank-you line.
+  let pagePublicText = ""
+  {
+    const { data: pageRow, error: pageErr } = await supabase
+      .from("lead_capture_forms")
+      .select("name, thank_you_message, landing_content")
+      .eq("id", input.magnetId)
+      .eq("brokerage_id", input.brokerageId)
       .maybeSingle()
-
-    if (!qrError && qr) {
-      qrCodeId = qr.id
-      qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(landingUrl)}`
+    if (pageErr) return { success: false, error: `Could not read the page copy before publishing: ${pageErr.message}` }
+    // ONE composition of the page's public words (lib/lead-magnets/public-text.ts — wave 145): the text scanned here is the
+    // text the AI draft's final phase recorded and the text the version ledger below proves went out.
+    const publicText = leadMagnetPublicText(pageRow as Parameters<typeof leadMagnetPublicText>[0])
+    pagePublicText = publicText
+    const { scanPublicCopy } = await import("@/lib/kernel/marketing/public-copy-rewrite")
+    // Wave 143 (lane 143F): a "55+ / senior living" claim passes ONLY against the tenant's recorded, verified
+    // housing-for-older-persons exemption for the community the page names (42 U.S.C. § 3607(b)); an unreadable
+    // record holds the claim — the human's publish never approves an unverified exemption.
+    const { loadOlderPersonsVerifications } = await import("@/lib/compliance/fair-housing-older-persons-store")
+    const olderPersons = await loadOlderPersonsVerifications(supabase as never, input.brokerageId)
+    const scan = await scanPublicCopy(publicText, "lead_magnet", { olderPersons })
+    if (!scan.ok) {
+      return { success: false, error: `Fair-housing review: the page copy still says ${scan.findings.map((f) => `"${f.phrase}"`).join(", ")} — rewrite it (${scan.findings.map((f) => f.fix).join("; ")}) before publishing.` }
     }
   }
 
+  // A BOOK MAGNET PUBLISHES ONLY WITH ITS FINISHED, REVIEWABLE BOOK (wave 142): a half-written manuscript has
+  // no deliverable, so the page would promise a book the capture cannot send. Fail closed, name the stage.
+  let bookSignOff: HumanizedReviewRecord | null = null
+  // The book this form DISTRIBUTES (wave 145 — its own row). An unreadable book FAILS CLOSED: a page that promises a book is
+  // never published on a gate that could not read the book.
+  const distributed = await loadDistributedBook(supabase as never, input.brokerageId, input.magnetId, curSettings)
+  if (distributed.error) return { success: false, error: `The book this lead magnet distributes could not be read — not published: ${distributed.error}` }
+  {
+    const book = (distributed.book?.project ?? null) as { stage?: string; needs_human_review?: number[]; chapters?: Array<{ body?: string; edited?: { human_revised_at?: string } }> } | null
+    if (book && typeof book === "object" && book.stage && book.stage !== "ready_for_review") {
+      return { success: false, error: `The book is still being written (stage: ${book.stage.replace(/_/g, " ")}) — finish it before publishing this lead magnet.` }
+    }
+    // A chapter the AI could not make compliant within its cap is the HUMAN's to rewrite (reviseBookChapter) —
+    // until then the PDF still carries the steering text, so the publish fails closed naming the chapters.
+    if (book && typeof book === "object" && Array.isArray(book.needs_human_review) && book.needs_human_review.length > 0) {
+      const n = book.needs_human_review.length
+      return { success: false, error: `Fair-housing review: chapter${n === 1 ? "" : "s"} ${book.needs_human_review.join(", ")} of the book still need${n === 1 ? "s" : ""} your rewrite (the AI reached its cap) — revise ${n === 1 ? "it" : "them"} before publishing.` }
+    }
+    // THE HUMANIZED REVIEW (wave 144): an AI-drafted chapter that still reads machine-written is the HUMAN's to rewrite in
+    // their own voice before the book goes out; the reviewer's publish is then the sign-off, recorded on the BOOK's own row
+    // (book_projects.project.humanized_review — any later revision clears it) by a counted write before the page activates.
+    if (book && typeof book === "object" && Array.isArray(book.chapters)) {
+      const review = humanizedReviewState(book.chapters)
+      if (!review.ready) return { success: false, error: humanizedReviewRefusal(review) }
+      bookSignOff = { by: input.actorUserId, at: publishedAt, basis: "lead_magnet_publish", chapters_human_revised: review.humanRevised, ai_tells_open: 0 }
+    }
+  }
+  // NO OFFER WITHOUT ITS ASSET (wave 147, lane 147E — owner ruling 5, contract C11). A page that promises a guide / book / report /
+  // agent-prepared value publishes only with its deliverable READY (produced and validated). A magnet drafted before the ruling,
+  // or whose production failed, gets its asset produced now; a staged asset (a book still being written) refuses with the
+  // reason. And the person publishing must be one the C5 authority permits to approve that asset (contract C5).
+  const formRow = form as { agent_id: string | null; magnet_type?: string | null; name?: string | null }
+  const deliverableGate = await ensureDeliverableForPublish(supabase as never, {
+    brokerageId: input.brokerageId, formId: input.magnetId, magnetType: formRow.magnet_type ?? "generic_form", title: formRow.name ?? form.slug,
+    agentId: formRow.agent_id ?? null, settings: curSettings, actorUserId: input.actorUserId,
+  }, opts.deliverable)
+  if (!deliverableGate.ok) return { success: false, error: `Not published — the asset this page promises is not ready: ${deliverableGate.error}` }
+  let deliverableApproval: { deliverable: DeliverableRow; decision: { basis: string; tier: string | null; reason: string; permittedUserIds: string[] } } | null = null
+  if (deliverableGate.required) {
+    const gate = await deliverableApprover(supabase, { brokerageId: input.brokerageId, agentId: formRow.agent_id ?? null, approverUserId: input.actorUserId })
+    if (!gate.ok) return { success: false, error: `Not published — ${gate.error}` }
+    deliverableApproval = { deliverable: deliverableGate.deliverable, decision: gate.decision }
+  }
+  // A FUNNEL PUBLISHES ONLY WHEN EVERYTHING IT PROMISES IS REAL (wave 148, lane 148G — owner ruling 11, contract C21): every
+  // PROMISED item ready (validated) or truthfully arranged — statuses re-read from their survivors first — and the publisher a
+  // C5-permitted approver. A staged bonus never blocks; a staged / failed promise does, by name. Not a funnel → unchanged.
+  const { funnelPublishGate, recordFunnelApproval } = await import("@/lib/lead-magnets/magnet-funnel")
+  const funnelGate = await funnelPublishGate(supabase as never, { brokerageId: input.brokerageId, formId: input.magnetId, settings: curSettings, agentId: formRow.agent_id ?? null, approverUserId: input.actorUserId })
+  if (!funnelGate.ok) return { success: false, error: `Not published — ${funnelGate.error}` }
+  // THE VERSION THAT GOES OUT (wave 145, lane 145G — owner ruling 20 / contract C4): the page about to go live is checked
+  // against the humanized final the AI draft recorded (distribution_finals, lib/marketing/humanize-final.ts): byte-for-byte the
+  // staged final, or the reviewer's OWN edit — which must keep every disclosure the final carried and no word the brand
+  // prohibits (fair housing was scanned above). This publish is the human approval. FAIL CLOSED: an unreadable ledger refuses.
+  const hf = await import("@/lib/marketing/humanize-final")
+  const { resolveBrandVoiceCore } = await import("@/lib/kernel/brand-voice")
+  const pageVoice = await resolveBrandVoiceCore(supabase as never, { brokerageId: input.brokerageId, actorUserId: input.actorUserId })
+  const versionInput = {
+    brokerageId: input.brokerageId, assetKind: "lead_magnet" as const, assetTable: "lead_capture_forms", assetId: input.magnetId,
+    content: pagePublicText, approval: { approved: true, by: input.actorUserId, at: publishedAt },
+    tenantBrand: { prohibitedWords: pageVoice.prohibitedWords, preferredWords: pageVoice.preferredWords },
+  }
+  const versionCheck = await hf.checkDistributionPublication(supabase as never, versionInput)
+  if (!versionCheck.ok) return { success: false, error: `Not published — ${versionCheck.reason}` }
+
+  const prevLifecycle = (curSettings.lifecycle ?? {}) as Partial<LeadMagnetLifecycle>
+  const lifecycle: LeadMagnetLifecycle = {
+    state: "published",
+    created_at: prevLifecycle.created_at ?? publishedAt,
+    published_at: publishedAt,
+    approved_by: input.actorUserId,
+    channels: input.channels,
+  }
+  const activation = await withActionLedger<{ ok: true } | { ok: false; error: string }>(
+    {
+      brokerageId: input.brokerageId,
+      action: "marketing.lead_magnet.publish",
+      actor: { type: "user", userId: input.actorUserId },
+      subject: { type: "lead_capture_form", id: input.magnetId },
+      reasonCode: "HUMAN_REQUESTED",
+      reasonDetail: `human approval: publish lead magnet ${form.slug} to ${input.channels.join(", ")}`,
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "lead_magnets",
+      detail: { channels: input.channels, landingUrl, authoring: curSettings.authoring ?? null, provenance: curSettings.provenance ?? null, deliverable: deliverableApproval ? { id: deliverableApproval.deliverable.id, version: deliverableApproval.deliverable.version, kind: deliverableApproval.deliverable.kind, approver_basis: deliverableApproval.decision.basis } : null, funnel: funnelGate.required ? { promised: funnelGate.items.filter((i) => i.promised).map((i) => ({ key: i.item_key, kind: i.kind, status: i.status })), approver_basis: funnelGate.decision.basis } : null },
+    },
+    async () => {
+      // C11 + C5: the approval of the delivery asset lands on ITS row first (counted, ready-fenced) — never an activation on an
+      // unrecorded approval, and never on a deliverable that stopped being ready since the gate read it.
+      if (deliverableApproval) {
+        const rec = await recordDeliverableApproval(supabase as never, { brokerageId: input.brokerageId, deliverableId: deliverableApproval.deliverable.id, approverUserId: input.actorUserId, decision: deliverableApproval.decision, at: publishedAt })
+        if (!rec.ok) return { ok: false as const, error: `The delivery asset's approval was not recorded — not published: ${rec.error}` }
+      }
+      // C21: the funnel's promised items take the approval too (counted) — never an activation on an unrecorded approval.
+      if (funnelGate.required) {
+        const promisedCount = funnelGate.items.filter((i) => i.promised).length
+        const rec = await recordFunnelApproval(supabase as never, { brokerageId: input.brokerageId, formId: input.magnetId, approverUserId: input.actorUserId, decision: funnelGate.decision, at: publishedAt, promisedCount })
+        if (!rec.ok) return { ok: false as const, error: `The funnel's approval was not recorded — not published: ${rec.error}` }
+      }
+      // The humanized-review sign-off lands on the BOOK first (counted): a page never activates on an unrecorded sign-off.
+      if (bookSignOff && distributed.book) {
+        const signed = await saveBookRow(supabase as never, input.brokerageId, distributed.book.id, { project: { ...distributed.book.project, humanized_review: bookSignOff }, updatedAt: publishedAt })
+        if (signed) return { ok: false as const, error: `The book's humanized-review sign-off was not recorded — not published: ${signed}` }
+      }
+      // Activate the form + record the approval on ONE row (a COUNTED update — CLAUDE.md §3).
+      const { data: activated, error: activateErr } = await supabase
+        .from("lead_capture_forms")
+        .update({ is_active: true, settings: { ...curSettings, lifecycle }, updated_at: publishedAt })
+        .eq("brokerage_id", input.brokerageId)
+        .eq("id", input.magnetId)
+        .select("id")
+      if (activateErr) return { ok: false as const, error: `Could not activate the lead magnet: ${activateErr.message}` }
+      if ((activated ?? []).length !== 1) return { ok: false as const, error: "Could not activate the lead magnet: no row matched this brokerage + id" }
+      return { ok: true as const }
+    },
+    {
+      settle: (r) => r.ok ? { status: "executed", outcome: "published", providerRef: form.slug } : { status: "failed", outcome: "activate_refused", error: r.error },
+      replay: (claim) => ({ ok: false as const, error: `ledger refused the publish: ${claim.kind}` }),
+    },
+    { client: supabase as any },
+  )
+  if (!activation.ok) return { success: false, error: activation.error }
+
+  // RECORD WHAT WENT LIVE (C4): the approved final marked published — or the reviewer's edit as its own version (basis
+  // human_edit). The page is already live, so a lost record is logged loudly, never an unwound publish.
+  {
+    const rec = await hf.recordDistributionPublication(supabase as never, { ...versionInput, via: "lead_magnet_page", ref: form.slug, now: new Date(publishedAt) })
+    if (!rec.ok) console.error("[publishLeadMagnet] the published version was NOT recorded:", rec.error)
+  }
+
+  // Create QR code if requested.
+  // MERGED-THEN-DELETED: this used to be its own `qr_codes` insert with slug `lm-<formSlug>` and
+  // NO dedupe at all, so re-publishing a magnet minted a second tracked code and split its scan
+  // count away from the one generateQRCode had already made. It now goes through the single
+  // lead-magnet minter (generateQRCode → mintTrackedQr), which dedupes on `lead_magnet:<magnetId>`
+  // and stamps destination_type — neither of which this path did.
+  if (input.channels.includes("qr_code")) {
+    const qrResult = await generateQRCode({
+      magnetId: input.magnetId,
+      brokerageId: input.brokerageId,
+      agentId: form.agent_id ?? null,
+      label: `Lead Magnet: ${form.slug}`,
+      targetUrl: landingUrl,
+    }, { client: supabase, mintTrackedQr: opts.mintTrackedQr })
+    if (qrResult.success) {
+      qrCodeId = qrResult.qrCodeId
+      qrImageUrl = qrResult.qrImageUrl
+    } else {
+      // A refused QR must not read as "published with a QR" — the caller shows the urls it gets.
+      console.error("[publishLeadMagnet] QR code was NOT created:", qrResult.error)
+    }
+  }
+
+  // OG/share card — best-effort, structurally the QR branch's sibling:
+  // conditional on real data, logs the refusal, never fakes success. A magnet
+  // with no landing_content gets NO card (enqueueLeadMagnetCard refuses by
+  // prop name via missingContentProps — Root.tsx's defaults would otherwise
+  // fabricate an offer on an ad card). The render is async; the finished PNG is
+  // read back at render time by /lm/[slug] generateMetadata and by the next
+  // publish call below.
+  {
+    // Best-effort by contract: a producer that THROWS (a module it needs cannot load) is the same
+    // honest refusal as one that returns skipped — the publish already landed and must not unwind.
+    const cardResult = await enqueueLeadMagnetCard(input.magnetId, input.brokerageId, supabase)
+      .catch((e: unknown) => ({ ok: false as const, skipped: `card producer threw: ${(e as Error)?.message ?? String(e)}` }))
+    if (!cardResult.ok) {
+      console.error("[publishLeadMagnet] share card was NOT enqueued:", cardResult.skipped)
+    }
+  }
+
+  // urls.share UPGRADE: this used to repeat the landing URL. Once a LeadMagnetCard
+  // render has completed for this magnet (a prior publish enqueued it), share
+  // becomes the finished 1200×630 card image — the artifact a social/ad share
+  // actually wants. First publish (nothing rendered yet) and any refused read
+  // keep the honest landing-URL fallback.
+  {
+    const { data: card, error: cardErr } = await supabase
+      .from("remotion_composition_renders")
+      .select("output_url")
+      .eq("brokerage_id", input.brokerageId)
+      .eq("entity_type", "lead_capture_form")
+      .eq("entity_id", input.magnetId)
+      .eq("composition_id", "LeadMagnetCard")
+      .eq("render_status", "succeeded")
+      .not("output_url", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (cardErr) console.error("[publishLeadMagnet] share-card read refused:", cardErr.message)
+    else if (card?.output_url) shareCardUrl = card.output_url as string
+  }
+
   // Log lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "lead_capture_form",
-    entity_id: input.magnetId,
-    event_type: "lead_magnet_published",
-    actor_user_id: input.actorUserId,
-    brokerage_id: input.brokerageId,
-    metadata: { channels: input.channels, landingUrl, publishedAt },
-  })
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "lead_capture_form",
+    entityId: input.magnetId,
+    event: "lead_magnet_published",
+    actorUserId: input.actorUserId,
+    brokerageId: input.brokerageId,
+    metadata: { channels: input.channels, landingUrl, publishedAt, approvedBy: input.actorUserId },
+    client: supabase,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   return {
     success: true,
     urls: {
       landing: landingUrl,
       qr: qrImageUrl,
-      share: landingUrl,
+      share: shareCardUrl ?? landingUrl,
     },
     qrCodeId,
     publishedAt,
@@ -354,23 +915,245 @@ export async function publishLeadMagnet(
 }
 
 // ============================================================================
+// KERNEL COMMAND 2b: enqueueLeadMagnetCard — the LeadMagnetCard producer
+// ============================================================================
+
+interface EnqueueLeadMagnetCardResult {
+  ok: boolean
+  renderId?: string
+  /** Why no render was queued — a refusal names its reason, never fakes success. */
+  skipped?: string
+}
+
+/** Cosmetic eyebrow per magnet type (contract-cosmetic — a default here cannot
+ *  state a wrong fact; the OFFER itself is headline/subhead, which REFUSE). */
+function cardEyebrowForMagnetType(magnetType: string | null | undefined): string {
+  switch (magnetType) {
+    case "home_valuation": return "FREE HOME VALUE"
+    case "buyer_guide":    return "FREE BUYER GUIDE"
+    case "seller_guide":   return "FREE SELLER GUIDE"
+    case "market_report":  return "MARKET REPORT"
+    case "listing_alert":  return "LISTING ALERTS"
+    case "open_house":     return "OPEN HOUSE"
+    default:               return "FREE GUIDE"
+  }
+}
+
+
+/**
+ * Wave 102.1 identity evidence for a public form capture. Mirrors lib/contact-pipeline/contact-capture.ts
+ * recordCapturePersonEvidence (the identity layer every capture door shares): resolve ONCE, link the contact
+ * (capture_match) and the submission row on the same person. A refusal is SAID (console) and the capture is
+ * unaffected — identity is evidence, never a gate.
+ */
+async function recordFormCapturePersonEvidence(
+  supabase: any,
+  args: { brokerageId: string; contactId: string | null; submissionId: string; firstName: string | null; lastName: string | null; email: string | null; phone: string | null },
+): Promise<string | null> {
+  try {
+    const { resolvePerson, linkPersonEvidence } = await import("@/lib/kernel/person-identity")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    const person = await resolvePerson(supabase, {
+      brokerageId: args.brokerageId,
+      firstName: args.firstName, lastName: args.lastName, email: args.email, phone: args.phone,
+    })
+    if (!person.ok) {
+      if (person.reason !== "no_identity_anchor") console.warn(`[lead-magnets] person identity not resolved: ${person.reason}`)
+      return null
+    }
+    if (args.contactId) {
+      const c = await linkPersonEvidence(supabase, {
+        brokerageId: args.brokerageId, personId: person.personId,
+        entityType: "contact", entityId: args.contactId, matchMethod: "capture_match", matchScore: 1,
+        source: "form_submit", actor: { type: "system", userId: null }, identity: person.identity,
+        existingEvent: KernelEvent.CONTACT_CAPTURED,
+      })
+      if (!c.ok) console.warn(`[lead-magnets] contact person evidence not recorded: ${c.reason}`)
+    }
+    const sub = await linkPersonEvidence(supabase, {
+      brokerageId: args.brokerageId, personId: person.personId,
+      entityType: "form_submission", entityId: args.submissionId, matchMethod: "capture_match", matchScore: 1,
+      source: "form_submit", actor: { type: "system", userId: null }, identity: person.identity,
+      existingEvent: KernelEvent.FORM_SUBMISSION_RECEIVED,
+    })
+    if (!sub.ok) console.warn(`[lead-magnets] submission person evidence not recorded: ${sub.reason}`)
+    return person.personId
+  } catch (err) {
+    console.warn("[lead-magnets] person identity threw (submission unaffected):", err instanceof Error ? err.message : String(err))
+    return null
+  }
+}
+
+/**
+ * Enqueue the 1200×630 LeadMagnetCard still for one magnet — the producer the
+ * registered composition never had (remotion/Root.tsx used to carry the
+ * "NO producer stages this composition" tombstone).
+ *
+ * REFUSAL, NOT DEFAULTS: headline/subhead are the contract-required props
+ * (lib/remotion/content-contract.ts LeadMagnetCard — "the offer a lead hands
+ * over their contact details for") and come ONLY from the form's own
+ * lead_capture_forms.landing_content. missingContentProps is asked BEFORE the
+ * insert, so a magnet with no AI-built landing copy gets NO card rather than
+ * Root.tsx's sample offer on an ad surface. This is the same predicate that
+ * already drives noindex on /lm/[slug] (no landing copy ⇒ noindex, and ⇒ no
+ * card) — one condition, two enforcement points.
+ *
+ * DEDUPE is keyed on the magnet's IDENTITY (entity_id = magnetId — the same
+ * ruling as leadMagnetQrLabel: the landing URL moves, the magnet does; see the
+ * generateQRCode header). A card already queued/rendering, or already succeeded
+ * with the SAME copy, is not re-enqueued; changed copy renders a fresh card.
+ */
+// Module-private since 2026-09-08 — no importer outside this file; outside mentions are prose (category B tranche 2).
+async function enqueueLeadMagnetCard(
+  magnetId: string,
+  brokerageId: string,
+  client?: ReturnType<typeof createServiceClient>,
+): Promise<EnqueueLeadMagnetCardResult> {
+  if (!magnetId || !brokerageId) return { ok: false, skipped: "missing magnetId/brokerageId" }
+  const supabase = client ?? createServiceClient()
+
+  const { data: form, error: formErr } = await supabase
+    .from("lead_capture_forms")
+    .select("id, name, agent_id, magnet_type, landing_content")
+    .eq("id", magnetId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (formErr) return { ok: false, skipped: `form unreadable: ${formErr.message}` }
+  if (!form) return { ok: false, skipped: "magnet not found" }
+
+  const lc = (((form as any).landing_content ?? {}) as Record<string, unknown>)
+  const headline = typeof lc.headline === "string" ? lc.headline.trim() : ""
+  const subhead  = typeof lc.subhead  === "string" ? lc.subhead.trim()  : ""
+  const ctaLabel = (typeof lc.cta === "string" && lc.cta.trim()) || "Get started"
+  const eyebrow  = cardEyebrowForMagnetType((form as any).magnet_type)
+
+  // Brokerage brand — resolved the way section-render.ts:143-153 does.
+  const { data: brk, error: brkErr } = await supabase
+    .from("brokerages")
+    .select("name, logo_url, license_number, license_state")
+    .eq("id", brokerageId)
+    .maybeSingle()
+  if (brkErr) return { ok: false, skipped: `brokerage unreadable: ${brkErr.message}` }
+  const brand = {
+    primaryColor:  "#0F172A",
+    accentColor:   "#F59E0B",
+    brokerageName: (brk as any)?.name ?? "Your Brokerage",
+    logoUrl:       (brk as any)?.logo_url ?? undefined,
+    licenseLine:   [(brk as any)?.license_number, (brk as any)?.license_state].filter(Boolean).join(" · ") || undefined,
+    showEhoMark:   true,
+  }
+
+  const inputProps: Record<string, unknown> = {
+    eyebrow,
+    headline,
+    subhead,
+    ctaLabel,
+    // No fabricated hero — the composition collapses to the centered text card.
+    heroImageUrl: null,
+    brand,
+  }
+  const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+  const missing = missingContentProps("LeadMagnetCard", inputProps)
+  if (missing.length > 0) {
+    return { ok: false, skipped: describeMissingContent("LeadMagnetCard", missing) }
+  }
+
+  // Dedupe on the magnet's identity, not the URL (see the header).
+  const { data: prior, error: priorErr } = await supabase
+    .from("remotion_composition_renders")
+    .select("id, render_status, input_props")
+    .eq("brokerage_id", brokerageId)
+    .eq("entity_type", "lead_capture_form")
+    .eq("entity_id", magnetId)
+    .eq("composition_id", "LeadMagnetCard")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (priorErr) {
+    // A refused dedupe read must not silently double-enqueue — report it.
+    return { ok: false, skipped: `dedupe read refused: ${priorErr.message}` }
+  }
+  if (prior) {
+    const p = prior as { id: string; render_status: string | null; input_props: Record<string, unknown> | null }
+    if (p.render_status === "queued" || p.render_status === "rendering") {
+      return { ok: true, renderId: p.id, skipped: "card render already in flight" }
+    }
+    const prev = (p.input_props ?? {}) as Record<string, unknown>
+    const sameCopy = prev.headline === headline && prev.subhead === subhead
+      && prev.eyebrow === eyebrow && prev.ctaLabel === ctaLabel
+    if (p.render_status === "succeeded" && sameCopy) {
+      return { ok: true, renderId: p.id, skipped: "current copy already rendered" }
+    }
+  }
+
+  // agent attribution: lead_capture_forms.agent_id is AGENTS-class;
+  // remotion_composition_renders.agent_user_id is USERS-class (§3 — disjoint).
+  let agentUserId: string | null = null
+  if ((form as any).agent_id) {
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    agentUserId = await resolveUserIdForAgentRecord(supabase, (form as any).agent_id)
+  }
+
+  const { data: render, error: insErr } = await supabase
+    .from("remotion_composition_renders")
+    .insert({
+      brokerage_id:    brokerageId,
+      composition_id:  "LeadMagnetCard",
+      agent_user_id:   agentUserId,
+      entity_type:     "lead_capture_form",
+      entity_id:       magnetId,
+      used_did_avatar: false,
+      used_voiceover:  false,
+      render_status:   "queued",
+      input_props:     inputProps,
+      // Brokerage-scoped: a magnet's share card is tenant marketing collateral,
+      // not a per-agent avatar piece.
+      scope_type:      "brokerage",
+      scope_id:        brokerageId,
+      // 'api' is on the requested_via allowlist (check-vocabularies:
+      // remotion_composition_renders.requested_via; the allowlist is also noted
+      // at avatar-render-orchestrator.ts:86-88) — this enqueue rides the
+      // publishLeadMagnet command, not a cron tick.
+      requested_via:   "api",
+      is_published:    false,
+    })
+    .select("id")
+    .single()
+  if (insErr || !render) return { ok: false, skipped: `render insert refused: ${insErr?.message ?? "no row returned"}` }
+  return { ok: true, renderId: (render as { id: string }).id }
+}
+
+// ============================================================================
 // KERNEL COMMAND 3: captureFormSubmission
 // ============================================================================
 
+/** The contacts.timeline CHECK buckets a magnet form may carry as a situation field (CLAUDE.md §5 — buckets only). */
+const LEAD_MAGNET_TIMELINES = new Set(["immediate", "1-3_months", "3-6_months", "6-12_months", "12+_months", "researching"])
+
+/**
+ * Who a magnet's C15 consent names — THE one rule (lib/contact-pipeline/contact-capture.ts resolveConsentBrand): its agent
+ * (full name), else its brokerage. The magnet page renders the component through the same rule.
+ */
+export async function leadMagnetConsentBrand(supabase: { from: (t: string) => any }, brokerageId: string, agentId: string | null): Promise<string> {
+  const { resolveConsentBrand } = await import("@/lib/contact-pipeline/contact-capture")
+  return resolveConsentBrand(supabase, { agentId, brokerageId })
+}
+
 export async function captureFormSubmission(
-  input: CaptureFormSubmissionInput
+  input: CaptureFormSubmissionInput,
+  opts: LeadMagnetClientOpts = {},
 ): Promise<CaptureFormSubmissionOutput> {
   if (!input.formId || !input.brokerageId || !input.submissionData) {
     return { success: false, error: "Missing required fields: formId, brokerageId, submissionData" }
   }
 
-  const supabase = createServiceClient()
+  const supabase = opts.client ?? createServiceClient()
   const submittedAt = new Date().toISOString()
 
   // Verify form exists and is active
   const { data: form, error: formError } = await supabase
     .from("lead_capture_forms")
-    .select("id, is_active, agent_id, magnet_type")
+    .select("id, is_active, agent_id, magnet_type, name, settings, landing_content, tcpa_disclosure_text")
     .eq("id", input.formId)
     .eq("brokerage_id", input.brokerageId)
     .maybeSingle()
@@ -380,54 +1163,137 @@ export async function captureFormSubmission(
   }
 
   if (!form.is_active) {
+    // A DRAFT (never published) and a paused magnet refuse alike — fail closed (wave 141: the draft the
+    // AI wrote is a real row, and this is what keeps it from capturing before a human approves it).
     return { success: false, error: "This form is no longer accepting submissions" }
+  }
+
+  // ── ATTRIBUTION (wave 141, lane 141E) ──────────────────────────────────────
+  // Sanitized again (the public door and the action both pass it; a forged in-process shape is cleaned
+  // the same way a query string is). The campaign id is VERIFIED against the magnet's tenant before it
+  // can be stamped anywhere: a campaign_attribution_id pointing at another brokerage's campaign would
+  // credit that tenant's spend with this tenant's lead. Not this tenant's → dropped, logged, capture
+  // continues with the rest of the attribution (utm / creative / qr are inert strings).
+  const attribution = sanitizeLeadMagnetAttribution(input.attribution)
+  let verifiedCampaignId: string | null = null
+  if (attribution?.campaignId) {
+    const { data: campaignRow, error: campaignErr } = await supabase
+      .from("marketing_campaigns")
+      .select("id")
+      .eq("id", attribution.campaignId)
+      .eq("brokerage_id", input.brokerageId)
+      .maybeSingle()
+    if (campaignErr) console.warn("[lead-magnets] attribution campaign read refused:", campaignErr.message)
+    if (campaignRow?.id) verifiedCampaignId = campaignRow.id as string
+    else console.warn(`[lead-magnets] attribution campaign ${attribution.campaignId} is not this brokerage's — dropped`)
+  }
+  const consentText = ((form as { tcpa_disclosure_text?: string | null }).tcpa_disclosure_text ?? "By submitting this form, you consent to receive communications from us. You may opt out at any time.")
+
+  // TCPA CONSENT IS REQUIRED ON A VALUATION FORM — ONE RULE, IN THE KERNEL.
+  // A submission carrying a property address is a home-value request and will
+  // be worked by phone/text, so it may not be recorded without consent. This
+  // rule used to live only in the public HTTP door
+  // (app/api/lead-magnets/submissions/route.ts), which meant the in-app door
+  // (app/actions/lead-magnet-capture.ts, the one /lm/[slug] actually uses)
+  // recorded consent-less valuation requests the API would have refused. Both
+  // doors now get the same answer from the same place, and the consent record
+  // (form_submissions.tcpa_consent_given below) means the same thing on both.
+  if ("property_address" in input.submissionData && !input.tcpaConsentGiven) {
+    return { success: false, error: "TCPA consent required for this form" }
   }
 
   // Try to match or create a contact from submission data
   const data = input.submissionData as Record<string, string>
   let contactId: string | undefined
+  // Wave 147 (C8): whether THIS capture created the contact or found it (the consented-intake record names it).
+  let captureAction: "created" | "merged" = "merged"
 
-  if (data.email) {
-    const { data: existingContact } = await supabase
-      .from("contacts")
-      .select("id, agent_id")
-      .eq("email", data.email)
-      .eq("brokerage_id", input.brokerageId)
-      .maybeSingle()
+  // Hoisted so the autonomous enroller below can resolve the persona whether the
+  // contact already existed or was created by this capture.
+  let capturedContactType: string | null = null
+  let capturedContactPersona: string | null = null
+  let consentWarnings: string[] = []
 
-    if (existingContact) {
-      contactId = existingContact.id
-      // Claim an UNOWNED contact for the magnet's agent — a returning-but-unassigned person who fills
-      // out this agent's lead magnet becomes that agent's lead. Never reassign a contact another agent
-      // already owns (no lead-stealing). The contacts.agent_id trigger emits contact_agent_assigned.
-      if (!(existingContact as any).agent_id && form.agent_id) {
-        await supabase.from("contacts").update({ agent_id: form.agent_id }).eq("id", contactId)
-      }
+  // THE CONSENT — C15 when the form rendered the ONE component, else the form's own single box (legacy). The consent is what
+  // the person ticked beside words the SERVER can re-render; never a default the person was not shown as consent.
+  const magnetOwnerName = await leadMagnetConsentBrand(supabase, input.brokerageId, (form as { agent_id?: string | null }).agent_id ?? null)
+  const { consentGrantsFromComponent } = await import("@/lib/contact-pipeline/contact-capture")
+  const c15 = consentGrantsFromComponent(input.consent, { door: input.consentDoor ?? "lead_magnet", brandName: magnetOwnerName, provided: { email: !!data.email, phone: !!data.phone, address: !!data.property_address } })
+  const magnetPurposes: Array<"home_valuation" | "market_updates" | "listing_alerts" | "event_followup"> =
+    "property_address" in input.submissionData ? ["home_valuation"] : []
+  const consents = c15.submission
+    ? c15.grants
+    : [{
+        family: (data.phone ? "phone" : "email") as "phone" | "email", given: input.tcpaConsentGiven === true, text: consentText,
+        textVersion: `lead_magnet:${input.formId}`, purposes: ["requested_information" as const, ...magnetPurposes],
+      }]
+
+  if (data.email || data.phone) {
+    // ONE DOOR (wave 148, lane 148B — owner ruling 4; lane 147A / 147Z Still open 1 — the "DUPLICATED upsert half").
+    // TOMBSTONE (orphan doctrine §1.1): the email-then-phone dedupe, the attribution / consent UPGRADE update, the
+    // unowned-contact CLAIM update, the contacts INSERT and the voided enrichment queue that stood here were a SECOND upsert
+    // of a consented person beside THE one survivor. Merged onto lib/contact-pipeline/contact-capture.ts
+    // captureConsentedContact (C8) → captureContact, riding THIS kernel's injected client (the contract the blocker named —
+    // its proofs drive it on an in-memory client). Every semantic the merge had to preserve is carried by the survivor now:
+    //   · campaign_attribution_id — the VERIFIED (this tenant's) campaign, FIRST-TOUCH (fill-if-empty on a returning person);
+    //   · source_channel — 'online_form' / 'paid_ad' / 'qr_code' from the proven arrival, first-touch;
+    //   · tcpa_consent_ip — stamped with the phone consent it evidences (C8 passes the evidence ip);
+    //   · the unowned-contact claim — a returning person with no owner is assigned to the magnet's agent (the merge path's
+    //     owner hint); an owned contact is never reassigned (no lead-stealing);
+    //   · consent UPGRADED, never revoked (an unticked box writes nothing);
+    //   · a NEW contact's intent from the magnet type / declared persona, status 'new', the captured language;
+    //   · enrichment queued (captureContact's create AND merge paths), the welcome, person evidence.
+    // The magnet's agent is owner AND creator (contacts.source_agent_id — ruling 12, assigned back to them).
+    const captureMagnetType = ((form as any).magnet_type ?? "generic_form") as string
+    const { classifyMagnetIntent } = await import("@/lib/marketing/lead-magnet-intent")
+    const intentRouting = classifyMagnetIntent(captureMagnetType)
+    // Wave 142: the form's DECLARED persona (settings.default_contact_type — the Forms Manager's one unique
+    // piece, merged onto this kernel) fills in only when the magnet type itself says nothing.
+    const declaredType = declarableContactType((((form as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>).default_contact_type)
+    const resolvedContactType = intentRouting.contactType ?? declaredType
+    let creatorUserId: string | null = null
+    if ((form as any).agent_id) {
+      const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+      creatorUserId = await resolveUserIdForAgentRecord(supabase, (form as any).agent_id)
+    }
+    const { captureConsentedContact } = await import("@/lib/contact-pipeline/contact-capture")
+    const c8 = await captureConsentedContact({
+      brokerageId: input.brokerageId,
+      ownerAgentId: (form as { agent_id?: string | null }).agent_id ?? null,
+      creatorUserId,
+      source: input.source ?? CONTACT_SOURCE_LEAD_MAGNET,
+      source_channel: sourceChannelFor(attribution),
+      campaign_attribution_id: verifiedCampaignId,
+      // 'lead' → 'new' (§6 merge, 2026-08-31): a lead-magnet capture is a NEW contact — leads are a different entity that
+      // belongs to the brokerage (CLAUDE.md §5). Vocabulary: lib/contact-promotion/qualification.ts CONTACT_STATUSES.
+      status: "new",
+      first_name: data.first_name ?? "",
+      last_name: data.last_name ?? "",
+      email: data.email ?? null,
+      phone: data.phone ?? null,
+      ...(resolvedContactType ? { contact_type: resolvedContactType } : {}),
+      ...(data.timeline && LEAD_MAGNET_TIMELINES.has(data.timeline) ? { timeline: data.timeline } : {}),
+      language: input.language ?? null,
+      consents,
+      intake: {
+        channel: "lead_magnet",
+        // The consent source has always been 'lead_magnet' (the contact's source is the arrival door).
+        consentSource: "lead_magnet",
+        evidence: { ...c15.evidence, ...(c15.wordingHash ? { wording_hash: c15.wordingHash } : {}), form_id: input.formId, source: input.source ?? null, ip: input.ipAddress ?? null, user_agent: input.userAgent ?? null },
+        formOwner: { table: "lead_capture_forms", id: input.formId },
+      },
+    }, { client: supabase as never })
+    if (c8.ok && c8.contactId) {
+      contactId = c8.contactId
+      captureAction = c8.action ?? "merged"
+      consentWarnings = c8.warnings
+      // The enroller's persona inputs, read back off the canonical row (a returning person keeps their own).
+      const { data: row, error: rowErr } = await supabase.from("contacts").select("contact_type, contact_persona").eq("id", contactId).eq("brokerage_id", input.brokerageId).maybeSingle()
+      if (rowErr) console.warn("[lead-magnets] captured contact read-back refused (the enroller resolves no persona):", rowErr.message)
+      capturedContactType = (row as { contact_type?: string | null } | null)?.contact_type ?? resolvedContactType ?? null
+      capturedContactPersona = (row as { contact_persona?: string | null } | null)?.contact_persona ?? null
     } else {
-      // Stamp the new contact's intent from the magnet so determinePortalView shows the right portal +
-      // education (a buyer guide → buyer portal; a seller/home-value magnet → seller portal).
-      const captureMagnetType = ((form as any).magnet_type ?? "generic_form") as string
-      const { classifyMagnetIntent } = await import("@/lib/marketing/lead-magnet-intent")
-      const intentRouting = classifyMagnetIntent(captureMagnetType)
-      const newRow: Record<string, unknown> = {
-        first_name: data.first_name ?? "",
-        last_name:  data.last_name ?? "",
-        email:      data.email,
-        phone:      data.phone ?? null,
-        source:     input.source ?? "lead_magnet",
-        source_channel: "online_form",
-        brokerage_id: input.brokerageId,
-        agent_id:   form.agent_id,
-        status:     "lead",
-      }
-      if (intentRouting.contactType) newRow.contact_type = intentRouting.contactType
-      const { data: newContact } = await supabase
-        .from("contacts")
-        .insert(newRow)
-        .select("id")
-        .maybeSingle()
-
-      if (newContact) contactId = newContact.id
+      console.error(`[lead-magnets] consented intake REFUSED for brokerage ${input.brokerageId}: ${c8.refused ?? "?"} — ${c8.reason ?? ""}`)
     }
   }
 
@@ -441,7 +1307,10 @@ export async function captureFormSubmission(
       submission_data: input.submissionData,
       ip_address: input.ipAddress ?? null,
       user_agent: input.userAgent ?? null,
-      tcpa_consent_given: input.tcpaConsentGiven ?? false,
+      tcpa_consent_given: c15.submission ? consents.some((g) => g.given && (g.family === "phone" || g.slot === "service_delivery")) : (input.tcpaConsentGiven ?? false),
+      // The arrival channel, written (wave 141) — it was a live column with a reader (person-timeline)
+      // and no writer, and getMagnetPerformance.topSources fabricated a 50/50 split in its place.
+      source: input.source ?? (attribution ? sourceChannelFor(attribution) : null),
       submitted_at: submittedAt,
     })
     .select("id")
@@ -454,9 +1323,58 @@ export async function captureFormSubmission(
   // Increment submission count on form (atomic — avoids read-modify-write races)
   await supabase.rpc("increment_form_submission_count", { form_id_input: input.formId })
 
+  // PERSON IDENTITY (wave 102.1) — merged onto this kernel command at wave-142 integration from the retired
+  // /api/forms/submit capture path (lane 142E consolidated the route here; the kernel's contact path never resolved
+  // a person). ONE resolve; the CONTACT (capture_match) and the SUBMISSION row linked on the same person; person_id
+  // rides FORM_SUBMISSION_RECEIVED through the output. Best-effort: never blocks the capture.
+  const personId = await recordFormCapturePersonEvidence(supabase, {
+    brokerageId: input.brokerageId, contactId: contactId ?? null, submissionId: submission.id,
+    firstName: data.first_name ?? null, lastName: data.last_name ?? null, email: data.email ?? null, phone: data.phone ?? null,
+  })
+
+  // CONSENT RECORD — CONTRACT C8 (wave 147, lane 147A; owner ruling 1; wave 148 lane 148B). TOMBSTONE: this used to be its
+  // own contact_consent_events insert (consent_type 'marketing' — a THIRD spelling, CLAUDE.md §6), then (wave 147) a direct
+  // call to the record half (completeConsentedIntake) after this kernel's OWN upsert. Since wave 148 the WHOLE intake —
+  // contact AND consent record AND lead closure AND event AND the AI ISA desk — is the one captureConsentedContact call
+  // above; its warnings (any best-effort step that did not land) are said here.
+  for (const w of consentWarnings) console.warn(`[lead-magnets] consented intake: ${w}`)
+
+  // ATTRIBUTION TOUCHPOINT (wave 141): the conversion lands on the EXISTING attribution spine —
+  // marketing_campaign_touchpoints (status 'converted', external_table form_submissions) — so
+  // marketing_attribution_credits, manager-touch-provenance and the twin see a lead-magnet conversion
+  // from an ad / QR without a new table. Written here on the capture's own client (the recorder,
+  // lib/marketing/touchpoint-recorder.ts, is server-only and mints its own service client — no seam);
+  // its row shape and metadata.manager rule (touchpointManagerForChannel) are reused verbatim.
+  // BLIND SPOT, published: the live channel CHECK has no paid-search value, so a Google click keeps its
+  // contact-level campaign stamp but writes no touchpoint row (touchpointChannelFor returns null).
+  let touchpointId: string | null = null
+  const touchpointChannel = touchpointChannelFor(attribution)
+  if (verifiedCampaignId && contactId && touchpointChannel) {
+    const { touchpointManagerForChannel } = await import("@/lib/campaign-sequences/touchpoint-bridge")
+    const { data: tp, error: tpErr } = await supabase
+      .from("marketing_campaign_touchpoints")
+      .insert({
+        brokerage_id:   input.brokerageId,
+        campaign_id:    verifiedCampaignId,
+        contact_id:     contactId,
+        channel:        touchpointChannel,
+        external_table: "form_submissions",
+        external_id:    submission.id,
+        status:         "converted",
+        source:         "trigger",
+        metadata:       { manager: touchpointManagerForChannel(touchpointChannel), magnet_id: input.formId, ad_campaign_id: attribution?.adCampaignId ?? null, creative: attribution?.creative ?? null, qr: attribution?.qr ?? null, utm_source: attribution?.utmSource ?? null, utm_medium: attribution?.utmMedium ?? null, utm_campaign: attribution?.utmCampaign ?? null, utm_content: attribution?.utmContent ?? null },
+        sent_at:        submittedAt,
+        converted_at:   submittedAt,
+      })
+      .select("id")
+      .maybeSingle()
+    if (tpErr) console.error("[lead-magnets] attribution touchpoint REFUSED:", tpErr.message)
+    else touchpointId = (tp as { id?: string } | null)?.id ?? null
+  }
+
   // If it was a home valuation, create a valuation_request record
   if (data.property_address && contactId) {
-    await supabase.from("valuation_requests").insert({
+    const { data: valuationRow, error: valuationReqErr } = await supabase.from("valuation_requests").insert({
       brokerage_id: input.brokerageId,
       agent_id: form.agent_id,
       contact_id: contactId,
@@ -470,7 +1388,21 @@ export async function captureFormSubmission(
       condition: data.condition ?? null,
       qualification_data: input.submissionData,
       submitted_at: submittedAt,
-    })
+    }).select("id").maybeSingle()
+    if (valuationReqErr) console.error(`[lead-magnets] home-valuation request NOT recorded: ${valuationReqErr.message}`)
+    // WAVE 151 (151E): an EXISTING contact asking what their home is worth is a first-party seller fact on the SAME contact —
+    // the moving-moment arbiter reassesses need and timing (never a new Lead, never a provider call). A contact this
+    // submission CREATED is the C8 intake's business (its welcome / speed-to-lead baton), so only the merged case re-enters.
+    else if (captureAction === "merged" && (valuationRow as { id?: string } | null)?.id) {
+      const { reassessExistingContact } = await import("@/lib/intent/movement-signals")
+      const reassessed = await reassessExistingContact(supabase as never, {
+        brokerageId: input.brokerageId,
+        contactId,
+        change: { kind: "valuation_request", referenceId: String((valuationRow as { id: string }).id), summary: "asked what their home is worth through the tenant's home-valuation magnet", at: submittedAt },
+        capturedBy: "person",
+      }).catch((e: unknown) => ({ status: "refused" as const, reason: e instanceof Error ? e.message : String(e) }))
+      if (reassessed.status === "refused") console.error(`[lead-magnets] existing-contact reassessment refused: ${reassessed.reason}`)
+    }
 
     // MANAGER-ORCHESTRATED — a valuation lead magnet (they gave us a property address) is strong
     // inbound seller intent. Hand it to the Listing Concierge over the bus for a gated precise-CMA
@@ -486,17 +1418,37 @@ export async function captureFormSubmission(
     }
   }
 
-  // DELIVER THE MAGNET — generate the deliverable copy the contact asked for (gated, Fair-Housing-safe)
-  // and record it so the enrolled sequence/messaging path ships it. The thing a lead magnet was always
-  // missing: it now actually DELIVERS the guide/report. Best-effort; never blocks the capture.
+  // DELIVER WHAT THE MAGNET PROMISED (wave 146, lane 146F — owner ruling 10, contract C4). The request's promise is RECORDED
+  // first (lib/lead-magnets/promised-deliverables.ts — source form + campaign, the contact + resolved person, the promised
+  // asset, the consent basis, the due time; one promise per request), then delivered: the asset must exist and be approved,
+  // it goes out through a permitted channel (the governed email, the secure portal card), and only a verified delivery is
+  // recorded as delivered — a guide that did not render, a held copy or a refused send is asset_missing / failed, retried by
+  // the sweep and raised to the arbiter (lead_magnet_promise_undelivered). Replaces the runner's deliverMagnet, which wrote
+  // "delivered" before anything was sent (tombstone in lib/marketing/lead-magnet-delivery-runner.ts). Best-effort: the
+  // capture already landed, and a promise that could not even be recorded is said loudly.
   const magnetType = ((form as any).magnet_type ?? "generic_form") as
     "home_valuation" | "buyer_guide" | "seller_guide" | "market_report" | "listing_alert" | "open_house" | "generic_form"
   if (contactId) {
     try {
-      const { deliverMagnet } = await import("@/lib/marketing/lead-magnet-delivery-runner")
-      await deliverMagnet({ brokerageId: input.brokerageId, contactId, agentUserId: form.agent_id, magnetType, ctx: { area: data.city ?? null } }, supabase)
+      // Wave 142: a magnet that DISTRIBUTES a FINISHED BOOK (wave 145: the book's own row — book_projects, read through
+      // loadDistributedBook) promises that book; an unreadable book is said and the GUIDE is what was promised.
+      const distributedBook = await loadDistributedBook(supabase as never, input.brokerageId, input.formId, (form as { settings?: Record<string, unknown> | null }).settings ?? null)
+      if (distributedBook.error) console.warn("[lead-magnets] distributed book unreadable — the guide is promised instead:", distributedBook.error)
+      const book = leadMagnetBookRefOf({ book: distributedBook.book?.project ?? null })
+      const { recordPromisedDeliverable, deliverPromised } = await import("@/lib/lead-magnets/promised-deliverables")
+      const promise = await recordPromisedDeliverable(supabase, {
+        brokerageId: input.brokerageId, formId: input.formId, submissionId: submission.id, contactId, personId,
+        magnetType, book, tcpaConsentGiven: input.tcpaConsentGiven === true,
+        campaignId: verifiedCampaignId, attribution: attribution ? { ...attribution, touchpointId } : null,
+      })
+      if (!promise.ok) console.error(`[lead-magnets] the deliverable promise for submission ${submission.id} was NOT recorded: ${promise.error}`)
+      else if (promise.promised && !promise.reused) {
+        const delivered = await deliverPromised(supabase, { brokerageId: input.brokerageId, promiseId: promise.promiseId }, { book })
+        if (!delivered.ok) console.error(`[lead-magnets] promise ${promise.promiseId} delivery errored: ${delivered.error}`)
+        else if (delivered.status !== "delivered") console.warn(`[lead-magnets] promise ${promise.promiseId} not delivered yet (${delivered.status}): ${delivered.reason}`)
+      }
     } catch (err) {
-      console.warn("[lead-magnets] deliverable failed:", err)
+      console.warn("[lead-magnets] deliverable promise failed:", err)
     }
 
     // MANAGER HANDOFF BY INTENT — capture → the right manager. home_valuation already got the stronger
@@ -523,14 +1475,17 @@ export async function captureFormSubmission(
   }
 
   // Log lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "form_submission",
-    entity_id: submission.id,
-    event_type: "form_submission_captured",
-    actor_user_id: contactId ?? null,
-    brokerage_id: input.brokerageId,
-    metadata: { formId: input.formId, contactId, source: input.source },
-  })
+  await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+    entityType: "form_submission",
+    entityId: submission.id,
+    event: "form_submission_captured",
+    // The submitter is a public visitor, not a platform user: actor_user_id FKs users(id), so the
+    // contact id here refused every echo with 23503 (wave 93 live walk). The contact rides in metadata.
+    actorUserId: null,
+    brokerageId: input.brokerageId,
+    metadata: { formId: input.formId, contactId, source: input.source, attribution: attribution ? { ...attribution, campaignId: verifiedCampaignId, campaignVerified: !!verifiedCampaignId, touchpointId } : null },
+    client: supabase,
+  }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
 
   // Notify agent — non-fatal
   if (form.agent_id) {
@@ -543,7 +1498,7 @@ export async function captureFormSubmission(
 
       if (agentRow?.user_id) {
         const submitterName = [data.first_name, data.last_name].filter(Boolean).join(" ") || data.email || "Someone"
-        await supabase.from("notifications").insert({
+        await sentinelWrite(supabase, supabase.from("notifications").insert({
           user_id:     agentRow.user_id,
           brokerage_id: input.brokerageId,
           type:        "lead_magnet_submission",
@@ -555,58 +1510,78 @@ export async function captureFormSubmission(
           priority:    "high",
           channel:     "in_app",
           created_at:  submittedAt,
-        })
+        }), { table: "notifications", flow: "lead_magnets_notify", brokerageId: input.brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
+
+        // EMAIL NOTIFICATION (was "coming soon") — the email twin of the in-app
+        // alert, opt-in per magnet via settings.notify_on_submission (the flag the
+        // builder writes). Sent to the AGENT (internal transactional; no contactId,
+        // so no outbound-to-contact compliance gate), best-effort — a mail failure
+        // never fails the capture the lead already completed.
+        const settingsBag = ((form as any).settings ?? {}) as Record<string, unknown>
+        const legacyBag = ((form as any).landing_content ?? {}) as Record<string, unknown>
+        const notifyByEmail = (settingsBag.notify_on_submission ?? legacyBag.notify_on_submission) === true
+        // PostgREST can return the users(...) embed as an object OR a single-element
+        // array depending on FK detection — handle both so the email never silently drops.
+        const usersEmbed = (agentRow as any).users
+        const agentUser = Array.isArray(usersEmbed) ? usersEmbed[0] : usersEmbed
+        const agentEmail = agentUser?.email as string | undefined
+        if (notifyByEmail && agentEmail) {
+          try {
+            const { dispatchEmail } = await import("@/lib/providers/dispatch")
+            const { DEFAULT_PRODUCT_BRAND } = await import("@/lib/platform/product-brand")
+            const fromEmail = process.env.SENDGRID_FROM_EMAIL ?? "noreply@vip-re.com"
+            const magnetName = ((form as any).name as string | undefined) ?? "your lead capture form"
+            const contactLine = [data.email, data.phone].filter(Boolean).join(" · ")
+            await dispatchEmail({
+              brokerageId:    input.brokerageId,
+              agentId:        form.agent_id ?? undefined,
+              systemSource:   "lead_magnet_notify",
+              channelPurpose: "transactional",
+              from:           `${DEFAULT_PRODUCT_BRAND.name} <${fromEmail}>`,
+              to:             agentEmail,
+              subject:        `New lead: ${submitterName} submitted "${magnetName}"`,
+              html:           `<p><strong>${submitterName}</strong> just submitted <strong>${magnetName}</strong>.</p>` +
+                              (contactLine ? `<p>${contactLine}</p>` : "") +
+                              `<p>Open your dashboard to follow up.</p>`,
+              text:           `${submitterName} just submitted "${magnetName}". ${contactLine}`,
+              metadata:       { formId: input.formId, submissionId: submission.id, contactId },
+            })
+          } catch {
+            // Non-fatal — the in-app notification already landed.
+          }
+        }
       }
     } catch {
       // Non-fatal — submission already recorded
     }
   }
 
-  // Auto-enroll contact in a follow-up sequence — non-fatal
-  if (contactId && form.agent_id) {
-    try {
-      const { data: followUpSeq } = await supabase
-        .from("campaign_sequences")
-        .select("id")
-        .eq("brokerage_id", input.brokerageId)
-        .eq("sequence_type", "lead_magnet")
-        .eq("is_active", true)
-        .limit(1)
-        .maybeSingle()
-
-      if (followUpSeq) {
-        // Check for an existing active enrollment to avoid duplicates
-        const { data: existingEnrollment } = await supabase
-          .from("sequence_enrollments")
-          .select("id")
-          .eq("sequence_id", followUpSeq.id)
-          .eq("contact_id", contactId)
-          .eq("status", "active")
-          .limit(1)
-          .maybeSingle()
-
-        if (!existingEnrollment) {
-          await supabase.from("sequence_enrollments").insert({
-            sequence_id:  followUpSeq.id,
-            contact_id:   contactId,
-            brokerage_id: input.brokerageId,
-            enrolled_at:  submittedAt,
-            status:       "active",
-            current_step: 0,
-            next_step_at: new Date().toISOString(),
-          })
-        }
-      }
-    } catch {
-      // Non-fatal — sequence enrollment is optional
-    }
+  // AUTONOMOUS ENROLMENT — non-fatal by contract (the enroller never throws).
+  // This used to select the sequence by `sequence_type = 'lead_magnet'`, which is
+  // not a value that column's CHECK admits, so it matched nothing on every run
+  // and no lead-magnet capture was ever enrolled. Selection is now by
+  // (source_key, persona) — the discriminator m293 added — through the same
+  // enroller the home-value capture uses, so the two cannot drift apart again.
+  if (contactId) {
+    await autoEnrollContact(supabase, {
+      brokerageId: input.brokerageId,
+      contactId,
+      source: input.source ?? CONTACT_SOURCE_LEAD_MAGNET,
+      contactType: capturedContactType,
+      contactPersona: capturedContactPersona,
+      enrolledBy: form.agent_id ?? null,
+      firstStepDelayMs: 0,   // a magnet download is a warm moment — follow up now
+      now: new Date(submittedAt),
+    })
   }
 
   return {
     success: true,
     submissionId: submission.id,
+    personId,
     contactId,
     capturedAt: submittedAt,
+    attribution: attribution ? { ...attribution, campaignId: verifiedCampaignId, campaignVerified: !!verifiedCampaignId, touchpointId } : null,
   }
 }
 
@@ -614,61 +1589,74 @@ export async function captureFormSubmission(
 // KERNEL COMMAND 4: generateQRCode
 // ============================================================================
 
+/**
+ * generateQRCode — the ONE lead-magnet QR minter (survivor of three).
+ *
+ * MERGED-THEN-DELETED. There were THREE lead-magnet minters writing `qr_codes` with THREE
+ * different dedupe keys, so the same magnet routinely ended up with two or three tracked codes
+ * that could not see each other and split its scan counts:
+ *
+ *   • publishLeadMagnet (this file, ~L300) — inline insert, slug `lm-<formSlug>`, NO dedupe.
+ *   • generateQRCode    (this function)    — deduped on (brokerage_id, target_url), which is not
+ *                                            a stable key: any change to the landing URL minted
+ *                                            a fresh code.
+ *   • generateQRCodeAction (app/actions/lead-magnets-actions.ts) — random slug, NO dedupe.
+ *
+ * This function survived (it is the kernel command with the API-route caller) and the other two
+ * now delegate here. ONE dedupe key for all three: `lead_magnet:<magnetId>` — the magnet's
+ * identity, which does not move when its URL does. What was merged in from the losers:
+ *   • `destination_type: 'landing_page'` — only generateQRCodeAction set it, and every
+ *     destination-bucketed analytic (and the m148 scan-event metadata) was blind without it.
+ *   • the publish path's landing URL as the semantic `target_url`.
+ *
+ * The QR image is now rendered by the vendored `qrcode` package as a data: URI. It used to be an
+ * <img> pointed at api.qrserver.com — which shipped the lead-bearing landing URL to a third party
+ * on every render and put an external host inside a print/PDF path.
+ */
 export async function generateQRCode(
-  input: GenerateQRCodeInput
+  input: GenerateQRCodeInput,
+  opts: LeadMagnetClientOpts = {},
 ): Promise<GenerateQRCodeOutput> {
   if (!input.magnetId || !input.brokerageId || !input.targetUrl) {
     return { success: false, error: "Missing required fields: magnetId, brokerageId, targetUrl" }
   }
 
-  const supabase = createServiceClient()
-
-  // Check for existing QR code for this magnet
-  const { data: existing } = await supabase
-    .from("qr_codes")
-    .select("id, slug, target_url")
-    .eq("brokerage_id", input.brokerageId)
-    .eq("target_url", input.targetUrl)
-    .maybeSingle()
-
-  if (existing) {
-    return {
-      success: true,
-      qrCodeId: existing.id,
-      qrImageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(existing.target_url)}`,
-      targetUrl: existing.target_url,
-      slug: existing.slug,
-    }
+  const supabase = opts.client ?? createServiceClient()
+  // The real minter is server-only; a load failure is an honest refusal (the caller shows the URLs it
+  // got — a refused QR must never read as "published with a QR"), never an unwound publish.
+  let mintTrackedQr: LeadMagnetQrMinter
+  try {
+    mintTrackedQr = opts.mintTrackedQr ?? (await import("@/lib/marketing/tracked-qr")).mintTrackedQr
+  } catch (e) {
+    return { success: false, error: `QR minter unavailable: ${(e as Error)?.message ?? String(e)}` }
   }
 
-  const slug = `lm-${generateSlug(input.label).substring(0, 40)}`
-
-  const { data: qr, error } = await supabase
-    .from("qr_codes")
-    .insert({
-      brokerage_id: input.brokerageId,
-      agent_id: input.agentId,
-      label: input.label,
-      slug,
-      target_url: input.targetUrl,
+  const minted = await mintTrackedQr(
+    {
+      brokerageId: input.brokerageId,
+      agentId: input.agentId ?? null,
+      // ONE dedupe key for every lead-magnet QR path.
+      label: leadMagnetQrLabel(input.magnetId),
+      destinationType: "landing_page",
+      targetUrl: input.targetUrl,
       purpose: "lead_magnet",
-      scan_count: 0,
-      lead_count: 0,
-      is_active: true,
-    })
-    .select("id, slug, target_url")
-    .maybeSingle()
+    },
+    supabase,
+  )
 
-  if (error || !qr) {
-    return { success: false, error: error?.message ?? "Failed to create QR code" }
+  if (!minted) {
+    return { success: false, error: "Failed to create QR code" }
   }
 
   return {
     success: true,
-    qrCodeId: qr.id,
-    qrImageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr.target_url)}`,
-    targetUrl: qr.target_url,
-    slug: qr.slug,
+    qrCodeId: minted.qrCodeId,
+    // The PNG encodes the tracked /api/qr/scan?slug= redirector, never the raw landing URL —
+    // a code that bypasses the resolver records no scan.
+    qrImageUrl: minted.qrCodeDataUrl,
+    scanUrl: minted.scanUrl,
+    targetUrl: minted.targetUrl,
+    slug: minted.slug,
   }
 }
 
@@ -679,71 +1667,106 @@ export async function generateQRCode(
 export async function trackMagnetEvent(
   input: TrackMagnetEventInput
 ): Promise<TrackMagnetEventOutput> {
-  if (!input.magnetId || !input.brokerageId || !input.eventType) {
-    return { success: false, error: "Missing required fields: magnetId, brokerageId, eventType" }
+  if (!input.magnetId || !input.eventType) {
+    return { success: false, error: "Missing required fields: magnetId, eventType" }
   }
 
   const supabase = createServiceClient()
 
+  // ── THE TENANT COMES FROM THE MAGNET, NOT FROM THE CALLER (§4) ────────────
+  // This wrote lifecycle_events (and qr_scan_events) stamped to whatever
+  // `brokerageId` the caller named, on a SERVICE client, while the only row it
+  // read to get there — the form — was looked up by id with NO brokerage
+  // predicate. The scan arm of GET /api/lead-magnets/qr/[magnetId] is
+  // unauthenticated by nature (a scan comes from a stranger's phone) and took
+  // that value from the QUERY STRING, so anyone could forge scan and view
+  // events into any tenant's ledger. That is the body-supplied-brokerageId-on-
+  // a-service-client shape CLAUDE.md §4 names. The form row is the ONE
+  // authority for which tenant a magnet belongs to, so it is read first (for
+  // every event type), its brokerage_id is what every write below carries, and
+  // a caller-supplied brokerageId is only ever CHECKED against it — a
+  // disagreement refuses rather than trusting either side.
+  const { data: form, error: formError } = await supabase
+    .from("lead_capture_forms")
+    .select("id, slug, brokerage_id")
+    .eq("id", input.magnetId)
+    .maybeSingle()
+  if (formError) {
+    return { success: false, error: `Could not resolve the lead magnet: ${formError.message}` }
+  }
+  if (!form?.brokerage_id) {
+    return { success: false, error: "Lead magnet not found" }
+  }
+  const tenantId = form.brokerage_id as string
+  if (input.brokerageId && input.brokerageId !== tenantId) {
+    return { success: false, error: "brokerageId does not match the lead magnet's brokerage" }
+  }
+
   // If it's a QR scan, increment scan count and log qr_scan_event
   if (input.eventType === "qr_scan") {
-    // Find QR code by target_url containing the magnet slug
-    const { data: form } = await supabase
-      .from("lead_capture_forms")
-      .select("slug")
-      .eq("id", input.magnetId)
+    // The code is keyed by its ONE label (leadMagnetQrLabel — the mint path's
+    // idempotency key), not by a substring of its URL: target_url is the
+    // semantic landing URL and is re-pointable, so an ILIKE on the form slug
+    // could match a re-pointed or unrelated code, or nothing at all.
+    const { data: qr, error: qrError } = await supabase
+      .from("qr_codes")
+      .select("id, scan_count")
+      .eq("brokerage_id", tenantId)
+      .eq("label", leadMagnetQrLabel(input.magnetId))
       .maybeSingle()
+    if (qrError) {
+      console.error("[lead-magnets] qr_codes lookup refused:", qrError.message)
+    }
 
-    if (form) {
-      const { data: qr } = await supabase
-        .from("qr_codes")
-        .select("id")
-        .eq("brokerage_id", input.brokerageId)
-        .ilike("target_url", `%${form.slug}%`)
-        .maybeSingle()
-
-      if (qr) {
-        await supabase
-          .from("qr_scan_events")
-          .insert({
-            qr_code_id: qr.id,
-            brokerage_id: input.brokerageId,
-            contact_id: input.contactId ?? null,
-            scanned_at: new Date().toISOString(),
-            ip_address: input.ipAddress ?? null,
-            user_agent: input.userAgent ?? null,
-          })
-
-        // Increment scan_count on qr_codes
-        const { data: qrRow } = await supabase
+    if (qr) {
+      // Errors are READ (§3): a refused scan insert used to resolve silently and
+      // the scan_count still went up, so the count and the event log disagreed.
+      // Wave 152 (152C): the PERMITTED scan context only — the same coarse evidence the scan door records
+      // (lib/marketing/tracked-qr.ts qrScanEvidence: a per-code-per-day visitor key, a coarse device, a traffic
+      // class); never the raw IP or the full browser string. Apply after m946. Both modules are already in the CRM
+      // page's graph — this adds no module to it.
+      const { qrScanEvidence } = await import("@/lib/marketing/tracked-qr")
+      const { classifyQrScan } = await import("@/lib/marketing/qr-contract")
+      const scanEvidence = qrScanEvidence({ qrCodeId: qr.id, ip: input.ipAddress ?? null, userAgent: input.userAgent ?? null, referrer: null })
+      const { error: scanError } = await supabase
+        .from("qr_scan_events")
+        .insert({
+          qr_code_id: qr.id,
+          brokerage_id: tenantId,
+          contact_id: input.contactId ?? null,
+          scanned_at: new Date().toISOString(),
+          visitor_key: scanEvidence.visitorKey,
+          device_class: scanEvidence.deviceClass,
+          traffic_class: classifyQrScan({ userAgent: input.userAgent ?? null }),
+        })
+      if (scanError) {
+        console.error("[lead-magnets] qr_scan_events insert refused:", scanError.message)
+      } else {
+        const { error: countError } = await supabase
           .from("qr_codes")
-          .select("scan_count")
+          .update({ scan_count: (qr.scan_count ?? 0) + 1 })
+          .eq("brokerage_id", tenantId)
           .eq("id", qr.id)
-          .maybeSingle()
-
-        if (qrRow) {
-          await supabase
-            .from("qr_codes")
-            .update({ scan_count: (qrRow.scan_count ?? 0) + 1 })
-            .eq("id", qr.id)
+        if (countError) {
+          console.error("[lead-magnets] qr_codes scan_count update refused:", countError.message)
         }
       }
     }
   }
 
-  // Log the lifecycle event
-  const { data: event, error } = await supabase
-    .from("lifecycle_events")
-    .insert({
-      entity_type: "lead_capture_form",
-      entity_id: input.magnetId,
-      event_type: `lead_magnet_${input.eventType}`,
-      actor_user_id: input.contactId ?? null,
-      brokerage_id: input.brokerageId,
+  // Log the lifecycle event — stamped to the MAGNET's tenant.
+  const kernelEmit = await import("@/lib/kernel/emit")
+  const { data: event, error } = kernelEmit.asWriteResult(await kernelEmit.emitKernelEvent({
+      entityType: "lead_capture_form",
+      entityId: input.magnetId,
+      event: `lead_magnet_${input.eventType}`,
+      // A contact is not a platform user (actor_user_id FKs users): a contact id here refused the
+      // event with 23503 every time a visitor submitted (wave 93 live walk). contactId rides in metadata.
+      actorUserId: null,
+      brokerageId: tenantId,
       metadata: { ...input.metadata, contactId: input.contactId },
-    })
-    .select("id")
-    .maybeSingle()
+      auditOnly: true,
+    }))
 
   if (error) {
     return { success: false, error: error.message }
@@ -757,13 +1780,14 @@ export async function trackMagnetEvent(
 // ============================================================================
 
 export async function getMagnetPerformance(
-  input: GetMagnetPerformanceInput
+  input: GetMagnetPerformanceInput,
+  opts: LeadMagnetClientOpts = {},
 ): Promise<GetMagnetPerformanceOutput> {
   if (!input.magnetId || !input.brokerageId) {
     return { success: false, error: "Missing required fields: magnetId, brokerageId" }
   }
 
-  const supabase = createServiceClient()
+  const supabase = opts.client ?? createServiceClient()
 
   // Total submissions
   const { count: totalSubmissions } = await supabase
@@ -793,19 +1817,48 @@ export async function getMagnetPerformance(
 
   const { data: recentSubmissions } = await supabase
     .from("form_submissions")
-    .select("submitted_at")
+    .select("submitted_at, source")
     .eq("form_id", input.magnetId)
     .eq("brokerage_id", input.brokerageId)
     .gte("submitted_at", thirtyDaysAgo.toISOString())
     .order("submitted_at", { ascending: true })
 
-  // Aggregate by day
+  // Aggregate by day, and by the arrival channel each submission RECORDED (form_submissions.source —
+  // wave 141 writes it; older rows with none count as 'unknown', never as a guessed split).
   const dayMap: Record<string, number> = {}
+  const sourceMap: Record<string, number> = {}
   for (const s of recentSubmissions ?? []) {
     const day = new Date(s.submitted_at).toISOString().substring(0, 10)
     dayMap[day] = (dayMap[day] ?? 0) + 1
+    const src = (s as { source?: string | null }).source || "unknown"
+    sourceMap[src] = (sourceMap[src] ?? 0) + 1
   }
   const submissionsByDay = Object.entries(dayMap).map(([date, count]) => ({ date, count }))
+  const topSources = Object.entries(sourceMap).map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count)
+
+  // Ad-attributed conversions: the touchpoint rows the capture wrote (status converted, external_table
+  // form_submissions) for THIS magnet — converted_at is the conversion instant, grouped by campaign.
+  const { data: convertedTouches, error: convErr } = await supabase
+    .from("marketing_campaign_touchpoints")
+    .select("campaign_id, converted_at, metadata")
+    .eq("brokerage_id", input.brokerageId)
+    .eq("external_table", "form_submissions")
+    .eq("status", "converted")
+    .gte("converted_at", thirtyDaysAgo.toISOString())
+    .order("converted_at", { ascending: false })
+    .limit(2000)
+  if (convErr) console.error("[lead-magnets] attributed conversions read REFUSED:", convErr.message)
+  const byCampaignMap: Record<string, { count: number; lastConvertedAt: string }> = {}
+  for (const t of (convertedTouches ?? []) as Array<{ campaign_id: string | null; converted_at: string | null; metadata: Record<string, unknown> | null }>) {
+    if (!t.campaign_id || !t.converted_at) continue
+    if ((t.metadata?.magnet_id ?? null) !== input.magnetId) continue
+    const cur = byCampaignMap[t.campaign_id] ?? { count: 0, lastConvertedAt: t.converted_at }
+    cur.count += 1
+    if (t.converted_at > cur.lastConvertedAt) cur.lastConvertedAt = t.converted_at
+    byCampaignMap[t.campaign_id] = cur
+  }
+  const byCampaign = Object.entries(byCampaignMap).map(([campaignId, v]) => ({ campaignId, ...v })).sort((a, b) => b.count - a.count)
+  const attributedConversions = { total: byCampaign.reduce((n, c) => n + c.count, 0), byCampaign }
 
   const views = totalViews ?? 0
   const subs  = totalSubmissions ?? 0
@@ -819,77 +1872,42 @@ export async function getMagnetPerformance(
       totalQrScans: totalQrScans ?? 0,
       conversionRate,
       submissionsByDay,
-      topSources: [
-        { source: "direct", count: Math.round(subs * 0.5) },
-        { source: "qr_code", count: totalQrScans ?? 0 },
-      ],
+      // TOMBSTONE (wave 141): this used to be `direct = round(subs × 0.5)` + the QR scan count — a
+      // FABRICATED split the dashboard rendered as a measurement. Now the recorded sources (30-day
+      // window, same as submissionsByDay), honest 'unknown' for rows written before the source landed.
+      topSources,
+      attributedConversions,
     },
   }
 }
 
 // ============================================================================
-// KERNEL COMMAND 7: updateMagnetSettings
+// KERNEL COMMAND 7: updateMagnetSettings — MERGED INTO THE SURVIVOR, THEN DELETED
 // ============================================================================
-
-export async function updateMagnetSettings(
-  input: UpdateMagnetSettingsInput
-): Promise<UpdateMagnetSettingsOutput> {
-  if (!input.magnetId || !input.brokerageId || !input.actorUserId) {
-    return { success: false, error: "Missing required fields: magnetId, brokerageId, actorUserId" }
-  }
-
-  if (!input.updates || Object.keys(input.updates).length === 0) {
-    return { success: false, error: "No updates provided" }
-  }
-
-  const supabase = createServiceClient()
-
-  const updatePayload: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  if (input.updates.name              !== undefined) updatePayload.name                = input.updates.name
-  if (input.updates.fields            !== undefined) updatePayload.fields              = input.updates.fields
-  if (input.updates.tcpaDisclosureText !== undefined) updatePayload.tcpa_disclosure_text = input.updates.tcpaDisclosureText
-  if (input.updates.thankYouMessage   !== undefined) updatePayload.thank_you_message   = input.updates.thankYouMessage
-  if (input.updates.redirectUrl       !== undefined) updatePayload.redirect_url        = input.updates.redirectUrl
-  if (input.updates.isActive          !== undefined) updatePayload.is_active           = input.updates.isActive
-
-  const { error } = await supabase
-    .from("lead_capture_forms")
-    .update(updatePayload)
-    .eq("id", input.magnetId)
-    .eq("brokerage_id", input.brokerageId)
-
-  if (error) {
-    return { success: false, error: error.message }
-  }
-
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "lead_capture_form",
-    entity_id: input.magnetId,
-    event_type: "lead_magnet_updated",
-    actor_user_id: input.actorUserId,
-    brokerage_id: input.brokerageId,
-    metadata: { updatedFields: Object.keys(input.updates) },
-  })
-
-  return { success: true, updatedAt: new Date().toISOString() }
-}
+// TOMBSTONE (orphan tranche 4). The live writer is
+// app/actions/lead-magnets-actions.ts:updateMagnetSettingsAction — wired from the
+// MagnetLibrary UI, session-resolved tenant (never caller-supplied brokerageId /
+// actorUserId, which this command took as inputs). Before deletion its two extra
+// capabilities were ADDED to that survivor: the `fields` (capture-form field list)
+// update and the lifecycle_events `lead_magnet_updated` audit row.
 
 // ============================================================================
 // KERNEL COMMAND 8: listLeadMagnets
 // ============================================================================
 
 export async function listLeadMagnets(
-  input: ListLeadMagnetsInput
+  input: ListLeadMagnetsInput,
+  opts: LeadMagnetClientOpts = {},
 ): Promise<ListLeadMagnetsOutput> {
   if (!input.brokerageId) {
     return { success: false, error: "Missing required field: brokerageId" }
   }
 
-  const supabase = createServiceClient()
+  const supabase = opts.client ?? createServiceClient()
 
   let query = supabase
     .from("lead_capture_forms")
-    .select("id, name, slug, is_active, submission_count, created_at, agent_id, fields")
+    .select("id, name, slug, is_active, submission_count, created_at, agent_id, fields, magnet_type, settings")
     .eq("brokerage_id", input.brokerageId)
     .order("created_at", { ascending: false })
 
@@ -928,19 +1946,32 @@ export async function listLeadMagnets(
     if (slug) qrBySlug[slug] = { id: qr.id, scan_count: qr.scan_count ?? 0 }
   }
 
+  const nameById = new Map(forms.map((f) => [f.id as string, f.name as string]))
   const magnets = forms.map((f) => {
     const qrEntry = qrBySlug[f.slug]
+    const settings = (((f as { settings?: Record<string, unknown> | null }).settings ?? {}) as Record<string, unknown>)
+    const lifecycle = (settings.lifecycle ?? null) as Partial<LeadMagnetLifecycle> | null
+    const provenance = (settings.provenance ?? null) as { cloned_from_id?: string; cloned_from_name?: string } | null
+    const authoring = (settings.authoring ?? null) as { by?: string } | null
+    // Before wave 141 rows have no lifecycle record: they were created active, i.e. published.
+    const lifecycleState: "draft" | "published" = lifecycle?.state === "draft" ? "draft" : "published"
     return {
       id: f.id,
       name: f.name,
       slug: f.slug,
-      magnetType: (f.fields as any[])?.[0]?.name === "property_address" ? "home_valuation" : "generic_form",
+      // The COLUMN, not a sniff of the first field (which read every buyer / seller guide as a
+      // generic form); the sniff stays only for rows written before magnet_type was stamped.
+      magnetType: ((f as { magnet_type?: string | null }).magnet_type) ?? ((f.fields as any[])?.some?.((x) => x?.name === "property_address") ? "home_valuation" : "generic_form"),
       isActive: f.is_active,
       submissionCount: f.submission_count ?? 0,
       scanCount: qrEntry?.scan_count ?? 0,
       createdAt: f.created_at,
       formId: f.id,
       qrCodeId: qrEntry?.id,
+      lifecycleState,
+      authoredBy: authoring?.by === "ai" ? "ai" as const : "human" as const,
+      clonedFromId: provenance?.cloned_from_id ?? null,
+      clonedFromName: provenance?.cloned_from_id ? (nameById.get(provenance.cloned_from_id) ?? provenance.cloned_from_name ?? null) : null,
     }
   })
 

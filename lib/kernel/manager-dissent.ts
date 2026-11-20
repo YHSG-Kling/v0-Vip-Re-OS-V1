@@ -132,6 +132,69 @@ export function reviewProposal(p: ProposalUnderReview, ctx: ReviewContext): Revi
   return objections.length > 0 ? { verdict: "dissent", objections } : { verdict: "pass", objections: [] }
 }
 
+// ─── DELEGATION REVIEW (wave 105, lane 105A) — the dissent survivor EXTENDED to a work order ──────
+// A manager that is ASKED for a capability (lib/kernel/manager-delegation.ts) reviews the ask the
+// way a peer reviews a proposal: the same ReviewVerdict vocabulary (pass / dissent / veto +
+// objections), the same posture (a hard stop is a veto; everything else annotates and the
+// requester / human decides). Nobody reviews their own work holds by construction — the service
+// refuses requesting_manager === assigned_manager, so the reviewer is always the OTHER seat.
+
+export interface DelegationUnderReview {
+  requestingManager: string
+  assignedManager: string
+  /** An APP_CAPABILITY_REGISTRY key (lib/agentic-os/app-capability-registry.ts). */
+  capability: string
+  objective: string
+  /** The authority rung the request asks for (persona-tool-policy AuthorityLevel). */
+  authority: number
+  budget: { usd?: number | null; tokens?: number | null }
+  deadline: string | null
+}
+
+export interface DelegationReviewContext {
+  /** CAPABILITY_MANAGER[capability] — who OWNS the capability per the registry (null = unknown key). */
+  capabilityOwner: string | null
+  /** The ceiling the ask may not exceed: the mission's authority_ceiling and the assignee's ladder rung. */
+  authorityCeiling: number
+  /** What the mission has left to spend (null = unmetered). */
+  remainingUsd: number | null
+  remainingTokens: number | null
+  now: Date
+  /** The assigned manager's own objections (free text — "the comps are three months stale"). */
+  objections?: string[]
+}
+
+/** The machine spelling of each objection — the delegation service refuses on codes[0]; the human reads objections[]. */
+export type DelegationObjectionCode =
+  | "objective_required" | "unknown_capability" | "capability_not_owned" | "authority_above_ceiling"
+  | "budget_exceeds_remaining" | "deadline_passed" | "assignee_objection"
+export interface DelegationReviewVerdict extends ReviewVerdict { codes: DelegationObjectionCode[] }
+
+/** Pure: the assigned manager's review of a delegation — THE evaluator for request-time refusal
+ *  AND the dissent path. A capability it does not own, an empty objective or an ask above the
+ *  authority ceiling is a VETO (the ask can never be worked as written); a budget above the
+ *  mission's remaining, a deadline already passed or the assignee's own objections are DISSENT
+ *  (annotated — the requester revises or a human decides). */
+export function reviewDelegation(d: DelegationUnderReview, ctx: DelegationReviewContext): DelegationReviewVerdict {
+  const blocking: Array<[DelegationObjectionCode, string]> = []
+  if (!d.objective?.trim()) blocking.push(["objective_required", "the delegation has no objective — nothing to work"])
+  if (ctx.capabilityOwner === null) blocking.push(["unknown_capability", `"${d.capability}" is not a catalogued capability (APP_CAPABILITY_REGISTRY)`])
+  else if (ctx.capabilityOwner !== d.assignedManager) blocking.push(["capability_not_owned", `${d.assignedManager} does not own "${d.capability}" — ${ctx.capabilityOwner} does (CAPABILITY_MANAGER)`])
+  if (d.authority > ctx.authorityCeiling) blocking.push(["authority_above_ceiling", `authority ${d.authority} exceeds the ceiling ${ctx.authorityCeiling}`])
+  if (blocking.length > 0) return { verdict: "veto", objections: blocking.map((b) => b[1]), codes: blocking.map((b) => b[0]) }
+
+  const objections: Array<[DelegationObjectionCode, string]> = []
+  const usd = typeof d.budget?.usd === "number" ? d.budget.usd : null
+  const tokens = typeof d.budget?.tokens === "number" ? d.budget.tokens : null
+  if (usd !== null && ctx.remainingUsd !== null && usd > ctx.remainingUsd) objections.push(["budget_exceeds_remaining", `budget $${usd.toFixed(2)} exceeds the mission's remaining $${ctx.remainingUsd.toFixed(2)}`])
+  if (tokens !== null && ctx.remainingTokens !== null && tokens > ctx.remainingTokens) objections.push(["budget_exceeds_remaining", `budget ${tokens} tokens exceeds the mission's remaining ${ctx.remainingTokens}`])
+  if (d.deadline && new Date(d.deadline).getTime() < ctx.now.getTime()) objections.push(["deadline_passed", `deadline ${d.deadline} has already passed`])
+  for (const o of ctx.objections ?? []) if (o?.trim()) objections.push(["assignee_objection", o.trim()])
+  return objections.length > 0
+    ? { verdict: "dissent", objections: objections.map((o) => o[1]), codes: objections.map((o) => o[0]) }
+    : { verdict: "pass", objections: [], codes: [] }
+}
+
 export interface DissentRunResult {
   reviewed: number
   passed: number
@@ -231,9 +294,10 @@ export async function runManagerDissent(
     if (result.verdict === "veto") {
       // Machine veto — a Compliance Officer pre-flight HARD STOP (consent). Auditable, no forged
       // human approver, only while still proposed.
-      const { data: done } = await supabase.from("agent_client_messages")
+      const { data: done, error: vetoErr } = await supabase.from("agent_client_messages")
         .update({ status: "rejected", send_error: `vetoed by ${complianceLabel} pre-flight: ${result.objections[0]}` })
         .eq("id", p.id).eq("status", "proposed").select("id").maybeSingle()
+      if (vetoErr) console.error(`[manager-dissent] compliance veto NOT recorded on the proposed message: ${vetoErr.message}`)
       if (done) vetoes += 1
     } else if (result.verdict === "dissent" || complianceAdvisories.length > 0) {
       // The Compliance Officer leads the header when Fair Housing is involved (it owns that finding);
@@ -245,15 +309,17 @@ export async function runManagerDissent(
         ...coordination.map((o) => `- [${reviewerLabel}] ${o}`),
       ]
       const annotation = `\n\n${REVIEW_MARK} PEER REVIEW — ${who} DISSENTS:\n${lines.join("\n")}`
-      const { data: done } = await supabase.from("agent_client_messages")
+      const { data: done, error: dissentErr } = await supabase.from("agent_client_messages")
         .update({ rationale: `${p.rationale ?? ""}${annotation}` })
         .eq("id", p.id).eq("status", "proposed").select("id").maybeSingle()
+      if (dissentErr) console.error(`[manager-dissent] dissent annotation NOT recorded: ${dissentErr.message}`)
       if (done) dissents += 1
     } else {
       const annotation = `\n\n${REVIEW_MARK} Peer-reviewed by ${reviewerLabel} — no objections.`
-      const { data: done } = await supabase.from("agent_client_messages")
+      const { data: done, error: passErr } = await supabase.from("agent_client_messages")
         .update({ rationale: `${p.rationale ?? ""}${annotation}` })
         .eq("id", p.id).eq("status", "proposed").select("id").maybeSingle()
+      if (passErr) console.error(`[manager-dissent] peer-review annotation NOT recorded: ${passErr.message}`)
       if (done) passed += 1
     }
   }

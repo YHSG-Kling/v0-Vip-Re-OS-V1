@@ -10,6 +10,7 @@ export async function GET(req: NextRequest) {
   const unauth = verifyCronAuth(req)
   if (unauth) return unauth
   const ctx = await createCronRunContextAction({ cron_name: "launch-war-room", cron_path: "/app/api/cron/launch-war-room/route.ts" })
+  if (ctx.data?.held) return NextResponse.json({ success: true, held: true, decision: ctx.data.decision }) // cron decision door (155R1): held before any domain write
   if (!ctx.success || !ctx.data) return NextResponse.json({ error: "ctx" }, { status: 500 })
   const contextId = ctx.data.context_id
   await recordCronStartAction({ context_id: contextId }).catch(() => {})

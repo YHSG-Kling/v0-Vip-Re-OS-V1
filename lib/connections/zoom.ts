@@ -36,6 +36,8 @@
 import { createHmac } from "crypto"
 import type { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
+import { zoomRegistrationEnabled } from "@/lib/open-house/event-registry"
 
 type ServiceClient = ReturnType<typeof createServiceClient>
 
@@ -138,7 +140,8 @@ export function zoomProviderGap(env: { clientId?: string | null; clientSecret?: 
 }
 
 /** Live: is the Zoom OAuth app configured? (Drives every connect button.) */
-export function isZoomProviderConfigured(): boolean {
+// internal helper — called in-file by ensureZoomMeetingForAppointment
+function isZoomProviderConfigured(): boolean {
   return zoomProviderGap({
     clientId: process.env.ZOOM_CLIENT_ID ?? null,
     clientSecret: process.env.ZOOM_CLIENT_SECRET ?? null,
@@ -146,7 +149,8 @@ export function isZoomProviderConfigured(): boolean {
 }
 
 /** Live: the gap statement for the current environment (null when configured). */
-export function currentZoomProviderGap(): string | null {
+// internal helper — called in-file by ensureFreshZoomToken/ensureZoomMeetingForAppointment/readScopedZoom
+function currentZoomProviderGap(): string | null {
   return zoomProviderGap({
     clientId: process.env.ZOOM_CLIENT_ID ?? null,
     clientSecret: process.env.ZOOM_CLIENT_SECRET ?? null,
@@ -261,8 +265,9 @@ export async function loadScopedZoomCredential(
 
   if (!data || data.is_active === false) return null
   const config = (data.config ?? {}) as Record<string, unknown>
-  const accessToken = (data.access_token as string | null) ?? (config.access_token as string | undefined) ?? null
-  const refreshToken = (data.refresh_token as string | null) ?? (config.refresh_token as string | undefined) ?? ""
+  // Stored tokens are enc:v1 envelopes (legacy plaintext passes through) — decrypt before use.
+  const accessToken = decryptSecret((data.access_token as string | null) ?? (config.access_token as string | undefined) ?? null)
+  const refreshToken = decryptSecret((data.refresh_token as string | null) ?? (config.refresh_token as string | undefined) ?? "") ?? ""
   if (!accessToken) return null
   return {
     id: data.id as string,
@@ -307,15 +312,24 @@ export async function ensureFreshZoomToken(
     throw new Error(`Zoom token refresh failed (${res.status ?? "—"}): ${res.error ?? ""}`)
   }
   const tokenExpiresAt = new Date(Date.now() + (res.data.expires_in ?? 3600) * 1000).toISOString()
-  await svc
+  // ZOOM ROTATES THE REFRESH TOKEN: the one we just spent is now dead. If this
+  // persist is refused and nobody is told, the row keeps the spent token and the
+  // integration is permanently broken at the next refresh — while this call
+  // still returns a working access token, so the failure surfaces an hour later
+  // with nothing pointing back here. The function already throws on a failed
+  // refresh; a failed persist is the same class of failure.
+  const { error: persistError } = await svc
     .from("platform_credentials")
     .update({
-      access_token: res.data.access_token,
-      refresh_token: res.data.refresh_token,
+      access_token: encryptSecret(res.data.access_token),
+      refresh_token: encryptSecret(res.data.refresh_token),
       token_expires_at: tokenExpiresAt,
       updated_at: new Date().toISOString(),
     })
     .eq("id", cred.id)
+  if (persistError) {
+    throw new Error(`Zoom token refreshed but could not be stored — the stored refresh token is now spent: ${persistError.message}`)
+  }
   return res.data.access_token
 }
 
@@ -348,6 +362,13 @@ export type ZoomMeetingOutcome =
       hostOwnerType: ZoomScope
       hostOwnerId: string
       hostEmail: string | null
+      /**
+       * WAVE 148 (lane 148H, C22): registration as Zoom ANSWERED it — `settings.approval_type` 0/1 in the RESPONSE. Zoom is
+       * documented (devforum, repeatedly) to return approval_type 2 ("no registration") for a request that asked for 0 on an
+       * account that cannot register attendees (a free plan) — so a requested registration is never assumed. Undefined when
+       * registration was not requested.
+       */
+      registrationEnabled?: boolean
     }
   | {
       created: false
@@ -372,6 +393,13 @@ export async function ensureZoomMeetingForAppointment(
     startAt: Date
     endAt?: Date | null
     timezoneName?: string | null
+    /**
+     * WAVE 148 (lane 148H, C22 — owner ruling 20): an EVENT meeting (virtual open house, webinar, online education session)
+     * asks Zoom for registration (approval_type 0 — automatic approval) so every attendee joins on a PERSONAL link carrying a
+     * Zoom registrant id our consented form minted; that id is what the participant webhook is matched on. Zoom's own
+     * registrant e-mail is switched off — the registrant gets the tenant's branded confirmation instead.
+     */
+    registration?: boolean
   },
 ): Promise<ZoomMeetingOutcome> {
   if (!isZoomProviderConfigured()) {
@@ -393,7 +421,7 @@ export async function ensureZoomMeetingForAppointment(
     const durationMinutes = args.endAt
       ? Math.max(15, Math.round((args.endAt.getTime() - args.startAt.getTime()) / 60_000))
       : 30
-    const res = await zoomRequest<{ id?: number | string; uuid?: string; join_url?: string; start_url?: string }>({
+    const res = await zoomRequest<{ id?: number | string; uuid?: string; join_url?: string; start_url?: string; settings?: { approval_type?: number } }>({
       accessToken,
       method: "POST",
       path: "/v2/users/me/meetings",
@@ -407,6 +435,7 @@ export async function ensureZoomMeetingForAppointment(
           join_before_host: true,
           waiting_room: false,
           auto_recording: "cloud",
+          ...(args.registration ? { approval_type: 0, registration_type: 1, registrants_email_notification: false } : {}),
         },
       },
     })
@@ -426,9 +455,106 @@ export async function ensureZoomMeetingForAppointment(
       hostOwnerType: cred.scope,
       hostOwnerId: cred.ownerId,
       hostEmail: cred.accountEmail,
+      ...(args.registration ? { registrationEnabled: zoomRegistrationEnabled(res.data.settings?.approval_type) } : {}),
     }
   } catch (e: any) {
     return { created: false, reason: "api_error", detail: e?.message ?? "Zoom meeting creation failed" }
+  }
+}
+
+// ─── C22 (wave 148, lane 148H): event registration + participant attendance (owner ruling 20) ───────────────────────────
+//
+// Documentation read 2026-11-01 (no credentials, no purchase):
+//   · meeting.participant_joined — payload.object {id, uuid, host_id, topic, start_time, participant{user_id (meeting-session
+//     id), user_name, email, join_time, participant_user_id / id (signed-in host-account users only), participant_uuid,
+//     registrant_id (registration meetings), customer_key}} — `email` is returned ONLY for a participant signed in to Zoom and
+//     is an empty string for most outside users (developers.zoom.us/docs/api/meetings/events, meeting.participant_joined).
+//   · meeting.participant_left — the same participant shape plus leave_time (required) and leave_reason (free text, e.g.
+//     "left the meeting", "Host ended the meeting"; not an enumerated vocabulary — zoom.github.io/rivet-javascript
+//     MeetingParticipantLeftEvent; devforum "possible reasons to leave").
+//   · webinar.participant_joined / _left — the Webinar product's equivalents (same participant shape) for a tenant that hosts
+//     on Zoom Webinars; creating a Zoom WEBINAR through the API is not built here (meetings with registration cover every kind).
+//   · POST /v2/meetings/{meetingId}/registrants {email, first_name, last_name} → 201 {registrant_id, join_url, id, topic};
+//     registration must be enabled on the meeting (approval_type 0/1) and the host must be a Licensed user.
+
+// Zoom's ANSWERED approval_type is read by zoomRegistrationEnabled (lib/open-house/event-registry.ts — pure, with the C22 rules).
+
+/** The participant events the webhook route hands to the attendance recorder. */
+export const ZOOM_PARTICIPANT_EVENTS = [
+  "meeting.participant_joined", "meeting.participant_left", "webinar.participant_joined", "webinar.participant_left",
+] as const
+
+export interface ZoomParticipantEvent {
+  kind: "participant_joined" | "participant_left"
+  meetingId: string
+  meetingUuid: string | null
+  hostId: string | null
+  /** The most specific per-session key Zoom offers (participant_uuid, else the meeting-session user_id). */
+  participantKey: string | null
+  registrantId: string | null
+  email: string | null
+  accountUserId: string | null
+  sessionUserId: string | null
+  displayName: string | null
+  at: string
+  leaveReason: string | null
+}
+
+/**
+ * Pure: normalise a verified Zoom participant webhook. Null for anything that is not a participant join/leave with a meeting
+ * id and a parsable time (never a guessed field). Empty strings (Zoom's "not available") become null.
+ */
+export function parseZoomParticipantEvent(payload: unknown): ZoomParticipantEvent | null {
+  const p = payload as { event?: string; payload?: { object?: Record<string, any> } } | null
+  if (!p || !(ZOOM_PARTICIPANT_EVENTS as readonly string[]).includes(String(p.event))) return null
+  const obj = p.payload?.object ?? {}
+  const part = (obj.participant ?? {}) as Record<string, unknown>
+  const s = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : typeof v === "number" ? String(v) : null)
+  const kind = String(p.event).endsWith("_joined") ? "participant_joined" : "participant_left"
+  const at = s(kind === "participant_joined" ? part.join_time : part.leave_time)
+  const meetingId = s(obj.id)
+  if (!meetingId || !at || Number.isNaN(Date.parse(at))) return null
+  return {
+    kind, meetingId, meetingUuid: s(obj.uuid), hostId: s(obj.host_id),
+    participantKey: s(part.participant_uuid) ?? s(part.user_id),
+    registrantId: s(part.registrant_id), email: s(part.email),
+    accountUserId: s(part.participant_user_id) ?? s(part.id), sessionUserId: s(part.user_id),
+    displayName: s(part.user_name), at: new Date(at).toISOString(), leaveReason: s(part.leave_reason),
+  }
+}
+
+export type ZoomRegistrantOutcome =
+  | { added: true; registrantId: string; joinUrl: string }
+  | { added: false; reason: "provider_unconfigured" | "not_connected" | "api_error" | "registration_not_enabled"; detail: string }
+
+/**
+ * Register ONE person on an event's Zoom meeting, on the SAME host account the meeting was created on (exact owner match —
+ * the account is read off the event's provider_meta, never resolved by cascade again). "Added" ONLY on Zoom's acceptance
+ * (a registrant_id AND a join_url) — never a fabricated personal link.
+ */
+export async function addZoomMeetingRegistrant(
+  svc: ServiceClient,
+  args: { hostOwnerType: ZoomScope; hostOwnerId: string; meetingId: string; email: string; firstName: string; lastName?: string | null },
+): Promise<ZoomRegistrantOutcome> {
+  const gap = currentZoomProviderGap()
+  if (gap) return { added: false, reason: "provider_unconfigured", detail: gap }
+  const cred = await loadScopedZoomCredential(svc, args.hostOwnerType, args.hostOwnerId)
+  if (!cred) return { added: false, reason: "not_connected", detail: "The Zoom account this event was created on is no longer connected — reconnect it under Settings." }
+  try {
+    const accessToken = await ensureFreshZoomToken(svc, cred)
+    const res = await zoomRequest<{ registrant_id?: string; join_url?: string; id?: number | string }>({
+      accessToken, method: "POST", path: `/v2/meetings/${encodeURIComponent(args.meetingId)}/registrants`,
+      body: { email: args.email, first_name: args.firstName.slice(0, 64), ...(args.lastName ? { last_name: args.lastName.slice(0, 64) } : {}) },
+    })
+    if (!res.ok && /registration has not been enabled|registration not enabled/i.test(res.error ?? "")) {
+      return { added: false, reason: "registration_not_enabled", detail: `Zoom refused the registrant: ${res.error}` }
+    }
+    if (!res.ok || !res.data?.registrant_id || !res.data.join_url) {
+      return { added: false, reason: "api_error", detail: `Zoom registrant add failed (${res.status ?? "—"}): ${res.error ?? "no registrant_id/join_url returned"}` }
+    }
+    return { added: true, registrantId: String(res.data.registrant_id), joinUrl: res.data.join_url }
+  } catch (e: any) {
+    return { added: false, reason: "api_error", detail: e?.message ?? "Zoom registrant add failed" }
   }
 }
 
@@ -453,7 +579,13 @@ export async function readScopedZoom(
   ownerId: string,
 ): Promise<ScopedZoomStatus> {
   const offering = ZOOM_OFFERINGS[scope]
-  const cred = offering.status === "connectable"
+  // ONE VOCABULARY (§6, wave 26): this line hand-rolled
+  // `offering.status === "connectable"`, which is the entire body of
+  // `isZoomOffered` (line 124) — the predicate declared 340 lines above for
+  // exactly this question and reached by nothing. Two spellings of "is Zoom
+  // connectable at this scope" cannot be found from one another, and a change to
+  // the offering vocabulary would have had to be made in both.
+  const cred = isZoomOffered(scope)
     ? await loadScopedZoomCredential(svc, scope, ownerId)
     : null
   return {

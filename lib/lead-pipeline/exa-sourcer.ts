@@ -1,93 +1,151 @@
 // lib/lead-pipeline/exa-sourcer.ts
-// Exa neural-search BUYER-intent source — AI-native discovery of people
-// describing a home search in their own words across the open web (forums,
-// blogs, social), which keyword scrapers miss. Each result is classified by
-// detectIntent and anchored on the author handle (the viability gate drops
-// anonymous/identity-less pages). This is the cutting-edge AI buyer channel that
-// complements the social/search scrapers and OSINT/Google.
+// Exa PUBLIC-MARKET RESEARCH source — cited public pages about a territory's housing market, its civic and employment events
+// and the anonymous questions people ask about it. NEVER a people finder.
+//
+// REVERSED (wave 150, lane 150KLMO — owner ruling R9 / directive 150L, 2026-11-06: "Exa for public-market research with
+// citations, never for people"; canary 8: "a market signal generates an attributed report/page/idea without inventing private
+// people or identifying anonymous social accounts"). Until wave 150 this lane (lane 89B, 2026-09-29: "exa is also another lead
+// scrapping source") searched for PEOPLE describing a home search and anchored each result on the AUTHOR HANDLE so the raw row
+// could walk toward the Lead door. That is exactly what the ruling now forbids: the author is no longer read, no handle or name
+// rides the record, and every result enters THE ONE RawData producer (lib/kernel/scraping.ts ingestRawSourceBatch, contract C35)
+// as EVIDENCE — subject_kind 'job_civic_event' (employer expansions, WARN closures, base / campus / infrastructure, corridors,
+// permits, zoning), 'market' (inventory, prices, rents, carrying-cost shifts) or 'anonymous_question' (a public question about
+// the local market) — which lib/lead-pipeline/canonical-lead-eligibility.ts subjectKindLeadProblem keeps out of every Lead door
+// and processRawRecord keeps away from every paid person lookup. Each record carries its citation (url, title, publisher,
+// published, retrieved), the source rights the vendor contract names (source-intent-map.ts sourceRightsFor), and the C35 TTL
+// for its subject kind. Only a short excerpt is kept — Exa returns pages it does not license for reuse (directive: "no
+// assumption it has legal permission to reuse all page content").
+//
+// The populations stay (acquisition-coverage.ts SOURCE_ACQUISITION.exa_buyer_intent: buy / relocate / sell / realtor_seeking /
+// investor) — each now names the MARKET question that population turns on, and the lexicon's population signals ride the record
+// as topic tags so the topic bank / market twin can route the evidence. The SourceKey keeps its historical spelling (it is the
+// ledger's usage_type on every Exa row already booked).
+//
+// Cost (exa.ai/pricing, 2026-09-29): $7 / 1k `/search` requests with 10 results included — EXA_RESULTS_PER_QUERY is 10 and a
+// territory run of EXA_QUERIES_PER_POPULATION x 5 populations is about $0.07 at list price. The provider's own
+// `costDollars.total` wins whenever it is present (exa-client.ts).
 
 import { exaSearch, type ExaResult } from "@/lib/external/exa-client"
 import { normalizeExaIntentRow } from "@/lib/external/exa-intent-normalizer"
 import { detectIntent } from "./social-sourcer"
-import { isViableRecord, type NormalizedScrapedRecord } from "./raw-record-types"
+import { isViableRecord, type NormalizedScrapedRecord, type RawDataSubjectKind } from "./raw-record-types"
+import { intentSignalsFromText, distressSignalsFromText } from "./scrape-keywords"
+import { SOURCE_ACQUISITION, type AcquisitionIntent } from "./acquisition-coverage"
 
 export interface ExaMarket {
   city: string | null
   state: string | null
 }
 
-/** Pure: an Exa neural result → buyer-intent raw record (author = identity anchor). */
-export function normalizeExaResult(result: ExaResult, market: ExaMarket): NormalizedScrapedRecord {
+/** Results per query — the base request price includes 10 (exa-client.ts::EXA_SEARCH_INCLUDED_RESULTS). */
+export const EXA_RESULTS_PER_QUERY = 10
+/** Queries per population per run — bounds spend (5 populations × 2 = 10 requests ≈ $0.07/territory). */
+export const EXA_QUERIES_PER_POPULATION = 2
+/** Recent content only — intent is time-sensitive. */
+export const EXA_LOOKBACK_DAYS = 120
+
+/** The research subject each query is about — never a person (C35 vocabulary, raw_scraped_leads.subject_kind CHECK m961). */
+type ExaResearchSubject = Extract<RawDataSubjectKind, "job_civic_event" | "market" | "anonymous_question">
+
+/** The query TEMPLATES per population — the MARKET question that population turns on; `{where}` is the territory. Two each. */
+const EXA_QUERY_TEMPLATES: Record<AcquisitionIntent, ReadonlyArray<{ template: string; subject: ExaResearchSubject }>> = {
+  buy:             [{ template: "{where} housing inventory and new home construction this year", subject: "market" }, { template: "first-time homebuyer assistance program announced for {where}", subject: "job_civic_event" }],
+  relocate:        [{ template: "major employer expansion or new jobs announced in {where}", subject: "job_civic_event" }, { template: "military base, university campus or infrastructure expansion near {where}", subject: "job_civic_event" }],
+  sell:            [{ template: "{where} home prices, listings and days on market local report", subject: "market" }, { template: "{where} property tax or homeowners insurance cost increase", subject: "market" }],
+  realtor_seeking: [{ template: "questions people ask about buying or selling a home in {where}", subject: "anonymous_question" }, { template: "{where} rezoning or new subdivision approved by the city or county", subject: "job_civic_event" }],
+  investor:        [{ template: "{where} rental market rents and vacancy report", subject: "market" }, { template: "WARN notice layoffs or plant closure in {where}", subject: "job_civic_event" }],
+}
+
+export interface ExaIntentQuery {
+  query: string
+  population: AcquisitionIntent
+  subject: ExaResearchSubject
+}
+
+/** The excerpt kept from a page — enough to cite and route, never the page (no reuse license is assumed). */
+const EXA_EXCERPT_CHARS = 280
+
+/**
+ * PURE — the territory's query set: every population SOURCE_ACQUISITION declares for this lane
+ * (never a hand list; a population declared without a template here fails the coverage guard),
+ * capped at EXA_QUERIES_PER_POPULATION each. Territory-honest: no city and no state ⇒ zero queries.
+ */
+export function buildExaIntentQueries(market: ExaMarket): ExaIntentQuery[] {
+  const where = [market.city, market.state].filter(Boolean).join(", ")
+  if (!where) return []
+  const out: ExaIntentQuery[] = []
+  for (const population of SOURCE_ACQUISITION.exa_buyer_intent.intents) {
+    for (const t of (EXA_QUERY_TEMPLATES[population] ?? []).slice(0, EXA_QUERIES_PER_POPULATION)) {
+      out.push({ query: t.template.replace(/\{where\}/g, where), population, subject: t.subject })
+    }
+  }
+  return out
+}
+
+const hostOf = (url: string | null) => { try { return url ? new URL(url).hostname.replace(/^www\./, "") : null } catch { return null } }
+
+/**
+ * Pure: an Exa result → a CITED public-market evidence record. The author is never read; no name, handle, email or phone rides
+ * the record. The subject kind is the query's (a question-shaped page is an anonymous question), stated on the envelope so the
+ * ONE producer writes it and every Lead door refuses it.
+ */
+export function normalizeExaResult(result: ExaResult, market: ExaMarket, subject: ExaResearchSubject = "anonymous_question"): NormalizedScrapedRecord {
   const text = `${result.title ?? ""} ${result.text ?? ""}`
   const legacy = detectIntent(text)
-
-  // Rich intent — buyer / seller / investor / agent / generic with persona, property addresses,
-  // prices, and a context blob. Feeds downstream lead-creation + AI-ISA scripts via
-  // raw_data.normalized_preview.intent.
-  const rich = normalizeExaIntentRow(result)
-  // Coarse legacy bucket for back-compat with the existing intentType union. Honor rich result when
-  // confident; fall back to the keyword detector. Investor/agent fold into 'unknown' since the legacy
-  // union is buyer/seller/unknown only.
+  // The SIDE of the market the page is about (buyer / seller) — a routing tag for the topic bank, never a person's intent.
+  // The weighted page classifier (exa-intent-normalizer.ts) decides when confident; the keyword detector otherwise. Only
+  // its market-side BUCKET is kept: the persona, the addresses and the prices it extracts describe an author and are
+  // discarded here (owner ruling R9).
+  const side = normalizeExaIntentRow(result).intent
   const intentType: "buyer" | "seller" | "unknown" =
-    rich.intent === "buyer"  ? "buyer"  :
-    rich.intent === "seller" ? "seller" :
-    rich.intent === "generic" || rich.intent === "investor" || rich.intent === "agent"
-      ? (legacy === "seller" ? "seller" : legacy === "buyer" ? "buyer" : "unknown")
-      : "unknown"
-
+    side === "buyer" || side === "seller" ? side : legacy === "seller" ? "seller" : legacy === "buyer" ? "buyer" : "unknown"
+  const lexicon = [...intentSignalsFromText(text), ...distressSignalsFromText(text)]
+  const excerpt = (result.highlights?.[0] ?? result.summary ?? result.text ?? "").replace(/\s+/g, " ").trim().slice(0, EXA_EXCERPT_CHARS)
+  const retrievedAt = new Date().toISOString()
   return {
     sourceRecordId: `exa-${result.id}`,
     source: "exa_buyer_intent",
-    behaviorType: "search_signal",
+    behaviorType: "market_research",
     intentType,
-    intentSignals: [
-      intentType,
-      rich.persona ?? "no_persona",
-      "ai_neural_match",
-      ...rich.matched.slice(0, 3),
-    ],
-    username: result.author ?? undefined,
+    intentSignals: Array.from(new Set([subject, "public_market_research", ...lexicon])),
     city: market.city,
     state: market.state,
     sourceUrl: result.url,
-    motivationScore: Math.round(Math.max(rich.scores.buyer, rich.scores.seller, rich.scores.investor) * 100),
-    // Rich intent flows into raw_data.normalized_preview.intent (canonical lead-gate downstream).
-    intent: {
-      winner:            rich.intent,
-      persona:           rich.persona,
-      scores:            rich.scores,
-      matched:           rich.matched,
-      propertyAddresses: rich.propertyAddresses,
-      prices:            rich.prices,
-    },
-    propertyAddress: rich.propertyAddresses[0] ?? null,
     rawPayload: {
-      id: result.id, url: result.url, title: result.title, author: result.author,
-      published: result.publishedDate,
-      // Preserve the full normalized intent + extracted addresses/prices for audit + AI-ISA.
-      intent: rich,
+      id: result.id, url: result.url, title: result.title, published: result.publishedDate, excerpt,
+      publisher: hostOf(result.url),
+    },
+    envelope: {
+      subjectKind: subject,
+      externalEventId: `exa:${result.id}`,
+      proofUrls: result.url ? [result.url] : [],
+      evidence: {
+        citation: { url: result.url, title: result.title, publisher: hostOf(result.url), published: result.publishedDate, retrieved_at: retrievedAt },
+        research: "public-market research (owner ruling R9) — cited public page; never a person, never an identified account",
+      },
     },
   }
 }
 
-/** Discover buyer-intent content for a territory via Exa neural search. */
+/**
+ * Research a territory's public market via Exa — every declared population's market questions (buildExaIntentQueries), each
+ * result a cited evidence record. The historical name is kept: it is the cron's import and the simulators' anchor.
+ */
 export async function sourceExaBuyerIntent(market: ExaMarket): Promise<{ records: NormalizedScrapedRecord[]; cost: number }> {
-  const where = [market.city, market.state].filter(Boolean).join(", ")
-  if (!where) return { records: [], cost: 0 }
-  // Recent content only — buyer intent is time-sensitive (last 120 days).
-  const since = new Date(Date.now() - 120 * 24 * 3600 * 1000).toISOString().slice(0, 10)
-  const queries = [
-    `first-time homebuyer looking to buy a house in ${where}`,
-    `pre-approved and house hunting in ${where}`,
-    `relocating to ${where} and need to buy a home`,
-  ]
+  const queries = buildExaIntentQueries(market)
+  if (queries.length === 0) return { records: [], cost: 0 }
+  const since = new Date(Date.now() - EXA_LOOKBACK_DAYS * 24 * 3600 * 1000).toISOString().slice(0, 10)
   const all: NormalizedScrapedRecord[] = []
+  const seen = new Set<string>()
   let cost = 0
-  for (const query of queries) {
-    const r = await exaSearch({ query, numResults: 20, startPublishedDate: since }).catch(() => ({ results: [] as ExaResult[], cost: 0 }))
+  for (const { query, subject } of queries) {
+    const r = await exaSearch({ query, numResults: EXA_RESULTS_PER_QUERY, startPublishedDate: since }).catch(() => ({ results: [] as ExaResult[], cost: 0 }))
     cost += r.cost ?? 0
     for (const result of r.results ?? []) {
-      const rec = normalizeExaResult(result, market)
+      const rec = normalizeExaResult(result, market, subject)
+      // The same page answers more than one population's query — one raw row, not five.
+      if (seen.has(rec.sourceRecordId)) continue
+      seen.add(rec.sourceRecordId)
       if (isViableRecord(rec)) all.push(rec)
     }
   }

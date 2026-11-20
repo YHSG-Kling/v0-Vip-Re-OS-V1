@@ -3,7 +3,6 @@
 import { useState, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Calendar, ChevronLeft, ChevronRight, Sparkles, Loader2, Clock } from "lucide-react"
 import { generateWeeklyContentPlan } from "@/app/actions/social/generate-social-post"
 import { toast } from "sonner"
@@ -11,7 +10,12 @@ import { toast } from "sonner"
 interface SocialCalendarAiPlannerProps {
   agentId: string
   brokerageId: string
-  userId: string
+  // TOMBSTONE: `userId` removed (wave 52, hidden-wire-census category c). The
+  // caller (app/dashboard/social/social-dashboard-client.tsx) passed the exact
+  // same session identity twice — `agentId={userId}` AND `userId={userId}` —
+  // and this component never read the second copy. `agentId` is the value this
+  // component and generateWeeklyContentPlan actually use; there is no second
+  // identity concept here to carry.
   posts: Array<{
     id: string
     content: string

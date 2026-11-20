@@ -162,7 +162,7 @@ export function BuyerCoachingCard({ contactId, brokerageId }: BuyerCoachingCardP
                 <ul className="space-y-0.5">
                   {coaching.risk_signals.map((s: string, i: number) => (
                     <li key={i} className="flex items-start gap-1.5 text-xs text-foreground">
-                      <svg viewBox="0 0 12 12" className="w-3 h-3 mt-0.5 flex-shrink-0 text-amber-500" fill="none">
+                      <svg viewBox="0 0 12 12" className="w-3 h-3 mt-0.5 flex-shrink-0 text-amber-600" fill="none">
                         <path d="M6 2v4M6 9v1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
                       </svg>
                       {s}

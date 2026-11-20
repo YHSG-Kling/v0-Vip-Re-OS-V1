@@ -14,6 +14,7 @@
  */
 import { NextResponse } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { runMarketWatchForBuyer } from "@/lib/buyer-search/market-watch"
 import { runExternalMarketWatchForBuyer, purgeStaleExternalReferences } from "@/lib/buyer-search/external-match"
@@ -26,6 +27,8 @@ const BATCH = 150
 export async function GET(request: Request) {
   const unauthorized = verifyCronAuth(request)
   if (unauthorized) return unauthorized
+  const cronDoor = await decideCronRun({ cron_name: "buyer-market-watch", cron_path: "/app/api/cron/buyer-market-watch/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
   const ranAt = new Date().toISOString()
@@ -33,6 +36,7 @@ export async function GET(request: Request) {
 
   // Compliance: purge stale external (RentCast/IDX) references first — they must be short-lived.
   let purged = 0
+  let pullGate: Awaited<ReturnType<typeof import("@/lib/lead-pipeline/scrape-territories").resolveActivePullGate>> | null = null
   try { purged = (await purgeStaleExternalReferences(svc)).purged } catch { /* best-effort */ }
 
   try {
@@ -44,8 +48,15 @@ export async function GET(request: Request) {
       .order("last_calculated_at", { ascending: true, nullsFirst: true })
       .limit(BATCH)
     const rows = (prefs ?? []) as Array<{ contact_id: string; brokerage_id: string }>
+    // ACTIVE-TERRITORY PRE-CHECK (wave 92, lane 92B — owner: "checking the active territories before
+  // scrapping and pulling data will cutdown on runs"): ONE resolution, every skipped run counted.
+    // TENANT-level: a buyer's criteria are the buyer's own area; an inactive tenant's buyers cost
+    // no RentCast/IDX run.
+    const { resolveActivePullGate } = await import("@/lib/lead-pipeline/scrape-territories")
+    pullGate = await resolveActivePullGate(svc)
 
     for (const p of rows) {
+      if (!pullGate.check({ brokerageId: p.brokerage_id }).allowed) continue
       buyersProcessed++
       try {
         const r = await runMarketWatchForBuyer(svc, p.brokerage_id, p.contact_id)
@@ -86,5 +97,5 @@ export async function GET(request: Request) {
     return NextResponse.json({ ran_at: ranAt, error: (e as Error).message, buyersProcessed }, { status: 500 })
   }
 
-  return NextResponse.json({ ran_at: ranAt, buyersProcessed, buyersMatched, buyersWithNew, reelsQueued, externalMatched, offerReadyFired, purged, errors })
+  return NextResponse.json({ ran_at: ranAt, buyersProcessed, buyersMatched, buyersWithNew, reelsQueued, externalMatched, offerReadyFired, purged, errors, territory_gate: pullGate?.tally ?? null })
 }

@@ -3,11 +3,18 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { generateAIText } from "@/lib/ai"
 import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
 import { getRentcastMarketStats } from "@/lib/property/rentcast"
-import { computeLivabilityScore, isNeighborhoodReportAllowed } from "@/lib/property/neighborhood-scoring"
+import {
+  computeLivabilityScore,
+  isNeighborhoodReportAllowed,
+  assembleFactsBlock,
+  factualNarrative,
+} from "@/lib/property/neighborhood-scoring"
 import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 // Types
 export interface NeighborhoodReport {
@@ -55,6 +62,17 @@ export interface DataSource {
   source_type: string
   last_synced_at: string | null
   is_active: boolean
+  /**
+   * WHICH ENDPOINT OF THE PROVIDER FED THIS REPORT.
+   *
+   * refreshNeighborhoodReport registers the source with `api_endpoint: "/markets"`
+   * (:306) and nothing read it. It matters precisely because source_type cannot say it:
+   * the live CHECK admits only {attom, census, custom, housecanary, walkscore}, so
+   * RentCast is stored as 'custom' and the provenance line said "RentCast" with no way
+   * to tell WHICH of a provider's endpoints produced the numbers on screen — the first
+   * thing anyone checks when a figure looks wrong. Null when the row records none.
+   */
+  api_endpoint: string | null
 }
 
 export interface PriceHistoryPoint {
@@ -68,7 +86,19 @@ export interface PriceHistoryPoint {
 
 export async function getNeighborhoodReport(listingId: string): Promise<{
   report: NeighborhoodReport | null
-  listing: { address: string; city: string; state: string; zip_code: string } | null
+  listing: {
+    address: string
+    city: string
+    state: string
+    zip_code: string
+    /**
+      * Seller contact — the only structural key into home_value_estimates.
+      * listings.seller_contact_id, NOT contact_id: contact_id exists on the table
+      * but is not populated for listings, so keying on it made this fallback dead.
+      */
+    seller_contact_id: string | null
+    brokerage_id: string | null
+  } | null
   priceHistory: PriceHistoryPoint[]
   dataSources: DataSource[]
 }> {
@@ -78,7 +108,7 @@ export async function getNeighborhoodReport(listingId: string): Promise<{
   // Get the listing
   const { data: listing } = await supabase
     .from("listings")
-    .select("id, address, city, state, zip")
+    .select("id, address, city, state, zip, seller_contact_id, brokerage_id")
     .eq("id", listingId)
     .eq("brokerage_id", brokerageId)
     .single()
@@ -107,15 +137,30 @@ export async function getNeighborhoodReport(listingId: string): Promise<{
     .order("generated_at", { ascending: true })
 
   // Get data sources
-  const { data: dataSources } = await supabase
+  const { data: dataSources, error: dataSourcesError } = await supabase
     .from("neighborhood_data_sources")
-    .select("id, source_name, source_type, last_synced_at, is_active")
+    .select("id, source_name, source_type, last_synced_at, is_active, api_endpoint")
     .eq("brokerage_id", brokerageId)
     .eq("is_active", true)
+  // §3 — supabase-js resolves a refusal as data:null, which renders as "this report has
+  // no sources": a provenance card that goes blank on an outage is worse than one that
+  // says it could not be read.
+  if (dataSourcesError) {
+    console.error("[neighborhood-report] data-source read refused:", dataSourcesError.message)
+  }
 
   return {
     report: report as NeighborhoodReport | null,
-    listing: listing ? { address: listing.address, city: listing.city, state: listing.state, zip_code: listing.zip } : null,
+    listing: listing
+      ? {
+          address: listing.address,
+          city: listing.city,
+          state: listing.state,
+          zip_code: listing.zip,
+          seller_contact_id: listing.seller_contact_id ?? null,
+          brokerage_id: listing.brokerage_id ?? null,
+        }
+      : null,
     priceHistory: (priceHistory || []).map(p => ({
       generated_at: p.generated_at,
       price_per_sqft: p.price_per_sqft,
@@ -181,7 +226,7 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
       .eq("id", (await supabase.auth.getUser()).data.user?.id)
       .single()
 
-    if (!["broker", "broker_owner", "admin", "superadmin"].includes(user?.user_type ?? "")) {
+    if (!isAdminOrBroker({ user_type: user?.user_type ?? "" })) {
       return { success: false, error: "Only brokers or admins can refresh non-expired reports" }
     }
   }
@@ -192,10 +237,15 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
 
   let reportData: Partial<NeighborhoodReport> = {}
 
+  // Computed ONCE, unconditionally, and reused below for the AI grounding block
+  // and the Fair-Housing-safe fallback narrative. computeLivabilityScore already
+  // handles the no-data case itself (dataSource "none" → score 0, label
+  // "Limited data"), so hoisting it out of the branch invents nothing.
+  const livability = computeLivabilityScore(osint)
+
   // Seed report with OSINT data where available. walk_score is computed
   // deterministically from real OSM amenity proximity (not AI-guessed).
   if (osint.dataSource !== "none") {
-    const livability = computeLivabilityScore(osint)
     reportData.amenities_json = osint.amenities
     reportData.data_source = osint.dataSource
     reportData.walk_score = livability.score
@@ -216,11 +266,69 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
         rc.price_trend_yoy_pct > 2 ? "appreciating" : rc.price_trend_yoy_pct < -2 ? "depreciating" : "stable"
       reportData.data_source = reportData.data_source ? `${reportData.data_source}+rentcast` : "rentcast"
 
-      await supabase
+      // REGISTER THE SOURCE, DON'T JUST STAMP IT.
+      //
+      // WHAT WAS BROKEN. This was a bare UPDATE … WHERE brokerage_id AND
+      // source_name='RentCast', and NOTHING in the repo has ever INSERTed a
+      // `neighborhood_data_sources` row — `source_name` and `source_type` are
+      // both NOT NULL with no default, no trigger and no seed, and the live
+      // table (project hrvaqgvukzxfskkcrwbt) holds 0 rows. So the update matched
+      // nothing on every run. An UPDATE that matches nothing RESOLVES with
+      // `error === null` and an empty result, byte-identical to one that worked
+      // (CLAUDE.md §3), and the call did not even destructure — so the miss was
+      // unreportable. Downstream, getNeighborhoodReport reads this table for the
+      // "Data Sources" footer of the seller-facing report, which therefore had
+      // no provenance to show: a report that quotes RentCast's median could not
+      // say where the number came from.
+      //
+      // The fact becomes known HERE — RentCast just answered for this tenant —
+      // so this is where the registration belongs. Written as a select-then-
+      // insert/update pair because the table carries no unique index on
+      // (brokerage_id, source_name) to upsert against.
+      const { data: existingSource, error: sourceReadError } = await supabase
         .from("neighborhood_data_sources")
-        .update({ last_synced_at: new Date().toISOString() })
+        .select("id")
         .eq("brokerage_id", brokerageId)
         .eq("source_name", "RentCast")
+        .maybeSingle()
+      if (sourceReadError) {
+        console.error("[neighborhood-report] data-source lookup was refused:", sourceReadError.message)
+      } else if (existingSource) {
+        // `.select("id")` so a row RLS hides reports failure instead of a silent
+        // success on zero rows — the trap this whole block exists to close.
+        const { data: touched, error: sourceUpdateError } = await supabase
+          .from("neighborhood_data_sources")
+          .update({ last_synced_at: new Date().toISOString(), is_active: true })
+          .eq("id", (existingSource as { id: string }).id)
+          .select("id")
+        if (sourceUpdateError) {
+          console.error("[neighborhood-report] data-source sync stamp was refused:", sourceUpdateError.message)
+        } else if (!touched?.length) {
+          console.error("[neighborhood-report] data-source sync stamp matched no row — the RentCast provenance line will be stale")
+        }
+      } else if (brokerageId) {
+        const { error: sourceInsertError } = await supabase
+          .from("neighborhood_data_sources")
+          .insert({
+            brokerage_id: brokerageId,
+            source_name: "RentCast",
+            // 'custom' IS THE ONLY ADMITTED VALUE FOR RENTCAST. The live CHECK
+            // on source_type is {attom, census, custom, housecanary, walkscore}
+            // — written before HouseCanary was retired in favour of RentCast, so
+            // the provider this row describes has no name of its own in the
+            // vocabulary yet (scripts/check-vocabularies.ts:986). Naming
+            // anything else here is a 23514 that refuses the WHOLE insert
+            // (CLAUDE.md §3), which is exactly how this registration would have
+            // failed silently a second time. source_name carries the provider.
+            source_type: "custom",
+            api_endpoint: "/markets",
+            is_active: true,
+            last_synced_at: new Date().toISOString(),
+          })
+        if (sourceInsertError) {
+          console.error("[neighborhood-report] data-source registration was refused:", sourceInsertError.message)
+        }
+      }
     }
   } catch (err) {
     console.error("RentCast market-stats error:", err)
@@ -287,6 +395,11 @@ ${reportData.walk_score ? `Walk Score: ${reportData.walk_score}` : ""}
 ${reportData.market_trend ? `Market Trend: ${reportData.market_trend}` : ""}
 ${reportData.data_source === "AI-estimated" ? "Note: Data is AI-estimated. Include that caveat." : ""}
 
+VERIFIED NEIGHBORHOOD FACTS (from OpenStreetMap amenities and the US Census — these are measured, not estimated):
+${assembleFactsBlock(osint, livability)}
+
+Use ONLY the verified facts above when describing amenities, walkability, schools, parks, transit or dining. Do not introduce any amenity, school, park or business that is not named there, and do not estimate distances.
+
 Focus on buyer appeal, market positioning, and neighborhood highlights. Keep it professional and informative.`
 
   let aiSummary = ""
@@ -301,6 +414,38 @@ Focus on buyer appeal, market positioning, and neighborhood highlights. Keep it 
     aiSummary = violations.some((v) => v.severity === "high") ? "" : summaryText
   } catch (err) {
     console.error("[v0] AI summary generation error:", err)
+  }
+
+  // GROUNDING + FALLBACK (orphan burn-down, lane E). Two defects closed here,
+  // using the two pure helpers in lib/property/neighborhood-scoring.ts that were
+  // written for this exact surface and had never been called from it:
+  //
+  //  1. assembleFactsBlock — the prompt above used to hand the model four
+  //     numbers (median price, DOM, walk score, trend) and then ask it for
+  //     "neighborhood highlights". The real amenity facts were fetched, scored
+  //     and written to amenities_json one screen up, and were never shown to the
+  //     model that was being asked to describe them. Asking for highlights while
+  //     withholding the amenities is an invitation to invent a grocery store,
+  //     a park or a school — in a report a buyer reads about a specific address.
+  //     The block now goes in, with an explicit instruction not to go beyond it.
+  //
+  //  2. factualNarrative — when the Fair-Housing guard rejected the summary
+  //     (violations.some(high)), aiSummary was set to "" and the report was
+  //     saved with ai_summary NULL. The tenant then saw a neighborhood report
+  //     with no narrative and no explanation. factualNarrative is documented in
+  //     its own header as "the safe fallback when the AI output fails the
+  //     Fair-Housing check": amenity counts and distances only, no
+  //     protected-class or steering language possible because it is assembled
+  //     from integers. A rejected summary now degrades to the honest, factual
+  //     paragraph instead of to silence. Same for a generation that threw.
+  //     It lands in `ai_summary` because that is the report's single narrative
+  //     slot, and the paragraph never claims to be an analysis — it states
+  //     measured counts and distances and nothing else — so the column holding
+  //     it cannot mislead a reader the way a blank report already did. When
+  //     there is no OSINT data at all there are no facts to state, so the field
+  //     stays NULL rather than carrying an empty-sounding sentence.
+  if (!aiSummary && osint.dataSource !== "none") {
+    aiSummary = factualNarrative(osint, livability)
   }
 
   // Determine neighborhood name from address
@@ -348,13 +493,14 @@ Focus on buyer appeal, market positioning, and neighborhood highlights. Keep it 
     return { success: false, error: upsertError.message }
   }
 
-  // Emit kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "listing",
-    entity_id: listingId,
-    event_type: KernelEvent.NEIGHBORHOOD_REPORT_GENERATED,
-    actor_user_id: userId, // lifecycle_events.actor_user_id FKs users(id) — agentId is agents(id)
+  // Emit kernel event — audit row + reactor.
+  await emitKernelEvent({
+    brokerageId,
+    entityType: "listing",
+    entityId: listingId,
+    event: KernelEvent.NEIGHBORHOOD_REPORT_GENERATED,
+    listingId,
+    actorUserId: userId, // lifecycle_events.actor_user_id FKs users(id) — agentId is agents(id)
     metadata: {
       neighborhood_name: neighborhoodName,
       data_source: reportData.data_source || "AI Generated",

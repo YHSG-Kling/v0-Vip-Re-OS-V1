@@ -113,7 +113,7 @@ export async function recordPolicyDecision(
     verdict: PolicyVerdict
     evidence: Record<string, unknown>
   },
-): Promise<{ recorded: boolean }> {
+): Promise<{ recorded: boolean; error?: string }> {
   const { error } = await svc.from("policy_decisions").insert({
     brokerage_id: input.brokerageId,
     transaction_id: input.transactionId ?? null,
@@ -126,5 +126,6 @@ export async function recordPolicyDecision(
     recommended_action: input.verdict.recommendedAction,
     required_approver_role: input.verdict.requiredApproverRole,
   })
-  return { recorded: !error }
+  // The refusal text is RETURNED (CLAUDE.md §3) — the settlement-reconciliation snapshot settle reads it (wave 152, lane 152G).
+  return { recorded: !error, ...(error ? { error: error.message } : {}) }
 }

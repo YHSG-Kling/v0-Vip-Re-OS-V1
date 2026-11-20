@@ -66,7 +66,7 @@ export function ExceptionReviewPanel({
           </CardTitle>
           <div className="flex items-center gap-2">
             {pendingDecisions.length > 0 && (
-              <Badge className="bg-orange-500 text-white">{pendingDecisions.length} Pending</Badge>
+              <Badge className="bg-orange-700 text-white">{pendingDecisions.length} Pending</Badge>
             )}
             {escalated.length > 0 && (
               <Badge variant="destructive">{escalated.length} Escalated</Badge>
@@ -83,7 +83,7 @@ export function ExceptionReviewPanel({
             <div className="flex items-start justify-between gap-2">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4 text-orange-500" />
+                  <AlertTriangle className="h-4 w-4 text-orange-600" />
                   <span className="font-medium text-sm">{exception.check_label}</span>
                 </div>
                 {exception.transaction?.property_address && (
@@ -107,7 +107,7 @@ export function ExceptionReviewPanel({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="text-green-600 border-green-600 hover:bg-green-50"
+                  className="text-green-700 border-green-600 hover:bg-green-50"
                   onClick={() => onApproveException(exception.id, exception.transaction_id)}
                 >
                   <CheckCircle className="h-4 w-4 mr-1" />

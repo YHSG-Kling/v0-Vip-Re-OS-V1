@@ -16,28 +16,27 @@
  * brokerage per cycle in the worst case — well below the per-cycle
  * vendor budget ceiling.
  *
- * Auth: CRON_SECRET dual-scheme (Bearer header OR ?secret= query).
+ * Auth: verifyCronAuth (lib/cron-auth.ts) — Bearer CRON_SECRET, fail closed
+ * when unset; the old ?secret= query credential is retired (lane 88E).
  */
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { renderLetterAudio } from "@/lib/direct-mail/render-letter-audio"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
-
 export async function GET(req: NextRequest) {
-  const auth     = req.headers.get("authorization")?.replace("Bearer ", "")
   const url      = new URL(req.url)
-  const qs       = url.searchParams.get("secret")
-  const expected = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (auth !== expected && qs !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
+  const cronRun = await createCronRunContextAction({ cron_name: "letter-audio-renderer", cron_path: "/app/api/cron/letter-audio-renderer/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   if (!process.env.ELEVENLABS_API_KEY) {
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({ ran_at: new Date().toISOString(), skipped: "ELEVENLABS_API_KEY not configured" })
   }
 
@@ -53,6 +52,7 @@ export async function GET(req: NextRequest) {
     .limit(30)
   const campaigns = (rows ?? []) as Array<{ id: string }>
   if (campaigns.length === 0) {
+    if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({ ran_at: new Date().toISOString(), rendered: 0 })
   }
 
@@ -67,6 +67,7 @@ export async function GET(req: NextRequest) {
     else                             { failed++;   outcomes.push({ campaign_id: c.id, result: `err:${r.error ?? "unknown"}` }) }
   }
 
+  if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
   return NextResponse.json({
     ran_at:    new Date().toISOString(),
     attempted: campaigns.length,

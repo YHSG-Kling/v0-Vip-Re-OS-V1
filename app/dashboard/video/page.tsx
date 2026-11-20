@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { mayUseFeature } from "@/lib/billing/billing-access"
 
 export default async function VideoHubRedirect() {
   const supabase = await createClient()
@@ -10,7 +10,7 @@ export default async function VideoHubRedirect() {
     redirect("/login")
   }
 
-  const access = await canAccessFeature(user.id, "video_generation")
+  const access = await mayUseFeature(user.id, "video_generation")
   if (!access.allowed) {
     redirect("/dashboard?upgrade=video_generation")
   }

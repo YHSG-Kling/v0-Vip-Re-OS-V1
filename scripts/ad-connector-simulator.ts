@@ -19,9 +19,21 @@
  */
 import { normalizeEmail, normalizePhoneE164, sha256Hex, hashMatchKey, hashAudienceMembers } from "../lib/ads/connectors/pii"
 import { deriveMetrics } from "../lib/ads/connectors/types"
-import { mapInsights } from "../lib/ads/connectors/meta"
+import { mapInsights, detectAdvantagePlusShoppingOrApp, metaConnector } from "../lib/ads/connectors/meta"
 import { mapReport } from "../lib/ads/connectors/google"
-import { toAdPerformanceRow } from "../lib/ads/ad-performance-ingest"
+// ad-performance-ingest became `server-only` when the creative-fatigue runner was
+// wired beside its insert (wave 26), and `server-only` THROWS outside a Server
+// Component. Neutralize the marker in the require cache BEFORE importing anything
+// that pulls it — the accounting-scopes / deadline-watcher idiom — then reach the
+// pure mapper through a DYNAMIC import, because a static one would hoist above
+// the shim.
+import { createRequire } from "node:module"
+const _require = createRequire(import.meta.url)
+try {
+  const soPath = _require.resolve("server-only")
+  _require.cache[soPath] = { id: soPath, filename: soPath, loaded: true, exports: {} } as any
+} catch { /* server-only not resolvable — nothing to shim */ }
+const { toAdPerformanceRow } = await import("../lib/ads/ad-performance-ingest")
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -30,7 +42,7 @@ function check(name: string, cond: boolean, detail?: string) {
   else { failed++; failures.push(name + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
 
-function testPure() {
+async function testPure() {
   console.log("\n[Layer 1 · PII normalization + hashing]")
   check("email is trimmed + lowercased", normalizeEmail("  TEST@Example.COM ") === "test@example.com")
   check("invalid email → null", normalizeEmail("not-an-email") === null)
@@ -53,6 +65,31 @@ function testPure() {
   const google = mapReport({ metrics: { costMicros: "120000000", impressions: "8000", clicks: "300", conversions: "6", conversionsValue: "1500" } })
   check("Google report: micros → dollars ($120)", google.spend === 120)
   check("Google report: conversions → leads + revenue", google.leads === 6 && google.revenue === 1500 && google.costPerLead === 20)
+
+  console.log("\n[Layer 1 · Meta v25 caveat — Advantage+ Shopping/App refused LOCALLY, not a silent API failure]")
+  check("smart_promotion_type=AUTOMATED_SHOPPING_ADS on the campaign → Shopping",
+    detectAdvantagePlusShoppingOrApp({ smart_promotion_type: "AUTOMATED_SHOPPING_ADS" }, {}) === "Shopping")
+  check("smart_promotion_type=SMART_APP_PROMOTION on the ad set → App",
+    detectAdvantagePlusShoppingOrApp({}, { smart_promotion_type: "SMART_APP_PROMOTION" }) === "App")
+  check("objective=OUTCOME_APP_PROMOTION → App (no non-Advantage+ App objective exists under v25)",
+    detectAdvantagePlusShoppingOrApp({ objective: "OUTCOME_APP_PROMOTION" }, {}) === "App")
+  check("an ordinary OUTCOME_SALES conversions campaign (this OS's actual 'conversions' objective) is NOT flagged",
+    detectAdvantagePlusShoppingOrApp({ objective: "OUTCOME_SALES" }, {}) === null)
+  check("an ordinary OUTCOME_LEADS campaign is NOT flagged",
+    detectAdvantagePlusShoppingOrApp({ objective: "OUTCOME_LEADS" }, {}) === null)
+  {
+    // publishCampaign refuses BEFORE any network call — no credential-gated
+    // skip needed, the refusal is pure and happens ahead of graph().
+    const result = await metaConnector.publishCampaign({
+      cred: { accessToken: "fake-token-never-sent", accountId: "123" } as any,
+      structure: {
+        campaign: { name: "x", smart_promotion_type: "AUTOMATED_SHOPPING_ADS" },
+        adSet: {}, adCreative: {}, ad: {},
+      },
+    })
+    check("publishCampaign returns a CLEAR, actionable refusal (not ok:true, not an opaque provider error)",
+      result.ok === false && /Advantage\+ Shopping/.test(result.error ?? "") && /Ads Manager/.test(result.error ?? ""))
+  }
 
   console.log("\n[Layer 1 · metrics + column mapping]")
   const m = deriveMetrics({ spend: 200, impressions: 10000, clicks: 250, leads: 8 })
@@ -125,7 +162,7 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
   console.log(" Ad connector simulator (Meta + Google: PII, performance, audiences)")
   console.log("══════════════════════════════════════════════════")
-  testPure()
+  await testPure()
   await testLive()
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

@@ -85,7 +85,10 @@ export async function orchestrateEmailPresetSend(
     || brand.agentName
     || brand.displayName
     || brand.brokerageName
-  const fromEmail = process.env.OUTBOUND_EMAIL_FROM ?? "noreply@vipre.io"
+  // WAVE 153 (lane 153P — lane 153K carried finding): no stand-in sender. It fell back to the literal
+  // "noreply@vipre.io"; an unset OUTBOUND_EMAIL_FROM is now REFUSED by name (a definitive refusal — nothing was sent).
+  const fromEmail = process.env.OUTBOUND_EMAIL_FROM?.trim()
+  if (!fromEmail) return { success: false, error: "sender_unset:OUTBOUND_EMAIL_FROM", presetName: preset.name }
   // NOTE: preset.reply_to_override is NOT yet applied. DispatchEmailParams
   // has no replyTo field — the address is fully derived from `from`.
   // Wiring reply-to through the dispatch surface is a follow-up that

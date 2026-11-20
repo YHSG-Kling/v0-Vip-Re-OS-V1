@@ -12,6 +12,21 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { MANAGERS, type ManagerKey } from '@/lib/kernel/manager-registry'
 import { loadRecentReaperActivity } from '@/lib/intelligence/reaper-net'
+import { summarizeManagerTouches, type ManagerTouchSummary } from '@/lib/intelligence/manager-touch-provenance'
+
+/** RECEIPTS — what a manager actually SENT in the window, from the shared touch
+ *  ledger's provenance columns (manager-touch-provenance.ts). The standup's other
+ *  fields are counts; this is the evidence behind them. */
+export interface ManagerStandupTouches {
+  /** Touches this manager sent in the window. */
+  count: number
+  /** Distinct channels they went out on. */
+  channels: string[]
+  /** Distinct ai_intents behind them — the "why did my client get this?" half. */
+  intents: string[]
+  /** How many of those touches were driven by a canonical sequence. */
+  sequenceCount: number
+}
 
 export interface ManagerStandupLine {
   manager: ManagerKey
@@ -24,6 +39,10 @@ export interface ManagerStandupLine {
   reaped_24h: number
   /** One broker-readable line. */
   headline: string
+  /** RECEIPTS for the sends behind the counts. ABSENT — never zeroed — when the
+   *  manager sent nothing in the window OR when the provenance read was refused
+   *  (§3: "nobody could check" must never render as "checked, and it was zero"). */
+  touches?: ManagerStandupTouches
 }
 
 export async function generateManagerStandup(brokerageId: string, client?: ReturnType<typeof createServiceClient>): Promise<ManagerStandupLine[]> {
@@ -45,7 +64,7 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
       supabase.from('listings').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).in('lifecycle_stage', ['MLS_ACTIVE', 'COMING_SOON_ACTIVE', 'SHOWINGS_ACTIVE']),
       supabase.from('remotion_composition_renders').select('id', { count: 'exact', head: true })
-        .eq('brokerage_id', brokerageId).eq('render_status', 'completed').gte('completed_at', since),
+        .eq('brokerage_id', brokerageId).eq('render_status', 'succeeded').gte('completed_at', since),
       supabase.from('property_matches').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).gte('created_at', since),
       // Deal Coordinator — transaction tasks advanced in 24h (workload actually moving).
@@ -54,7 +73,9 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
       // Ads Manager — paid-campaign actions awaiting a human's spend approval.
       supabase.from('ad_manager_actions').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).eq('status', 'proposed'),
-      // Marketing Manager — brand/content actions awaiting approval.
+      // Campaign Orchestrator's brand/content actions awaiting approval (m618: table name
+      // marketing_agent_actions is unchanged; only the owning manager moved from the
+      // retired marketing_agent seat).
       supabase.from('marketing_agent_actions').select('id', { count: 'exact', head: true })
         .eq('brokerage_id', brokerageId).eq('status', 'proposed'),
       // Sphere Manager — repeat/referral touches proposed (attributed by agent_kind).
@@ -79,11 +100,19 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
       headline: `${n(handoffs)} qualified handoff${n(handoffs) === 1 ? '' : 's'} in 24h · working ${n(hotIsa)} hot conversation${n(hotIsa) === 1 ? '' : 's'}`,
     },
     {
+      // m618: MERGED — this card used to be two lines (campaign_orchestrator's client
+      // messages + the retired marketing_agent seat's brand/content actions). One manager,
+      // one card; the two counts stay separately-sourced (agent_client_messages vs
+      // marketing_agent_actions — table name unchanged, only its owning manager moved) but
+      // roll up together so the standup doesn't show a second row for a retired seat.
       manager: 'campaign_orchestrator', label: MANAGERS.campaign_orchestrator.label,
-      activity_24h: n(proposedMsgs), needs_human: n(proposedMsgs),
-      headline: n(proposedMsgs) > 0
-        ? `${n(proposedMsgs)} client message${n(proposedMsgs) === 1 ? '' : 's'} proposed — awaiting your approval`
-        : 'No client messages awaiting approval',
+      activity_24h: n(proposedMsgs) + n(mktProposed), needs_human: n(proposedMsgs) + n(mktProposed),
+      headline: (n(proposedMsgs) + n(mktProposed)) > 0
+        ? [
+            n(proposedMsgs) > 0 ? `${n(proposedMsgs)} client message${n(proposedMsgs) === 1 ? '' : 's'}` : null,
+            n(mktProposed) > 0 ? `${n(mktProposed)} marketing action${n(mktProposed) === 1 ? '' : 's'}` : null,
+          ].filter(Boolean).join(' + ') + ' proposed — awaiting your approval'
+        : 'No client messages or marketing actions awaiting approval',
     },
     {
       manager: 'data_steward', label: MANAGERS.data_steward.label,
@@ -120,13 +149,6 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
         : 'No ad spend awaiting approval',
     },
     {
-      manager: 'marketing_agent', label: MANAGERS.marketing_agent.label,
-      activity_24h: n(mktProposed), needs_human: n(mktProposed),
-      headline: n(mktProposed) > 0
-        ? `${n(mktProposed)} marketing action${n(mktProposed) === 1 ? '' : 's'} proposed — awaiting your approval`
-        : 'No marketing actions awaiting approval',
-    },
-    {
       manager: 'sphere_of_influence', label: MANAGERS.sphere_of_influence.label,
       activity_24h: n(sphereProposed), needs_human: n(sphereProposed),
       headline: n(sphereProposed) > 0
@@ -158,7 +180,26 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
 
   // Overlay the REAPER NET's 24h activity from the ledger: each manager's line gains
   // a "your AI team caught N stuck item(s)" receipt, and escalations count as needs_human.
-  const reaperActivity = await loadRecentReaperActivity(brokerageId, 24, supabase)
+  //
+  // Overlay 2 — TOUCH PROVENANCE: the same 24h window, read off the shared touch ledger's
+  // provenance columns, so the line shows RECEIPTS ("3 touches on email, sms — a warm
+  // re-engagement") and not only counts. Key is metadata.manager, stamped by
+  // lib/campaign-sequences/touchpoint-bridge.ts:99 via touchpointManagerForChannel — whose
+  // whole value set (ai_isa, asset_manager, campaign_orchestrator — m618: the retired
+  // marketing_agent seat's channels now resolve to campaign_orchestrator too, same as
+  // the default) is a SUBSET of ManagerKey, so this map cannot silently
+  // miss (§6). Touches with no manager aggregate to 'unattributed', which matches no
+  // ManagerKey and is therefore dropped rather than mis-credited to a manager.
+  const [reaperActivity, touchSummaries] = await Promise.all([
+    loadRecentReaperActivity(brokerageId, 24, supabase),
+    summarizeManagerTouches(supabase, brokerageId, 1),
+  ])
+  // null = the provenance read was REFUSED (§3). Leave EVERY line without touches; do not
+  // render an unreadable ledger as "this manager sent nothing".
+  const touchByManager = new Map<string, ManagerTouchSummary>(
+    (touchSummaries ?? []).map((s) => [s.manager, s]),
+  )
+
   const lines: ManagerStandupLine[] = baseLines.map((l) => {
     const ra = reaperActivity[l.manager]
     const reaped_24h = ra ? ra.escalated + ra.reaped : 0
@@ -166,9 +207,19 @@ export async function generateManagerStandup(brokerageId: string, client?: Retur
     if (ra && (ra.escalated > 0 || ra.reaped > 0)) {
       headline += ` · AI caught ${ra.escalated + ra.reaped} stuck item${ra.escalated + ra.reaped === 1 ? '' : 's'}`
     }
-    return { ...l, reaped_24h, needs_human: l.needs_human + (ra?.escalated ?? 0), headline }
+    const ts = touchByManager.get(l.manager)
+    const touches: ManagerStandupTouches | undefined = ts && ts.touchCount > 0
+      ? { count: ts.touchCount, channels: ts.channels, intents: ts.sampleIntents, sequenceCount: ts.sequenceTouchCount }
+      : undefined
+    if (touches) {
+      headline += ` · sent ${touches.count} touch${touches.count === 1 ? '' : 'es'}`
+        + (touches.channels.length > 0 ? ` on ${touches.channels.join(', ')}` : '')
+    }
+    return { ...l, reaped_24h, needs_human: l.needs_human + (ra?.escalated ?? 0), headline, ...(touches ? { touches } : {}) }
   })
 
-  // Only report managers with something to say (quiet managers don't add noise).
-  return lines.filter((l) => l.activity_24h > 0 || l.needs_human > 0 || l.reaped_24h > 0)
+  // Only report managers with something to say (quiet managers don't add noise). A manager
+  // whose only 24h output is SENT TOUCHES has something to say — that is the receipt this
+  // overlay exists to surface — so touches qualify a line alongside activity/needs/reaped.
+  return lines.filter((l) => l.activity_24h > 0 || l.needs_human > 0 || l.reaped_24h > 0 || (l.touches?.count ?? 0) > 0)
 }

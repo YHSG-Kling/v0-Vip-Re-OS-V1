@@ -15,6 +15,7 @@
 // The planner + friction + mode decision are PURE (unit-tested); the ensure/update/get do the I/O.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { daysBetween as dateDaysBetween } from "@/lib/format/dates"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -155,13 +156,19 @@ export function decideBuyerMode(input: {
   return { recommended_mode: "contact_assisted_guided_diy", confidence: 0.8, friction_score: friction, reasons, next_best_action: "CONTINUE_GUIDED_SUPPORT" }
 }
 
+// TOMBSTONE (§1.1, duplicates round 6, wave 60): the day-diff arithmetic
+// lived here; survivor lib/format/dates.ts:39 daysBetween. The nearest-day
+// rounding (vs. lib/kernel/closing-war-room.ts:200's floor-rounded sibling
+// of the same name) is this caller's own policy — a move-in friction score
+// that wants "how many days until close, rounded", not a floor — so it stays
+// a thin wrapper, same formula, delegated arithmetic.
 /** Days between now and the closing date (null when unknown). `now` is injectable for pure testing. */
 export function daysToClose(closingDate: string | null | undefined, now?: Date): number | null {
   if (!closingDate) return null
   const close = Date.parse(`${closingDate.slice(0, 10)}T00:00:00Z`)
   if (Number.isNaN(close)) return null
   const ref = now ? now.getTime() : Date.parse(new Date().toISOString().slice(0, 10) + "T00:00:00Z")
-  return Math.round((close - ref) / 86_400_000)
+  return dateDaysBetween(ref, close, { round: "round" })
 }
 
 // ── Service layer (I/O) ──────────────────────────────────────────────────────────────────────────
@@ -192,24 +199,32 @@ export async function ensureBuyerMoveCase(
   svc: Svc,
   params: { transactionId: string; brokerageId: string; now?: Date },
 ): Promise<{ created: boolean; case: BuyerMoveCase | null }> {
-  const { data: txn } = await svc
+  const { data: txn, error: txnErr } = await svc
     .from("transactions")
     .select("id, deal_type, buyer_contact_id, agent_id, close_date, estimated_close_date")
     .eq("id", params.transactionId)
     .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
+  // A refused read is not "no deal" (CLAUDE.md §3) — both callers catch and report it.
+  if (txnErr) throw new Error(`[buyer-move] transaction ${params.transactionId} unreadable: ${txnErr.message}`)
   if (!txn) return { created: false, case: null }
-  // Buyer-side only: a move-in concierge needs a buyer to serve. An explicit seller-side (listing) deal
-  // or a deal with no buyer contact has nobody to move in — skip honestly rather than fabricate a case.
-  if ((txn as any).deal_type === "listing") return { created: false, case: null }
+  // Buyer-side only: a move-in concierge needs a buyer WE REPRESENT. A seller-only deal ('seller' — our
+  // listing, an outside buyer logged for the paperwork) or a deal with no buyer contact has nobody of ours
+  // to move in — skip honestly rather than fabricate a case. WAS `=== "listing"` (wave 153, lane 153Q): a
+  // spelling transactions.deal_type's CHECK refuses (buyer | dual | seller — lib/transactions/deal-type-resolver.ts
+  // DealType), so the skip never fired and the OTHER side's buyer got our move-in concierge.
+  if ((txn as any).deal_type === "seller") return { created: false, case: null }
   if (!(txn as any).buyer_contact_id) return { created: false, case: null }
 
   const closingDate = (txn as any).close_date ?? (txn as any).estimated_close_date ?? null
-  const { data: existing } = await svc
+  const { data: existing, error: existingErr } = await svc
     .from("buyer_move_cases")
     .select("*")
     .eq("transaction_id", params.transactionId)
+    .eq("brokerage_id", params.brokerageId)
     .maybeSingle()
+  // An unread case is not an absent case: inserting over it would duplicate (or be refused by the unique key).
+  if (existingErr) throw new Error(`[buyer-move] move case for ${params.transactionId} unreadable: ${existingErr.message}`)
 
   const dtc = daysToClose(closingDate, params.now)
 
@@ -217,18 +232,19 @@ export async function ensureBuyerMoveCase(
     // Keep the buyer's task edits; just refresh the recommendation + friction from current state.
     const tasks = ((existing as any).tasks ?? []) as MoveTask[]
     const decision = decideBuyerMode({ tasks, daysToClose: dtc, buyerRequestedHelp: (existing as any).service_mode === "handoff" })
-    await svc.from("buyer_move_cases").update({
+    const { error: moveRefreshErr } = await svc.from("buyer_move_cases").update({
       recommended_mode: decision.recommended_mode,
       friction_score: decision.friction_score,
       closing_date: closingDate,
       updated_at: new Date().toISOString(),
     }).eq("id", (existing as any).id)
+    if (moveRefreshErr) console.error(`[buyer-move] move-case recommendation refresh NOT saved: ${moveRefreshErr.message}`)
     return { created: false, case: hydrate({ ...(existing as any), recommended_mode: decision.recommended_mode, friction_score: decision.friction_score, closing_date: closingDate }) }
   }
 
   const tasks = buildMoveInTasks(closingDate)
   const decision = decideBuyerMode({ tasks, daysToClose: dtc })
-  const { data: created } = await svc
+  const { data: created, error: createCaseErr } = await svc
     .from("buyer_move_cases")
     .insert({
       transaction_id: params.transactionId,
@@ -244,6 +260,7 @@ export async function ensureBuyerMoveCase(
     })
     .select("*")
     .maybeSingle()
+  if (createCaseErr) console.error(`[buyer-move] move case NOT created for transaction ${params.transactionId}: ${createCaseErr.message}`)
   return { created: !!created, case: created ? hydrate(created) : null }
 }
 
@@ -266,7 +283,7 @@ export async function updateMoveTask(
   const dtc = daysToClose((row as any).closing_date, params.now)
   const decision = decideBuyerMode({ tasks, daysToClose: dtc, buyerRequestedHelp: (row as any).service_mode === "handoff" })
   const allDone = tasks.every((t) => t.status === "done" || t.status === "skipped")
-  const { data: updated } = await svc
+  const { data: updated, error: taskSaveErr } = await svc
     .from("buyer_move_cases")
     .update({
       tasks: tasks as any,
@@ -278,6 +295,7 @@ export async function updateMoveTask(
     .eq("id", (row as any).id)
     .select("*")
     .maybeSingle()
+  if (taskSaveErr) console.error(`[buyer-move] move-case task update refused: ${taskSaveErr.message}`)
   return { ok: !!updated, case: updated ? hydrate(updated) : null }
 }
 

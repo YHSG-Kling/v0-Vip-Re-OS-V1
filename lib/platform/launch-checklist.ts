@@ -27,7 +27,29 @@
 //   optional         — nice-to-have rails (osint/research, stock media,
 //                      direct mail, social/accounting OAuth apps).
 
+import { STRIPE_WEBHOOK_ROUTES, TENANT_BILLING_WEBHOOK_EVENTS, PLATFORM_WEBHOOK_ENV, PLATFORM_ONLY_STRIPE_ENV, TENANT_MONEY_ON_PLATFORM_KEY } from "@/lib/billing/stripe-account-scope"
+import { VENDOR_MARKETPLACE_WEBHOOK_EVENTS } from "@/lib/vendors/vendor-webhook-events"
+
 export type LaunchTier = "launch-blocking" | "launch-degraded" | "optional"
+
+/**
+ * A DRIFT CHECK — a launch requirement a presence map CANNOT answer, because
+ * the truth lives at a vendor (which events Stripe will deliver to our
+ * endpoint) and reading it is a network call. Listed here so the checklist
+ * NAMES it beside the env rows instead of leaving it to tribal knowledge; the
+ * status arrives on demand from the action each row names, never on page
+ * load. No env value, no vendor value is carried in this row.
+ */
+export interface LaunchDriftCheck {
+  key: string
+  capability: string
+  /** What drifts, and what "in sync" means. */
+  whatDrifts: string
+  /** The server action that reads the live state (and the one that repairs it). */
+  checkAction: string
+  repairAction: string
+  tier: LaunchTier
+}
 
 export interface LaunchChecklistItem {
   key: string
@@ -53,6 +75,8 @@ export interface LaunchChecklist {
   optionalConfigured: number
   optionalTotal: number
   items: LaunchChecklistItem[]
+  /** On-demand vendor-state checks (wave 80A) — metadata only; see LaunchDriftCheck. */
+  driftChecks: LaunchDriftCheck[]
 }
 
 /** The ONLY place this module touches process.env — presence check, value discarded. */
@@ -96,23 +120,102 @@ const ROWS: RowDef[] = [
   },
   {
     key: "stripe",
-    capability: "Stripe billing (secret key)",
+    // ── CORRECTED BY OWNER RULING ────────────────────────────────────────────
+    // "the stripe account will be per tenant and platform so no configuration
+    // should be hardcoded."
+    //
+    // This row used to read "Stripe billing (secret key)" and light up "Stripe
+    // Connect payouts" — i.e. it presented ONE env var as the switch for every
+    // Stripe path in the product, tenant money included. That is worse than an
+    // inaccuracy on a LAUNCH board: it goes GREEN on one key and reads as "money
+    // is wired", while every tenant-side path is still unresolvable. A go-live
+    // checklist that goes green on the wrong architecture is worse than one that
+    // fails.
+    //
+    // What this row can honestly gate is the PLATFORM half, and only that. The
+    // TENANT half is not an env var and cannot be — there are N tenants and env
+    // vars are singular. Each tenant connects their own Stripe in
+    // Settings → Connections; until they do,
+    // lib/billing/resolve-stripe-account.ts REFUSES their charges by name rather
+    // than settling them on the platform's account, which is the fail-closed
+    // behaviour a launch board should WANT and cannot itself verify.
+    capability: "Stripe billing — the PLATFORM's own account (secret key)",
     envVars: ["STRIPE_SECRET_KEY"],
-    whatLightsUp: "Signup checkout, subscriptions, dunning, vendor marketplace billing, Stripe Connect payouts.",
+    whatLightsUp:
+      "The money the PLATFORM is the payee on: signup checkout, subscriptions, dunning, AI overage, vendor marketplace tiers, and the Connect PLATFORM that mints tenant acct_… ids. A platform-owned platform_credentials row (owner_type='platform', platform='stripe') overrides this var and is the preferred home once one exists. It does NOT cover tenant-side money — a brokerage's vendor bills, client payments and agent payouts run on that brokerage's OWN Stripe account, connected per tenant in Settings → Connections. " +
+      // The residual ledger's RUNTIME reader (wave 82E): TENANT_MONEY_ON_PLATFORM_KEY
+      // is the declared list of tenant-money call sites still on this key
+      // (scripts/stripe-account-scope-simulator.ts C8 holds it equal to the
+      // scanned source). The operator reading this row is who must know if it
+      // is ever non-empty — a launch on it settles a tenant's money here.
+      (TENANT_MONEY_ON_PLATFORM_KEY.length === 0
+        ? "Tenant-money call sites still on this key: 0 — every tenant-side path resolves the tenant's own account."
+        : `WARNING — ${TENANT_MONEY_ON_PLATFORM_KEY.length} tenant-money call site(s) still settle on this key: ${TENANT_MONEY_ON_PLATFORM_KEY.map((r) => `${r.file} (${r.pathId})`).join(", ")}.`),
     tier: "launch-blocking",
   },
   {
     key: "stripe_webhook",
-    capability: "Stripe webhook verification",
-    envVars: ["STRIPE_WEBHOOK_SECRET"],
-    whatLightsUp: "Paid signups actually ACTIVATE — register https://<app>/api/webhooks/stripe in the Stripe dashboard and set the signing secret.",
+    capability: "Stripe webhook verification — PLATFORM account (tenant billing)",
+    envVars: [PLATFORM_WEBHOOK_ENV.tenant_billing],
+    // THE URL WAS WRONG, AND IT IS THE ONLY INSTRUCTION AN OPERATOR GETS.
+    // This row said "register https://<app>/api/webhooks/stripe". No such route
+    // exists — app/api/webhooks/stripe/ contains ONLY vendor/route.ts, so
+    // /api/webhooks/stripe is a 404. The tenant billing webhook lives at
+    // /api/billing/webhook. An operator who followed this line exactly would
+    // register a dead endpoint, every checkout.session.completed and
+    // customer.subscription.* delivery would fail, paid signups would never
+    // activate — and this very checklist would have gone GREEN, because it
+    // checks that the SECRET is set and cannot see where it was pointed.
+    // THE EVENT LIST IS DERIVED, NOT TYPED (wave 80A). This row used to spell
+    // out six events and omitted customer.subscription.created, which the route
+    // has handled since wave 79A — an operator following it registered an
+    // endpoint Stripe would never send that event to. TENANT_BILLING_WEBHOOK_EVENTS
+    // is the one vocabulary the route's switch, the SDK registration and this
+    // instruction share; scripts/stripe-webhook-events-guard.ts holds them equal.
+    whatLightsUp: `Paid signups actually ACTIVATE — register https://<app>${STRIPE_WEBHOOK_ROUTES.tenant_billing} in the PLATFORM's Stripe dashboard (events: ${TENANT_BILLING_WEBHOOK_EVENTS.join(", ")} — the "Stripe webhook events" drift check below registers any that are missing through the Stripe SDK) and set its signing secret here. This is the PLATFORM account's secret only: ${STRIPE_WEBHOOK_ROUTES.tenant_billing} now identifies the signing account cryptographically (lib/billing/stripe-webhook-secrets.ts) and refuses to write the platform's billing ledger from a tenant-signed delivery, so a tenant's own webhook secret belongs on that tenant's platform_credentials row (config.webhook_secret), never here.`,
     tier: "launch-blocking",
   },
   {
+    // The VENDOR marketplace webhook is a SECOND Stripe endpoint with its OWN
+    // signing secret, and it was absent from this checklist entirely — so an
+    // operator could complete every launch-blocking row and still have vendor
+    // subscriptions silently unreconciled (payment_failed → past_due and
+    // cancellation → suspend never arrive).
+    key: "stripe_vendor_webhook",
+    capability: "Stripe webhook verification — PLATFORM account (vendor marketplace)",
+    envVars: [PLATFORM_WEBHOOK_ENV.vendor_marketplace],
+    // DERIVED (wave 82E). The route and the event list were hand-typed here
+    // ("customer.subscription.*, invoice.payment_succeeded, invoice.payment_failed")
+    // after 81E derived the vendor vocabulary — so the one instruction an operator
+    // reads omitted transfer.created / transfer.reversed, and a vendor endpoint
+    // registered from it never lets a payout leave 'processing'.
+    whatLightsUp: `Vendor subscription status and vendor payouts stay true — register https://<app>${STRIPE_WEBHOOK_ROUTES.vendor_marketplace} as a SEPARATE endpoint on the PLATFORM's Stripe account (events: ${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.join(", ")} — the "Stripe webhook events" drift check below registers any that are missing through the Stripe SDK) and set its own signing secret. The vendor marketplace tier is money the vendor pays the PLATFORM (VENDOR_PLATFORM_TIER), so this endpoint accepts platform-signed deliveries only. Without a secret — here or on the platform credential's config.vendor_webhook_secret — the route refuses every delivery with a 500 naming what is missing.`,
+    tier: "launch-blocking",
+  },
+  {
+    // The PLATFORM's browser-public Stripe key (wave 82E). It is one of the four
+    // names PLATFORM_ONLY_STRIPE_ENV admits and the ONLY one no row gated: the
+    // in-app upgrade modal (app/settings/billing/upgrade-modal.tsx loadStripe)
+    // mounts Stripe Elements with it, so without it the card form never renders
+    // while every secret-key row reads green. Derived from the one list — the
+    // browser-public subset — so a renamed key cannot leave this row stale.
+    key: "stripe_publishable_key",
+    capability: "Stripe card form — PLATFORM account (publishable key)",
+    envVars: PLATFORM_ONLY_STRIPE_ENV.filter((n) => n.startsWith("NEXT_PUBLIC_")),
+    whatLightsUp: "The in-app plan upgrade card form (Stripe Elements on the billing page). Hosted Checkout (signup, seat packages) does not need it; the embedded upgrade form does.",
+    tier: "launch-degraded",
+  },
+  {
     key: "ai_gateway",
-    capability: "AI model gateway (any one key)",
-    envVars: ["AI_GATEWAY_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"],
-    anyOf: true,
+    capability: "AI model gateway",
+    // ONE key, not "any one of four". The provider SDKs are gone: every
+    // text/object/image/transcription call resolves through the Vercel AI Gateway,
+    // so ANTHROPIC_API_KEY / OPENAI_API_KEY / XAI_API_KEY no longer reach a model
+    // and must not read as a satisfied launch requirement.
+    // (ANTHROPIC_API_KEY still has ONE job — Anthropic's Managed Agents API in
+    // lib/agents/managed-agents-egress.ts, which the gateway does not proxy — but
+    // that is an agent-session surface, not the model lane this row gates.)
+    envVars: ["AI_GATEWAY_API_KEY"],
     whatLightsUp: "Every AI manager, copilot, widget chat, and content lane — the routing table selects per feature.",
     tier: "launch-blocking",
   },
@@ -159,6 +262,22 @@ const ROWS: RowDef[] = [
     envVars: ["DID_API_KEY"],
     whatLightsUp: "Avatar video generation and the live avatar embed widget.",
     tier: "launch-degraded",
+  },
+  {
+    // Wave 81C — lane 80C's flagged blind spot, kept flagged: the Videos V4
+    // `TransparentBackground` discriminator is TRANSCRIBED from the schema
+    // name (lib/did/contract.ts transparentPresenterConfig sends
+    // `{ type: "transparent" }`); the literal was not visible in the fetched
+    // reference. The same key gates it, so this row reads as configured the
+    // moment D-ID is — the LIVE CHECK is the first keyed V4 submit: the
+    // poller (app/api/cron/poll-did-videos) must host a .webm and record
+    // `transparent: true` on provider_metadata; an mp4 back means the field
+    // was ignored and the PiP reels fall to the opaque ring card.
+    key: "did_v4_transparent_background",
+    capability: "D-ID Videos V4 keyed (transparent) presenter — LIVE CHECK on first submit",
+    envVars: ["DID_API_KEY"],
+    whatLightsUp: "Keyed avatar PiP over content (webm with alpha) on MarketUpdateReel / AgentExplainerReel / EquityReportReel / AgentTalkingHeadReel. Verify: the first V4 result_format is webm and provider_metadata.transparent is true; otherwise the opaque card renders (by design) and the discriminator literal needs correcting in lib/did/contract.ts.",
+    tier: "optional",
   },
   {
     key: "zoom_oauth",
@@ -226,13 +345,6 @@ const ROWS: RowDef[] = [
     tier: "launch-degraded",
   },
   {
-    key: "vapi_legacy",
-    capability: "Vapi legacy voice lane (migration window only)",
-    envVars: ["VAPI_API_KEY"],
-    whatLightsUp: "Only tenants still on VOICE_ENGINE=vapi; new tenants bind to the Twilio-native lane.",
-    tier: "launch-degraded",
-  },
-  {
     key: "contact_enrichment",
     capability: "Contact enrichment (PeopleData)",
     envVars: ["PEOPLEDATA_API_KEY"],
@@ -251,8 +363,13 @@ const ROWS: RowDef[] = [
   },
   {
     key: "research_search",
-    capability: "Neural search / research (Exa · Tavily · Perplexity)",
-    envVars: ["EXA_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY"],
+    capability: "Neural search / research (Exa · Tavily)",
+    // PERPLEXITY_API_KEY was named here and has NO reader left in production:
+    // Perplexity's search-augmented models (perplexity-sonar / perplexity-sonar-pro
+    // in AI_TASK_ROUTING) are reached through the AI Gateway on AI_GATEWAY_API_KEY
+    // like every other model. A checklist row that green-lights on a key nothing
+    // reads is a row that lies.
+    envVars: ["EXA_API_KEY", "TAVILY_API_KEY"],
     anyOf: true,
     whatLightsUp: "Buyer-intent discovery, competitor intelligence, research-backed content lanes.",
     tier: "optional",
@@ -301,6 +418,30 @@ const ROWS: RowDef[] = [
   },
 ]
 
+// Vendor-state checks the board runs ON DEMAND. Every checkAction / repairAction
+// named here is a real export of app/actions/superadmin/* (the guard verifies).
+const DRIFT_CHECKS: LaunchDriftCheck[] = [
+  {
+    key: "stripe_webhook_events",
+    capability: "Stripe webhook events — PLATFORM account (tenant billing)",
+    whatDrifts: `The endpoint registered at ${STRIPE_WEBHOOK_ROUTES.tenant_billing} must enable every event the route handles (${TENANT_BILLING_WEBHOOK_EVENTS.length}: ${TENANT_BILLING_WEBHOOK_EVENTS.join(", ")}). A handled event that is not enabled is never delivered — a subscription minted in the Stripe dashboard would never reach the ledger. In sync = the endpoint's enabled_events ⊇ the handled list (or the wildcard). Register writes the UNION through the Stripe SDK (webhookEndpoints.update) and creates nothing.`,
+    checkAction: "checkStripeWebhookEventsAction",
+    repairAction: "registerStripeWebhookEventsAction",
+    tier: "launch-blocking",
+  },
+  {
+    // Lane 81E: the vendor endpoint's vocabulary is DERIVED now (payout map ∪
+    // subscription lane — lib/vendors/vendor-webhook-events.ts), so the same
+    // check/register pair covers it; the actions take the endpoint by name.
+    key: "stripe_vendor_webhook_events",
+    capability: "Stripe webhook events — PLATFORM account (vendor marketplace: vendor tier billing + payout completion)",
+    whatDrifts: `The endpoint registered at ${STRIPE_WEBHOOK_ROUTES.vendor_marketplace} must enable every event its route handles (${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.length}: ${VENDOR_MARKETPLACE_WEBHOOK_EVENTS.join(", ")}). Without transfer.created / transfer.reversed no vendor payout ever leaves 'processing'; without the subscription events a vendor's tier never moves. In sync = enabled_events ⊇ the handled list (or the wildcard). Register writes the UNION through the Stripe SDK and creates nothing.`,
+    checkAction: "checkStripeWebhookEventsAction",
+    repairAction: "registerStripeWebhookEventsAction",
+    tier: "launch-degraded",
+  },
+]
+
 /** Build the live checklist — presence only; env values are never carried into the result. */
 export function buildLaunchChecklist(): LaunchChecklist {
   const items: LaunchChecklistItem[] = ROWS.map((r) => ({
@@ -330,5 +471,6 @@ export function buildLaunchChecklist(): LaunchChecklist {
     optionalConfigured: o.configured,
     optionalTotal: o.total,
     items,
+    driftChecks: DRIFT_CHECKS.map((d) => ({ ...d })),
   }
 }

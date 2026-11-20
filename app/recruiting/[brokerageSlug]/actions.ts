@@ -18,6 +18,8 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 const VALID_STATUS = "prospect" as const
 
@@ -58,14 +60,29 @@ export async function submitRecruitInquiry(
   const svc = createServiceClient()
 
   // ── Resolve the brokerage from its slug ───────────────────────────────────
-  const { data: brokerage } = await svc
-    .from("brokerages")
-    .select("id, name")
-    .eq("slug", input.brokerageSlug)
-    .maybeSingle()
-  if (!brokerage) {
-    return { success: false, error: "Brokerage not found" }
+  // WAVE 155 (lane 155R18 — G10): as the DECISION's opt-in read, BEFORE the recruit row or any notification — the per-IP cap,
+  // then the TENANT'S OWN OPT-IN: the live brokerage its public slug names (the recruiting page's own slug predicate, minus a
+  // tenant that is archived, deleted or deactivated — an archived brokerage's page must not keep collecting recruits).
+  const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+  const seen: { brokerage: { id: string; name: string | null } | null } = { brokerage: null }
+  const door = await decidePublicDoor({
+    surface: "recruit-inquiry", callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
+    optIn: async () => {
+      const { data, error } = await svc
+        .from("brokerages")
+        .select("id, name, is_active, archived_at, deleted_at")
+        .eq("slug", input.brokerageSlug)
+        .maybeSingle()
+      const b = data as { id: string; name: string | null; is_active: boolean | null; archived_at: string | null; deleted_at: string | null } | null
+      if (error || !b || b.is_active === false || b.archived_at || b.deleted_at) return null
+      seen.brokerage = { id: b.id, name: b.name }
+      return { brokerageId: b.id, basis: "brokerages.slug (live tenant: active, not archived, not deleted)" }
+    },
+  })
+  if (!door.allowed || !seen.brokerage) {
+    return { success: false, error: !door.allowed && door.reason === "rate_limited" ? "Too many requests from this connection — try again shortly." : "Brokerage not found" }
   }
+  const brokerage = seen.brokerage
 
   // ── Validate the referring agent (if any) belongs to this brokerage ──────
   // We don't trust the URL param. If the agent isn't in this brokerage we
@@ -115,7 +132,7 @@ export async function submitRecruitInquiry(
       .from("users")
       .select("id")
       .eq("brokerage_id", brokerage.id)
-      .in("user_type", ["broker", "admin"])
+      .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
       .limit(5)
     const recipients = (brokerUsers ?? []).map((u: { id: string }) => u.id)
     if (recipients.length > 0) {
@@ -131,7 +148,15 @@ export async function submitRecruitInquiry(
         channel:       "in_app",
         is_read:       false,
       }))
-      await svc.from("notifications").insert(rows)
+      // A refused insert used to vanish (the try/catch sees only a THROW, and
+      // supabase-js resolves a refusal). sentinelWrite reads the error and
+      // ledgers the loss for the repair digest (lane 87E, swallowed-refusal census).
+      await sentinelWrite(svc, svc.from("notifications").insert(rows), {
+        table: "notifications",
+        flow: "recruit_inquiry_broker_notice",
+        brokerageId: brokerage.id,
+        reason: "the recruit row is already written; the broker notice must not fail the public form",
+      })
     }
   } catch (notifyErr) {
     console.error("[submitRecruitInquiry] Notification failed:", notifyErr)
@@ -146,7 +171,7 @@ export async function submitRecruitInquiry(
         .eq("id", recruiterAgentId)
         .maybeSingle()
       if (agentUser?.user_id) {
-        await svc.from("notifications").insert({
+        await sentinelWrite(svc, svc.from("notifications").insert({
           user_id:       agentUser.user_id,
           brokerage_id:  brokerage.id,
           type:          "recruit_referral_inquiry",
@@ -157,6 +182,11 @@ export async function submitRecruitInquiry(
           priority:      "medium",
           channel:       "in_app",
           is_read:       false,
+        }), {
+          table: "notifications",
+          flow: "recruit_inquiry_referrer_notice",
+          brokerageId: brokerage.id,
+          reason: "the recruit row is already written; the referrer notice must not fail the public form",
         })
       }
     } catch (notifyErr) {

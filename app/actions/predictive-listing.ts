@@ -10,8 +10,23 @@
  *   - listQueuedAutoTouches(agentId) — review queue for the agent
  */
 
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
+import { bestEffort } from "@/lib/db/best-effort"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+
+/** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
+ *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
+ *  the SESSION's (each caller resolves them). The helper answers `{ success, error }` WITHOUT running only when it refused the
+ *  claim; callers here read their own result shape, so only that refusal maps through `refused` — a run's value is returned as is.
+ *  A caller with NO tenant (platform staff) has no valid receipt row: never invented (CLAUDE.md §4) — it runs exactly as before. */
+async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: string; agentId?: string | null; action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> }, run: () => Promise<T>, refused: (error: string) => R): Promise<T | R> {
+  if (!rc.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const out = await ledgerSessionAction({ brokerageId: rc.brokerageId, action: rc.action, actor: { type: "user", userId: rc.userId, agentId: rc.agentId ?? null }, subject: rc.subject, riskClass: rc.riskClass, reasonCode: "HUMAN_REQUESTED", detail: rc.detail ?? null }, () => { ran = true; return run() })
+  return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
+}
 
 export interface PredictiveSellerRow {
   contactId: string
@@ -22,6 +37,12 @@ export interface PredictiveSellerRow {
   lastActionAt: string | null
   lastActionType: string | null
   scoredAt: string
+  /** The AVM the scorer recorded (contacts.home_value_estimate today) and where it came from. */
+  avmValue: number | null
+  avmSource: string | null
+  /** Evidence depth behind the score: how many signals fired and their summed motivation boost. */
+  signalsFired: number | null
+  motivationTotal: number | null
 }
 
 export async function getTopPredictiveSellers(params: {
@@ -34,10 +55,17 @@ export async function getTopPredictiveSellers(params: {
   const minScore = params.minScore ?? 60
   const limit = params.limit ?? 10
 
+  // Lane M2 — avm_value/avm_source (the home-value estimate the scorer
+  // recorded and where it came from) and signals_fired/
+  // contributing_motivation_total (the evidence depth behind the score) were
+  // written by every nightly scoring pass and read by nothing: the card showed
+  // a bare score with no dollar context and no way to tell a 4-signal 78 from
+  // a 1-signal 78.
   let query = supabase
     .from("predictive_listing_scores")
     .select(
       "contact_id, pls_score, confidence, top_signals, last_action_at, last_action_type, scored_at, suppressed_until, " +
+        "avm_value, avm_source, signals_fired, contributing_motivation_total, " +
         "contacts!inner(first_name, last_name, agent_id)"
     )
     .gte("pls_score", minScore)
@@ -60,6 +88,10 @@ export async function getTopPredictiveSellers(params: {
     last_action_type: string | null
     scored_at: string
     suppressed_until: string | null
+    avm_value: number | null
+    avm_source: string | null
+    signals_fired: number | null
+    contributing_motivation_total: number | null
     contacts: { first_name: string | null; last_name: string | null }
   }>)
     .filter((row) => !row.suppressed_until || new Date(row.suppressed_until) < now)
@@ -73,6 +105,11 @@ export async function getTopPredictiveSellers(params: {
       lastActionAt: row.last_action_at,
       lastActionType: row.last_action_type,
       scoredAt: row.scored_at,
+      avmValue: row.avm_value != null ? Number(row.avm_value) : null,
+      avmSource: row.avm_source,
+      signalsFired: row.signals_fired != null ? Number(row.signals_fired) : null,
+      motivationTotal:
+        row.contributing_motivation_total != null ? Number(row.contributing_motivation_total) : null,
     }))
 }
 
@@ -87,8 +124,13 @@ export async function dismissPredictiveSeller(params: {
   days?: number
   reason?: string
 }): Promise<{ success: boolean; error?: string }> {
+  // WAVE 155 (lane 155R12): the tenant came from the ARGUMENT (CLAUDE.md §4). The sibling's session gate (getAgentContext, see
+  // listDismissedPredictiveSellers) now decides it: an argument naming another tenant is refused.
+  const { getAgentContext } = await import("@/lib/identity"); const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
   const supabase = await createClient()
   const days = params.days ?? 90
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "predictive.seller.dismiss", subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", detail: { days } }, async () => {
 
   const { error } = await supabase
     .from("predictive_listing_scores")
@@ -105,7 +147,7 @@ export async function dismissPredictiveSeller(params: {
   if (error) return { success: false, error: error.message }
 
   // Also write a manual_dismiss action row for audit
-  await supabase.from("predictive_listing_actions").insert({
+  await bestEffort(supabase.from("predictive_listing_actions").insert({
     contact_id: params.contactId,
     brokerage_id: params.brokerageId,
     action_type: "manual_dismiss",
@@ -113,10 +155,95 @@ export async function dismissPredictiveSeller(params: {
     cancel_reason: params.reason ?? "agent_dismissed",
     cancelled_by_user_id: params.userId,
     cancelled_at: new Date().toISOString(),
-  })
+  }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   revalidatePath("/dashboard/agent")
   return { success: true }
+  }, (error) => ({ success: false as const, error }))
+}
+
+/**
+ * The dismissals ledger (lane M2). dismissPredictiveSeller stamps WHO hid a
+ * contact (suppressed_by_user_id), WHY (suppression_reason) and until when —
+ * and nothing ever read any of it: a dismissed contact simply vanished, and a
+ * team could not tell a deliberate "not for me" from a mis-click, nor undo
+ * either. Tenant comes from the SESSION (§4), not from a parameter — this is
+ * the shape the sibling actions in this file should also converge on.
+ *
+ * suppressed_by_user_id carries a users.id (the card passes the page's
+ * auth user id) — names resolve against users, never agents (§3: the id
+ * spaces are disjoint).
+ */
+export async function listDismissedPredictiveSellers(): Promise<Array<{
+  contactId: string
+  contactName: string
+  suppressionReason: string | null
+  suppressedUntil: string | null
+  suppressedByName: string | null
+}>> {
+  const supabase = await createClient()
+  const { getAgentContext } = await import("@/lib/identity")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+
+  const now = new Date().toISOString()
+  const { data, error } = await supabase
+    .from("predictive_listing_scores")
+    .select(
+      "contact_id, suppression_reason, suppressed_by_user_id, suppressed_until, " +
+        "contacts!inner(first_name, last_name)"
+    )
+    .eq("brokerage_id", ctx.brokerageId)
+    .gt("suppressed_until", now)
+    .order("suppressed_until", { ascending: false })
+    .limit(20)
+
+  // §3: the error is read; a refused read returns an empty ledger, never throws
+  // into the dashboard.
+  if (error) {
+    console.error("[predictive-listing] dismissals read refused:", error.message)
+    return []
+  }
+
+  const rows = (data ?? []) as unknown as Array<{
+    contact_id: string
+    suppression_reason: string | null
+    suppressed_by_user_id: string | null
+    suppressed_until: string | null
+    contacts: { first_name: string | null; last_name: string | null }
+  }>
+
+  // Resolve dismisser names in one read against USERS (the id class written).
+  const userIds = [
+    ...new Set(rows.map((r) => r.suppressed_by_user_id).filter((id): id is string => !!id)),
+  ]
+  const nameById = new Map<string, string>()
+  if (userIds.length > 0) {
+    const { data: users, error: usersErr } = await supabase
+      .from("users")
+      .select("id, first_name, last_name")
+      .eq("brokerage_id", ctx.brokerageId)
+      .in("id", userIds)
+    if (usersErr) {
+      console.error("[predictive-listing] dismisser name read refused:", usersErr.message)
+    } else {
+      for (const u of (users ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+        const name = `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim()
+        if (name) nameById.set(u.id, name)
+      }
+    }
+  }
+
+  return rows.map((r) => ({
+    contactId: r.contact_id,
+    contactName:
+      `${r.contacts?.first_name ?? ""} ${r.contacts?.last_name ?? ""}`.trim() || "Contact",
+    suppressionReason: r.suppression_reason,
+    suppressedUntil: r.suppressed_until,
+    suppressedByName: r.suppressed_by_user_id
+      ? (nameById.get(r.suppressed_by_user_id) ?? null)
+      : null,
+  }))
 }
 
 /**
@@ -127,7 +254,12 @@ export async function markPredictiveAction(params: {
   brokerageId: string
   actionType: "touched" | "consulted" | "nurtured"
 }): Promise<{ success: boolean; error?: string }> {
+  // WAVE 155 (lane 155R12): the tenant came from the ARGUMENT (CLAUDE.md §4). The sibling's session gate (getAgentContext, see
+  // listDismissedPredictiveSellers) now decides it: an argument naming another tenant is refused.
+  const { getAgentContext } = await import("@/lib/identity"); const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
   const supabase = await createClient()
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "predictive.seller.mark_action", subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", detail: { action_type: params.actionType } }, async () => {
   const { error } = await supabase
     .from("predictive_listing_scores")
     .update({
@@ -146,16 +278,17 @@ export async function markPredictiveAction(params: {
       : params.actionType === "consulted"
       ? "manual_consult"
       : "manual_nurture"
-  await supabase.from("predictive_listing_actions").insert({
+  await bestEffort(supabase.from("predictive_listing_actions").insert({
     contact_id: params.contactId,
     brokerage_id: params.brokerageId,
     action_type: actionType,
     status: "sent",
     sent_at: new Date().toISOString(),
-  })
+  }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
 
   revalidatePath("/dashboard/agent")
   return { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /**
@@ -168,7 +301,12 @@ export async function cancelQueuedAutoTouch(params: {
   userId: string
   reason?: string
 }): Promise<{ success: boolean; error?: string }> {
+  // WAVE 155 (lane 155R12): the tenant came from the ARGUMENT (CLAUDE.md §4). The sibling's session gate (getAgentContext, see
+  // listDismissedPredictiveSellers) now decides it: an argument naming another tenant is refused.
+  const { getAgentContext } = await import("@/lib/identity"); const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId || !decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
   const supabase = await createClient()
+  return withReceipt({ brokerageId: ctx.brokerageId, userId: ctx.userId, agentId: ctx.agentId, action: "predictive.auto_touch.cancel", subject: { type: "predictive_listing_action", id: params.actionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
   const { error } = await supabase
     .from("predictive_listing_actions")
     .update({
@@ -184,6 +322,7 @@ export async function cancelQueuedAutoTouch(params: {
   if (error) return { success: false, error: error.message }
   revalidatePath("/dashboard/agent")
   return { success: true }
+  }, (error) => ({ success: false as const, error }))
 }
 
 /**

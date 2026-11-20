@@ -38,8 +38,15 @@ export const REVERSE_PROSPECTING_TAG = "REVERSE PROSPECTING"
 /** A listing only becomes instant demand while it's fresh inventory. */
 export const REVERSE_PROSPECTING_STATUSES = ["coming_soon", "active"] as const
 
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: REVERSE_PROSPECTING_THRESHOLD.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Buyers below this fit are not worth a one-to-one note (mirrors the market-watch bar). */
-export const REVERSE_PROSPECTING_THRESHOLD = 70
+const REVERSE_PROSPECTING_THRESHOLD = 70
 
 export interface ListingForProspecting {
   id: string

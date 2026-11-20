@@ -20,6 +20,7 @@
  * via processKernelEvent() (non-blocking — compliance result is returned regardless).
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -112,10 +113,10 @@ export async function checkBrandCompliance(
     }
 
     const blogPassed = violations.length === 0
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("blog_posts")
       .update({ seo_score: blogPassed ? (blog?.seo_score ?? 0) : (blog?.seo_score ?? 0) })
-      .eq("id", contentId)
+      .eq("id", contentId), { table: "blog_posts", flow: "blog_posts_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // ── podcast ───────────────────────────────────────────────────────────────
   } else if (contentType === "podcast") {
@@ -150,10 +151,11 @@ export async function checkBrandCompliance(
     }
 
     const newsletterPassed = violations.length === 0
-    await supabase
+    const { error: brandFlagErr } = await supabase
       .from("newsletter_campaigns")
       .update({ brand_compliance_passed: newsletterPassed })
       .eq("id", contentId)
+    if (brandFlagErr) console.error(`[brand-compliance] newsletter brand-compliance verdict NOT recorded: ${brandFlagErr.message}`)
 
   // ── ad_creative ───────────────────────────────────────────────────────────
   } else if (contentType === "ad_creative") {
@@ -409,14 +411,14 @@ async function updateComplianceRecord(ctx: {
 
   if (contentType === "social_post") {
     // social_posts uses brand_compliance_passed + compliance_checked_at (live schema confirmed)
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("social_posts")
       .update({
         brand_compliance_passed: passed,
         compliance_checked_at:  now,
         updated_at:              now,
       })
-      .eq("id", contentId)
+      .eq("id", contentId), { table: "social_posts", flow: "social_posts_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   } else if (contentType === "video") {
     // ai_video_projects has no dedicated compliance column — store in video_metadata jsonb
     const { data: existing } = await supabase
@@ -426,7 +428,7 @@ async function updateComplianceRecord(ctx: {
       .maybeSingle()
 
     const currentMeta = (existing?.video_metadata ?? {}) as Record<string, unknown>
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("ai_video_projects")
       .update({
         video_metadata: {
@@ -436,13 +438,13 @@ async function updateComplianceRecord(ctx: {
         },
         updated_at: now,
       })
-      .eq("id", contentId)
+      .eq("id", contentId), { table: "ai_video_projects", flow: "kernel_brand_compliance_stamp", reason: "compliance annotation on the project; the verdict is returned to the caller" })
   } else if (contentType === "listing_media") {
     // listing_media.kernel_compliance_passed confirmed in live schema
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("listing_media")
       .update({ kernel_compliance_passed: passed })
-      .eq("id", contentId)
+      .eq("id", contentId), { table: "listing_media", flow: "listing_media_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   }
   // document: no table in public schema — no UPDATE issued
 }

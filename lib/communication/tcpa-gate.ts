@@ -16,10 +16,68 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { checkQuietHours, stateFromPhone } from "@/lib/communication/call-compliance"
+// PURE, no I/O (lib/compliance/phone-scrub.ts carries no server-only import) — reused here
+// rather than re-deriving the ten-digit normalization BatchData's DNC/TCPA tools expect.
+import { toTenDigits as toTenDigitsForScrub } from "@/lib/compliance/phone-scrub"
 
 const RND_STALENESS_DAYS = 90  // FCC reassigned-number safe harbor reference
+
+// ── FRESH DNC/TCPA SCRUB (wave 68, owner verbatim: "we do want to make sure that the
+// phone/scrub and email before using it") ───────────────────────────────────────────
+// A stored dnc_status is only as good as the day it was last checked. This EXTENDS the
+// existing TCPA gate (never a second gate stack) with a freshness requirement: a verdict
+// older than DNC_TCPA_SCRUB_STALENESS_DAYS (or never checked) is re-verified LIVE against
+// BatchData before the call/SMS proceeds — "the skip-trace record's own flags when
+// present" is exactly `contacts.dnc_status` + `dnc_verified_at` when that timestamp is
+// still fresh (stamped by lib/compliance/phone-scrub-runner.ts at intake, or by this gate
+// itself on a prior send); otherwise the mirrors in lib/external/batchdata-mcp.ts
+// (checkDncStatus/checkTcpaStatus — SAME tools phone-scrub-runner.ts already calls, one
+// vocabulary §6) are queried live. FAIL CLOSED: unconfigured (no BatchData key) with a
+// stale/missing stored verdict refuses the send rather than assuming clean.
+export const DNC_TCPA_SCRUB_STALENESS_DAYS = 30
+
+/** @proofSeam exported so scripts/outbound-call-gates-simulator.ts §8 can pin the
+ *  freshness clock's boundary (29d fresh / 31d stale) directly — enforceTCPACompliance
+ *  below is this function's only production caller, in the SAME file. */
+/** PURE: is a stored DNC/TCPA verdict still fresh enough to trust without a live re-check? */
+export function isDncTcpaVerdictFresh(verifiedAt: string | null | undefined, now: number = Date.now()): boolean {
+  if (!verifiedAt) return false
+  const ts = new Date(verifiedAt).getTime()
+  if (!Number.isFinite(ts)) return false
+  const ageDays = (now - ts) / (1000 * 60 * 60 * 24)
+  return ageDays >= 0 && ageDays <= DNC_TCPA_SCRUB_STALENESS_DAYS
+}
+
+/** Minimal shape of what lib/external/batchdata-mcp.ts::checkDncStatus returns — typed
+ *  locally so this pure evaluator never imports the (server-only-adjacent) MCP client. */
+export interface DncCheckLike { ok: boolean; dnc: boolean | null; unconfigured?: boolean; error?: string | null }
+export interface TcpaCheckLike { ok: boolean; tcpaLitigator: boolean | null; unconfigured?: boolean; error?: string | null }
+
+export type FreshScrubVerdict =
+  | { verified: true; blocked: false }
+  | { verified: true; blocked: true; blockReason: "dnc" | "tcpa_litigator" }
+  | { verified: false; reason: string }
+
+/** @proofSeam the four wave-68 dnc/tcpa/unconfigured/clean controls in
+ *  scripts/outbound-call-gates-simulator.ts §8 execute this PURE decision core
+ *  directly; enforceTCPACompliance below is its only production caller (same file). */
+export function evaluateFreshScrubVerdict(dncResult: DncCheckLike, tcpaResult: TcpaCheckLike): FreshScrubVerdict {
+  if (dncResult.unconfigured || tcpaResult.unconfigured) {
+    return {
+      verified: false,
+      reason: "DNC/TCPA scrub is unconfigured (no BatchData key) and the stored verdict is stale — cannot verify a fresh status, so nothing was sent.",
+    }
+  }
+  if (!dncResult.ok && !tcpaResult.ok) {
+    return { verified: false, reason: `DNC/TCPA scrub failed: ${dncResult.error ?? tcpaResult.error ?? "unknown error"}` }
+  }
+  if (dncResult.ok && dncResult.dnc === true) return { verified: true, blocked: true, blockReason: "dnc" }
+  if (tcpaResult.ok && tcpaResult.tcpaLitigator === true) return { verified: true, blocked: true, blockReason: "tcpa_litigator" }
+  return { verified: true, blocked: false }
+}
 
 export type TCPABlockReason =
   | "dnc"
@@ -31,14 +89,26 @@ export type TCPABlockReason =
   | "phone_reassigned"
   | "opted_out"
   | "missing_phone"
+  | "tcpa_litigator"
+  /** Wave 91 (lane 91B): the recipient is a LEAD — no SMS, no calls (owner ruling). */
+  | "lead_stage"
   | "other"
 
 export interface TCPAGateInput {
   channel:       "sms" | "call"
   phone:         string
   contactId?:    string | null
+  /** Wave 91 (lane 91B): the LEAD this send is keyed to, when there is no contact. A
+   *  lead-keyed send is refused outright — leads are non-consenting (owner ruling). */
+  leadId?:       string | null
   brokerageId?:  string | null
   initiatedBy?:  string | null
+  /** Wave 101C — ISA IS A SYSTEM AI ISA: the send's systemSource. An unattended AI-ISA send
+   *  (lib/kernel/action-ledger.ts isAiIsaSystemSource, not human-approved) is logged as the ISA's
+   *  system user (lib/auth/isa-actor.ts isaAuditActor); `initiatedBy` (the agent whose line or
+   *  record it ran beside) rides as details.on_behalf_of_user_id. */
+  systemSource?: string | null
+  humanApproved?: boolean
   /** Set true on system-of-record retention/transactional notices that may
    *  bypass marketing consent (e.g. an in-progress transaction confirmation
    *  to an existing client). DNC and quiet hours STILL apply. */
@@ -65,19 +135,128 @@ export async function enforceTCPACompliance(input: TCPAGateInput): Promise<TCPAG
     return { allowed: false, blockReason: "missing_phone", message: "Phone number missing or invalid", logEntryId: log }
   }
 
+  // 0. LEAD-STAGE REFUSAL (wave 91, lane 91B — owner: "Leads usually are non consenting so no
+  //    sms or calls allowed only email and direct mail"). Without a contactId the consent block
+  //    below never runs, so a lead-keyed or number-only send used to reach quiet hours alone and
+  //    pass. The ONE predicate (lib/ai-isa/lead-channel-policy.ts::channelRefusalForRecipient)
+  //    refuses a lead-keyed send; a number-only send is resolved by phone against the tenant's
+  //    UNCONVERTED leads. FAILS CLOSED: an unreadable lookup refuses a marketing send.
+  {
+    const leadRefusal = await leadStageRefusal(input)
+    if (leadRefusal) {
+      const log = await writeLog(input, "blocked", "lead_stage", { reason: "lead_stage", detail: leadRefusal, lead_id: input.leadId ?? null })
+      return { allowed: false, blockReason: "lead_stage", message: leadRefusal, logEntryId: log }
+    }
+  }
+
   // 1. Look up contact compliance state (when contactId provided — most paths have it)
   if (input.contactId) {
     const svc = createServiceClient()
-    const { data: contact } = await svc
+    // THIS READ IS THE GATE. It used to be `const { data: contact }` with the
+    // error dropped, and supabase-js RESOLVES a refused query — so a refused
+    // read produced `contact === null`, the `if (contact)` block was skipped
+    // whole, and DNC / STOP opt-out / express consent / phone-status / RND
+    // staleness were ALL bypassed. Execution fell through to the quiet-hours
+    // check, which knows nothing about consent, and the gate could return
+    // allowed. A consent gate that fails OPEN is the one direction this must
+    // never fail, and it covered SMS as well as voice.
+    //
+    // Both "the read was refused" and "an id was named but no row came back"
+    // mean the same thing here — WE CANNOT VERIFY CONSENT — so both refuse.
+    // The caller supplied the id; a missing row is a data fault, not consent.
+    const { data: contact, error: contactError } = await svc
       .from("contacts")
-      .select("dnc_status, tcpa_consent, tcpa_consent_date, sms_opt_out, phone_status, phone_validated_at, email_opt_out")
+      .select("dnc_status, tcpa_consent, tcpa_consent_date, sms_opt_out, phone_status, phone_validated_at, email_opt_out, dnc_verified_at")
       .eq("id", input.contactId)
       .maybeSingle()
 
-    if (contact) {
-      if (contact.dnc_status === true) {
-        const log = await writeLog(input, "blocked", "dnc", { dnc_status: true })
-        return { allowed: false, blockReason: "dnc", message: "Contact is on DNC list", logEntryId: log }
+    if (contactError) {
+      const log = await writeLog(input, "blocked", "other", {
+        reason: "compliance_state_unreadable",
+        contact_id: input.contactId,
+        db_error: contactError.message,
+      })
+      return {
+        allowed: false,
+        blockReason: "other",
+        message: `Could not read this contact's compliance state (${contactError.message}) — nothing was sent. Consent cannot be assumed.`,
+        logEntryId: log,
+      }
+    }
+    if (!contact) {
+      const log = await writeLog(input, "blocked", "other", {
+        reason: "contact_not_found",
+        contact_id: input.contactId,
+      })
+      return {
+        allowed: false,
+        blockReason: "other",
+        message: "No contact record found for the id supplied, so there is no consent on file — nothing was sent.",
+        logEntryId: log,
+      }
+    }
+
+    {
+      // FRESH DNC/TCPA SCRUB — see the header. A fresh stored verdict is trusted as-is
+      // ("the skip-trace record's own flags when present"); a stale/missing one is
+      // re-verified LIVE, fail-closed on an unconfigured provider.
+      if (isDncTcpaVerdictFresh(contact.dnc_verified_at as string | null)) {
+        if (contact.dnc_status === true) {
+          const log = await writeLog(input, "blocked", "dnc", { dnc_status: true, source: "stored_fresh" })
+          return { allowed: false, blockReason: "dnc", message: "Contact is on DNC list", logEntryId: log }
+        }
+      } else {
+        const ten = toTenDigitsForScrub(input.phone)
+        const [dncResult, tcpaResult]: [DncCheckLike, TcpaCheckLike] = ten
+          ? await (async () => {
+              // THE ONE BATCHDATA GATE (wave 80 lane B): purpose "dnc" declared through
+              // lib/ai-isa/property-lookup-rail.ts::resolveBatchDataAccess — never refused
+              // by a spend policy; a refusal (unknown purpose) reads as unverifiable below.
+              const { resolveBatchDataAccess } = await import("@/lib/ai-isa/property-lookup-rail")
+              const access = await resolveBatchDataAccess({ brokerageId: input.brokerageId, purpose: "dnc" })
+              if (!access.allowed) {
+                return [
+                  { ok: false, dnc: null, unconfigured: false, error: access.reason },
+                  { ok: false, tcpaLitigator: null, unconfigured: false, error: access.reason },
+                ]
+              }
+              const { checkDncStatus, checkTcpaStatus } = await import("@/lib/external/batchdata-mcp")
+              return [await checkDncStatus(ten), await checkTcpaStatus(ten)]
+            })()
+          : [
+              { ok: false, dnc: null, unconfigured: false, error: "phone could not be normalized for a DNC/TCPA scrub" },
+              { ok: false, tcpaLitigator: null, unconfigured: false, error: "phone could not be normalized for a DNC/TCPA scrub" },
+            ]
+        const verdict = evaluateFreshScrubVerdict(dncResult, tcpaResult)
+        if (!verdict.verified) {
+          const log = await writeLog(input, "blocked", "other", { reason: "dnc_tcpa_scrub_unverifiable", detail: verdict.reason })
+          return { allowed: false, blockReason: "other", message: `${verdict.reason}`, logEntryId: log }
+        }
+        if (verdict.blocked) {
+          const log = await writeLog(input, "blocked", verdict.blockReason, { source: "fresh_scrub" })
+          return {
+            allowed: false,
+            blockReason: verdict.blockReason,
+            message: verdict.blockReason === "dnc"
+              ? "Contact is on the DNC list (fresh scrub)"
+              : "This number is associated with a known TCPA litigator (fresh scrub)",
+            logEntryId: log,
+          }
+        }
+        // Clean — persist so the NEXT send within the freshness window skips the live
+        // call. Best-effort: a refused stamp never blocks a compliant send.
+        if (input.contactId) {
+          await sentinelWrite(
+            svc,
+            svc.from("contacts").update({ dnc_status: false, dnc_verified_at: new Date().toISOString() }).eq("id", input.contactId),
+            {
+              table: "contacts",
+              flow: "tcpa_gate_dnc_verdict_stamp",
+              brokerageId: input.brokerageId ?? null,
+              reason: "the live DNC/TCPA verdict already gated this send; the stamp only lets the next send inside the freshness window skip the provider call, so a lost stamp costs one extra verification, never a compliance miss",
+            },
+          )
+        }
       }
       // SMS-specific opt-out from STOP keyword path
       if (input.channel === "sms" && contact.sms_opt_out === true) {
@@ -143,6 +322,37 @@ export async function enforceTCPACompliance(input: TCPAGateInput): Promise<TCPAG
   }
 }
 
+/**
+ * Wave 91 (lane 91B) — is this SMS/call aimed at a LEAD? The keys decide first (a contactId is a
+ * contact: its consent is judged below; a leadId alone is a lead). A NUMBER-ONLY send is resolved
+ * against the tenant's leads by phone: a match on an unconverted lead with no contact carrying the
+ * same number is a lead. A transactional (recipient-initiated) number-only send skips the lookup —
+ * the recipient reached us first — but an explicitly lead-keyed send never does.
+ * Returns the refusal reason, or null.
+ */
+export async function leadStageRefusal(input: TCPAGateInput): Promise<string | null> {
+  const { channelRefusalForRecipient, leadStageChannelRefusal } = await import("@/lib/ai-isa/lead-channel-policy")
+  const channel = input.channel === "call" ? "voice" : "sms"
+  const keyed = channelRefusalForRecipient({ contactId: input.contactId ?? null, leadId: input.leadId ?? null }, channel)
+  if (keyed) return keyed
+  if (input.contactId || input.leadId || input.transactional || !input.brokerageId) return null
+  const ten = input.phone.replace(/\D/g, "").slice(-10)
+  if (ten.length !== 10) return null
+  const svc = createServiceClient()
+  // phone_digits is GENERATED on both tables (regexp_replace(phone, '\D', '', 'g') — live read
+  // 2026-09-30), so a stored "+1 (512) …" reads as 1512…; both spellings are matched.
+  const [{ data: leadRows, error: leadErr }, { data: contactRows, error: contactErr }] = await Promise.all([
+    svc.from("leads").select("id").eq("brokerage_id", input.brokerageId).in("phone_digits", [ten, `1${ten}`]).is("contact_id", null).limit(1),
+    svc.from("contacts").select("id").eq("brokerage_id", input.brokerageId).in("phone_digits", [ten, `1${ten}`]).limit(1),
+  ])
+  const readErr = leadErr ?? contactErr
+  if (readErr) {
+    return `Could not verify whether this number belongs to a lead (${readErr.message}) — nothing was sent; a lead may not be texted or called.`
+  }
+  if ((leadRows ?? []).length > 0 && (contactRows ?? []).length === 0) return leadStageChannelRefusal(channel)
+  return null
+}
+
 async function writeLog(
   input: TCPAGateInput,
   decision: "allowed" | "blocked",
@@ -153,22 +363,27 @@ async function writeLog(
 ): Promise<string | undefined> {
   try {
     const svc = createServiceClient()
-    const { data } = await svc
+    const { isAiIsaSystemSource } = await import("@/lib/kernel/action-ledger")
+    const isaActor = isAiIsaSystemSource(input.systemSource) && input.humanApproved !== true
+      ? await (await import("@/lib/auth/isa-actor")).isaAuditActor(svc as any, input.brokerageId, input.initiatedBy ?? null)
+      : null
+    const { data, error: complianceLogErr } = await svc
       .from("outbound_message_compliance_log")
       .insert({
         brokerage_id:         input.brokerageId ?? null,
         contact_id:           input.contactId   ?? null,
-        initiated_by:         input.initiatedBy ?? null,
+        initiated_by:         isaActor ? isaActor.actorUserId : (input.initiatedBy ?? null),
         channel:              input.channel,
         phone:                input.phone,
         decision,
         block_reason:         reason,
-        details:              { ...details, transactional: input.transactional ?? false },
+        details:              { ...details, transactional: input.transactional ?? false, ...(isaActor?.onBehalfOfUserId ? { on_behalf_of_user_id: isaActor.onBehalfOfUserId } : {}) },
         recipient_state:      state ?? null,
         recipient_local_hour: localHour ?? null,
       })
       .select("id")
       .single()
+    if (complianceLogErr) console.error(`[tcpa-gate] outbound compliance decision NOT recorded: ${complianceLogErr.message}`)
     return data?.id as string | undefined
   } catch (err) {
     console.error("[tcpa-gate] log write failed:", err)

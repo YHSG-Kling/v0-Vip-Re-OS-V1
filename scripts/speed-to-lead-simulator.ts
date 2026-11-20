@@ -23,17 +23,44 @@
  * Run: npx tsx scripts/speed-to-lead-simulator.ts  (npm run test:speed-to-lead)
  */
 
+import { readFileSync } from "node:fs"
 import {
   firstTouchDecision,
   DEFAULT_AGENT_GRACE_MINUTES,
   summarizeFirstTouchLatency,
+  summarizeIsaProofNumbers,
+  VOICE_CONNECTED_STATUSES,
+  VOICE_DIALED_TERMINAL_STATUSES,
 } from "../lib/ai-isa/speed-to-lead-policy"
 import type { FirstTouchInput } from "../lib/ai-isa/speed-to-lead-policy"
+import { PHASE1_WINDOW_DAYS, PHASE3_SPACING_DAYS } from "../lib/ai-isa/reengagement-policy"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 import {
   buildPersonalizationFacts,
   buildOutreachPrompt,
   buildDeterministicCopy,
 } from "../lib/ai-isa/personalize-outreach"
+import { registerHooks } from "node:module"
+import { memSupabase } from "./in-memory-supabase"
+
+// WAVE 153 (lane 153F) Layer W153: the sweep is driven IN MEMORY — only `server-only`, the service client and the two engagement doors
+// (which the sweep's own deps replace anyway) are stubbed; the sweep, the claim, the arbiter and the completion tracker are REAL.
+const STL_STUBS: Record<string, string> = {
+  "server-only": "export{}",
+  "@/lib/supabase/service": "export const createServiceClient = () => globalThis.__153F_db",
+  "@/app/actions/ai-isa/initiate-engagement": "export const initiateAIISAEngagement = async () => ({ success: false, reason: 'stub: the proof injects the door' })",
+  "@/app/actions/ai-isa/engage-contact": "export const engageContact = async () => ({ success: false, reason: 'stub: the proof injects the door' })",
+}
+// Registered ONLY without live credentials — the credentialed Layer 2 must load the real modules, so Layer W153 is skipped there.
+const STL_IN_MEMORY = !(process.env.SUPABASE_SERVICE_ROLE_KEY && (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL))
+if (STL_IN_MEMORY) registerHooks({
+  resolve(spec: string, ctx: unknown, next: (s: string, c: unknown) => unknown) {
+    const stub = STL_STUBS[spec]
+    if (stub !== undefined) return { url: `data:text/javascript,${encodeURIComponent(stub)}`, shortCircuit: true }
+    return next(spec, ctx)
+  },
+} as never)
 
 // ── Test harness ─────────────────────────────────────────────────────────────
 
@@ -250,8 +277,15 @@ async function main() {
   check("rich input → occupation present",        richKeys.includes("occupation"))
   check("rich input → household_income present",  richKeys.includes("household_income"))
   check("rich input → home_owner_status present", richKeys.includes("home_owner_status"))
-  check("rich input → life_event present",        richKeys.includes("life_event"))
-  check("rich input → marital_status present",    richKeys.includes("marital_status"))
+  // WAVE 148 (lane 148F, owner ruling 17) — re-asserted to the RULE: a life event is never copy ("it is about them and their
+  // emotions at this time"); it shapes only the TONE fact, and the event itself rides no fact the prompt shows.
+  check("rich input → a life event shapes only the TONE (148F): a tone fact, never a 'life_event' copy fact",
+    richKeys.includes("tone") && !richKeys.includes("life_event") && !richFacts.some((f) => !f.key.startsWith("_") && /new job|started a new/i.test(f.value)))
+  // WAVE 148 (148Z — lane 148F hand-off, rulings 1 + 17): re-asserted to the RULE. Marital status is a protected class and the
+  // shadow of the marital life events; it never becomes a copy fact, and its VALUE appears in no shown fact. Positive control:
+  // the same input still yields the other facts (the builder is not simply empty).
+  check("rich input → marital_status is NEVER a copy fact, and 'married' appears in no shown fact",
+    !richKeys.includes("marital_status") && !richFacts.some((f) => !f.key.startsWith("_") && /\bmarried\b/i.test(f.value)) && richKeys.includes("occupation"))
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[Layer 1d · Two different records → different prompts (non-hardcoded proof)]")
@@ -278,10 +312,13 @@ async function main() {
   check("prompt A ≠ prompt B (non-hardcoded)",      promptAText !== promptBText)
   check("prompt A includes Alice",                  promptAText.includes("Alice"))
   check("prompt A includes Austin",                 promptAText.includes("Austin"))
-  check("prompt A includes life_event (new_baby)",  promptAText.toLowerCase().includes("child") || promptAText.toLowerCase().includes("baby"))
+  // WAVE 148 (148F, ruling 17): the USER message (the facts) never names the life event — the system message carries the rule
+  // (and lists example events in the rule itself, which is why the whole-prompt text is not the thing tested).
+  const userOf = (p: typeof promptA) => String(p.find((m) => m.role === "user")?.content ?? "").toLowerCase()
+  check("prompt A never names the life event (new baby) — the tone carries it instead",  !/child|baby/.test(userOf(promptA)) && /tone/.test(userOf(promptA)))
   check("prompt B includes Bob",                    promptBText.includes("Bob"))
   check("prompt B includes Dallas",                 promptBText.includes("Dallas"))
-  check("prompt B includes life_event (retirement)",promptBText.toLowerCase().includes("retir"))
+  check("prompt B never names the life event (retirement) — the tone carries it instead", !/retir/.test(userOf(promptB)) && /tone/.test(userOf(promptB)))
 
   // Deterministic fallback: two different records yield different copy
   const fallbackA = buildDeterministicCopy(recordA, "email", "Alice")
@@ -331,6 +368,208 @@ async function main() {
   // clock-skew guard: firstTouchedAt before createdAt is excluded from latency (still counted in channel mix).
   const skew = summarizeFirstTouchLatency([{ createdAt: t0.toISOString(), firstTouchedAt: new Date(t0.getTime() - 5000).toISOString(), channel: "email" }])
   check("latency: negative (clock-skew) latency excluded", skew.touchedCount === 0 && skew.channelBreakdown.email === 1)
+  // Lane 90C — the SLA meter PER CHANNEL (89D P2-8: first-response seconds per lead per channel).
+  check("latency per channel: email median of 60/600 = 330s with 1/2 within SLA; sms 120s with 1/1",
+    sum.perChannel.email?.medianSeconds === 330 && sum.perChannel.email?.touchedCount === 2 && Math.round((sum.perChannel.email?.pctWithinSla ?? 0) * 100) === 50
+    && sum.perChannel.sms?.medianSeconds === 120 && sum.perChannel.sms?.pctWithinSla === 1)
+  check("latency per channel: a skewed row is excluded from its channel too (no bucket for it)", !("email" in skew.perChannel))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Layer 1g (lane 90C): THE THREE PROOF NUMBERS competitors publish — response
+  // rate, connect rate, days of follow-up — pure math over the ledgers.
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[Layer 1g · ISA proof numbers — response rate / connect rate / days of follow-up]")
+  const d = (daysAgo: number) => new Date(t0.getTime() - daysAgo * 86_400_000).toISOString()
+  const proof = summarizeIsaProofNumbers({
+    outreach: [
+      // lead A: 3 sends over 20 days, replied on the 2nd (email) → 1 replied person
+      { leadId: "A", channel: "email", sentAt: d(20) },
+      { leadId: "A", channel: "email", sentAt: d(12), repliedAt: d(11) },
+      { leadId: "A", channel: "sms", sentAt: d(0) },
+      // lead B: 2 sends 5 days apart, never replied
+      { leadId: "B", channel: "email", sentAt: d(5) },
+      { leadId: "B", channel: "email", sentAt: d(0) },
+      // contact C (no lead id): 1 send, status 'replied' spelling
+      { leadId: null, contactId: "C", channel: "sms", sentAt: d(3), status: "replied" },
+      // a row with no person and a row with no sent_at are ignored, never counted
+      { leadId: null, contactId: null, channel: "email", sentAt: d(1) },
+      { leadId: "D", channel: "email", sentAt: null },
+    ],
+    calls: [
+      { status: "completed", direction: "outbound" },
+      { status: "no_answer", direction: "outbound" },
+      { status: "voicemail", direction: "outbound" },
+      { status: "failed", direction: "outbound" },
+      { status: "in_progress", direction: "outbound" }, // still live — not dialed-terminal
+      { status: "blocked", direction: "outbound" },     // never dialed
+      { status: "completed", direction: "inbound" },    // not an ISA dial
+    ],
+  })
+  check("response rate: 2 of 3 people reached wrote back (a person counts once; replied_at OR status='replied')",
+    proof.responseRate.numerator === 2 && proof.responseRate.denominator === 3 && Math.round((proof.responseRate.rate ?? 0) * 100) === 67)
+  check("response rate per channel: email 1/2, sms 1/2 (A's reply was on email; C's on sms)",
+    proof.responseRateByChannel.email?.numerator === 1 && proof.responseRateByChannel.email?.denominator === 2
+    && proof.responseRateByChannel.sms?.numerator === 1 && proof.responseRateByChannel.sms?.denominator === 2)
+  check("connect rate: 1 of 4 finished outbound dials reached a person (in_progress / blocked / inbound excluded)",
+    proof.connectRate.numerator === 1 && proof.connectRate.denominator === 4 && proof.connectRate.rate === 0.25)
+  check("days of follow-up: A spans 20d, B spans 5d → median 13 (12.5 rounded half-up), max 20, 2 persons; C's single send does not count",
+    proof.followUp.personsWithFollowUp === 2 && proof.followUp.medianDays === 13 && proof.followUp.maxDays === 20)
+  check("days of follow-up carries the ladder's own horizon, READ from reengagement-policy (never retyped)",
+    proof.followUp.policy.phase1WindowDays === PHASE1_WINDOW_DAYS && proof.followUp.policy.phase3SpacingDays === PHASE3_SPACING_DAYS)
+  const noRows = summarizeIsaProofNumbers({ outreach: [], calls: [] })
+  check("no rows → honest nulls, never a fabricated 0%",
+    noRows.responseRate.rate === null && noRows.connectRate.rate === null && noRows.followUp.medianDays === null && noRows.followUp.personsWithFollowUp === 0)
+  // POSITIVE CONTROL on the vocabulary: every status the connect-rate math names
+  // is a LIVE voice_calls.status CHECK value — a retired spelling here would
+  // silently read as "never connected" (CLAUDE.md §2: assert the rule, derive).
+  const liveStatuses = new Set(CHECK_VOCABULARIES.voice_calls?.status ?? [])
+  check(`connect-rate statuses ⊆ live voice_calls.status CHECK (${[...VOICE_DIALED_TERMINAL_STATUSES].join("/")})`,
+    liveStatuses.size > 0 && VOICE_DIALED_TERMINAL_STATUSES.every((s) => liveStatuses.has(s)) && VOICE_CONNECTED_STATUSES.every((s) => liveStatuses.has(s)))
+  check("POSITIVE CONTROL: the same subset test REJECTS a status the CHECK does not carry", !liveStatuses.has("answered_by_human"))
+  check("connected ⊂ dialed-terminal (a call cannot connect without finishing)", VOICE_CONNECTED_STATUSES.every((s) => VOICE_DIALED_TERMINAL_STATUSES.includes(s)))
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Layer 1h (lane 90C): the numbers are SURFACED — one reader, three surfaces
+  // (stripped source; CLAUDE.md §2).
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[Layer 1h · one reader, three surfaces — ISA console, ISA analytics, Brokerage Intelligence]")
+  const src = (p: string) => stripComments(readFileSync(p, "utf8"))
+  const metricsSrc = src("app/actions/ai-isa/speed-to-lead-metrics.ts")
+  check("getSpeedToLeadMetrics reads isa_outreach_log AND voice_calls and feeds summarizeIsaProofNumbers (code, not comment)",
+    metricsSrc.includes('.from("isa_outreach_log")') && metricsSrc.includes('.from("voice_calls")') && metricsSrc.includes("summarizeIsaProofNumbers("))
+  check("getSpeedToLeadMetrics READS every ledger's error into `refused` (CLAUDE.md §3 — a refused read is never a clean zero)",
+    (metricsSrc.match(/res\.error/g) ?? []).length >= 1 && metricsSrc.includes("refused.push("))
+  const panelSrc = src("app/dashboard/isa/components/speed-to-lead-panel.tsx")
+  check("the panel exports IsaProofNumbersStrip and renders responseRate / connectRate / followUp + the refused notice",
+    panelSrc.includes("export function IsaProofNumbersStrip") && panelSrc.includes("proof.responseRate") && panelSrc.includes("proof.connectRate") && panelSrc.includes("followUp") && panelSrc.includes("refused"))
+  check("the panel renders the per-channel SLA meter (recent.perChannel)", panelSrc.includes("recent.perChannel"))
+  for (const [label, path] of [
+    ["ISA console", "app/dashboard/isa/page.tsx"],
+    ["ISA analytics", "app/dashboard/isa/analytics/page.tsx"],
+    ["Brokerage Intelligence", "app/dashboard/brokerage/intelligence/page.tsx"],
+  ] as const) {
+    const s = src(path)
+    check(`${label} calls getSpeedToLeadMetrics( and mounts the strip (SpeedToLeadPanel or IsaProofNumbersStrip)`,
+      s.includes("getSpeedToLeadMetrics(") && (s.includes("<SpeedToLeadPanel") || s.includes("<IsaProofNumbersStrip")))
+  }
+  const analyticsSrc = src("app/dashboard/isa/analytics/page.tsx")
+  check("ISA analytics no longer reads fields the outcomes reader never returned (totalContacted/totalQualified/byOutcome — the blind meter)",
+    !/outcomes\.(totalContacted|totalQualified|byOutcome)\b/.test(analyticsSrc) && analyticsSrc.includes("outcomes.stats."))
+  check("POSITIVE CONTROL: the blind-meter scan DOES flag a fixture that still reads outcomes.totalContacted",
+    /outcomes\.(totalContacted|totalQualified|byOutcome)\b/.test("const n = outcomes.totalContacted || 0"))
+
+  // Layer W153 (wave 153, lane 153F — brief F2): REAL timestamps, ACTUAL latency, no planning call in front of the first touch
+  console.log("\n[Layer W153 · wave 153 (153F) — measured speed-to-lead: real timestamps, actual latency, the stated-channel fast path, the latency budget]")
+  {
+    const pol = await import("../lib/ai-isa/speed-to-lead-policy")
+    const T0 = Date.parse("2026-11-14T15:00:00Z")
+    const at = (ms: number) => new Date(ms).toISOString()
+    const rows = [
+      { id: "L-a", createdAt: at(T0), firstTouchedAt: at(T0 + 5_000), channel: "email" },
+      { id: "L-b", createdAt: at(T0), firstTouchedAt: at(T0 + 60_000), channel: "email" },
+    ]
+    const merged = pol.preferMeasuredFirstTouch(rows, [{ subjectId: "L-a", receivedAt: at(T0 + 30_000), dispatchedAt: at(T0 + 30_000 + 9 * 60_000) }])
+    const measuredSum = pol.summarizeFirstTouchLatency(merged.rows)
+    const inferredSum = pol.summarizeFirstTouchLatency(rows)
+    check("MEASURED BEATS INFERRED: a row with a recorded timeline is timed received → DISPATCHED (9 min), not claim − created (5 s); the other row stays inferred and is COUNTED as inferred",
+      merged.measuredCount === 1 && merged.inferredCount === 1 && merged.rows[0].firstTouchedAt === at(T0 + 30_000 + 9 * 60_000) && measuredSum.touchedCount === 2)
+    check("…so the SLA meter tells the truth: the claim-based reading said 2 of 2 inside 5 min, the measured one says 1 of 2", inferredSum.pctWithinSla === 1 && measuredSum.pctWithinSla === 0.5, `${inferredSum.pctWithinSla} vs ${measuredSum.pctWithinSla}`)
+    check("POSITIVE CONTROL: a timeline with no dispatch (failed / handed to a person) never stands in as a measured response", pol.preferMeasuredFirstTouch(rows, [{ subjectId: "L-a", receivedAt: at(T0), dispatchedAt: null }]).measuredCount === 0)
+
+    const arb = await import("../lib/ai-isa/followup-arbiter")
+    const { DEFAULT_FOLLOWUP_POLICY } = await import("../lib/ai-isa/followup-policy")
+    const policy = { ...DEFAULT_FOLLOWUP_POLICY, arbiter: { ...DEFAULT_FOLLOWUP_POLICY.arbiter, enabled: true, minConfidence: 0.3 } }
+    let asked = 0
+    const spy = async () => { asked++; return { optionId: "first_touch", channel: "email", format: null, waitHours: null, rationale: "Email reaches a brand-new lead fastest.", evidence: ["moment"], confidence: 0.8 } }
+    const facts = (prefs: Array<{ key: string; value: string }>) => ({ leadTemperature: "warm", leadScore: 60, timeline: "1-3", source: "website", minutesSinceArrival: 1, hoursSinceLastOutreach: null, preferences: prefs })
+    const stated = await arb.arbitrateSpeedToLead({ brokerageId: "b", policy, permitted: ["email", "direct_mail"], facts: facts([{ key: "channel_preference", value: "mail" }]) }, { decide: spy as never })
+    check("FAST PATH: a new lead who told us how to reach them (mail) is answered there at once — NO planning call; the arbiter's own decision (path fast), ledgerable as any other",
+      stated.channel === "direct_mail" && asked === 0 && stated.decision?.path === "fast" && stated.decision?.source === "deterministic", JSON.stringify(stated.decision))
+    const open = await arb.arbitrateSpeedToLead({ brokerageId: "b", policy, permitted: ["email", "direct_mail"], facts: facts([]) }, { decide: spy as never })
+    check("POSITIVE CONTROL: nothing stated and a real choice → the arbiter's judgment is asked (once), inside the speed-to-lead budget", asked === 1 && open.channel === "email" && open.decision?.path === "deliberate")
+    const t1 = Date.now()
+    const hung = await arb.arbitrateSpeedToLead({ brokerageId: "b", policy, permitted: ["email", "direct_mail"], facts: facts([]) }, { decide: (() => new Promise(() => undefined)) as never })
+    const took = Date.now() - t1
+    check("MODEL TIMEOUT: a hung model never holds the first touch — the default channel answers inside ARBITER_LATENCY_BUDGET_MS.speed_to_lead",
+      hung.channel === "email" && /latency budget/.test(hung.decision?.fallbackReason ?? "") && took < arb.ARBITER_LATENCY_BUDGET_MS.speed_to_lead + 1_000, `${took}ms ${hung.decision?.fallbackReason}`)
+
+    if (!STL_IN_MEMORY) {
+      console.log("  ⏭  in-memory sweep skipped under live credentials (Layer 2 drives the real sweep instead)")
+    } else {
+      const stl = await import("../lib/ai-isa/speed-to-lead")
+      const B = "b1530000-0000-4000-8000-000000000001", L1 = "b1530000-0000-4000-8000-0000000000a1", L2 = "b1530000-0000-4000-8000-0000000000a2"
+      const NOW = new Date()
+      const createdLongAgo = at(NOW.getTime() - 3 * 86_400_000) // parked for days, then distributed
+      const distributed = at(NOW.getTime() - 40_000)
+      const lead = (id: string, email: string) => ({ id, brokerage_id: B, created_at: createdLongAgo, distributed_at: distributed, first_touched_at: null, contact_id: null, email, email_verified: true, email_opt_out: false, mailing_address_verified: false, direct_mail_opt_out: false, ai_isa_owner: true, preferred_channel: "email", lead_temperature: "warm", lead_score: 55, timeline: "1-3", source: "website", lifecycle_state: "new", is_active: true })
+      const db = memSupabase({ leads: [lead(L1, "first@x.example"), lead(L2, "second@x.example")], contacts: [], manager_completions: [], agent_action_ledger: [], automation_errors: [] },
+        { uuidIds: true, stampCreatedAt: true, unique: { manager_completions: [["idempotency_key"]], agent_action_ledger: [["idempotency_key"]] } })
+      ;(globalThis as { __153F_db?: unknown }).__153F_db = db
+      const dispatchedAt = new Date(Date.parse(distributed) + 95_000)
+      const doors: string[] = []
+      const r = await stl.runSpeedToLead(B, { now: NOW }, {
+        supabase: db as never,
+        initiateEngagement: (async (leadId: string, o: { forceChannel?: string }) => { doors.push(`${leadId}:${o?.forceChannel}`); return leadId === L1 ? { success: true, channel: "email", messageId: "SG-first-1" } : { success: false, reason: "the provider refused the address" } }) as never,
+        contactEngagement: (async () => ({ success: false, reason: "no contact expected" })) as never,
+        clock: () => dispatchedAt,
+      })
+      const comp = (id: string) => db.tables.manager_completions.find((c) => c.subject_id === id)?.context as Record<string, any> | undefined
+      const c1 = comp(L1), c2 = comp(L2)
+      check("THE SWEEP touched the first lead on the channel it stated (the arbiter's fast path inside the real sweep — no model was reachable here)", r.leadsTouched === 1 && doors.includes(`${L1}:email`), JSON.stringify({ r, doors }))
+      check("REAL TIMESTAMPS on the decision's completion: received = the un-parked DISTRIBUTION time (not a 3-day-old created_at), claimed, dispatched off the wall clock, the provider's reference, the decision path",
+        c1?.timeline?.received_at === distributed && c1?.timeline?.claimed_at === NOW.toISOString() && c1?.timeline?.dispatched_at === dispatchedAt.toISOString() && c1?.timeline?.failed_at === null && c1?.timeline?.provider_ref === "SG-first-1" && c1?.decision_path === "fast", JSON.stringify(c1 ?? null))
+      check("ACTUAL RESPONSE LATENCY = dispatched − received (95 s here) — the claim-based inference would have read three days", c1?.response_latency_ms === 95_000 && Date.parse(String(db.tables.leads.find((l) => l.id === L1)?.first_touched_at)) - Date.parse(createdLongAgo) > 2 * 86_400_000)
+      check("FAILURE IS A TIMESTAMP TOO: the refused first touch records failed_at, no dispatch, no latency — and the claim is released so the next sweep tries again",
+        !!c2?.timeline?.failed_at && c2?.timeline?.dispatched_at === null && c2?.response_latency_ms === null && db.tables.leads.find((l) => l.id === L2)?.first_touched_at === null, JSON.stringify(c2 ?? null))
+      const fed = pol.preferMeasuredFirstTouch([{ id: L1, createdAt: createdLongAgo, firstTouchedAt: String(db.tables.leads.find((l) => l.id === L1)?.first_touched_at), channel: "email" }], [{ subjectId: L1, receivedAt: c1?.timeline?.received_at ?? null, dispatchedAt: c1?.timeline?.dispatched_at ?? null }])
+      check("THE READER'S MATH on the sweep's own record: the dashboard row is timed 95 s, measured", fed.measuredCount === 1 && pol.summarizeFirstTouchLatency(fed.rows).medianSeconds === 95)
+      ;(globalThis as { __153F_db?: unknown }).__153F_db = undefined
+    }
+    const metricsSrc2 = stripComments(readFileSync("app/actions/ai-isa/speed-to-lead-metrics.ts", "utf8"))
+    check("WIRED: getSpeedToLeadMetrics reads the measured first responses (manager_completions, speed_to_lead:*) and prefers them (preferMeasuredFirstTouch), a refusal named in `refused`",
+      /from\("manager_completions"\)[\s\S]{0,300}\.like\("source_ref", "speed_to_lead:%"\)/.test(metricsSrc2) && /preferMeasuredFirstTouch\(touched, measuredRows\)/.test(metricsSrc2) && /measured first responses \(manager_completions\)/.test(metricsSrc2))
+    check("WIRED: the ISA panel says how much of its number is measured vs estimated (recent.measuredCount)", /recent\.measuredCount/.test(stripComments(readFileSync("app/dashboard/isa/components/speed-to-lead-panel.tsx", "utf8"))))
+  }
+
+  // ── Layer W153T (wave 153, lane 153T — owner B12; lane 153O outside-lane 2): arbitration responsiveness beside the metrics ──
+  console.log("\n[Layer W153T · arbitration responsiveness — the responder's evidence, a refused read is never zeros]")
+  {
+    const { readArbitrationResponsiveness, ARBITRATION_RESPONSIVENESS_ACTIONS } = await import("../lib/ai-isa/speed-to-lead-policy")
+    const B = "11111111-1111-4111-8111-111111111111", B2 = "22222222-2222-4222-8222-222222222222"
+    const NOWT = new Date("2026-11-16T12:00:00Z")
+    const at = (min: number) => new Date(NOWT.getTime() - min * 60_000).toISOString()
+    const rows = [
+      { id: "r1", brokerage_id: B, action: "inbound.message.respond", outcome: "reply_sent", status: "executed", detail: { record_id: "m1", decided_in_ms: 1200 }, created_at: at(30) },
+      { id: "r2", brokerage_id: B, action: "inbound.message.respond", outcome: "human_task", status: "executed", detail: { record_id: "m2", decided_in_ms: 2600, arbitration: { late_obligation: true } }, created_at: at(600) },
+      { id: "r3", brokerage_id: B, action: "inbound.late_result.settle", outcome: "re_arbitrated:reply_sent", status: "executed", detail: { record_id: "m3", disposition: "re_arbitrate" }, created_at: at(20) },
+      { id: "r4", brokerage_id: B, action: "inbound.message.respond", outcome: "refused", status: "skipped", detail: { record_id: "m4" }, created_at: at(10) },
+      { id: "r5", brokerage_id: B, action: "listing.price.change", outcome: "x", status: "executed", detail: {}, created_at: at(5) },
+      { id: "r6", brokerage_id: B2, action: "inbound.message.respond", outcome: "reply_sent", status: "executed", detail: { record_id: "mx", decided_in_ms: 1 }, created_at: at(5) },
+      { id: "r7", brokerage_id: B, action: "inbound.message.respond", outcome: "reply_sent", status: "executed", detail: { record_id: "old", decided_in_ms: 9 }, created_at: at(60 * 24 * 30) },
+    ]
+    const db = memSupabase({ agent_action_ledger: rows })
+    const since = at(60 * 24 * 7)
+    const ok = await readArbitrationResponsiveness(db as never, B, since, NOWT)
+    check("W153T.1 the reader folds THIS tenant's decisions + settlements in the window through the ONE formula (other tenants, other actions, older rows excluded)",
+      ok.ok && ok.rows === 4 && ok.metrics.inbound === 3 && ok.metrics.reArbitrated === 1 && ok.metrics.meaningfulAnswerMsP50 === 1200 && ok.metrics.timedOut === 1 && ok.metrics.expiredPendingTouches === 1 && ok.metrics.missedConversations === 2 && !ok.truncated,
+      JSON.stringify(ok))
+    check("W153T.1 the action vocabulary is the responder's two ledger actions", JSON.stringify(ARBITRATION_RESPONSIVENESS_ACTIONS) === JSON.stringify(["inbound.message.respond", "inbound.late_result.settle"]))
+    const refusing = { from: () => { const b: any = { select: () => b, eq: () => b, in: () => b, gte: () => b, limit: async () => ({ data: null, error: { message: "permission denied for table agent_action_ledger" } }) }; return b } }
+    const bad = await readArbitrationResponsiveness(refusing, B, since, NOWT)
+    check("W153T.2 ADVERSE · a REFUSED ledger read is { ok: false } with the reason — never a metrics object of zeros", !bad.ok && /permission denied/.test(bad.reason) && !("metrics" in bad), JSON.stringify(bad))
+    const none = await readArbitrationResponsiveness(db as never, "", since, NOWT)
+    check("W153T.2 ADVERSE · no tenant → refused (never 'all tenants')", !none.ok && /no tenant/.test(none.reason))
+    const empty = await readArbitrationResponsiveness(memSupabase({ agent_action_ledger: [] }) as never, B, since, NOWT)
+    check("W153T.2 POSITIVE CONTROL · a READABLE empty window is ok with honest zeros (distinct from a refusal)", empty.ok && empty.metrics.inbound === 0 && empty.rows === 0)
+    const metricsSrc3 = stripComments(readFileSync("app/actions/ai-isa/speed-to-lead-metrics.ts", "utf8"))
+    const panelSrc3 = stripComments(readFileSync("app/dashboard/isa/components/speed-to-lead-panel.tsx", "utf8"))
+    check("W153T.3 WIRED: getSpeedToLeadMetrics reads it with its OWN session client (never the service client — the action takes a brokerageId) and returns it as `arbitration`",
+      /readArbitrationResponsiveness\(supabase, brokerageId, since\)/.test(metricsSrc3) && /\barbitration,\s*\}/.test(metricsSrc3) && !/createServiceClient/.test(metricsSrc3))
+    const REFUSED_COPY = /if \(!read \|\| !read\.ok\)[\s\S]{0,400}could not be loaded[\s\S]{0,200}unknown, not zero/
+    check("W153T.4 WIRED: the panel renders the strip, and a refused read renders 'could not be loaded … unknown, not zero' BEFORE any number",
+      /<ArbitrationResponsivenessStrip read=\{metrics\.arbitration\} \/>/.test(panelSrc3) && REFUSED_COPY.test(panelSrc3) && panelSrc3.indexOf("could not be loaded") < panelSrc3.indexOf("read.metrics"))
+    check("W153T.4 POSITIVE CONTROL · the refused-copy probe misses a strip that renders zeros on refusal", !REFUSED_COPY.test(`if (!read || !read.ok) { return <p>0 · 0 · 0</p> }`))
+  }
 
   // ───────────────────────────────────────────────────────────────────────────
   // Layer 2: LIVE (gated)

@@ -48,6 +48,7 @@ export async function generateMarketInsights(): Promise<{
     if (!isValidUUID(agentId)) {
       return { insights: null, error: "Agent context not available" }
     }
+    return await ledgered(context, { action: "analytics.market_insights.generate", subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
     const supabase = await createClient()
 
@@ -72,7 +73,7 @@ export async function generateMarketInsights(): Promise<{
           .from("listings")
           .select("id, list_price, sold_price, status")
           .eq("agent_id", agentId)
-          .in("status", ["sold", "closed"])
+          .in("status", ["sold"])
           .gte("updated_at", thirtyDaysAgoStr)
           .limit(200),
 
@@ -81,7 +82,9 @@ export async function generateMarketInsights(): Promise<{
           .from("transactions")
           .select("id, purchase_price, close_date, stage")
           .eq("agent_id", agentId)
-          .in("stage", ["closed", "funded"])
+          // transactions.stage is UPPER_SNAKE — ["closed","funded"] matched nothing,
+          // so market insights were computed over zero closed deals.
+          .in("stage", ["CLOSED"])
           .gte("close_date", thirtyDaysAgo.toISOString().split("T")[0])
           .limit(200),
 
@@ -90,7 +93,7 @@ export async function generateMarketInsights(): Promise<{
           .from("contacts")
           .select("id, contact_type, buyer_stage, status")
           .eq("agent_id", agentId)
-          .in("contact_type", ["buyer", "Buyer"]),
+          .in("contact_type", ["buyer"]),
       ])
 
     // ── 2. Process results ────────────────────────────────────────────────────
@@ -227,13 +230,28 @@ Price-to-sale ratio: ${snapshot.avgListPrice && snapshot.avgSalePrice ? ((snapsh
 
 Generate insights that help this agent take action today.`
 
-    const { text } = await generateTextRouted({
-      feature: "market_insight_generation",
-      system: systemPrompt,
-      prompt: userPrompt,
-      maxTokens: 600,
-      temperature: 0.3,
-    })
+    let text: string
+    try {
+      const result = await generateTextRouted({
+        brokerageId: context.brokerageId,
+        userId: context.userId,
+        agentId: context.agentId,
+        feature: "market_insight_generation",
+        system: systemPrompt,
+        prompt: userPrompt,
+        maxTokens: 600,
+        temperature: 0.3,
+      })
+      text = result.text
+    } catch (aiErr) {
+      // Convert non-serializable Error to plain message
+      const errorMessage = aiErr instanceof Error ? aiErr.message : String(aiErr)
+      console.error("[MarketInsights] AI generation failed:", errorMessage)
+      return {
+        insights: null,
+        error: "Market insights temporarily unavailable. Please try again later.",
+      }
+    }
 
     // ── 4. Parse AI response ──────────────────────────────────────────────────
 
@@ -310,11 +328,39 @@ Generate insights that help this agent take action today.`
     }
 
     return { insights: result }
+    })
   } catch (err) {
-    console.error("[MarketInsights] generateMarketInsights failed:", err)
+    // Log safe message only — avoid serializing Error objects
+    const errorMessage = err instanceof Error ? err.message : String(err)
+    console.error("[MarketInsights] generateMarketInsights failed:", errorMessage)
     return {
       insights: null,
       error: "Unable to generate market insights. Please try again.",
     }
   }
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

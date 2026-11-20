@@ -18,7 +18,6 @@ import {
   BarChart3,
   TrendingUp,
   Users,
-  DollarSign,
   Home,
   AlertTriangle,
   RefreshCw,
@@ -28,6 +27,7 @@ import {
   ChevronRight,
   CheckCircle2,
   Target,
+  Sparkles,
 } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 
@@ -58,17 +58,127 @@ interface ReportingData {
     open: number
     atRisk: any[]
   }
+  // Wave 152 (lane 152K — 152B outside-lane 4): the route now builds this from the authorized ROI reader
+  // (app/api/dashboard/reporting/route.ts marketingTotals). Spend is NULL when nothing records it (never $0), revenue is
+  // NULL when commission is off this viewer's display or not established; the return is THE formula's value (net, over
+  // fully-recorded spend) or null with a plain `note`. Rendered as "Unknown" / "—", never as $0 or a client-side multiple.
   marketingPerformance: {
-    totalSpend: number
+    totalSpend: number | null
     totalLeads: number
     totalConversions: number
-    totalRevenue: number
+    totalRevenue: number | null
+    spendStatus: string
+    realizedReturn: number | null
+    note: string | null
   }
   stuckWork: {
     transactions: any[]
     staleLeads: any[]
     acceptedOffersNoTx: any[]
   }
+}
+
+// ── The AI team's read ────────────────────────────────────────────────────────
+// Deterministic briefing composed from the SAME numbers the boxes below show —
+// the dashboard reads itself to the agent instead of making them scan boxes.
+// Pure math over fetched data: no LLM cost, nothing hallucinated, every line
+// traces to a number on this page, every line lands on the surface that fixes it.
+
+interface PipelineInsight {
+  severity: "urgent" | "warn" | "good" | "info"
+  text: string
+  cta: string
+  href: string
+}
+
+function composePipelineBriefing(data: ReportingData, periodLabel: string): PipelineInsight[] {
+  const out: PipelineInsight[] = []
+  const f = data.leadFunnel
+  const isa = data.isaPerformance
+  const mkt = data.marketingPerformance
+  const stuckTx = data.stuckWork.transactions.length
+  const stuckOffers = data.stuckWork.acceptedOffersNoTx.length
+  const stuckLeads = data.stuckWork.staleLeads.length
+  const stuckTotal = stuckTx + stuckOffers + stuckLeads
+
+  if (stuckTotal > 0) {
+    const parts = [
+      stuckOffers > 0 ? `${stuckOffers} accepted offer${stuckOffers === 1 ? "" : "s"} with no transaction opened` : null,
+      stuckTx > 0 ? `${stuckTx} transaction${stuckTx === 1 ? "" : "s"} gone quiet` : null,
+      stuckLeads > 0 ? `${stuckLeads} qualified lead${stuckLeads === 1 ? "" : "s"} still unassigned` : null,
+    ].filter(Boolean)
+    out.push({
+      severity: "urgent",
+      text: `Money is sitting still: ${parts.join(", ")}. These are the first things your team would chase today.`,
+      cta: "Work the stuck list",
+      href: "#stuck-work",
+    })
+  }
+
+  if (f.total >= 10 && f.qualified / f.total < 0.3) {
+    out.push({
+      severity: "warn",
+      text: `Only ${Math.round((f.qualified / f.total) * 100)}% of ${f.total} leads qualified ${periodLabel.toLowerCase()} — the intake sources are feeding thin. Worth reviewing which sources earn their spot.`,
+      cta: "Review lead sources",
+      href: "/leads",
+    })
+  } else if (f.assigned >= 5 && f.converted === 0) {
+    out.push({
+      severity: "warn",
+      text: `${f.assigned} leads assigned ${periodLabel.toLowerCase()} but none converted yet — follow-up is where this period's revenue is hiding.`,
+      cta: "Open the funnel",
+      href: "/leads",
+    })
+  }
+
+  if (isa.outreachSent >= 20) {
+    const rate = Math.round(((isa.appointmentsSet ?? 0) / isa.outreachSent) * 100)
+    if (rate < 5) {
+      out.push({
+        severity: "warn",
+        text: `Your AI ISA sent ${isa.outreachSent} touches for ${isa.appointmentsSet} appointment${isa.appointmentsSet === 1 ? "" : "s"} (${rate}%). The scripts may be stale — a few objection drills sharpen the openers.`,
+        cta: "Drill objections",
+        href: "/dashboard/coaching/practice",
+      })
+    } else {
+      out.push({
+        severity: "good",
+        text: `AI ISA is earning its keep: ${isa.outreachSent} touches → ${isa.appointmentsSet} appointments (${rate}%) ${periodLabel.toLowerCase()}.`,
+        cta: "See ISA detail",
+        href: "/dashboard/voice/isa",
+      })
+    }
+  }
+
+  if (mkt.totalSpend != null && mkt.totalSpend > 0 && mkt.totalLeads === 0) {
+    out.push({
+      severity: "warn",
+      text: `$${Math.round(mkt.totalSpend).toLocaleString()} of recorded marketing spend produced zero leads ${periodLabel.toLowerCase()} — pause or retarget before it compounds.`,
+      cta: "Open campaigns",
+      href: "/dashboard/marketing",
+    })
+  } else if (mkt.realizedReturn != null && mkt.totalSpend != null && mkt.totalSpend > 0 && mkt.totalRevenue != null) {
+    // THE formula (lib/intelligence/roi-ledger.ts realizedReturnOnMarketingSpend): (earned − recorded spend) ÷ recorded
+    // spend, only over fully-recorded spend — the client no longer divides revenue by spend itself.
+    out.push({
+      severity: mkt.realizedReturn > 0 ? "good" : "warn",
+      text: `Marketing's realized return was ${Math.round(mkt.realizedReturn * 100)}% — $${Math.round(mkt.totalSpend).toLocaleString()} recorded spend, $${Math.round(mkt.totalRevenue).toLocaleString()} earned commission credited back.`,
+      cta: "Campaign ROI",
+      href: "/dashboard/campaigns/roi",
+    })
+  }
+
+  if (data.listingHealth.withOffers > 0) {
+    out.push({
+      severity: "info",
+      text: `${data.listingHealth.withOffers} active listing${data.listingHealth.withOffers === 1 ? "" : "s"} carrying live offers — momentum to protect this week.`,
+      cta: "Open listings",
+      href: "/dashboard/listings",
+    })
+  }
+
+  const rank = { urgent: 0, warn: 1, good: 2, info: 3 }
+  return out.sort((a, b) => rank[a.severity] - rank[b.severity]).slice(0, 4)
 }
 
 export function ReportingClient() {
@@ -164,6 +274,56 @@ export function ReportingClient() {
             </>
           )}
         </div>
+
+        {/* The AI team's read — the numbers below, already read for you */}
+        {!loading && data && (() => {
+          const insights = composePipelineBriefing(data, periodLabel)
+          const SEVERITY_STYLE: Record<string, string> = {
+            urgent: "border-red-200 bg-red-50/60",
+            warn:   "border-amber-200 bg-amber-50/60",
+            good:   "border-emerald-200 bg-emerald-50/60",
+            info:   "border-border bg-muted/30",
+          }
+          const SEVERITY_DOT: Record<string, string> = {
+            urgent: "bg-red-500", warn: "bg-amber-500", good: "bg-emerald-500", info: "bg-slate-400",
+          }
+          return (
+            <Card className="border-indigo-200">
+              <CardHeader className="border-b border-border pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Sparkles className="h-5 w-5 text-indigo-600" />
+                  Your AI team&apos;s read
+                  <span className="text-xs font-normal text-muted-foreground ml-1">
+                    every line traces to a number on this page
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-4 space-y-2">
+                {insights.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Not enough activity {periodLabel.toLowerCase()} to brief on yet — as leads, offers,
+                    and campaigns flow, your AI team&apos;s read shows up here first.
+                  </p>
+                ) : (
+                  insights.map((ins, i) => (
+                    <div key={i} className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5 ${SEVERITY_STYLE[ins.severity]}`}>
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <span className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${SEVERITY_DOT[ins.severity]}`} />
+                        <p className="text-sm text-foreground leading-relaxed">{ins.text}</p>
+                      </div>
+                      <Link href={ins.href} className="shrink-0">
+                        <Button size="sm" variant="outline" className="h-8 text-xs gap-1">
+                          {ins.cta}
+                          <ArrowRight className="h-3 w-3" />
+                        </Button>
+                      </Link>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+          )
+        })()}
 
         {/* Lead Acquisition Funnel */}
         <Card className="border-border">
@@ -383,8 +543,8 @@ export function ReportingClient() {
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 <MarketingTile
-                  label="Total Spend"
-                  value={`$${Math.round(data?.marketingPerformance.totalSpend ?? 0).toLocaleString()}`}
+                  label={data?.marketingPerformance.spendStatus === "partial" ? "Recorded Spend (partial)" : "Total Spend"}
+                  value={usdOr(data?.marketingPerformance.totalSpend, "Unknown")}
                 />
                 <MarketingTile
                   label="Leads Generated"
@@ -395,17 +555,20 @@ export function ReportingClient() {
                   value={(data?.marketingPerformance.totalConversions ?? 0).toString()}
                 />
                 <MarketingTile
-                  label="Revenue Attributed"
-                  value={`$${Math.round(data?.marketingPerformance.totalRevenue ?? 0).toLocaleString()}`}
+                  label="Earned Commission Attributed"
+                  value={usdOr(data?.marketingPerformance.totalRevenue, "—")}
                   highlight
                 />
               </div>
+            )}
+            {!loading && data?.marketingPerformance.note && (
+              <p className="mt-3 text-xs text-muted-foreground">{data.marketingPerformance.note}</p>
             )}
           </CardContent>
         </Card>
 
         {/* Cross-domain stuck work */}
-        <Card className="border-border">
+        <Card className="border-border scroll-mt-6" id="stuck-work">
           <CardHeader className="border-b border-border pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="flex items-center gap-2 text-base">
@@ -424,7 +587,7 @@ export function ReportingClient() {
               </div>
             ) : stuckTotal === 0 ? (
               <div className="py-8 text-center">
-                <CheckCircle2 className="h-8 w-8 text-emerald-500 mx-auto mb-2" />
+                <CheckCircle2 className="h-8 w-8 text-emerald-600 mx-auto mb-2" />
                 <p className="text-sm text-muted-foreground">No cross-domain stuck work.</p>
               </div>
             ) : (
@@ -536,6 +699,11 @@ function IsaTile({
       <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
     </div>
   )
+}
+
+/** A recorded dollar figure, or the given word when nothing records it (never $0 for unknown — wave 152, 152K). */
+function usdOr(n: number | null | undefined, empty: string): string {
+  return n == null ? empty : `$${Math.round(n).toLocaleString()}`
 }
 
 function MarketingTile({

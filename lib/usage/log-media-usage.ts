@@ -15,7 +15,9 @@
  */
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
+import { currentUsagePeriod } from "./period"
 
 export type MediaMetric =
   | "live_avatar_minutes"
@@ -23,7 +25,7 @@ export type MediaMetric =
   | "tts_characters"
   | "voice_clones_created"
   | "avatars_created"
-  | "vapi_minutes"
+  | "ai_voice_minutes"
   | "video_minutes"
   | "live_assistant_minutes"
   | "live_assistant_sessions"
@@ -56,7 +58,10 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
   const supabase = createServiceClient()
 
   // 1. Per-event audit row
-  await supabase.from("usage_events").insert({
+  // THE BILLED ROW (usage_events is what is invoiced). supabase-js RESOLVES a
+  // refusal, so the old `.then(() => {}, warn)` only ever saw a THROW — a refused
+  // row vanished. sentinelWrite reads it and ledgers the loss; still never throws.
+  await sentinelWrite(supabase, supabase.from("usage_events").insert({
     brokerage_id: params.brokerageId,
     team_id: params.teamId ?? null,
     agent_id: params.agentId ?? null,
@@ -68,13 +73,15 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
     feature: params.feature ?? null,
     cost_cents: params.costCents ?? null,
     metadata: params.metadata ?? {},
-  }).then(() => {}, (e) => console.warn("[usage] event insert failed", e))
+  }), {
+    table: "usage_events", flow: "media_usage_event", brokerageId: params.brokerageId,
+    reason: "usage logging never fails the media operation it meters; a lost billed row is ledgered for the repair digest",
+  })
 
   // 2. Monthly counter — UPSERT with delta increment
   // Period: calendar month UTC. UNIQUE(brokerage_id, period_start, period_end, metric).
-  const now = new Date()
-  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
-  const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+  // Canonical UTC period — lib/usage/period.ts is the one definition (#190).
+  const { periodStartIso, periodEndIso } = currentUsagePeriod()
 
   // Read-modify-write — small race risk if two events land in the same ms,
   // acceptable for a usage counter (we don't bill off it directly; we bill
@@ -84,27 +91,66 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
     .from("usage_counters")
     .select("id, value")
     .eq("brokerage_id", params.brokerageId)
-    .eq("period_start", periodStart.toISOString())
-    .eq("period_end", periodEnd.toISOString())
+    .eq("period_start", periodStartIso)
     .eq("metric", params.metric)
     .maybeSingle()
 
   if (existing) {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("usage_counters")
       .update({ value: (existing.value ?? 0) + Math.ceil(params.quantity) })
-      .eq("id", existing.id)
-      .then(() => {}, (e) => console.warn("[usage] counter update failed", e))
+      .eq("id", existing.id), {
+      table: "usage_counters", flow: "media_usage_counter", brokerageId: params.brokerageId,
+      reason: "display counter (billing reads usage_events); a lost increment is ledgered",
+    })
   } else {
-    await supabase
+    await sentinelWrite(supabase, supabase
       .from("usage_counters")
       .insert({
         brokerage_id: params.brokerageId,
-        period_start: periodStart.toISOString(),
-        period_end: periodEnd.toISOString(),
+        period_start: periodStartIso,
+        period_end: periodEndIso,
         metric: params.metric,
         value: Math.ceil(params.quantity),
-      })
-      .then(() => {}, (e) => console.warn("[usage] counter insert failed", e))
+      }), {
+      table: "usage_counters", flow: "media_usage_counter", brokerageId: params.brokerageId,
+      reason: "display counter (billing reads usage_events); a lost increment is ledgered",
+    })
+  }
+
+  // 3. THE BILLING METER — `billing_usage.video_minutes`.
+  //
+  // WHY A THIRD WRITE AND NOT A JOIN OFF THE TWO ABOVE: `billing_usage` is a
+  // DIFFERENT rail from `usage_counters`, with different readers, and it had NO
+  // WRITER AT ALL. Its two live surfaces — the tenant's usage bars
+  // (app/settings/billing/usage-section.tsx via app/actions/billing.ts
+  // getBillingUsage) and the overage projection
+  // (app/components/features/admin/overage-calculator.tsx via
+  // calculateOverageExposure) — read five columns nothing in the product ever
+  // wrote, so both showed zero for every tenant, forever. An overage exposure
+  // computed from an unwritten meter reads as "no exposure", which is the one
+  // wrong answer that costs money.
+  //
+  // Only `video_minutes` maps: it is the one media metric `billing_usage` has a
+  // column for (live schema: ai_calls_count, video_minutes, storage_bytes,
+  // scraper_calls, active_agents). The avatar/TTS/voice metrics stay on
+  // usage_counters alone rather than being silently folded into a column that
+  // does not mean them.
+  //
+  // `units` is a DELTA. Never restate a running total here.
+  if (params.metric === "video_minutes") {
+    const { recordUsageEvent } = await import("@/lib/kernel/billing")
+    const metered = await recordUsageEvent({
+      brokerageId: params.brokerageId,
+      metric: "video_minutes",
+      units: Math.ceil(params.quantity),
+    })
+    // Same posture as the two writes above: usage logging is observability and
+    // must not break the caller. But the refusal is REPORTED rather than
+    // discarded — a meter that silently stops recording is what produced the
+    // zeroed surfaces in the first place.
+    if (!metered.success) {
+      console.warn("[usage] billing_usage video_minutes not recorded:", metered.error)
+    }
   }
 }

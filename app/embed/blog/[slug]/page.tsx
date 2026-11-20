@@ -23,12 +23,13 @@ export const dynamic = "force-dynamic"
 
 interface PageProps {
   params:       Promise<{ slug: string }>
-  searchParams: Promise<{ p?: string; c?: string; utm_source?: string }>
+  searchParams: Promise<{ p?: string; utm_source?: string }>
 }
 
 export default async function EmbedBlogPage({ params, searchParams }: PageProps) {
   const { slug } = await params
-  const { p: persona, c: contactId, utm_source } = await searchParams
+  // ?c=<contact_id> retired (wave 155, lane 155K2) — see app/blog/[slug]/page.tsx header.
+  const { p: persona, utm_source } = await searchParams
 
   const svc = createServiceClient()
   const { data: post } = await svc
@@ -109,14 +110,12 @@ export default async function EmbedBlogPage({ params, searchParams }: PageProps)
             shareUrl={shareUrl}
             title={p.title}
             personaSnapshot={persona ?? null}
-            contactId={contactId ?? null}
           />
         </div>
       </div>
       <BlogTracker
         blogPostId={p.id}
         personaSnapshot={persona ?? null}
-        contactId={contactId ?? null}
         utmSource={utm_source ?? null}
       />
     </article>

@@ -35,9 +35,10 @@
  * brokerage's fallback Lob template — the channel never goes dark.
  *
  * Idempotency: a direct_mail_campaigns row tagged
- * (target_audience='lifecycle:{event_type}', marketing_campaign_id=
- * <listing_id> as a sentinel) prevents the same event firing
- * postcards twice for the same listing.
+ * (target_audience='lifecycle:{event_type}:{listing_id}' as a sentinel)
+ * prevents the same event firing postcards twice for the same listing,
+ * and the action-ledger key per (listing, event, contact) holds each
+ * piece at-most-once (wave 150, lane 150R).
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -45,6 +46,11 @@ import { orchestrateRenderAndSend } from "@/lib/direct-mail/orchestrate-send"
 import { resolveMailingAddressForContact } from "@/lib/contacts/resolve-mailing-address"
 import type { LifecycleEventType } from "@/lib/kernel/lifecycle-promo-policy"
 import type { Persona } from "@/lib/kernel/types"
+// RENDER BOUNDARY (§6) — `statusBadge` is PRINTED on the postcard that lands in
+// a consumer's mailbox, so it speaks the public word. The EVENT_DEFAULTS key
+// `price_reduction` is the live lifecycle_mail_policy.event_type CHECK value
+// and is UNCHANGED.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 export interface DispatchLifecycleMailArgs {
   brokerageId: string
@@ -80,7 +86,7 @@ const EVENT_DEFAULTS: Record<LifecycleEventType, EventDefaults> = {
   just_listed:         { size: "6x9", statusBadge: "JUST LISTED", persona: "upsize",     withPhoto: true  },
   open_house_announce: { size: "6x9", statusBadge: "OPEN HOUSE",  persona: "first_time", withPhoto: true  },
   open_house_reminder: { size: "4x6", statusBadge: "THIS WEEKEND", persona: "first_time", withPhoto: false },
-  price_reduction:     { size: "4x6", statusBadge: "PRICE REDUCED", persona: "first_time", withPhoto: true  },
+  price_reduction:     { size: "4x6", statusBadge: priceImprovementLabel("print"), persona: "first_time", withPhoto: true  },
   under_contract:      { size: "4x6", statusBadge: "UNDER CONTRACT", persona: "upsize",   withPhoto: false },
   just_sold:           { size: "6x9", statusBadge: "JUST SOLD",   persona: "upsize",     withPhoto: true  },
   back_on_market:      { size: "6x9", statusBadge: "AVAILABLE AGAIN", persona: "first_time", withPhoto: true  },
@@ -117,28 +123,37 @@ export async function dispatchLifecycleMail(
     return { ok: false, event: args.eventType, status: "failed", reason: "tenant_mismatch" }
   }
 
-  // Hero photo precedence (Wave 36 m156):
-  //   1. listing_photos.is_hero=true — explicit agent pick
-  //   2. listing_photos.order_index=0 — MLS default
+  // Hero photo precedence (Wave 36 m156, repointed to listing_media by m368):
+  //   1. listing_media.is_primary=true on a photo row — explicit agent pick
+  //   2. lowest listing_media.sort_order photo row — MLS default
   //   3. null → composition falls back to brand-color gradient
-  // Two parallel queries; pick the first non-null.
+  // media_type is pinned on BOTH queries: a primary video or a floorplan
+  // rendered onto a postcard as the property hero is a printed defect.
+  // brokerage_id is pinned too — svc is a service-role client, so it bypasses
+  // RLS and would otherwise happily read another tenant's photo.
   const [heroFlagged, mlsFirst] = await Promise.all([
-    svc.from("listing_photos")
-      .select("photo_url")
+    svc.from("listing_media")
+      .select("file_url")
       .eq("listing_id", args.listingId)
-      .eq("is_hero", true)
+      .eq("brokerage_id", args.brokerageId)
+      .eq("media_type", "photo")
+      .eq("is_primary", true)
       .limit(1)
       .maybeSingle(),
-    svc.from("listing_photos")
-      .select("photo_url")
+    svc.from("listing_media")
+      .select("file_url")
       .eq("listing_id", args.listingId)
-      .order("order_index", { ascending: true })
+      .eq("brokerage_id", args.brokerageId)
+      .eq("media_type", "photo")
+      .order("sort_order", { ascending: true })
       .limit(1)
       .maybeSingle(),
   ])
+  if (heroFlagged.error) console.error("[mail-reactor] hero photo read failed:", heroFlagged.error.message)
+  if (mlsFirst.error) console.error("[mail-reactor] MLS-first photo read failed:", mlsFirst.error.message)
   const propertyPhotoUrl =
-    ((heroFlagged.data?.photo_url as string | undefined) ??
-     (mlsFirst.data?.photo_url as string | undefined) ??
+    ((heroFlagged.data?.file_url as string | undefined) ??
+     (mlsFirst.data?.file_url as string | undefined) ??
      null)
 
   // Agent team_id for brand cascade — listings.team_id first, agent's
@@ -153,12 +168,15 @@ export async function dispatchLifecycleMail(
   const agentId:     string | null = (agentRow?.id as string | undefined) ?? null
 
   // 2. Idempotency — same (listing, event_type) doesn't double-fire.
-  const { count: prior } = await svc
+  // WAVE 150 (150R): the sentinel is keyed in target_audience. It used to put the LISTING id in
+  // marketing_campaign_id, an FK to marketing_campaigns (scripts/schema-fk-map.ts) — refused 23503, so the
+  // sentinel never existed. A refused count is a refusal, not "never sent" (the ledger key still holds).
+  const { count: prior, error: priorErr } = await svc
     .from("direct_mail_campaigns")
     .select("id", { count: "exact", head: true })
     .eq("brokerage_id", args.brokerageId)
-    .eq("target_audience", `lifecycle:${args.eventType}`)
-    .eq("marketing_campaign_id", args.listingId)
+    .eq("target_audience", `lifecycle:${args.eventType}:${args.listingId}`)
+  if (priorErr) return { ok: false, event: args.eventType, status: "failed", reason: `idempotency read refused: ${priorErr.message}` }
   if ((prior ?? 0) > 0) {
     return { ok: true, event: args.eventType, status: "already_sent" }
   }
@@ -267,13 +285,39 @@ export async function dispatchLifecycleMail(
   const fallbackTpl = policy.mail_template_id
     ?? (brokerageRow?.lob_fallback_template_id as string | null)
     ?? ""
-  if (!fallbackTpl) {
+  // WAVE 150 (lane 150R, R5): the GLOBAL postcard front/back is the survivor; the policy / tenant id is a
+  // measured legacy fallback (piece-type.ts fallbackLobTemplates), and a front with no distinct back is
+  // refused rather than aliased.
+  const { fallbackLobTemplates, mailPieceIdempotencyKey } = await import("@/lib/direct-mail/piece-type")
+  if (!fallbackLobTemplates("postcard", fallbackTpl).ok) {
     return { ok: true, event: args.eventType, status: "skipped", reason: "no_fallback_template_configured" }
   }
 
   // 6. Dispatch one piece per recipient via the orchestrator. Per-piece
   //    Fair Housing gate + de-conflict + Lob spend still all apply.
-  const propertyAddress = [l.address, l.city, l.state].filter(Boolean).join(", ")
+  // OWNER RULING 1 (wave 145, lane 145Z — lane 145B Outside-lane 9): a coming_soon postcard prints only the line the
+  // address rule allows ("City, ST" unless the seller AND the attested MLS rule permit the street). The listing was
+  // checked against this run's tenant above; fail closed inside the rule.
+  const propertyAddress = args.eventType === "coming_soon"
+    ? (await (await import("@/lib/marketing/listing-public-address")).resolveComingSoonCreativeAddress({
+        policyClient: svc as any, termsClient: svc as any, listing: { ...l, brokerage_id: args.brokerageId },
+      })).addressLine
+    : [l.address, l.city, l.state].filter(Boolean).join(", ")
+  // WAVE 83C — THE PRINTED LIFECYCLE PIECE CARRIES A TRACKED QR (82D open item:
+  // the reactor passed no qrScanUrl). ONE registered code per listing × event,
+  // minted/reused through THE ONE minter, stamped with the listing so the QR
+  // boards resolve it; destination follows the copy's own CTA. A refused mint
+  // mails without a QR (the CTA still prints) and says so.
+  const qrDestination = args.eventType === "open_house_announce" || args.eventType === "open_house_reminder" ? "book_meeting" : "listing_detail"
+  let lifecycleQr: { scanUrl: string } | null = null
+  try {
+    const { mintTrackedQr } = await import("@/lib/marketing/tracked-qr")
+    const minted = await mintTrackedQr({ brokerageId: args.brokerageId, agentId, label: `lifecycle_mail:${args.listingId}:${args.eventType}`, purpose: "listing", destinationType: qrDestination, listingId: args.listingId }, svc as any)
+    if (minted) lifecycleQr = { scanUrl: minted.scanUrl }
+    else console.error(`[mail-reactor] no tracked QR for listing ${args.listingId} ${args.eventType} — pieces mail without one`)
+  } catch (err) {
+    console.error(`[mail-reactor] tracked QR unavailable for listing ${args.listingId}:`, (err as Error)?.message)
+  }
   let sent = 0, rendered = 0, failed = 0
   for (const contactId of recipientList) {
     const addr = await resolveMailingAddressForContact({ contactId, brokerageId: args.brokerageId })
@@ -305,15 +349,18 @@ export async function dispatchLifecycleMail(
         agentUserId: args.agentUserId,
         contactId,
         persona:     defaults.persona,
-        qrDestinationType: args.eventType === "open_house_announce" || args.eventType === "open_house_reminder"
-          ? "book_meeting"
-          : "listing_detail",
+        qrDestinationType: qrDestination,
         hookFacts: {
           listingAddress: propertyAddress || undefined,
         },
       },
       fallbackTemplateId: fallbackTpl,
+      // The listing × event REGISTERED code (minted above).
+      qrScanUrl:          lifecycleQr?.scanUrl ?? null,
       systemSource:       `lifecycle:${args.eventType}`,
+      // AT-MOST-ONCE per (listing, event, contact): a re-fired reactor replays, never re-charges — even
+      // when the campaign sentinel below was not written.
+      idempotencyKey:     mailPieceIdempotencyKey("lifecycle", args.listingId, args.eventType, contactId),
     })
 
     if (result.success) sent++
@@ -322,15 +369,23 @@ export async function dispatchLifecycleMail(
 
     // Log the campaign with the sentinel that makes the idempotency
     // check work for the NEXT firing.
-    await svc.from("direct_mail_campaigns").insert({
+    // direct_mail_campaigns.agent_id is agents-class. The USERS id here was
+    // FK-rejected, which took the idempotency sentinel with it — so the next
+    // firing saw no prior campaign and mailed the same lifecycle piece again.
+    const { resolveUserIdToAgentRecord } = await import("@/lib/kernel/agent-identity-resolver")
+    const mailAgentId = await resolveUserIdToAgentRecord(args.agentUserId, args.brokerageId)
+
+    // TOMBSTONE (wave 150, lane 150R): status was "sent", which the LIVE direct_mail_campaigns_status_check
+    // refuses (read 2026-11-06) — the insert failed whole, unread, so the idempotency sentinel was never
+    // written and the next firing mailed the same piece again. "mailed" is the CHECK's word; the error is read.
+    const { error: sentinelErr } = await svc.from("direct_mail_campaigns").insert({
       brokerage_id:        args.brokerageId,
-      agent_id:            args.agentUserId,
+      agent_id:            mailAgentId,
       contact_id:          contactId,
-      marketing_campaign_id: args.listingId,
       campaign_name:       `Lifecycle ${args.eventType} - ${propertyAddress.slice(0, 60)}`,
-      target_audience:     `lifecycle:${args.eventType}`,
+      target_audience:     `lifecycle:${args.eventType}:${args.listingId}`,
       quantity:            1,
-      status:              result.success ? "sent" : "failed",
+      status:              result.success ? "mailed" : "failed",
       piece_type:          "postcard",
       lob_order_id:        result.messageId ?? null,
       mailing_date:        result.success ? new Date().toISOString().slice(0, 10) : null,
@@ -341,6 +396,7 @@ export async function dispatchLifecycleMail(
       compliance_event_id: result.complianceEventId ?? null,
       created_at:          new Date().toISOString(),
     })
+    if (sentinelErr) console.error(`[mail-reactor] lifecycle campaign sentinel NOT recorded for listing ${args.listingId} ${args.eventType} (the ledger idempotency key still holds the piece at-most-once): ${sentinelErr.message}`)
   }
 
   return {

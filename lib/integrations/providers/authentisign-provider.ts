@@ -39,6 +39,7 @@ import type {
   ListFormsResponse,
   ProviderForm,
 } from "./transaction-provider.interface"
+import { mapProviderFormCategory } from "./transaction-provider.interface"
 import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
 
 export class AuthentisignProvider implements ITransactionProvider {
@@ -247,12 +248,7 @@ export class AuthentisignProvider implements ITransactionProvider {
   }
 }
 
-function mapAuthentisignCategory(c: string | undefined): ProviderForm["category"] {
-  const s = (c ?? "").toString().toLowerCase()
-  if (s.includes("listing"))    return "listing"
-  if (s.includes("purchase") || s.includes("offer")) return "offer"
-  if (s.includes("addendum"))   return "addendum"
-  if (s.includes("disclosure")) return "disclosure"
-  if (s.includes("agency"))     return "agency"
-  return "other"
-}
+// TOMBSTONE: local mapAuthentisignCategory merged onto
+// transaction-provider.interface.ts mapProviderFormCategory (imported above)
+// — §1/§6 SAME BODY census round 3, 2026-09-09.
+const mapAuthentisignCategory = mapProviderFormCategory

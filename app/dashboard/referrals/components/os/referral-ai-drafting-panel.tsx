@@ -19,9 +19,42 @@ import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 
 interface ReferralAiDraftingPanelProps {
   agentId: string
+  /**
+   * A contacts.id — and ONLY a contacts.id. The composition used to pass
+   * `selectedContactId || agentId`; an agents.id is a different id space, so
+   * both AI actions below looked it up in `contacts`, found nothing, and
+   * returned "Contact not found" that this panel never showed. Callers must
+   * resolve a real contact before mounting this panel.
+   */
   contactId: string
   contactName: string
   onDraftComplete?: (draft: string) => void
+}
+
+/**
+ * The shape checkThemFirstCompliance actually returns (ai-chat.ts →
+ * analyzeThemFirstLanguage). This panel used to store the result as
+ * `{ isCompliant, issues }`, a shape that function has never produced, so
+ * `isCompliant` was permanently undefined: the badge said "Review Needed" on
+ * every single draft, however good, and the issues list could never render.
+ * gratitude-gifting-panel.tsx reads the same call correctly (score >= 50).
+ */
+interface ThemFirstResult {
+  score: number
+  themFirstCount: number
+  agentFirstCount: number
+  feedback: string
+}
+
+/** What aiOptimizeReferralAsk returns. It was awaited and then discarded — a
+ *  full GPT-4o call, billed on every click, whose entire output was dropped. */
+interface ReferralStrategy {
+  readinessScore: number
+  bestChannel: string
+  bestTiming: string
+  askScript: string
+  incentiveRecommendation?: { type: string; value: string; reason: string }
+  objectionHandling?: Array<{ objection: string; response: string }>
 }
 
 export function ReferralAiDraftingPanel({
@@ -35,10 +68,9 @@ export function ReferralAiDraftingPanel({
   const [relationshipType, setRelationshipType] = useState<string>("lifetime-customer")
   const [draft, setDraft] = useState<string>("")
   const [brandVoice, setBrandVoice] = useState<any>(null)
-  const [complianceResult, setComplianceResult] = useState<{
-    isCompliant: boolean
-    issues?: string[]
-  } | null>(null)
+  const [complianceResult, setComplianceResult] = useState<ThemFirstResult | null>(null)
+  const [strategy, setStrategy] = useState<ReferralStrategy | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
@@ -46,29 +78,51 @@ export function ReferralAiDraftingPanel({
   }, [agentId])
 
   const handleGenerateDraft = () => {
+    setError(null)
     startTransition(async () => {
-      // First optimize the ask
-      const optimizeResult = await aiOptimizeReferralAsk({
+      // Both calls now carry what the agent typed. "Additional context" and
+      // "Relationship type" were collected into state and sent nowhere, so the
+      // two inputs on this card could not change a single word of the output.
+      const askInput = {
         agentId,
         contactId,
-      })
+        additionalContext: context,
+        relationshipType,
+      }
 
-      // Then generate the touchpoint
+      const optimizeResult = await aiOptimizeReferralAsk(askInput)
+      const optimized = (optimizeResult as any).data as ReferralStrategy | undefined
+      setStrategy(optimizeResult.success && optimized ? optimized : null)
+
       const touchpointResult = await aiGenerateTouchpoint({
-        agentId,
-        contactId,
+        ...askInput,
         touchpointType: "referral_ask",
       })
+      const message: string | undefined = (touchpointResult as any).data?.message
 
-      if (touchpointResult.success && (touchpointResult as any).data?.message) {
-        setDraft((touchpointResult as any).data?.message ?? "")
+      // The strategy call already produced a usable ask script, so a failed
+      // touchpoint no longer has to mean an empty box.
+      const text = (touchpointResult.success && message) || optimized?.askScript || ""
 
-        // Check compliance
-        const compliance = await checkThemFirstCompliance((touchpointResult as any).data?.message ?? "")
-        setComplianceResult(compliance)
+      if (!text) {
+        // A refusal used to leave the panel exactly as it was — no draft, no
+        // message — which reads as "nothing happened" rather than "it failed".
+        setError(
+          (touchpointResult as any).error ??
+            (optimizeResult as any).error ??
+            "Could not draft a referral ask",
+        )
+        return
       }
+
+      setDraft(text)
+      const compliance = (await checkThemFirstCompliance(text)) as ThemFirstResult
+      setComplianceResult(compliance)
     })
   }
+
+  // Same threshold the gifting panel uses, so the two badges cannot disagree.
+  const isCompliant = complianceResult ? complianceResult.score >= 50 : null
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(draft)
@@ -130,6 +184,54 @@ export function ReferralAiDraftingPanel({
           Generate Referral Ask
         </Button>
 
+        {error && (
+          <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </p>
+        )}
+
+        {/* Ask strategy — the output of aiOptimizeReferralAsk */}
+        {strategy && (
+          <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+            <div className="grid grid-cols-3 gap-2 text-center text-xs">
+              <div>
+                <p className="text-muted-foreground">Readiness</p>
+                <p className="font-semibold">{strategy.readinessScore}/100</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Best channel</p>
+                <p className="font-semibold capitalize">
+                  {String(strategy.bestChannel).replace(/_/g, " ")}
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Best timing</p>
+                <p className="font-semibold">{strategy.bestTiming}</p>
+              </div>
+            </div>
+            {strategy.incentiveRecommendation && (
+              <p className="text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">
+                  {strategy.incentiveRecommendation.type} ({strategy.incentiveRecommendation.value})
+                </span>{" "}
+                — {strategy.incentiveRecommendation.reason}
+              </p>
+            )}
+            {strategy.objectionHandling && strategy.objectionHandling.length > 0 && (
+              <div className="text-xs space-y-1">
+                <p className="font-medium">If they hesitate</p>
+                <ul className="list-disc list-inside text-muted-foreground">
+                  {strategy.objectionHandling.slice(0, 3).map((o, i) => (
+                    <li key={i}>
+                      <span className="text-foreground">{o.objection}</span> — {o.response}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Draft Display */}
         {draft && (
           <div className="space-y-3">
@@ -137,17 +239,17 @@ export function ReferralAiDraftingPanel({
               <span className="text-xs text-muted-foreground">
                 {brandVoice?.name ? `Using ${brandVoice.name} voice` : "Brand voice applied"}
               </span>
-              {complianceResult && (
+              {isCompliant !== null && (
                 <Badge
-                  variant={complianceResult.isCompliant ? "default" : "destructive"}
+                  variant={isCompliant ? "default" : "destructive"}
                   className="flex items-center gap-1"
                 >
-                  {complianceResult.isCompliant ? (
+                  {isCompliant ? (
                     <CheckCircle className="h-3 w-3" />
                   ) : (
                     <AlertCircle className="h-3 w-3" />
                   )}
-                  {complianceResult.isCompliant ? "Compliant" : "Review Needed"}
+                  {isCompliant ? "Compliant" : "Review Needed"}
                 </Badge>
               )}
             </div>
@@ -159,14 +261,15 @@ export function ReferralAiDraftingPanel({
               className="font-mono text-sm"
             />
 
-            {complianceResult && !complianceResult.isCompliant && complianceResult.issues && (
+            {complianceResult && isCompliant === false && (
               <div className="p-2 rounded bg-destructive/10 text-destructive text-xs">
-                <p className="font-medium">Issues found:</p>
-                <ul className="list-disc list-inside">
-                  {complianceResult.issues.map((issue, i) => (
-                    <li key={i}>{issue}</li>
-                  ))}
-                </ul>
+                <p className="font-medium">Them-first score {complianceResult.score}/100</p>
+                <p>{complianceResult.feedback}</p>
+                <p className="mt-1">
+                  {complianceResult.themFirstCount} them-first phrase
+                  {complianceResult.themFirstCount === 1 ? "" : "s"} vs{" "}
+                  {complianceResult.agentFirstCount} agent-first
+                </p>
               </div>
             )}
 

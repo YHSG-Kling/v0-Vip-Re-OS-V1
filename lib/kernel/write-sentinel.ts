@@ -27,6 +27,40 @@
  *   await sentinelWrite(svc, svc.from("voice_calls").insert({...}), {
  *     table: "voice_calls", flow: "voice_call_ledger", brokerageId,
  *   })
+ *
+ * ── ITS TWIN, AND THE PRECONDITION THAT KEEPS THEM APART ─────────────────────
+ * (adjudicated 2026-08-26 against the LIVE database, CLAUDE.md §1/§6)
+ *
+ * `lib/db/best-effort.ts::bestEffort` is the same IDEA — await a tolerated write,
+ * read `{ error }`, never throw, never let the loss vanish — spelled a second way.
+ * §6 says two spellings of one idea are a defect, and this one looked open-and-shut:
+ * sentinelWrite ledgers, bestEffort only console.warns, so merge onto the stronger
+ * one. The two objections that usually block such a merge both evaporated on
+ * measurement — ZERO of bestEffort's 60 call sites read its `{ ok, error }` return,
+ * so the boolean return costs nothing, and its `reason` string is merged below.
+ *
+ * What actually blocks it is a PRECONDITION, and it is a hard one:
+ *
+ *   sentinelWrite IS STRICTLY STRONGER ONLY WHEN `svc` BYPASSES RLS.
+ *
+ * `self_heal_events` has RLS enabled and exactly ONE policy — SELECT, for
+ * `authenticated` (`tenant_read_self_heal_events`). There is no INSERT policy for
+ * any non-service role. So handed a cookie-session client (`await createClient()` /
+ * `createServerClient()`), recordSelfHeal's insert is REFUSED — and recordSelfHeal
+ * swallows its own failure with `.then(() => {}, () => {})`, the very silencer this
+ * file was written to abolish. On such a path the sentinel is not stronger than
+ * bestEffort, it is WEAKER: a console.warn a human can grep becomes nothing at all.
+ * 17 of the 44 files calling bestEffort use a user-scoped client for at least some
+ * of their writes, so a blanket conversion would have blinded roughly a third of
+ * them while every guard stayed green.
+ *
+ * THE RULING, so the choice stops being a coin-flip:
+ *   · service-role client (createServiceClient / supabaseAdmin) → sentinelWrite.
+ *     It can reach the ledger, so the loss must be ledgered.
+ *   · user-scoped client (createClient / createServerClient)    → bestEffort.
+ *     It cannot reach the ledger; the log line is the strongest honest record.
+ * Giving the ledger an INSERT policy for `authenticated` is NOT the fix — it would
+ * hand every signed-in browser write access to the self-heal audit trail.
  */
 
 import { recordSelfHeal } from "./self-heal-ledger"
@@ -37,6 +71,16 @@ export interface SentinelWriteContext {
   /** The business flow the write belongs to (e.g. 'isa_outreach_record'). */
   flow: string
   brokerageId?: string | null
+  /**
+   * WHY failing here is tolerable — merged from bestEffort (CLAUDE.md §1.1: give
+   * the survivor what the duplicate had before ruling on the duplicate). It was
+   * the one thing bestEffort could say that the sentinel could not, and it is the
+   * thing a human reading the loss digest most needs: a ranked list of lost writes
+   * is only actionable if it says which losses were EXPECTED. Written for the next
+   * person deciding whether to keep this behaviour, not for a log grep. Optional,
+   * so no existing call site changes.
+   */
+  reason?: string
 }
 
 /**
@@ -53,36 +97,45 @@ export async function sentinelWrite(
     const result = await op
     const err = (result as any)?.error
     if (!err) return true
-    await recordSelfHeal(svc, {
-      brokerageId: ctx.brokerageId ?? null,
-      domain: "data_flow",
-      subject: `${ctx.flow}:${ctx.table}`,
-      action: "best_effort_write",
-      outcome: "failed",
-      detail: {
-        flow: ctx.flow,
-        table: ctx.table,
-        message: String(err.message ?? "").slice(0, 300),
-        code: err.code ?? null,
-      },
-    })
+    await recordBestEffortLoss(svc, ctx, String(err.message ?? ""), err.code ?? null)
     return false
   } catch (err) {
-    await recordSelfHeal(svc, {
-      brokerageId: ctx.brokerageId ?? null,
-      domain: "data_flow",
-      subject: `${ctx.flow}:${ctx.table}`,
-      action: "best_effort_write",
-      outcome: "failed",
-      detail: {
-        flow: ctx.flow,
-        table: ctx.table,
-        message: err instanceof Error ? err.message.slice(0, 300) : "rejected",
-        code: null,
-      },
-    }).catch(() => null)
+    await recordBestEffortLoss(svc, ctx, err instanceof Error ? err.message : "rejected").catch(() => null)
     return false
   }
+}
+
+/**
+ * The sentinel's LEDGER HALF on its own (lane 92A) — for a best-effort step whose
+ * refusal arrives as a RESULT (`{ ok: false, error }` / `{ success: false, error }`)
+ * from a helper that already read the supabase error itself, so there is no raw
+ * `{ error }` promise to hand sentinelWrite. Same row, same domain/action/outcome,
+ * so the loss lands on the surface that already shows refusals — the repair digest
+ * and the Exception Center (composeSentinelLossReport below) — instead of only a log
+ * line. sentinelWrite's two branches call this; nothing writes the shape twice.
+ * Service-role client only (see the ruling above: a cookie client cannot reach the
+ * ledger). Never throws.
+ */
+export async function recordBestEffortLoss(
+  svc: any,
+  ctx: SentinelWriteContext,
+  message: string,
+  code: string | null = null,
+): Promise<void> {
+  await recordSelfHeal(svc, {
+    brokerageId: ctx.brokerageId ?? null,
+    domain: "data_flow",
+    subject: `${ctx.flow}:${ctx.table}`,
+    action: "best_effort_write",
+    outcome: "failed",
+    detail: {
+      flow: ctx.flow,
+      table: ctx.table,
+      message: String(message ?? "").slice(0, 300),
+      code,
+      reason: ctx.reason ?? null,
+    },
+  })
 }
 
 // ─── THE OBSERVATION SURFACE ─────────────────────────────────────────────────

@@ -134,6 +134,9 @@ export async function setVariantActive(input: {
   if (!access.canEditBrokerage || !access.brokerageScopeId) {
     return { success: false, error: "Brokerage admin scope required" }
   }
+  const caller = await (await import("@/lib/auth/require-caller")).requireCallerTenant()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof setVariantActive>>>({ brokerageId: access.brokerageScopeId, action: "direct_mail.variant.set_active", actor: { type: "user", userId: caller.ok ? caller.userId : null }, subject: { type: "direct_mail_variant", id: input.variantId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { is_active: input.isActive } }, async () => {
   const svc = createServiceClient()
 
   // Tenant guard: must be a brokerage-scoped row owned by this tenant.
@@ -159,6 +162,7 @@ export async function setVariantActive(input: {
   if (error) return { success: false, error: error.message }
   revalidatePath("/settings/direct-mail/variants")
   return { success: true }
+  })
 }
 
 export async function addCustomVariant(input: {
@@ -174,6 +178,9 @@ export async function addCustomVariant(input: {
     return { success: false, error: "Brokerage admin scope required" }
   }
 
+  const caller = await (await import("@/lib/auth/require-caller")).requireCallerTenant()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction<Awaited<ReturnType<typeof addCustomVariant>>>({ brokerageId: access.brokerageScopeId, action: "direct_mail.variant.create", actor: { type: "user", userId: caller.ok ? caller.userId : null }, subject: { type: "brokerage", id: access.brokerageScopeId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   // Validate the enum-shaped fields against the CHECK constraints + the
   // Persona union before round-tripping to Postgres.
   const compId = input.composition_id.trim()
@@ -213,4 +220,5 @@ export async function addCustomVariant(input: {
     : `copy_style "${style}" isn't in the platform overlay map — the bandit will pick this arm but the prompt won't differ from the "default" overlay until you add the style to lib/direct-mail/draft-copy.ts.`
 
   return { success: true, variantId: data.id as string, warning }
+  })
 }

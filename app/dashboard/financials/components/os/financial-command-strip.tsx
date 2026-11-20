@@ -6,8 +6,6 @@ import { Badge } from "@/components/ui/badge"
 import {
   AlertTriangle,
   TrendingUp,
-  DollarSign,
-  FileText,
   ChevronRight,
   Clock,
   CheckCircle2,
@@ -150,14 +148,14 @@ export function FinancialCommandStrip({
             <div className="flex items-center gap-4 border-l pl-4 border-violet-200">
               <div className="text-center">
                 <p className="text-xs text-muted-foreground">MTD Revenue</p>
-                <p className="text-sm font-semibold text-green-600">
+                <p className="text-sm font-semibold text-green-700">
                   {formatCurrency(periodSummary.mtdRevenue)}
                 </p>
               </div>
               {role !== "agent" && (
                 <div className="text-center">
                   <p className="text-xs text-muted-foreground">Pending</p>
-                  <p className="text-sm font-semibold text-amber-600">
+                  <p className="text-sm font-semibold text-amber-700">
                     {formatCurrency(periodSummary.pendingCommissions)}
                   </p>
                 </div>

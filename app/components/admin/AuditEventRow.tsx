@@ -66,7 +66,7 @@ export function AuditEventRow({
       client_portal_messages: "portal",
       transaction_documents: "docs",
       commission_distributions: "commission",
-      vapi_voice_calls: "vapi",
+      voice_calls: "voice",
       ai_isa_calls: "isa",
       agent_badges: "badges",
       accounting_sync_log: "sync",

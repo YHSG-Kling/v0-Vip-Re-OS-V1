@@ -52,6 +52,7 @@ export type VoiceCoverageDomain =
   | "broadcast"         // brokerage-wide announcements
   | "reporting"         // read-only briefings + pipelines
   | "scheduling"        // calendar / open house
+  | "financial"         // lender/vendor financial-verification confirmations
 
 export interface VoiceCommandCoverageRow {
   /** The canonical kernel/action command this row is about (module.symbol). */
@@ -192,6 +193,24 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     sayIt: "“Look up the Hendersons”",
   },
   {
+    command: "app/actions/listing-lifecycle-core.getListingCurrentStage",
+    domain: "reporting",
+    speakable: true,
+    toolName: "query_listing_status",
+    guard: "authority 'agent' (tool-registry) + entity_owner gate at the route: the session's brokerage must own the listing before the read (ports Stack A validateListingAccess into the canonical dispatcher)",
+    auditParity: VOICE_RECEIPT,
+    sayIt: "“What stage is 44 Birch at?”",
+  },
+  {
+    command: "app/actions/buyer-execution.getBuyerJourney",
+    domain: "reporting",
+    speakable: true,
+    toolName: "query_buyer_stage",
+    guard: "authority 'agent' (tool-registry) + entity_owner gate at the route: the session's brokerage must own the contact before the read",
+    auditParity: VOICE_RECEIPT,
+    sayIt: "“Where are the Hendersons in their buyer journey?”",
+  },
+  {
     command: "contact detail read (profile + recent activities)",
     domain: "contacts",
     speakable: true,
@@ -243,6 +262,42 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     auditParity:
       `SAME canonical lane as the AI ISA's qualification hook (evaluateAndAssignLead → handleLeadAssigned → createContactFromLead) — same assignment_log + lifecycle_events audit, same admin assignment_rules policy, same in-app agent notification; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
     sayIt: "“Convert the lead for John Smith” (broker roles only; refused unless the AI ISA qualified them)",
+  },
+
+  // ── FINANCIAL (vendor/lender lane) ──────────────────────────────────────────
+  // The FIRST cross-party voice tool: a lender is a vendor-USER role, not a
+  // contact, and reaches a buyer only through an active vendor_contact_assignment.
+  {
+    command: "app/actions/buyer-execution.lenderConfirmBuyerFinancials → lib/buyer-execution/multi-party-updates.lenderConfirmFinancialVerification",
+    domain: "financial",
+    speakable: true,
+    toolName: "lender_confirm_financials",
+    guard:
+      "authority 'vendor' (tool-registry role gate at the route — lender/vendor user_type only, never staff) + the assigned_party gate INSIDE the executor (assertVendorAssignedToContact): resolves user_role_assignments.vendor_id and requires an ACTIVE, unexpired vendor_contact_assignment to THIS contact with 'financial' scope, plus the whole-vendor time box (vendors.access_expires_at) — fails closed; the dispatcher also requires an explicit spoken confirm before the state change (human-in-the-loop)",
+    auditParity:
+      `SAME executor as the lender portal action (lenderConfirmFinancialVerification) — same emitFinancialVerificationEvent + buyer.financial.lender_confirmed activity with actor_role='lender'; voice origin: ${VOICE_RECEIPT}`,
+    sayIt: "“Confirm the Hendersons' pre-approval for 480k” (lender/vendor users assigned to that buyer)",
+  },
+  {
+    command: "app/actions/buyer-lifecycle-core.getBuyerFinancialStatus",
+    domain: "financial",
+    speakable: true,
+    toolName: "get_buyer_financials",
+    guard:
+      "authority 'financial_staff' (tool-registry role gate at the route — agent/broker/broker_admin/admin/superadmin/compliance_officer/tc) + entity_owner gate at the route: the session's brokerage must own the contact before the read",
+    auditParity: VOICE_RECEIPT,
+    sayIt: "“Is the Hendersons' financing verified?”",
+  },
+  {
+    command: "app/actions/buyer-lifecycle-core.recordBuyerFinancialVerification",
+    domain: "financial",
+    speakable: true,
+    toolName: "confirm_buyer_financials",
+    guard:
+      "authority 'financial_staff' (tool-registry role gate at the route — the brokerage's own staff, NOT an assigned lender) + entity_owner gate at the route (the contact must belong to your brokerage); flips the financing gate, so the dispatcher requires an explicit spoken confirm first (human-in-the-loop)",
+    auditParity:
+      `SAME core the agent/dashboard confirm calls (recordBuyerFinancialVerification → emitFinancialVerificationEvent, verifiedBy 'agent', source 'manual'); voice origin: ${VOICE_RECEIPT}`,
+    sayIt: "“Mark the Hendersons pre-approved for 480k from the pre-approval letter”",
   },
 
   // ── TASKS ──────────────────────────────────────────────────────────────────
@@ -327,6 +382,34 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
       `SAME canonical action as the composer (notifyBrokerageAgentsAction) — IN-APP ONLY by construction (notifications rows, channel 'in_app'; never email/SMS — no egress), same team_announcement_posted lifecycle_events ledger with honest counters; voice origin: ${VOICE_RECEIPT} + ${BUS_RECEIPT}`,
     sayIt: "“Announce to the team: the office closes at noon Friday”",
   },
+  // ── Wave 138E — the whole team, 24/7 (lib/voice-admin/assistant-reach.ts) ──
+  {
+    command: "lib/kernel/manager-delegation.pendingDelegationsFor + lib/kernel/manager-activity.loadManagerActivity (manager status)",
+    domain: "team-coordination",
+    speakable: true,
+    toolName: "manager_status",
+    guard: "authority 'admin' (route) + the backend re-checks resolveTenantAdmin (user_type OR a grant pinned to the session's tenant); a role that cannot be read refuses",
+    auditParity: `read-only — the same two readers the Missions card and the Command Center activity feed use; a refused source is spoken, never shown as 'nothing'; voice origin: ${VOICE_RECEIPT}`,
+    sayIt: "“What is the ads manager working on?” / “Team status”",
+  },
+  {
+    command: "lib/kernel/broker-objectives.submitBrokerObjective",
+    domain: "team-coordination",
+    speakable: true,
+    toolName: "broker_objective",
+    guard: "authority 'admin' (route) + resolveTenantAdmin in the backend — the Missions card's own rule (an objective commits the brokerage)",
+    auditParity: `SAME kernel call as submitBrokerObjectiveAction — the same mission / proposal / evidence rows, nothing runs before a human approves; voice origin: ${VOICE_RECEIPT}`,
+    sayIt: "“Objective: grow listings 10% in Riverside under $2,000 a month”",
+  },
+  {
+    command: "lib/kernel/skill-marketplace.runSkill",
+    domain: "team-coordination",
+    speakable: true,
+    toolName: "run_skill",
+    guard: "authority 'admin' (route) + resolveTenantAdmin in the backend; risk ≤ COMMUNICATION and no money / books / legal-stage capability (assistantSkillRefusal); then runSkill's own entitlement, metering and authority-rung gates",
+    auditParity: `SAME run path as runSkillForTenant — one withActionLedger row (skill.manager_skill.run) + one delegation per capability, each accepted by a human; voice origin: ${VOICE_RECEIPT}`,
+    sayIt: "“Run skill anniversary note and gift for the Hendersons”",
+  },
 
   // ── DEAL DOCUMENTS (offer/BBA/listing packets + e-sign) ───────────────────
   {
@@ -397,7 +480,7 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     domain: "marketing-content",
     speakable: true,
     toolName: "stage_newsletter_draft",
-    guard: "any authenticated voice session; draft only — approval/publish gates unchanged",
+    guard: "authority 'tenant_staff' (tool-registry role gate at the route); draft only — stages at pending_review, the approval pipeline runs the outbound gates before anything ships — approval/publish gates unchanged",
     auditParity: VOICE_RECEIPT,
     sayIt: "“Create a newsletter about spring inventory”",
   },
@@ -406,7 +489,7 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     domain: "marketing-content",
     speakable: true,
     toolName: "stage_email_campaign",
-    guard: "any authenticated voice session; draft only",
+    guard: "authority 'tenant_staff' (tool-registry role gate at the route); draft only — stages at pending_review, the approval pipeline runs the outbound gates before anything ships",
     auditParity: VOICE_RECEIPT,
   },
   {
@@ -414,7 +497,7 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     domain: "marketing-content",
     speakable: true,
     toolName: "stage_blog_draft",
-    guard: "any authenticated voice session; draft only",
+    guard: "authority 'tenant_staff' (tool-registry role gate at the route); draft only — stages at pending_review, the approval pipeline runs the outbound gates before anything ships",
     auditParity: VOICE_RECEIPT,
   },
   {
@@ -422,7 +505,7 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     domain: "marketing-content",
     speakable: true,
     toolName: "stage_podcast_episode",
-    guard: "any authenticated voice session; draft only",
+    guard: "authority 'tenant_staff' (tool-registry role gate at the route); draft only — stages at pending_review, the approval pipeline runs the outbound gates before anything ships",
     auditParity: VOICE_RECEIPT,
   },
   {
@@ -430,7 +513,7 @@ export const VOICE_COMMAND_COVERAGE: VoiceCommandCoverageRow[] = [
     domain: "marketing-content",
     speakable: true,
     toolName: "stage_video_project",
-    guard: "any authenticated voice session; draft only",
+    guard: "authority 'tenant_staff' (tool-registry role gate at the route); draft only — stages at pending_review, the approval pipeline runs the outbound gates before anything ships",
     auditParity: VOICE_RECEIPT,
   },
   {

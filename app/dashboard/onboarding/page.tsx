@@ -6,6 +6,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
+import { readRoleGrants, selectVendorId } from '@/lib/auth/role-grants'
 import { getAgentOnboardingDashboard } from '@/lib/kernel/agent-onboarding'
 import { OnboardingDashboardClient } from './OnboardingDashboardClient'
 import { CriticalSetupMeter } from '@/app/components/onboarding/critical-setup-meter'
@@ -25,6 +26,17 @@ export default async function OnboardingPage() {
   if (!user) {
     redirect('/login')
   }
+
+  // FIRST LOGIN IS NEVER A HIDDEN REPAIR (owner, wave 140). TOMBSTONE: this
+  // landing used to call ensureAgentBrokerage() — a brokerage-of-one, a
+  // trialing subscription and the agents/onboarding/RBAC rows minted on a GET,
+  // invisible to the person. The seat flow (lib/kernel/users.ts
+  // inviteTenantMember) now produces the whole chain, and this page is the
+  // VISIBLE setup state an incomplete account is routed to.
+  // A REPAIRABLE account gap routes through the readiness contract
+  // (evaluateTenantReadiness({ repair: true }) → self-healing engine →
+  // repairIncompleteAccountSetup, lib/kernel/users.ts) and is re-verified — see
+  // below, where this page finds an agent-role user without an agents row.
 
   // Get user details including type — maybeSingle() never throws on missing row
   const { data: userData } = await supabase
@@ -65,13 +77,50 @@ export default async function OnboardingPage() {
     agentId = agent?.id ?? null
   }
 
-  // Fetch onboarding dashboard data using kernel function
-  // agentId may be null for non-agent roles (tc, broker, admin) — kernel handles this
+  // NOT `?? user.id` (m353). getAgentOnboardingDashboard filters
+  // agent_onboarding.agent_id, which FKs AGENTS — so the fallback handed it a
+  // users id and the query matched nothing. Worse, it was backwards: the
+  // substitution only ever happened for the non-agent roles the AGENT
+  // onboarding dashboard does not describe in the first place. A role without
+  // an agents row gets an honest notice, not an empty agent curriculum.
+  let setupBlockers: string[] = []
+  if (isAgentRole && !agentId) {
+    // THE READINESS CONTRACT (wave 140): evidenced, policy-capped repair through the
+    // self-healing engine (self_heal_events + ledger + kernel event), then ONE re-read.
+    // The tenant is the session's (users.brokerage_id above) — never a parameter.
+    try {
+      const [{ evaluateTenantReadiness }, { createServiceClient }] = await Promise.all([import("@/lib/kernel/tenant-readiness"), import("@/lib/supabase/service")])
+      const report = await evaluateTenantReadiness(createServiceClient(), brokerageId, { repair: true })
+      setupBlockers = report.blockers
+      const { data: healed } = await supabase.from('agents').select('id').eq('user_id', user.id).eq('brokerage_id', brokerageId).maybeSingle()
+      agentId = healed?.id ?? null
+    } catch (error) {
+      console.error('[Onboarding] readiness repair failed:', (error as Error).message)
+    }
+  }
+  if (isAgentRole && !agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        <p>Finishing your account setup — refresh in a moment to view your onboarding.</p>
+        {setupBlockers.length > 0 && (
+          <p className="mt-2 text-xs">Waiting on: {setupBlockers.slice(0, 3).join('; ')}</p>
+        )}
+      </div>
+    )
+  }
+  if (!agentId) {
+    return (
+      <div className="p-8 text-center text-muted-foreground">
+        Onboarding is agent-scoped. Your role ({userType}) does not have an agent curriculum.
+      </div>
+    )
+  }
+
   let dashboard
   try {
     dashboard = await getAgentOnboardingDashboard({
       userId:  user.id,
-      agentId: agentId ?? user.id, // kernel expects a string; fall back to user.id for non-agent path
+      agentId,
     })
   } catch (error) {
     console.error('[Onboarding] Failed to load dashboard:', error)
@@ -99,9 +148,21 @@ export default async function OnboardingPage() {
       if (role === 'team_lead') teamLead = true
       let vendorId: string | null = null
       if (role === 'vendor') {
-        const { data: ra } = await svc.from('user_role_assignments').select('vendor_id')
-          .eq('user_id', user.id).not('vendor_id', 'is', null).maybeSingle()
-        vendorId = (ra as { vendor_id?: string | null } | null)?.vendor_id ?? null
+        // Read every grant and choose: narrowing to the vendor-bearing rows still
+        // leaves several possible (the table is UNIQUE on (user_id, role)), and
+        // `.maybeSingle()` over them ERRORS — which here silently emptied the
+        // vendor half of the critical-setup meter and told a vendor their setup
+        // was complete when it had simply not been looked at.
+        const grantsResult = await readRoleGrants(svc, user.id)
+        if (!grantsResult.ok) {
+          console.error('[Onboarding] role grant read failed:', grantsResult.error)
+        } else {
+          const resolved = selectVendorId(grantsResult.grants)
+          if (resolved.ambiguous) {
+            console.error('[Onboarding] user', user.id, 'is linked to more than one vendor')
+          }
+          vendorId = resolved.vendorId
+        }
       }
       const facts = await loadCriticalSetupFacts(svc, {
         brokerageId,

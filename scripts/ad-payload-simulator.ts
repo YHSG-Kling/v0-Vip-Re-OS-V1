@@ -23,7 +23,9 @@ const metaLead = (over: Partial<AdBuildInput> = {}): AdBuildInput => ({
   platform: "facebook", objective: "leads", campaignName: "Just Listed — Maple Grove", dailyBudgetUsd: 50,
   pageId: "PAGE_123", leadFormId: "FORM_456",
   creative: { headline: "See Your Home's Value", primaryText: "Thinking of selling? Get a free market analysis.", description: "Local experts", callToAction: "LEARN_MORE", mediaAssetUrl: "https://blob/reel.mp4", destinationUrl: null },
-  targeting: { locations: [{ city: "Maple Grove", state: "MN" }], audienceExternalId: "AUD_789" },
+  // inclusionGovernance (wave 148, lane 148C): a targeted audience is delivered only after launch-assembler re-gated it — the
+  // compliant fixture carries the flag the assembler sets; test:persona-compliance proves the ungated shape is a violation.
+  targeting: { locations: [{ city: "Maple Grove", state: "MN" }], audienceExternalId: "AUD_789", inclusionGovernance: "gated" },
   specialAdCategory: "HOUSING", ...over,
 })
 

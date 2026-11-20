@@ -8,6 +8,7 @@
 // inside the window with no re-engagement are left for next run. Read-mostly; never throws.
 
 import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { decidePredictorOutcome, predictorNameForSignal, PREDICTOR_EVAL_WINDOW_DAYS } from "./predictor-outcome"
 import { recordPredictorOutcome } from "./predictor-learning-runner"
@@ -67,12 +68,12 @@ export async function resolvePredictorOutcomes(
     }, svc).catch(() => ({ ok: false }))
     if (!rec.ok) continue
 
-    await svc.from("manager_signals").update({
+    await sentinelWrite(svc, svc.from("manager_signals").update({
       status: "consumed",
       consumed_action: `predictor outcome: ${predictor} ${decision.won ? "won (re-engaged)" : "lost (no re-engagement)"}`,
       consumed_at: new Date().toISOString(),
       payload: { ...(sig.payload ?? {}), outcome_recorded: true, outcome_won: decision.won },
-    }).eq("id", sig.id).then(() => {}, () => {})
+    }).eq("id", sig.id), { table: "manager_signals", flow: "predictor_outcome_consume", reason: "marks the signal consumed after the outcome was recorded; a loss only re-evaluates it" })
 
     if (decision.won) out.wins++; else out.losses++
   }

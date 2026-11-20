@@ -19,6 +19,9 @@ export interface VoiceAssistantRequest {
   intent: 'explain_progress' | 'whats_next' | 'search_properties' | 'schedule_tour' | 'general_question'
   transcript: string
   userId?: string
+  /** Wave 155 (lane 155F2): the SESSION's tenant (requireContactAccess in app/actions/buyer-execution.ts) — never a request value.
+   *  Required for `general_question`; absent → that intent refuses (fail closed). */
+  brokerageId?: string | null
 }
 
 export interface VoiceAssistantResponse {
@@ -69,7 +72,10 @@ export async function handleBuyerVoiceRequest(
       
       case 'schedule_tour':
         return await scheduleTourVoice(context, transcript)
-      
+
+      case 'general_question':
+        return await generalQuestionVoice({ contactId, brokerageId: request.brokerageId ?? null, transcript })
+
       default:
         return {
           success: false,
@@ -83,6 +89,46 @@ export async function handleBuyerVoiceRequest(
       spokenResponse: "I encountered an error. Please try again or contact your agent.",
       error: error instanceof Error ? error.message : 'Unknown error'
     }
+  }
+}
+
+/**
+ * THE FOURTH DOOR (wave 155, lane 155F2 — owner R10). A free question to the buyer assistant used to fall to the router's default
+ * ("I'm not sure how to help with that"). It now takes the SAME decision as the portal tutor, the home assistant and the widget
+ * (lib/portal/question-answer-decision.ts decidePortalAnswer): a deal / lender / title fact from the record only, a guard question
+ * its fixed answer, a general question from the tenant's verified help base — no model on this door — and the question the record
+ * cannot answer goes to the assigned agent as ONE task (fileQuestionDing). The caller gated the session (requireContactAccess);
+ * the tenant is that session's, and the contact is re-read inside it.
+ */
+async function generalQuestionVoice(a: { contactId: string; brokerageId: string | null; transcript: string }): Promise<VoiceAssistantResponse> {
+  const question = (a.transcript ?? '').trim()
+  if (!a.brokerageId) return { success: false, spokenResponse: "I had trouble identifying your account. Please try again.", error: 'no session tenant' }
+  if (!question) return { success: false, spokenResponse: "What would you like to know? Ask me in a sentence and I'll check your file." }
+  const [{ createServiceClient }, qad] = await Promise.all([import('@/lib/supabase/service'), import('@/lib/portal/question-answer-decision')])
+  const svc = createServiceClient()
+  const { data: contact, error: cErr } = await svc.from('contacts').select('id, agent_id').eq('id', a.contactId).eq('brokerage_id', a.brokerageId).maybeSingle()
+  if (cErr) return { success: false, spokenResponse: "I can't reach your file right now. Please try again or contact your agent.", error: cErr.message }
+  if (!contact) return { success: false, spokenResponse: "I had trouble identifying your account. Please try again." }
+  const agentId = (contact as { agent_id?: string | null }).agent_id ?? null
+  let agentName: string | null = null
+  if (agentId) {
+    // agents carries no name: agents.id and users.id are DISJOINT — cross via agents.user_id (CLAUDE.md §3). A refused read only
+    // costs the name ("your agent" is said instead).
+    const { data: ag } = await svc.from('agents').select('user_id').eq('id', agentId).eq('brokerage_id', a.brokerageId).maybeSingle()
+    const uid = (ag as { user_id?: string | null } | null)?.user_id ?? null
+    if (uid) {
+      const { data: u } = await svc.from('users').select('first_name').eq('id', uid).maybeSingle()
+      agentName = (u as { first_name?: string | null } | null)?.first_name ?? null
+    }
+  }
+  const decision = await qad.decidePortalAnswer(svc, { brokerageId: a.brokerageId, contactId: a.contactId, question, agentName })
+  const ding = await qad.fileQuestionDing(svc, { brokerageId: a.brokerageId, contactId: a.contactId, sessionId: null, agentId, question, decision, surface: 'buyer_assistant' })
+  if (decision.plan.notify && !ding.filed && !ding.deduped && ding.notified === 0) console.error('[voice-assistant] question ding not filed:', ding.reason)
+  return {
+    success: decision.answered !== 'refused',
+    spokenResponse: decision.text,
+    displayData: { answered: decision.answered, sources: decision.sources.slice(0, 6), questionKind: decision.cls.kind },
+    actionsRequired: ding.filed ? ['Your agent has your question and will follow up.'] : undefined,
   }
 }
 
@@ -180,13 +226,29 @@ async function searchPropertiesVoice(
     }
   }
   
-  // 2. Execute search
+  // 2. Execute search — WAVE 147 (lane 147Z — lane 147C Outside-lane 4, contract C10): over the buyer's SAVED criteria, the
+  // ONE store the portal, email, SMS and phone turns write, so "find me something" by voice searches what they already told us.
+  // The tenant bound is the contact's own row (the same person the search is for); an unreadable store searches the words alone.
+  let storedCriteria: Awaited<ReturnType<typeof import('@/lib/buyer-search/buyer-criteria').loadBuyerCriteria>> = null
+  try {
+    const { createServiceClient } = await import('@/lib/supabase/service')
+    const svc = createServiceClient()
+    const { data: who, error: whoError } = await svc.from('contacts').select('brokerage_id').eq('id', context.contactId).maybeSingle()
+    if (whoError) console.error('[voice-assistant] contact read refused — searching the spoken words alone:', whoError.message)
+    else if ((who as { brokerage_id?: string | null } | null)?.brokerage_id) {
+      const { loadBuyerCriteria } = await import('@/lib/buyer-search/buyer-criteria')
+      storedCriteria = await loadBuyerCriteria(svc, context.contactId, { brokerageId: (who as { brokerage_id: string }).brokerage_id })
+    }
+  } catch (e) {
+    console.error('[voice-assistant] saved criteria not read — searching the spoken words alone:', e instanceof Error ? e.message : String(e))
+  }
   const searchResult = await searchPropertiesWithNaturalLanguage({
     contactId: context.contactId,
     naturalLanguageQuery: transcript,
     options: {
       limit: 5, // Voice should return fewer results
       logSignals: true,
+      criteria: storedCriteria,
     }
   })
   
@@ -229,6 +291,25 @@ async function searchPropertiesVoice(
 }
 
 /**
+ * PURE. The property the buyer NAMED, straight out of what they said — or null.
+ *
+ * Deliberately conservative: it recognises a street-address shape (a house number
+ * followed by a street word) and nothing else. It does NOT try to resolve the
+ * property to a listing row — that is entity resolution's job, and guessing a listing
+ * from a voice transcript is how the wrong home ends up on a showing request.
+ * A null here simply means "ask", which is the behaviour that was always there.
+ */
+function extractSpokenPropertyReference(transcript: string): string | null {
+  const said = (transcript ?? "").trim()
+  if (!said) return null
+  const m = said.match(
+    /\b\d{1,6}\s+[A-Za-z0-9'.-]+(?:\s+[A-Za-z0-9'.-]+){0,3}\s+(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd|court|ct|place|pl|way|terrace|ter|circle|cir|parkway|pkwy)\b\.?/i,
+  )
+  if (!m) return null
+  return m[0].replace(/\.$/, "").trim()
+}
+
+/**
  * Handle tour scheduling via voice
  * ENFORCES financial verification gate
  */
@@ -266,13 +347,30 @@ async function scheduleTourVoice(
   }
   
   // 3. Delegate to showing management system
-  // NOTE: This would integrate with actual showing management system
-  // For now, return guidance
+  //
+  // `transcript` — WHAT THE BUYER ACTUALLY SAID — was accepted by this handler and
+  // read by NOTHING until 2026-08-24, while its sibling `searchPropertiesVoice` above
+  // hands the same string straight to the search. So a buyer who said "book me a tour
+  // of 412 Oak Street on Saturday" was answered with "Can you tell me which property
+  // you're interested in visiting?" — the assistant asking for the one thing it had
+  // just been told. On a voice surface that is the difference between an assistant and
+  // a form.
+  //
+  // The property reference is not RESOLVED here — that is entity resolution's job
+  // (app/actions/voice-assistant/core/resolve-entities.ts) and this handler is still
+  // the guidance stub its note says it is. What changes is that the spoken reply stops
+  // discarding the utterance, and the reference travels in displayData so the step
+  // that does the booking does not have to ask a second time.
+  const spokenProperty = extractSpokenPropertyReference(transcript)
+
   return {
     success: true,
-    spokenResponse: "I can help you schedule a tour! Can you tell me which property you're interested in visiting? You can say the address or describe the property.",
+    spokenResponse: spokenProperty
+      ? `I can help you schedule a tour of ${spokenProperty}. Let me get that in front of your agent — what day and time work for you?`
+      : "I can help you schedule a tour! Can you tell me which property you're interested in visiting? You can say the address or describe the property.",
     displayData: {
       canTour: true,
+      spokenPropertyReference: spokenProperty,
       nextAction: 'property_selection',
     }
   }

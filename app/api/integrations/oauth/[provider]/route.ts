@@ -14,7 +14,9 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integration-tester"
 import { connectionScopeForUserType } from "@/lib/connections/field-spec"
+import { readRoleGrants, selectVendorGrant } from "@/lib/auth/role-grants"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { encryptSecret, isEncryptionConfigured } from "@/lib/security/secret-crypto"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -47,6 +49,12 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
       "https://www.googleapis.com/auth/calendar.events",
       "https://www.googleapis.com/auth/gmail.send",
       "https://www.googleapis.com/auth/gmail.readonly",
+      // Google eSignature is the platform's DEFAULT e-sign method (owner, wave 88). It has
+      // no API, so the FormWizard places the FILLED form in the agent's own Drive and opens
+      // it for "Request eSignature" (lib/esign/google-esign-handoff.ts). drive.file is the
+      // narrowest Drive grant: it reaches ONLY files this app created, never the agent's
+      // other Drive content. Accounts connected before this line must reconnect once.
+      "https://www.googleapis.com/auth/drive.file",
     ],
     additionalParams: {
       access_type: "offline",
@@ -109,7 +117,7 @@ const OAUTH_CONFIGS: Record<OAuthProvider, OAuthConfig> = {
     scopes: ["business_management", "ads_management", "ads_read"],
   },
   // Google ADS — Customer Match + reporting. Needs GOOGLE_ADS_DEVELOPER_TOKEN (env,
-  // injected into config below). Stored under platform='google'.
+  // injected into config below). Stored under platform='google_ads' (wave 145, lane 145D; m862).
   google_ads: {
     clientIdEnv: "GOOGLE_CLIENT_ID",
     clientSecretEnv: "GOOGLE_CLIENT_SECRET",
@@ -213,6 +221,17 @@ export async function GET(
         return redirectWithResult(baseUrl, false, provider, "Security validation failed - please try again")
       }
 
+      // FAIL CLOSED BEFORE THE EXCHANGE (wave 140H; owner wave 139: secrets fail closed). With no
+      // SECRETS_ENCRYPTION_KEY the credential write below would refuse; exchanging the code first would
+      // spend a single-use authorization code for tokens that cannot be stored. Refuse here, raise the
+      // platform incident (no secret in it), and tell the user nothing was stored.
+      if (!isEncryptionConfigured()) {
+        const { raiseSecretStorageIncident } = await import("@/lib/security/credential-rotation")
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        await raiseSecretStorageIncident(createServiceClient(), { surface: `integration OAuth callback (${provider})`, brokerageId: null, code: "secrets_key_missing" })
+        return redirectWithResult(baseUrl, false, provider, "Secret storage is not configured on this deployment - the connection was not completed and nothing was stored")
+      }
+
       // Clear state cookie
       cookieStore.delete("oauth_state")
 
@@ -242,6 +261,12 @@ export async function GET(
 
       // Exchange code for tokens (through the connector-gateway). config.tokenUrl is a full URL —
       // split into origin + pathname so the gateway hits the exact endpoint (no trailing-slash drift).
+      // KEPT ON REST (wave 71A) — this is the shared multi-provider OAuth
+      // authorization-code exchange (google/microsoft/docusign/quickbooks/
+      // xero/meta_ads/google_ads/zoom all pass through this one branch); for
+      // the Meta leg specifically, the Business SDK has no OAuth exchange
+      // method at all (FacebookAdsApi always requires an access token already
+      // in hand to construct), so it cannot express this call regardless.
       const tokenUrl = new URL(config.tokenUrl)
       // Zoom's token endpoint requires HTTP Basic auth (client_id:client_secret
       // in the Authorization header, NOT the form body); everyone else takes
@@ -295,7 +320,10 @@ export async function GET(
         oauthProvider === "google" ? "gmail"
         : oauthProvider === "microsoft" ? "outlook"
         : oauthProvider === "meta_ads" ? "facebook"     // what the ad connector loads
-        : oauthProvider === "google_ads" ? "google"
+        // Wave 145 (lane 145D): 'google_ads', the name the ad connector loads (lib/ads/connection-status.ts
+        // adCredentialPlatform) and m862 admits. The old 'google' was refused by the live CHECK (every Google Ads
+        // connect failed) and folds onto gmail in the Connection OS (connection-manager PROVIDER_ALIASES).
+        : oauthProvider === "google_ads" ? "google_ads"
         : oauthProvider === "quickbooks" && ownerType === "platform" ? "platform_quickbooks"
         // Same m273 idiom for meetings: the PLATFORM's own Zoom lives under the
         // distinct 'platform_zoom' key so a tenant's host cascade can never
@@ -309,10 +337,10 @@ export async function GET(
       let adConfigExtra: Record<string, unknown> = {}
       if (oauthProvider === "meta_ads") {
         try {
-          const aa = await callConnector<{ data?: Array<{ account_id?: string }> }>({
-            connector: "meta-adaccounts", baseUrl: "https://graph.facebook.com", path: "/v19.0/me/adaccounts?fields=account_id",
-            method: "GET", auth: { style: "bearer", token: tokens.access_token },
-          })
+          // Wave 71A: routes through the official `facebook-nodejs-business-sdk`
+          // adapter instead of the connector gateway.
+          const { graphGet } = await import("@/lib/providers/meta/client")
+          const aa = await graphGet<{ data?: Array<{ account_id?: string }> }>(tokens.access_token, ["me", "adaccounts"], { fields: "account_id" })
           if (aa.ok) adAccountId = aa.data?.data?.[0]?.account_id ?? null
         } catch {}
       } else if (oauthProvider === "google_ads") {
@@ -368,14 +396,15 @@ export async function GET(
         owner_id: ownerId,
         agent_user_id: ownerType === "agent" ? stateData.userId : null,
         platform: storedPlatform,
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
+        // Wave 140H — the callback writes ENCRYPTED columns only (fail closed with no key).
+        access_token: encryptSecret(tokens.access_token),
+        refresh_token: encryptSecret(tokens.refresh_token),
         ...(realmId ? { account_id: realmId } : {}),
         ...(adAccountId ? { account_id: adAccountId } : {}),
         ...(zoomUserId ? { account_id: zoomUserId } : {}),
+        // Wave 139: the tokens live ONLY in the canonical columns — no second copy in `config` (a duplicate the
+        // column-level encryption would miss). Readers take the columns first; legacy rows keep their old config.
         config: {
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token,
           token_type: tokens.token_type,
           scope: tokens.scope,
           ...(connectedEmail ? { email: connectedEmail } : {}),
@@ -389,15 +418,32 @@ export async function GET(
         last_tested_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }
-      // Owner-keyed update-or-insert (the unique key is (owner_type, owner_id, platform)).
+      // Owner-keyed update-or-insert. The unique key is (owner_type, owner_id,
+      // platform) and it is REAL — VERIFIED LIVE, not assumed: m104 created it as
+      // `platform_credentials_owner_uniq`, a PARTIAL UNIQUE INDEX
+      // `WHERE owner_type IS NOT NULL`, and a duplicate insert is refused with 23505.
+      // It is spelled out here because it lives in pg_index and NOT in pg_constraint:
+      // a check that dumps pg_constraint for this table sees only the two FKs and the
+      // three CHECKs, reads the key as absent, and reports this comment as a lie. It
+      // is not. A concurrent OAuth callback racing this read-then-write cannot
+      // duplicate the credential — the second writer gets 23505, not a second row.
       const { data: existingCred } = await supabase
         .from("platform_credentials")
         .select("id")
         .eq("owner_type", ownerType).eq("owner_id", ownerId).eq("platform", storedPlatform)
         .maybeSingle()
-      const { error: credError } = existingCred
-        ? await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
-        : await supabase.from("platform_credentials").insert(credRow)
+      // Split from a ternary so each branch's error capture sits next to its own
+      // write: in the ternary form the `const { error: credError }` was far
+      // enough from the INSERT branch that no reviewer (and no guard) could see
+      // that branch was covered. Behaviour is unchanged.
+      let credError: { message: string } | null = null
+      if (existingCred) {
+        const { error } = await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
+        credError = error
+      } else {
+        const { error } = await supabase.from("platform_credentials").insert(credRow)
+        credError = error
+      }
 
       if (credError) {
         console.error("[OAuth] Failed to store credentials:", credError)
@@ -411,7 +457,7 @@ export async function GET(
         try {
           const { data: agentRow } = await supabase.from("agents").select("id").eq("user_id", stateData.userId).maybeSingle()
           if (agentRow?.id) {
-            await supabase
+            const { error: mirrorErr } = await supabase
               .from("agent_api_credentials")
               .upsert(
                 {
@@ -419,8 +465,8 @@ export async function GET(
                   brokerage_id: stateData.brokerageId,
                   service_name: storedPlatform,
                   service_type: "personal_email",
-                  access_token: tokens.access_token,
-                  refresh_token: tokens.refresh_token,
+                  access_token: encryptSecret(tokens.access_token),
+                  refresh_token: encryptSecret(tokens.refresh_token),
                   token_expires_at: expiresAt,
                   config: { email: connectedEmail, scope: tokens.scope },
                   is_active: true,
@@ -428,6 +474,10 @@ export async function GET(
                 },
                 { onConflict: "agent_id,service_name" }
               )
+            // The personal-email adapter sends from THIS row — a refused mirror
+            // means the agent's mail does not go from their mailbox. Non-fatal
+            // (the owner-scoped token is saved) but never silent.
+            if (mirrorErr) console.error(`[OAuth] agent-scoped mailbox credential NOT mirrored for agent ${agentRow.id}: ${mirrorErr.message}`)
           }
         } catch (agentCredErr) {
           console.error("[OAuth] Failed to mirror agent-scoped credential:", agentCredErr)
@@ -438,7 +488,7 @@ export async function GET(
       // Update brokerage_integrations + kernel event — TENANT connects only (a platform-scope
       // connect has no brokerage to anchor these to).
       if (stateData.brokerageId) {
-        await supabase
+        const { error: integrationStatusErr } = await supabase
           .from("brokerage_integrations")
           .upsert({
             brokerage_id: stateData.brokerageId,
@@ -451,6 +501,7 @@ export async function GET(
           }, {
             onConflict: "brokerage_id,provider_name",
           })
+        if (integrationStatusErr) console.error(`[OAuth] credentials stored but brokerage_integrations NOT marked connected: ${integrationStatusErr.message}`)
 
         // Fire kernel event
         await processKernelEvent({
@@ -462,6 +513,28 @@ export async function GET(
         }).catch(err => {
           console.error("[OAuth] Kernel event failed (non-blocking):", err)
         })
+
+        // IMMEDIATE POST-CONDITION (wave 141B): re-read the integration row ON THIS TENANT and verify it
+        // reads `connected`. A transaction / e-sign provider is the tenant's own TRANSACTION capability
+        // (owner: transaction and e-sign are different capabilities; the credentials are the tenant's) →
+        // routed to the Deal Coordinator; every other lane → provider_connection. A failed verify is
+        // evidenced and routed NOW (the credential itself is stored; the status row is what did not land)
+        // and the redirect carries the honest sentence instead of "connected".
+        try {
+          const { verifyIntegrationRow, reportOperationOutcome } = await import("@/lib/kernel/immediate-operations")
+          const verified = await verifyIntegrationRow(supabase, { brokerageId: stateData.brokerageId, providerName: provider })
+          const transactional = metadata.providerType === "transaction" || metadata.providerType === "esign"
+          await reportOperationOutcome(supabase, {
+            operation: transactional ? "transaction_provider_connection" : "provider_connection",
+            brokerageId: stateData.brokerageId, ok: verified.ok,
+            subjectType: "brokerage_integrations", subjectId: (verified.evidence.rowId as string | undefined) ?? null, source: "ui",
+            evidence: { provider, provider_type: metadata.providerType, owner_type: ownerType, ...verified.evidence }, error: verified.error,
+            tenantFacing: verified.ok ? null : `${provider} authorized, but its connection status did not verify — reconnect it from Settings › Integrations`,
+          })
+          if (!verified.ok) return redirectWithResult(baseUrl, false, provider, `${provider} authorized, but its connection status did not verify: ${verified.error}`)
+        } catch (verifyErr) {
+          console.error("[OAuth] post-condition verify failed (non-blocking):", (verifyErr as Error)?.message)
+        }
       }
 
       console.log(`[OAuth] Successfully connected ${provider} for ${ownerType} ${ownerId}`)
@@ -486,27 +559,50 @@ export async function GET(
     // Resolve the connecting actor's OWNER scope so the callback stores tokens owner-scoped
     // (agent/team/brokerage/staff/vendor/contact) — not always brokerage. This is what lets a
     // vendor/contact connect their OWN email/calendar and have it resolve via the owner cascade.
-    const { data: userData } = await supabase
+    // BOTH identity columns (§4). On user_type alone the platform's one human
+    // staff row (user_type='admin', platform_role='superadmin') resolved to
+    // "brokerage", so the company's own Zoom/QuickBooks were stored as a tenant
+    // row under 'zoom'/'quickbooks' and the 'platform_zoom'/'platform_quickbooks'
+    // arms in the callback (storedPlatform above) were unreachable — the
+    // platform cards read a row this route could never write. A refused read
+    // leaves platform_role null, which fails closed toward the tenant scopes.
+    const { data: userData, error: userError } = await supabase
       .from("users")
-      .select("brokerage_id, user_type, team_id")
+      .select("brokerage_id, user_type, platform_role, team_id")
       .eq("id", user.id)
       .maybeSingle()
+    if (userError) console.error("[OAuth] identity read failed:", userError.message)
 
-    const { scope } = connectionScopeForUserType((userData?.user_type as string) ?? "")
+    const { scope } = connectionScopeForUserType(
+      (userData?.user_type as string) ?? "",
+      (userData?.platform_role as string | null) ?? null,
+    )
     let ownerType: string = scope
     let ownerId: string | null = null
     let brokerageId: string | null = (userData?.brokerage_id as string | null) ?? null
 
     if (scope === "vendor") {
-      // canonical vendor linkage: user_role_assignments.vendor_id (vendors has no user_id)
-      const { data: ra } = await supabase
-        .from("user_role_assignments")
-        .select("vendor_id, brokerage_id")
-        .eq("user_id", user.id)
-        .not("vendor_id", "is", null)
-        .maybeSingle()
-      ownerId = (ra?.vendor_id as string | null) ?? null
-      brokerageId = brokerageId ?? ((ra?.brokerage_id as string | null) ?? null)
+      // canonical vendor linkage: user_role_assignments.vendor_id (vendors has no user_id).
+      //
+      // This resolves the OWNER that the OAuth tokens will be stored under, so a
+      // wrong or missing answer here misfiles a vendor's own calendar/email
+      // credentials. `.maybeSingle()` over the vendor-bearing grants ERRORS the
+      // moment there are two (the table is UNIQUE on (user_id, role), not user_id)
+      // and the discarded error read as "no vendor" → the flow aborted with
+      // "Could not resolve your account for this connection" for a real vendor.
+      const grantsResult = await readRoleGrants(supabase, user.id)
+      if (!grantsResult.ok) {
+        console.error("[OAuth] role grant read failed:", grantsResult.error)
+        return redirectWithResult(baseUrl, false, provider, "Could not verify your vendor account — please try again")
+      }
+      const { grant: vendorGrant, ambiguous } = selectVendorGrant(grantsResult.grants)
+      if (ambiguous) {
+        return redirectWithResult(baseUrl, false, provider, "Your account is linked to more than one vendor — ask the brokerage to correct it")
+      }
+      ownerId = vendorGrant?.vendor_id ?? null
+      // The tenant anchor comes off the SAME grant that supplied the owner, so the
+      // credential can never be filed under one vendor and one other tenant.
+      brokerageId = brokerageId ?? (vendorGrant?.brokerage_id ?? null)
     } else if (scope === "contact") {
       const { data: c } = await supabase.from("contacts").select("id, brokerage_id").eq("contact_user_id", user.id).maybeSingle()
       ownerId = (c?.id as string | null) ?? null

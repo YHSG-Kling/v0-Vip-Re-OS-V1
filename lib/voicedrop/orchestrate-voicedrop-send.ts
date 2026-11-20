@@ -74,10 +74,24 @@ async function ensureCompliance(args: {
   brokerageId: string
   contactId?: string
   leadId?: string
+  toPhone: string
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   // The compliance gate uses messageType='phone' to enforce TCPA
   // consent + dnc_status + phone_opt_out. Voicedrop = a phone call
   // by FCC interpretation, so we gate identically.
+  //
+  // Wave 91 (lane 91B) — a LEAD never gets a voicedrop (owner: "Leads usually are non consenting
+  // so no sms or calls allowed only email and direct mail"). The lead branch below used to pass a
+  // lead whose row happened to carry tcpa_consent, and a number-only drop returned ok with NO
+  // check at all. The TCPA chokepoint's lead-stage arm (the ONE predicate + the phone lookup for
+  // a keyless send) now runs first.
+  {
+    const { leadStageRefusal } = await import("@/lib/communication/tcpa-gate")
+    const leadStage = await leadStageRefusal({
+      channel: "call", phone: args.toPhone, contactId: args.contactId ?? null, leadId: args.leadId ?? null, brokerageId: args.brokerageId,
+    })
+    if (leadStage) return { ok: false, reason: leadStage }
+  }
   if (!args.contactId && !args.leadId) return { ok: true }
   const svc = createServiceClient()
   let kc: { id: string; tcpa_consent: boolean | null; dnc_status: boolean | null; phone_opt_out: boolean | null; status: string | null } | null = null
@@ -122,8 +136,30 @@ async function ensureCompliance(args: {
       phone_opt_out: kc.phone_opt_out ?? undefined,
       status:        kc.status ?? "",
     } as unknown as Parameters<typeof evaluateOutbound>[0]["contact"],
-  })
+  }, { client: svc })
   if (!r.allowed) return { ok: false, reason: `gate:${r.violations.join("; ")}` }
+
+  // ── FRESH DNC/TCPA SCRUB (wave 69C carry a; §6 one gate) ──────────────────────────
+  // evaluateOutbound above still checks only the STORED contacts.dnc_status, with no
+  // freshness requirement — it predates the wave-68 freshness clock. The ONE place that
+  // clock lives is lib/communication/tcpa-gate.ts::enforceTCPACompliance
+  // (isDncTcpaVerdictFresh / evaluateFreshScrubVerdict); voicedrop is a phone call under
+  // FCC interpretation (see the file header), so it now calls that SAME gate rather than
+  // re-implementing a second scrub. Scoped to contactId sends — the gate's compliance
+  // read targets `contacts`, and a leadId-only voicedrop has no dnc_verified_at column to
+  // freshen (leads are already covered above via call_stop_flag through evaluateOutbound).
+  if (args.contactId) {
+    const { enforceTCPACompliance } = await import("@/lib/communication/tcpa-gate")
+    const scrub = await enforceTCPACompliance({
+      channel:     "call",
+      phone:       args.toPhone,
+      contactId:   args.contactId,
+      brokerageId: args.brokerageId,
+      transactional: false,
+    })
+    if (!scrub.allowed) return { ok: false, reason: `tcpa_gate:${scrub.blockReason ?? "blocked"}` }
+  }
+
   return { ok: true }
 }
 
@@ -159,26 +195,27 @@ async function synthVoicemail(args: {
   }
   if (!voiceId) return null
 
-  // Call ElevenLabs TTS → buffer → Vercel Blob → public URL.
-  try {
-    const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
-    const result = await synthesizeSpeech({
-      text:        args.script,
-      voiceId,
-      brokerageId: args.brokerageId,
-    })
-    if (!result.success || !result.audioBuffer) return null
-    const { put } = await import("@vercel/blob")
-    const uploaded = await put(
-      `voicedrops/${args.brokerageId}/${Date.now()}.mp3`,
-      result.audioBuffer,
-      { access: "public", contentType: "audio/mpeg" },
-    )
-    return uploaded.url
-  } catch (e) {
-    console.error("[voicedrop] synth failed:", (e as Error).message)
+  // ORPHAN DOCTRINE (§1 — DUPLICATE, MERGED). This used to call ElevenLabs
+  // directly with NO modelId (silently defaulting to synthesizeSpeech's
+  // oldest fallback, `eleven_monolingual_v1` — never touched by the wave
+  // 55/57 realism upgrades) and re-implement the "buffer → hostRenderedMedia"
+  // upload inline. SURVIVOR: lib/voice/render-voice-drop.ts#renderVoiceDrop —
+  // built for wave 58's AMD-voicemail <Play> path and merged onto here so the
+  // ringless-drop rail gets the SAME eleven_v3 model + natural-pause pacing,
+  // not a second hand-rolled synth+host implementation (§6: one vocabulary
+  // for "synthesize a voicemail and host it").
+  const { renderVoiceDrop } = await import("@/lib/voice/render-voice-drop")
+  const rendered = await renderVoiceDrop({
+    script: args.script,
+    voiceId,
+    brokerageId: args.brokerageId,
+    storageKeyHint: `preset-${Date.now()}`,
+  })
+  if (!rendered.ok) {
+    console.error("[voicedrop] synth failed:", rendered.error)
     return null
   }
+  return rendered.audioUrl
 }
 
 export async function orchestrateVoicedropSend(
@@ -200,6 +237,7 @@ export async function orchestrateVoicedropSend(
     brokerageId: args.brokerageId,
     contactId:   args.contactId,
     leadId:      args.leadId,
+    toPhone:     args.toPhone,
   })
   if (!gate.ok) return { success: false, error: gate.reason, presetName: preset.name }
 
@@ -243,24 +281,74 @@ export async function orchestrateVoicedropSend(
   // The exact param shape is provider-specific; we route via
   // callConnector so swapping providers is a config change, not a
   // code change.
-  const res = await callConnector<{ job_id?: string; success?: boolean; error?: string }>({
-    connector: "voicedrop",
-    baseUrl:   "https://www.mobile-sphere.com",
-    path:      "gateway/vmb.php",
-    method:    "POST",
-    auth:      { style: "none" },
-    bodyType:  "form",
-    body: {
-      c_uid:      apiKey,
-      c_url:      audioUrl,
-      c_callerID: fromPhone,
-      c_audio:    "mp3",
-      c_phone:    args.toPhone,
+  //
+  // EVIDENCE (wave 146, lane 146I — closes lane 145D Still open 5; LAW 5 "consequential actions leave evidence"): the drop
+  // is a regulated phone touch, and until now its only evidence was the vendor booking, an activities row and a kernel event
+  // — no agent_action_ledger row said who/why/which provider/what happened. The provider call is now claimed → run → settled
+  // through the ONE ledger wrapper (lib/kernel/action-ledger.ts withActionLedger), like every dispatch.ts send. No cycle is
+  // given, so nothing is deduplicated that was not before; a ledger that cannot claim refuses the drop by name (a non-acting
+  // claim is never "sent").
+  type DropResponse = Awaited<ReturnType<typeof callConnector<{ job_id?: string; success?: boolean; error?: string }>>>
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const res: DropResponse = await withActionLedger<DropResponse>(
+    {
+      brokerageId: args.brokerageId,
+      action: "comms.voice_drop.send",
+      actor: args.agentUserId ? { type: "user", userId: args.agentUserId } : { type: "system" },
+      subject: args.contactId ? { type: "contact", id: args.contactId } : args.leadId ? { type: "lead", id: args.leadId } : { type: "phone", ref: args.toPhone },
+      reasonCode: "UNSPECIFIED",
+      reasonDetail: `voice drop preset "${preset.name}" via ${args.systemSource ?? "voicedrop"}`,
+      channel: "voice_drop",
+      riskClass: "COMMUNICATION",
+      systemSource: args.systemSource ?? "voicedrop",
+      detail: { preset_id: preset.id, provider: providerKey, situational_script: !!args.scriptOverride?.trim(), tcpa_gate: "passed" },
     },
-  })
+    () => callConnector<{ job_id?: string; success?: boolean; error?: string }>({
+      connector: "voicedrop",
+      baseUrl:   "https://www.mobile-sphere.com",
+      path:      "gateway/vmb.php",
+      method:    "POST",
+      auth:      { style: "none" },
+      bodyType:  "form",
+      body: {
+        c_uid:      apiKey,
+        c_url:      audioUrl,
+        c_callerID: fromPhone,
+        c_audio:    "mp3",
+        c_phone:    args.toPhone,
+      },
+    }),
+    {
+      settle: (r) => r.ok && !!r.data?.success
+        ? { status: "executed", outcome: "accepted", provider: providerKey, providerRef: r.data?.job_id ?? null, costUsd: null }
+        : { status: r.status === null && /timeout|timed out|abort/i.test(String(r.error ?? "")) ? "unknown" : "failed", outcome: r.ok ? "provider_refused" : "provider_error", provider: providerKey, error: String(r.data?.error ?? r.error ?? `status ${r.status ?? "none"}`) },
+      replay: (claim) => ({
+        ok: false, status: null, headers: {}, drift: null,
+        data: { success: false, error: claim.kind === "refused" ? `action_ledger_refused: ${claim.error}` : `action_ledger_${claim.kind}: an identical drop was already claimed — not re-sent` },
+        error: `action_ledger_${claim.kind}`,
+      } as DropResponse),
+    },
+  )
+
+  // THE SPEND (wave 139, 139C) — a delivered drop on the PLATFORM key was neither priced nor booked.
+  // Slybroadcast's API price is UNKNOWN (no primary source — cost-normalizer VENDOR_PRICING.voicedrop),
+  // so the drop books its ONE unit with price_state 'unknown' — counted, never a guessed dollar. The
+  // provider's job id is the charge's identity (a re-booked job is skipped). Never fails the send.
+  const delivered = res.ok && !!res.data?.success
+  if (delivered) {
+    const { meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
+    const booked = await meterVendorSpend({
+      vendorName: "voicedrop", usageType: "voicemail_drop", cost: 0, priceState: "unknown", unitCount: 1,
+      brokerageId: args.brokerageId, systemSource: args.systemSource ?? "voicedrop", coverage: "platform_covered",
+      idempotencyKey: res.data?.job_id ? `voicedrop:${providerKey}:${res.data.job_id}` : null,
+      attribution: { leadId: args.leadId ?? null, contactId: args.contactId ?? null },
+      metadata: { provider: providerKey, preset_id: preset.id },
+    })
+    if (!booked) console.error("[voicedrop] delivered drop NOT booked on vendor_usage_tracking")
+  }
 
   return {
-    success:     res.ok && !!res.data?.success,
+    success:     delivered,
     providerKey,
     jobId:       res.data?.job_id ?? undefined,
     audioUrl,

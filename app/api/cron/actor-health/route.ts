@@ -9,6 +9,7 @@
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { createCronRunContextAction, recordCronSuccessAction, recordCronFailureAction } from "@/app/actions/cron-kernel"
 import { ACTOR_REGISTRY, checkActorExists, type ApifyTask } from "@/lib/external/apify-actors"
 
 export const dynamic = "force-dynamic"
@@ -17,10 +18,13 @@ export const maxDuration = 120
 export async function GET(request: Request) {
   const unauth = verifyCronAuth(request)
   if (unauth) return unauth
+  const cronRun = await createCronRunContextAction({ cron_name: "actor-health", cron_path: "/app/api/cron/actor-health/route.ts" }) // run row + cron decision door (155R1)
+  if (cronRun.data?.held) return NextResponse.json({ success: true, held: true, decision: cronRun.data.decision })
 
   const supabase = createServiceClient()
   const results: Array<{ task: string; actor_id: string; alive: boolean }> = []
   const deadTasks: string[] = []
+  const refusedWrites: string[] = []
 
   for (const task of Object.keys(ACTOR_REGISTRY) as ApifyTask[]) {
     let anyAlive = false
@@ -28,7 +32,9 @@ export async function GET(request: Request) {
       const alive = await checkActorExists(actorId)
       if (alive) anyAlive = true
       results.push({ task, actor_id: actorId, alive })
-      await supabase
+      // READ (lane 88F): the admin diagnostics page renders this table as the actor
+      // health board, so a refused write would leave a stale "alive" on a dead actor.
+      const { error: healthErr } = await supabase
         .from("scraper_actor_health")
         .upsert(
           {
@@ -40,6 +46,7 @@ export async function GET(request: Request) {
           },
           { onConflict: "task,actor_id" },
         )
+      if (healthErr) refusedWrites.push(`${task}/${actorId}: ${healthErr.message}`)
     }
     // A task with NO live candidate needs a registry update — surface it loudly.
     if (!anyAlive) {
@@ -48,10 +55,12 @@ export async function GET(request: Request) {
     }
   }
 
+  if (cronRun.data) await (refusedWrites.length > 0 ? recordCronFailureAction({ context_id: cronRun.data.context_id, error: refusedWrites.join("; "), stage: "health-write" }) : recordCronSuccessAction({ context_id: cronRun.data.context_id, records_processed: results.length }))
   return NextResponse.json({
     checked: results.length,
     alive: results.filter((r) => r.alive).length,
     dead: results.filter((r) => !r.alive).length,
     tasks_with_no_live_actor: deadTasks,
-  })
+    health_writes_refused: refusedWrites,
+  }, { status: refusedWrites.length > 0 ? 500 : 200 })
 }

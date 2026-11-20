@@ -1,20 +1,28 @@
 "use server"
 
-import { getAgentContext } from "@/lib/identity"
-import { resolveWriteContext } from "@/lib/kernel/identity"
-import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
+// ★ ACT-AS WRITE SEAM ★ — resolveWriteContext now comes from the PLATFORM seam
+// (lib/platform/acting-context). The kernel homonym in lib/kernel/identity is now
+// DELETED (§1.1 tombstone at lib/platform/acting-context.ts:38); it never checked
+// the impersonation MODE, so a read_only act-as grant could create notifications
+// through the service client below.
+// The seam refuses read_only outright (re-validated on the call) and hands the
+// writers an acting db, so the mark-read updates — which rode the bare cookie
+// client keyed on the EFFECTIVE userId and silently zero-rowed under act-as —
+// now land, with row counts as the proof.
+import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
+// (The service client and the roster test were imported here only for createNotification, retired below — the two mark-read
+// writers ride the acting db the seam hands them.)
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type NotificationType =
-  | "lead_alert"
-  | "deal_update"
-  | "task_due"
-  | "message_received"
-  | "system_alert"
-  | "market_update"
-  | "ai_insight"
+// TOMBSTONE (wave 155, integrator — CLAUDE.md §1 case 3 and §6). A seven-value `NotificationType` union stood on these eight
+// lines: lead_alert, deal_update, task_due, message_received, system_alert, market_update, ai_insight. It typed ONE thing —
+// the `type` argument of createNotification, the public endpoint retired at the end of this file — and nothing imported it.
+// It was also a second vocabulary: the notifications a tenant actually receives are named by the kernel's notification
+// engine (lib/kernel/notification-engine.ts, the survivor the retirement tombstone below names), and a row read back here
+// carries `type: string` (the Notification interface below), so no reader ever narrowed on this list.
+// The block is kept at the same height on purpose: tombstones in lib/kernel/index.ts and lib/kernel/notification-center.ts
+// name markNotificationRead and markAllRead in this file by line.
 
 export interface Notification {
   id: string
@@ -34,12 +42,12 @@ export interface Notification {
 export async function getNotifications(
   limit = 20,
 ): Promise<{ success: boolean; notifications: Notification[] }> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) {
     return { success: false, notifications: [] }
   }
 
-  const supabase = await createClient()
+  const supabase = ctx.db
 
   const { data, error } = await supabase
     .from("notifications")
@@ -55,7 +63,7 @@ export async function getNotifications(
     return { success: false, notifications: [] }
   }
 
-  const notifications: Notification[] = (data ?? []).map((row) => ({
+  const notifications: Notification[] = (data ?? []).map((row: Record<string, unknown>) => ({
     id: String(row.id),
     title: String(row.title ?? ""),
     body: row.body != null ? String(row.body) : null,
@@ -76,22 +84,27 @@ export async function getNotifications(
 export async function markNotificationRead(
   notificationId: string,
 ): Promise<{ success: boolean; error?: string }> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) {
-    return { success: false, error: "Unauthorized" }
+  // ACT-AS WRITE SEAM — read_only refused; the update rides the acting db and
+  // stays pinned to the EFFECTIVE user's own rows.
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) {
+    return { success: false, error: ctx.error }
   }
 
-  const supabase = await createClient()
-
-  const { error } = await supabase
+  // Zero rows is a refusal (not this user's notification), not success.
+  const { data: marked, error } = await ctx.db
     .from("notifications")
     .update({ is_read: true, read_at: new Date().toISOString() })
     .eq("id", notificationId)
     .eq("user_id", ctx.userId)
+    .select("id")
 
   if (error) {
     console.warn("[notifications] markNotificationRead failed:", error.message)
     return { success: false, error: error.message }
+  }
+  if (!marked || marked.length === 0) {
+    return { success: false, error: "Notification not found" }
   }
 
   return { success: true }
@@ -103,14 +116,14 @@ export async function markAllRead(): Promise<{
   success: boolean
   error?: string
 }> {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated) {
-    return { success: false, error: "Unauthorized" }
+  // ACT-AS WRITE SEAM — read_only refused. Zero rows here is legitimate
+  // (nothing unread), so no row-count assertion.
+  const ctx = await resolveWriteContext()
+  if (!ctx.ok) {
+    return { success: false, error: ctx.error }
   }
 
-  const supabase = await createClient()
-
-  const { error } = await supabase
+  const { error } = await ctx.db
     .from("notifications")
     .update({ is_read: true, read_at: new Date().toISOString() })
     .eq("user_id", ctx.userId)
@@ -124,107 +137,16 @@ export async function markAllRead(): Promise<{
   return { success: true }
 }
 
-// ── createNotification ────────────────────────────────────────────────────────
-// Used by other systems to fire notifications. Uses service client (bypasses RLS).
-
-export async function createNotification(params: {
-  title: string
-  body: string
-  type: NotificationType
-  agentId: string
-  brokerageId: string
-  entityType?: string
-  entityId?: string
-  priority?: string
-}): Promise<{ success: boolean; id?: string; error?: string }> {
-  const { title, body, type, agentId, brokerageId, entityType, entityId, priority } =
-    params
-
-  const supabase = createServiceClient()
-
-  // Caller authorization: use resolveWriteContext (kernel mandate for all write actions).
-  // Provides FK-safe agentId, superadmin brokerage fallback, and non-null brokerageId guarantee.
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) {
-    return { success: false, error: "Unauthorized" }
-  }
-
-  // Deny authenticated callers who have no agent identity and are not a
-  // broker/admin/superadmin — they cannot be authorized to create notifications.
-  if (!ctx.agentId && !["broker", "admin", "superadmin"].includes(ctx.userType)) {
-    return { success: false, error: "Agent identity required" }
-  }
-
-  // Always fetch the target agent (user_id + brokerage_id) — needed both for
-  // auth and for the insert below.
-  const targetAgentQuery = supabase
-    .from("agents")
-    .select("user_id, brokerage_id")
-    .eq("id", agentId)
-    .maybeSingle()
-
-  let targetAgent: { user_id: string | null; brokerage_id: string | null } | null = null
-
-  if (ctx.agentId && ctx.agentId !== agentId) {
-    // Fetch both agents in parallel so we can compare brokerage IDs from the DB.
-    const [{ data: callerAgent }, { data: ta, error: agentError }] = await Promise.all([
-      supabase.from("agents").select("brokerage_id").eq("id", ctx.agentId).maybeSingle(),
-      targetAgentQuery,
-    ])
-    if (agentError || !ta?.user_id) {
-      console.warn("[notifications] createNotification: agent lookup failed", agentError?.message)
-      return { success: false, error: "Agent not found" }
-    }
-    targetAgent = ta
-    if (!callerAgent || callerAgent.brokerage_id !== targetAgent.brokerage_id) {
-      return { success: false, error: "Unauthorized" }
-    }
-  } else {
-    // No cross-agent auth needed (caller == target, or caller is broker/admin)
-    const { data: ta, error: agentError } = await targetAgentQuery
-    if (agentError || !ta?.user_id) {
-      console.warn("[notifications] createNotification: agent lookup failed", agentError?.message)
-      return { success: false, error: "Agent not found" }
-    }
-    targetAgent = ta
-    // Broker/admin callers (no agentId) must stay within their own brokerage.
-    // resolveWriteContext guarantees brokerageId is non-null, so only compare values.
-    if (!ctx.agentId && ctx.userType !== "superadmin") {
-      if (targetAgent.brokerage_id !== ctx.brokerageId) {
-        return { success: false, error: "Unauthorized" }
-      }
-    }
-  }
-
-  if (!targetAgent.brokerage_id) {
-    console.warn("[notifications] createNotification: agent has no brokerage_id, cannot create notification")
-    return { success: false, error: "Agent has no brokerage context" }
-  }
-  if (targetAgent.brokerage_id !== brokerageId) {
-    console.warn("[notifications] brokerageId mismatch — using agent's brokerage_id")
-  }
-  const resolvedBrokerageId = targetAgent.brokerage_id
-
-  const { data, error } = await supabase
-    .from("notifications")
-    .insert({
-      user_id: targetAgent.user_id,
-      brokerage_id: resolvedBrokerageId,
-      title,
-      body,
-      type,
-      is_read: false,
-      entity_type: entityType ?? null,
-      entity_id: entityId ?? null,
-      priority: priority ?? null,
-    })
-    .select("id")
-    .single()
-
-  if (error) {
-    console.warn("[notifications] createNotification insert failed:", error.message)
-    return { success: false, error: error.message }
-  }
-
-  return { success: true, id: String(data.id) }
-}
+// TOMBSTONE (CLAUDE.md §1 case 3 — wave 155, integrator). `createNotification` DELETED: a public "use server" endpoint that wrote
+// a notification of any type for any agent of the caller's brokerage through the service client. Its last caller,
+// app/actions/communications.ts sendNotificationToAgent, was itself retired this wave (lane 155B2 — an ungated door), which left
+// this export reachable only as an endpoint nobody calls. Nothing to merge: in-app notices are written where the fact is known —
+// SURVIVOR lib/kernel/notification-engine.ts:206 (processKernelEvent's rule-driven insert, now decided and receipted at the one
+// fan-out) and the kernel modules that own a notice (os-health, referral-radar, document-compliance-audit …). The bell's readers
+// and the two mark-read writers below are unchanged.
+//
+// TOMBSTONE (wave 155, lane 155R20; §1 case 1 — a DUPLICATE; moved here when the emptied file app/actions/notification-actions.ts
+// was deleted). Its markAllRead and markOneRead re-implemented the two writers below on the cookie client WITHOUT the act-as
+// write seam (a read_only impersonation grant was not refused) and read a zero-row mark as success. SURVIVORS: markNotificationRead
+// and markAllRead in this file; the one caller, app/notifications/page.tsx, calls them. The kernel helpers the duplicate wrapped
+// (lib/kernel/notification-center.ts markNotificationRead / markAllNotificationsRead) were retired with it.

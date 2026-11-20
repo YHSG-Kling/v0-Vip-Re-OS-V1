@@ -4,12 +4,24 @@ import { useState, useTransition } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { ChevronDown, ChevronRight, Zap, Sparkles } from "lucide-react"
+import { ChevronDown, ChevronRight, Zap, Sparkles, ShieldCheck, Printer } from "lucide-react"
 import { triggerAICompScoring } from "@/app/actions/seller-cma"
+import { resolveCompRiskFlag } from "@/app/actions/compliance-monitoring"
 import { generateAICMA } from "@/app/actions/ai-cma"
+// The appraiser packet's ONE remaining door (§1, 2026-08-27): the CMA report tab
+// is where the agent already stands when a low appraisal threatens the deal, so
+// the packet is built from THIS report's id. The HTTP route that used to wrap
+// this action (app/api/listings/[listingId]/appraisal-defense/route.ts) had no
+// caller anywhere in the tree and is deleted — this entry is its survivor.
+// §5: everything in the packet is DETERMINISTIC (comp rows + state-guideline
+// adjustments with their vintage, template bullets over computed numbers) —
+// nothing model-authored reaches the licensed appraiser (see one_cma_engine +
+// current_year_appraiser_guidelines in lib/kernel/manager-registry.ts).
+import { buildAppraisalDefensePackage, type AppraisalDefensePackage } from "@/app/actions/appraisal-defense"
 import type { CMAPageData } from "@/app/actions/seller-cma"
 import { useRouter } from "next/navigation"
+import { ADJUSTMENT_GRID_DISCLAIMER, type ComparableAdjustmentGrid, type ReconciledValueRange } from "@/lib/cma/comp-adjustments"
+import { ListingAttribution } from "@/app/components/listings/ListingAttribution"
 
 interface Props {
   listing: {
@@ -60,7 +72,67 @@ export function CMAReportTab({ listing, data }: Props) {
   const [scoringMsg, setScoringMsg] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
+  // Flags cleared during THIS render, so the card empties immediately instead of
+  // waiting for a refresh. The server is still the authority — a refusal leaves
+  // the id out of this set and puts the reason in flagMsg.
+  const [resolvedFlagIds, setResolvedFlagIds] = useState<Set<string>>(new Set())
+  const [resolvingFlagId, setResolvingFlagId] = useState<string | null>(null)
+  const [flagMsg, setFlagMsg] = useState<string | null>(null)
+  // Appraisal defense packet — built on demand from THIS CMA; errors shown, never swallowed.
+  const [defense, setDefense] = useState<AppraisalDefensePackage | null>(null)
+  const [defenseError, setDefenseError] = useState<string | null>(null)
+  const [defenseBuilding, setDefenseBuilding] = useState(false)
+  const [contractPriceInput, setContractPriceInput] = useState("")
+  // THE APPRAISAL-STYLE ADJUSTMENT GRID (wave 70) — from the RESULT of the most
+  // recent generateAICMA() call in THIS session, since the grid itself is not
+  // yet a persisted column on cma_price_adjustments. Cleared on navigation; the
+  // agent sees it immediately after a generate/regenerate, which is when it is
+  // actually being reviewed before presenting to the seller.
+  const [lastGrid, setLastGrid] = useState<ComparableAdjustmentGrid[] | null>(null)
+  const [lastReconciled, setLastReconciled] = useState<ReconciledValueRange | null>(null)
   const router = useRouter()
+
+  async function handleBuildDefense() {
+    if (!cma) return
+    setDefenseBuilding(true)
+    setDefenseError(null)
+    try {
+      const parsed = Number(contractPriceInput.replace(/[^0-9.]/g, ""))
+      const result = await buildAppraisalDefensePackage({
+        cmaReportId: cma.id,
+        contractPrice: Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
+      })
+      if (result.success) setDefense(result.package)
+      else
+        setDefenseError(
+          result.error === "no_comparables"
+            ? "This CMA has no saved comparables — regenerate the CMA before building an appraiser packet."
+            : result.error,
+        )
+    } catch (e: any) {
+      setDefenseError(e?.message ?? "Could not build the packet.")
+    } finally {
+      setDefenseBuilding(false)
+    }
+  }
+
+  const openRiskFlags = riskFlags.filter((f) => !resolvedFlagIds.has(f.id))
+
+  async function handleResolveFlag(flagId: string) {
+    setResolvingFlagId(flagId)
+    setFlagMsg(null)
+    const res = await resolveCompRiskFlag({ flagId })
+    setResolvingFlagId(null)
+    if (res.success) {
+      setResolvedFlagIds((prev) => new Set(prev).add(flagId))
+      setFlagMsg("Flag cleared — recorded against you, with the time.")
+      router.refresh()
+    } else {
+      // Never swallowed. A refused clear that looks like a success is how a
+      // risk flag disappears from the screen while still standing in the record.
+      setFlagMsg(res.error ?? "Could not clear that flag.")
+    }
+  }
 
   function handleScoreComps() {
     if (!cma) return
@@ -99,6 +171,8 @@ export function CMAReportTab({ listing, data }: Props) {
       if (!result.success) {
         setGenerateError((result as any).error ?? "CMA generation failed.")
       } else {
+        setLastGrid((result as any).adjustmentGrid ?? null)
+        setLastReconciled((result as any).reconciledRange ?? null)
         // Refresh the page so the new CMA is loaded from the server
         router.refresh()
       }
@@ -149,6 +223,39 @@ export function CMAReportTab({ listing, data }: Props) {
             : ""}
         </span>
       </div>
+
+      {/* Appraisal-style adjustment grid (wave 70) — from the most recent generate/regenerate in this session */}
+      {lastGrid && lastGrid.length > 0 && (
+        <Card>
+          <CardHeader className="py-3 px-4">
+            <CardTitle className="text-sm font-medium text-foreground">Adjustment Grid</CardTitle>
+            <p className="text-xs text-muted-foreground">{ADJUSTMENT_GRID_DISCLAIMER}</p>
+          </CardHeader>
+          <CardContent className="px-4 pb-4 space-y-2">
+            {lastGrid.map((g, i) => (
+              <div key={i} className="flex items-center justify-between text-sm border-b pb-2 last:border-b-0">
+                <div>
+                  <div className="font-medium">{g.comp.address}</div>
+                  <div className="text-xs text-muted-foreground">
+                    Gross {(g.grossAdjustmentPct * 100).toFixed(1)}% · Net {g.netAdjustmentPct >= 0 ? "+" : ""}
+                    {(g.netAdjustmentPct * 100).toFixed(1)}% · Adjusted ${g.adjustedValue.toLocaleString()}
+                  </div>
+                </div>
+                {g.isWeakComp && (
+                  <Badge className="bg-amber-100 text-amber-800 border-amber-300">Weak comp</Badge>
+                )}
+              </div>
+            ))}
+            {lastReconciled && (
+              <div className="text-sm pt-2">
+                Reconciled value: <span className="font-medium">${lastReconciled.reconciledValue.toLocaleString()}</span>{" "}
+                (range ${lastReconciled.low.toLocaleString()}–${lastReconciled.high.toLocaleString()}, weighted by inverse
+                gross adjustment across {lastReconciled.compsUsed} comp(s)){lastReconciled.allCompsWeak ? " — all comps flagged weak, treat as directional only" : ""}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Property upgrades (seller-reported from CMA intake) */}
       {propertyUpgrades.length > 0 && (
@@ -202,26 +309,45 @@ export function CMAReportTab({ listing, data }: Props) {
         </Card>
       )}
 
-      {/* Risk flags */}
-      {riskFlags.length > 0 && (
+      {/* Risk flags.
+          The list is loaded `.eq("is_resolved", false)` and, until wave 14, nothing
+          could ever set that column true — so a comp risk the agent had already
+          dealt with stayed on the report permanently. "Mark handled" is the writer
+          that was missing; it records WHO cleared it and WHEN (m511), because a
+          compliance artefact cleared by nobody is not cleared. */}
+      {openRiskFlags.length > 0 && (
         <Card className="border-red-200 bg-red-50/30">
           <CardHeader className="py-3 px-4">
             <CardTitle className="text-sm font-medium text-red-800">Comp Risk Flags</CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4 space-y-2">
-            {riskFlags.map((flag) => (
+            {openRiskFlags.map((flag) => (
               <div key={flag.id} className="flex gap-2 items-start text-sm">
                 {severityBadge(flag.severity)}
-                <div>
+                <div className="flex-1">
                   <p className="text-foreground">{flag.description}</p>
                   {flag.recommended_action && (
                     <p className="text-xs text-muted-foreground mt-0.5">{flag.recommended_action}</p>
                   )}
                 </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={resolvingFlagId === flag.id}
+                  onClick={() => handleResolveFlag(flag.id)}
+                >
+                  {resolvingFlagId === flag.id ? "Clearing…" : "Mark handled"}
+                </Button>
               </div>
             ))}
+            {flagMsg && <p className="text-xs text-muted-foreground">{flagMsg}</p>}
           </CardContent>
         </Card>
+      )}
+      {/* A refusal must not be silent: if every flag was cleared this run, say so
+          rather than simply removing the card and leaving the agent guessing. */}
+      {openRiskFlags.length === 0 && resolvedFlagIds.size > 0 && flagMsg && (
+        <p className="text-xs text-muted-foreground">{flagMsg}</p>
       )}
 
       {/* AI Scoring button */}
@@ -287,6 +413,141 @@ export function CMAReportTab({ listing, data }: Props) {
           </div>
         </CardContent>
       </Card>
+
+      {/* Appraisal defense packet — the appraiser-facing one-pager built from
+          THIS report's comps + state-guideline adjustments. Used pre-appraisal
+          (leave at the appointment), post-low-appraisal (reconsideration of
+          value), or buyer-side. Deterministic content only (§5). */}
+      <Card>
+        <CardHeader className="py-3 px-4">
+          <CardTitle className="text-sm font-medium text-foreground flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4" />
+            Appraisal Defense Packet
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            A printable one-pager arguing the price from this report's adjusted comps —
+            for the appraisal appointment or a reconsideration of value.
+          </p>
+        </CardHeader>
+        <CardContent className="px-4 pb-4 space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              type="text"
+              inputMode="numeric"
+              className="rounded border border-border bg-background px-2 py-1.5 text-sm w-44"
+              placeholder="Contract price (optional)"
+              value={contractPriceInput}
+              onChange={(e) => setContractPriceInput(e.target.value)}
+            />
+            <Button size="sm" className="gap-2" disabled={defenseBuilding} onClick={handleBuildDefense}>
+              <ShieldCheck className="h-4 w-4" />
+              {defenseBuilding ? "Building packet…" : defense ? "Rebuild packet" : "Build packet"}
+            </Button>
+            {defense && (
+              <Button size="sm" variant="outline" className="gap-2 print:hidden" onClick={() => window.print()}>
+                <Printer className="h-4 w-4" />
+                Print
+              </Button>
+            )}
+          </div>
+          {defenseError && <p className="text-xs text-destructive">{defenseError}</p>}
+
+          {defense && (
+            <div className="space-y-4 rounded-lg border border-border p-4">
+              <div>
+                <p className="text-sm font-semibold text-foreground">{defense.subjectProperty.address}</p>
+                <p className="text-xs text-muted-foreground">
+                  Prepared {new Date(defense.generatedAt).toLocaleDateString()}
+                  {defense.subjectProperty.contractPrice != null
+                    ? ` · contract price $${Number(defense.subjectProperty.contractPrice).toLocaleString()}`
+                    : ""}
+                  {defense.marketConditionLabel && defense.marketConditionLabel !== "unknown"
+                    ? ` · ${defense.marketConditionLabel} market`
+                    : ""}
+                </p>
+              </div>
+
+              <div className="rounded bg-muted/40 px-3 py-2 text-sm">
+                Indicated range{" "}
+                <b>
+                  ${Math.round(defense.summary.indicatedRangeLow).toLocaleString()}–$
+                  {Math.round(defense.summary.indicatedRangeHigh).toLocaleString()}
+                </b>{" "}
+                · midpoint ${Math.round(defense.summary.indicatedMidpoint).toLocaleString()}
+                {defense.summary.perSqftRangeLow != null && defense.summary.perSqftRangeHigh != null
+                  ? ` · $${defense.summary.perSqftRangeLow.toFixed(0)}–$${defense.summary.perSqftRangeHigh.toFixed(0)}/sqft`
+                  : ""}
+              </div>
+
+              <ul className="list-disc pl-5 space-y-1 text-sm text-foreground">
+                {defense.argumentBullets.map((b, i) => (
+                  <li key={i}>{b}</li>
+                ))}
+              </ul>
+
+              <div className="space-y-3">
+                {defense.comparables.map((c, i) => (
+                  <div key={i} className="rounded border border-border px-3 py-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="font-medium text-foreground">{c.address}</span>
+                      <span className="text-foreground">
+                        ${c.salePrice.toLocaleString()} → <b>${Math.round(c.adjustedValue).toLocaleString()}</b>
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {c.saleDate ? `Sold ${new Date(c.saleDate).toLocaleDateString()}` : "Sale date —"}
+                      {c.distanceMi != null ? ` · ${c.distanceMi.toFixed(1)} mi` : ""}
+                      {c.sqft ? ` · ${c.sqft.toLocaleString()} sqft` : ""}
+                    </p>
+                    {c.adjustments.length > 0 && (
+                      <ul className="mt-1 space-y-0.5">
+                        {c.adjustments.map((a, j) => (
+                          <li key={j} className="text-xs text-muted-foreground">
+                            {a.direction === "add" ? "+" : "−"}${a.amount.toLocaleString()} {a.label}
+                            {a.rationale ? ` — ${a.rationale}` : ""}
+                            {/* cma_price_adjustments.comparable_address, printed
+                                verbatim, and only when it disagrees with the comp
+                                this line is filed under. This page is printed for a
+                                licensed appraiser (§5): the address is the stored
+                                string, never composed. */}
+                            {a.addressMismatch && (
+                              <span className="text-amber-700">
+                                {" "}· recorded against {a.recordedAddress}
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Adjustments this CMA holds that attach to no comparable on file.
+                  Named by their own recorded address rather than a uuid — see
+                  unattachedAdjustments in app/actions/appraisal-defense.ts. They
+                  are OUTSIDE the adjusted values above and the block says so. */}
+              {defense.unattachedAdjustments.length > 0 && (
+                <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2">
+                  <p className="text-xs font-medium text-amber-900">
+                    Not included in the values above — {defense.unattachedAdjustments.length} recorded
+                    adjustment(s) attach to no comparable on this CMA:
+                  </p>
+                  <ul className="mt-1 space-y-0.5">
+                    {defense.unattachedAdjustments.map((a, i) => (
+                      <li key={i} className="text-xs text-amber-900">
+                        {a.recordedAddress ?? "Address not recorded"} · {a.direction === "add" ? "+" : "−"}$
+                        {a.amount.toLocaleString()} {a.label}
+                        {a.rationale ? ` — ${a.rationale}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }
@@ -307,6 +568,7 @@ function CompRow({
     ai_rationale: string | null
     risk_flags: string[] | null
     coaching_insight: string | null
+    source_provider?: string | null
   }
   aiScore: {
     score: number
@@ -332,6 +594,7 @@ function CompRow({
             {open ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}
             {comp.address}
           </div>
+          <ListingAttribution source={comp.source_provider as any} className="text-[10px] text-muted-foreground block ml-5" />
           {flags.length > 0 && (
             <div className="flex gap-1 flex-wrap mt-1">
               {flags.slice(0, 3).map((f, i) => (

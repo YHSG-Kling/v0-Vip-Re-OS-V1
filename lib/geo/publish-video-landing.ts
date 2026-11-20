@@ -11,11 +11,39 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getComposition } from "@/lib/remotion/registry"
 import { slugifyTitle, isPublishableRender, isAutoPublishEligible } from "./video-landing"
+import { mintTrackedQr, normalizeOrigin, type MintedTrackedQr } from "@/lib/marketing/tracked-qr"
 
 export interface PublishResult {
   ok:     boolean
   slug?:  string
   reason?: string
+  /** wave 81D: the page's tracked QR (registered in qr_codes); null when the mint was refused. */
+  qr?: { qrCodeId: string; slug: string; scanUrl: string } | null
+}
+
+/** ONE idempotency key per public video page — the same code rides every
+ *  re-publish, so scans accrue to one row (registry: lib/marketing/tracked-qr.ts). */
+export function videoLandingQrLabel(rail: "render" | "project", id: string): string {
+  return `video_landing:${rail}:${id}`
+}
+
+/**
+ * THE PAGE'S QR (wave 81D — owner: "automatic video landing pages … " and
+ * "any qrcode that gets created for assets are added to the qrcode management").
+ * Minted through the ONE minter at publish time: destination landing_page,
+ * target the /v/<slug> page, purpose campaign. Never throws — a page still
+ * publishes when the registry refuses (the page shows no QR, honestly).
+ */
+export async function mintVideoLandingQr(args: { rail: "render" | "project"; id: string; brokerageId: string; slug: string; agentId?: string | null; listingId?: string | null }, client?: ReturnType<typeof createServiceClient>): Promise<MintedTrackedQr | null> {
+  return mintTrackedQr({
+    brokerageId: args.brokerageId,
+    agentId: args.agentId ?? null,
+    label: videoLandingQrLabel(args.rail, args.id),
+    destinationType: "landing_page",
+    targetUrl: `${normalizeOrigin()}/v/${args.slug}`,
+    listingId: args.listingId ?? null,
+    purpose: "campaign",
+  }, client)
 }
 
 export async function publishVideoLanding(args: {
@@ -62,7 +90,8 @@ export async function publishVideoLanding(args: {
     .eq("brokerage_id", args.brokerageId)
   if (error) return { ok: false, reason: error.message }
 
-  return { ok: true, slug }
+  const qr = await mintVideoLandingQr({ rail: "render", id: r.id, brokerageId: args.brokerageId, slug }, svc)
+  return { ok: true, slug, qr: qr ? { qrCodeId: qr.qrCodeId, slug: qr.slug, scanUrl: qr.scanUrl } : null }
 }
 
 /**
@@ -89,20 +118,32 @@ export async function publishVideoProjectLanding(args: {
 }): Promise<PublishResult> {
   const svc = createServiceClient()
 
-  const { data: project } = await svc.from("ai_video_projects")
-    .select("id, brokerage_id, title, video_type, status, compliance_status, approval_status, video_url, public_slug, is_published")
+  const { data: project, error: projectErr } = await svc.from("ai_video_projects")
+    .select("id, brokerage_id, agent_id, listing_id, title, video_type, status, compliance_status, approval_status, approved_by, video_url, public_slug, is_published, audience_type, usage_intent, contact_id, learning_module_id, video_metadata")
     .eq("id", args.projectId)
     .eq("brokerage_id", args.brokerageId)
     .maybeSingle()
+  if (projectErr) return { ok: false, reason: `reel read refused: ${projectErr.message}` }
   const p = project as {
-    id: string; brokerage_id: string; title: string | null; video_type: string | null;
-    status: string; compliance_status: string; approval_status: string;
+    id: string; brokerage_id: string; agent_id: string | null; listing_id: string | null; title: string | null; video_type: string | null;
+    status: string; compliance_status: string; approval_status: string; approved_by: string | null;
     video_url: string | null; public_slug: string | null; is_published: boolean
+    audience_type: string | null; usage_intent: string | null; contact_id: string | null; learning_module_id: string | null; video_metadata: Record<string, unknown> | null
   } | null
   if (!p) return { ok: false, reason: "reel not found or tenant mismatch" }
 
   // Idempotent — already public.
   if (p.is_published && p.public_slug) return { ok: true, slug: p.public_slug }
+
+  // WAVE 146 (lane 146F — owner rulings 4 + 6): A PUBLIC PAGE IS BROADCAST, SO ONLY A BROADCAST VIDEO GETS ONE. This door never
+  // asked lib/video/public-video.ts classifyPublicVideo, so an APPROVED PERSONAL video — an agent intro or a home-anniversary
+  // clip filed for ONE contact (usage_intent 'public_marketing'), a client explainer, a welcome video — became a public /v page
+  // on the next geo-reel-autopublish tick. Now the ONE verdict decides (personal / client / in-house / MLS / unapproved are
+  // refused by name), and a NON-LISTING video must also be STAGED with the landing-page channel chosen and approved by its
+  // assigned approver (lib/video/video-staging.ts stagedPublicationVerdict). Live census 2026-10-29: 0 rows — exposed, not leaked.
+  const { stagedPublicationVerdict } = await import("@/lib/video/video-staging")
+  const broadcast = stagedPublicationVerdict(p, "landing_page")
+  if (!broadcast.ok) return { ok: false, reason: `reel not publishable as a public page — ${broadcast.reason}` }
 
   // The gate — finished + compliance-passed + broker-approved + has artifact.
   if (!isAutoPublishEligible({
@@ -131,7 +172,9 @@ export async function publishVideoProjectLanding(args: {
     .eq("is_published", false)   // fence: never double-publish under a race
   if (error) return { ok: false, reason: error.message }
 
-  return { ok: true, slug }
+  // ai_video_projects.agent_id is agents-class (m366) — exactly what qr_codes.agent_id FKs.
+  const qr = await mintVideoLandingQr({ rail: "project", id: p.id, brokerageId: args.brokerageId, slug, agentId: p.agent_id, listingId: p.listing_id }, svc)
+  return { ok: true, slug, qr: qr ? { qrCodeId: qr.qrCodeId, slug: qr.slug, scanUrl: qr.scanUrl } : null }
 }
 
 /** Unpublish — hide the public page. Keeps public_slug so a later

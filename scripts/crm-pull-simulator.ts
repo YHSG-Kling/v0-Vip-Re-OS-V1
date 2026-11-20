@@ -8,7 +8,8 @@
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { fubToRow, hubspotToRow, loftyToRow, ghlToRow, CRM_IMPORT_PROVIDERS } from "../lib/crm/import-pull"
+import { fubToRow, loftyToRow, ghlToRow, CRM_IMPORT_PROVIDERS } from "../lib/crm/import-pull"
+import { blankComments } from "./strip-comments"
 import { planTokenAction, RENEWAL_WINDOW_DAYS } from "../lib/social/token-refresh"
 import { detectPortal, parsePortalLeadEmail } from "../lib/lead-pipeline/portal-lead-intake"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
@@ -30,23 +31,30 @@ console.log("\n── PURE: vendor → CSV-shaped rows (the gate decides, not th
   })
   check("FUB: identity/address land under CSV-alias keys",
     fub["First Name"] === "Dana" && fub.Email === "d@x.com" && fub.Phone === "+15551234567" && fub.City === "Austin")
-  check("FUB: vendor context keeps VENDOR keys (→ notes via the steward, never contact columns)",
-    "FUB Source" in fub && "FUB Tags" in fub && fub["FUB Tags"] === "hot, sphere")
-  check("FUB: stage maps to the gated enum key 'Type' (Data-Steward-normalized, not trusted)", fub.Type === "Buyer")
-
-  const hs = hubspotToRow({ properties: { firstname: "A", lastname: "B", email: "a@b.com", phone: null, mobilephone: "+15550000000", zip: "78702", lifecyclestage: "lead" } })
-  check("HubSpot: mobile fallback + zip + lifecycle→Type", hs.Phone === "+15550000000" && hs.Zip === "78702" && hs.Type === "lead")
+  // Wave 141 (lane 141D): vendor context rides the registry-resolvable keys the survivor
+  // pipeline (importParsedContacts) actually lands — tags → Tags, the old CRM's source label →
+  // Source (source_subtype), a vendor STAGE/TYPE → Notes as text (never a canonical enum). The
+  // vendor-keyed "FUB Source"/"FUB Tags"/"Type" keys were silently DROPPED on that pipeline.
+  check("FUB: vendor context lands on registry keys — tags → Tags, source → Source, stage → Notes TEXT (never a contact enum)",
+    fub.Tags === "hot, sphere" && fub.Source === "Zillow" && /Follow Up Boss stage: Buyer/.test(String(fub.Notes)) && !("Type" in fub) && !("FUB Tags" in fub))
 
   const lofty = loftyToRow({ first_name: "C", last_name: "D", emails: ["c@d.com"], phones: ["+15551111111"], zipCode: "78703", stage: "Nurture", tags: ["past client"] })
-  check("Lofty: snake/array fallbacks + stage stays vendor-keyed", lofty.Email === "c@d.com" && lofty.Zip === "78703" && lofty["Lofty Stage"] === "Nurture")
+  check("Lofty: snake/array fallbacks + stage → Notes text", lofty.Email === "c@d.com" && lofty.Zip === "78703" && /Lofty stage: Nurture/.test(String(lofty.Notes)) && lofty.Tags === "past client")
 
   const ghl = ghlToRow({ firstName: "E", lastName: "F", email: "e@f.com", phone: "+15552222222", postalCode: "78704", tags: ["seller"] })
-  check("GHL: postalCode→Zip + tags vendor-keyed", ghl.Zip === "78704" && ghl["GHL Tags"] === "seller")
+  check("GHL: postalCode→Zip + tags → Tags", ghl.Zip === "78704" && ghl.Tags === "seller")
 
-  const allRows = [fub, hs, lofty, ghl]
+  const allRows = [fub, lofty, ghl]
   check("NO mapper ever emits a consent field (consent is earned on OUR rail, never imported)",
     allRows.every((r) => !Object.keys(r).some((k) => /consent|tcpa|opt[_ ]?in/i.test(k))))
-  check("four providers registered", CRM_IMPORT_PROVIDERS.length === 4)
+  // Wave 72A tombstone (owner: "hubspot is only sync out to hubspot."): the
+  // inbound pull dropped from 4 providers to 3 (followupboss/lofty/gohighlevel)
+  // — assert the RULE (hubspot absent, the other three present), not a bare
+  // count, so this does not silently start passing again if a provider is
+  // dropped for the wrong reason.
+  check("three providers registered, hubspot NOT among them (sync-out only, see lib/crm/providers/hubspot.ts:25)",
+    CRM_IMPORT_PROVIDERS.length === 3 && !(CRM_IMPORT_PROVIDERS as string[]).includes("hubspot") &&
+    (["followupboss", "lofty", "gohighlevel"] as const).every((p) => (CRM_IMPORT_PROVIDERS as string[]).includes(p)))
 }
 
 console.log("\n── PURE: social token lifecycle (the audit's worst gap) ──")
@@ -95,7 +103,10 @@ console.log("\n── SOURCE: tenant connections hub ──")
   check("portal lead = a CONTACT for the RECEIVING AGENT via the gated captureContact (owner's rule — never a raw lead)",
     intake.includes("captureContact") && intake.includes("receivingAgentUserId") && !intake.includes("raw_scraped_leads"))
   check("TCPA provenance recorded, never silent (portal + property in consent source/text)",
-    intake.includes("portal_inquiry:") && intake.includes("tcpa_consent_text"))
+    // Wave 147 (147A, C8) — rule re-asserted: the inquiry wording (portal + property) is the consent grant's `text` on the
+    // consented-intake contract, which stamps it as tcpa_consent_text AND hashes it onto the consent record (version portal_inquiry:<portal>).
+    intake.includes("portal_inquiry:") && (intake.includes("tcpa_consent_text")
+      || (intake.includes("captureConsentedContact") && /text: inquiryText/.test(intake) && /const inquiryText = `Consumer submitted contact info to \$\{lead\.portal\}[\s\S]{0,120}\$\{lead\.propertyAddress\}/.test(intake))))
   check("the receiving agent gets a high-priority heads-up", intake.includes("portal_lead_received"))
   const webhook = src("app/api/webhooks/inbound-mail/route.ts")
   check("hooked into inbound-mail BEFORE the known-contact gate + assigns the MAILBOX OWNER as the agent",
@@ -110,8 +121,8 @@ console.log("\n── SOURCE: tenant connections hub ──")
   check("settings page: forwarding instructions + last-30d proof counts per portal",
     page.includes("auto-forward") && page.includes("last 30 days"))
   const matrix = src("lib/providers/tenancy-matrix.ts")
-  check("strategy recorded: Twilio convergence (ConversationRelay/Conversations/Voice Intelligence/fraud) + Vapi sunset lane + zyte backup + sinch/plivo/plaid/buffer dropped",
-    matrix.includes("ConversationRelay") && matrix.includes("SUNSET LANE") && matrix.includes("BACKUP scraper lane") && matrix.includes("DROPPED by owner decision"))
+  check("strategy recorded: Twilio convergence (ConversationRelay/Conversations/Voice Intelligence/fraud) + Vapi RETIRED + zyte backup + sinch/plivo/plaid/buffer dropped",
+    matrix.includes("ConversationRelay") && matrix.includes("RETIRED voice lane") && matrix.includes("BACKUP scraper lane") && matrix.includes("DROPPED by owner decision"))
   check("registry burn domain tenant_connections_hub", "tenant_connections_hub" in MAINTENANCE_DOMAINS)
 }
 
@@ -139,13 +150,35 @@ console.log("\n── SOURCE: one pipeline, gated end to end ──")
   const pull = src("lib/crm/import-pull.ts")
   check("all vendor egress via the connector gateway (no bespoke fetch)", pull.includes("callConnector") && !/\bfetch\(/.test(pull))
   check("cursor-resumable pages (honest 'more remain')", pull.includes("nextCursor"))
+  // Wave 72A (owner: "hubspot is only sync out to hubspot.") — mutation
+  // control re-anchored from "the pull calls listContactsPage" (deleted) to
+  // "the pull no longer references hubspot at all in CODE" (the retirement
+  // itself). Read STRIPPED source (blankComments, CLAUDE.md §2) so the
+  // tombstone comment naming the survivor does not itself count as a hit.
+  const pullStripped = blankComments(pull)
+  check("HubSpot inbound pull retired: no hubspot code reference in import-pull.ts (tombstone only, in comments)",
+    !/hubspot/i.test(pullStripped) && /hubspot is only sync out to\s*(?:\/\/\s*)?hubspot\./i.test(pull))
+  const hubspotOutbound = src("lib/crm/providers/hubspot.ts")
+  check("survivor still stands: outbound sync calls upsertContactByEmail/createContact (never a pull)",
+    hubspotOutbound.includes("upsertContactByEmail") && hubspotOutbound.includes("createContact") &&
+    !/listContactsPage/.test(blankComments(hubspotOutbound)))
   const actions = src("app/actions/lead-import/crm-pull-actions.ts")
-  check("the pull feeds processImportRows — the SAME gated pipeline as CSV", actions.includes("processImportRows({ importId, rows: page.rows })"))
+  check("the pull feeds importParsedContacts — the SAME gated pipeline as the CSV white-glove import",
+    actions.includes("parseContactRecords(page.rows)") && actions.includes("importParsedContacts({"))
   check("per-run cap with resumable cursor reported honestly", actions.includes("MAX_PAGES_PER_RUN") && actions.includes("nextCursor: cursor"))
-  check("tenant-keyed credentials (platform_credentials, brokerage-scoped)", actions.includes('.eq("brokerage_id", ctx.brokerageId)') && actions.includes("platform_credentials"))
-  const card = src("app/dashboard/admin/import/crm-pull-card.tsx")
-  check("import wizard hosts the pull card with the gate explained to the user", card.includes("same") && card.includes("notes") && card.includes("Consent is never assumed"))
-  check("card mounted on the import page", src("app/dashboard/admin/import/page.tsx").includes("<CrmPullCard />"))
+  check("tenant-keyed credentials (platform_credentials, scoped to the TARGET brokerage)",
+    actions.includes('.eq("brokerage_id", input.brokerageId)') && actions.includes("platform_credentials"))
+  check("pulling is a PLATFORM-STAFF operation on an explicit target tenant (not a tenant self-serve button)",
+    actions.includes('gateStaffAction("tenants")') && actions.includes("auditStaffAction") && actions.includes("brokerageId: string"))
+  // An all-invalid page must NOT abort the run: those rows are already counted in
+  // `failed`, and breaking here strands the cursor on the same page forever.
+  check("an all-invalid page keeps paginating; only errors raised WITH importable rows are fatal",
+    /if \(!r\.ok && r\.error && parsed\.rows\.length > 0\)/.test(actions))
+  const panel = src("app/dashboard/superadmin/brokerages/[id]/tenant-crm-pull-panel.tsx")
+  check("superadmin tenant panel hosts the pull with the gate explained to the operator",
+    panel.includes("same safeguards") && panel.includes("consent is never imported as opted-in"))
+  check("panel mounted on the superadmin brokerage page",
+    src("app/dashboard/superadmin/brokerages/[id]/page.tsx").includes("<TenantCrmPullPanel brokerageId={brokerage.id} />"))
 
   const cron = src("app/api/cron/open-house-followup/route.ts")
   check("open-house post-event cron: 1–25h window + completed-flip idempotency", cron.includes("25 * 3_600_000") && cron.includes("processEventFollowups"))
@@ -162,7 +195,10 @@ console.log("\n── SOURCE: one pipeline, gated end to end ──")
   check("AVM adapters call the REAL clients (rentcast/batchdata/zenrows via connector gateway)",
     src("lib/avm/provider-chain.ts").includes("getRentcastAVM") &&
     src("lib/property/rentcast.ts").includes('connector: "rentcast"') &&
-    src("lib/external/zenrows-client.ts").includes('connector: "zenrows"'))
+    // wave 70: ZenRows moved onto the official SDK adapter — the "real client"
+    // is lib/providers/zenrows/client.ts now, not a connector-gateway call
+    (src("lib/external/zenrows-client.ts").includes('connector: "zenrows"')
+      || /@\/lib\/providers\/zenrows\/client/.test(src("lib/external/zenrows-client.ts"))))
   check("package.json wires the proof", /"test:crm-pull":/.test(src("package.json")))
 }
 

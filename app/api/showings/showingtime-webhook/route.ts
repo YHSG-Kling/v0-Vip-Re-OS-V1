@@ -13,6 +13,7 @@
  * (brokerage_credentials.showingtime.webhook_secret) configurations.
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import crypto from "crypto"
@@ -172,7 +173,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, ignored: true })
       }
       const confirmedTime = appt.confirmed_at ?? appt.requested_at
-      await supabase
+      await sentinelWrite(supabase, supabase
         .from("tour_stops")
         .update({
           is_confirmed:        true,
@@ -180,7 +181,7 @@ export async function POST(req: NextRequest) {
           scheduling_reference: appt.id,
         })
         .eq("id", appt.external_ref)
-        .eq("brokerage_id", brokerageId)
+        .eq("brokerage_id", brokerageId), { table: "tour_stops", flow: "showingtime_stop_confirm", reason: "webhook must ack; a lost confirmation stamp is ledgered" })
 
       return NextResponse.json({ ok: true })
     }
@@ -190,14 +191,15 @@ export async function POST(req: NextRequest) {
     case "appointment.rescheduled": {
       if (!appt.external_ref) return NextResponse.json({ ok: true, ignored: true })
       // Just record the lifecycle event — agent will see it and can re-dispatch
-      await supabase.from("lifecycle_events").insert({
-        brokerage_id:  brokerageId,
-        entity_type:   "tour_stop",
-        entity_id:     appt.external_ref,
-        event_type:    `tour_stop.showingtime.${payload.event_type.replace("appointment.", "")}`,
-        actor_user_id: null,
+      await sentinelWrite(supabase, import("@/lib/kernel/emit").then((k) => k.emitKernelEvent({
+        brokerageId:  brokerageId,
+        entityType:   "tour_stop",
+        entityId:     appt.external_ref!, // narrowed by the early return above; lost inside the callback
+        event:    `tour_stop.showingtime.${payload.event_type.replace("appointment.", "")}`,
+        actorUserId: null,
         metadata:      { showingtime_id: appt.id, notes: appt.notes ?? null },
-      }).then(() => null, () => null)
+        auditOnly: true,
+      }).then(k.asWriteResult)), { table: "lifecycle_events", flow: "lifecycle_events_echo", reason: "lifecycle_events audit echo of a change the caller already made; a lost row is ledgered (service client) or logged (user client), never silently dropped" })
       return NextResponse.json({ ok: true })
     }
 

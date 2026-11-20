@@ -10,6 +10,7 @@
  *   preferred_avatar_provider?: "did" | "upload"  (HeyGen is NOT accepted — coerced to "did")
  */
 
+import { bestEffort } from "@/lib/db/best-effort"
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
@@ -52,6 +53,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Upsert: create profile row if it doesn't exist yet
+    const write = async (): Promise<NextResponse> => {
     const { error } = await supabase
       .from("agent_voice_profiles")
       .upsert(
@@ -70,13 +72,18 @@ export async function POST(request: NextRequest) {
 
     // Mirror elevenlabs_voice_id to users table — podcast-generation.ts reads it from there.
     if (elevenlabs_voice_id !== undefined && auth.userId) {
-      await supabase
+      await bestEffort(supabase
         .from("users")
         .update({ elevenlabs_voice_id })
-        .eq("id", auth.userId)
+        .eq("id", auth.userId), "users.elevenlabs_voice_id mirrors the agent video profile already saved above (podcast reads the mirror)")
     }
 
     return NextResponse.json({ success: true })
+    }
+    // WAVE 155 (155R14): the receipt — the SESSION's user and tenant (requireAuth); field names only, never the URLs or voice id.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "marketing.video_profile.update", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "agent", id: auth.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(updates).filter((k) => k !== "updated_at") } }, async () => { const out = await write(); return { success: out.ok, error: out.ok ? undefined : `HTTP ${out.status}`, out } })
+    return "out" in r ? r.out : NextResponse.json({ error: r.error ?? "The video profile was not saved" }, { status: 500 })
   } catch (error: any) {
     console.error("[update-video-profile] Error:", error)
     return NextResponse.json({ error: error.message ?? "Internal server error" }, { status: 500 })

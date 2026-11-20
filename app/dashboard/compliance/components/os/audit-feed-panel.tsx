@@ -35,7 +35,7 @@ export function AuditFeedPanel({ auditEvents }: AuditFeedPanelProps) {
       return <XCircle className="h-4 w-4 text-destructive" />
     }
     if (status === "needs_review") {
-      return <AlertTriangle className="h-4 w-4 text-orange-500" />
+      return <AlertTriangle className="h-4 w-4 text-orange-600" />
     }
     if (type === "compliance_checks_seeded") {
       return <FileCheck className="h-4 w-4 text-blue-500" />
@@ -47,7 +47,7 @@ export function AuditFeedPanel({ auditEvents }: AuditFeedPanelProps) {
     const status = event.metadata?.new_status
     
     if (status === "pass") {
-      return <Badge className="bg-green-500 text-white text-[10px]">Passed</Badge>
+      return <Badge className="bg-green-700 text-white text-[10px]">Passed</Badge>
     }
     if (status === "waived") {
       return <Badge variant="outline" className="text-[10px]">Waived</Badge>
@@ -56,7 +56,7 @@ export function AuditFeedPanel({ auditEvents }: AuditFeedPanelProps) {
       return <Badge variant="destructive" className="text-[10px]">Failed</Badge>
     }
     if (status === "needs_review") {
-      return <Badge className="bg-orange-500 text-white text-[10px]">Review</Badge>
+      return <Badge className="bg-orange-700 text-white text-[10px]">Review</Badge>
     }
     return null
   }

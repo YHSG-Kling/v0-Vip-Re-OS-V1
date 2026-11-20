@@ -71,7 +71,10 @@ const addToRemoveQueue = (toastId: string) => {
   toastTimeouts.set(toastId, timeout)
 }
 
-export const reducer = (state: State, action: Action): State => {
+// Module-private (orphan burn-down) — no importer outside this file; used only
+// by dispatch() below. Un-exported rather than tagged @proofSeam because no
+// scripts/* proof imports it either — there is no seam to preserve.
+const reducer = (state: State, action: Action): State => {
   switch (action.type) {
     case 'ADD_TOAST':
       return {

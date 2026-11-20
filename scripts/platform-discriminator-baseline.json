@@ -1,0 +1,20 @@
+{
+  "app/actions/admin/billing.ts": 1,
+  "app/actions/ai-buyer-search-push.ts": 1,
+  "app/actions/marketing/image-library.ts": 1,
+  "app/actions/notifications.ts": 2,
+  "app/actions/open-house.ts": 1,
+  "app/actions/portal-stream.ts": 1,
+  "app/actions/seed-default-sequences.ts": 2,
+  "app/actions/vendor-budget.ts": 2,
+  "app/api/admin/audit-events/route.ts": 1,
+  "app/api/errors/escalate/route.ts": 1,
+  "app/api/errors/retry/route.ts": 1,
+  "app/dashboard/admin/lead-intake/page.tsx": 1,
+  "app/dashboard/brokerage/deal-health/page.tsx": 1,
+  "app/dashboard/brokerage/fatigue/page.tsx": 1,
+  "app/dashboard/financials/team/page.tsx": 1,
+  "app/dashboard/marketing/podcast/podcast-dashboard.tsx": 1,
+  "lib/auth/contact-access.ts": 1,
+  "lib/buyer-execution/governance-guards.ts": 1
+}

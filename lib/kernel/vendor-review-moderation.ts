@@ -15,7 +15,14 @@
 
 export const MIN_BODY = 50
 export const MAX_BODY = 2000
-export const MIN_ACCOUNT_AGE_DAYS = 7
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: MIN_ACCOUNT_AGE_DAYS.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+const MIN_ACCOUNT_AGE_DAYS = 7
 export const VERIFIED_WEIGHT = 1.5
 export const UNVERIFIED_WEIGHT = 1.0
 /** Community flags at or above this move a review to `under_review`. */

@@ -4,9 +4,11 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Loader2, CheckCircle2, AlertCircle } from "lucide-react"
 import { captureProfileLead } from "@/app/actions/agent-public-profile"
+// C15 (wave 148): the ONE consent component + the situation fields every intake form carries (ruling 12).
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
+import { EMPTY_SITUATION, SituationFields, type SituationValue } from "@/app/components/forms/SituationFields"
 
 interface Props {
   agentId: string
@@ -14,6 +16,8 @@ interface Props {
   brokerageId: string
   agentName: string
   brand: string
+  /** The brokerage name the consent names (THE one brand rule). */
+  consentBrandName?: string | null
 }
 
 export function ProfileLeadCaptureForm({
@@ -22,12 +26,15 @@ export function ProfileLeadCaptureForm({
   brokerageId,
   agentName,
   brand,
+  consentBrandName,
 }: Props) {
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
   const [phone, setPhone] = useState("")
   const [message, setMessage] = useState("")
-  const [consent, setConsent] = useState(false)
+  // THE one brand rule (resolveConsentBrand): the brokerage by name, else the agent — what captureProfileLead re-renders.
+  const consent = useConsentBoxes("agent_profile", consentBrandName?.trim() || agentName)
+  const [situation, setSituation] = useState<SituationValue>(EMPTY_SITUATION)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
@@ -35,8 +42,8 @@ export function ProfileLeadCaptureForm({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
-    if (!name.trim() || (!email.trim() && !phone.trim()) || !consent) {
-      setError("Name, contact info, and consent are required")
+    if (!name.trim() || (!email.trim() && !phone.trim()) || !consent.serviceGiven) {
+      setError("Name, contact info, and the first consent box are required")
       return
     }
     setSubmitting(true)
@@ -48,7 +55,8 @@ export function ProfileLeadCaptureForm({
       email: email.trim() || undefined,
       phone: phone.trim() || undefined,
       message: message.trim() || undefined,
-      consentToContact: consent,
+      consent: consent.submission,
+      situation: { intent: situation.intent || null, timeline: situation.timeline || null },
     })
     setSubmitting(false)
     if (result.success) {
@@ -113,17 +121,9 @@ export function ProfileLeadCaptureForm({
         />
       </div>
 
-      <label className="flex items-start gap-2 text-[11px] text-gray-600 pt-1">
-        <Checkbox
-          checked={consent}
-          onCheckedChange={(c) => setConsent(Boolean(c))}
-          className="mt-0.5"
-        />
-        <span>
-          I agree to be contacted by {agentName} about real estate services via the
-          contact methods I provided. I understand I can opt out at any time.
-        </span>
-      </label>
+      <SituationFields value={situation} onChange={setSituation} idPrefix="profile-situation" compact />
+
+      <ConsentBoxes {...consent.boxProps} idPrefix="profile-consent" compact className="pt-1" />
 
       {error && (
         <p className="text-xs text-red-600 flex items-center gap-1">

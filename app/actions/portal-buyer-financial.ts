@@ -12,7 +12,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import {
-  recordDocumentUpload,
+  uploadFinancialVerificationDocument,
   connectBuyerToLender,
   loadFinancialProfile,
   getBrokerageLenders,
@@ -48,11 +48,45 @@ async function authBuyerOwnsContact(contactId: string): Promise<
 }
 
 // ─── Portal-side: buyer uploads their own pre-approval / POF ──────────────
+//
+// TOMBSTONE — `submitBuyerFinancialFromPortalAction` lived here. It took a
+// caller-supplied `blobUrl` and wrote it straight onto the client_documents row,
+// which is what let the portal card upload the buyer's financial paperwork to a
+// permanent PUBLIC Vercel Blob URL. Its survivor is
+// `uploadBuyerFinancialFromPortalAction` below (this file), which takes the
+// BYTES and mints the URL itself, so no caller can hand in a public one. In a
+// "use server" file every export is a public HTTP endpoint (CLAUDE.md §4) —
+// leaving the URL-accepting one standing would have left the public path open
+// even with no UI calling it.
 
-export async function submitBuyerFinancialFromPortalAction(input: {
+// ─── Portal-side: buyer uploads the BYTES, not a public URL ───────────────
+//
+// The portal card used to call @vercel/blob's client `upload()` with
+// access:"public" and then hand the resulting URL to the action above. A buyer's
+// pre-approval letter and proof of funds are their financial paperwork, and that
+// put every one of them at a permanent, unauthenticated, never-expiring URL —
+// then PERSISTED that URL onto the client_documents row, so the leak outlived
+// the upload. The bytes now come to the server, land in the PRIVATE
+// `client-documents` bucket, and the row records a TIME-LIMITED signed URL from
+// the ONE issuer (lib/storage/document-buckets.ts#issueBucketObjectUrl).
+//
+// FAIL CLOSED: if the URL cannot be signed the upload is undone and the buyer is
+// told it failed. There is no public fallback.
+//
+// Still a PURE THIN WRAPPER, exactly as the header promises: the portal gate
+// runs first, then it delegates to the ONE byte-accepting action shared with the
+// agent CRM panel (app/actions/buyer-financial.ts#uploadFinancialVerificationDocument).
+// One spelling of "how a financial document is stored" (CLAUDE.md §6).
+//
+// base64 over a server action, matching the existing in-tree pattern
+// (app/actions/cda-storage.ts, app/actions/admin/commission-agreement.ts);
+// next.config.ts sets serverActions.bodySizeLimit to 8mb.
+
+export async function uploadBuyerFinancialFromPortalAction(input: {
   contactId:           string
-  blobUrl:             string
   fileName:            string
+  contentType:         string
+  base64:              string
   docCategory:         "pre_approval_letter" | "proof_of_funds"
   verificationAmount?: number
   verificationLender?: string
@@ -61,12 +95,11 @@ export async function submitBuyerFinancialFromPortalAction(input: {
   const auth = await authBuyerOwnsContact(input.contactId)
   if (!auth.ok) return { success: false as const, error: auth.error }
 
-  return recordDocumentUpload({
+  return uploadFinancialVerificationDocument({
     contactId:          input.contactId,
-    brokerageId:        auth.brokerageId,
-    uploadedBy:         auth.userId,
-    documentName:       input.fileName,
-    documentUrl:        input.blobUrl,
+    fileName:           input.fileName,
+    contentType:        input.contentType,
+    base64:             input.base64,
     docCategory:        input.docCategory,
     verificationAmount: input.verificationAmount,
     verificationLender: input.verificationLender,
@@ -130,5 +163,7 @@ export async function loadFinancialProfileFromPortalAction(input: { contactId: s
 export async function getBrokerageLendersFromPortalAction(input: { contactId: string }) {
   const auth = await authBuyerOwnsContact(input.contactId)
   if (!auth.ok) return { success: false as const, error: auth.error }
-  return getBrokerageLenders({ brokerageId: auth.brokerageId })
+  // The tenant is the SESSION's, resolved inside getBrokerageLenders — this used to
+  // hand it `auth.brokerageId` into a parameter that was documented as ignored.
+  return getBrokerageLenders()
 }

@@ -29,6 +29,8 @@ import {
   runComplianceCheck,
 } from "@/app/actions/listing-media"
 import { createClient } from "@/lib/supabase/client"
+import { checkUpload } from "@/lib/storage/file-limits"
+import { OWNER_PHOTO_ATTESTATION_TEXT, OWNER_PHOTO_ATTESTATION_VERSION } from "@/lib/listings/owner-photo-upload"
 import {
   MoreHorizontalIcon,
   PlusIcon,
@@ -68,12 +70,19 @@ interface MediaGridProps {
   onMediaChange: (media: MediaItem[]) => void
 }
 
+// listing_media.media_type admits: photo | video | floorplan | virtual_tour |
+// document | graphic | reel | story. This list said "floor_plan" — one
+// underscore the column does not have — so every floor plan upload was rejected,
+// and graphic / reel / story were real types nobody could choose.
 const MEDIA_TYPE_OPTIONS = [
-  { value: "photo",         label: "Photo" },
-  { value: "video",         label: "Video" },
-  { value: "floor_plan",    label: "Floor Plan" },
-  { value: "virtual_tour",  label: "Virtual Tour" },
-  { value: "document",      label: "Document" },
+  { value: "photo",        label: "Photo" },
+  { value: "video",        label: "Video" },
+  { value: "floorplan",    label: "Floor Plan" },
+  { value: "virtual_tour", label: "Virtual Tour" },
+  { value: "graphic",      label: "Graphic" },
+  { value: "reel",         label: "Reel" },
+  { value: "story",        label: "Story" },
+  { value: "document",     label: "Document" },
 ]
 
 export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaChange }: MediaGridProps) {
@@ -89,6 +98,8 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
     mediaType: "photo" as const,
     isPrimary: false,
   })
+  // Owner ruling 2026-11-06 (lane 150XY): a listing photo is added only when the uploader attests they own it.
+  const [ownershipAttested, setOwnershipAttested] = useState(false)
 
   // File upload state
   const [fileUploading, setFileUploading] = useState(false)
@@ -98,6 +109,24 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function uploadFile(file: File) {
+    // This surface had NO size or type check at all and PUTs straight to
+    // listing-media, which enforces both — 52,428,800 bytes and an image/video
+    // mime list. Without this an agent uploading a 60 MB drone clip or a PDF
+    // watched the spinner and then got a raw storage error string. COURTESY
+    // ONLY, but here the bucket is the WHOLE gate: no Vercel Function is in
+    // this path, so nothing else could have refused it earlier.
+    const gate = checkUpload({
+      bucket: "listing-media",
+      transport: "direct_to_storage",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      setFileUploadError(gate.reason)
+      toast({ title: "File upload failed", description: gate.reason, variant: "destructive" })
+      return
+    }
+
     setFileUploading(true)
     setFileUploadError(null)
     setFileUploadSuccess(false)
@@ -177,6 +206,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
         altText:      form.altText.trim() || undefined,
         isPrimary:    form.isPrimary,
         approvalRequired: true,
+        ownershipAttestation: form.mediaType === "photo" ? { accepted: ownershipAttested, version: OWNER_PHOTO_ATTESTATION_VERSION } : null,
       })
       if (result.error) {
         toast({ title: "Upload failed", description: result.error, variant: "destructive" })
@@ -187,14 +217,21 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
       onMediaChange(updated.data ?? [])
       setUploadOpen(false)
       setForm({ fileUrl: "", thumbnailUrl: "", caption: "", altText: "", mediaType: "photo", isPrimary: false })
+      setOwnershipAttested(false)
       setFileUploadSuccess(false)
       setFileUploadError(null)
+      // Lane 92A: a refused hero-photo fan-out rides the same toast that reports this
+      // upload's compliance problems — saved, but not sent on to marketing.
+      const fanoutWarning = [result.data?.fanoutWarning, result.data?.galleryWarning].filter(Boolean).join(" ") || null
       toast({
         title: "Media uploaded",
-        description: result.data?.compliance?.passed
-          ? "Brand compliance passed."
-          : "Uploaded — compliance check flagged some issues.",
-        variant: result.data?.compliance?.passed ? "default" : "destructive",
+        description: [
+          result.data?.compliance?.passed
+            ? "Brand compliance passed."
+            : "Uploaded — compliance check flagged some issues.",
+          fanoutWarning,
+        ].filter(Boolean).join(" "),
+        variant: result.data?.compliance?.passed && !fanoutWarning ? "default" : "destructive",
       })
     })
   }
@@ -255,7 +292,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
         <p className="text-sm text-muted-foreground">
           {media.length} file{media.length !== 1 ? "s" : ""}
           {media.filter(m => m.is_approved).length > 0 && (
-            <span className="ml-2 text-green-600 dark:text-green-400">
+            <span className="ml-2 text-green-700 dark:text-green-400">
               · {media.filter(m => m.is_approved).length} approved
             </span>
           )}
@@ -305,12 +342,12 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
               {/* Status badges */}
               <div className="absolute top-2 left-2 flex flex-col gap-1">
                 {item.is_primary && (
-                  <Badge className="text-xs bg-yellow-500 text-white border-0 flex items-center gap-1">
+                  <Badge className="text-xs bg-yellow-700 text-white border-0 flex items-center gap-1">
                     <StarIcon className="w-3 h-3" /> Primary
                   </Badge>
                 )}
                 {item.kernel_compliance_passed ? (
-                  <Badge className="text-xs bg-green-600 text-white border-0 flex items-center gap-1">
+                  <Badge className="text-xs bg-green-700 text-white border-0 flex items-center gap-1">
                     <ShieldCheckIcon className="w-3 h-3" /> OK
                   </Badge>
                 ) : (
@@ -325,7 +362,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
                 {item.approval_required && !item.is_approved ? (
                   <Badge variant="secondary" className="text-xs">Pending</Badge>
                 ) : item.is_approved ? (
-                  <Badge className="text-xs bg-green-600 text-white border-0">Approved</Badge>
+                  <Badge className="text-xs bg-green-700 text-white border-0">Approved</Badge>
                 ) : null}
               </div>
 
@@ -441,7 +478,7 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
                   ) : fileUploadSuccess ? (
                     <div className="flex flex-col items-center gap-1">
                       <CheckCircleIcon className="h-6 w-6 text-green-600" />
-                      <p className="text-xs font-medium text-green-600">File uploaded successfully</p>
+                      <p className="text-xs font-medium text-green-700">File uploaded successfully</p>
                       <p className="text-[10px] text-muted-foreground">Click or drop to replace</p>
                     </div>
                   ) : (
@@ -523,12 +560,24 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
               />
               <Label htmlFor="isPrimary" className="cursor-pointer">Set as primary</Label>
             </div>
+            {form.mediaType === "photo" && (
+              <div className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  id="ownershipAttested"
+                  checked={ownershipAttested}
+                  onChange={e => setOwnershipAttested(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-input"
+                />
+                <Label htmlFor="ownershipAttested" className="cursor-pointer text-sm leading-snug">{OWNER_PHOTO_ATTESTATION_TEXT}</Label>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setUploadOpen(false)} disabled={isPending || fileUploading}>
               Cancel
             </Button>
-            <Button onClick={handleUpload} disabled={isPending || fileUploading || !form.fileUrl.trim()}>
+            <Button onClick={handleUpload} disabled={isPending || fileUploading || !form.fileUrl.trim() || (form.mediaType === "photo" && !ownershipAttested)}>
               {isPending ? (
                 <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving…</>
               ) : fileUploading ? (

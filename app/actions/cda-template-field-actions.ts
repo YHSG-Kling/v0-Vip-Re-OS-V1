@@ -18,7 +18,10 @@ import {
 import { aiClassifyCdaFields, type SuggestedBinding } from "@/lib/transactions/cda-field-classifier"
 import { listPdfFields } from "@/lib/forms/pdf-form-fill"
 
-const FIELD_ADMIN_ROLES = new Set(["compliance_officer", "broker", "broker_admin", "admin", "superadmin"])
+// SCOPE LADDER (kept inline — admits compliance_officer): 'superadmin' removed
+// — dead as users.user_type (0 live rows); broker_owner added — storable seat
+// with CDA (finance) authority per m472.
+const FIELD_ADMIN_ROLES = new Set(["compliance_officer", "broker", "broker_owner", "broker_admin", "admin"])
 
 // Build the resolve context for a CDA from the waterfall + the transaction.
 async function buildContext(
@@ -26,12 +29,12 @@ async function buildContext(
   cda: { transaction_id: string; brokerage_id: string; gross_commission: number | null; agent_net: number | null; brokerage_net: number | null; field_values?: Record<string, unknown> | null },
 ) {
   const [{ data: dists }, { data: txn }] = await Promise.all([
-    supabase.from("commission_distributions").select("distribution_type, calculated_amount").eq("transaction_id", cda.transaction_id),
+    supabase.from("commission_distributions").select("distribution_type, calculated_amount, status").eq("transaction_id", cda.transaction_id).eq("brokerage_id", cda.brokerage_id),
     supabase.from("transactions").select("property_address, close_date, estimated_close_date, purchase_price, agent_id").eq("id", cda.transaction_id).maybeSingle(),
   ])
   const waterfall = cdaWaterfallContext({
     gross_commission: cda.gross_commission, agent_net: cda.agent_net, brokerage_net: cda.brokerage_net,
-    distributions: (dists ?? []) as Array<{ distribution_type?: string | null; calculated_amount?: number | null }>,
+    distributions: (dists ?? []) as Array<{ distribution_type?: string | null; calculated_amount?: number | null; status?: string | null }>,
   })
   const transaction: Record<string, string | number | null> = {
     property_address: (txn as { property_address?: string | null } | null)?.property_address ?? null,
@@ -82,6 +85,7 @@ export async function saveCdaFieldInputsAction(input: { cdaId: string; agentInpu
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof saveCdaFieldInputsAction> => {
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
@@ -98,13 +102,22 @@ export async function saveCdaFieldInputsAction(input: { cdaId: string; agentInpu
   // Persist: the resolved values (for rendering/audit) + the raw agent inputs (re-editable).
   const valuesByKey: Record<string, string> = {}
   for (const f of resolution.fields) valuesByKey[f.field_key] = f.formatted
-  await supabase
+  // MERGE, never replace (wave 152, lane 152H): field_values also carries the deal's CDA-policy switch (cda_mode_switch), the preliminary
+  // statement review, the e-sign and title-delivery evidence. Writing only { resolved, agent_inputs } erased all of them each time the
+  // agent saved the form — a switched deal silently reverted to the policy it opened under. Tenant-pinned and COUNTED (§3).
+  const priorFieldValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
+  const { data: savedRows, error: fieldSaveErr } = await supabase
     .from("closing_disclosure_agreement")
-    .update({ field_values: { resolved: valuesByKey, agent_inputs: ctx.agentInputs }, updated_at: new Date().toISOString() })
+    .update({ field_values: { ...priorFieldValues, resolved: valuesByKey, agent_inputs: ctx.agentInputs }, updated_at: new Date().toISOString() })
     .eq("id", cda.id)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("id")
+  if (fieldSaveErr) return { success: false, error: `Could not save the CDA field values: ${fieldSaveErr.message}` }
+  if (!savedRows || savedRows.length === 0) return { success: false, error: "Could not save the CDA field values: the CDA was not found in your brokerage." }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
   return { success: true, resolution }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.field_inputs_save", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 /**
@@ -134,7 +147,12 @@ export async function autoBindCdaTemplateAction(input: { templateId: string }): 
   // Fetch the uploaded PDF bytes (Vercel Blob public URL) and read its AcroForm fields.
   let fieldNames: string[]
   try {
-    const res = await fetch(template.pdf_url)
+    // Wave 154 (lane 154M): pdf_url stores a docref:// reference — resolved at use for one immediate byte fetch (2 minutes).
+    const { resolveDocumentLink, DOC_FETCH_TTL_SECONDS } = await import("@/lib/storage/signed-doc-url")
+    const { createServiceClient: pdfSvc } = await import("@/lib/supabase/service")
+    const pdfLink = await resolveDocumentLink(pdfSvc() as never, template.pdf_url, DOC_FETCH_TTL_SECONDS)
+    if (!pdfLink.ok) return { success: false, error: "pdf_unavailable" }
+    const res = await fetch(pdfLink.url)
     if (!res.ok) return { success: false, error: `pdf_fetch_failed_${res.status}` }
     const bytes = new Uint8Array(await res.arrayBuffer())
     fieldNames = await listPdfFields(bytes)
@@ -177,6 +195,7 @@ export async function saveCdaTemplateFieldDefsAction(input: {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof saveCdaTemplateFieldDefsAction> => {
   if (!FIELD_ADMIN_ROLES.has(auth.userType)) return { success: false, error: "forbidden" }
 
   const { data: template } = await supabase
@@ -187,7 +206,8 @@ export async function saveCdaTemplateFieldDefsAction(input: {
   if (!template || template.brokerage_id !== auth.brokerageId) return { success: false, error: "not_found" }
 
   // Replace the template's field set atomically-ish (delete + insert).
-  await supabase.from("brokerage_cda_template_fields").delete().eq("template_id", input.templateId)
+  const { error: fieldsClearErr } = await supabase.from("brokerage_cda_template_fields").delete().eq("template_id", input.templateId)
+  if (fieldsClearErr) return { success: false, error: `Could not replace the template fields: ${fieldsClearErr.message}` }
   const rows = input.fields.map((f, i) => ({
     brokerage_id: auth.brokerageId,
     template_id: input.templateId,
@@ -206,6 +226,7 @@ export async function saveCdaTemplateFieldDefsAction(input: {
     if (error) return { success: false, error: error.message }
   }
   return { success: true, count: rows.length }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda_template.field_defs_save", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage_cda_template", id: input.templateId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }
 
 /**
@@ -223,6 +244,7 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false, error: "unauthenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async (): ReturnType<typeof generateFilledCdaPdfAction> => {
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
@@ -250,7 +272,7 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
 
   const { buildCdaFillValues } = await import("@/lib/transactions/cda-pdf-fill")
   const { fillPdfForm } = await import("@/lib/forms/pdf-form-fill")
-  const { put } = await import("@vercel/blob")
+  const { uploadBufferToBucket } = await import("@/lib/storage/buckets")
 
   const plan = buildCdaFillValues(resolution.fields)
   if (plan.values.length === 0) return { success: false, error: "nothing_to_fill" }
@@ -260,7 +282,12 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
   let filled: number
   let skipped: string[]
   try {
-    const res = await fetch(template.pdf_url)
+    // Wave 154 (lane 154M): pdf_url stores a docref:// reference — resolved at use for one immediate byte fetch (2 minutes).
+    const { resolveDocumentLink, DOC_FETCH_TTL_SECONDS } = await import("@/lib/storage/signed-doc-url")
+    const { createServiceClient: pdfSvc } = await import("@/lib/supabase/service")
+    const pdfLink = await resolveDocumentLink(pdfSvc() as never, template.pdf_url, DOC_FETCH_TTL_SECONDS)
+    if (!pdfLink.ok) return { success: false, error: "pdf_unavailable" }
+    const res = await fetch(pdfLink.url)
     if (!res.ok) return { success: false, error: `pdf_fetch_failed_${res.status}` }
     const bytes = new Uint8Array(await res.arrayBuffer())
     const result = await fillPdfForm(bytes, plan.values, { flatten: false })
@@ -271,24 +298,31 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
     return { success: false, error: e instanceof Error ? `pdf_fill_failed: ${e.message}` : "pdf_fill_failed" }
   }
 
-  // Store the filled PDF + record it on the CDA.
-  let url: string
-  try {
-    const blob = await put(`cda-filled/${cda.id}-${cda.transaction_id}.pdf`, Buffer.from(filledBytes), {
-      access: "public",
-      contentType: "application/pdf",
-      addRandomSuffix: true,
-    })
-    url = blob.url
-  } catch (e) {
-    return { success: false, error: e instanceof Error ? `pdf_store_failed: ${e.message}` : "pdf_store_failed" }
-  }
+  // Store the filled PDF in Supabase Storage (platform buckets) + record it on the CDA.
+  const stored = await uploadBufferToBucket({
+    bucket: "cda-filled",
+    path: `${cda.id}-${cda.transaction_id}-${crypto.randomUUID()}.pdf`,
+    buffer: Buffer.from(filledBytes),
+    contentType: "application/pdf",
+    // The follow-up the previous comment promised. A FILLED closing-disclosure
+    // agreement carries the commission split — a brokerage financial, and
+    // commission is off agent-facing display entirely (CLAUDE.md §5). It was
+    // being stored `public: true`, i.e. at a permanent unauthenticated URL that
+    // was then persisted to closing_disclosure_agreement.generated_pdf_url.
+    public: false,
+  })
+  if (!stored.ok) return { success: false, error: `pdf_store_failed: ${stored.error}` }
+  const url: string = stored.url
 
-  await supabase
+  const { error: pdfStampErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({ generated_pdf_url: url, generated_pdf_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("id", cda.id)
+  if (pdfStampErr) return { success: false, error: `PDF generated but not attached to the CDA: ${pdfStampErr.message}` }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)
-  return { success: true, url, filled, skipped, unmapped: plan.unmapped }
+  // Wave 154 (lane 154M): the row keeps the reference; the page gets the ONE door (deal rule on the CDA's transaction).
+  const { documentOpenHref } = await import("@/lib/storage/signed-doc-url")
+  return { success: true, url: documentOpenHref(url) ?? url, filled, skipped, unmapped: plan.unmapped }
+  }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.pdf_generate", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>>
 }

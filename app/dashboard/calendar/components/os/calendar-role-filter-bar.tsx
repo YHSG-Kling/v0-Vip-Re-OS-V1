@@ -14,7 +14,10 @@ interface CalendarRoleFilterBarProps {
 const ROLES: { value: CalendarRole; label: string; icon: typeof User; description: string }[] = [
   { value: "all", label: "All Events", icon: LayoutGrid, description: "View everything" },
   { value: "agent", label: "Agent", icon: User, description: "Full agent calendar" },
-  { value: "isa", label: "ISA", icon: Phone, description: "Appointments & follow-ups" },
+  // Lane 88B (owner, wave 88: "Isa is a system ai ai isa."): this lens shows what the AI ISA booked
+  // (isa_appointment / listing_appointment) plus follow-ups — a view OF the AI's work for the humans
+  // who own the calendar, not a human ISA seat's personal calendar.
+  { value: "isa", label: "AI ISA", icon: Phone, description: "Booked by the AI ISA & follow-ups" },
   { value: "listing", label: "Listings", icon: Home, description: "Showings & open houses" },
   { value: "transaction", label: "Transactions", icon: FileText, description: "Inspections, appraisals, closings" },
   { value: "buyer", label: "Buyers", icon: Users, description: "Tours & buyer meetings" },

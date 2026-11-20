@@ -1,5 +1,7 @@
 "use server"
 
+import { documentOpenHref } from "@/lib/storage/signed-doc-url"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { licenseNeedsManualReview, manualReviewOutcome } from "@/lib/onboarding/license-review"
@@ -9,7 +11,22 @@ import { licenseNeedsManualReview, manualReviewOutcome } from "@/lib/onboarding/
 // Now: session is required, brokerage is resolved from session, and write
 // actions require broker / admin / superadmin role.
 
-const ADMIN_ROLES = ["admin", "super_admin", "superadmin", "broker", "broker_owner", "broker_admin"]
+// TRUE ADMIN GATE (operational: license tooling) — repointed to the ONE tenant
+// roster below. 'superadmin'/'super_admin' were dead — tested against
+// users.user_type, where 0 live rows store either spelling.
+//
+// THE isSuperadmin FLAG IS NO LONGER DEAD. It was a 65th hand-rolled re-spelling
+// of a platform-staff comparison (["superadmin","super_admin"].includes(user_type)),
+// and CLAUDE.md §4 is explicit: platform staff live in `platform_role`, NOT
+// user_type='superadmin', which no live row has. The platform's only superadmin is
+// (user_type='admin', platform_role='superadmin') — so this flag was FALSE for
+// every account that has ever existed, and the four cross-tenant scope widenings
+// below (lines 86/224/307/377/471) refused the one account they were written for.
+// Merged onto the survivor: lib/platform/platform-staff-roster.ts:187
+// ::isPlatformSuperadminIdentity, which reads BOTH identity columns and refuses a
+// service account outright.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 async function requireAdminInBrokerage(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string; isSuperadmin: boolean }
@@ -20,17 +37,17 @@ async function requireAdminInBrokerage(): Promise<
   if (!user) return { ok: false, error: "Unauthorized" }
   const { data: u } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
   if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
-  if (!ADMIN_ROLES.includes(u.user_type ?? "")) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: u.user_type })) return { ok: false, error: "Forbidden" }
   return {
     ok: true,
     userId: user.id,
     brokerageId: u.brokerage_id,
     userType: u.user_type ?? "",
-    isSuperadmin: ["superadmin", "super_admin"].includes(u.user_type ?? ""),
+    isSuperadmin: isPlatformSuperadminIdentity(u.user_type, (u as { platform_role?: string | null }).platform_role),
   }
 }
 
@@ -65,6 +82,10 @@ export interface AgentLicenseStatus {
   ceHoursCompleted: number
   ceHoursRequired: number
   verificationStatus: string | null
+  /** Stamped by reviewLicenseManually() below when a human clears the license. */
+  verifiedAt: string | null
+  eoCertificateUrl: string | null
+  eoCoverageAmount: number | null
   /** true when auto-verification couldn't clear the license (pending/failed) → needs a human decision. */
   needsManualReview: boolean
   /** Latest automated attempt (method, evidence, confidence, portal link) — null when never attempted. */
@@ -100,8 +121,11 @@ export async function getBrokerageAgentLicenseStatuses(
           id,
           license_number,
           license_state,
-          expiry_date,
-          verification_status
+          expiration_date,
+          verification_status,
+          verified_at,
+          eo_certificate_url,
+          eo_coverage_amount
         )
       )
     `)
@@ -153,7 +177,15 @@ export async function getBrokerageAgentLicenseStatuses(
     // license_expiry + agent_licenses live on the AGENT (agent_licenses FK is agent_id), not users.
     const license = Array.isArray(agentRow?.agent_licenses) ? agentRow.agent_licenses[0] : agentRow?.agent_licenses
 
-    const expiryRaw = license?.expiry_date ?? agentRow?.license_expiry ?? null
+    // `agent_licenses.expiry_date` DOES NOT EXIST — the live column is
+    // `expiration_date` (it is what app/actions/onboarding/license.ts writes on
+    // intake). Naming the wrong column made PostgREST reject this ENTIRE users
+    // query, so the admin license-tracking view rendered zero agents — not zero
+    // licenses, zero AGENTS — with `error` set but the screen showing a blank
+    // roster. Renamed rather than aliased: this is the only reader of the raw
+    // column, and it lives here, while every consumer outside this file reads
+    // the camelCase `expiryDate` below, which is unchanged.
+    const expiryRaw = license?.expiration_date ?? agentRow?.license_expiry ?? null
     const daysUntilExpiry = expiryRaw
       ? Math.ceil((new Date(expiryRaw).getTime() - now) / 86_400_000)
       : null
@@ -178,6 +210,10 @@ export async function getBrokerageAgentLicenseStatuses(
       ceHoursCompleted: Number(agentRow?.ce_hours_completed ?? 0),
       ceHoursRequired: Number(agentRow?.ce_hours_required ?? 0),
       verificationStatus,
+      verifiedAt: license?.verified_at ?? null,
+      eoCertificateUrl: documentOpenHref(license?.eo_certificate_url),
+      eoCoverageAmount: license?.eo_coverage_amount !== null && license?.eo_coverage_amount !== undefined
+        ? Number(license.eo_coverage_amount) : null,
       needsManualReview: licenseNeedsManualReview(verificationStatus, !!license?.license_number),
       lastVerification: license?.id ? latestAttemptByLicense.get(license.id) ?? null : null,
     }
@@ -217,7 +253,9 @@ export async function reviewLicenseManually(input: {
   const passed = outcome.verified
   const now = new Date().toISOString()
 
-  await service
+  // THE DECISION. A refused write used to fall through to the audit row and the
+  // agent's "License verified" notice while the license kept its old status.
+  const { error: decisionErr } = await service
     .from("agent_licenses")
     .update({
       verification_status: outcome.verificationStatus,
@@ -225,21 +263,22 @@ export async function reviewLicenseManually(input: {
       updated_at: now,
     })
     .eq("id", lic.id)
+  if (decisionErr) return { success: false, error: `Could not record the review decision: ${decisionErr.message}` }
 
   // Audit row — manual method, captures the reviewer + their notes.
-  await service.from("license_verifications").insert({
+  await sentinelWrite(service, service.from("license_verifications").insert({
     brokerage_id: lic.brokerage_id,
     license_id: lic.id,
     verification_method: "manual",
     verification_result: outcome.verificationResult,
     failure_reasons: passed ? null : [input.notes?.trim() || "Rejected on manual review"],
     raw_response: { detail: input.notes?.trim() || `Manually ${input.decision}d`, reviewer_user_id: auth.userId },
-  })
+  }), { table: "license_verifications", flow: "license_manual_review_audit", brokerageId: lic.brokerage_id, reason: "audit row of a manual review whose decision is written (and checked) on agent_licenses above" })
 
   // Tell the agent the outcome.
   const { data: agentRow } = await service.from("agents").select("user_id").eq("id", lic.agent_id).maybeSingle()
   if (agentRow?.user_id) {
-    await service.from("notifications").insert({
+    await sentinelWrite(service, service.from("notifications").insert({
       user_id: agentRow.user_id,
       brokerage_id: lic.brokerage_id,
       type: passed ? "license_verified" : "license_rejected",
@@ -249,9 +288,11 @@ export async function reviewLicenseManually(input: {
         : `Your ${lic.license_state ?? ""} license review needs attention${input.notes?.trim() ? `: ${input.notes.trim()}` : ". Please contact your admin."}`,
       entity_type: "agent_license",
       entity_id: lic.id,
-      priority: passed ? "normal" : "high",
+      // notifications.priority CHECK: critical | high | low | medium (wave 152, 152K — row 45 census): "normal" refused
+      // the whole insert, so a verified license never rang the agent's bell.
+      priority: passed ? "medium" : "high",
       channel: "in_app",
-    })
+    }), { table: "notifications", flow: "license_tracking_notify", brokerageId: lic.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   return { success: true }
@@ -336,11 +377,23 @@ export async function logCeCompletion(input: CECompletionInput): Promise<{
     updates.ethics_due_date = due.toISOString().slice(0, 10)
   }
 
-  await service.from("agents").update(updates).eq("id", input.agentId)
+  await sentinelWrite(service, service.from("agents").update(updates).eq("id", input.agentId), { table: "agents", flow: "agent_ce_rollup_cache", reason: "agents.ce/ethics dates are a derived cache of the CE ledger row that already landed; recomputed on the next completion" })
 
   return { success: true, completionId: completion.id }
 }
 
+/**
+ * THE ONE READER of the CE ledger, and it used to leave the audit note behind.
+ * `logCeCompletion` above writes `notes` — the broker's own record of WHY a credit
+ * was entered by hand rather than reported by an accredited provider (a paper
+ * certificate, a make-up course, a reciprocity credit). Nothing anywhere selected
+ * it, and the log dialog never offered a field to fill it, so the column was
+ * written NULL forever and could not have been shown if it had not been. On a
+ * license-compliance ledger that is the same defect class as the DSAR audit trail
+ * (MAINTENANCE_DOMAINS.dsar_audit_record_has_a_reader): the fact is recorded and
+ * unshowable. Selected, returned and rendered now — as is `certificate_url`,
+ * which WAS selected but which the row never displayed.
+ */
 export async function listCeCompletions(agentId: string): Promise<Array<{
   id: string
   courseName: string
@@ -349,6 +402,7 @@ export async function listCeCompletions(agentId: string): Promise<Array<{
   hours: number
   completedOn: string
   certificateUrl: string | null
+  notes: string | null
 }>> {
   const auth = await requireAdminInBrokerage()
   if (!auth.ok) return []
@@ -366,7 +420,7 @@ export async function listCeCompletions(agentId: string): Promise<Array<{
 
   const { data } = await service
     .from("agent_ce_completions")
-    .select("id, course_name, provider, category, hours, completed_on, certificate_url")
+    .select("id, course_name, provider, category, hours, completed_on, certificate_url, notes")
     .eq("agent_id", agentId)
     .order("completed_on", { ascending: false })
 
@@ -377,7 +431,8 @@ export async function listCeCompletions(agentId: string): Promise<Array<{
     category: c.category,
     hours: Number(c.hours ?? 0),
     completedOn: c.completed_on,
-    certificateUrl: c.certificate_url,
+    certificateUrl: documentOpenHref(c.certificate_url),
+    notes: c.notes ?? null,
   }))
 }
 
@@ -423,6 +478,11 @@ export async function createEducationModule(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const service = createServiceClient()
+  // WAVE 155 (lane 155R4, G12): ONE agent_action_ledger receipt per module write through ledgerSessionAction
+  // (lib/kernel/action-ledger.ts, the one helper) — admin + tenant from requireAdminInBrokerage (the SESSION); counts and flags,
+  // never the lesson body or quiz. NO cycle / idempotencyKey: a second create is a second draft.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "education.learning_module.create", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { surface: "license_tracking", required: params.required, target_roles: params.targetRoles, quiz_questions: params.quizQuestions?.length ?? 0, status: "draft" } }, async () => {
 
   const { data, error } = await service
     .from("learning_modules")
@@ -441,6 +501,7 @@ export async function createEducationModule(params: {
 
   if (error) return { success: false, error: error.message }
   return { success: true, moduleId: data.id }
+  })
 }
 
 export async function deleteEducationModule(moduleId: string): Promise<{ success: boolean; error?: string }> {
@@ -459,13 +520,18 @@ export async function deleteEducationModule(moduleId: string): Promise<{ success
   if (!auth.isSuperadmin && existing.brokerage_id !== auth.brokerageId) {
     return { success: false, error: "Forbidden" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "education.learning_module.delete", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module", id: moduleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { surface: "license_tracking", cross_tenant_by_platform_staff: existing.brokerage_id !== auth.brokerageId } }, async () => {
 
-  const { error } = await service
-    .from("learning_modules")
-    .delete()
-    .eq("id", moduleId)
-    .eq("brokerage_id", existing.brokerage_id)
+  // WAVE 155 (lane 155S3 — CLAUDE.md §3): COUNTED. `.eq("brokerage_id", null)` renders `brokerage_id=eq.null`, which matches NO
+  // row — so a platform-staff delete of a PLATFORM module (brokerage_id NULL) silently "succeeded" with nothing deleted. A NULL
+  // owner is matched with IS NULL, and zero deleted rows is a FAILURE for this caller (the module was proven present above).
+  let del = service.from("learning_modules").delete().eq("id", moduleId)
+  del = existing.brokerage_id === null ? del.is("brokerage_id", null) : del.eq("brokerage_id", existing.brokerage_id)
+  const { data: deleted, error } = await del.select("id")
 
   if (error) return { success: false, error: error.message }
+  if ((deleted ?? []).length === 0) return { success: false, error: "The module was not deleted (it may already be gone)" }
   return { success: true }
+  })
 }

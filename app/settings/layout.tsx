@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth/client';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, Loader2 } from 'lucide-react';
+import { isTenantAdminGrantRole } from "@/lib/auth/resolve-user-role"
 
 // Personal "tech stack" sections every tier may manage (a solo agent inside a brokerage/team
 // sets up their OWN email/phone/calendar/social/CRM, profile, brand voice, signature).
@@ -21,7 +22,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   // /settings/<section>/... → section
   const section = (pathname ?? '').split('/').filter(Boolean)[1] ?? '';
   const isPersonalSection = PERSONAL_SECTIONS.has(section);
-  const isBrokerageRole = !!userContext?.roles.some(r => ['admin', 'broker', 'superadmin'].includes(r));
+  const isBrokerageRole = !!userContext?.roles.some(r => isTenantAdminGrantRole(r));
   // Brokerage-wide sections (billing, users, global, commission, accounting, services, providers)
   // stay admin/broker; personal-stack sections are open to any authenticated tier.
   // Developers is gated SERVER-SIDE to the tenancy principal (isTenancyPrincipal:
@@ -51,11 +52,13 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   }
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    // Wave 142 (lane 142H): a column below md — the sidebar renders as a horizontal section strip there
+    // (a 256px fixed rail on a 390px phone left the settings themselves ~130px wide).
+    <div className="flex flex-col md:flex-row h-screen bg-gray-50">
       <SettingsSidebar />
       <div className="flex-1 overflow-auto">
         <div className="border-b border-gray-200 bg-white sticky top-0 z-10">
-          <div className="max-w-7xl mx-auto px-8 py-4 flex items-center justify-between">
+          <div className="max-w-7xl mx-auto px-4 md:px-8 py-4 flex items-center justify-between">
             <div></div>
             <Link 
               href="/dashboard"
@@ -66,7 +69,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
             </Link>
           </div>
         </div>
-        <div className="max-w-7xl mx-auto p-8">
+        <div className="max-w-7xl mx-auto p-4 md:p-8">
           {children}
         </div>
       </div>

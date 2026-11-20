@@ -1,10 +1,12 @@
 // lib/education/curriculum-author.ts
 //
-// CURRICULUM AUTHOR (recruiting_manager) — the OS teaches itself to teach. Weekly it mines the real
-// signal of the business (objection-drill scores by scenario, recurring compliance violations), asks the
-// pure detector IF any topic genuinely warrants education, and for each NEW proven gap it AUTHORS a rich,
-// specific micro-course with the model — grounded in the real evidence, not generic real-estate filler —
-// then persists it as a GATED DRAFT on the training_courses catalog for a human to review/publish.
+// CURRICULUM AUTHOR (recruiting_manager) — the OS teaches itself to teach. Weekly (the education-delivery cron,
+// wave 142G) it mines the real signal of the business (objection-drill scores by scenario, recurring compliance
+// violations, recurring assistant questions, recurring SUPPORT TICKETS), asks the pure detector IF any topic
+// genuinely warrants education, and for each NEW proven gap it AUTHORS a rich, specific micro-course (or, for a
+// support topic, a help article) with the model — grounded in the real evidence, not generic filler — then
+// persists it as a GATED DRAFT on the learning_modules catalog for a human to review/publish, with the recurrence
+// count on its evidence row so lib/education/repeat-measure.ts can later ask whether repeats decreased.
 // Idempotent per (brokerage, topic). Best-effort; never throws into a caller.
 
 import { z } from "zod"
@@ -34,15 +36,30 @@ export const CurriculumSchema = z.object({
 })
 export type Curriculum = z.infer<typeof CurriculumSchema>
 
-/** Gather the real knowledge-gap signals for a brokerage (objection drills + compliance violations). */
-export async function gatherGapSignals(svc: Svc, brokerageId: string, now: Date): Promise<GapSignal[]> {
-  const since = new Date(now.getTime() - 180 * 86_400_000).toISOString()
-  const questionSince = new Date(now.getTime() - 30 * 86_400_000).toISOString()
-  const [drills, flags, questions] = await Promise.all([
-    svc.from("objection_training_sessions").select("scenario_key, scenario_label, total_score, improvements").eq("brokerage_id", brokerageId).not("completed_at", "is", null).gte("started_at", since).limit(5000),
-    svc.from("compliance_flags").select("violation_type, flagged_content").eq("brokerage_id", brokerageId).gte("created_at", since).limit(5000),
-    // QUESTION SIGNAL — recurring questions in the assistant/tutor logs (user turns only, brokerage-scoped).
-    svc.from("chat_messages").select("content, chat_sessions!inner(brokerage_id)").eq("role", "user").eq("chat_sessions.brokerage_id", brokerageId).gte("created_at", questionSince).limit(5000),
+/** The recurrence window the fast sources (questions, support tickets) are read over, and the one the repeat
+ *  measure compares before/after a published asset. */
+const GAP_WINDOW_DAYS = 30
+
+/**
+ * Gather the real knowledge-gap signals for a brokerage (objection drills + compliance violations + recurring
+ * assistant questions + recurring SUPPORT TICKETS). `opts.window` (wave 142G) pins every source to one
+ * [since, until] span so the repeat measure can re-count a topic before and after an asset was published.
+ */
+export async function gatherGapSignals(svc: Svc, brokerageId: string, now: Date, opts: { window?: { since: Date; until: Date } } = {}): Promise<GapSignal[]> {
+  const w = opts.window
+  const since = (w?.since ?? new Date(now.getTime() - 180 * 86_400_000)).toISOString()
+  const questionSince = (w?.since ?? new Date(now.getTime() - GAP_WINDOW_DAYS * 86_400_000)).toISOString()
+  const until = (w?.until ?? now).toISOString()
+  const [drills, flags, questions, tickets] = await Promise.all([
+    svc.from("objection_training_sessions").select("scenario_key, scenario_label, total_score, improvements").eq("brokerage_id", brokerageId).not("completed_at", "is", null).gte("started_at", since).lte("started_at", until).limit(5000),
+    svc.from("compliance_flags").select("violation_type, flagged_content").eq("brokerage_id", brokerageId).gte("created_at", since).lte("created_at", until).limit(5000),
+    // QUESTION SIGNAL — recurring questions in the assistant/tutor logs (user turns only, brokerage-scoped). Every
+    // surface that logs through chat_sessions/chat_messages (the one chat log) is read here — the FormWizard coach
+    // included once it writes there; no per-surface filter, so a new surface needs no new reader.
+    svc.from("chat_messages").select("content, chat_sessions!inner(brokerage_id)").eq("role", "user").eq("chat_sessions.brokerage_id", brokerageId).gte("created_at", questionSince).lte("created_at", until).limit(5000),
+    // SUPPORT SIGNAL (wave 142G) — recurring support ticket subjects on this tenant (both lanes: what agents ask the
+    // office AND what the office asks the platform both say what the OS fails to explain).
+    svc.from("support_tickets").select("subject, description, lane").eq("brokerage_id", brokerageId).gte("created_at", questionSince).lte("created_at", until).limit(5000),
   ])
 
   const signals: GapSignal[] = []
@@ -87,14 +104,39 @@ export async function gatherGapSignals(svc: Svc, brokerageId: string, now: Date)
     signals.push(...buildQuestionSignals(rawQs))
   } catch { /* question mining is best-effort */ }
 
+  // Recurring support tickets → support gaps (classified against the fixed PRODUCT lexicon; a refused read is a
+  // logged zero, never a thrown sweep — `error` is read, CLAUDE.md §3).
+  if (tickets.error) console.error("[curriculum-author] support_tickets read refused:", tickets.error.message)
+  else {
+    try {
+      const { buildSupportSignals } = await import("@/lib/education/question-gap")
+      const rawTs = ((tickets.data ?? []) as Array<{ subject?: string | null; description?: string | null }>).map((t) => ({ subject: t.subject ?? "", description: t.description ?? null }))
+      signals.push(...buildSupportSignals(rawTs))
+    } catch { /* support mining is best-effort */ }
+  }
+
   return signals
 }
 
 /** Author a rich curriculum for a detected gap with the model. Throws if the model is unavailable. */
-export async function authorCurriculum(gap: KnowledgeGap): Promise<Curriculum> {
+async function authorCurriculum(gap: KnowledgeGap): Promise<Curriculum> {
   const { generateObjectRouted } = await import("@/lib/ai/models")
-  const evidence = gap.evidence.length ? `\n\nReal evidence from our agents (ground the material in THESE, not generic advice):\n- ${gap.evidence.join("\n- ")}` : ""
   const { withScriptStandards } = await import("@/lib/ai/script-standards")
+  // Wave 142G — a SUPPORT gap is a product how-to, not a real-estate skill: the asset is a help article / walkthrough
+  // (lessons = steps), grounded in the ticket evidence, that never invents a feature, menu, setting or price and
+  // says "contact support" where the exact steps are not evidenced. Reviewed like every other draft.
+  if (gap.source === "support") {
+    const evidence = gap.evidence.length ? `\n\nWhat people actually asked (ground the article in THESE):\n- ${gap.evidence.join("\n- ")}` : ""
+    const { object } = await generateObjectRouted({
+      feature: "curriculum_authoring",
+      schema: CurriculumSchema,
+      system: "You are the product-support writer for a real-estate brokerage operating system. Author a HELP ARTICLE / walkthrough that answers a recurring support question for the brokerage's own staff and agents. Each lesson is one step or sub-task, written plainly for a non-technical reader: what to click, what they will see, what to check, the mistakes that bite. NEVER invent a feature, a menu, a setting, a provider name or a price that is not in the evidence — where the exact steps are not evidenced, tell the reader to open a support ticket and say what to include. Never mention what the platform pays for, credentials or internal errors. The quiz checks the reader can do the task.",
+      maxTokens: 3500,
+      prompt: `Write the help article that answers this recurring support topic:\n\nTopic: ${gap.topicLabel}\nWhy it matters: ${gap.rationale}${evidence}\n\nWrite tight, specific, step by step.`,
+    })
+    return object
+  }
+  const evidence = gap.evidence.length ? `\n\nReal evidence from our agents (ground the material in THESE, not generic advice):\n- ${gap.evidence.join("\n- ")}` : ""
   const { object } = await generateObjectRouted({
     feature: "curriculum_authoring",
     schema: CurriculumSchema,
@@ -128,6 +170,14 @@ export async function runCurriculumAuthor(svc: Svc, params: { brokerageId: strin
     let curriculum: Curriculum
     try { curriculum = await authorCurriculum(gap) } catch { continue /* model unavailable — try again next run */ }
 
+    // Cross-path dedup: the chatter/gap path names topics dynamically, so a topic
+    // another subsystem already covered (under a different gap_tag) would slip past
+    // the per-tag guard above. Skip if a near-duplicate title already exists for an
+    // overlapping audience — no duplicates across paths.
+    const audience = audienceForGap(gap)
+    const { hasNearDuplicateModule } = await import("@/lib/education/dedup-guard")
+    if (await hasNearDuplicateModule(svc, params.brokerageId, curriculum.title, audience)) continue
+
     const ok = await persistCurriculumDraft(svc, params.brokerageId, gap, curriculum)
     if (ok) out.authored++
   }
@@ -150,18 +200,31 @@ export function renderModuleBody(c: Curriculum, footer: string): string {
 }
 
 /** PURE: render a knowledge-gap curriculum (footer names the gap that triggered it). */
-export function renderCurriculumBody(gap: KnowledgeGap, c: Curriculum): string {
+function renderCurriculumBody(gap: KnowledgeGap, c: Curriculum): string {
   return renderModuleBody(c, `Authored by the Recruiting Manager from a real, recurring gap: ${gap.rationale}`)
 }
+
+/** PURE: who a gap's asset is for — skill gaps train agents; compliance AND support how-tos train the whole
+ *  roster incl. brokers (office staff raise support tickets too). */
+/** @proofSeam the proof asserts both audiences directly */
+export function audienceForGap(gap: Pick<KnowledgeGap, "source">): string[] {
+  return gap.source === "compliance" || gap.source === "support" ? ["agent", "broker"] : ["agent"]
+}
+
+/** The lifecycle_events evidence row every AI-authored proposal carries (wave 142G): the recurrence count it was
+ *  proposed from, so the repeat measure (lib/education/repeat-measure.ts) can ask "did repeats decrease?". */
+/** @proofSeam the proof reads the proposal's counter by this type */
+export const EDUCATION_PROPOSED_EVENT = "education.gap_proposed"
 
 /**
  * Persist an authored curriculum as a GATED DRAFT on the CANONICAL learning_modules catalog
  * (status 'pending_review', is_ai_generated, gap_tags carry the detected topic so the learning-router
  * can target it). The existing approve/publish action + learning-router delivery to agents AND client
- * portals then take over — no parallel system. Best-effort.
+ * portals then take over — no parallel system; a SUPPORT gap rides the article channel, which the
+ * approval action fans out to knowledge_articles (the help center the ticket UI searches). Best-effort.
  */
 export async function persistCurriculumDraft(svc: Svc, brokerageId: string, gap: KnowledgeGap, curriculum: Curriculum): Promise<boolean> {
-  const { error } = await svc.from("learning_modules").insert({
+  const { data, error } = await svc.from("learning_modules").insert({
     brokerage_id: brokerageId,
     title: curriculum.title,
     summary: curriculum.summary,
@@ -170,17 +233,26 @@ export async function persistCurriculumDraft(svc: Svc, brokerageId: string, gap:
     is_ai_generated: true,
     status: "pending_review",
     gap_tags: [gap.topicKey],
-    // Skill gaps train agents; compliance gaps train the whole roster incl. brokers.
-    audience_roles: gap.source === "compliance" ? ["agent", "broker"] : ["agent"],
-    // Format follows the material — only video-worthy topics render on the video channel.
-    channels: channelsForFormat(resolveMaterialFormat({ topicKey: gap.topicKey })),
-    estimated_minutes: 5,
+    audience_roles: audienceForGap(gap),
+    // Format follows the material — only video-worthy topics render on the video channel; a support how-to is an article.
+    channels: channelsForFormat(resolveMaterialFormat({ topicKey: gap.topicKey, source: gap.source })),
+    estimated_minutes: gap.source === "support" ? 3 : 5,
     required: gap.source === "compliance",
-  })
-  return !error
+  }).select("id").single()
+  if (error || !data) return false
+  // THE COUNTER THE PROPOSAL CARRIES — audit-only, best-effort (the draft stands without it; the measure re-gathers).
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    await emitKernelEvent({
+      event: EDUCATION_PROPOSED_EVENT, brokerageId, entityType: "learning_module", entityId: (data as { id: string }).id, auditOnly: true, client: svc,
+      metadata: { topic_key: gap.topicKey, source: gap.source, repeats_before: gap.weakCount, weakness_ratio: gap.weaknessRatio, avg_score: gap.avgScore, window_days: GAP_WINDOW_DAYS, priority: gap.priority },
+    })
+  } catch { /* evidence is best-effort */ }
+  return true
 }
 
-/** Autonomous: author across every brokerage (rides the weekly recruit-outreach cron). */
+/** Autonomous: author across every brokerage (rides the weekly education-delivery cron — the education owner's host;
+ *  wave 142G moved it off recruit-outreach, the talent-pipeline cron). */
 export async function runCurriculumAuthorAll(svc: Svc, now?: Date): Promise<{ brokerages: number; authored: number }> {
   const out = { brokerages: 0, authored: 0 }
   const { data: rows } = await svc.from("brokerages").select("id").limit(1000)

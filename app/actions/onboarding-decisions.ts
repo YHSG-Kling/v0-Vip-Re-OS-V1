@@ -15,6 +15,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import {
+  attachLessons,
   composeOnboardingDecisions,
   loadOnboardingDecisionFacts,
   type OnboardingDecision,
@@ -28,16 +29,29 @@ async function loadMember(): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Not authenticated" }
   const { data: row } = await supabase
-    .from("users").select("brokerage_id, user_type, role").eq("id", user.id).maybeSingle()
+    .from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "No brokerage" }
   return {
     ok: true,
     userId: user.id,
     brokerageId: (row as any).brokerage_id,
-    role: String((row as any).role ?? (row as any).user_type ?? "agent"),
+    // user_type, never legacy users.role — the principal gate is user_type vocabulary.
+    role: String((row as any).user_type ?? "agent"),
   }
 }
 
+/**
+ * The client-callable re-read of the decision list.
+ *
+ * MERGED (wave 4 slice 2): this used to return `composeOnboardingDecisions(facts)`
+ * raw, while the server card that renders the same list
+ * (app/components/onboarding/setup-readiness-card.tsx) also runs `attachLessons`,
+ * which hangs the /academy/module/… link off each decision. Swapping this
+ * action's output into the rendered list would therefore have SILENTLY DROPPED
+ * every lesson link. It now composes the identical shape, so the two are
+ * interchangeable — which is the point: DecisionRoom can replace its list with
+ * server truth instead of hand-writing an optimistic "done" card.
+ */
 export async function getOnboardingDecisionsAction(): Promise<
   | { ok: true; decisions: OnboardingDecision[] }
   | { ok: false; error: string }
@@ -46,7 +60,10 @@ export async function getOnboardingDecisionsAction(): Promise<
   if (!m.ok) return { ok: false, error: m.error }
   const svc = createServiceClient()
   const facts = await loadOnboardingDecisionFacts(svc as any, { brokerageId: m.brokerageId })
-  return { ok: true, decisions: composeOnboardingDecisions(facts) }
+  return {
+    ok: true,
+    decisions: attachLessons(composeOnboardingDecisions(facts), facts.moduleIdByTopic ?? new Map()),
+  }
 }
 
 export async function adoptAssistantIdentityAction(): Promise<
@@ -60,6 +77,8 @@ export async function adoptAssistantIdentityAction(): Promise<
   const { isTenancyPrincipal } = await import("@/lib/kernel/tenancy-principal")
   const principal = await isTenancyPrincipal(svc as any, { userId: m.userId, brokerageId: m.brokerageId, role: m.role })
   if (!principal) return { ok: false, error: "Only the tenancy's principal can set the assistant identity" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const lr = await ledgerSessionAction<{ ok: true; assistantName: string } | { ok: false; error: string }>({ brokerageId: m.brokerageId, action: "onboarding.assistant_identity.adopt", actor: { type: "user", userId: m.userId }, subject: { type: "brokerage", id: m.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // Idempotent: the brokerage-scope identity is UNIQUE(scope_type, scope_id).
   const { data: existing } = await svc.from("ai_identity_profiles")
@@ -102,4 +121,6 @@ export async function adoptAssistantIdentityAction(): Promise<
   } catch { /* ledger best-effort */ }
 
   return { ok: true, assistantName }
+  })
+  return "ok" in lr ? lr : { ok: false, error: lr.error ?? "This change was not recorded — nothing was saved" }
 }

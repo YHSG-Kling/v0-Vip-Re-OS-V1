@@ -9,7 +9,11 @@ import { listOnboardingSteps } from "@/lib/kernel"
 import type { OnboardingStepRow } from "@/lib/kernel"
 import { OnboardingStepsClient } from "./OnboardingStepsClient"
 
-const ADMIN_ROLES = ["admin", "broker", "superadmin"] as const
+// TRUE ADMIN GATE (operational: onboarding) — repointed to the ONE tenant
+// roster, matching the repointed action gate in app/actions/admin/onboarding-steps.ts.
+// 'superadmin' was dead: 0 live rows store that users.user_type.
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { RoleGateNotice } from "@/app/components/shared/role-gate-notice"
 
 export default async function OnboardingStepsAdminPage() {
   const supabase = await createClient()
@@ -25,8 +29,8 @@ export default async function OnboardingStepsAdminPage() {
     .single()
 
   if (userError || !userRow) redirect("/login")
-  if (!(ADMIN_ROLES as ReadonlyArray<string>).includes(userRow.user_type)) {
-    redirect("/dashboard")
+  if (!isAdminOrBroker({ user_type: userRow.user_type })) {
+    return <RoleGateNotice surface="Onboarding steps" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
   // listOnboardingSteps already enforces admin gate + brokerage scoping internally

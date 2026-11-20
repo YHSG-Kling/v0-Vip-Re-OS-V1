@@ -8,15 +8,16 @@
 // real accept/counter/reject actions stay where they are (compliance-gated). PURE composer.
 
 import { computeNetProceeds } from "@/lib/kernel/offer-net-sheet"
+import type { SellerCosts as NetSheetSellerCosts } from "@/lib/offers/net-sheet-calc"
 import { scoreBuyerStrength, labelStrength, type StrengthLabel } from "@/lib/offers/offer-strength"
 
-export interface SellerCosts {
-  commissionRate: number
-  mortgagePayoff: number
-  countyCityTaxes: number
-  hoaDuesProration: number
-  otherProratedFees: number
-}
+/**
+ * The seller-side cost lines. Deliberately NOT a second declaration: this is the
+ * canonical net-sheet type minus buyerClosingCredit, which is per-OFFER and rides
+ * on DecisionOffer instead. computeNetProceeds takes exactly this Omit, so the two
+ * cannot drift apart.
+ */
+export type SellerCosts = Omit<NetSheetSellerCosts, "buyerClosingCredit">;
 
 export interface DecisionOffer {
   offerId: string
@@ -82,15 +83,17 @@ export function buildSellerDecisionRoom(offers: DecisionOffer[], costs: SellerCo
     const isTopNet = e.o.offerId === topNetId
     const isTopCertainty = e.o.offerId === topCertaintyId
     const label = labelStrength(e.strengthScore)
-    const tag = isTopNet && isTopCertainty ? "most money AND safest"
-      : isTopNet ? "most money" : isTopCertainty ? "safest to close" : "in the mix"
+    // Full sentences, not fragments: the old form interpolated as "The ${tag}." and
+    // the neutral branch rendered the ungrammatical "The in the mix."
+    const tag = isTopNet && isTopCertainty ? "The most money AND the safest to close."
+      : isTopNet ? "The most money." : isTopCertainty ? "The safest to close." : "In the mix."
     const closes = e.o.closeDateDays != null ? `closes in ~${e.o.closeDateDays} days` : "close date TBD"
     const fin = e.o.financingType ? e.o.financingType : "financing unspecified"
     return {
       offerId: e.o.offerId, buyerName: e.o.buyerName, price: e.o.offerPrice, netProceeds: e.netProceeds,
       closeDateDays: e.o.closeDateDays, strengthScore: e.strengthScore, strengthLabel: label,
       contingencyCount: e.o.contingencies.length, financingType: e.o.financingType, isTopNet, isTopCertainty,
-      modeledOutcome: `Nets you ${money(e.netProceeds)}, ${closes}. Buyer looks ${label} (${e.strengthScore}/100 — ${fin}, ${e.o.contingencies.length} contingenc${e.o.contingencies.length === 1 ? "y" : "ies"}). The ${tag}.`,
+      modeledOutcome: `Nets you ${money(e.netProceeds)}, ${closes}. Buyer looks ${label.replace(/_/g, " ")} (${e.strengthScore}/100 — ${fin}, ${e.o.contingencies.length} contingenc${e.o.contingencies.length === 1 ? "y" : "ies"}). ${tag}`,
     }
   })
 

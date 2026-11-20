@@ -15,7 +15,7 @@
  *
  * Run: npx tsx scripts/touchpoint-bridge-simulator.ts   (npm run test:touchpoint-bridge)
  */
-import { touchpointChannelForStep } from "../lib/campaign-sequences/touchpoint-bridge"
+import { touchpointChannelForStep, deliveringChannelForStep } from "../lib/campaign-sequences/touchpoint-bridge"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -39,7 +39,12 @@ async function main() {
   console.log("\n[Layer 1 · step.channel → touchpoint channel]")
   check("email → email (de-confliction email cap)",      touchpointChannelForStep("email") === "email")
   check("sms → sms (de-confliction sms cap)",            touchpointChannelForStep("sms") === "sms")
-  check("video → video (de-confliction video cap)",      touchpointChannelForStep("video") === "video")
+  // WAVE 155 (lane 155J, owner R9 "video is an artifact not a channel"): a video step has NO channel of its own; its
+  // delivery is ONE email touch carrying the artifact, and an undelivered render is no touch (the old row asserted the
+  // defect — a "video" lane no de-confliction cap reads — and would have stayed green only while the defect stood).
+  check("video → no channel of its own (R9: an artifact)", touchpointChannelForStep("video") === null)
+  check("video delivered → ONE email touch, artifact video", JSON.stringify(deliveringChannelForStep("video", true)) === JSON.stringify({ channel: "email", artifact: "video" }))
+  check("video never delivered (no email) → no touch",     deliveringChannelForStep("video", false) === null && deliveringChannelForStep("email", true) === null)
   check("ai_call → phone",                               touchpointChannelForStep("ai_call") === "phone")
   check("voice_drop → phone",                            touchpointChannelForStep("voice_drop") === "phone")
   check("direct_mail → direct_mail",                     touchpointChannelForStep("direct_mail") === "direct_mail")

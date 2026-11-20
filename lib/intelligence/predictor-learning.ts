@@ -11,7 +11,7 @@
 
 export type PredictorConfidence = "unproven" | "reliable" | "mixed" | "unreliable"
 
-export interface PredictorAccuracy {
+interface PredictorAccuracy {
   fired: number
   wins: number
   accuracy: number // 0–1
@@ -31,7 +31,8 @@ export interface PredictorTuning {
 export const PREDICTOR_MIN_SAMPLE = 5
 
 /** Fold recorded wins/losses into an accuracy. Pure. */
-export function predictorAccuracy(wins: number, losses: number): PredictorAccuracy {
+// Module-private since 2026-09-08 — no importer outside this file (category B tranche).
+function predictorAccuracy(wins: number, losses: number): PredictorAccuracy {
   const fired = Math.max(0, wins) + Math.max(0, losses)
   return { fired, wins: Math.max(0, wins), accuracy: fired > 0 ? Math.max(0, wins) / fired : 0 }
 }

@@ -20,8 +20,10 @@
  *   }
  */
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { decidePublicDoor, callerIpFrom } from "@/lib/security/public-rate-limit"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const body = await req.json().catch(() => ({})) as {
@@ -43,19 +45,32 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const svc = createServiceClient()
 
-  // Validate the token
-  const { data: tokenRow } = await svc
-    .from("buyer_intake_tokens")
-    .select("id, brokerage_id, contact_id, agent_user_id, status, expires_at")
-    .eq("token", body.token)
-    .maybeSingle()
-
-  if (!tokenRow) return NextResponse.json({ error: "Invalid token" }, { status: 404 })
-  if (tokenRow.status !== "pending") return NextResponse.json({ error: "Token already used or cancelled" }, { status: 410 })
-  if (new Date(tokenRow.expires_at) < new Date()) {
-    await svc.from("buyer_intake_tokens").update({ status: "expired" }).eq("id", tokenRow.id)
+  // Validate the token — WAVE 155 (lane 155R18 — G10): as the DECISION's opt-in read, BEFORE any write: the per-IP cap, then the
+  // sealed one-time credential the TENANT issued (pending, unexpired); the tenant is that token row's. The expiry stamp is a
+  // write, so it now happens only in the refusal branch, after the decision.
+  const token = body.token
+  type TokenRow = { id: string; brokerage_id: string | null; contact_id: string; agent_user_id: string | null; status: string; expires_at: string }
+  const seen: { row: TokenRow | null } = { row: null }
+  const door = await decidePublicDoor({
+    surface: "buyer-intake-submit", callerKey: callerIpFrom(req.headers), cap: { limit: 20, windowMs: 10 * 60_000 },
+    optIn: async () => {
+      const { data, error } = await svc.from("buyer_intake_tokens").select("id, brokerage_id, contact_id, agent_user_id, status, expires_at").eq("token", token).maybeSingle()
+      if (error) return null
+      seen.row = (data as TokenRow | null) ?? null
+      const r = seen.row
+      if (!r?.brokerage_id || r.status !== "pending" || !(new Date(r.expires_at) >= new Date())) return null
+      return { brokerageId: r.brokerage_id, basis: "buyer_intake_tokens row (pending, unexpired) issued by the tenant" }
+    },
+  })
+  if (!door.allowed) {
+    if (door.reason === "rate_limited") return NextResponse.json({ error: "Too many attempts — try again shortly." }, { status: 429, headers: { "Retry-After": String(door.retryAfterSeconds) } })
+    const r = seen.row
+    if (!r || !r.brokerage_id) return NextResponse.json({ error: "Invalid token" }, { status: 404 })
+    if (r.status !== "pending") return NextResponse.json({ error: "Token already used or cancelled" }, { status: 410 })
+    await sentinelWrite(svc, svc.from("buyer_intake_tokens").update({ status: "expired" }).eq("id", r.id), { table: "buyer_intake_tokens", flow: "intake_token_expired", reason: "expiry stamp; the expired response is returned regardless" })
     return NextResponse.json({ error: "Token expired" }, { status: 410 })
   }
+  const tokenRow = { ...seen.row!, brokerage_id: door.brokerageId as string } // the tenant the decision proved (the token row's)
 
   // Update the contact record.
   // tenant anchor (scope burn-down): pinned to the token-validated contact AND
@@ -81,7 +96,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // Persist pre-approval / POF docs if provided
   for (const [type, url] of [["pre_approval", body.preApprovalDocUrl], ["pof", body.pofDocUrl]] as const) {
     if (url) {
-      await svc.from("documents").insert({
+      const { error: intakeDocErr } = await svc.from("documents").insert({
         brokerage_id:   tokenRow.brokerage_id,
         contact_id:     tokenRow.contact_id,
         document_type:  type,
@@ -90,11 +105,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         metadata:       { uploaded_via: "buyer_intake", token_id: tokenRow.id },
         created_at:     new Date().toISOString(),
       })
+      if (intakeDocErr) console.error(`[buyer-intake] buyer's uploaded pre-approval/POF document NOT recorded: ${intakeDocErr.message}`)
     }
   }
 
   // Mark token submitted
-  await svc.from("buyer_intake_tokens").update({
+  const { error: tokenSubmitErr } = await svc.from("buyer_intake_tokens").update({
     status:         "submitted",
     submitted_at:   new Date().toISOString(),
     submitted_data: {
@@ -105,10 +121,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       fundsMaxPurchase: body.fundsMaxPurchase,
     },
   }).eq("id", tokenRow.id)
+  if (tokenSubmitErr) console.error(`[buyer-intake] token NOT marked submitted (the link stays usable): ${tokenSubmitErr.message}`)
 
   // Notify the agent that intake is complete
   if (tokenRow.agent_user_id) {
-    await svc.from("notifications").insert({
+    await sentinelWrite(svc, svc.from("notifications").insert({
       user_id:        tokenRow.agent_user_id,
       brokerage_id:   tokenRow.brokerage_id,
       type:           "buyer_intake_submitted",
@@ -118,7 +135,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       entity_type:    "contact",
       entity_id:      tokenRow.contact_id,
       channel:        "in_app",
-    })
+    }), { table: "notifications", flow: "route_notify", brokerageId: tokenRow.brokerage_id, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
   }
 
   return NextResponse.json({ success: true, contactId: tokenRow.contact_id })

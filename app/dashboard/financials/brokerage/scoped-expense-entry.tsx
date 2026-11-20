@@ -19,14 +19,25 @@ import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Receipt, Loader2, CheckCircle2 } from "lucide-react"
 import { logScopedExpense, type ExpenseScope } from "@/app/actions/financials"
+import { EXPENSE_CATEGORIES } from "@/lib/documents/receipt-rules"
 
 // Same category vocabulary the agent expense flow + tax concierge fold on —
 // these map to brokerage_p_l buckets (marketing/office/tech/operating).
-const CATEGORIES = ["marketing", "office", "technology", "education", "transportation", "other"]
+// One vocabulary (CLAUDE.md §6): the expense categories live in lib/documents/receipt-rules.ts (wave 152, lane 152D).
+const CATEGORIES = EXPENSE_CATEGORIES
 
 export interface TeamOption { id: string; name: string }
 
-export function ScopedExpenseEntry({ teams, canLogAgentScope }: { teams: TeamOption[]; canLogAgentScope: boolean }) {
+// WAVE 153 (lane 153A): the offices this person keeps (lib/finance/expense-rollup.ts — the C34 hierarchy x the books
+// roster). `required` = a multi-location tenant: a company expense is recorded to ONE office or, only for the whole
+// company's books keeper, the main office as a shared cost. Never preselected there — the person chooses.
+const MAIN_OFFICE = "__main_office__"
+
+export function ScopedExpenseEntry({ teams, canLogAgentScope, offices }: {
+  teams: TeamOption[]
+  canLogAgentScope: boolean
+  offices?: { required: boolean; mainOfficeAllowed: boolean; choices: Array<{ id: string; name: string }> }
+}) {
   const router = useRouter()
   const [scope, setScope] = useState<ExpenseScope>("brokerage")
   const [teamId, setTeamId] = useState<string>(teams[0]?.id ?? "")
@@ -34,6 +45,8 @@ export function ScopedExpenseEntry({ teams, canLogAgentScope }: { teams: TeamOpt
   const [description, setDescription] = useState("")
   const [amount, setAmount] = useState("")
   const [date, setDate] = useState(new Date().toISOString().split("T")[0])
+  const [office, setOffice] = useState<string>("")
+  const officeNeeded = scope === "brokerage" && !!offices?.required
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -48,6 +61,7 @@ export function ScopedExpenseEntry({ teams, canLogAgentScope }: { teams: TeamOpt
       amount: Number(amount),
       expenseDate: date,
       teamId: scope === "team" ? teamId : null,
+      locationId: scope === "brokerage" && office && office !== MAIN_OFFICE ? office : null,
     })
     setSaving(false)
     if (result.success) {
@@ -55,7 +69,7 @@ export function ScopedExpenseEntry({ teams, canLogAgentScope }: { teams: TeamOpt
       setDescription(""); setAmount("")
       router.refresh()
     } else {
-      setError(result.error ?? "Failed to save expense")
+      setError(result.message ?? result.error ?? "Failed to save expense")
     }
   }
 
@@ -67,7 +81,7 @@ export function ScopedExpenseEntry({ teams, canLogAgentScope }: { teams: TeamOpt
           Log Operating Expense
         </CardTitle>
         <CardDescription>
-          Brokerage expenses feed the monthly P&L expense lines above. Team expenses stay on the team&apos;s own book and agent expenses on the agent&apos;s — neither rolls up.
+          Company expenses feed the monthly P&amp;L expense lines above; with more than one office, each is recorded to its office and all offices roll up to the company total. Team expenses stay on the team&apos;s own book and agent expenses on the agent&apos;s — neither rolls up.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -83,6 +97,18 @@ export function ScopedExpenseEntry({ teams, canLogAgentScope }: { teams: TeamOpt
               </SelectContent>
             </Select>
           </div>
+          {scope === "brokerage" && offices && (offices.required || offices.choices.length > 0) && (
+            <div className="space-y-1.5">
+              <Label htmlFor="exp-office">Office</Label>
+              <Select value={office} onValueChange={setOffice}>
+                <SelectTrigger id="exp-office"><SelectValue placeholder={offices.required ? "Choose the office" : "The company"} /></SelectTrigger>
+                <SelectContent>
+                  {offices.choices.map((o) => <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>)}
+                  {offices.required && offices.mainOfficeAllowed && <SelectItem value={MAIN_OFFICE}>Main office — shared cost</SelectItem>}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           {scope === "team" && (
             <div className="space-y-1.5">
               <Label htmlFor="exp-team">Team</Label>
@@ -117,11 +143,11 @@ export function ScopedExpenseEntry({ teams, canLogAgentScope }: { teams: TeamOpt
           <Textarea id="exp-desc" rows={2} placeholder="e.g. Office rent — July, MLS board dues, brokerage CRM subscription" value={description} onChange={(e) => setDescription(e.target.value)} />
         </div>
         <div className="flex items-center gap-3">
-          <Button onClick={handleSave} disabled={saving || !description.trim() || !amount || !date || (scope === "team" && !teamId)}>
+          <Button onClick={handleSave} disabled={saving || !description.trim() || !amount || !date || (scope === "team" && !teamId) || (officeNeeded && !office)}>
             {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving…</> : "Save Expense"}
           </Button>
           {saved && (
-            <span className="flex items-center gap-1.5 text-sm text-emerald-600">
+            <span className="flex items-center gap-1.5 text-sm text-emerald-700">
               <CheckCircle2 className="h-4 w-4" /> Logged — P&amp;L updates on the next nightly rollup
             </span>
           )}

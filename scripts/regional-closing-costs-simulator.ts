@@ -10,8 +10,8 @@
  *          conventions (transfer tax + customary payer, title pricing
  *          convention, settlement/attorney model, recording bands, property-tax
  *          bands), every figure labeled "regional estimate — {state}".
- * FLOOR:   the deterministic regional model is the floor — applyAiRefinements
- *          clamps every AI adjustment within [0.5×, 1.5×] of the band, refuses
+ * FLOOR:   the deterministic regional model CALCULATES (wave 144, ruling 9) — applyAiRefinements
+ *          attaches the model's explanation and applies NO figure (it used to clamp within [0.5×, 1.5×]), refuses
  *          lender-fact + pending lines, and requires a stated reason.
  * HONESTY: lender facts beat the region; pending-lender lines carry the state
  *          CONVENTION as a labeled note, never a fabricated dollar figure; the
@@ -136,46 +136,50 @@ function estimateLayer() {
 }
 
 function aiBoundsLayer() {
-  console.log("\n[AI refinement — the deterministic regional model is the floor]")
+  // RE-ASSERTED AS THE RULE (wave 144, lane 144C — owner ruling 9: "AI explains, deterministic engine calculates — remove any
+  // LLM-computed money"). This layer used to prove the model's figures were APPLIED within a clamp; the rule now is that no
+  // figure from the model ever lands — the reason is attached as an explanation and every number stays the regional model's.
+  console.log("\n[AI explanation — the deterministic regional model calculates; the model only explains]")
   const conv = getRegionalConventions("CA")!
   const est = estimateBuyerClosingCosts({ purchasePrice: 800_000, loanAmount: 640_000, sellerCredit: 0, interestRatePct: 6.25, loanSourceNote: "per your lender's loan terms on file", state: "CA" })
   const settle = est.lines.find((l) => l.label === "Settlement / escrow fee")!
+  const figures = (lines: typeof est.lines) => JSON.stringify(lines.map((l) => [l.label, l.low, l.high, l.source, l.sourceLabel ?? null]))
 
-  const inBounds = applyAiRefinements(est.lines, [
+  const explained = applyAiRefinements(est.lines, [
     { label: "Settlement / escrow fee", low: settle.low + 100, high: settle.high + 200, reason: "Bay Area escrow fees run to the top of the band" },
   ], conv)
-  const refined = inBounds.lines.find((l) => l.label === "Settlement / escrow fee")!
-  check("in-bounds adjustment applies, relabels the line ai_refined, and carries the stated reason",
-    inBounds.applied.length === 1 && refined.source === "ai_refined"
-    && refined.low === settle.low + 100 && refined.high === settle.high + 200
-    && /AI-refined within the California regional band — Bay Area/.test(refined.sourceLabel ?? ""))
+  const line = explained.lines.find((l) => l.label === "Settlement / escrow fee")!
+  check("an explanation is attached to the deterministic line and the model's figures are IGNORED (named) — low, high, source and label unchanged",
+    explained.applied.length === 1 && explained.figuresIgnored.join() === "Settlement / escrow fee"
+    && line.low === settle.low && line.high === settle.high && line.source === settle.source && line.source !== "ai_refined"
+    && /Why \(California\): Bay Area escrow fees/.test(line.note ?? "") && figures(explained.lines) === figures(est.lines))
 
-  const outOfBounds = applyAiRefinements(est.lines, [
+  const wild = applyAiRefinements(est.lines, [
     { label: "Settlement / escrow fee", low: 10, high: settle.high * 10, reason: "wild guess" },
   ], conv)
-  const clamped = outOfBounds.lines.find((l) => l.label === "Settlement / escrow fee")!
-  check("out-of-bounds adjustment is CLAMPED into [0.5×low, 1.5×high] — the floor holds",
-    clamped.low === Math.floor(settle.low * 0.5) && clamped.high === Math.ceil(settle.high * 1.5))
+  check("POSITIVE CONTROL for the old clamp: a wild model range moves NOTHING (the wave-143 clamp would have set the line to 0.5x-1.5x)",
+    figures(wild.lines) === figures(est.lines) && wild.lines.find((l) => l.label === "Settlement / escrow fee")!.low !== Math.floor(settle.low * 0.5))
 
   const lenderLine = est.lines.find((l) => l.label.startsWith("Prepaid interest"))!
   const refusals = applyAiRefinements(est.lines, [
     { label: "Prepaid interest (~15 days)", low: 1, high: 2, reason: "trust me" },
-    { label: "Settlement / escrow fee", low: 500, high: 900, reason: "   " },
-    { label: "Nonexistent line", low: 1, high: 2, reason: "x" },
-    { label: "Appraisal", low: -50, high: 20, reason: "negative" },
+    { label: "Settlement / escrow fee", reason: "   " },
+    { label: "Nonexistent line", reason: "x" },
   ], conv)
-  check("refusals: lender-fact untouchable, empty reason refused, unknown line refused, insane range refused — nothing applied",
-    refusals.applied.length === 0 && refusals.rejected.length === 4
-    && refusals.rejected.some((r) => /lender-fact/.test(r.why))
-    && refusals.rejected.some((r) => /no reason stated/.test(r.why))
-    && refusals.lines.find((l) => l.label.startsWith("Prepaid interest"))!.low === lenderLine.low)
+  check("refusals: a lender-fact line is never annotated, an empty reason is refused, an unknown line is refused — nothing changed",
+    refusals.applied.length === 0 && refusals.rejected.length === 3
+    && refusals.rejected.some((r) => /lender-fact/.test(r.why)) && refusals.rejected.some((r) => /no reason stated/.test(r.why))
+    && refusals.lines.find((l) => l.label.startsWith("Prepaid interest"))!.low === lenderLine.low && figures(refusals.lines) === figures(est.lines))
 
   const pendingEst = estimateBuyerClosingCosts({ purchasePrice: 500_000, loanAmount: null, sellerCredit: 0, state: "CA" })
   const pendingRefusal = applyAiRefinements(pendingEst.lines, [
     { label: "Lender fees (origination + underwriting)", low: 2000, high: 4000, reason: "typical" },
   ], conv)
-  check("pending lines are untouchable — AI cannot invent dollars where the loan terms aren't on file",
+  check("pending lines are untouched — AI cannot speak where the loan terms aren't on file",
     pendingRefusal.applied.length === 0 && /pending the lender's terms/.test(pendingRefusal.rejected[0]?.why ?? ""))
+  const action = src("app/actions/buyer-closing-costs.ts")
+  check("the prompt asks for explanations with NO dollar figures, and its schema carries no low / high (the model has no number to return)",
+    /explanations: z\.array\(z\.object\(\{\s*label: z\.string\(\),\s*reason: z\.string\(\),\s*\}\)\)/.test(action) && /NO dollar figures/.test(action) && !/low: z\.number\(\)/.test(action))
 }
 
 function wiringLayer() {
@@ -183,12 +187,12 @@ function wiringLayer() {
   const action = src("app/actions/buyer-closing-costs.ts")
   check("action resolves region property_state → brokerage state fallback, and passes it to the estimator",
     /property_state/.test(action) && /\(brokerage as any\)\?\.state/.test(action) && /state,\s*\n\s*\}\)/.test(action))
-  check("action's AI pass is OPT-IN (refineWithAi), bounded via applyAiRefinements, gateway-routed (generateObjectRouted), deterministic floor on failure",
+  check("action's AI pass is OPT-IN (refineWithAi), applied only through applyAiRefinements (explanations, no figures), gateway-routed (generateObjectRouted), deterministic floor on failure",
     /refineWithAi/.test(action) && /applyAiRefinements/.test(action)
     && /generateObjectRouted/.test(action) && /deterministic floor holds/.test(action))
   const card = src("app/components/portal/buyer-closing-costs-card.tsx")
-  check("portal card renders per-line provenance (sourceBadge), the regional authority line, and the user-initiated AI refine",
-    /sourceBadge/.test(card) && /Loan Estimate is the authority/.test(card) && /Sharpen this estimate with AI/.test(card))
+  check("portal card renders per-line provenance (sourceBadge), the regional authority line, and the user-initiated AI EXPLANATION (never 'sharpen' a figure)",
+    /sourceBadge/.test(card) && /Loan Estimate is the authority/.test(card) && /Explain this estimate with AI/.test(card) && !/Sharpen this estimate/.test(card))
   const push = src("lib/transactions/stage-progression.ts")
   check("closing-prep push copy carries the labels: lender terms where real, labeled regional estimate otherwise, Loan Estimate the authority",
     /labeled regional estimate/.test(push) && /Loan Estimate is the authority/.test(push) && /property_state/.test(push))

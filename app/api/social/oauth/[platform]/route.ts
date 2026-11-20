@@ -36,7 +36,8 @@ import {
   isPlatformSocialChannel,
 } from "@/lib/platform/platform-social"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
-import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
+import { encryptSecret, isEncryptionConfigured } from "@/lib/security/secret-crypto"
 
 type SocialPlatform = SocialOAuthProvider
 
@@ -162,6 +163,17 @@ export async function GET(
     if (!storedState || storedState !== state) {
       return failRedirect("Security validation failed — please try again")
     }
+
+    // FAIL CLOSED BEFORE THE EXCHANGE (wave 140H; owner wave 139: secrets fail closed). With no
+    // SECRETS_ENCRYPTION_KEY the token write below would refuse; exchanging the code first would spend
+    // a single-use authorization code for a token that cannot be stored. Refuse here, raise the
+    // platform incident (no secret in it), and tell the user nothing was stored.
+    if (!isEncryptionConfigured()) {
+      const { raiseSecretStorageIncident } = await import("@/lib/security/credential-rotation")
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      await raiseSecretStorageIncident(createServiceClient(), { surface: `social OAuth callback (${platform})`, brokerageId: null, code: "secrets_key_missing" })
+      return failRedirect("Secret storage is not configured on this deployment — the connection was not completed and nothing was stored")
+    }
     cookieStore.delete("social_oauth_state")
 
     // Decode state
@@ -230,7 +242,7 @@ export async function GET(
       // Defense in depth: the connecting user must STILL hold platform marketing.
       const { data: staffRow } = await svc
         .from("users").select("user_type, platform_role, email").eq("id", stateData.userId).maybeSingle()
-      const role = (staffRow as any)?.platform_role ?? ((staffRow as any)?.user_type === "superadmin" ? "superadmin" : null)
+      const role = resolvePlatformRoleIdentity((staffRow as any)?.user_type, (staffRow as any)?.platform_role)
       if (!platformStaffCan(role, "marketing")) {
         return redirectPlatformResult(baseUrl, false, channel, "Platform marketing access required")
       }
@@ -280,22 +292,47 @@ export async function GET(
     // callback. Resolve the connecting user's brokerage; account_id keeps the
     // userId placeholder (the publisher fills the real one on first use), so
     // (brokerage_id, platform, account_id=userId) is unique per user.
-    const { data: connectingUser } = await supabase
+    const { data: connectingUser, error: connectingUserErr } = await supabase
       .from("users").select("brokerage_id").eq("id", stateData.userId).maybeSingle()
+    // A refused read is not "no brokerage" (CLAUDE.md §3), and social_media_accounts.brokerage_id is NOT NULL: a connect that
+    // cannot name its tenant is refused here with its reason, instead of being sent to the database to fail as "save failed".
+    const connectingBrokerageId = ((connectingUser as { brokerage_id?: string | null } | null)?.brokerage_id) ?? null
+    if (connectingUserErr || !connectingBrokerageId) {
+      console.error(`[Social OAuth] ${platform}: the connecting user's brokerage could not be resolved`, connectingUserErr?.message ?? "no brokerage on the user row")
+      return redirectWithResult(baseUrl, false, platform, connectingUserErr ? "Could not verify your account — try again" : "Your account is not linked to a brokerage yet")
+    }
+    // WAVE 155 (convergence) — THE WRITER OF social_media_accounts.agent_id. This callback is the ONE way the product connects a
+    // channel (the two pasted-token doors that also wrote the row were retired by lane 155R29, tombstones in
+    // app/actions/social-media-automation.ts and app/actions/social-publishing.ts), and it never stamped the agent — while the
+    // readers that post "in the sender's voice on the sender's channel" FILTER on it (lib/repurpose/refurbish-run.ts senderAccounts,
+    // lib/agents/asset-manager-actions.ts). Every channel connected through the product was therefore invisible to them. The agent
+    // is the connecting user's agents row IN THE SAME TENANT (agents.id and users.id are disjoint — crossed via agents.user_id);
+    // NULL is a real answer for a seat with no agents row, a refused lookup is not.
+    const { data: connectingAgent, error: connectingAgentErr } = await supabase
+      .from("agents").select("id").eq("user_id", stateData.userId).eq("brokerage_id", connectingBrokerageId).maybeSingle()
+    if (connectingAgentErr) {
+      console.error(`[Social OAuth] ${platform}: the connecting user's agent row could not be read`, connectingAgentErr.message)
+      return redirectWithResult(baseUrl, false, platform, "Could not verify your agent profile — try again")
+    }
 
     // Upsert into social_media_accounts
     const { error: upsertError } = await supabase
       .from("social_media_accounts")
       .upsert(
         {
-          brokerage_id: (connectingUser as any)?.brokerage_id ?? null,
+          brokerage_id: connectingBrokerageId,
           user_id: stateData.userId,
+          agent_id: (connectingAgent as { id?: string } | null)?.id ?? null,
           platform,
-          access_token: tokens.access_token,
-          refresh_token: tokens.refresh_token ?? null,
+          // Wave 140H — the callback writes ENCRYPTED columns only (fail closed with no key).
+          access_token: encryptSecret(tokens.access_token),
+          refresh_token: encryptSecret(tokens.refresh_token ?? null),
           token_expires_at: tokens.expires_in
             ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
             : null,
+          // Wave 155 (lane 155G): keep what the provider GRANTED. Without it the media-variant contract can only read a
+          // connected account's video permission as "unverified" (lib/video/media-variant-contract.ts).
+          scope: typeof (tokens as { scope?: unknown }).scope === "string" ? (tokens as { scope: string }).scope : null,
           account_id: stateData.userId, // placeholder; real account_id fetched by publisher on first use
           account_name: config.displayName,
           is_active: true,
@@ -310,6 +347,21 @@ export async function GET(
     }
 
     console.log(`[Social OAuth] Successfully connected ${platform} for user ${stateData.userId}`)
+    // Wave 143 (lane 143F): a freshly authorized YouTube channel backfills the approved public non-personal videos
+    // that were waiting on it — best-effort, bounded, never failing the connect.
+    if (platform === "youtube") {
+      try {
+        const { data: me } = await supabase.from("users").select("brokerage_id").eq("id", stateData.userId).maybeSingle()
+        const brokerageId = (me as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+        if (brokerageId) {
+          const { backfillYouTubeAutoPublish } = await import("@/lib/video/youtube-publish")
+          const b = await backfillYouTubeAutoPublish(supabase, brokerageId, { limit: 5 })
+          console.log(`[Social OAuth] YouTube backfill on connect: ${JSON.stringify(b).slice(0, 240)}`)
+        }
+      } catch (e) {
+        console.warn("[Social OAuth] YouTube backfill skipped (connect unaffected):", e instanceof Error ? e.message : String(e))
+      }
+    }
     return redirectWithResult(baseUrl, true, platform)
   }
 

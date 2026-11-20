@@ -79,6 +79,148 @@ export interface SellerCostInput {
   /** the buyer's negotiated closing-cost credit on the accepted offer
    *  (offers.closing_cost_contribution) — a deal fact. */
   buyerClosingCredit?: number | null
+  /** WAVE 144 (lane 144D, owner ruling 6): the property-tax proration CONVENTION for this deal, as the settlement agent
+   *  states it (or a compliance-approved jurisdiction rule). When every term is present the proration line becomes a
+   *  NUMBER (prorateTax); otherwise it stays a pending note naming what is missing — never one state's rule for all. */
+  taxProration?: Partial<TaxProrationInput> | null
+}
+
+// ─── PROPERTY-TAX PRORATION — the deterministic math, every convention an INPUT (wave 144, lane 144D) ───────────────
+//
+// Owner (2026-10-25): "Net sheet math applies to closing math: tax proration (state-dependent) … estimates are compared with
+// the authoritative final title/closing statement; never hard-code one state's rule for all."
+// WHAT VARIES (realestate-mortgage skill: "Location matters — property tax rates vary … use local rates"; "show the math"):
+// whether the jurisdiction collects in ARREARS (the seller has not yet paid their share of the period, so the seller credits
+// the buyer) or in ADVANCE (the seller prepaid the period, so the buyer reimburses the seller); when the tax period starts (a
+// calendar year, a July fiscal year, a county's own year); the day count (actual days of a 365-day year, actual/actual, or a
+// 30/360 banker's year); and who owns the closing day. NONE of these is defaulted here: each is a required input, supplied by
+// the settlement agent's proration instruction for the deal or by a compliance-approved jurisdiction rule (lane 144A's
+// adaptive vocabulary) — a missing term leaves the line PENDING with the missing terms named. The settlement statement
+// remains the authority; lib/offers/closing-cost-accuracy.ts grades the estimate against it.
+
+export type TaxPaymentTiming = "arrears" | "advance"
+export type ProrationDayBasis = "actual_365" | "actual_actual" | "banker_360"
+export type ClosingDayOwner = "buyer" | "seller"
+
+export interface TaxProrationInput {
+  /** The tax bill for the WHOLE tax period, in dollars (the tax record / the title's figure). */
+  annualTax: number
+  /** The tax period's first day (YYYY-MM-DD). */
+  periodStart: string
+  timing: TaxPaymentTiming
+  /** YYYY-MM-DD — the closing date, inside the tax period. */
+  closeDate: string
+  closingDayOwner: ClosingDayOwner
+  dayBasis: ProrationDayBasis
+  /** Where the convention came from — the settlement agent's instruction, or the approved jurisdiction rule's citation. */
+  source: string
+}
+
+type TaxProrationResult =
+  | {
+      ok: true
+      /** arrears → the seller credits the buyer; advance → the buyer reimburses the seller. */
+      direction: "seller_credits_buyer" | "buyer_reimburses_seller"
+      amount: number
+      sellerDays: number
+      totalDays: number
+      note: string
+    }
+  | { ok: false; pending: true; missing: string[] }
+
+const YMD_RE = /^(\d{4})-(\d{2})-(\d{2})$/
+
+function ymdParts(s: unknown): { y: number; m: number; d: number } | null {
+  if (typeof s !== "string") return null
+  const m = YMD_RE.exec(s.slice(0, 10))
+  if (!m) return null
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3])
+  const dim = [31, (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1]
+  return mo >= 1 && mo <= 12 && d >= 1 && d <= (dim ?? 0) ? { y, m: mo, d } : null
+}
+
+/** Whole days from a to b (b − a), on UTC calendar dates — no local-time drift. */
+const dayIndex = (p: { y: number; m: number; d: number }) => Math.round(Date.UTC(p.y, p.m - 1, p.d) / 86_400_000)
+
+/** 30/360 (US) day count from a to b. */
+function days360(a: { y: number; m: number; d: number }, b: { y: number; m: number; d: number }): number {
+  const d1 = Math.min(a.d, 30)
+  const d2 = b.d === 31 && d1 === 30 ? 30 : b.d
+  return (b.y - a.y) * 360 + (b.m - a.m) * 30 + (d2 - d1)
+}
+
+/**
+ * PURE — the property-tax proration for a deal, from the deal's own convention. Rounded to the cent once, at the end.
+ * The seller owns the days from the period start up to the closing (through the closing day when the seller owns it).
+ * Module-private: reached through estimateSellerClosingCosts({ taxProration }) — the net-sheet engine the proofs drive.
+ */
+function prorateTax(input: Partial<TaxProrationInput> | null | undefined): TaxProrationResult {
+  const i = input ?? {}
+  const missing: string[] = []
+  const annualTax = Number(i.annualTax)
+  if (!(Number.isFinite(annualTax) && annualTax > 0)) missing.push("the tax bill for the period")
+  const start = ymdParts(i.periodStart)
+  if (!start) missing.push("the tax period's start date")
+  if (i.timing !== "arrears" && i.timing !== "advance") missing.push("whether the jurisdiction collects in arrears or in advance")
+  const close = ymdParts(i.closeDate)
+  if (!close) missing.push("the closing date")
+  if (i.closingDayOwner !== "buyer" && i.closingDayOwner !== "seller") missing.push("who owns the closing day")
+  if (i.dayBasis !== "actual_365" && i.dayBasis !== "actual_actual" && i.dayBasis !== "banker_360") missing.push("the day-count basis")
+  if (!String(i.source ?? "").trim()) missing.push("the source of the convention (the settlement agent's instruction or the approved jurisdiction rule)")
+  if (missing.length > 0 || !start || !close) return { ok: false, pending: true, missing }
+
+  const end = { y: start.y + 1, m: start.m, d: start.d }
+  const startIdx = dayIndex(start)
+  const endIdx = dayIndex(end) // exclusive: the next period's first day
+  const closeIdx = dayIndex(close)
+  if (closeIdx < startIdx || closeIdx >= endIdx) return { ok: false, pending: true, missing: ["a closing date inside the stated tax period"] }
+
+  // The seller's last owned day: the day before closing when the buyer owns the closing day, else the closing day itself.
+  const sellerLastIdx = i.closingDayOwner === "buyer" ? closeIdx - 1 : closeIdx
+  let sellerDays: number
+  let totalDays: number
+  if (i.dayBasis === "banker_360") {
+    totalDays = 360
+    const lastDate = new Date((sellerLastIdx + 1) * 86_400_000) // the day AFTER the seller's last day = the count's end
+    const after = { y: lastDate.getUTCFullYear(), m: lastDate.getUTCMonth() + 1, d: lastDate.getUTCDate() }
+    sellerDays = Math.max(0, Math.min(360, days360(start, after)))
+  } else {
+    totalDays = i.dayBasis === "actual_365" ? 365 : endIdx - startIdx
+    sellerDays = Math.max(0, Math.min(totalDays, sellerLastIdx - startIdx + 1))
+  }
+  const cents = (n: number) => Math.round(n * 100) / 100
+  if (i.timing === "arrears") {
+    const amount = cents((annualTax * sellerDays) / totalDays)
+    return {
+      ok: true,
+      direction: "seller_credits_buyer",
+      amount,
+      sellerDays,
+      totalDays,
+      note: `taxes are paid in arrears here, so the seller credits the buyer for the seller's ${sellerDays} of ${totalDays} days of the $${annualTax.toLocaleString("en-US")} bill (${i.dayBasis}; the ${i.closingDayOwner} owns the closing day) — ${String(i.source).trim()}`,
+    }
+  }
+  const amount = cents((annualTax * (totalDays - sellerDays)) / totalDays)
+  return {
+    ok: true,
+    direction: "buyer_reimburses_seller",
+    amount,
+    sellerDays,
+    totalDays,
+    note: `taxes are paid in advance here, so the buyer reimburses the seller for the buyer's ${totalDays - sellerDays} of ${totalDays} days of the $${annualTax.toLocaleString("en-US")} bill the seller prepaid (${i.dayBasis}; the ${i.closingDayOwner} owns the closing day) — ${String(i.source).trim()}`,
+  }
+}
+
+/** The proration LINE: a number when the convention is complete, else the pending note (with what is missing). A
+ *  reimbursement to the seller is a NEGATIVE cost (it raises the net). */
+function prorationLine(i: SellerCostInput, fallbackNote: string, sourceLabel: string | null): SellerCostLine {
+  const p = i.taxProration ? prorateTax(i.taxProration) : null
+  if (p && p.ok) {
+    const signed = p.direction === "seller_credits_buyer" ? p.amount : -p.amount
+    return { label: "Property-tax proration", low: signed, high: signed, note: p.note, source: "deal_fact", sourceLabel: String(i.taxProration?.source ?? "").trim() }
+  }
+  const missingNote = p && !p.ok ? ` Still needed to compute it: ${p.missing.join("; ")}.` : ""
+  return { label: "Property-tax proration", low: 0, high: 0, pending: true, note: `${fallbackNote}${missingNote}`, ...(sourceLabel ? { sourceLabel } : {}) }
 }
 
 export interface SellerClosingEstimate {
@@ -237,16 +379,13 @@ export function estimateSellerClosingCosts(i: SellerCostInput): SellerClosingEst
       sourceLabel: regLabel!,
     })
 
-    // Proration is a NOTE, not a number: it needs the close date + the
-    // county's paid-through status — neither is invented here.
-    lines.push({
-      label: "Property-tax proration",
-      low: 0,
-      high: 0,
-      pending: true,
-      note: `prorated to your closing date — direction and size depend on the close date and the county's paid-through status. ${conv.stateName} effective property tax runs ~${conv.propertyTaxLowPct}%–${conv.propertyTaxHighPct}%/yr (${regLabel})`,
-      sourceLabel: regLabel!,
-    })
+    // Proration is a NOTE until the deal's own convention is supplied (wave 144: prorateTax) — the close date, the
+    // tax bill, arrears vs advance, the period, the day count and the closing-day owner; none is invented here.
+    lines.push(prorationLine(
+      i,
+      `prorated to your closing date — direction and size depend on the close date and the county's paid-through status. ${conv.stateName} effective property tax runs ~${conv.propertyTaxLowPct}%–${conv.propertyTaxHighPct}%/yr (${regLabel})`,
+      regLabel!,
+    ))
   } else {
     lines.push({
       label: "Transfer / deed tax (seller share)",
@@ -275,13 +414,7 @@ export function estimateSellerClosingCosts(i: SellerCostInput): SellerClosingEst
       high: 300,
       source: "industry_band",
     })
-    lines.push({
-      label: "Property-tax proration",
-      low: 0,
-      high: 0,
-      pending: true,
-      note: "prorated to your closing date — depends on the close date and the county's paid-through status",
-    })
+    lines.push(prorationLine(i, "prorated to your closing date — depends on the close date and the county's paid-through status", null))
   }
 
   const totalLow = lines.reduce((s, l) => s + (l.pending ? 0 : l.low), 0)

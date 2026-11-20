@@ -26,7 +26,7 @@ export default async function CrmSettingsPage() {
       {!status.ok ? (
         <div className="text-red-600 text-sm">{status.error}</div>
       ) : (
-        <CrmConnectForm active={status.active} connected={status.connected} />
+        <CrmConnectForm active={status.active} connected={status.connected} lastError={status.lastError} lastSyncedAt={status.lastSyncedAt} verified={status.verified} />
       )}
     </div>
   )

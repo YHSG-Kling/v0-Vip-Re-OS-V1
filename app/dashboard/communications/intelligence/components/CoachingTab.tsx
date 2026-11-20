@@ -21,6 +21,7 @@ interface AgentInsight {
   avg_health_score: number          // 0-100
   objections_raised: string[]
   buying_signals: string[]
+  pain_points: string[]
   response_time_avg_seconds: number | null
   conversation_count: number
 }
@@ -89,6 +90,7 @@ function AgentCard({
 
   const topObjections = topN(insight.objections_raised)
   const topSignals    = topN(insight.buying_signals)
+  const topPainPoints = topN(insight.pain_points ?? [])
   const sentimentData = [{ value: insight.avg_sentiment_score, fill: "hsl(var(--primary))" }]
 
   async function handleGenerate() {
@@ -195,8 +197,8 @@ function AgentCard({
             </div>
           </div>
 
-          {/* Top objections + signals */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Top objections + signals + pain points (all three are extracted from the same analysed threads) */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">Top Objections</p>
               {topObjections.length === 0
@@ -216,6 +218,17 @@ function AgentCard({
                   <div key={s.label} className="flex items-center justify-between text-xs py-0.5">
                     <span className="text-foreground truncate">{s.label}</span>
                     <span className="ml-2 font-medium text-muted-foreground shrink-0">×{s.count}</span>
+                  </div>
+                ))}
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">Top Pain Points</p>
+              {topPainPoints.length === 0
+                ? <p className="text-xs text-muted-foreground">None recorded</p>
+                : topPainPoints.map(p => (
+                  <div key={p.label} className="flex items-center justify-between text-xs py-0.5">
+                    <span className="text-foreground truncate">{p.label}</span>
+                    <span className="ml-2 font-medium text-muted-foreground shrink-0">×{p.count}</span>
                   </div>
                 ))}
             </div>

@@ -1,10 +1,11 @@
 "use server"
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient }        from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getSellerCoaching }   from "@/lib/seller-coaching"
+import { getSellerCoaching }   from "@/lib/seller-coaching/coaching-generator" // the module, not the barrel (proxy-graph budget)
 import { getSellerPersona }    from "@/lib/seller-coaching/persona-utils"
-import type { SellerPersona, SellerCoachingContent } from "@/lib/seller-coaching"
+import type { SellerPersona, SellerCoachingContent } from "@/lib/seller-coaching/coaching-generator"
 
 interface GetListingCoachingResult {
   success: boolean
@@ -73,11 +74,17 @@ export async function getListingCoaching(
     }
   }
 
+  // LAW 5 (wave 155, lane 155R23): a cache miss or a stale row (7 days) regenerates seller_stage_coaching through a PAID model
+  // inside getSellerCoaching, so this request leaves ONE receipt: the session user, the SESSION's tenant (the listing was read
+  // under it above), the listing. Spend stays on the AI cost ledger; no key — a second request is a second request.
+  const sessionTenant = userRow.brokerage_id as string
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: sessionTenant, action: "coaching.seller_stage_card.load", actor: { type: "user", userId: user.id }, subject: { type: "listing", id: listing.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_stage: listing.lifecycle_stage ?? "LEAD" } }, async (): Promise<GetListingCoachingResult> => {
   try {
     const coaching = await getSellerCoaching(
       listing.lifecycle_stage ?? "LEAD",
       persona,
-      listing.brokerage_id ?? userRow.brokerage_id
+      listing.brokerage_id ?? sessionTenant
     )
 
     return {
@@ -90,6 +97,7 @@ export async function getListingCoaching(
   } catch (err: any) {
     return { success: false, error: err?.message ?? "Coaching generation failed" }
   }
+  })
 }
 
 /**
@@ -137,11 +145,11 @@ export async function refreshSellerCoaching(
 
   // Invalidate: set updated_at to epoch so staleness check forces re-generation
   const svc = createServiceClient()
-  await svc
+  await sentinelWrite(svc, svc
     .from("seller_stage_coaching")
     .update({ updated_at: new Date(0).toISOString() })
     .eq("listing_stage", listing.lifecycle_stage ?? "LEAD")
-    .or(persona ? `persona.eq.${persona},persona.is.null` : "persona.is.null")
+    .or(persona ? `persona.eq.${persona},persona.is.null` : "persona.is.null"), { table: "seller_stage_coaching", flow: "seller_stage_coaching_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
 
   // Re-run full generation
   return getListingCoaching(listingId)
@@ -185,6 +193,8 @@ export async function dismissCoachingCard(
     return { success: false, error: "Forbidden" }
   }
 
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: callerRow.brokerage_id, action: "listing.coaching_card.dismiss", actor: { type: "user", userId: user.id }, subject: { type: "listing", id: listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const { error } = await supabase.from("activities").insert({
     entity_type:   "listing",
     entity_id:     listingId,
@@ -197,4 +207,5 @@ export async function dismissCoachingCard(
 
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }

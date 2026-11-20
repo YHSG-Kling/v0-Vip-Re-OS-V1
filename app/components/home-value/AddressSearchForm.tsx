@@ -17,7 +17,9 @@ import {
 } from "@/components/ui/select"
 import { ArrowRight, ArrowLeft, Loader2, Home, ClipboardList, User, Shield, CheckCircle2 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { Checkbox } from "@/components/ui/checkbox"
+// C15 (wave 148, lane 148B): the ONE consent component — no form renders its own consent checkbox.
+import { ConsentBoxes, useConsentBoxes } from "@/app/components/forms/ConsentBoxes"
+import { PROPERTY_TYPE_OPTIONS } from "@/lib/constants"
 
 interface ActiveQuestions {
   sellTimeline?: boolean
@@ -41,6 +43,8 @@ interface QuestionLabels {
 interface AddressSearchFormProps {
   agentSlug?: string
   brokerageId?: string
+  /** The name the consent names — resolved on the server exactly as the submission door does (getHomeValueConsentBrand). */
+  consentBrandName?: string
   utmSource?: string
   activeQuestions?: ActiveQuestions
   questionLabels?: QuestionLabels
@@ -59,6 +63,7 @@ const STEPS = [
 export function AddressSearchForm({
   agentSlug,
   brokerageId,
+  consentBrandName,
   utmSource,
   activeQuestions,
   questionLabels,
@@ -116,7 +121,7 @@ export function AddressSearchForm({
   const [lastName, setLastName] = useState("")
   const [email, setEmail] = useState("")
   const [phone, setPhone] = useState("")
-  const [tcpaConsent, setTcpaConsent] = useState(false)
+  const consent = useConsentBoxes("home_value", consentBrandName ?? "our brokerage")
 
   // City OR zip is sufficient (seller may only know one)
   const hasCityOrZip = city.trim() !== "" || zipCode.trim() !== ""
@@ -144,7 +149,8 @@ export function AddressSearchForm({
     firstName.trim() !== "" &&
     lastName.trim() !== "" &&
     email.trim() !== "" &&
-    phone.trim() !== ""
+    phone.trim() !== "" &&
+    consent.serviceGiven
 
   async function handleSubmit() {
     if (!isStep3Valid) return
@@ -169,10 +175,7 @@ export function AddressSearchForm({
         agentSlug,
           brokerageId,
           utmSource,
-          tcpaConsent,
-          tcpaConsentText: tcpaConsent
-            ? "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase. Message and data rates may apply."
-            : undefined,
+          consent: consent.submission,
           qualificationData: {
           sellTimeline,
           motivation,
@@ -314,13 +317,15 @@ export function AddressSearchForm({
                 <SelectTrigger id="propertyType">
                   <SelectValue placeholder="Select type" />
                 </SelectTrigger>
+                {/* Canonical options. This list previously offered "mobile_home" (no
+                    canonical equivalent — it now maps to "other"), omitted townhouse and
+                    commercial entirely, and folded townhomes into Condo. A seller with a
+                    townhouse had to mis-classify their own home, and the value they picked
+                    could not survive into a listing. */}
                 <SelectContent>
-                  <SelectItem value="single_family">Single Family</SelectItem>
-                  <SelectItem value="condo">Condo / Townhome</SelectItem>
-                  <SelectItem value="multi_family">Multi-Family</SelectItem>
-                  <SelectItem value="land">Land / Lot</SelectItem>
-                  <SelectItem value="mobile_home">Mobile / Manufactured</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
+                  {PROPERTY_TYPE_OPTIONS.map((pt) => (
+                    <SelectItem key={pt.value} value={pt.value}>{pt.label}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -397,7 +402,7 @@ export function AddressSearchForm({
             </div>
 
             {!hasCityOrZip && propertyAddress && (
-              <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
                 Please enter your city or ZIP code so we can find comparable sales.
               </p>
             )}
@@ -600,25 +605,8 @@ export function AddressSearchForm({
               />
             </div>
 
-            {/* TCPA consent — governs channel permission, not lead creation */}
-            <label className="flex items-start gap-2 mt-1 cursor-pointer">
-              <Checkbox
-                id="tcpa-hv"
-                checked={tcpaConsent}
-                onCheckedChange={(v) => setTcpaConsent(!!v)}
-                className="mt-0.5 shrink-0"
-              />
-              <span className="text-xs text-muted-foreground leading-relaxed">
-                I agree to receive calls, texts, and emails from this brokerage and its agents regarding
-                real estate services. Consent is not required for purchase. Message and data rates may apply.
-              </span>
-            </label>
-
-            {!tcpaConsent && (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                Without consent, we can only contact you by email.
-              </p>
-            )}
+            {/* C15 — the ONE consent component: service delivery required, marketing optional per channel. */}
+            <ConsentBoxes {...consent.boxProps} idPrefix="hv-consent" offered={["email", "sms", "voice", "direct_mail"]} className="mt-1" />
 
             <div className="flex items-start gap-2 text-sm text-muted-foreground bg-muted/50 p-3 rounded-lg">
               <Shield className="h-4 w-4 mt-0.5 shrink-0 text-primary" />

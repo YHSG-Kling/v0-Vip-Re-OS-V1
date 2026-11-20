@@ -14,6 +14,9 @@
  * forbidden narrowing. Pure + fully unit-tested.
  */
 
+import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
+import { audienceProxyReasonFor } from "@/lib/compliance-rules/audience-compliance"
+
 export type AdObjective = "leads" | "traffic" | "awareness" | "conversions"
 
 export interface AdCreativeSpec {
@@ -32,6 +35,41 @@ export interface AdTargetingSpec {
   genders?:  Array<"male" | "female">
   interests?: string[]
   audienceExternalId?: string | null   // a synced custom/lookalike audience to target
+  /**
+   * Synced audiences to TARGET, as platform audience ids. The plural form of
+   * `audienceExternalId`, which stays for the single-audience callers.
+   * Resolved by lib/ads/launch-assembler.ts from
+   * `targeting_config.custom_audience_ids` — the field that had three writers
+   * and, until this lane, no reader at all (CLAUDE.md §1).
+   */
+  audienceExternalIds?: string[]
+  /**
+   * Synced audiences to SUPPRESS, as platform audience ids — Meta's
+   * `excluded_custom_audiences`.
+   *
+   * A HOUSING AD MAY NOT SUPPRESS PEOPLE FOR A PROTECTED CHARACTERISTIC (Fair
+   * Housing Act, 42 U.S.C. § 3604(c); HUD's 2019-2022 actions against Meta).
+   * This module is pure and cannot see who an audience contains, so it does not
+   * decide that — `lib/ads/audience-exclusion.ts` does, at every door. What this
+   * module enforces is that the decision was MADE: see `exclusionGovernance`.
+   */
+  excludedAudienceExternalIds?: string[]
+  /**
+   * Set to `"gated"` ONLY by lib/ads/launch-assembler.ts, and only after
+   * `verifyExclusionSlot` returned ok for this campaign. `validateAdReadiness`
+   * turns an exclusion list without it into a VIOLATION, so an ad assembled by
+   * some future path that forgot the gate cannot reach a platform: "nobody
+   * checked" must never render as "checked and fine" (CLAUDE.md §4).
+   */
+  exclusionGovernance?: "gated"
+  /**
+   * WAVE 148 (lane 148C, owner ruling 1 — compliance checks audience SELECTION and DELIVERY). Set to `"gated"` ONLY by
+   * lib/ads/launch-assembler.ts after every TARGETED audience (the singular and plural ids) was re-gated at the delivery door —
+   * resolved to a governed audience row of this tenant, its source rule re-checked by the selection gates, and no platform
+   * look-alike under HOUSING. `validateAdReadiness` turns targeted audiences without it into a VIOLATION, exactly as it does for
+   * the exclusion slot: "nobody checked" must never render as "checked and fine".
+   */
+  inclusionGovernance?: "gated"
 }
 
 export interface AdBuildInput {
@@ -72,6 +110,39 @@ export function validateAdReadiness(input: AdBuildInput): ValidationResult {
   if (!input.creative.mediaAssetUrl?.trim()) missing.push("creative.mediaAssetUrl")
   if ((input.targeting.locations ?? []).length === 0) missing.push("targeting.locations")
 
+  // AN UNGOVERNED SUPPRESSION LIST IS A VIOLATION ON EVERY PLATFORM, not only
+  // Meta — Google Customer Match carries the same exposure. Checked outside the
+  // `isMeta` branch on purpose: a housing ad that withholds itself from an
+  // unchecked list of people is the restricted act wherever it runs.
+  if ((input.targeting.excludedAudienceExternalIds ?? []).length > 0
+      && input.targeting.exclusionGovernance !== "gated") {
+    violations.push(
+      "excluded audiences are present but were never gated — every audience in an exclusion slot must " +
+      "pass lib/ads/audience-exclusion.ts (a protected-characteristic persona audience may not suppress " +
+      "a housing ad). Assemble through lib/ads/launch-assembler.ts, which runs that gate.",
+    )
+  }
+
+  // ── WAVE 148 (lane 148C): FAIR HOUSING ON DELIVERY, every platform — not only the wording ───────────────────────────────
+  // Every audience this product runs is a HOUSING audience (protected-class-signals.ts header: there is no "is this housing?"
+  // branch to get wrong), so these hold on Meta AND Google:
+  //   · targeted audiences must have been re-gated at the delivery door (inclusionGovernance — set only by launch-assembler);
+  //   · an interest that names a protected class or a proxy for one is refused (the field-token classifier + the audience proxy
+  //     vocabulary, lib/compliance-rules/audience-compliance.ts) — an interest the payload builder would drop silently is still
+  //     the operator's intent, so it is refused in words rather than quietly ignored.
+  const targeted = !!input.targeting.audienceExternalId || (input.targeting.audienceExternalIds ?? []).length > 0
+  if (targeted && input.targeting.inclusionGovernance !== "gated") {
+    violations.push(
+      "targeted audiences are present but were never gated at delivery — every targeted audience must resolve to a governed " +
+      "audience of this tenant whose source rule passes the selection gates (no protected characteristic or proxy, no platform " +
+      "look-alike under HOUSING). Assemble through lib/ads/launch-assembler.ts, which runs that gate.",
+    )
+  }
+  for (const interest of input.targeting.interests ?? []) {
+    const why = protectedClassReasonFor(interest) ?? audienceProxyReasonFor(interest)
+    if (why) violations.push(`HOUSING ads cannot target the interest "${interest}" — ${why}`)
+  }
+
   if (isMeta) {
     // Lead ads need a page + a lead form; everything else needs a destination url.
     if (input.objective === "leads") {
@@ -88,10 +159,19 @@ export function validateAdReadiness(input: AdBuildInput): ValidationResult {
       if (input.targeting.ageMax != null && input.targeting.ageMax < 65) violations.push("HOUSING ads cannot narrow by age (ageMax must be 65+)")
       if ((input.targeting.genders ?? []).length > 0) violations.push("HOUSING ads cannot target by gender")
       if (input.targeting.locations.some((l) => (l.radiusMiles ?? 0) > 0 && (l.radiusMiles ?? 0) < 15)) violations.push("HOUSING ads cannot use a radius under 15 miles")
+      // WAVE 148 (148C): the header always said the category disables ZIP targeting; the validator never checked it. A ZIP list
+      // is the classic redlining proxy — refused, not silently dropped by the payload builder.
+      if (input.targeting.locations.some((l) => !!l.zip?.trim())) violations.push("HOUSING ads cannot target by ZIP code — use a city / region with a radius of 15 miles or more")
     }
   } else {
     // Google: every ad needs a final URL; responsive ads need real copy.
     if (!input.creative.destinationUrl?.trim()) missing.push("creative.destinationUrl")
+    // WAVE 148 (148C): Google's housing personalized-advertising policy (US / Canada) restricts the same narrowing Meta's HOUSING
+    // category does — age, gender, ZIP code (parental / marital status have no field here). The Google branch checked NONE of it.
+    if (input.targeting.ageMin != null && input.targeting.ageMin > 18) violations.push("housing ads on Google cannot narrow by age (ageMin must be 18)")
+    if (input.targeting.ageMax != null && input.targeting.ageMax < 65) violations.push("housing ads on Google cannot narrow by age (ageMax must be 65+)")
+    if ((input.targeting.genders ?? []).length > 0) violations.push("housing ads on Google cannot target by gender")
+    if (input.targeting.locations.some((l) => !!l.zip?.trim())) violations.push("housing ads on Google cannot target by ZIP code")
   }
 
   return { ready: missing.length === 0 && violations.length === 0, missing, violations }
@@ -104,13 +184,26 @@ export function buildMetaAdStructure(input: AdBuildInput): MetaAdStructure {
   const budgetCents = Math.round(input.dailyBudgetUsd * 100)
   const cta = (input.creative.callToAction ?? "LEARN_MORE").toUpperCase()
   // HOUSING: broad age 18-65+, no gender; geo allowed but not tight radius.
+  // ONE list of targeted audiences, from the singular field and the plural one,
+  // de-duplicated — two spellings of "the audience to target" existed and Meta
+  // takes one array (CLAUDE.md §6).
+  const includeIds = Array.from(new Set([
+    ...(input.targeting.audienceExternalId ? [input.targeting.audienceExternalId] : []),
+    ...(input.targeting.audienceExternalIds ?? []),
+  ]))
+  const excludeIds = Array.from(new Set(input.targeting.excludedAudienceExternalIds ?? []))
   const targeting = {
     geo_locations: {
       cities: input.targeting.locations.filter((l) => l.city).map((l) => ({ name: l.city })),
       regions: input.targeting.locations.filter((l) => l.state && !l.city).map((l) => ({ name: l.state })),
     },
     age_min: 18, age_max: 65,
-    ...(input.targeting.audienceExternalId ? { custom_audiences: [{ id: input.targeting.audienceExternalId }] } : {}),
+    ...(includeIds.length > 0 ? { custom_audiences: includeIds.map((id) => ({ id })) } : {}),
+    // Meta's own Exclude field. It is emitted ONLY when the campaign declared a
+    // suppression list in the product AND that list was gated — which is the
+    // whole point of the field existing: an exclusion this system can see is an
+    // exclusion this system can refuse.
+    ...(excludeIds.length > 0 ? { excluded_custom_audiences: excludeIds.map((id) => ({ id })) } : {}),
   }
   const linkData = input.objective === "leads"
     ? { call_to_action: { type: cta, value: { lead_gen_form_id: input.leadFormId } }, message: input.creative.primaryText, name: input.creative.headline, description: input.creative.description ?? undefined }

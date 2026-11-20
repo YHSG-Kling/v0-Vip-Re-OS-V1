@@ -134,7 +134,7 @@ export function RevenueProtectionHero({ data, brokerageId, agentUserId }: Props)
             <p className="text-[11px] text-muted-foreground uppercase tracking-wide">AI has saved this period</p>
             <div className="flex items-baseline gap-2 mt-0.5">
               <p className="text-3xl font-bold text-foreground tabular-nums">{formatUsd(data.savedGci)}</p>
-              <Sparkles className="h-3.5 w-3.5 text-amber-500" />
+              <Sparkles className="h-3.5 w-3.5 text-amber-600" />
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">
               {data.savesCount} save{data.savesCount === 1 ? "" : "s"}
@@ -181,7 +181,7 @@ export function RevenueProtectionHero({ data, brokerageId, agentUserId }: Props)
         {/* AI lift line */}
         {data.aiLiftPct > 0 && (
           <p className="text-[11px] text-emerald-800 bg-emerald-50 rounded-md px-2 py-1.5 border border-emerald-100">
-            <Sparkles className="h-3 w-3 inline mr-1 text-amber-500" />
+            <Sparkles className="h-3 w-3 inline mr-1 text-amber-600" />
             <strong>AI lift {data.aiLiftPct.toFixed(1)}%</strong> vs. industry no-AI baseline ({formatUsd(data.noAiBaselineGci)} expected without intervention).
           </p>
         )}

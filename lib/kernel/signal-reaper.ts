@@ -7,9 +7,10 @@
 // FEED_ONLY signal past its TTL is expired quietly. After this runs, the invariant holds: no signal
 // stays open beyond its window. Best-effort per signal; never throws.
 
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { SIGNAL_REGISTRY } from "./signal-registry"
+import { signalSpec } from "./signal-registry"
 import { shouldReapSignal, shouldAutoReplaySignal, MAX_HANDLED_OPEN_HOURS, FEED_ONLY_TTL_HOURS } from "./signal-reaper-policy"
 import { publishManagerSignal } from "./manager-signals"
 import type { ManagerKey } from "./manager-registry"
@@ -42,7 +43,9 @@ export async function reapStuckManagerSignals(brokerageId: string, client?: Svc)
   }>) {
     result.scanned += 1
     const ageHours = (now - new Date(row.created_at).getTime()) / 3_600_000
-    const disposition = SIGNAL_REGISTRY[row.signal_type]?.disposition ?? "handled"
+    // Read through the registry's accessor. An UNCATALOGUED signal (signalSpec → undefined)
+    // still reaps conservatively as "handled" — escalate to a human, never expire quietly.
+    const disposition = signalSpec(row.signal_type)?.disposition ?? "handled"
     const action = shouldReapSignal({ ageHours, disposition })
     if (action === "keep") continue
 
@@ -65,9 +68,9 @@ export async function reapStuckManagerSignals(brokerageId: string, client?: Svc)
         dedupe:      false,
       }, svc)
       if (republished.ok && republished.signalId !== row.id) {
-        await svc.from("manager_signals")
+        await sentinelWrite(svc, svc.from("manager_signals")
           .update({ status: "expired", consumed_at: new Date().toISOString(), consumed_action: `auto-replayed (attempt ${replays + 1}/${2}) — re-handed to ${row.to_manager}` })
-          .eq("id", row.id).eq("status", "open")
+          .eq("id", row.id).eq("status", "open"), { table: "manager_signals", flow: "signal_reaper_replay_expire", reason: "expires the replayed original; a loss leaves it for the next reap" })
         result.replayed += 1
         continue
       }
@@ -84,12 +87,12 @@ export async function reapStuckManagerSignals(brokerageId: string, client?: Svc)
           recipient_contact_id: row.contact_id, entity_type: row.entity_type, entity_id: row.entity_id,
         })
         if (agentUserId) {
-          await svc.from("notifications").insert({
+          await sentinelWrite(svc, svc.from("notifications").insert({
             user_id: agentUserId, brokerage_id: brokerageId, type: "manager_handoff_stalled",
             title: "⚠️ A team handoff needs your hand",
             body: `${row.from_manager} → ${row.to_manager}: “${row.message ?? "a handoff"}” couldn't complete automatically. Take a look and handle it.`,
             entity_type: row.entity_type, entity_id: row.entity_id, priority: "high", is_read: false,
-          })
+          }), { table: "notifications", flow: "signal_reaper_notify", brokerageId: brokerageId, reason: "in-app notification — a lost row is a missed bell, never the business write it follows" })
           result.escalated += 1
         }
       } catch (e) {
@@ -100,9 +103,9 @@ export async function reapStuckManagerSignals(brokerageId: string, client?: Svc)
     const reason = action === "expire_escalate"
       ? "expired: handoff did not complete within window — escalated to a human"
       : "expired: feed display TTL reached"
-    await svc.from("manager_signals")
+    await sentinelWrite(svc, svc.from("manager_signals")
       .update({ status: "expired", consumed_at: new Date().toISOString(), consumed_action: reason })
-      .eq("id", row.id).eq("status", "open")
+      .eq("id", row.id).eq("status", "open"), { table: "manager_signals", flow: "signal_reaper_expire", reason: "expires a stale signal; a loss leaves it for the next reap" })
     result.expired += 1
   }
 

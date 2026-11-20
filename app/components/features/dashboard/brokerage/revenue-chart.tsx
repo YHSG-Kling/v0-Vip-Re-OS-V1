@@ -2,6 +2,7 @@
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { TrendingUp, DollarSign } from "lucide-react"
+import { usd } from "@/lib/format/money"
 
 interface RevenueData {
   month: string
@@ -20,14 +21,10 @@ export function BrokerageRevenueChart({
   totalRevenue = 0,
   growthPercent = 0,
 }: BrokerageRevenueChartProps) {
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(amount)
-  }
+  // `formatCurrency` — same-body census, round 4 (2026-09-09, lane FC):
+  // DELETED, byte-identical (in effect) to lib/format/money.ts `usd`
+  // (imported above).
+  const formatCurrency = usd
 
   const maxRevenue = Math.max(...data.map((d) => d.revenue), 1)
 
@@ -41,7 +38,7 @@ export function BrokerageRevenueChart({
           </div>
           <div className="text-right">
             <p className="text-2xl font-bold">{formatCurrency(totalRevenue)}</p>
-            <div className="flex items-center gap-1 text-sm text-emerald-600">
+            <div className="flex items-center gap-1 text-sm text-emerald-700">
               <TrendingUp className="w-4 h-4" />
               <span>{growthPercent > 0 ? "+" : ""}{growthPercent.toFixed(1)}% YoY</span>
             </div>

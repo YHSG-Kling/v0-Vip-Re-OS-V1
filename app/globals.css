@@ -3,6 +3,18 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * THE ONE LIVE PALETTE (app/layout.tsx imports this file; components.json points shadcn at it).
+ * Wave 146, lane 146H (owner ruling 16 — "one consistent high-contrast palette"): every pair the
+ * app/components/ui primitives render is MEASURED against WCAG 2.2 AA by
+ * `npm run test:ui-palette-contrast` (scripts/ui-palette-contrast-guard.ts §T) — 4.5:1 for text,
+ * 3:1 for a form-control boundary and the focus ring. Four live pairs failed at bf67aa63 and were
+ * corrected below WITHIN their hue (no rebrand): --destructive (white label 3.76 → 4.83, error text
+ * 3.76 → 4.83), --muted-foreground (inactive tab on the TabsList 4.34 → 4.81), --input (control
+ * boundary / unchecked Switch track 1.23 → 3.32). Change a token here and the guard re-measures it.
+ * styles/globals.css is the unreferenced v0 template (nothing imports it) — not a second palette.
+ */
+
 :root {
   --background: 0 0% 100%;
   --foreground: 222.2 84% 4.9%;
@@ -15,13 +27,13 @@
   --secondary: 210 40% 96.1%;
   --secondary-foreground: 222.2 47.4% 11.2%;
   --muted: 210 40% 96.1%;
-  --muted-foreground: 215.4 16.3% 46.9%;
+  --muted-foreground: 215.4 16.3% 44%;
   --accent: 210 40% 96.1%;
   --accent-foreground: 222.2 47.4% 11.2%;
-  --destructive: 0 84.2% 60.2%;
+  --destructive: 0 72.2% 50.6%;
   --destructive-foreground: 210 40% 98%;
   --border: 214.3 31.8% 91.4%;
-  --input: 214.3 31.8% 91.4%;
+  --input: 215 16% 57%;
   --ring: 222.2 84% 4.9%;
   --radius: 0.5rem;
   --chart-1: 12 76% 61%;
@@ -54,10 +66,10 @@
   --muted-foreground: 215 20.2% 65.1%;
   --accent: 217.2 32.6% 17.5%;
   --accent-foreground: 210 40% 98%;
-  --destructive: 0 62.8% 30.6%;
+  --destructive: 0 84.2% 60.2%;
   --destructive-foreground: 210 40% 98%;
   --border: 217.2 32.6% 17.5%;
-  --input: 217.2 32.6% 17.5%;
+  --input: 215.4 16.3% 46.9%;
   --ring: 212.7 26.8% 83.9%;
   --chart-1: 220 70% 50%;
   --chart-2: 160 60% 45%;
@@ -66,7 +78,7 @@
   --chart-5: 340 75% 55%;
   --sidebar: 222.2 84% 4.9%;
   --sidebar-foreground: 210 40% 98%;
-  --sidebar-primary: 217.2 91.2% 59.8%;
+  --sidebar-primary: 221.2 83.2% 53.3%;
   --sidebar-primary-foreground: 210 40% 98%;
   --sidebar-accent: 217.2 32.6% 17.5%;
   --sidebar-accent-foreground: 210 40% 98%;

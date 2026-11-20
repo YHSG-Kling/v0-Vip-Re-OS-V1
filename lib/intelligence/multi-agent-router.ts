@@ -1,4 +1,17 @@
-"use server"
+// NOT a server-action module (2026-09-03, integrator, CLAUDE.md §4). The
+// module-level "use server" that stood here made every export a public HTTP
+// endpoint onto a service client: getActiveSessions(brokerageId) and
+// getAgentMetrics(brokerageId) answered ANY tenant's agent sessions to any
+// signed-in caller, and endAgentSession / clearHumanOverride mutated any
+// tenant's rows — the parameter-supplied-tenant IDOR shape. The browser now
+// reaches these only through app/actions/coordination.ts, which resolves the
+// tenant from the session and proves the row is the caller's first. The
+// in-process callers stay: app/api/cron/agent-health-check (cron secret),
+// app/api/intelligence/coordinate (INTERNAL_API_SECRET), app/dashboard/
+// coordination/page.tsx (via the gated actions). `server-only` fails a future
+// client import at build time.
+import "server-only"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -165,29 +178,31 @@ export async function routeToAgent(request: RouteRequest): Promise<RouteResult> 
     }
   }
   
-  // Step 7: Log kernel event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_SESSION_STARTED,
-    entity_type: request.entityType,
-    entity_id: request.entityId,
-    brokerage_id: request.brokerageId,
-    agent_id: request.agentId,
-    payload: {
+  // Step 7: Kernel event — audit row + reactor (`payload` → `metadata`, the column
+  // every reader uses; the bare inserts here reached nothing downstream).
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_SESSION_STARTED,
+    entityType: request.entityType,
+    entityId: request.entityId,
+    brokerageId: request.brokerageId,
+    agentId: request.agentId,
+    metadata: {
       session_id: newSession.id,
       agent_type: agentType,
       capability: request.capability,
       priority: request.priority || 'normal',
     },
   })
-  
+
   // Step 8: Dispatch task
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_TASK_DISPATCHED,
-    entity_type: request.entityType,
-    entity_id: request.entityId,
-    brokerage_id: request.brokerageId,
-    agent_id: request.agentId,
-    payload: {
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_TASK_DISPATCHED,
+    entityType: request.entityType,
+    entityId: request.entityId,
+    brokerageId: request.brokerageId,
+    agentId: request.agentId,
+    metadata: {
       session_id: newSession.id,
       agent_type: agentType,
       capability: request.capability,
@@ -220,13 +235,14 @@ interface HandoffRequest {
 async function initiateHandoff(request: HandoffRequest): Promise<RouteResult> {
   const supabase = createServiceClient()
   
-  // Log handoff initiated event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_HANDOFF_INITIATED,
-    entity_type: request.entityType,
-    entity_id: request.entityId,
-    brokerage_id: request.brokerageId,
-    payload: {
+  // Handoff initiated — audit row + reactor.
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_HANDOFF_INITIATED,
+    entityType: request.entityType,
+    entityId: request.entityId,
+    brokerageId: request.brokerageId,
+    metadata: {
       from_session_id: request.fromSessionId,
       from_agent_type: request.fromAgentType,
       to_agent_type: request.toAgentType,
@@ -235,7 +251,7 @@ async function initiateHandoff(request: HandoffRequest): Promise<RouteResult> {
   })
   
   // End the current session
-  await supabase
+  const { error: handoffStateErr } = await supabase
     .from('agent_state_machine')
     .update({
       status: 'handed_off',
@@ -244,6 +260,7 @@ async function initiateHandoff(request: HandoffRequest): Promise<RouteResult> {
       handoff_reason: request.reason,
     })
     .eq('id', request.fromSessionId)
+  if (handoffStateErr) console.error(`[multi-agent-router] session NOT marked handed_off: ${handoffStateErr.message}`)
   
   // Create new session for the receiving agent
   if (request.toAgentType === 'none' || request.toAgentType === 'human') {
@@ -282,13 +299,13 @@ async function initiateHandoff(request: HandoffRequest): Promise<RouteResult> {
     }
   }
   
-  // Log handoff completed event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_HANDOFF_COMPLETED,
-    entity_type: request.entityType,
-    entity_id: request.entityId,
-    brokerage_id: request.brokerageId,
-    payload: {
+  // Handoff completed — audit row + reactor.
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_HANDOFF_COMPLETED,
+    entityType: request.entityType,
+    entityId: request.entityId,
+    brokerageId: request.brokerageId,
+    metadata: {
       from_session_id: request.fromSessionId,
       from_agent_type: request.fromAgentType,
       to_session_id: newSession.id,
@@ -328,7 +345,7 @@ export async function escalateToHuman(params: {
   }
   
   // Set human override flag
-  await supabase
+  const { error: escalateStateErr } = await supabase
     .from('agent_state_machine')
     .update({
       status: 'escalated',
@@ -338,9 +355,10 @@ export async function escalateToHuman(params: {
       escalation_urgency: params.urgency,
     })
     .eq('id', params.sessionId)
+  if (escalateStateErr) console.error(`[multi-agent-router] human override NOT recorded: ${escalateStateErr.message}`)
   
   // Create smart assistant suggestion for human agent
-  await supabase.from('smart_assistant_suggestions').insert({
+  await sentinelWrite(supabase, supabase.from('smart_assistant_suggestions').insert({
     brokerage_id: session.brokerage_id,
     agent_id: session.assigned_agent_id,
     suggestion_type: 'agent_escalation',
@@ -356,17 +374,23 @@ export async function escalateToHuman(params: {
       entity_id: session.entity_id,
       suggested_action: params.suggestedAction,
     },
-  })
+  }), { table: "smart_assistant_suggestions", flow: "smart_assistant_suggestions_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
   
-  // Log kernel event
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_ESCALATED_TO_HUMAN,
-    entity_type: session.entity_type,
-    entity_id: session.entity_id,
-    brokerage_id: session.brokerage_id,
-    agent_id: session.assigned_agent_id,
-    payload: {
+  // Kernel event — audit row + reactor. `agentId` stamps lifecycle_events.agent_id (the
+  // audit column) but DispatchKernelEventParams carries no agentId field, so the
+  // event-reactor's D-undecies reader (#24, routes this to recruiting_manager for the
+  // escalating agent's team lead) cannot see it there — metadata.agent_id mirrors it,
+  // the same convention #17 MESSAGE_NEEDS_RESPONSE already uses.
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_ESCALATED_TO_HUMAN,
+    entityType: session.entity_type,
+    entityId: session.entity_id,
+    brokerageId: session.brokerage_id,
+    agentId: session.assigned_agent_id,
+    metadata: {
       session_id: params.sessionId,
+      agent_id: session.assigned_agent_id,
       agent_type: session.agent_type,
       reason: params.reason,
       urgency: params.urgency,
@@ -400,7 +424,7 @@ export async function endAgentSession(params: {
     return { success: false, message: 'Session not found' }
   }
   
-  await supabase
+  const { error: endStateErr } = await supabase
     .from('agent_state_machine')
     .update({
       status: params.outcome,
@@ -408,20 +432,22 @@ export async function endAgentSession(params: {
       outcome_summary: params.summary,
     })
     .eq('id', params.sessionId)
+  if (endStateErr) console.error(`[multi-agent-router] session outcome NOT recorded: ${endStateErr.message}`)
   
-  await supabase.from('lifecycle_events').insert({
-    event_type: KernelEvent.AGENT_SESSION_ENDED,
-    entity_type: session.entity_type,
-    entity_id: session.entity_id,
-    brokerage_id: session.brokerage_id,
-    agent_id: session.assigned_agent_id,
-    payload: {
+  const { emitKernelEvent } = await import('@/lib/kernel/emit')
+  await emitKernelEvent({
+    event: KernelEvent.AGENT_SESSION_ENDED,
+    entityType: session.entity_type,
+    entityId: session.entity_id,
+    brokerageId: session.brokerage_id,
+    agentId: session.assigned_agent_id,
+    metadata: {
       session_id: params.sessionId,
       agent_type: session.agent_type,
       outcome: params.outcome,
       summary: params.summary,
-      duration_ms: session.started_at 
-        ? Date.now() - new Date(session.started_at).getTime() 
+      duration_ms: session.started_at
+        ? Date.now() - new Date(session.started_at).getTime()
         : null,
     },
   })

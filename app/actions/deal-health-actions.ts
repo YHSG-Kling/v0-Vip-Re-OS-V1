@@ -18,6 +18,7 @@ import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 
 // ─── Resolve a proactive intervention ────────────────────────────────────────
 
@@ -32,6 +33,7 @@ export async function resolveInterventionAction(params: {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
+  return ledgered("session", { action: "transaction.deal_health_intervention.resolve", subject: { type: "proactive_intervention", id: params.interventionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   // Verify the intervention belongs to a transaction the user can access.
   // We don't enforce brokerage gating here directly — RLS does that.
@@ -59,6 +61,7 @@ export async function resolveInterventionAction(params: {
     revalidatePath(`/dashboard/transactions/${row.transaction_id}`)
   }
   return { success: true }
+  })
 }
 
 // ─── On-demand deal-health rescan ────────────────────────────────────────────
@@ -80,15 +83,32 @@ export async function rescanDealHealthAction(params: {
     return { success: false, error: "Invalid transaction id" }
   }
 
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  // WAVE 155 (lane 155S1) — THE SAME GATE AS THE ROUTE'S MANUAL RESCAN (app/api/cron/deal-health-scan/route.ts POST, commit
+  // 119ac6b4). This action read the transaction through the row policy alone, and the live policy lets a VENDOR PARTY on the
+  // deal read the transaction row — so a vendor could re-score a deal and raise DEAL_AT_RISK_DETECTED for its tenant. Now:
+  // the caller is the SESSION (requireCaller); they must be able to WORK this deal (lib/auth/deal-work-ownership.ts
+  // loadDealWorkAccess — owning agent, assigned coordinator, the deal agent's team lead, a tenant admin, compliance; a lender,
+  // title company, vendor or Contact is not a worker of it); the transaction is read PINNED to the session's tenant. Another
+  // tenant's deal, an unknown id and a deal the caller may not work all answer "Transaction not found"; a gate that cannot
+  // run refuses, never passes.
+  const { requireCaller } = await import("@/lib/auth/require-caller")
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.reason === "unauthenticated" ? "Unauthorized" : caller.error }
+  const user = { id: caller.userId }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { loadDealWorkAccess } = await import("@/lib/auth/deal-work-ownership")
+  const work = await loadDealWorkAccess(svc, { userId: caller.userId, brokerageId: caller.brokerageId, userType: caller.userType, transactionId: params.transactionId })
+  if (!work.ok) return { success: false, error: "Your access to this deal could not be confirmed. Try again in a moment." }
+  if (!work.access.capabilities.read) return { success: false, error: "Transaction not found" }
 
-  const { data: tx } = await supabase
+  const { data: tx, error: txErr } = await svc
     .from("transactions")
     .select("id, brokerage_id")
     .eq("id", params.transactionId)
+    .eq("brokerage_id", caller.brokerageId)
     .maybeSingle()
+  if (txErr) return { success: false, error: "The transaction could not be read. Try again in a moment." }
   if (!tx) return { success: false, error: "Transaction not found" }
 
   try {
@@ -97,13 +117,16 @@ export async function rescanDealHealthAction(params: {
       brokerageId:   tx.brokerage_id,
     })
 
-    // Mirror the cron's lifecycle event so portals + alerts get notified.
-    await supabase.from("lifecycle_events").insert({
-      event_type:  KernelEvent.DEAL_HEALTH_SCORE_UPDATED,
-      entity_type: "transaction",
-      entity_id:   tx.id,
-      brokerage_id: tx.brokerage_id,
-      actor_user_id: user.id,
+    // Mirror the cron's lifecycle event so portals + alerts get notified —
+    // emitKernelEvent does the audit row AND the reactor (a bare insert did neither
+    // of "portals + alerts").
+    await emitKernelEvent({
+      event:       KernelEvent.DEAL_HEALTH_SCORE_UPDATED,
+      entityType:  "transaction",
+      entityId:    tx.id,
+      brokerageId: tx.brokerage_id,
+      actorUserId: user.id,
+      transactionId: tx.id,
       metadata: {
         overall_score: result.overallScore,
         risk_level:    result.riskLevel,
@@ -113,12 +136,13 @@ export async function rescanDealHealthAction(params: {
     })
 
     if (result.riskLevel === "critical" || result.riskLevel === "at_risk") {
-      await supabase.from("lifecycle_events").insert({
-        event_type:  KernelEvent.DEAL_AT_RISK_DETECTED,
-        entity_type: "transaction",
-        entity_id:   tx.id,
-        brokerage_id: tx.brokerage_id,
-        actor_user_id: user.id,
+      await emitKernelEvent({
+        event:       KernelEvent.DEAL_AT_RISK_DETECTED,
+        entityType:  "transaction",
+        entityId:    tx.id,
+        brokerageId: tx.brokerage_id,
+        actorUserId: user.id,
+        transactionId: tx.id,
         metadata: {
           overall_score: result.overallScore,
           risk_level:    result.riskLevel,
@@ -137,4 +161,29 @@ export async function rescanDealHealthAction(params: {
     const message = error instanceof Error ? error.message : "Rescan failed"
     return { success: false, error: message }
   }
+}
+
+/**
+ * WAVE 155 (lane 155R9, G12): ONE agent_action_ledger receipt per session write — ledgerSessionAction
+ * (lib/kernel/action-ledger.ts) does the claim → run → settle. Who and which tenant come from the SESSION (CLAUDE.md §4);
+ * "session" resolves them through getAgentContext. NO idempotency key: a person's second save runs again and leaves a
+ * second receipt. The export's value comes back unchanged; a refused claim (only a malformed action name, caught by
+ * test:action-ledger §14) throws instead of returning a value of another shape. No session tenant → the write runs exactly
+ * as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL — there is no valid row to write).
+ * @proofSeam scripts/ledger-receipts-transaction2-guard.ts
+ */
+async function ledgered<T>(
+  who: { userId?: string | null; brokerageId?: string | null; agentId?: string | null } | null | undefined | "session",
+  what: { action: string; subject: { type: string; id?: string | null; ref?: string | null }; riskClass: string; detail?: Record<string, unknown> },
+  run: () => Promise<T>,
+): Promise<T> {
+  const seat = who === "session" ? await (await import("@/lib/identity/get-agent-context")).getAgentContext() : who
+  if (!seat?.userId || !seat.brokerageId) return run()
+  const id = what.subject.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(what.subject.id) ? what.subject.id : null
+  const subject = { type: what.subject.type, id, ref: id ? what.subject.ref ?? null : what.subject.ref ?? what.subject.id ?? null }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  let ran = false
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: what.action, actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject, riskClass: what.riskClass, reasonCode: "HUMAN_REQUESTED", detail: what.detail ?? null }, async () => { ran = true; return run() })
+  if (!ran) throw new Error((r as { error?: string }).error ?? "action ledger refused the claim")
+  return r as T
 }

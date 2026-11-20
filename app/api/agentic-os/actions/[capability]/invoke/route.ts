@@ -12,20 +12,22 @@ import { planInvocation, planConnectedInvocation } from "@/lib/agentic-os/invoke
 import { checkVendorBudget } from "@/lib/vendor-governance/budget-gate"
 import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
 import { isConnectedCapability, getConnectedCapability } from "@/lib/agentic-os/connected-vendor-registry"
-import { resolveConnectedCapability } from "@/lib/agentic-os/resolve-connected-capability"
+import { resolveConnectedCapability, resolveConnectedCapabilityForOrigin } from "@/lib/agentic-os/resolve-connected-capability"
 import { recordInvocation } from "@/lib/agentic-os/invocation-log"
 
 // Executors for read/analyze actions. Side-effecting capabilities intentionally have
 // no executor here — they run through their dedicated guarded routes after confirmation.
 const EXECUTORS: Partial<Record<VendorCapability, (inputs: any, ctx: { brokerageId: string }) => Promise<unknown>>> = {
-  web_research: async (inputs) => {
+  web_research: async (inputs, ctx) => {
     const { webSearch } = await import("@/lib/ai/web-search")
-    return webSearch({ query: String(inputs.query), maxResults: 6 })
+    // Wave 139 (139C): the search's spend books under the CALLER's tenant (was unbooked).
+    return webSearch({ query: String(inputs.query), maxResults: 6, spend: { brokerageId: ctx.brokerageId || null, systemSource: "agentic_api_invoke" } })
   },
   property_valuation: async (inputs, ctx) => {
     const { getCurrentAvm } = await import("@/lib/avm/provider-chain")
     // Generic agent invoke uses the FREE tier (Perplexity/OSINT) — no surprise spend.
-    return getCurrentAvm({ address: String(inputs.address), zipCode: inputs.zipCode ?? null, brokerageId: ctx.brokerageId, usePaidProviders: false })
+    // Wave 93 (lane 93B): an AI AGENT invoke surface — the BatchData backup is skipped here.
+    return getCurrentAvm({ address: String(inputs.address), zipCode: inputs.zipCode ?? null, brokerageId: ctx.brokerageId, skipProviders: ["batchdata"] })
   },
 }
 
@@ -57,9 +59,18 @@ export async function POST(req: Request, ctx: { params: Promise<{ capability: st
 
   // ── User-connected vendor capability — connection-gated (NOT platform budget). ──
   if (isConnectedCapability(capability)) {
-    const resolution = caller.brokerageId
-      ? await resolveConnectedCapability(capability, { brokerageId: caller.brokerageId })
-      : null
+    // WAVE 155 (lane 155R25 — the credentials sink rule): an external agent's TOKEN request reads the credential store because
+    // a model asked, so it goes through the stated-origin door (one decision row per credential read), and only AFTER the
+    // token's scope + inputs pass — an unscoped token never causes a credential read at all. A signed-in person keeps the
+    // plain read-only probe.
+    const scopeFirst = planConnectedInvocation(capability, { inputs, grantedScopes: caller.scopes, connected: true })
+    const resolution = !caller.brokerageId ? null
+      : caller.via !== "token" ? await resolveConnectedCapability(capability, { brokerageId: caller.brokerageId })
+      : scopeFirst.decision === "unauthorized" || scopeFirst.decision === "invalid_input" ? null
+      : await resolveConnectedCapabilityForOrigin(capability, { brokerageId: caller.brokerageId }, {
+          trustClass: "model_output",
+          sink: { verification: { kind: "deterministic", check: `agentic bearer token holds scope ${getConnectedCapability(capability).scope} with its required inputs (planConnectedInvocation)` } },
+        })
     const plan = planConnectedInvocation(capability, {
       inputs,
       grantedScopes: caller.scopes,

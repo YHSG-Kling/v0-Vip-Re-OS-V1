@@ -10,10 +10,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox"
 import { Separator } from "@/components/ui/separator"
 import { createClient } from "@/lib/supabase/client"
+import { publicCredentialSelect, CREDENTIAL_STORES } from "@/lib/security/credential-projection"
 
+/** The IDX credential AS THIS BROWSER PAGE MAY SEE IT (wave 140, lane 140P): the non-secret
+ *  projection only. `api_key` is never selected here — a browser has no key to decrypt the sealed
+ *  envelope and never needs it; the box below is always empty (empty = keep the stored key). */
 interface IDXCred {
   id?: string
-  api_key: string
   account_name: string
   config: Record<string, any>
   is_active: boolean
@@ -25,6 +28,23 @@ interface UsageRow {
   alerts_run: number
   properties_matched: number
   emails_sent: number
+  /** Sum of property_alert_delivery_log.properties_checked — the denominator behind "Matched". */
+  properties_checked: number
+  /** Mean idx_response_time_ms over rows where the IDX API was actually called. */
+  avg_response_ms: number | null
+}
+
+/** A delivery-log row that recorded a provider/delivery error — the failure
+ *  half of the ledger the alert engine writes on every run. */
+interface FailureRow {
+  id: string
+  created_at: string
+  alert_id: string | null
+  contact_id: string | null
+  batch_id: string | null
+  run_triggered_by: string | null
+  channels_used: string[] | null
+  error_message: string
 }
 
 const DEFAULT_DEFAULTS = {
@@ -53,7 +73,7 @@ export default function IDXBrokerSettingsPage() {
   const [defaults, setDefaults]   = useState(DEFAULT_DEFAULTS)
   const [savingDefaults, setSavingDefaults] = useState(false)
 
-  const [usage, setUsage]         = useState<{ activeAlerts: number; todayApiCalls: number; monthSent: number; rows: UsageRow[] } | null>(null)
+  const [usage, setUsage]         = useState<{ activeAlerts: number; todayApiCalls: number; monthSent: number; rows: UsageRow[]; failures: FailureRow[] } | null>(null)
   const [loadingUsage, setLoadingUsage] = useState(false)
 
   useEffect(() => {
@@ -73,19 +93,23 @@ export default function IDXBrokerSettingsPage() {
 
       if (!profile?.brokerage_id) return
 
-      // Load existing credential
-      const { data: existing } = await supabase
+      // Load existing credential — the NON-secret projection (lib/security/credential-projection.ts).
+      // Wave 140H sealed the key server-side; wave 140P stops selecting it at all: the browser never
+      // receives the envelope. The box stays empty — saving with it empty KEEPS the stored key (the
+      // server action omits api_key), typing a new one replaces it.
+      const { data: existing, error: existingError } = await supabase
         .from("platform_credentials")
-        .select("*")
+        .select(publicCredentialSelect("id, brokerage_id, owner_type, owner_id, agent_user_id, platform, scope, api_url, token_expires_at, account_id, account_name, is_active, last_synced_at, last_tested_at, test_status, sync_error, config, created_at, updated_at", CREDENTIAL_STORES.platform_credentials))
         .eq("brokerage_id", profile.brokerage_id)
         .eq("platform", "idxbroker")
         .maybeSingle()
+      if (existingError) console.error("[idx-broker] credential read failed:", existingError.message)
 
       if (existing) {
-        setCred(existing)
-        setApiKey(existing.api_key ?? "")
-        setPartnerKey((existing.config as any)?.partner_key ?? "")
-        setAccountLabel(existing.account_name ?? "")
+        setCred(existing as unknown as IDXCred)
+        setApiKey("")
+        setPartnerKey(((existing as any).config as any)?.partner_key ?? "")
+        setAccountLabel((existing as any).account_name ?? "")
       }
 
       // Load global settings defaults
@@ -129,30 +153,64 @@ export default function IDXBrokerSettingsPage() {
 
     const monthSent = (monthRows ?? []).reduce((s: number, r: any) => s + (r.properties_sent ?? 0), 0)
 
-    // 7-day rows
+    // 7-day rows — the full delivery ledger the alert engine writes: how many
+    // properties each run CHECKED (the denominator behind "Matched"), how the
+    // IDX API responded (idx_response_time_ms), which channels carried the
+    // delivery, what triggered the run, and — for failures — the error plus
+    // the alert/contact/batch it belongs to. The card's own footer has always
+    // said "if you see API errors in the delivery log"; this read is what makes
+    // those errors visible anywhere.
     const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-    const { data: logRows } = await supabase
+    const { data: logRows, error: logError } = await supabase
       .from("property_alert_delivery_log")
-      .select("created_at, properties_matched, properties_sent, idx_api_called")
+      .select("id, created_at, properties_checked, properties_matched, properties_sent, idx_api_called, idx_response_time_ms, channels_used, run_triggered_by, alert_id, contact_id, batch_id, error_message")
       .eq("brokerage_id", bid)
       .gte("created_at", sevenDaysAgo.toISOString())
       .order("created_at", { ascending: false })
+    // supabase-js RESOLVES a refused read — surface it instead of "no activity".
+    if (logError) console.error("[idx-broker] delivery log read failed:", logError.message)
 
-    const dayMap = new Map<string, UsageRow>()
+    const dayMap = new Map<string, UsageRow & { _responseTimes: number[] }>()
+    const failures: FailureRow[] = []
     for (const row of logRows ?? []) {
       const d = row.created_at.slice(0, 10)
-      const existing = dayMap.get(d) ?? { date: d, alerts_run: 0, properties_matched: 0, emails_sent: 0 }
+      const existing = dayMap.get(d) ?? {
+        date: d, alerts_run: 0, properties_matched: 0, emails_sent: 0,
+        properties_checked: 0, avg_response_ms: null, _responseTimes: [] as number[],
+      }
       existing.alerts_run++
       existing.properties_matched += row.properties_matched ?? 0
       existing.emails_sent        += row.properties_sent    ?? 0
+      existing.properties_checked += row.properties_checked ?? 0
+      if (row.idx_api_called && typeof row.idx_response_time_ms === "number") {
+        existing._responseTimes.push(row.idx_response_time_ms)
+      }
       dayMap.set(d, existing)
+      if (row.error_message) {
+        failures.push({
+          id: row.id,
+          created_at: row.created_at,
+          alert_id: row.alert_id ?? null,
+          contact_id: row.contact_id ?? null,
+          batch_id: row.batch_id ?? null,
+          run_triggered_by: row.run_triggered_by ?? null,
+          channels_used: Array.isArray(row.channels_used) ? row.channels_used : null,
+          error_message: row.error_message,
+        })
+      }
     }
 
     setUsage({
       activeAlerts:  activeAlerts ?? 0,
       todayApiCalls: todayApiCalls ?? 0,
       monthSent,
-      rows: Array.from(dayMap.values()),
+      rows: Array.from(dayMap.values()).map(({ _responseTimes, ...row }) => ({
+        ...row,
+        avg_response_ms: _responseTimes.length > 0
+          ? Math.round(_responseTimes.reduce((a, b) => a + b, 0) / _responseTimes.length)
+          : null,
+      })),
+      failures: failures.slice(0, 10),
     })
     setLoadingUsage(false)
   }
@@ -163,26 +221,17 @@ export default function IDXBrokerSettingsPage() {
     const config: any = {}
     if (partnerKey) config.partner_key = partnerKey
 
-    await supabase.from("platform_credentials").upsert(
-      {
-        // pass 10: the live unique is (owner_id, owner_type, platform) — the
-        // legacy brokerage_id/scope columns had no matching unique, so this
-        // upsert errored on every save. owner_type/owner_id ARE the identity.
-        owner_type:   "brokerage",
-        owner_id:     brokerageId,
-        brokerage_id: brokerageId,
-        platform:     "idxbroker",
-        scope:        "brokerage",
-        api_key:      apiKey,
-        account_name: accountLabel || "IDX Broker",
-        config,
-        is_active:    true,
-        updated_at:   new Date().toISOString(),
-      },
-      { onConflict: "owner_id,owner_type,platform" }
-    )
+    // The save's refusal is READ (lane 87E, swallowed-refusal census). It used to
+    // be dropped, so a refused credential (RLS, a CHECK, the pass-10 unique) left
+    // the page looking saved while the alert engine kept reading nothing.
+    // Wave 140H — the key is written by the SERVER action (encrypt-on-write through
+    // lib/security/secret-crypto.ts, owner-keyed update-or-insert on the same (owner_type, owner_id,
+    // platform) identity). A browser client has no encryption key and must never write a credential
+    // column in plaintext; the tenant comes from the action's session, never from this page.
+    const { upsertPlatformCredential } = await import("@/app/actions/settings/integrations")
+    const saved = await upsertPlatformCredential({ platform: "idxbroker", scope: "brokerage", ...(apiKey ? { api_key: apiKey } : {}), account_name: accountLabel || "IDX Broker", config })
     setSaving(false)
-    setTestResult(null)
+    setTestResult(saved.success ? null : { ok: false, message: `The IDX Broker credential was not saved: ${saved.error ?? "refused"}` })
   }
 
   const handleTest = async () => {
@@ -203,21 +252,50 @@ export default function IDXBrokerSettingsPage() {
   const handleDisconnect = async () => {
     if (!brokerageId || !confirm("Disconnect IDX Broker? All active alerts will be paused.")) return
     setDisconnecting(true)
-    await supabase
+    // Both halves of the disconnect READ their refusal (lane 87E). The dialog
+    // promises the feed is off AND the alerts are paused; either one refused used
+    // to clear the form as if both had happened.
+    const { error: deactivateError } = await supabase
       .from("platform_credentials")
       .update({ is_active: false, updated_at: new Date().toISOString() })
       .eq("brokerage_id", brokerageId)
       .eq("platform", "idxbroker")
+    if (deactivateError) {
+      setDisconnecting(false)
+      setTestResult({ ok: false, message: `IDX Broker was not disconnected: ${deactivateError.message}` })
+      return
+    }
 
-    // Pause all brokerage alerts
-    await supabase
+    // Pause all brokerage alerts.
+    //
+    // paused_by is an ACTOR CLASS (agent | buyer | system) — it previously got
+    // 'admin_disconnect', an EVENT name, which the CHECK rejects. Because this
+    // is one bulk UPDATE, that rejection took the whole statement with it: the
+    // confirm dialog promised "All active alerts will be paused" and not one
+    // alert was ever paused. The actor is the system (a cascade of losing the
+    // feed, not a per-alert human decision); the event moves to paused_reason.
+    //
+    // Scoped to is_active=true so the cascade only touches LIVE alerts. The
+    // inactive rows are the conversation-criteria proposals awaiting approval,
+    // and paused_reason is where their [VOICE_PROPOSAL]/[TEXT_PROPOSAL] evidence
+    // lives — overwriting it would drop them off the approval rail.
+    const { error: pauseError } = await supabase
       .from("property_alerts")
-      .update({ is_active: false, paused_by: "admin_disconnect", updated_at: new Date().toISOString() })
+      .update({
+        is_active: false,
+        paused_by: "system",
+        paused_reason: "IDX Broker integration disconnected",
+        updated_at: new Date().toISOString(),
+      })
       .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
 
     setDisconnecting(false)
     setCred(null)
     setApiKey("")
+    if (pauseError) {
+      setTestResult({ ok: false, message: `Disconnected, but the brokerage's live alerts were NOT paused: ${pauseError.message}` })
+    }
   }
 
   const handleSaveDefaults = async () => {
@@ -231,7 +309,8 @@ export default function IDXBrokerSettingsPage() {
 
     const merged = { ...(gs?.additional_settings ?? {}), idx_alert_defaults: defaults }
     if (gs?.id) {
-      await supabase.from("global_settings").update({ additional_settings: merged }).eq("id", gs.id)
+      const { error: defaultsError } = await supabase.from("global_settings").update({ additional_settings: merged }).eq("id", gs.id)
+      if (defaultsError) setTestResult({ ok: false, message: `Alert defaults were not saved: ${defaultsError.message}` })
     }
     setSavingDefaults(false)
   }
@@ -245,8 +324,10 @@ export default function IDXBrokerSettingsPage() {
     }))
   }
 
-  // Role gate
-  const canManage = role && ["superadmin", "admin", "broker"].includes(role)
+  // Role gate (presentation only — reads users.user_type).
+  // 'superadmin' removed: dead as users.user_type (0 live rows); broker_owner
+  // added — storable seat that owns the brokerage.
+  const canManage = role && ["admin", "broker", "broker_owner"].includes(role)
 
   if (role && !canManage) {
     return (
@@ -423,13 +504,16 @@ export default function IDXBrokerSettingsPage() {
                 {usage.rows.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No activity in the last 7 days.</p>
                 ) : (
+                  <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="text-left text-xs text-muted-foreground border-b">
                         <th className="py-1.5 pr-4">Date</th>
                         <th className="py-1.5 pr-4">Alerts Run</th>
+                        <th className="py-1.5 pr-4">Checked</th>
                         <th className="py-1.5 pr-4">Matched</th>
-                        <th className="py-1.5">Emails Sent</th>
+                        <th className="py-1.5 pr-4">Emails Sent</th>
+                        <th className="py-1.5">Avg IDX Response</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -437,17 +521,44 @@ export default function IDXBrokerSettingsPage() {
                         <tr key={row.date} className="border-b last:border-0">
                           <td className="py-1.5 pr-4 font-mono text-xs">{row.date}</td>
                           <td className="py-1.5 pr-4">{row.alerts_run}</td>
+                          <td className="py-1.5 pr-4">{row.properties_checked}</td>
                           <td className="py-1.5 pr-4">{row.properties_matched}</td>
-                          <td className="py-1.5">{row.emails_sent}</td>
+                          <td className="py-1.5 pr-4">{row.emails_sent}</td>
+                          <td className="py-1.5">{row.avg_response_ms != null ? `${row.avg_response_ms}ms` : "—"}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 )}
               </div>
 
+              {/* The delivery log's ERRORS — the rows the footer note has always
+                  pointed at. Each failure names its alert, contact and batch so
+                  a support conversation can cite the exact run. */}
+              {usage.failures.length > 0 && (
+                <div>
+                  <p className="text-sm font-medium mb-2">Recent delivery errors</p>
+                  <ul className="space-y-2">
+                    {usage.failures.map(f => (
+                      <li key={f.id} className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs">
+                        <p className="text-destructive">{f.error_message}</p>
+                        <p className="text-muted-foreground mt-0.5 font-mono">
+                          {new Date(f.created_at).toLocaleString()}
+                          {f.run_triggered_by ? ` · via ${f.run_triggered_by}` : ""}
+                          {f.channels_used?.length ? ` · channels ${f.channels_used.join(", ")}` : ""}
+                          {f.alert_id ? ` · alert ${f.alert_id.slice(0, 8)}` : ""}
+                          {f.contact_id ? ` · contact ${f.contact_id.slice(0, 8)}` : ""}
+                          {f.batch_id ? ` · batch ${f.batch_id.slice(0, 8)}` : ""}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <div className="rounded-md bg-muted/40 border px-3 py-2 text-xs text-muted-foreground">
-                IDX Broker rate limits vary by tier. Contact IDX Broker support if you see API errors in the delivery log.
+                IDX Broker rate limits vary by tier. Contact IDX Broker support if you see API errors above.
               </div>
             </>
           ) : null}

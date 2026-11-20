@@ -6,6 +6,11 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 
 export async function POST(request: Request) {
+  // A SEED DOOR NEVER RUNS IN A DEPLOYED BUILD (wave 155; found by lane 155R17). It upserts GLOBAL users rows typed admin /
+  // broker / tc, with no tenant and a base64 "password hash", and its only gate was the maintenance check — open in
+  // production to ANY tenant's admin once ALLOW_PROD_MAINTENANCE_ROUTES is set. Previews share the live database, so the
+  // refusal covers every production BUILD, not only the production deployment. Local development is unchanged.
+  if (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production") return NextResponse.json({ error: "Not found" }, { status: 404 })
   const auth = await requireAdminMaintenanceAccess(request)
   if (!auth.authorized) return auth.response
 
@@ -65,11 +70,17 @@ export async function POST(request: Request) {
       brokerage: null,
     },
     {
+      // A LENDER IS A VENDOR (owner ruling: lender is a vendor category, not a
+      // user type). This seed used to write user_type='lender'; after the CHECK
+      // drops that value the whole UPSERT would be refused (23514) and the seed
+      // would report a failure it could not fix. The lender-ness of this account
+      // lives on its vendors row (category 'lender') + a user_role_assignments
+      // grant carrying that vendor_id — see lib/kernel/lender-linkage.ts.
       email: "lender@nexus.local",
       first_name: "Larry",
       last_name: "Lender",
-      user_type: "lender",
-      role: "lender",
+      user_type: "vendor",
+      role: "vendor",
       brokerage: null,
     },
   ]
@@ -130,6 +141,14 @@ export async function POST(request: Request) {
   }
 
   const successCount = results.filter((r) => r.success).length
+  // LAW 5 (wave 155, lane 155R23 — no tenant): a seed writes GLOBAL users rows that belong to no brokerage, so its record is the
+  // platform's evidence door (recordPlatformEvidence → superadmin_audit_log), ONE row per run, after the maintenance gate and the
+  // production refusal above: what ran and the honest counts (emails only — no password material). Never an invented tenant.
+  const { recordPlatformEvidence } = await import("@/lib/platform/staff-action-gate")
+  await recordPlatformEvidence({
+    actorUserId: null, actorEmail: "system:seed_users", action: "platform_seed.users_seeded", targetType: "platform_seed", targetId: null,
+    details: { seeded: successCount, attempted: TEST_USERS.length, failed: results.filter((r) => !r.success).map((r) => r.email) },
+  }, { client: supabase })
   return NextResponse.json({
     message: `Seeded ${successCount}/${TEST_USERS.length} test users`,
     results,

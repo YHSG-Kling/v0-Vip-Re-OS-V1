@@ -27,10 +27,13 @@
  * would be ideal — for now we check newsletter_sends presence per recipient
  * before dispatching (so a mid-loop crash + replay is safe).
  *
- * Auth: CRON_SECRET via Authorization: Bearer or ?secret= (matches the rest
- * of the cron fleet).
+ * Auth: verifyCronAuth (lib/cron-auth.ts) — Bearer CRON_SECRET, fail closed
+ * when unset; the old ?secret= query credential is retired (lane 88E).
  */
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
+import { verifyCronAuth } from "@/lib/cron-auth"
+import { decideCronRun } from "@/lib/kernel/cron-logging"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail } from "@/lib/providers/dispatch"
 import { evaluateBroadcastDeconflict } from "@/lib/kernel/deconflict"
@@ -38,7 +41,7 @@ import {
   resolveSectionsForRecipient,
   assembleNewsletterHtml,
 } from "@/lib/kernel/newsletter/assemble"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { evaluateTenantOutbound } from "@/lib/kernel/tenant-config-reads"
 import { resolveBuyerNotificationPreferences, buyerWantsNotification, type BuyerNotificationPreferences } from "@/lib/notifications/buyer-preferences"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -47,9 +50,6 @@ import { checkAssetReadiness, ASSET_READINESS_CONFIGS } from "@/lib/kernel/compo
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
-function unauthorized() {
-  return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-}
 
 interface CampaignRow {
   id:                   string
@@ -103,11 +103,10 @@ interface CampaignResult {
 }
 
 export async function GET(req: NextRequest) {
-  const headerSecret = req.headers.get("authorization")?.replace("Bearer ", "")
-  const querySecret  = new URL(req.url).searchParams.get("secret")
-  const expected     = process.env.CRON_SECRET
-  if (!expected) return NextResponse.json({ skipped: "CRON_SECRET not configured" })
-  if (headerSecret !== expected && querySecret !== expected) return unauthorized()
+  const denied = verifyCronAuth(req)
+  if (denied) return denied
+  const cronDoor = await decideCronRun({ cron_name: "publish-newsletters", cron_path: "/app/api/cron/publish-newsletters/route.ts" }) // cron decision door (155R1)
+  if (cronDoor.held) return NextResponse.json({ success: true, held: true, decision: cronDoor.decision })
 
   const svc = createServiceClient()
 
@@ -130,10 +129,24 @@ export async function GET(req: NextRequest) {
     results.push(r)
   }
 
+  // ── OPEN/CLICK RATES, DERIVED FROM THE SENDS ──────────────────────────────
+  // Engagement lands hours or days after the send (the SendGrid fan-out stamps
+  // newsletter_sends.opened_at/.clicked_at), so the rate cannot be computed
+  // when the campaign goes out. newsletter_campaigns.open_rate/.click_rate were
+  // read by the campaign ROI measurer, the content-topic ranker and the AI
+  // send-time optimiser and written by NOBODY — three surfaces reasoning over a
+  // permanent zero. Re-rolled every tick for campaigns still inside the window.
+  const { rollupNewsletterCampaignRates } = await import("@/lib/marketing/engagement-rollup")
+  const rates = await rollupNewsletterCampaignRates(svc)
+  if (rates.refusals.length > 0) {
+    console.error("[publish-newsletters] rate rollup refusals:", rates.refusals.join(" | "))
+  }
+
   return NextResponse.json({
     ran_at:               new Date().toISOString(),
     campaigns_processed:  results.length,
     results,
+    rates,
   })
 }
 
@@ -150,10 +163,14 @@ async function deferCampaign(
   svc: ReturnType<typeof createServiceClient>,
   c: CampaignRow,
   reason: string,
+  /** WAVE 155 (155G2): a provenance HOLD also returns the issue to review (approval_status 'pending_review'), the same
+   *  hold lib/newsletter/local-events.ts holdDerivedDrafts applies — the content must be revised before it may go. */
+  extra?: { approval_status: "pending_review" },
 ): Promise<CampaignResult> {
-  await svc.from("newsletter_campaigns")
-    .update({ status: "deferred", defer_reason: reason })
+  const { error: deferErr } = await svc.from("newsletter_campaigns")
+    .update({ status: "deferred", defer_reason: reason.slice(0, 300), ...(extra ?? {}) })
     .eq("id", c.id)
+  if (deferErr) console.error(`[publish-newsletters] campaign NOT marked deferred: ${deferErr.message}`)
   processKernelEvent({
     event:       KernelEvent.NEWSLETTER_SEND_DEFERRED,
     brokerageId: c.brokerage_id,
@@ -173,6 +190,13 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   // "newsletter" for section assembly is the campaign itself. There is no
   // separate newsletters row to pull sections from.
   const newsletterId: string = c.id
+  // WAVE 155 (155G2): the stored issue. The creator stores an array issue as its JSON section list (lib/kernel/
+  // content-creators.ts createNewsletterCampaign), and this sender used `c.content` verbatim as the email's intro HTML —
+  // every recipient got the raw JSON above the real sections. The array is not an intro (its sections render from
+  // newsletter_sections); prose / HTML content still is. The per-section provenance rides on that array.
+  const planner = await import("@/lib/kernel/newsletter/section-planner")
+  const issue = planner.parseStoredIssue(c.content)
+  const introHtml = issue.introHtml
 
   // Brokerage-wide newsletter cooldown (1/7d default). Per-segment scoping is
   // a follow-up — the campaign row doesn't carry the audience segment yet
@@ -250,7 +274,7 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     target_locations: { cities?: string[]; states?: string[]; zip_codes?: string[] } | null
   }>
   const sectionCount  = sectionGate.count ?? sectionRows.length
-  const hasCampaignBody  = ((c.content ?? "").trim().length > 0)
+  const hasCampaignBody  = ((introHtml ?? "").trim().length > 0)
   const hasUniversalSection = sectionRows.some((s) => {
     const personaScoped  = Array.isArray(s.target_personas)  && s.target_personas.length > 0
     const locationScoped = !!s.target_locations && (
@@ -265,6 +289,77 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   }
   if (!hasUniversalSection && !hasCampaignBody) {
     return await deferCampaign(svc, c, "sections_missing:no_universal_fallback")
+  }
+
+  // Check (2.2) — WAVE 155 (155G2, directive G3): PER-SECTION PROVENANCE, re-checked against the live rows before the
+  // campaign is claimed — so before any recipient is mailed. A canceled / postponed / past event, a listing that is no
+  // longer ACTIVE (sold), a retired resource or a stale market row HOLDS the issue (deferred + back to review); a refused
+  // read defers it (fail closed — "nobody checked" never reads as "checked and fine"). An issue with no recorded
+  // provenance (manual editor copy) passes here; the human who wrote it is covered by the approval rail.
+  const provenance = await planner.verifyIssueProvenance(svc, c.brokerage_id, issue.provenance)
+  if (!provenance.ok) {
+    return await deferCampaign(svc, c, provenance.reason, provenance.hold ? { approval_status: "pending_review" } : undefined)
+  }
+
+  // Check (2.5) — SEO SCORE GATE/NUDGE (orphan doctrine §1.2 reader for
+  // newsletter_seo_scores — until now the 8 columns getSEOScore() writes had
+  // no reader at all, cron included). Looked up via the campaign's OWN
+  // scheduled-send ledger row (newsletter_scheduled_sends.newsletter_id =
+  // c.id — the same join get-seo-score.ts's tenant check uses), most recent
+  // first, since a re-scheduled campaign can carry more than one ledger row.
+  // A campaign with NO stored score (htmlContent was never supplied to
+  // getSEOScore — schedule-newsletter.ts:192) is NOT gated: scoring is
+  // opt-in, and blocking every unscored send would refuse campaigns that
+  // never asked to be measured. A LOW score defers exactly like the other
+  // composition-gate checks above AND nudges campaign_orchestrator over the
+  // manager bus — a signal, never an outbound send (§ "Paid spend and
+  // outbound sends stay gated" / LANE_RULES). The threshold matches the
+  // editor's own amber/red boundary (newsletters-client.tsx:1533).
+  // TOMBSTONE (m618) — the signal used to route campaign_orchestrator ->
+  // marketing_agent (retired). campaign_orchestrator now owns both the send
+  // schedule and the content/SEO lane, so a same-manager route is invalid
+  // (validSignalRoute requires from !== to); data_steward (the SEO-scoring
+  // pipeline that detected the low score, same shape as the other
+  // data_steward -> campaign_orchestrator content-pipeline signals in
+  // lib/kernel/event-reactor.ts) reports it instead.
+  const SEO_SCORE_GATE_THRESHOLD = 70
+  try {
+    const { data: ledgerRow } = await svc
+      .from("newsletter_scheduled_sends")
+      .select("id")
+      .eq("newsletter_id", c.id)
+      .eq("brokerage_id", c.brokerage_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (ledgerRow?.id) {
+      const { data: seoRow, error: seoError } = await svc
+        .from("newsletter_seo_scores")
+        .select("overall_seo_score")
+        .eq("scheduled_send_id", ledgerRow.id)
+        .maybeSingle()
+      if (seoError) {
+        console.error(`[publish-newsletters] SEO score lookup refused for ${c.id}:`, seoError.message)
+      } else if (seoRow && seoRow.overall_seo_score < SEO_SCORE_GATE_THRESHOLD) {
+        const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+        await publishManagerSignal({
+          brokerageId: c.brokerage_id,
+          fromManager: "data_steward",
+          toManager: "campaign_orchestrator",
+          signalType: "newsletter_seo_score_low",
+          message: `"${c.campaign_name ?? c.subject_line ?? c.id}" scored ${seoRow.overall_seo_score}/100 — below the ${SEO_SCORE_GATE_THRESHOLD} send threshold. Held, not sent.`,
+          entityType: "newsletter_campaign",
+          entityId: c.id,
+          payload: { overall_seo_score: seoRow.overall_seo_score, threshold: SEO_SCORE_GATE_THRESHOLD },
+        }, svc)
+        return await deferCampaign(svc, c, `seo_score_low:${seoRow.overall_seo_score}`)
+      }
+    }
+  } catch (seoGateErr) {
+    // Fail OPEN here, deliberately: the SEO gate is a quality nudge layered on
+    // top of the compliance/composition gates above, not a substitute for
+    // them. A refused lookup must not silently hold every campaign hostage.
+    console.error(`[publish-newsletters] SEO score gate threw for ${c.id} (continuing):`, seoGateErr)
   }
 
   // Check (3) — final-shape compliance gate. Per-section evaluateOutbound runs
@@ -288,11 +383,11 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
       brokerageId:      c.brokerage_id,
       newsletterId,
       campaignSubject:  c.subject_line,
-      campaignBodyHtml: videoEmbed + (c.content ?? ""),
+      campaignBodyHtml: videoEmbed + (introHtml ?? ""),
     },
     sections: previewSections,
   })
-  const finalCompliance = await evaluateOutbound({
+  const finalCompliance = await evaluateTenantOutbound({
     actorContext: { userId: c.created_by ?? c.agent_id ?? c.brokerage_id, role: "agent", brokerageId: c.brokerage_id },
     journeyType:  "seller",
     // 'other' is the canonical Persona value when no specific persona
@@ -301,27 +396,33 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     persona:      "other",
     messageType:  "email",
     content:      previewAssembled.text,
-    contact: {
-      id: "broadcast_preview",
-      first_name: "Subscriber",
-      last_name: "Audience",
-      contact_type: "buyer",
-      tcpa_consent: true,
-      isa_reengage_allowed: false,
-      dnc_status: false,
-    },
-  }).catch(() => ({ allowed: true, violations: [] as string[] }))
+    // BROADCAST SHAPE (86C): no contact. The stub id "broadcast_preview" it carried is not a
+    // uuid, so compliance_events.entity_id (uuid) refused the audit row (22P02) on every run,
+    // and the per-contact gates it pretended to satisfy belong to the per-recipient pass.
+    //
+    // FAIL CLOSED (86C): a gate that throws DEFERS the campaign (deferCampaign below) instead of
+    // reading as allowed — "nobody checked" must never render as "checked and fine" (§4).
+  }, svc).catch((e: unknown) => ({ allowed: false, violations: [`gate_unavailable:${e instanceof Error ? e.message : String(e)}`] }))
   if (!finalCompliance.allowed) {
     return await deferCampaign(svc, c, `final_compliance:${finalCompliance.violations.slice(0, 3).join("|") || "blocked"}`)
   }
 
+  // WAVE 153 (lane 153P — lane 153K carried finding): the sender domain is REQUIRED. It fell back to the literal
+  // "platform.com" — a domain nobody here owns, so every newsletter would have gone out from a stranger's address
+  // (and been refused or spam-foldered by the provider). Unset → the campaign DEFERS by name before it is claimed.
+  const newsletterFromDomain = process.env.NEWSLETTER_FROM_DOMAIN?.trim()
+  if (!newsletterFromDomain) {
+    return await deferCampaign(svc, c, "sender_unset:NEWSLETTER_FROM_DOMAIN")
+  }
+
   // Claim the campaign so concurrent ticks don't re-send it.
-  const { data: claimed } = await svc
+  const { data: claimed, error: claimErr } = await svc
     .from("newsletter_campaigns")
     .update({ status: "sending" })
     .eq("id", c.id)
     .in("status", ["scheduled"])
     .select("id")
+  if (claimErr) console.error(`[publish-newsletters] campaign claim refused (treated as not claimed): ${claimErr.message}`)
   if (!claimed?.length) {
     return {
       campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
@@ -357,7 +458,8 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   }
 
   if (subs.length === 0) {
-    await svc.from("newsletter_campaigns").update({ status: "sent" }).eq("id", c.id)
+    const { error: emptySentErr } = await svc.from("newsletter_campaigns").update({ status: "sent" }).eq("id", c.id)
+    if (emptySentErr) console.error(`[publish-newsletters] empty campaign NOT marked sent: ${emptySentErr.message}`)
     return {
       campaign_id: c.id, brokerage_id: c.brokerage_id, agent_id: c.agent_id,
       outcome: "sent_empty", recipients: 0, sent: 0, suppressed: 0, errors: 0,
@@ -402,9 +504,15 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     console.error(`[publish-newsletters] preference batch load failed for ${c.id}:`, (e as Error).message)
   }
 
+  // WAVE 155 (155G2 — lane 155E carry-in 1): the ONE QR slot, resolved ONCE per campaign through THE minter
+  // (lib/marketing/tracked-qr.ts resolveArtifactQrSlot, slot `email_link`): in an email it is a clickable TRACKED link to a
+  // real public page (the planned listing, else the agent's public profile). No destination / held / refused → no block.
+  const nlQr = await planner.resolveNewsletterEmailQr(svc, c, issue.provenance)
+  if (!nlQr.qr) console.warn(`[publish-newsletters] campaign ${c.id}: no QR link (${nlQr.status})`)
+
   // For each subscriber: resolve persona → sections → assemble → dispatch → log.
   let sent = 0, suppressed = 0, errors = 0
-  const fromAddress = `newsletter@${(process.env.NEWSLETTER_FROM_DOMAIN ?? "platform.com")}`
+  const fromAddress = `newsletter@${newsletterFromDomain}`
 
   for (const s of subs) {
     if (!s.email) continue
@@ -415,11 +523,22 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
       if (prefs && !buyerWantsNotification(prefs, "marketing", "email")) {
         suppressed++
         try {
-          await svc.from("newsletter_sends").insert({
+          // TOMBSTONE (orphan doctrine §1.1/§1.3, 2026-09-04) — `subject` is no
+          // longer written here. SURVIVOR: newsletter_campaigns.subject_line,
+          // reached from this row through campaign_id (the same join the send
+          // list and the weekly measure already use). This was the LAST pair of
+          // writers of the duplicate: app/actions/ai-newsletter.ts:1310 stopped
+          // writing it in wave 26 and left the ruling in a comment there, and
+          // this cron kept copying it — one subject, two homes, and the copy had
+          // no reader at all (§6). The column is nullable in practice: the
+          // ai-newsletter insert named above omits it on the platform's main
+          // newsletter path, and PostgREST refuses the WHOLE row on a NOT NULL
+          // violation (§3), so that path could not work if it were required.
+          await sentinelWrite(svc, svc.from("newsletter_sends").insert({
             brokerage_id: c.brokerage_id, campaign_id: c.id, contact_id: s.contact_id,
-            template_id: null, subject: c.subject_line ?? null, status: "suppressed",
+            template_id: null, status: "suppressed",
             provider_message_id: null, sent_at: null,
-          })
+          }), { table: "newsletter_sends", flow: "newsletter_suppressed_row", reason: "suppressed-recipient record; never blocks the remaining recipients" })
         } catch { /* non-blocking */ }
         continue
       }
@@ -433,7 +552,10 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
           .select("id")
           .eq("campaign_id", c.id)
           .eq("contact_id", s.contact_id)
-          .in("status", ["sent", "delivered"])
+          // newsletter_sends.status has no 'delivered' (queued|sent|failed|
+          // bounced|opened|clicked|suppressed). 'sent' is the real "already went
+          // out" marker and every later state implies it.
+          .in("status", ["sent", "opened", "clicked"])
           .limit(1)
           .maybeSingle()
         if (prior) continue
@@ -495,10 +617,11 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
         newsletterId,
         campaignSubject:  c.subject_line,
         campaignBodyHtml: recipientVideoEmbed
-          ? `${recipientVideoEmbed}\n${c.content ?? ""}`
-          : c.content,
+          ? `${recipientVideoEmbed}\n${introHtml ?? ""}`
+          : introHtml,
       },
       sections,
+      qr: nlQr.qr,
     })
 
     const result = await dispatchEmail({
@@ -530,22 +653,81 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
     if (status === "failed")     errors++
 
     try {
-      await svc.from("newsletter_sends").insert({
+      // TOMBSTONE (§1.1/§1.3) — `subject` dropped; SURVIVOR is
+      // newsletter_campaigns.subject_line via campaign_id. `assembled.subject`
+      // IS that value (lib/kernel/newsletter/assemble.ts copies
+      // context.campaignSubject), so this wrote the campaign's own subject back
+      // onto every recipient row and nothing ever read the copy. See the fuller
+      // tombstone on the suppressed-row insert above.
+      await sentinelWrite(svc, svc.from("newsletter_sends").insert({
         brokerage_id:        c.brokerage_id,
         campaign_id:         c.id,
         contact_id:          s.contact_id,
         template_id:         null,
-        subject:             assembled.subject,
         status,
         provider_message_id: result.messageId ?? null,
         sent_at:             status === "sent" ? new Date().toISOString() : null,
-      })
+      }), { table: "newsletter_sends", flow: "newsletter_send_row", reason: "per-recipient send row after the dispatch already happened; never blocks the remaining recipients" })
     } catch { /* row write failure shouldn't block remaining recipients */ }
   }
 
-  await svc.from("newsletter_campaigns")
+  const { error: sentStampErr } = await svc.from("newsletter_campaigns")
     .update({ status: "sent" })
     .eq("id", c.id)
+  if (sentStampErr) console.error(`[publish-newsletters] campaign sent but NOT marked sent (it stays 'sending'): ${sentStampErr.message}`)
+
+  // THE VERSION THAT WENT OUT (owner ruling 20 — wave 145, lane 145Z; lane 145G Outside-lane 4): the campaign's stored content
+  // (its sections, as the final was staged — storedAs) is recorded as published, with the campaign's approval as the evidence.
+  try {
+    const { recordDoorPublication } = await import("@/lib/marketing/humanize-final")
+    const sent = typeof c.content === "string" ? c.content : JSON.stringify(c.content ?? null)
+    const rec = await recordDoorPublication(svc as any, {
+      brokerageId: c.brokerage_id, assetKind: "newsletter", assetTable: "newsletter_campaigns", assetId: c.id, content: sent,
+      approvedBy: null, approvedAt: null, via: "newsletter_send", ref: null,
+    })
+    if (!rec.ok) console.error(`[publish-newsletters] campaign ${c.id} sent, but the version that went out was NOT recorded: ${rec.error}`)
+  } catch (e) {
+    console.error(`[publish-newsletters] campaign ${c.id}: version record threw: ${(e as Error)?.message ?? e}`)
+  }
+
+  // ── CLOSE THE LEDGER ROW THE SCHEDULER OPENED ─────────────────────────────
+  // newsletter_scheduled_sends is the send LEDGER: two schedulers
+  // (app/actions/newsletter/schedule-newsletter.ts and
+  // lib/kernel/marketing.ts:385) open a row with send_status='scheduled', and
+  // nothing ever closed it. So `sent_time` — which the AI send-time optimiser
+  // ORDERS BY (app/actions/ai-newsletter.ts:608) and which
+  // getNewsletterAnalytics uses to pick "the latest send" — was NULL on every
+  // row this product has ever written. PostgREST orders NULLs last, so the
+  // optimiser's "50 most recent sends" was in practice an arbitrary 50, and the
+  // analytics reader's "latest send" was whichever row happened to sort first.
+  //
+  // Stamped with the campaign's real completion time, and only for rows still
+  // open, so a re-run of an already-published campaign cannot rewrite history.
+  //
+  // MATCHED ON newsletter_id ALONE, deliberately. That column FKs
+  // newsletter_campaigns and `c` is the campaign this run just published inside
+  // its own tenant, so the id IS the tenancy anchor. Adding
+  // `.eq("brokerage_id", …)` would look stricter and be worse: one of the two
+  // schedulers (lib/kernel/marketing.ts scheduleNewsletterSend) historically
+  // inserted its ledger row with NO brokerage_id — that writer now carries the
+  // tenant, but the rows it wrote before the fix are permanently untenanted,
+  // and a brokerage predicate here would leave them open forever — a filter
+  // that reads as tenancy while quietly excluding half the ledger.
+  const { data: closedLedger, error: ledgerError } = await svc
+    .from("newsletter_scheduled_sends")
+    .update({ send_status: "sent", sent_time: new Date().toISOString() })
+    .eq("newsletter_id", c.id)
+    .is("sent_time", null)
+    .select("id")
+  if (ledgerError) {
+    console.error(`[publish-newsletters] scheduled-send ledger not closed for ${c.id}: ${ledgerError.message}`)
+  } else if ((closedLedger ?? []).length === 0) {
+    // Zero rows is not automatically wrong — a campaign published straight from
+    // the studio never opened a ledger row — but it IS the difference between
+    // "already closed" and "the tenant predicate refused", and supabase-js
+    // reports both as a clean empty array. Say which case this run saw.
+    console.warn(`[publish-newsletters] no open scheduled-send ledger row for campaign ${c.id}`)
+  }
 
   // Emit kernel event so notification rules + analytics pick this up.
   try {

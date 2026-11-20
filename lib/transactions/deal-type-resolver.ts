@@ -7,10 +7,11 @@
 // Two ground-truth signals the offer bridge can observe:
 //   • ourListing — the offer is on one of OUR listings (a seller_contact_id resolved from it) → we
 //     represent the SELLER side.
-//   • ourBuyer   — the BUYER on the offer is OUR represented client: they're in our buyer pipeline
-//     (contacts.buyer_stage is set). Our-buyer offers come through the buyer flow, which advances the
-//     buyer_stage; an OUTSIDE buyer's offer that arrives by inbound-mail / upload intake creates a bare
-//     contact with no buyer_stage. (agent_id is NOT a reliable signal — the mail intake stamps the
+//   • ourBuyer   — the BUYER on the offer is OUR represented client: the buyer ladder has MOVED past
+//     its column default (buyerStageShowsRepresentation below — "is set" was always true, the column
+//     defaults to BUYER_CONTACT_CREATED) or an ACTIVE buyer-broker agreement names them (computed in
+//     lib/transactions/offer-bridge.ts). An OUTSIDE buyer's offer that arrives by inbound-mail /
+//     upload intake has neither. (agent_id is NOT a reliable signal — the mail intake stamps the
 //     LISTING agent on an outside buyer's offer, so "same agent" alone can't tell single-agent dual
 //     from a logged outside offer; buyer_stage can.)
 //
@@ -22,11 +23,26 @@
 //   • Our listing AND an OUTSIDE buyer → 'seller'.
 // Pure + unit-tested.
 
+import { BUYER_STAGES } from "@/lib/contacts/buyer-stage"
+
 export type DealType = "buyer" | "seller" | "dual"
 
 export interface DealTypeInput {
   ourListing: boolean
   ourBuyer: boolean
+}
+
+/**
+ * PURE. Does a contacts.buyer_stage value show that the buyer is in OUR pipeline?
+ *
+ * The column DEFAULTS to 'BUYER_CONTACT_CREATED' (live, 2026-10-01), so every contact — an outside
+ * buyer logged for paperwork, even a seller — carries that value without anyone having worked a
+ * purchase with them. Only a stage the buyer ladder has MOVED to is evidence of representation.
+ * Unknown spellings are not evidence (one vocabulary per function — lib/contacts/buyer-stage.ts).
+ */
+const DEFAULT_BUYER_STAGE = "BUYER_CONTACT_CREATED"
+export function buyerStageShowsRepresentation(stage: string | null | undefined): boolean {
+  return !!stage && stage !== DEFAULT_BUYER_STAGE && (BUYER_STAGES as readonly string[]).includes(stage)
 }
 
 export function resolveDealType(input: DealTypeInput): DealType {

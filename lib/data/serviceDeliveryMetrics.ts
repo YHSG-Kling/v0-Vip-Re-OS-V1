@@ -95,7 +95,9 @@ export async function getTransactionRisks(brokerageId: string): Promise<Transact
       contact_id
     `)
     .eq("brokerage_id", brokerageId)
-    .in("stage", ["under_contract", "contingent", "pending"])
+    // All three of ["under_contract","contingent","pending"] were lowercase and
+    // matched nothing; service-delivery metrics saw no in-flight deals at all.
+    .in("stage", ["UNDER_CONTRACT", "INSPECTION", "APPRAISAL", "FINANCING_PENDING", "CLOSING_PREP"])
 
   if (!transactions || transactions.length === 0) return []
 

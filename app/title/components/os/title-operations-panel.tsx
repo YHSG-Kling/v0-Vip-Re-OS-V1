@@ -129,7 +129,7 @@ export function TitleOperationsPanel({ titleCompanyId }: TitleOperationsPanelPro
         <div className="grid grid-cols-3 gap-2">
           <div className="flex flex-col items-center rounded-lg bg-green-50 p-2 dark:bg-green-950/20">
             <CheckCircle className="h-4 w-4 text-green-600" />
-            <span className="mt-1 text-lg font-bold text-green-600">{metrics.clear}</span>
+            <span className="mt-1 text-lg font-bold text-green-700">{metrics.clear}</span>
             <span className="text-xs text-green-600/70">Clear</span>
           </div>
           <div className="flex flex-col items-center rounded-lg bg-blue-50 p-2 dark:bg-blue-950/20">

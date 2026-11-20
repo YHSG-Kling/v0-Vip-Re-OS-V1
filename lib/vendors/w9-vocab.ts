@@ -82,6 +82,11 @@ export function deriveW9Status(
   currentVendorName?: string | null,
 ): W9Status {
   if (!record || record.status === "missing") return "missing"
+  // A stored value outside the vocabulary (a stale spelling, a hand-edited row)
+  // is NOT a certification on file — fail closed to 'missing' rather than fall
+  // through to the on_file branch below (lane 80E: W9_STATUSES was exported for
+  // the W-9 proof and validated nothing at runtime).
+  if (!(W9_STATUSES as readonly string[]).includes(record.status)) return "missing"
   if (record.status === "expired") return "expired"
   // status 'on_file' — check the legal-identity snapshot.
   const filed = (record.vendorNameAtFiling ?? "").trim().toLowerCase()

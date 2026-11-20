@@ -151,7 +151,7 @@ Return ONLY valid JSON:
         </Button>
 
         {error && (
-          <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{error}</p>
+          <p className="text-sm text-red-700 bg-red-50 rounded-md p-2">{error}</p>
         )}
 
         {variations.length > 0 && (

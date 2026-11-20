@@ -67,6 +67,8 @@ export async function createContentSource(input: {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.content_source.create", actor: { type: "user", userId: ctx.userId }, subject: { type: "content_topic_source", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source_type: input.type } }, async (): ReturnType<typeof createContentSource> => {
 
     // Map UI type → DB source_type. The DB column stores 'youtube_search' for
     // Exa (legacy overload from Wave 17) — we expose 'exa_query' in the UI for
@@ -97,6 +99,7 @@ export async function createContentSource(input: {
     if (error || !data) return { ok: false, error: error?.message ?? "insert failed" }
     revalidatePath("/dashboard/marketing/content-intel")
     return { ok: true, id: data.id as string }
+    }); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
   }
@@ -106,6 +109,8 @@ export async function toggleContentSource(id: string, isActive: boolean): Promis
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.content_source.toggle", actor: { type: "user", userId: ctx.userId }, subject: { type: "content_topic_source", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { is_active: isActive } }, async (): ReturnType<typeof toggleContentSource> => {
     const supabase = await createClient()
     const { error } = await supabase
       .from("content_topic_sources")
@@ -115,6 +120,7 @@ export async function toggleContentSource(id: string, isActive: boolean): Promis
     if (error) return { ok: false, error: error.message }
     revalidatePath("/dashboard/marketing/content-intel")
     return { ok: true }
+    }); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
   }
@@ -124,17 +130,78 @@ export async function deleteContentSource(id: string): Promise<{ ok: boolean; er
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const signedIn = { ...ctx, brokerageId: ctx.brokerageId }; const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.content_source.delete", actor: { type: "user", userId: ctx.userId }, subject: { type: "content_topic_source", id: id }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async (ctx = signedIn): ReturnType<typeof deleteContentSource> => {
     const supabase = await createClient()
-    const { error } = await supabase
+    // WAVE 154 (lane 154G1 — directive C2 / C4): the source's own topics cascade with it (content_topic_bank.source_id ON
+    // DELETE CASCADE, live). A topic of ANOTHER source that merged the same public post (THE ONE intake links observations
+    // across sources) survives — so each post URL this source listed is re-evaluated: its observation leaves that topic's
+    // provenance, and a topic left with none is retired (lib/content-intel/topic-intake.ts reevaluateRemovedTopicSource).
+    const { data: before, error: readErr } = await supabase.from("content_topic_sources").select("source_config")
+      .eq("id", id).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+    if (readErr) return { ok: false, error: readErr.message }
+    if (!before) return { ok: false, error: "source not found in your brokerage" }
+    const { data: gone, error } = await supabase
       .from("content_topic_sources")
       .delete()
       .eq("id", id)
       .eq("brokerage_id", ctx.brokerageId)
+      .select("id")
     if (error) return { ok: false, error: error.message }
+    if ((gone ?? []).length !== 1) return { ok: false, error: "source was not deleted (it may be platform-wide or already gone)" }
+    const urls = (before as { source_config?: { community_post_urls?: unknown } }).source_config?.community_post_urls
+    if (Array.isArray(urls) && urls.length) {
+      const { reevaluateRemovedTopicSource } = await import("@/lib/content-intel/topic-intake")
+      for (const u of urls.filter((x): x is string => typeof x === "string").slice(0, 50)) {
+        const r = await reevaluateRemovedTopicSource(supabase, { brokerageId: ctx.brokerageId, sourceUrl: u, disposition: "deleted" })
+        if (!r.ok) console.error(`[content-intel/sources] topics citing ${u} not re-evaluated: ${r.error}`)
+      }
+    }
     revalidatePath("/dashboard/marketing/content-intel")
     return { ok: true }
+    }); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
+  }
+}
+
+/**
+ * A subscriber's own observation or a permitted link they saved, filed in the ONE topic pool (wave 154, lane 154G1 — lane
+ * 154C Outside-lane request 5; directive C5.1). Tenant from the SESSION (CLAUDE.md §4), never the body; the user's RLS
+ * client, like every action in this file. The note passes the intake's exclusion gate and personal-data screen.
+ */
+export async function saveTopicObservationAction(input: { note: string; link?: string | null }): Promise<{ ok: boolean; inserted: number; merged: number; excluded: Array<{ reason: string; message: string }>; error?: string }> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, inserted: 0, merged: 0, excluded: [], error: "Unauthorized" }
+    const note = String(input?.note ?? "").trim()
+    if (!note) return { ok: false, inserted: 0, merged: 0, excluded: [], error: "A note is required" }
+    const link = typeof input?.link === "string" && /^https?:\/\//.test(input.link.trim()) ? input.link.trim() : null
+    const supabase = await createClient()
+    const brokerageId = ctx.brokerageId
+    const { saveManualTopicObservation } = await import("@/lib/content-intel/public-chatter-topics")
+    const { explainTopicNotStored } = await import("@/lib/content-intel/topic-intake")
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    // LAW 5 — who saved what into the pool, and what the intake did with it.
+    const r = await withActionLedger(
+      {
+        // Wave 154 (lane 154L): three segments — the two-segment "intel.topic_observation_saved" was REFUSED by the ledger's
+        // domain.entity.action rule, so the save never ran (test:action-ledger §14 red at c07048ea).
+        brokerageId, action: "intel.topic_observation.save", actor: { type: "user", userId: ctx.userId },
+        subject: { type: "content_topic", ref: link ?? "own_observation" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED",
+        systemSource: "content-intel/sources", reasonDetail: "a subscriber saved their own observation / a permitted link into the topic pool",
+      },
+      () => saveManualTopicObservation(supabase, { brokerageId, note, link }),
+      {
+        settle: (x) => ({ status: x.ok ? "executed" as const : "failed" as const, outcome: `inserted ${x.inserted}, merged ${x.merged}, excluded ${x.excluded.length}`, error: x.ok ? null : (x.refused ?? x.errors.slice(0, 2).join("; ")) }),
+        replay: (claim) => ({ ok: false, inserted: 0, merged: 0, excluded: [], rows: [], strippedFields: 0, sameObservation: 0, errors: [claim.kind === "refused" ? `action ledger refused: ${claim.error}` : `duplicate save (${claim.kind})`], refused: claim.kind === "refused" ? "ledger_refused" : undefined }),
+      },
+    )
+    if (r.inserted + r.merged > 0) revalidatePath("/dashboard/marketing/content-intel")
+    if (!r.ok) console.error(`[content-intel/sources] topic observation not saved for ${brokerageId}: ${r.refused ?? r.errors.join("; ")}`)
+    return { ok: r.ok, inserted: r.inserted, merged: r.merged, excluded: r.excluded.map((x) => ({ reason: x.reason, message: explainTopicNotStored(x.reason) })), ...(r.ok ? {} : { error: "The topic could not be saved. Please try again." }) }
+  } catch (e) {
+    return { ok: false, inserted: 0, merged: 0, excluded: [], error: (e as Error).message }
   }
 }
 

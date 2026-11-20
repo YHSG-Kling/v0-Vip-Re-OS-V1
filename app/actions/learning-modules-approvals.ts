@@ -14,8 +14,7 @@
 import { revalidatePath } from "next/cache"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-
-const ADMIN_ROLES = new Set(["broker", "broker_admin", "admin", "superadmin", "team_lead"])
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function requireAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -32,7 +31,7 @@ async function requireAdmin(): Promise<
     .maybeSingle()
   if (!row?.brokerage_id) return { ok: false, error: "Brokerage not configured" }
   const userType = row.user_type as string
-  if (!ADMIN_ROLES.has(userType)) return { ok: false, error: "Forbidden" }
+  if (!isAdminOrBroker({ user_type: userType })) return { ok: false, error: "Forbidden" }
   return { ok: true, userId: user.id, brokerageId: row.brokerage_id as string, userType }
 }
 
@@ -83,6 +82,71 @@ export async function listPendingApprovalModulesAction(): Promise<
   return { ok: true, rows }
 }
 
+export interface RecentDecisionRow {
+  id:                string
+  title:             string
+  status:            string
+  approved_by:       string | null
+  approved_at:       string | null
+  rejected_by:       string | null
+  rejected_at:       string | null
+  rejection_reason:  string | null
+  decided_by_name:   string | null
+}
+
+/**
+ * Approve/reject provenance for recently-decided modules. approved_by /
+ * approved_at / rejected_by / rejected_at / rejection_reason are stamped by
+ * approveLearningModuleAction / rejectLearningModuleAction above and, before
+ * this reader, went nowhere — the approvals page's own copy claims "the
+ * kernel records who decided and when" with no surface that ever showed it.
+ */
+export async function listRecentModuleDecisionsAction(): Promise<
+  | { ok: true; rows: RecentDecisionRow[] }
+  | { ok: false; error: string }
+> {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth
+
+  const svc = createServiceClient()
+  const { data, error } = await svc
+    .from("learning_modules")
+    .select("id, title, status, approved_by, approved_at, rejected_by, rejected_at, rejection_reason")
+    .eq("brokerage_id", auth.brokerageId)
+    .in("status", ["published", "rejected"])
+    .or("approved_at.not.is.null,rejected_at.not.is.null")
+    .order("updated_at", { ascending: false })
+    .limit(20)
+  if (error) return { ok: false, error: error.message }
+
+  const deciderIds = [...new Set(
+    (data ?? []).map(r => (r.approved_by ?? r.rejected_by) as string | null).filter((v): v is string => !!v),
+  )]
+  const names = new Map<string, string>()
+  if (deciderIds.length > 0) {
+    const { data: users } = await svc.from("users").select("id, first_name, last_name").in("id", deciderIds)
+    for (const u of users ?? []) {
+      names.set(u.id as string, [u.first_name, u.last_name].filter(Boolean).join(" ") || "—")
+    }
+  }
+
+  const rows: RecentDecisionRow[] = (data ?? []).map(r => {
+    const deciderId = (r.approved_by ?? r.rejected_by) as string | null
+    return {
+      id:               r.id as string,
+      title:            r.title as string,
+      status:           r.status as string,
+      approved_by:      (r.approved_by as string | null) ?? null,
+      approved_at:      (r.approved_at as string | null) ?? null,
+      rejected_by:      (r.rejected_by as string | null) ?? null,
+      rejected_at:      (r.rejected_at as string | null) ?? null,
+      rejection_reason: (r.rejection_reason as string | null) ?? null,
+      decided_by_name:  deciderId ? (names.get(deciderId) ?? null) : null,
+    }
+  })
+  return { ok: true, rows }
+}
+
 export async function approveLearningModuleAction(
   moduleId: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -92,7 +156,7 @@ export async function approveLearningModuleAction(
   const svc = createServiceClient()
   const { data: m } = await svc
     .from("learning_modules")
-    .select("brokerage_id, status")
+    .select("brokerage_id, status, required, quiz_questions")
     .eq("id", moduleId)
     .maybeSingle()
   if (!m) return { ok: false, error: "Module not found" }
@@ -100,7 +164,16 @@ export async function approveLearningModuleAction(
   if (m.status !== "pending_review") {
     return { ok: false, error: `Cannot approve from status '${m.status}'` }
   }
+  // WAVE 155 (155C — owner R1): the second publish door applies the same rule as publishLearningModuleAction — a required
+  // quiz with no valid question is never published, because it could never be completed.
+  const { courseQuizReadiness, COURSE_NOT_COMPLETABLE_MESSAGE } = await import("@/lib/academy/quiz")
+  if (courseQuizReadiness((m as { required?: unknown }).required, (m as { quiz_questions?: unknown }).quiz_questions) === "not_completable") {
+    return { ok: false, error: COURSE_NOT_COMPLETABLE_MESSAGE }
+  }
 
+  // WAVE 155 (155R17): the receipt — requireAdmin's SESSION user and tenant; the approval publishes the module to the tenant.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "academy.learning_module.approve", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module", id: moduleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const now = new Date().toISOString()
   const { error } = await svc
     .from("learning_modules")
@@ -116,6 +189,8 @@ export async function approveLearningModuleAction(
 
   revalidatePath("/dashboard/admin/learning-modules/approvals")
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "Not run" }
 }
 
 export async function rejectLearningModuleAction(
@@ -140,6 +215,9 @@ export async function rejectLearningModuleAction(
     return { ok: false, error: `Cannot reject from status '${m.status}'` }
   }
 
+  // WAVE 155 (155R17): the receipt — requireAdmin's SESSION user and tenant.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "academy.learning_module.reject", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module", id: moduleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const now = new Date().toISOString()
   const { error } = await svc
     .from("learning_modules")
@@ -155,4 +233,6 @@ export async function rejectLearningModuleAction(
 
   revalidatePath("/dashboard/admin/learning-modules/approvals")
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "Not run" }
 }

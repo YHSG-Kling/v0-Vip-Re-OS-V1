@@ -38,8 +38,11 @@ export interface BrandVoiceUpsertInput {
   custom_instructions?: string
 }
 
-// Roles permitted to read/write brand voice profiles
-const BRAND_VOICE_ALLOWED_ROLES = ["agent", "broker", "admin", "superadmin"]
+// Roles permitted to read/write brand voice profiles.
+// SCOPE LADDER (kept inline — admits agent, not an admin gate): 'superadmin'
+// removed — dead as users.user_type (0 live rows); broker_owner added —
+// storable seat that owns the brokerage and holds at least its broker's access.
+const BRAND_VOICE_ALLOWED_ROLES = ["agent", "broker", "broker_owner", "admin"]
 
 // ── Load the caller's brand voice profile ────────────────────────────────────
 
@@ -95,6 +98,8 @@ export async function saveBrandVoiceProfileAction(input: BrandVoiceUpsertInput):
     return { success: false, error: "Agent profile not found" }
   }
 
+  const run = async (): Promise<{ success: boolean; profile?: BrandVoiceProfile; error?: string }> => {
+
   const supabase = await createClient()
 
   // Check if a profile already exists for this agent
@@ -143,4 +148,9 @@ export async function saveBrandVoiceProfileAction(input: BrandVoiceUpsertInput):
 
   if (error) return { success: false, error: error.message }
   return { success: true, profile: data! }
+  }
+  // A seat with no tenant has no valid ledger row: it saves exactly as before, unrecorded.
+  if (!ctx.brokerageId) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.brand_voice.save", actor: { type: "user", userId: ctx.impersonatorUserId ?? ctx.userId, agentId: ctx.agentId }, subject: ctx.agentId ? { type: "agent", id: ctx.agentId } : { type: "brand_voice_profile" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, run)
 }

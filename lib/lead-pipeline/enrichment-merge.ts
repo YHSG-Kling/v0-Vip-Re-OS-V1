@@ -2,6 +2,7 @@
 // Pure enrichment merge logic — separated from perplexity-enrichment.ts so it
 // carries NO gateway/server-only imports and is unit-testable in any runtime
 // (the scraper simulator runs under plain tsx).
+import { isLeadEligibleIdentity, leadEmailProblem, personNameProblem } from "./canonical-lead-eligibility"
 
 export interface BaseEnrichment {
   first_name: string | null
@@ -29,7 +30,9 @@ export function mergeEnrichment(base: BaseEnrichment, extra: PerplexityFindings 
   if (!extra) return base
   let filled = false
   const next: BaseEnrichment = { ...base }
-  if (!next.email && extra.email) { next.email = extra.email; filled = true }
+  // An UNUSABLE email on file (the gate's leadEmailProblem) is a gap, not a value
+  // to protect — shouldGapFill spends precisely because of it (lane 88F).
+  if ((!next.email || leadEmailProblem(next.email)) && extra.email && !leadEmailProblem(extra.email)) { next.email = extra.email; filled = true }
   if (!next.phone && extra.phone) { next.phone = extra.phone; filled = true }
   if (!next.employer && extra.employer) { next.employer = extra.employer; filled = true }
   if (!next.currentBrokerage && extra.currentBrokerage) { next.currentBrokerage = extra.currentBrokerage; filled = true }
@@ -39,8 +42,19 @@ export function mergeEnrichment(base: BaseEnrichment, extra: PerplexityFindings 
   return next
 }
 
-/** Should we spend a Perplexity call? Only for high-value, identity-promising gaps. */
+/**
+ * Should we spend a Perplexity call? Only for high-value, identity-promising gaps.
+ *
+ * WIRED TO THE ONE LEAD PREDICATE (lane 88F — `isLeadEligibleIdentity` was an
+ * export only proofs called). The spend is worth it exactly when the record is NOT
+ * yet a lead AND the one thing it lacks is the contact anchor: its name already
+ * passes the gate's own name test. The hand check this replaces
+ * (`first_name && last_name && !email`) paid for two gaps the gate would refuse
+ * anyway — a placeholder or entity name ("Current Owner", "Oak Holdings LLC") can
+ * never become a lead whatever email is found — and skipped the one it wants: a
+ * row carrying an UNUSABLE email (noreply@, a disposable domain) still needs one.
+ */
 export function shouldGapFill(base: BaseEnrichment): boolean {
-  const hasFullName = !!(base.first_name && base.last_name)
-  return hasFullName && !base.email
+  if (isLeadEligibleIdentity(base)) return false
+  return personNameProblem(base.first_name, base.last_name) === null
 }

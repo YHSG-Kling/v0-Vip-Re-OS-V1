@@ -28,7 +28,7 @@ export function SellerJourneyMeaningCard({
   const ctx = resolveSellerStageCopy(stage, { sensitive })
 
   const UrgencyIcon = ctx.urgency === "high" ? AlertCircle : ctx.urgency === "medium" ? Clock : CheckCircle2
-  const urgencyColor = ctx.urgency === "high" ? "text-amber-600" : ctx.urgency === "medium" ? "text-blue-600" : "text-green-600"
+  const urgencyColor = ctx.urgency === "high" ? "text-amber-700" : ctx.urgency === "medium" ? "text-blue-600" : "text-green-700"
 
   return (
     <Card className="shadow-lg border-0">

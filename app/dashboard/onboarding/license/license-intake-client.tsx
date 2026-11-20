@@ -7,6 +7,9 @@
 // 4-step horizontal stepper with persistent progress.
 
 import { useState, useEffect, useCallback } from "react"
+// What a row stores for a private document: the ONE reference format (lib/storage/signed-doc-url.ts toDocumentRef — wave 154,
+// lane 154M). This component mints no link at all: the license and the E&O certificate are opened through the session-gated door.
+import { toDocumentRef } from "@/lib/storage/signed-doc-url"
 import { useRouter } from "next/navigation"
 import useSWR, { mutate } from "swr"
 import { Button } from "@/components/ui/button"
@@ -16,7 +19,6 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
-import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
 import { Check, Upload, FileText, Shield, AlertCircle, Loader2 } from "lucide-react"
 import {
@@ -298,11 +300,11 @@ function LicenseDetailsStep({
 
       if (error) throw error
 
-      const { data: urlData } = supabase.storage
-        .from("agent-documents")
-        .getPublicUrl(fileName)
-
-      setFormData(prev => ({ ...prev, documentUrl: urlData.publicUrl }))
+      // agent-documents is DOCUMENT-CLASS: this is the agent's real-estate
+      // LICENSE. Neither a public URL nor a long-lived signed URL may be
+      // persisted onto the profile — the row stores the object's REFERENCE, and
+      // every view mints a short link after a session check (app/api/documents/open).
+      setFormData(prev => ({ ...prev, documentUrl: toDocumentRef("agent-documents", fileName) }))
       toast.success("Document uploaded successfully")
     } catch (error) {
       console.error("Upload error:", error)
@@ -538,11 +540,9 @@ function EOInsuranceStep({
 
       if (error) throw error
 
-      const { data: urlData } = supabase.storage
-        .from("agent-documents")
-        .getPublicUrl(fileName)
-
-      setFormData(prev => ({ ...prev, certificateUrl: urlData.publicUrl }))
+      // Same class, same rule — an E&O insurance certificate is the agent's
+      // professional paperwork, not a marketing asset: the row stores its reference.
+      setFormData(prev => ({ ...prev, certificateUrl: toDocumentRef("agent-documents", fileName) }))
       toast.success("Certificate uploaded successfully")
     } catch (error) {
       console.error("Upload error:", error)
@@ -828,6 +828,47 @@ function ContractStep({
           </Badge>
         </div>
 
+        {/* m481 — TEAM AGREEMENT, beside the brokerage contract. Joining a team
+            is also in writing: when the agent resolves to a team, the team's
+            agreement (issued by the brokerage/team lead from the agency
+            contract family) appears here with its own status. It does not gate
+            the onboarding step — the checklist step is the brokerage-join
+            contract; the team agreement is its own record. */}
+        {status?.teamId && (
+          <div className="flex items-center justify-between rounded-lg border p-4">
+            <div>
+              <p className="font-medium">Team Agreement</p>
+              <p className="text-sm text-muted-foreground">
+                {status?.teamContractRecord
+                  ? status.teamContractRecord.status === "fully_signed"
+                    ? `Signed on ${status.teamContractRecord.signed_at ? new Date(status.teamContractRecord.signed_at).toLocaleDateString() : ""}`
+                    : "Awaiting signature — sign offline and your admin records it, or use the signing link if one exists"
+                  : "Your team's agreement has not been issued yet — your team lead or admin sends it"}
+              </p>
+              {status?.teamContractRecord?.signing_url && status.teamContractRecord.status !== "fully_signed" && (
+                <a
+                  href={status.teamContractRecord.signing_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm underline"
+                >
+                  Sign Team Agreement
+                </a>
+              )}
+            </div>
+            <Badge
+              variant={status?.teamContractRecord?.status === "fully_signed" ? "default" : "outline"}
+              className={status?.teamContractRecord?.status === "fully_signed" ? "bg-green-600" : ""}
+            >
+              {status?.teamContractRecord
+                ? status.teamContractRecord.status === "fully_signed"
+                  ? (<><Check className="mr-1 h-3 w-3" /> Signed</>)
+                  : "Pending"
+                : "Not Issued"}
+            </Badge>
+          </div>
+        )}
+
         {/* Actions */}
         {!isSent && !isSigned && (
           <Button onClick={handleSendContract} className="w-full" disabled={isSubmitting}>
@@ -1003,12 +1044,16 @@ function ComplianceStep({
                 >
                   {item.step_name}
                 </label>
+                {/* "Read Full Policy" was removed here. There is no policy
+                    document behind it: onboarding_steps carries step_key,
+                    step_name and instructions and no policy URL or attachment,
+                    and no table in the schema stores a per-step policy doc. The
+                    acknowledgment text the agent is agreeing to is `instructions`,
+                    which is already shown in full directly above — the link
+                    promised a longer document that does not exist. */}
                 <p className="mt-1 text-sm text-muted-foreground">
                   {item.instructions}
                 </p>
-                <Button variant="link" size="sm" className="h-auto p-0 text-primary">
-                  Read Full Policy
-                </Button>
               </div>
             </div>
           ))}

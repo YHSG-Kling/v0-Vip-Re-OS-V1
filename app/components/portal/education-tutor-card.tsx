@@ -73,7 +73,14 @@ export function EducationTutorCard({ contactId }: { contactId: string }) {
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Related lessons</p>
                 <div className="flex flex-wrap gap-1.5">
                   {related.map((m) => (
-                    <Link key={m.id} href={`/portal/${contactId}/learn/${m.id}`}>
+                    // `m.id` is a learning_modules.id. The learn page's client
+                    // reads `?module=` and opens that lesson's drawer once
+                    // (app/portal/[contactId]/learn/learn-client.tsx). Same
+                    // portal, same contactId, so the clicker sees only their
+                    // own lessons. Was a bare link to the learn page after the
+                    // 2026-09-02 dangling-link repoint, when nothing read a
+                    // module id.
+                    <Link key={m.id} href={`/portal/${contactId}/learn?module=${m.id}`}>
                       <Badge variant="outline" className="text-xs cursor-pointer hover:bg-muted">{m.title ?? "Lesson"}</Badge>
                     </Link>
                   ))}

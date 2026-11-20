@@ -15,6 +15,7 @@
  * Run: npx tsx scripts/lead-deconflict-simulator.ts   (npm run test:lead-deconflict)
  */
 import { leadLogChannel } from "../lib/kernel/deconflict/lead-channel"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -36,10 +37,20 @@ async function main() {
   console.log("══════════════════════════════════════════════════")
 
   console.log("\n[Layer 1 · de-conflict channel → isa_outreach_log channel]")
+  // THIS ASSERTION USED TO PIN THE BUG. It required leadLogChannel("phone") ===
+  // "phone" — but isa_outreach_log.channel says 'voice', and that mismatch is
+  // the whole reason the mapping module exists: countPhoneTouches filtered the
+  // log for 'phone', matched zero rows every time, and the "1 call / 7 days" cap
+  // could never fire. On an over-touch cap a zero is not an error, it is a
+  // PERMISSION. Had this simulator been wired to CI it would have blocked the
+  // fix and defended the leak. It now asserts the corrected mapping.
   check("mail → direct_mail (log stores direct_mail)", leadLogChannel("mail") === "direct_mail")
   check("email → email", leadLogChannel("email") === "email")
   check("sms → sms", leadLogChannel("sms") === "sms")
-  check("phone → phone", leadLogChannel("phone") === "phone")
+  check("phone → voice (the log's word for a call — NOT 'phone')", leadLogChannel("phone") === "voice")
+  check("the live CHECK really does reject 'phone' on that column",
+    !(CHECK_VOCABULARIES.isa_outreach_log?.channel ?? []).includes("phone")
+    && (CHECK_VOCABULARIES.isa_outreach_log?.channel ?? []).includes("voice"))
 
   console.log("\n[Layer 2 · live: a lead at the email cap is deferred]")
   const hasCreds =

@@ -25,7 +25,14 @@ export const MANAGED_SESSION_STATUSES: readonly ManagedSessionStatus[] = [
  * (run_started→running, idled→idle, terminated→terminated).
  */
 export function normalizeManagedSessionStatus(raw: string | null | undefined): ManagedSessionStatus {
-  switch ((raw ?? "").toLowerCase()) {
+  const lowered = (raw ?? "").toLowerCase()
+  // A value ALREADY in the CHECK vocabulary passes through by membership, not by
+  // case label — so the roster above is the one place the vocabulary is spelled
+  // (CLAUDE.md §6) and a status added to the CHECK + roster is honoured here the
+  // same day, without a new `case` (lane 80E: this roster was exported for the
+  // governance proof and read by nothing at runtime).
+  if ((MANAGED_SESSION_STATUSES as readonly string[]).includes(lowered)) return lowered as ManagedSessionStatus
+  switch (lowered) {
     case "idle":
     case "idled":        return "idle"
     case "terminated":

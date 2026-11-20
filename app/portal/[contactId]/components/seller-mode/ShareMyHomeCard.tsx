@@ -29,6 +29,9 @@ import { SellerSharePostsRail, type SellerSharePost } from "./SellerSharePostsRa
 interface Props {
   listingId: string
   listingAddress: string
+  /** The portal's own contact (route param). The feed read is scoped to it —
+   *  see the contact_id note on ShareFeedRow below. */
+  contactId: string
 }
 
 interface PublishedPostRow {
@@ -47,6 +50,48 @@ interface ShareFeedRow {
   share_messages: Record<string, string> | null
   agent_note: string | null
   pushed_at: string | null
+  /** users.id of the agent who pushed it — the writer stamps the signed-in
+   *  user's auth id (app/dashboard/listings/[id]/share/page.tsx → pushListingToSellerPortal);
+   *  no FK in scripts/schema-fk-map.ts, so the class is the writer's. */
+  pushed_by_user_id: string | null
+  /** The tenant the push landed on — the anchor for the name read below. */
+  brokerage_id: string | null
+  /** WHO the push was addressed to — pushListingToSellerPortal stamps the
+   *  listing's own contact_id (app/actions/push-listing-to-seller-portal.ts:78).
+   *  Until this card read it, a co-seller on the same listing was served the
+   *  push addressed to the OTHER seller. NULL = listing-wide (no addressee was
+   *  recorded), which every seller on the listing may see. */
+  contact_id: string | null
+}
+
+/** Pick the newest feed row this contact is entitled to: addressed to them, or
+ *  listing-wide (NULL addressee). A row addressed to a DIFFERENT contact is
+ *  skipped rather than rendered. */
+function selectFeedForContact(rows: ShareFeedRow[], contactId: string): ShareFeedRow | null {
+  return rows.find((r) => r.contact_id === null || r.contact_id === contactId) ?? null
+}
+
+/**
+ * WHO PUSHED IT — contact-facing (CLAUDE.md §5: the seller sees the agent's
+ * DISPLAY NAME and nothing else about them). The name is read anchored on the
+ * feed row's own brokerage_id, never on a caller field. Four states, never
+ * collapsed and never "the system":
+ *   resolved       — a user of that brokerage carries the id
+ *   unresolved     — an id is stamped but no user of that brokerage carries it
+ *   not_recorded   — the column is NULL
+ *   lookup_refused — the name read itself was refused
+ */
+type PusherState = "resolved" | "unresolved" | "not_recorded" | "lookup_refused"
+
+function pusherLine(state: PusherState, name: string | null, pushedAt: string | null): string {
+  const when = pushedAt ? new Date(pushedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : null
+  const on = when ? ` on ${when}` : ""
+  switch (state) {
+    case "resolved":       return `Sent to your portal by ${name}${on}`
+    case "unresolved":     return `Sent to your portal${on} by someone outside your agent's brokerage`
+    case "lookup_refused": return `Sent to your portal${on} — the sender's name could not be looked up`
+    case "not_recorded":   return `Sent to your portal${on} — sender not recorded`
+  }
 }
 
 const SHARE_PLATFORM_ORDER = ["facebook", "linkedin", "twitter", "nextdoor", "instagram", "imessage"] as const
@@ -72,22 +117,54 @@ function withSellerShareAttribution(url: string, listingId: string): string {
   return `${url}${sep}ref=seller-share&listing=${listingId}&utm_source=seller-share&utm_campaign=seller_share_${listingId}`
 }
 
-export async function ShareMyHomeCard({ listingId, listingAddress }: Props) {
+export async function ShareMyHomeCard({ listingId, listingAddress, contactId }: Props) {
   const supabase = await createClient()
 
-  const [{ data: listingRow }, { data: shareFeed }, { data: campaigns }] = await Promise.all([
+  const [{ data: listingRow }, { data: shareFeed, error: shareFeedErr }, { data: campaigns }] = await Promise.all([
     supabase.from("listings").select("id, slug").eq("id", listingId).maybeSingle(),
+    // A window, not limit(1): the newest row may be addressed to a CO-SELLER, and
+    // the addressee filter runs in selectFeedForContact below (contactId is a route
+    // param — keeping it out of a PostgREST `.or()` string keeps it out of the filter
+    // grammar entirely).
     supabase
       .from("seller_share_feed")
-      .select("public_url, share_messages, agent_note, pushed_at")
+      .select("public_url, share_messages, agent_note, pushed_at, pushed_by_user_id, brokerage_id, contact_id")
       .eq("listing_id", listingId)
       .order("pushed_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+      .limit(10),
     supabase.from("marketing_campaigns").select("id").eq("listing_id", listingId).limit(10),
   ])
-  const feed = (shareFeed as ShareFeedRow | null) ?? null
+  // Read, not swallowed: a refused feed read used to resolve as "nothing pushed"
+  // and the card quietly disappeared.
+  if (shareFeedErr) console.warn("[ShareMyHomeCard] seller_share_feed read refused:", shareFeedErr.message)
+  const feed = selectFeedForContact((shareFeed as unknown as ShareFeedRow[] | null) ?? [], contactId)
   const slug = (listingRow as { slug: string | null } | null)?.slug ?? null
+
+  // Resolve the pushing agent's display name, anchored on the feed row's tenant.
+  let pusherState: PusherState = "not_recorded"
+  let pusherName: string | null = null
+  if (feed?.pushed_by_user_id) {
+    if (!feed.brokerage_id) {
+      // No tenant to anchor on → a cross-tenant name read is exactly what §4
+      // forbids; say the lookup did not run rather than guess.
+      pusherState = "lookup_refused"
+    } else {
+      const { data: pusher, error: pusherErr } = await supabase
+        .from("users")
+        .select("first_name, last_name")
+        .eq("id", feed.pushed_by_user_id)
+        .eq("brokerage_id", feed.brokerage_id)
+        .maybeSingle()
+      if (pusherErr) {
+        console.warn("[ShareMyHomeCard] pusher name lookup refused:", pusherErr.message)
+        pusherState = "lookup_refused"
+      } else {
+        const u = pusher as { first_name: string | null; last_name: string | null } | null
+        pusherName = u ? [u.first_name, u.last_name].filter(Boolean).join(" ") || null : null
+        pusherState = pusherName ? "resolved" : "unresolved"
+      }
+    }
+  }
 
   // PUBLISHED posts only — the compliance line this surface never crosses.
   // social_posts carries listing_id directly AND via marketing_campaign_id;
@@ -154,6 +231,7 @@ export async function ShareMyHomeCard({ listingId, listingAddress }: Props) {
         {/* Agent-pushed share payload — the public link + ready-to-send copy per platform. */}
         {feed && (
           <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-3 space-y-3">
+            <p className="text-[11px] text-muted-foreground">{pusherLine(pusherState, pusherName, feed.pushed_at)}</p>
             {feed.agent_note && <p className="text-sm text-foreground">{feed.agent_note}</p>}
             {shareUrl && (
               <div className="flex flex-wrap items-center gap-2">

@@ -26,11 +26,17 @@ export async function createPortalInviteForContact(params: {
   const { data: { user: authUser } } = await authClient.auth.getUser()
   if (!authUser) return { success: false, error: "Unauthorized" }
 
-  return issuePortalInvite({
+  const invite = () =>
+  issuePortalInvite({
     contactId:       params.contactId,
     invitedByUserId: authUser.id,
     sendMagicLink:   params.sendMagicLink ?? false,
   })
+  // WAVE 155 (155R14): the receipt — the SESSION's tenant (one read); a seat with no tenant runs exactly as before.
+  const { data: callerRow } = await authClient.from("users").select("brokerage_id").eq("id", authUser.id).maybeSingle()
+  if (!callerRow?.brokerage_id) return invite()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: callerRow.brokerage_id, action: "portal.invite.create", actor: { type: "user", userId: authUser.id }, subject: { type: "contact", id: params.contactId }, riskClass: params.sendMagicLink ? "COMMUNICATION" : "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { magic_link: !!params.sendMagicLink } }, invite)
 }
 
 // Staff seat roles that may see the tenant's portal-client roster. Mirrors
