@@ -70,7 +70,7 @@ correct screen, not a failure.
 |---|---|---|---|
 | 1 | three different people ask the same general question (two at `/portal/[contactId]/assistant`, one on `/site/[slug]`) | after the third distinct asker, ONE de-identified topic appears at `/dashboard/marketing/content-intel/topics` | SIMULATED [S5 FAQ cluster → topic] · LIVE (owner) |
 | 2 | `/dashboard/marketing/video-staging` | the same asker count chooses an educational video (an artifact, delivered on a channel) | SIMULATED [S5 JOIN education artifact] |
-| 3 | `/newsletters` | the FAQ topic does NOT appear as a newsletter section today — a known code gap (GAP-FAQ-NEWSLETTER) | SIMULATED [S5 measured gap] |
+| 3 | `/newsletters` | the same FAQ topic is selected as a newsletter section, with the topic as its provenance; another brokerage's topic is not (closed at merge — it was the code gap GAP-FAQ-NEWSLETTER) | SIMULATED [S5 JOIN topic → newsletter section] |
 | 4 | `/dashboard/agent/qr-codes` | the video end card and the flyer each have their own tracked code on the same campaign | SIMULATED [S5 JOIN QR] · LIVE (owner) |
 | 5 | scan the printed flyer code with a phone (`/api/qr/scan`) | redirect to the real page; the scan is counted with no identity | LIVE (owner) · after P0-4 |
 | 6 | `/dashboard/content/approvals` → edit the approved piece | approval re-opens after a substantive edit | LIVE (owner) · [S5 approval] |

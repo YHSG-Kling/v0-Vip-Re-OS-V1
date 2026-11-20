@@ -180,8 +180,8 @@ re-run**); m855 and m875 read WRITTEN, NOT APPLIED. These two are yours.
 3. §I census 0 → RESOLVED → O2. 4. Ledger R5 / R6 / M1 / M2 observed with ids → O3. 5. SEK line RESOLVED (date, `dpl_`, 302).
 6-8. LEGAL, LICENSES, LIVE-PROBES lines RESOLVED as written above. `test:release-blockers` prints PRODUCTION-LIVE: YES only with zero obligations. `test:production-readiness` block L reads all eight
 as launch gates: each stays EXTERNAL until its evidence exists, and a green simulation alone never unlocks launch (check L2).
-Verdict vocabulary (directive §L3): ENGINEERING BLOCKED — CODE GAPS REMAIN while a P0 / P1 code gap is listed;
-ENGINEERING READY — OWNER ACTIONS REMAIN once none is; CONTROLLED PRODUCTION VERIFIED only after 1-8 are evidenced.
+Verdict vocabulary (directive §L3): ENGINEERING BLOCKED — CODE GAPS REMAIN while a P0 / P1 code gap is listed or the arbitration
+census measures one; ENGINEERING READY — OWNER ACTIONS REMAIN once neither does; CONTROLLED PRODUCTION VERIFIED only after 1-8 are evidenced.
 
 ## 11. Owner SQL named by the final lanes (OWNER-SQL §R) — not release-blocking, written, never run
 
