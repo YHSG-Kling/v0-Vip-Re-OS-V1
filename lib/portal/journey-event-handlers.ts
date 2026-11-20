@@ -119,18 +119,69 @@ async function portalMessage(
   return { success: true, written: 1 }
 }
 
-/** journey.stage_completed — the client's celebration message. */
+/** The registered manager for the two client-message reactions (ORCHESTRATOR_EVENT_MANAGER in lib/kernel/manager-registry.ts). */
+const JOURNEY_REACTION_MANAGER = "data_steward"
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * WAVE 155 (lane 155R24, arbitration G03) — THE DECISION AND THE RECEIPT IN FRONT OF THE CLIENT MESSAGE. The stage and
+ * journey celebrations post to a CLIENT's portal thread autonomously, and they did so with no decision of their own (the
+ * egress row records the post, not whether it should happen). The lane 155R17 / 155R20 pattern: the EXISTING autonomy gate
+ * (lib/managers/autonomy-gate.ts autonomyDecision) over its two halts — the platform's god switch (loadPlatformHalt) and
+ * platform staff's per-tenant pause (loadTenantAutonomyHalt), both cached and fail-open by their own design — decides BEFORE
+ * the post, and ONE withActionLedger receipt (`portal.journey.<kind>`, actor the registered manager, tenant the event row's,
+ * subject the contact) records what happened. A HELD decision posts nothing and settles `skipped / autonomy_held` with the
+ * halt's reason; the reaction reports success (a hold is not a dispatch failure) and names the hold. No idempotency key: the
+ * egress below is already at-most-once per (contact, kind, stage). A refusing ledger runs the post exactly as before.
+ */
+async function decidedJourneyMessage(
+  svc: any,
+  brokerageId: string,
+  payload: Record<string, any>,
+  kind: "stage_completed" | "all_tasks_done",
+  post: () => Promise<JourneyEventOutcome>,
+): Promise<JourneyEventOutcome> {
+  if (!brokerageId) return { success: false, written: 0, error: "No brokerageId — journey events are never acted on untenanted" }
+  const { autonomyDecision, loadTenantAutonomyHalt } = await import("@/lib/managers/autonomy-gate")
+  const { loadPlatformHalt } = await import("@/lib/platform/platform-controls")
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const decision = autonomyDecision({ managerKey: JOURNEY_REACTION_MANAGER, effective: null, platformHalt: await loadPlatformHalt(svc as never), tenantHalt: await loadTenantAutonomyHalt(brokerageId, svc as never) })
+  let result: JourneyEventOutcome | null = null
+  const run = async (): Promise<void> => { if (!decision.allow) return; result = await post() }
+  const contactId = typeof payload?.contact_id === "string" ? payload.contact_id : null
+  await withActionLedger<void>({
+    brokerageId,
+    action: `portal.journey.${kind}`,
+    actor: { type: "manager", managerKey: JOURNEY_REACTION_MANAGER },
+    subject: contactId && UUID_RE.test(contactId) ? { type: "contact", id: contactId } : { type: "contact", ref: String(contactId ?? "none") },
+    riskClass: "COMMUNICATION",
+    systemSource: "journey_event_handler",
+    detail: { kind, stage_name: payload?.stage_name ?? null, autonomy: decision.allow ? "allow" : "held" },
+  }, run, {
+    settle: () => {
+      const r = result as JourneyEventOutcome | null
+      if (!decision.allow) return { status: "skipped", outcome: "autonomy_held", error: decision.reason }
+      if (r?.success) return r.written > 0 ? { status: "executed", outcome: "message_posted" } : { status: "skipped", outcome: "nothing_to_post", error: r.error ?? null }
+      return { status: "failed", outcome: "message_refused", error: r?.error ?? "the post returned no result" }
+    },
+    replay: (claim) => (claim.kind === "refused" ? run() : undefined),
+  }, { client: svc })
+  if (!decision.allow) return { success: true, written: 0, error: `held — ${decision.reason ?? "autonomy halt"}` }
+  return (result as JourneyEventOutcome | null) ?? { success: false, written: 0, error: "the journey reaction did not run" }
+}
+
+/** journey.stage_completed — the client's celebration message (decided and receipted, above). */
 export function reactToJourneyStageCompleted(svc: any, brokerageId: string, payload: Record<string, any>) {
   const stage = payload?.stage_name ?? "this"
   const next = payload?.next_stage_name ? ` Moving on to ${payload.next_stage_name}.` : ""
-  return portalMessage(svc, brokerageId, payload,
+  return decidedJourneyMessage(svc, brokerageId, payload, "stage_completed", () => portalMessage(svc, brokerageId, payload,
     `Stage Complete: ${stage}\n\nCongratulations! You've completed the ${stage} stage.${next}`,
-    { kind: "milestone", stage_name: payload?.stage_name ?? null })
+    { kind: "milestone", stage_name: payload?.stage_name ?? null }))
 }
 
-/** journey.all_tasks_done — the client's journey-complete message. */
+/** journey.all_tasks_done — the client's journey-complete message (decided and receipted, above). */
 export function reactToJourneyAllTasksDone(svc: any, brokerageId: string, payload: Record<string, any>) {
-  return portalMessage(svc, brokerageId, payload,
+  return decidedJourneyMessage(svc, brokerageId, payload, "all_tasks_done", () => portalMessage(svc, brokerageId, payload,
     "Journey Complete!\n\nCongratulations on completing your real estate journey! We're honored to have been part of this milestone.",
-    { kind: "celebration" })
+    { kind: "celebration" }))
 }

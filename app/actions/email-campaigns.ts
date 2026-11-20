@@ -65,8 +65,8 @@ export interface CreateEmailCampaignParams {
    * THE UMBRELLA THIS EMAIL BELONGS TO — marketing_campaigns.id.
    *
    * `email_campaigns.marketing_campaign_id` was read in two places and written
-   * in none. lib/orchestrator/internal.ts:835 fans a finished video (and
-   * :1060 a finished image) into every asset sharing the umbrella, so a
+   * in none. lib/orchestrator/internal.ts:716 fans a finished video (and
+   * :1088 a finished image) into every asset sharing the umbrella, so a
    * rendered video could never be embedded into the campaign email it was made
    * for; lib/marketing/campaign-measurer.ts rolls child-asset engagement up to
    * the parent campaign, so the ROI board scored every umbrella at zero email

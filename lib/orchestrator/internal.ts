@@ -13,7 +13,7 @@
  */
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { registerEventDispatcher, type OrchestratorEvent as WorkflowEvent } from "@/lib/events"
+import { registerEventDispatcher } from "@/lib/events"
 import type { Event, EventInput } from "@/lib/orchestrator/event-types"
 import { EVENT_TYPES } from "@/lib/orchestrator/event-types" // the module, not the barrel (proxy-graph budget)
 import { KernelEvent } from "@/lib/kernel/events"
@@ -32,32 +32,25 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { writeSmartSuggestion, type SuggestionPriority } from "@/lib/assistant/smart-suggestion"
 // (wave 155, lane 155B2) sendNotificationToAgent is no longer imported: its two callers here — the hot-lead alert and the
 // copilot's overdue bell — are retired onto the AI ISA loop and raiseMilestoneOverdue's one notification.
+// (wave 155, lane 155R24) listingLiveTasks / offerReceivedTasks / closingApproachingTasks, reactToCreditPartnerStatus /
+// reactToCreditTargetReached, reactToVideoPublished / reactToVideoHighEngagement and writeSevenDayNurturePlan are no longer
+// imported: their eight dotted events are retired onto the kernel-bus survivors named in the WAVE 155 (155R24) block below.
 import {
   appointmentBookedTasks,
   agreementSignedTasks,
-  listingLiveTasks,
-  offerReceivedTasks,
   contingencyClearedTasks,
-  closingApproachingTasks,
   scheduleClosingGiftForListing,
 } from "@/lib/listing-lifecycle/lifecycle-event-tasks"
-import {
-  reactToCreditPartnerStatus,
-  reactToCreditTargetReached,
-} from "@/lib/credit/credit-event-handlers"
 import {
   reactToJourneyTaskCompleted,
   reactToJourneyStageCompleted,
   reactToJourneyAllTasksDone,
 } from "@/lib/portal/journey-event-handlers"
-import { writeSevenDayNurturePlan } from "@/lib/copilot/seven-day-plan"
 import { reactToOnboardingStalled } from "@/lib/onboarding/stalled-onboarding-reaction"
 import { reactToAgentDelegatedToAi } from "@/lib/portal-stream/ai-delegation-reaction"
 import {
   reactToVideoReady,
   reactToVideoScriptApproved,
-  reactToVideoPublished,
-  reactToVideoHighEngagement,
 } from "@/lib/video/video-event-reactions"
 import { getChainsByTrigger } from "@/lib/workflow-orchestrator/chains"
 import { startRun as engineStartRun } from "@/lib/workflow-orchestrator/engine"
@@ -159,6 +152,37 @@ interface ProcessingResult {
 //     close_approaching (closing-orchestration already raises the walkthrough / CD signals), transaction.closing_soon (a
 //     closing GIFT is spend), credit.target_reached, video.published / video.high_engagement (no writer marks the moment).
 //
+// ─── WAVE 155 (lane 155R24) — THE TEN CONSUMERS NOTHING EMITS, DECIDED ONE BY ONE (arbitration G02; CLAUDE.md §1) ─────
+// Reachability, per dotted name (fixed-string sweep of app/ lib/ supabase/ vercel.json, not a regex — `.` had matched the
+// underscore kernel spellings): NO emitter in code, no SQL trigger or function, no cron route, no `${baseUrl}/api/…` self-call;
+// the only occurrences are this file, lib/events/types.ts and comments. Eight are the SAME MOMENT the kernel bus already reacts
+// to, so these consumers were DUPLICATES (case 1) and are retired here, each tombstone naming its survivor:
+//   · listing.offer_received → the arrival: lib/inbound-mail/offer-intake.ts:604 afterInboundOfferRead (the listing agent's
+//     high-priority notice, :666, with price, terms and "Review it, then present it to your seller"); the release:
+//     app/actions/offers/present-to-seller.ts:265 KernelEvent.OFFER_RECEIVED (staff bell lib/kernel/notification-engine.ts:524).
+//     The retired body was one "Review offer" task — the same instruction on a second surface (owner question in the notes).
+//   · listing.live → KernelEvent.LISTING_PUBLISHED (lib/listings/mls-live-verification.ts:265 on a verified MLS go-live;
+//     lib/kernel/event-reactor.ts:598 et seq. — promo video, mail, ads, social drafts); the listing QR: app/actions/
+//     listings-kernel.ts:707 launchListing → mintTrackedQr (the SAME `listing:<id>` key this file's handleListingLive used).
+//   · lead.created → KernelEvent.CONTACT_CREATED (lib/kernel/event-reactor.ts:402 sequence enrollment; bell
+//     notification-engine.ts:523). Leads are the brokerage's (§5): a "reach out in 24 h" card to whoever emitted was the wrong
+//     owner. writeSevenDayNurturePlan stays — app/actions/copilot.ts calls it on an agent's request.
+//   · credit.status_updated / credit.target_reached → app/actions/credit-copilot.ts:399 triggerCreditFlowActions (the approved
+//     stage's kickoff task :500; the funded stage's target_score_reached + celebration task :542). The retired bodies keyed on
+//     credit_status 'approved' / 'target_reached' — values the one credit_status writer never stores (needs_work | in_program |
+//     good, app/credit-pipeline/page.tsx:46) — and logCreditStatusUpdated writes the UNDERSCORE spelling this switch never saw.
+//   · transaction.close_approaching → lib/transactions/closing-orchestration.ts:265 (walkthrough unscheduled) and :283 (wire
+//     instructions missing), and lib/kernel/calendar-deadline-watcher.ts:40 KernelEvent.CD_DUE (bell notification-engine.ts:531)
+//     — the three task titles the retired body seeded, already raised on the real deadline.
+//   · video.published → lib/geo/publish-video-landing.ts:164 publishVideoProjectLanding (the ONE fenced is_published stamp of
+//     ai_video_projects) and KernelEvent.SOCIAL_POST_PUBLISHED (event-reactor.ts:3760) for the social channels.
+//   · video.high_engagement → KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED (app/api/video/engagement/route.ts thresholds;
+//     event-reactor.ts:1015 → Campaign Orchestrator). The retired "respond to comments" task keyed on a comment count no
+//     producer records.
+// Two have NO producer and NO survivor (case 3) — nothing is invented; they stay DORMANT (nothing runs) pending the owner:
+//   · transaction.contingency_cleared — no writer of transactions.*_contingency_removed_at, no trigger, no catalog milestone.
+//   · transaction.closing_soon — a closing GIFT (closing_gifts, price_cents) is spend; the hard rule forbids starting one unruled.
+//
 // ─── ASKED AND ANSWERED: the six copilot/assistant "handlers" do NOT belong here ─────
 // app/actions/copilot.ts (handleSuggestionAccepted, handleCoachingSessionBooked,
 // handleMorningKickoff) and app/actions/assistant.ts (handleAssistantQuery,
@@ -212,7 +236,8 @@ async function mustSucceed<T extends { success: boolean; error?: string }>(label
 // entries followed in lane 86F3 (lib/video/video-event-reactions.ts).
 const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // Lead events
-  "lead.created": async (e) => mustSucceed("7-day nurture plan", writeSevenDayNurturePlan(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
+  // TOMBSTONE (wave 155, lane 155R24): "lead.created" → writeSevenDayNurturePlan lived here (never dispatched: the switch routed the
+  // type to a local handler, and nothing emits it). SURVIVOR: KernelEvent.CONTACT_CREATED, lib/kernel/event-reactor.ts:402.
   // TOMBSTONE (wave 155, lane 155B2): "lead.tagged_hot" and "lead.engaged" (both → assistantSuggestionsNotWired) lived here.
   // SURVIVOR: LEAD_SCORED → AI ISA, lib/kernel/event-reactor.ts branch 27 (see the WAVE 155 block in the header).
 
@@ -221,10 +246,13 @@ const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // TOMBSTONE (wave 155, lane 155B2): "listing.signed" → agreementSignedTasks lived here. SURVIVOR: reactToListingAgreementSigned
   // (this file), run by lib/kernel/event-reactor.ts branch "21d" on KernelEvent.LISTING_AGREEMENT_SIGNED — the go-live checklist,
   // the photography procurement and the agent's card, once per listing.
-  "listing.live": async (e) => mustSucceed("listing-live tasks", listingLiveTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  // TOMBSTONE (wave 155, lane 155R24): "listing.live" → listingLiveTasks lived here (never dispatched: the switch routed the type to
+  // a local handler, and nothing emits it). SURVIVOR: KernelEvent.LISTING_PUBLISHED, lib/kernel/event-reactor.ts:598.
   // TOMBSTONE (wave 155, lane 155B2): "listing.price_reduction" → priceReductionTasks lived here. SURVIVOR: app/actions/
   // listing-lifecycle.ts handlePriceReduction, called by the Reduce Price sheet right after updateListing writes the price.
-  "listing.offer_received": async (e) => mustSucceed("offer-received task", offerReceivedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
+  // TOMBSTONE (wave 155, lane 155R24): "listing.offer_received" → offerReceivedTasks (one "Review offer" task) lived here; nothing
+  // emits the dotted name. SURVIVORS: lib/inbound-mail/offer-intake.ts:604 afterInboundOfferRead (the arrival, the listing agent's
+  // notice) and app/actions/offers/present-to-seller.ts:265 KernelEvent.OFFER_RECEIVED (the release, the staff bell).
 
   // Transaction events
   // TOMBSTONE (wave 154, lane 154A3 — CLAUDE.md §6, coverage-ledger gap row 11): `"transaction.milestone_overdue":
@@ -232,17 +260,21 @@ const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // spelling, KernelEvent.MILESTONE_OVERDUE ('milestone_overdue'), which lib/events/event-helpers.ts logMilestoneOverdue (called
   // by app/actions/copilot.ts) actually writes. SURVIVOR: the `case KernelEvent.MILESTONE_OVERDUE:` in orchestrateEvent below →
   // handleMilestoneOverdue (the urgent suggestion + the agent notification), which the dotted case label never let it reach.
+  // OWNER-HELD, DORMANT (wave 155, lane 155R24 — case 3): no producer of the moment exists; kept, unrun, pending the owner.
   "transaction.contingency_cleared": async (e) => mustSucceed("contingency task", contingencyClearedTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
-  "transaction.close_approaching": async (e) => mustSucceed("closing tasks", closingApproachingTasks(createServiceClient(), e.brokerage_id, e.payload ?? {})),
-  // The closing gift takes a listings.id, not a payload — see the header.
+  // TOMBSTONE (wave 155, lane 155R24): "transaction.close_approaching" → closingApproachingTasks (walkthrough / closing disclosure /
+  // wire-instruction tasks) lived here; nothing emits it. SURVIVORS: lib/transactions/closing-orchestration.ts:265 and :283, and
+  // KernelEvent.CD_DUE from lib/kernel/calendar-deadline-watcher.ts:40.
+  // OWNER-HELD, DORMANT (wave 155, lane 155R24 — case 3: a closing gift is spend). The closing gift takes a listings.id, not a payload — see the header.
   "transaction.closing_soon": async (e) =>
     mustSucceed("closing gift", scheduleClosingGiftForListing(createServiceClient(), e.brokerage_id, (e.payload as Record<string, any>)?.listing_id ?? null)),
   // TOMBSTONE (wave 155, lane 155B2): "transaction.closed" → scheduleReviewRequests (three `scheduled` review_requests rows per
   // client) lived here. SURVIVOR: lib/reputation/review-ask.ts — the ONE path from a verified closing to a sent ask.
 
   // Credit events
-  "credit.status_updated": async (e) => mustSucceed("credit partner status", reactToCreditPartnerStatus(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
-  "credit.target_reached": async (e) => mustSucceed("credit target reached", reactToCreditTargetReached(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
+  // TOMBSTONE (wave 155, lane 155R24): "credit.status_updated" → reactToCreditPartnerStatus and "credit.target_reached" →
+  // reactToCreditTargetReached lived here; nothing emits either dotted name, and both keyed on credit_status values no writer
+  // stores. SURVIVOR: app/actions/credit-copilot.ts:399 triggerCreditFlowActions (kickoff task :500, target reached :542).
   // TOMBSTONE (wave 155, lane 155B2): "credit.partner_referred" → reactToCreditPartnerReferred lived here. SURVIVOR: app/actions/
   // credit-copilot.ts referToCreditPartner → lib/credit/credit-event-handlers.ts recordCreditPartnerReferral (the same body).
 
@@ -250,8 +282,10 @@ const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // (the "use server" handlers in app/actions/video-content.ts are retired onto them).
   "video.generated": async (e) => mustSucceed("video ready notification", reactToVideoReady(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
   "video.script_approved": async (e) => mustSucceed("video script approved", reactToVideoScriptApproved(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
-  "video.published": async (e) => mustSucceed("video published", reactToVideoPublished(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
-  "video.high_engagement": async (e) => mustSucceed("video engagement", reactToVideoHighEngagement(createServiceClient(), e.brokerage_id, e.payload ?? {}, e.user_id)),
+  // TOMBSTONE (wave 155, lane 155R24): "video.published" → reactToVideoPublished and "video.high_engagement" →
+  // reactToVideoHighEngagement lived here; nothing emits either. SURVIVORS: lib/geo/publish-video-landing.ts:164 (the one
+  // is_published stamp) with KernelEvent.SOCIAL_POST_PUBLISHED (lib/kernel/event-reactor.ts:3760), and
+  // KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED (lib/kernel/event-reactor.ts:1015).
 
   // Journey/Portal events — EVENT_TYPES.JOURNEY_* since lane 86F; routed below.
   "journey.task_completed": async (e) => mustSucceed("journey task notification", reactToJourneyTaskCompleted(createServiceClient(), e.brokerage_id, e.payload ?? {})),
@@ -362,9 +396,8 @@ export async function orchestrateEvent(event: Event): Promise<void> {
   try {
     // Route to appropriate handlers based on event type
     switch (event.event_type) {
-      case EVENT_TYPES.LEAD_CREATED:
-        results.push(await handleLeadCreated(event))
-        break
+      // TOMBSTONE (wave 155, lane 155R24): `case EVENT_TYPES.LEAD_CREATED:` → handleLeadCreated lived here (no emitter).
+      // SURVIVOR: KernelEvent.CONTACT_CREATED, lib/kernel/event-reactor.ts:402.
 
       // TOMBSTONE (wave 155, lane 155B2): `case EVENT_TYPES.LEAD_TAGGED_HOT:` → handleLeadTaggedHot lived here (no emitter).
       // SURVIVOR: LEAD_SCORED → AI ISA (lib/kernel/event-reactor.ts branch 27).
@@ -376,9 +409,8 @@ export async function orchestrateEvent(event: Event): Promise<void> {
       // TOMBSTONE (wave 155, lane 155B2): `case EVENT_TYPES.LISTING_SIGNED:` → handleListingSigned lived here (no emitter).
       // SURVIVOR: reactToListingAgreementSigned below, on KernelEvent.LISTING_AGREEMENT_SIGNED (event-reactor.ts branch "21d").
 
-      case EVENT_TYPES.LISTING_LIVE:
-        results.push(await handleListingLive(event))
-        break
+      // TOMBSTONE (wave 155, lane 155R24): `case EVENT_TYPES.LISTING_LIVE:` → handleListingLive lived here (no emitter).
+      // SURVIVOR: KernelEvent.LISTING_PUBLISHED, lib/kernel/event-reactor.ts:598; the QR, app/actions/listings-kernel.ts:707.
 
       // ONE SPELLING (wave 154, lane 154A3): logMilestoneOverdue writes KernelEvent.MILESTONE_OVERDUE ('milestone_overdue');
       // this case used to wait for EVENT_TYPES.TRANSACTION_MILESTONE_OVERDUE ('transaction.milestone_overdue'), which nothing
@@ -387,9 +419,8 @@ export async function orchestrateEvent(event: Event): Promise<void> {
         results.push(await handleMilestoneOverdue(event))
         break
 
-      case EVENT_TYPES.CREDIT_STATUS_UPDATED:
-        results.push(await handleCreditStatusUpdated(event))
-        break
+      // TOMBSTONE (wave 155, lane 155R24): `case EVENT_TYPES.CREDIT_STATUS_UPDATED:` → handleCreditStatusUpdated lived here (no
+      // emitter of the dotted name). SURVIVOR: app/actions/credit-copilot.ts:399 triggerCreditFlowActions.
 
       case EVENT_TYPES.VIDEO_GENERATED:
         results.push(await handleVideoGenerated(event))
@@ -411,14 +442,11 @@ export async function orchestrateEvent(event: Event): Promise<void> {
       // case labels.
       // TOMBSTONE (wave 155, lane 155B2): LISTING_PRICE_REDUCTION, TRANSACTION_CLOSED and CREDIT_PARTNER_REFERRED were routed
       // here. SURVIVORS (header, WAVE 155 block): handlePriceReduction, lib/reputation/review-ask.ts, referToCreditPartner.
-      case EVENT_TYPES.LISTING_OFFER_RECEIVED:
+      // TOMBSTONE (wave 155, lane 155R24): LISTING_OFFER_RECEIVED, TRANSACTION_CLOSE_APPROACHING, CREDIT_TARGET_REACHED,
+      // VIDEO_PUBLISHED and VIDEO_HIGH_ENGAGEMENT were routed here. SURVIVORS: the registry tombstones above (header, 155R24 block).
       case EVENT_TYPES.TRANSACTION_CONTINGENCY_CLEARED:
-      case EVENT_TYPES.TRANSACTION_CLOSE_APPROACHING:
       case EVENT_TYPES.TRANSACTION_CLOSING_SOON:
-      case EVENT_TYPES.CREDIT_TARGET_REACHED:
       case EVENT_TYPES.VIDEO_SCRIPT_APPROVED:
-      case EVENT_TYPES.VIDEO_PUBLISHED:
-      case EVENT_TYPES.VIDEO_HIGH_ENGAGEMENT:
       case EVENT_TYPES.JOURNEY_TASK_COMPLETED:
       case EVENT_TYPES.JOURNEY_STAGE_COMPLETED:
       case EVENT_TYPES.JOURNEY_ALL_TASKS_DONE:
@@ -486,46 +514,10 @@ export async function orchestrateEvent(event: Event): Promise<void> {
 // EVENT HANDLERS - Specific logic for each event type
 // =====================================================
 
-async function handleLeadCreated(event: WorkflowEvent): Promise<ProcessingResult> {
-  const startTime = Date.now()
-  try {
-    // `timeline` rides the event payload from the lead/contact row. Its
-    // vocabulary is constants/crm-standards.ts:STANDARD_TIMELINES, and the two
-    // tests below key on `immediate`, which survived the consolidation of six
-    // spellings unchanged — so this handler needed no repoint, only a name for
-    // the list it is testing against.
-    const { contact_id, source, timeline } = event.payload
-
-    // Create AI suggestion for follow-up
-    await writeEventSuggestion({
-      brokerage_id: event.brokerage_id,
-      user_id: event.user_id!,
-      context_type: "contact",
-      context_id: contact_id,
-      suggestion_type: "outreach",
-      title: "New Lead - Follow Up",
-      description: `New ${source} lead created. ${timeline === "immediate" ? "URGENT: " : ""}Reach out within 24 hours.`,
-      action_payload: {
-        contact_id,
-        action: "send_initial_message",
-        priority: timeline === "immediate" ? "high" : "medium",
-      },
-    })
-
-    return {
-      success: true,
-      handler: "handleLeadCreated",
-      processing_time_ms: Date.now() - startTime,
-    }
-  } catch (error) {
-    return {
-      success: false,
-      handler: "handleLeadCreated",
-      error: error instanceof Error ? error.message : "Unknown error",
-      processing_time_ms: Date.now() - startTime,
-    }
-  }
-}
+// TOMBSTONE (wave 155, lane 155R24 — CLAUDE.md §1/§5): handleLeadCreated (a "New Lead - Follow Up" card to whoever emitted) lived
+// here. Nothing emits lead.created; leads are the brokerage's, so a per-emitter follow-up card was the wrong owner as well.
+// SURVIVOR: KernelEvent.CONTACT_CREATED — lib/kernel/event-reactor.ts:402 (sequence enrollment) and the staff bell
+// (lib/kernel/notification-engine.ts:523).
 
 // TOMBSTONE (wave 155, lane 155B2): handleLeadTaggedHot (a "Hot Lead Alert" card + bell to whoever emitted) lived here — no
 // emitter in either spelling. SURVIVOR: LEAD_SCORED → AI ISA (lib/kernel/event-reactor.ts branch 27) and the ISA handoff, which
@@ -673,92 +665,12 @@ export async function reactToListingAgreementSigned(
   )
 }
 
-async function handleListingLive(event: Event): Promise<ProcessingResult> {
-  const startTime = Date.now()
-  try {
-    const { listing_id, mls_number } = event.payload
-    const extras: string[] = []
-
-    // Auto-mint a QR code pointing to the public listing landing page so the
-    // agent has it ready for yard signs, flyers, postcards, and brochures.
-    //
-    // MERGED-THEN-DELETED: this used to be its own `qr_codes` insert deduping on
-    // (brokerage_id, target_url). app/actions/listings-kernel.ts:launchListing minted for the
-    // SAME listing deduping on (listing_id, brokerage_id, purpose) — two different keys, so
-    // neither could see the other and a listing that both launched and fired listing.live ended
-    // up with TWO tracked codes splitting its scans between them. Both paths now call the one
-    // minter with the SAME key, `listing:<listingId>`, so whichever fires first mints and the
-    // other reuses. What this path contributed and kept: the users.id → agents.id resolution
-    // (qr_codes.agent_id FKs agents(id), and a users id there is a refused insert) and the
-    // "QR code minted" note on the smart suggestion, which now fires only on a REAL mint.
-    try {
-      const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
-      const svc = svcCreate()
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.vipre.os"
-
-      // qr_codes.agent_id FKs agents(id), not users(id). Look up the agents
-      // row from the event's user_id; fall back to null when no agent record
-      // exists (qr_codes.agent_id is nullable).
-      let agentRowId: string | null = null
-      if (event.user_id) {
-        const { data: agentRow, error: agentError } = await svc
-          .from("agents")
-          .select("id")
-          .eq("user_id", event.user_id)
-          .maybeSingle()
-        if (agentError) console.error("[handleListingLive] agent lookup refused:", agentError.message)
-        agentRowId = agentRow?.id ?? null
-      }
-
-      const { mintTrackedQr, listingQrLabel } = await import("@/lib/marketing/tracked-qr")
-      const minted = await mintTrackedQr({
-        brokerageId:     event.brokerage_id,
-        agentId:         agentRowId,
-        label:           listingQrLabel(String(listing_id)),
-        destinationType: "listing_detail",
-        targetUrl:       `${appUrl}/listings/${listing_id}`,
-        listingId:       String(listing_id),
-        purpose:         "listing",
-        origin:          appUrl,
-      }, svc)
-
-      if (minted?.created) {
-        extras.push("QR code minted for landing page")
-      } else if (!minted) {
-        console.error(`[handleListingLive] QR mint refused for listing ${mls_number ?? listing_id}`)
-      }
-    } catch (qrErr) {
-      console.error("[handleListingLive] QR code creation failed:", qrErr)
-    }
-
-    await writeEventSuggestion({
-      brokerage_id: event.brokerage_id,
-      user_id: event.user_id!,
-      context_type: "listing",
-      context_id: listing_id,
-      suggestion_type: "marketing",
-      title: "Listing is Live - Marketing Time",
-      description: `MLS# ${mls_number} is now active.${extras.length ? " " + extras.join(", ") + "." : ""} Boost visibility with these marketing tactics.`,
-      action_payload: {
-        listing_id,
-        actions: ["share_on_social", "send_to_sphere", "schedule_open_house", "create_video_tour", "print_qr_yard_sign"],
-      },
-    })
-
-    return {
-      success: true,
-      handler: "handleListingLive",
-      processing_time_ms: Date.now() - startTime,
-    }
-  } catch (error) {
-    return {
-      success: false,
-      handler: "handleListingLive",
-      error: error instanceof Error ? error.message : "Unknown error",
-      processing_time_ms: Date.now() - startTime,
-    }
-  }
-}
+// TOMBSTONE (wave 155, lane 155R24 — CLAUDE.md §1): handleListingLive (the listing QR mint + a "Listing is Live - Marketing
+// Time" card of manual tasks) lived here. Nothing emits listing.live. SURVIVORS: the QR — app/actions/listings-kernel.ts:707
+// launchListing → lib/marketing/tracked-qr.ts mintTrackedQr on the SAME `listing:<id>` key (this handler's users.id → agents.id
+// resolution was already merged there); the go-live reaction — KernelEvent.LISTING_PUBLISHED (lib/listings/mls-live-verification.ts
+// :265 → lib/kernel/event-reactor.ts:598: promo video, mail, ads, social drafts). The manual-task card is an owner question (lane
+// 155B2 notes, default: automation only).
 
 async function handleMilestoneOverdue(event: Event): Promise<ProcessingResult> {
   const startTime = Date.now()
@@ -795,43 +707,10 @@ async function handleMilestoneOverdue(event: Event): Promise<ProcessingResult> {
   }
 }
 
-async function handleCreditStatusUpdated(event: Event): Promise<ProcessingResult> {
-  const startTime = Date.now()
-  try {
-    const { contact_id, old_status, new_status, score_band } = event.payload
-
-    if (new_status === "target_reached") {
-      // Contact reached target credit score
-      await writeEventSuggestion({
-        brokerage_id: event.brokerage_id,
-        user_id: event.user_id!,
-        context_type: "contact",
-        context_id: contact_id,
-        suggestion_type: "outreach",
-        title: "🎉 Credit Target Reached",
-        description: `Contact reached target credit score (${score_band}). Re-engage for home buying.`,
-        action_payload: {
-          contact_id,
-          action: "celebrate_and_reengage",
-          priority: "high",
-        },
-      })
-    }
-
-    return {
-      success: true,
-      handler: "handleCreditStatusUpdated",
-      processing_time_ms: Date.now() - startTime,
-    }
-  } catch (error) {
-    return {
-      success: false,
-      handler: "handleCreditStatusUpdated",
-      error: error instanceof Error ? error.message : "Unknown error",
-      processing_time_ms: Date.now() - startTime,
-    }
-  }
-}
+// TOMBSTONE (wave 155, lane 155R24 — CLAUDE.md §1): handleCreditStatusUpdated (a "Credit Target Reached" card when a free-text
+// status read 'target_reached') lived here. Nothing emits the dotted credit.status_updated, logCreditStatusUpdated writes the
+// underscore spelling, and no credit_status writer stores 'target_reached'. SURVIVOR: app/actions/credit-copilot.ts:399
+// triggerCreditFlowActions — the funded stage marks target_score_reached and queues the celebration task (:542).
 
 /**
  * THE FAN-OUT. A finished video reaches every channel from here — an email

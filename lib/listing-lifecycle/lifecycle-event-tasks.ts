@@ -123,15 +123,9 @@ export function agreementSignedTasks(svc: any, brokerageId: string, payload: Rec
   ])
 }
 
-/** listing.live — recorded in EVENT_HANDLERS; the switch's local handler is in force. */
-export function listingLiveTasks(svc: any, brokerageId: string, payload: Record<string, any>) {
-  return seedListingTasks(svc, brokerageId, payload, [
-    { title: "Share on social media", dueDays: 0, priority: "urgent" },
-    { title: "Send to sphere of influence", dueDays: 1, priority: "high" },
-    { title: "Schedule first open house", dueDays: 3, priority: "high" },
-    { title: "Create video tour", dueDays: 2, priority: "high" },
-  ])
-}
+// TOMBSTONE (wave 155, lane 155R24 — CLAUDE.md §1): listingLiveTasks (four manual marketing tasks on "listing.live") lived here —
+// never dispatched, nothing emits the event. SURVIVOR: KernelEvent.LISTING_PUBLISHED → lib/kernel/event-reactor.ts:598 (the
+// automated promo video, mail, ads and social drafts); whether manual tasks should ride beside them is an owner question.
 
 /** listing.price_reduction — DISPATCHED. */
 export function priceReductionTasks(svc: any, brokerageId: string, payload: Record<string, any>) {
@@ -140,29 +134,21 @@ export function priceReductionTasks(svc: any, brokerageId: string, payload: Reco
   ])
 }
 
-/** listing.offer_received — DISPATCHED. */
-export function offerReceivedTasks(svc: any, brokerageId: string, payload: Record<string, any>) {
-  const amount = Number(payload?.offer_amount) || 0
-  return seedListingTasks(svc, brokerageId, payload, [
-    { title: `Review offer from ${payload?.buyer_name || "buyer"} - $${amount.toLocaleString()}`, dueDays: 0, priority: "urgent" },
-  ])
-}
+// TOMBSTONE (wave 155, lane 155R24 — CLAUDE.md §1): offerReceivedTasks (one "Review offer" task on "listing.offer_received") lived
+// here — nothing emits the event. SURVIVORS: lib/inbound-mail/offer-intake.ts:604 afterInboundOfferRead (the listing agent's
+// high-priority notice on arrival, with the price and terms) and app/actions/offers/present-to-seller.ts:265
+// KernelEvent.OFFER_RECEIVED (the release to the seller, with the staff bell).
 
-/** transaction.contingency_cleared — DISPATCHED. */
+/** transaction.contingency_cleared — routed, but OWNER-HELD and DORMANT: nothing produces the moment (lane 155R24). */
 export function contingencyClearedTasks(svc: any, brokerageId: string, payload: Record<string, any>) {
   return seedListingTasks(svc, brokerageId, payload, [
     { title: `${payload?.contingency_type ?? "A"} contingency cleared - update transaction status`, dueDays: 0, priority: "high" },
   ])
 }
 
-/** transaction.close_approaching — DISPATCHED. */
-export function closingApproachingTasks(svc: any, brokerageId: string, payload: Record<string, any>) {
-  return seedListingTasks(svc, brokerageId, payload, [
-    { title: "Confirm final walkthrough scheduled", dueDays: 0, priority: "urgent" },
-    { title: "Verify closing disclosure sent", dueDays: 0, priority: "urgent" },
-    { title: "Confirm wire instructions with title", dueDays: 1, priority: "urgent" },
-  ])
-}
+// TOMBSTONE (wave 155, lane 155R24 — CLAUDE.md §1): closingApproachingTasks (walkthrough / closing disclosure / wire-instruction
+// tasks on "transaction.close_approaching") lived here — nothing emits the event. SURVIVORS: lib/transactions/closing-orchestration.ts
+// :265 (walkthrough unscheduled) and :283 (wire instructions missing), and KernelEvent.CD_DUE (lib/kernel/calendar-deadline-watcher.ts:40).
 
 // TOMBSTONE (wave 155, lane 155B2 — CLAUDE.md §1; first retired from dispatch in wave 143, lane 143E): scheduleReviewRequests(svc,
 // brokerageId, payload) lived here — the "transaction.closed" handler that inserted THREE `scheduled` review_requests rows per closing
@@ -171,7 +157,8 @@ export function closingApproachingTasks(svc: any, brokerageId: string, payload: 
 // reputation policy, after the tenant's delay; it pins the tenant on every read (the gate this handler carried).
 
 /**
- * transaction.closing_soon — DISPATCHED. One closing gift a week before the
+ * transaction.closing_soon — routed, but OWNER-HELD and DORMANT (lane 155R24): a closing gift is spend, and nothing emits the
+ * event; no producer is invented before the owner rules. One closing gift a week before the
  * listing's estimated close. closing_gifts.agent_id is carried as the listing's
  * agents.id (listings.agent_id is agents-class; not re-labelled as a user).
  */

@@ -540,7 +540,7 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
       await insertCreditTask({
         contact_id: account.contact_id,
         title: "Send credit success celebration message",
-        description: `Congratulate ${account.contact.first_name} on reaching credit goals!`,
+        description: `Congratulate ${account.contact.first_name} on reaching credit goals — then re-engage them for home buying.`,
         due_date: new Date().toISOString(),
         priority: "high",
         source: "credit_celebration",

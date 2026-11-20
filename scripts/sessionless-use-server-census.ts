@@ -648,6 +648,9 @@ console.log("\n═══ 4. THE HUB (lane 86F) — lib/orchestrator/internal.ts 
         hubFixture.findings[0].exportName === "handleVideoPublished", JSON.stringify(hubFixture.findings.map((f) => f.path)))
   }
 
+  // (wave 155, lane 155R24) these two left the hub — their events are retired onto survivors (lib/orchestrator/internal.ts, 155R24 block);
+  // both stay server-only, tenant-pinned cores of their remaining callers (credit-copilot.ts referToCreditPartner; copilot.ts), still checked below.
+  const LEFT_HUB = new Set(["lib/credit/credit-event-handlers.ts", "lib/copilot/seven-day-plan.ts"])
   const HUB_CORES = [
     "lib/assistant/smart-suggestion.ts",
     "lib/listing-lifecycle/lifecycle-event-tasks.ts",
@@ -660,7 +663,7 @@ console.log("\n═══ 4. THE HUB (lane 86F) — lib/orchestrator/internal.ts 
     const raw = existsSync(core) ? readFileSync(core, "utf8") : ""
     const st = stripComments(raw)
     const spec = `@/${core.replace(/\.ts$/, "")}`
-    ok(`${core}: imported by the hub`, hubStripped.includes(spec))
+    ok(`${core}: imported by the hub`, hubStripped.includes(spec) || LEFT_HUB.has(core))
     ok(`…server-only, never "use server", builds no cookie client, reads no session`,
       /^\s*import\s+["']server-only["']/m.test(st) && !hasUseServerDirective(st) && !COOKIE_CLIENT_SPECIFIER.test(st) &&
       !SESSION_TOKENS.some((t) => t.on === "identifiers" && t.re.test(blankStrings(raw))))

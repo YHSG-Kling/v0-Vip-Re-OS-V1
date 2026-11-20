@@ -64,46 +64,9 @@ async function contactInTenant(client: any, brokerageId: string, contactId: stri
   return { ok: true }
 }
 
-interface NotificationFields {
-  type: string
-  title: string
-  body: string
-  entity_type: string
-  entity_id: string
-  priority?: "low" | "medium" | "high"
-}
-
-/** One notifications row for the recipient — only when the recipient's own
- *  users.brokerage_id IS the tenant (the value the bell compares against). */
-async function notifyInTenant(
-  client: any,
-  brokerageId: string,
-  userId: string | null | undefined,
-  row: NotificationFields,
-  out: CreditEventOutcome,
-): Promise<void> {
-  if (!userId) { out.skipped.push("notification: no recipient on the event"); return }
-  const tenant = await resolveRecipientBrokerageId(client, userId)
-  if (!tenant.ok) { out.skipped.push(`notification: ${tenant.reason}`); return }
-  if (tenant.brokerageId !== brokerageId) {
-    out.skipped.push(`notification: recipient ${userId} is not in brokerage ${brokerageId}`)
-    return
-  }
-  // The row is written as an EXPLICIT literal — never `{ ...row, … }` — so the tenant stamp
-  // is provable at the write (scripts/ai-insight-tenant-guard.ts cannot see through a spread).
-  const { data, error } = await client.from("notifications").insert({
-    user_id: userId,
-    brokerage_id: brokerageId,
-    type: row.type,
-    title: row.title,
-    body: row.body,
-    entity_type: row.entity_type,
-    entity_id: row.entity_id,
-    priority: row.priority ?? "medium",
-  }).select("id").maybeSingle()
-  if (error || !data) out.skipped.push(`notification refused: ${error?.message ?? "no row returned"}`)
-  else out.written.push("notification")
-}
+// TOMBSTONE (wave 155, lane 155R24): notifyInTenant (the tenant-proven notifications writer of the two credit event reactions)
+// lived here; both reactions are retired (below), so it had no caller. The one bell on a credit-flow stage is the survivor's:
+// app/actions/credit-copilot.ts:399 triggerCreditFlowActions.
 
 async function taskForAgent(
   client: any,
@@ -123,78 +86,13 @@ async function taskForAgent(
 
 const outcome = (): CreditEventOutcome => ({ success: true, written: [], skipped: [] })
 
-/** credit.status_updated (recorded in EVENT_HANDLERS; the switch's local handler is in force). */
-export async function reactToCreditPartnerStatus(
-  client: any,
-  brokerageId: string,
-  payload: Record<string, any>,
-  actorUserId: string | null | undefined,
-): Promise<CreditEventOutcome> {
-  const out = outcome()
-  if (!brokerageId) return { ...out, success: false, error: "No brokerageId — credit events are never acted on untenanted" }
-  const contact = await contactInTenant(client, brokerageId, payload?.contact_id)
-  if (!contact.ok) return { ...out, success: false, error: contact.error }
-  const userId = payload?.user_id ?? actorUserId ?? null
-  await notifyInTenant(client, brokerageId, userId, {
-    type: "partner_status_update",
-    title: "Partner Status Updated",
-    body: `Credit partner status changed from ${payload?.old_status ?? "unknown"} to ${payload?.new_status ?? "unknown"}.`,
-    entity_type: "contact",
-    entity_id: payload.contact_id,
-  }, out)
-  if (payload?.new_status === "approved") {
-    await taskForAgent(client, brokerageId, userId, {
-      contact_id: payload.contact_id,
-      title: "Schedule credit program kickoff",
-      due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      priority: "high",
-    }, out)
-  }
-  return out
-}
-
-/** credit.target_reached — DISPATCHED. */
-export async function reactToCreditTargetReached(
-  client: any,
-  brokerageId: string,
-  payload: Record<string, any>,
-  actorUserId: string | null | undefined,
-): Promise<CreditEventOutcome> {
-  const out = outcome()
-  if (!brokerageId) return { ...out, success: false, error: "No brokerageId — credit events are never acted on untenanted" }
-  const contactId = payload?.contact_id
-  const contact = await contactInTenant(client, brokerageId, contactId)
-  if (!contact.ok) return { ...out, success: false, error: contact.error }
-
-  // The update carries the tenant ON THE PREDICATE and is counted.
-  const { data: updated, error: updErr } = await client
-    .from("contacts")
-    .update({ credit_status: "good", credit_pipeline_stage: "target_score_reached" })
-    .eq("id", contactId)
-    .eq("brokerage_id", brokerageId)
-    .select("id")
-  if (updErr) return { ...out, success: false, error: `Contact credit update refused: ${updErr.message}` }
-  if (!updated?.length) return { ...out, success: false, error: `Contact credit update matched no row in brokerage ${brokerageId}` }
-  out.written.push("contact")
-
-  const userId = payload?.user_id ?? actorUserId ?? null
-  await notifyInTenant(client, brokerageId, userId, {
-    type: "credit_target_reached",
-    title: "Client Reached Credit Target!",
-    body: `Your client reached their target credit score of ${payload?.target_score ?? "their goal"}. Time to re-engage for home buying!`,
-    entity_type: "contact",
-    entity_id: contactId,
-    priority: "high",
-  }, out)
-  await taskForAgent(client, brokerageId, userId, {
-    contact_id: contactId,
-    title: "Re-engage client for home buying",
-    description: "Client has reached target credit score and is ready to start looking at homes!",
-    due_date: new Date().toISOString(),
-    priority: "urgent",
-  }, out)
-  return out
-}
+// TOMBSTONE (wave 155, lane 155R24 — CLAUDE.md §1): reactToCreditPartnerStatus ("credit.status_updated": a bell to the actor and,
+// on new_status 'approved', a kickoff task) and reactToCreditTargetReached ("credit.target_reached": contact → good /
+// target_score_reached, a bell and a re-engage task) lived here. Nothing emits either dotted name (logCreditStatusUpdated writes
+// the underscore credit_status_updated), and both keyed on credit_status values the one writer never stores (needs_work |
+// in_program | good). SURVIVOR: app/actions/credit-copilot.ts:399 triggerCreditFlowActions — the approved stage's kickoff
+// task (:500) and the funded stage's target_score_reached + celebration task (:542). The re-engage-for-home-buying step the
+// survivor lacks is merged by the outside-lane diff in lane 155R24's notes.
 
 export interface CreditPartnerReferralInput {
   contactId: string

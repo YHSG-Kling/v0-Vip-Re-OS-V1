@@ -122,6 +122,44 @@ export async function reactToAgentDelegatedToAi(
     sourceEventType: payload?.source_event_type ?? portal.event_type,
   })
 
+  // WAVE 155 (lane 155R24, arbitration G03) — ONE RECEIPT FOR THE DELEGATED DRAFT. The decision was already on this path (the
+  // model call's spend gate, mayUseAndAfford, and the human approval that every proposal waits for); the act — one model call
+  // and one proposed client message — left no evidence of its own. ONE withActionLedger receipt (`portal.delegation.draft`,
+  // actor campaign_orchestrator — the registered manager for this event — tenant the event row's, subject the portal card)
+  // now records what happened: proposed (with the message id), or why not. No key: a second "AI do it" on the same card is a
+  // second request. A refusing ledger runs the draft exactly as before.
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  let outcome: AiDelegationOutcome = { success: false, error: "the draft did not run" }
+  const draftAndPropose = async (): Promise<void> => { outcome = await draftAndProposeDelegated(svc, brokerageId, payload, portal, c, audience, brief, deps) }
+  await withActionLedger<void>({
+    brokerageId,
+    action: "portal.delegation.draft",
+    actor: { type: "manager", managerKey: "campaign_orchestrator" },
+    subject: { type: "portal_event_stream", id: portal.id },
+    riskClass: "LOW_RISK_WRITE",
+    systemSource: "orchestrator_event",
+    detail: { event: "agent.delegated_to_ai", contact_id: c.id, source_event_type: payload?.source_event_type ?? portal.event_type ?? null },
+  }, draftAndPropose, {
+    settle: () => {
+      const o = outcome as AiDelegationOutcome
+      return o.success ? { status: "executed", outcome: "reply_proposed", detail: { agent_client_message_id: o.messageId ?? null } } : { status: "failed", outcome: "reply_not_proposed", error: o.error ?? "unknown" }
+    },
+    replay: (claim) => (claim.kind === "refused" ? draftAndPropose() : undefined),
+  }, { client: svc })
+  return outcome
+}
+
+/** The act the receipt above records: one model draft, then one GATED proposal (never a send). */
+async function draftAndProposeDelegated(
+  svc: any,
+  brokerageId: string,
+  payload: AiDelegationPayload,
+  portal: PortalRow,
+  c: { id: string },
+  audience: "buyer" | "seller",
+  brief: { system: string; prompt: string },
+  deps: { draft?: (brief: { system: string; prompt: string }) => Promise<string> },
+): Promise<AiDelegationOutcome> {
   let body: string
   try {
     body = deps.draft

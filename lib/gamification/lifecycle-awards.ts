@@ -418,6 +418,39 @@ export function buyerEngagementRoot(current: { id: string; signed_at: string }, 
   return cur.id
 }
 
+/**
+ * WAVE 155 (lane 155R24, arbitration G04) — THE CLOSE AWARD'S DECISION. The TRANSACTION_CLOSED reaction (the close, the first
+ * close, a repeat client, the won referral's agent) wrote points and badges with no decision of its own. The lane 155R17 /
+ * 155R20 pattern: the EXISTING autonomy gate (lib/managers/autonomy-gate.ts autonomyDecision, manager recruiting_manager — the
+ * lifecycle_gamification owner) over its two halts — the platform's god switch and platform staff's per-tenant pause, both
+ * cached and fail-open by their own design — decides before any award. Allowed → null (each award keeps its own once-key and
+ * ledger row). HELD → no award runs, and ONE withActionLedger row (`gamification.close_award.hold`, settled `skipped /
+ * autonomy_held`, the halt's reason) records why; the returned reason is pushed to `refused`. No automatic replay when the halt
+ * lifts (the same default the kernel fan-out states). A refusing ledger still holds — the decision, not the receipt, decides.
+ */
+async function closeAwardHold(db: LedgerCapableClient, brokerageId: string, transactionId: string): Promise<string | null> {
+  const { autonomyDecision, loadTenantAutonomyHalt } = await import("@/lib/managers/autonomy-gate")
+  const { loadPlatformHalt } = await import("@/lib/platform/platform-controls")
+  const decision = autonomyDecision({ managerKey: "recruiting_manager", effective: null, platformHalt: await loadPlatformHalt(db as never), tenantHalt: await loadTenantAutonomyHalt(brokerageId, db as never) })
+  if (decision.allow) return null
+  const reason = decision.reason ?? "autonomy halt"
+  try {
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    await withActionLedger<void>({
+      brokerageId,
+      action: "gamification.close_award.hold",
+      actor: { type: "manager", managerKey: "recruiting_manager" },
+      subject: isUuid(transactionId) ? { type: "transaction", id: transactionId } : { type: "transaction", ref: String(transactionId) },
+      riskClass: "LOW_RISK_WRITE",
+      systemSource: "event_reactor",
+      detail: { event: KernelEvent.TRANSACTION_CLOSED, autonomy: "held" },
+    }, async () => {}, { settle: () => ({ status: "skipped", outcome: "autonomy_held", error: reason }), replay: () => undefined }, { client: db as never })
+  } catch (e) {
+    console.error(`[lifecycle-gamification] close-award hold not receipted: ${(e as Error)?.message ?? e}`)
+  }
+  return reason
+}
+
 export interface LifecycleAwardOutcome {
   awarded: Array<{ agentId: string; reason: PointReason; points: number; newTotal: number }>
   alreadyAwarded: number
@@ -438,6 +471,10 @@ export async function awardLifecycleMilestones(
 ): Promise<LifecycleAwardOutcome> {
   const out: LifecycleAwardOutcome = { awarded: [], alreadyAwarded: 0, badgesAwarded: 0, refused: [] }
   if (!LIFECYCLE_AWARD_RULES.some((r) => r.event === p.event)) return out
+  if (p.event === KernelEvent.TRANSACTION_CLOSED) {
+    const held = await closeAwardHold(db, p.brokerageId, p.entityId)
+    if (held) { out.refused.push(`TRANSACTION_CLOSED: held — ${held}`); console.error(`[lifecycle-gamification] ${p.event}: held — ${held}`); return out }
+  }
 
   const agents = await resolveMilestoneAgents(db, p)
   const actingId = agents.acting[0] ?? null

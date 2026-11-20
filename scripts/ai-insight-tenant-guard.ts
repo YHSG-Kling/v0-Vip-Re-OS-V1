@@ -1171,7 +1171,8 @@ const W23_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> =
   // floor follows the write: credit-copilot keeps its budget alert (1) and the
   // core carries the event notifications (1 site, both reactions call it).
   { file: "app/actions/credit-copilot.ts", table: "notifications", floor: 1 },
-  { file: "lib/credit/credit-event-handlers.ts", table: "notifications", floor: 1 },
+  // RETIRED, not lost (wave 155, lane 155R24): that core's notifications writer served only the two credit event reactions nothing emitted;
+  // both are retired onto app/actions/credit-copilot.ts triggerCreditFlowActions, whose own floor (above) stays. The floor follows the capability.
   // MOVED, not lost (wave 26, lane L3). social-publishing.ts's notifications write
   // lived inside `handleContentApproved`, one of THREE functions that approved a
   // social post. It was deleted onto `approveSocialPost` in social-media-automation.ts

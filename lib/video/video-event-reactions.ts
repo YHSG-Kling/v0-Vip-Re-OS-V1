@@ -167,11 +167,59 @@ export async function reactToVideoScriptApproved(
     if (!project.ok) return fail(project.error)
     entityId = project.row.id
   }
-  const { renderApprovedVideoScript } = await import("./render-from-approval")
-  const render = await renderApprovedVideoScript(svc, brokerageId, {
-    scriptId: script.id,
-    approvedByUserId: (payload?.approved_by as string | undefined) ?? actorUserId ?? null,
-  })
+  // WAVE 155 (lane 155R24, arbitration G03) — THE DECISION AND THE RECEIPT IN FRONT OF THE RENDER. The commission below is an
+  // autonomous, METERED act (a D-ID twin or a voiceover render on the Director's rail) that ran with no decision and no
+  // evidence of its own. The lane 155R17 / 155R20 pattern: the EXISTING autonomy gate (lib/managers/autonomy-gate.ts
+  // autonomyDecision) over its two halts — the platform's god switch and platform staff's per-tenant pause, both cached and
+  // fail-open by their own design — decides BEFORE the commission; ONE withActionLedger receipt (`video.script.render_commission`,
+  // actor asset_manager — the registered manager for this event — tenant the event row's, subject the script) records it. A HELD
+  // decision commissions nothing and settles `skipped / autonomy_held`; the agent's bell still rings with the reason (under a
+  // halt the humans are the fallback — the owner's round-3 default). No key: the commission is idempotent on its own
+  // (`already_staged`). A refusing ledger runs the commission exactly as before.
+  const { autonomyDecision, loadTenantAutonomyHalt } = await import("@/lib/managers/autonomy-gate")
+  const { loadPlatformHalt } = await import("@/lib/platform/platform-controls")
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const decision = autonomyDecision({ managerKey: "asset_manager", effective: null, platformHalt: await loadPlatformHalt(svc as never), tenantHalt: await loadTenantAutonomyHalt(brokerageId, svc as never) })
+  type Render = import("./render-from-approval").ApprovalRenderOutcome
+  let rendered: Render | null = null
+  const commission = async (): Promise<void> => {
+    if (!decision.allow) return
+    const { renderApprovedVideoScript } = await import("./render-from-approval")
+    rendered = await renderApprovedVideoScript(svc, brokerageId, {
+      scriptId: script.id,
+      approvedByUserId: (payload?.approved_by as string | undefined) ?? actorUserId ?? null,
+    })
+  }
+  await withActionLedger<void>({
+    brokerageId,
+    action: "video.script.render_commission",
+    actor: { type: "manager", managerKey: "asset_manager" },
+    subject: { type: "video_script", id: script.id },
+    riskClass: "FINANCIAL",
+    systemSource: "orchestrator_event",
+    detail: { event: "video.script_approved", video_id: payload?.video_id ?? null, autonomy: decision.allow ? "allow" : "held" },
+  }, commission, {
+    settle: () => {
+      const r = rendered as Render | null
+      if (!decision.allow) return { status: "skipped", outcome: "autonomy_held", error: decision.reason }
+      if (r?.ok && r.videoProjectId) return { status: "executed", outcome: r.status === "already_staged" ? "render_already_staged" : "render_commissioned" }
+      return { status: "failed", outcome: "render_not_started", error: r ? `${r.status}: ${r.reason}` : "no render result" }
+    },
+    replay: (claim) => (claim.kind === "refused" ? commission() : undefined),
+  }, { client: svc })
+  if (!decision.allow) {
+    out.skipped.push(`render held: ${decision.reason ?? "autonomy halt"}`)
+    await notifyInTenant(svc, brokerageId, recipientOf(payload, actorUserId), {
+      type: "video_script_approved",
+      title: "Approved script is waiting",
+      body: `Your video script was approved, but autonomous rendering is paused (${decision.reason ?? "autonomy halt"}). It has not been started.`.slice(0, 600),
+      entity_type: "video",
+      entity_id: entityId,
+      priority: "high",
+    }, out)
+    return out
+  }
+  const render: Render = (rendered as Render | null) ?? { ok: false, status: "failed", reason: "the commission did not run", warnings: [] }
   const staged = render.ok && !!render.videoProjectId
   if (staged) out.written.push(render.status === "already_staged" ? "render_already_staged" : "render_commissioned")
   const hostLine = render.host === "avatar"
@@ -193,83 +241,9 @@ export async function reactToVideoScriptApproved(
   return out
 }
 
-/** video.published — DISPATCHED. Stamps the project published (tenant-pinned, counted) and tells the agent. */
-export async function reactToVideoPublished(
-  svc: any,
-  brokerageId: string,
-  payload: Record<string, any>,
-  actorUserId: string | null | undefined,
-): Promise<VideoEventOutcome> {
-  if (!brokerageId) return fail("No brokerageId — video events are never acted on untenanted")
-  const project = await projectInTenant(svc, brokerageId, payload?.video_id)
-  if (!project.ok) return fail(project.error)
-  const { data: stamped, error: upErr } = await svc
-    .from("ai_video_projects")
-    .update({ status: "published", is_published: true, published_at: new Date().toISOString() })
-    .eq("id", project.row.id)
-    .eq("brokerage_id", brokerageId)
-    .select("id")
-  if (upErr) return fail(`Video publish stamp refused: ${upErr.message}`)
-  if (!stamped?.length) return fail(`Video publish stamp matched no row in brokerage ${brokerageId}`)
-  const out = outcome()
-  out.written.push("publish_stamp")
-  const platforms = Array.isArray(payload?.platforms) ? (payload.platforms as string[]) : []
-  await notifyInTenant(svc, brokerageId, recipientOf(payload, actorUserId), {
-    type: "video_published",
-    title: "Video Published!",
-    body: `Your video has been published to ${platforms.join(", ") || "your channels"}.`,
-    entity_type: "video",
-    entity_id: project.row.id,
-  }, out)
-  return out
-}
-
-/** video.high_engagement — DISPATCHED. The bell, plus a reply task when comments pile up. */
-export async function reactToVideoHighEngagement(
-  svc: any,
-  brokerageId: string,
-  payload: Record<string, any>,
-  actorUserId: string | null | undefined,
-): Promise<VideoEventOutcome> {
-  if (!brokerageId) return fail("No brokerageId — video events are never acted on untenanted")
-  const project = await projectInTenant(svc, brokerageId, payload?.video_id)
-  if (!project.ok) return fail(project.error)
-  const out = outcome()
-  const userId = recipientOf(payload, actorUserId)
-  const count = Number(payload?.engagement_count) || 0
-  const kind = String(payload?.engagement_type ?? "engagements")
-  await notifyInTenant(svc, brokerageId, userId, {
-    type: "video_engagement",
-    title: "Video Performing Well!",
-    body: `Your video has ${count} ${kind}. Great job!`,
-    entity_type: "video",
-    entity_id: project.row.id,
-  }, out)
-
-  if (kind === "comments" && count > 5) {
-    // tasks.brokerage_id + assigned_to_agent_id are NOT NULL (pass 5). The assignee
-    // is the recipient's agents row IN this tenant — resolved, never substituted.
-    if (!userId) {
-      out.skipped.push("task: no recipient on the event")
-    } else {
-      const { data: agents, error: aErr } = await svc
-        .from("agents").select("id").eq("user_id", userId).eq("brokerage_id", brokerageId).limit(1)
-      const agentId = ((agents ?? [])[0]?.id as string | undefined) ?? null
-      if (aErr) out.skipped.push(`task: agent lookup refused: ${aErr.message}`)
-      else if (!agentId) out.skipped.push(`task: user ${userId} holds no agents row in this brokerage`)
-      else {
-        const { data: task, error: tErr } = await svc.from("tasks").insert({
-          brokerage_id: brokerageId,
-          assigned_to_agent_id: agentId,
-          title: "Respond to video comments",
-          description: `Your video has ${count} comments. Engage with your audience!`,
-          due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-          priority: "medium",
-        }).select("id").maybeSingle()
-        if (tErr || !task) out.skipped.push(`task refused: ${tErr?.message ?? "no row returned"}`)
-        else out.written.push("task")
-      }
-    }
-  }
-  return out
-}
+// TOMBSTONE (wave 155, lane 155R24 — CLAUDE.md §1): reactToVideoPublished ("video.published": stamp ai_video_projects published +
+// a bell) and reactToVideoHighEngagement ("video.high_engagement": a bell + a reply task past five comments) lived here. Nothing
+// emits either dotted name. SURVIVORS: lib/geo/publish-video-landing.ts:164 publishVideoProjectLanding — the ONE fenced
+// is_published stamp (a second writer here would have raced it) — with KernelEvent.SOCIAL_POST_PUBLISHED for the social channels
+// (lib/kernel/event-reactor.ts:3760); and KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED (app/api/video/engagement/route.ts thresholds →
+// lib/kernel/event-reactor.ts:1015 → Campaign Orchestrator). No producer records a comment count, so the reply task was unreachable.

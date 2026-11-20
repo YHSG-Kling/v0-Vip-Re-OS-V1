@@ -208,7 +208,9 @@ async function main() {
 
   // ── W: wiring + registration (stripped source) ─────────────────────────────
   const orch = src("lib/orchestrator/internal.ts")
-  const sliceOf = (body: string, fn: string) => { const i = body.indexOf(`async function ${fn}(`); return i < 0 ? "" : body.slice(i, body.indexOf("\nasync function ", i + 10)) }
+  // The slice ends at the NEXT top-level function, exported or not (wave 155): it stopped only at a bare `async function`, so a
+  // handler followed by an EXPORTED one ran on through it — handleListingAppointmentSet is followed by the procuring survivor.
+  const sliceOf = (body: string, fn: string) => { const i = body.indexOf(`async function ${fn}(`); if (i < 0) return ""; const rest = body.slice(i + 10); const n = rest.search(/\n(?:export\s+)?(?:async\s+)?function /); return n < 0 ? body.slice(i) : body.slice(i, i + 10 + n) }
   // THE RULE: the Listing Concierge's media need — the ONE reaction to a signed listing agreement — requests photography
   // procurement, and the kernel reactor actually runs that reaction. Wave 155's lane 155B2 merged handleListingSigned (whose
   // `case` had no emitter) onto reactToListingAgreementSigned, run by lib/kernel/event-reactor.ts branch 21d on
@@ -224,7 +226,9 @@ async function main() {
     !procuresPhotography(`const { requestProcurement } = await import("@/lib/kernel/procurement")\nrequestProcurement(s, { serviceType: "staging" })`) &&
     !procuresPhotography(`await procure(svc, { serviceType: "photography" })`) &&
     procuresPhotography(`const { requestProcurement } = await import("@/lib/kernel/procurement")\nrequestProcurement(s, { serviceType: "photography" })`))
-  check("W2 POSITIVE CONTROL: the slicer finds nothing in a handler that does not procure", !/requestProcurement/.test(sliceOf(orch, "handleListingLive")) && sliceOf(orch, "handleListingLive").length > 0)
+  check("W2 POSITIVE CONTROL: the slicer finds nothing in a handler that does not procure", !/requestProcurement/.test(sliceOf(orch, "handleListingAppointmentSet")) && sliceOf(orch, "handleListingAppointmentSet").length > 0)
+  check("W2 CONTROL OF THE SLICER: a slice stops at the next function even when that one is exported (it does not run on into a procuring neighbor)",
+    !/requestProcurement/.test(sliceOf(`async function a() { return 1 }\nexport async function b() { requestProcurement() }`, "a")) && /requestProcurement/.test(sliceOf(`async function a() { requestProcurement() }\nexport function c() {}`, "a")))
   const acm = src("lib/agents/agent-client-messages.ts")
   check("W3 the approval queue books / declines procurement requests", /approveProcurementRequest\(supabase/.test(acm) && /declineProcurementRequest\(supabase/.test(acm))
   const portal = src("app/actions/vendor-portal.ts")

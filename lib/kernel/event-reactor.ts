@@ -4661,15 +4661,25 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
             // WAVE 155 (155R17, G04): ONE ledger receipt for the stamp. No decision is taken HERE — the lesson was released by a
             // human approver (approveClientMessage emits this event only after that approval); the stamp records the delivery.
             // A refused claim keeps today's behavior (the stamp still runs, unreceipted).
-            const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+            // WAVE 155 (lane 155R24, G04) — and ONE DECISION in front of it: the EXISTING autonomy gate (lib/managers/autonomy-gate.ts
+            // autonomyDecision) over the platform's god switch and platform staff's per-tenant pause (both cached, fail-open by design)
+            // — the 155R17 / 155R21 pattern. The human released the LESSON; the stamp is the reactor's own autonomous write. A held
+            // decision stamps nothing and settles `skipped / autonomy_held` with the halt's reason (the staff bell is the fan-out's
+            // and still rings — lib/kernel/notification-engine.ts).
+            // runStamp is DEFINED first and RUN only by the receipt below, after the decision is taken (it reads eduDecision then).
             const eduBrokerageId = params.brokerageId, moduleId = md.module_id, messageId = md.agent_client_message_id
             let r: { ok: true; assignmentId: string } | { ok: false; error: string } = { ok: false, error: "not run" }
-            const runStamp = async (): Promise<void> => { r = await stampEducationDelivered(svc, { brokerageId: eduBrokerageId, contactId, moduleId, messageId, channel: md.channel ?? null }) }
-            await withActionLedger<void>({ brokerageId: eduBrokerageId, action: "education.delivery.stamp", actor: { type: "manager", managerKey: "recruiting_manager" }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", systemSource: "event_reactor", detail: { module_id: moduleId, agent_client_message_id: messageId } }, runStamp, {
-              settle: () => (r.ok ? { status: "executed", outcome: "delivery_stamped" } : { status: "failed", outcome: "stamp_refused", error: r.error }),
+            const runStamp = async (): Promise<void> => { if (!eduDecision.allow) return; r = await stampEducationDelivered(svc, { brokerageId: eduBrokerageId, contactId, moduleId, messageId, channel: md.channel ?? null }) }
+            const { autonomyDecision, loadTenantAutonomyHalt } = await import("@/lib/managers/autonomy-gate")
+            const { loadPlatformHalt } = await import("@/lib/platform/platform-controls")
+            const eduDecision = autonomyDecision({ managerKey: "recruiting_manager", effective: null, platformHalt: await loadPlatformHalt(svc as never), tenantHalt: await loadTenantAutonomyHalt(eduBrokerageId, svc as never) })
+            const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+            await withActionLedger<void>({ brokerageId: eduBrokerageId, action: "education.delivery.stamp", actor: { type: "manager", managerKey: "recruiting_manager" }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", systemSource: "event_reactor", detail: { module_id: moduleId, agent_client_message_id: messageId, autonomy: eduDecision.allow ? "allow" : "held" } }, runStamp, {
+              settle: () => (!eduDecision.allow ? { status: "skipped", outcome: "autonomy_held", error: eduDecision.reason } : r.ok ? { status: "executed", outcome: "delivery_stamped" } : { status: "failed", outcome: "stamp_refused", error: r.error }),
               replay: (claim) => (claim.kind === "refused" ? runStamp() : undefined),
             }, { client: svc })
-            if (!r.ok) console.error(`[event-reactor] client_education_delivered receipt not stamped (contact ${contactId}, module ${md.module_id}): ${r.error}`)
+            if (!eduDecision.allow) console.warn(`[event-reactor] client_education_delivered stamp held (contact ${contactId}): ${eduDecision.reason ?? "autonomy halt"}`)
+            else if (!r.ok) console.error(`[event-reactor] client_education_delivered receipt not stamped (contact ${contactId}, module ${md.module_id}): ${r.error}`)
           } else {
             console.error("[event-reactor] client_education_delivered carried no contact / module / message id — no receipt stamped")
           }

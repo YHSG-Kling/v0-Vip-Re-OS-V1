@@ -28,7 +28,7 @@ export const EVENT_OWNER_HELD: Record<string, string> = {
   buyer_search_executed:          "record? a buyer lifecycle state echo (same as above)",
   cda_generated:                  "record? a CDA row was generated (app/actions/cda-portal.ts); approval is the CDA portal's own door",
   contact_enrichment_completed:   "record? enrichment landed (lib/lead-pipeline/enrichment-orchestrator.ts); failure already routes (contact_enrichment_failed → ai_isa)",
-  credit_status_updated:          "TWO BODIES (lib/orchestrator/internal.ts): the switch's handleCreditStatusUpdated (suggestion card only on 'target_reached', a free-text status) vs EVENT_HANDLERS reactToCreditPartnerStatus (bell + kickoff task on 'approved', never reached); and logCreditStatusUpdated writes the underscore spelling the dotted handler never sees",
+  credit_status_updated:          "record? the credit status change (app/actions/credit-copilot.ts → logCreditStatusUpdated). Both orchestrator bodies are retired onto triggerCreditFlowActions (lane 155R24); is the lifecycle row the whole point (auditOnly: true), or must a manager act?",
   deal_on_hold:                   "record? a buyer lifecycle state echo (lib/kernel/lifecycle.ts)",
   integration_failed:             "record? an admin's own integration TEST failed (app/api/integrations/test) — the admin is looking at the result",
   marketing_campaign_approved:    "record? the approval is decided by decideMarketingApproval (lib/kernel/approval-authority.ts); the event is its echo",
