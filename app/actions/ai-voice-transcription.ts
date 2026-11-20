@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
+import { authorizeForAgent } from "@/lib/auth/require-caller"
 import { bookedGenerateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
@@ -79,6 +80,12 @@ export async function analyzeCallTranscript(params: {
     return { success: false, error: "Invalid contact or agent ID" }
   }
 
+  // WAVE 155 (lane 155S2): THE GATE, before the contact read and the model — this public endpoint took the agent from its
+  // argument and never refused a missing session, then wrote call_analyses / activities / tasks under that agent. The agent
+  // is the caller's own, or (tenant roster) an agent of the SESSION's tenant; the contact is read INSIDE that tenant.
+  const agentAuth = await authorizeForAgent(params.agentId)
+  if (!agentAuth.ok) return { success: false, error: agentAuth.error }
+
   const supabase = await createClient()
 
   try {
@@ -126,7 +133,8 @@ export async function analyzeCallTranscript(params: {
         transactions!transactions_contact_id_fkey(status)
       `)
       .eq("id", params.contactId)
-      .single()
+      .eq("brokerage_id", agentAuth.brokerageId)
+      .maybeSingle()
 
     if (contactError || !contact) {
       return {
@@ -338,6 +346,10 @@ export async function generateCallSummaryEmail(params: {
 }) {
   // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
   const spendActor = await getAgentContext()
+  // WAVE 155 (lane 155S2): THE GATE, before the read and the model — no session, no draft; the analysis is read INSIDE
+  // the session's tenant (another tenant's analysis id finds nothing).
+  if (!spendActor.isAuthenticated || !spendActor.brokerageId) return { success: false, error: "Not authenticated" }
+  const sessionBrokerageId = spendActor.brokerageId
   const supabase = await createClient()
   return ledgered(spendActor, { action: "communication.call_summary_email.generate", subject: { type: "call_analysis", id: params.analysisId }, riskClass: "LOW_RISK_WRITE", detail: { recipient_type: params.recipientType } }, async () => {
 
@@ -346,7 +358,8 @@ export async function generateCallSummaryEmail(params: {
       .from("call_analyses")
       .select("*, contacts(*)")
       .eq("id", params.analysisId)
-      .single()
+      .eq("brokerage_id", sessionBrokerageId)
+      .maybeSingle()
 
     if (!analysis) {
       return { success: false, error: "Analysis not found" }
@@ -385,6 +398,10 @@ export async function getAgentCallInsights(params: {
   agentId: string
   timeframe: "week" | "month" | "quarter"
 }) {
+  // WAVE 155 (lane 155S2): THE GATE, before the read and the model — the agent is the caller's own, or (tenant roster) an
+  // agent of the SESSION's tenant; the analyses are read inside that tenant.
+  const agentAuth = await authorizeForAgent(params.agentId)
+  if (!agentAuth.ok) return { success: false, error: agentAuth.error }
   const supabase = await createClient()
 
   try {
@@ -394,7 +411,8 @@ export async function getAgentCallInsights(params: {
     const { data: analyses } = await supabase
       .from("call_analyses")
       .select("*")
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", agentAuth.agentId)
+      .eq("brokerage_id", agentAuth.brokerageId)
       .gte("analyzed_at", startDate)
 
     if (!analyses || analyses.length === 0) {

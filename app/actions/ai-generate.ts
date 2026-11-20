@@ -29,6 +29,8 @@ export async function generateAIText(
   prompt: string,
   options?: { maxTokens?: number; temperature?: number; feature?: string }
 ): Promise<{ text: string; error?: string }> {
+  const refused = await refuseWithoutSession()
+  if (refused) return { text: "", error: refused }
   return _generateAIText(prompt, options)
 }
 
@@ -36,6 +38,8 @@ export async function generateAIJSON<T = Record<string, unknown>>(
   prompt: string,
   options?: { model?: string; maxTokens?: number; temperature?: number; feature?: string }
 ): Promise<{ data: T | null; error?: string }> {
+  const refused = await refuseWithoutSession()
+  if (refused) return { data: null, error: refused }
   return ledgered("session", { action: "ai.json.generate", subject: { type: "ai_feature", ref: options?.feature ?? "generic" }, riskClass: "LOW_RISK_WRITE" }, async () => {
   return _generateAIJSON<T>(prompt, options)
   })
@@ -46,6 +50,8 @@ export async function generateAIObject<T extends z.ZodType>(
   schema: T,
   options?: { model?: string; temperature?: number }
 ): Promise<{ success: boolean; object?: z.infer<T>; error?: string }> {
+  const refused = await refuseWithoutSession()
+  if (refused) return { success: false, error: refused }
   return _generateAIObject<T>(prompt, schema, options)
 }
 
@@ -53,7 +59,23 @@ export async function generateChatResponse(
   userMessage: string,
   context: string
 ): Promise<{ text: string; error?: string }> {
+  const refused = await refuseWithoutSession()
+  if (refused) return { text: "", error: refused }
   return _generateChatResponse(userMessage, context)
+}
+
+/**
+ * WAVE 155 (lane 155S2): THE GATE every export here runs before the model. Each is a public endpoint ("use server") that
+ * spent on a model for whoever posted to it — no session was read (lib/ai/generate.ts resolves the tenant to BOOK the
+ * spend to, but never refused a caller without one). Now a caller with no session, or a session with no tenant, is
+ * refused and no model is reached. No importer exists today (scripts/orphan-export-baseline.json carries the file);
+ * retiring it is the integrator's census call — the gate stands either way.
+ * @proofSeam scripts/wave155-ungated-deal-guard.ts
+ */
+async function refuseWithoutSession(): Promise<string | null> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  return ctx.isAuthenticated && ctx.brokerageId ? null : "Not authenticated"
 }
 
 /**

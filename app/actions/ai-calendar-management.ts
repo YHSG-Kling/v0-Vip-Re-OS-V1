@@ -11,6 +11,11 @@ import { z } from "zod"
 import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
+// WAVE 155 (lane 155S2): the seven exports that take an `agentId` (optimizeDailySchedule, suggestAppointmentSlots,
+// scheduleSmartFollowUps, suggestMeetingTimes, blockCalendarTime, prepareMeetingBrief, generateWeeklyPlan) took it from
+// the BODY with no session gate, then read that agent's book, spent on a model and wrote under it. Each now runs
+// authorizeForAgent FIRST: the caller's own agents row, or (tenant roster) an agent of the SESSION's tenant.
+import { authorizeForAgent } from "@/lib/auth/require-caller"
 import { CalendarEventType, canonicalCalendarEventType } from "@/lib/kernel/calendar-types"
 
 // Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
@@ -306,6 +311,8 @@ export async function optimizeDailySchedule(params: {
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
     }
+    const agentAuth = await authorizeForAgent(params.agentId)
+    if (!agentAuth.ok) return { success: false, error: agentAuth.error }
 
     const supabase = await createClient()
     const targetDate = new Date(params.date)
@@ -398,6 +405,8 @@ export async function suggestAppointmentSlots(params: {
   urgency?: "low" | "medium" | "high"
 }) {
   try {
+    const agentAuth = await authorizeForAgent(params.agentId)
+    if (!agentAuth.ok) return { success: false, error: agentAuth.error }
     const supabase = await createClient()
 
     // public.users has no working_hours/time_zone/calendar_preferences columns
@@ -485,6 +494,8 @@ export async function scheduleSmartFollowUps(params: {
   daysAhead?: number
 }) {
   try {
+    const agentAuth = await authorizeForAgent(params.agentId)
+    if (!agentAuth.ok) return { success: false, error: agentAuth.error }
     const supabase = await createClient()
     const { userId, brokerageId } = await getAgentContext()
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
@@ -581,13 +592,13 @@ Create a balanced follow-up schedule that:
 5. Respects contact preferences`,
     })
 
-    // Create follow-up appointments
-    const { data: tpBrok } = await supabase.from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
+    // Create follow-up appointments — stamped with the SESSION's tenant (the agent was proven to be in it above), no longer
+    // with whatever tenant the BODY's agent row carried.
     for (const followUp of followUpPlan.scheduledFollowUps) {
       await bestEffort(supabase.from("scheduled_touchpoints").insert({
         contact_id: followUp.contactId,
         agent_id: params.agentId,
-        brokerage_id: tpBrok?.brokerage_id,
+        brokerage_id: agentAuth.brokerageId,
         touchpoint_type: followUp.channel,
         scheduled_date: `${followUp.suggestedDate}T${followUp.suggestedTime}`,
         message_template: [followUp.purpose, followUp.talkingPoints, followUp.priority]
@@ -625,6 +636,8 @@ export async function suggestMeetingTimes(params: {
   preferences?: { startTime?: string; endTime?: string; daysAhead?: number }
 }) {
   try {
+    const agentAuth = await authorizeForAgent(params.agentId)
+    if (!agentAuth.ok) return { success: false, error: agentAuth.error }
     const supabase = await createClient()
     const duration = params.duration; // Declare the duration variable
     const daysAhead = params.preferences?.daysAhead || 7
@@ -673,6 +686,8 @@ export async function blockCalendarTime(params: {
   type: "prospecting" | "admin" | "personal" | "buffer"
 }) {
   try {
+    const agentAuth = await authorizeForAgent(params.agentId)
+    if (!agentAuth.ok) return { success: false, error: agentAuth.error }
     const supabase = await createClient()
     const { userId, brokerageId } = await getAgentContext()
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
@@ -765,7 +780,13 @@ export async function prepareMeetingBrief(params: {
   agentId: string
   forceRegenerate?: boolean
 }) {
+  // The gate's refusal joins the result family at the boundary (lib/kernel/action-ledger.ts resultFamily) so the caller
+  // (meeting-brief-card.tsx) still reads `res.meetingBrief` without narrowing.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   try {
+    const agentAuth = await authorizeForAgent(params.agentId)
+    if (!agentAuth.ok) return { success: false, error: agentAuth.error }
     const supabase = await createClient()
     const { userId, brokerageId } = await getAgentContext()
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
@@ -887,6 +908,7 @@ Create a brief including:
   } catch (error) {
     return handleError(error, "prepareMeetingBrief")
   }
+  })())
 }
 
 /**
@@ -897,7 +919,12 @@ export async function generateWeeklyPlan(params: {
   weekStartDate: string
   forceRegenerate?: boolean
 }) {
+  // Result family restored at the boundary (as prepareMeetingBrief above) — this-week-preview.tsx reads `res.weeklyPlan`.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   try {
+    const agentAuth = await authorizeForAgent(params.agentId)
+    if (!agentAuth.ok) return { success: false, error: agentAuth.error }
     const supabase = await createClient()
     const { userId, brokerageId } = await getAgentContext()
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
@@ -1023,6 +1050,7 @@ Create a balanced weekly plan that:
   } catch (error) {
     return handleError(error, "generateWeeklyPlan")
   }
+  })())
 }
 
 /**

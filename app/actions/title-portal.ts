@@ -663,19 +663,53 @@ export async function sendTitleMessageToAgent(data: {
     .eq("id", actor.titleUserId)
     .single()
 
-  const { error } = await supabase.from("client_portal_messages").insert({
+  // WAVE 155 (lane 155S2): THE RECIPIENT IS THE AGENT'S USER SEAT, delivered through the door this file already uses to
+  // reach the agent (the final-CD bridge above: notifications, user_id resolved from agents.id by
+  // lib/kernel/agent-identity.ts resolveUserIdForAgentRecord).
+  //
+  // This wrote `contact_id: tx.agent_id` into client_portal_messages. scripts/schema-fk-map.ts:
+  //   client_portal_messages: { agent_id → agents, contact_id → contacts, transaction_id → transactions }
+  // so an agents.id went into a CONTACTS column (CLAUDE.md §3, disjoint ids → 23503), and the table's own agent_id was
+  // never written (NOT NULL, m086) — the insert could never succeed: every title note to the agent was lost. The deal's
+  // client contact is not "the right id" either: client_portal_messages is the CLIENT's thread (the buyer / seller portal
+  // home reads it by contact_id), so the title company's note to the agent would have been shown to the client. Nothing
+  // is written to that table now; no contact id is invented.
+  //
+  // Service client AFTER the gate (requireTitleActor above, and the deal proven inside the actor's tenant): a title
+  // vendor seat's session client is not entitled to read the agents row it needs to address.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+  const agentUserId = tx.agent_id ? await resolveUserIdForAgentRecord(svc as never, tx.agent_id) : null
+  if (!agentUserId) throw new Error("This deal's agent has no user seat to receive the message")
+
+  const body = `[TITLE/ESCROW] ${titleUser?.company_name || "Title Company"} re: ${tx.property_address || "Transaction"}:\n\n${data.message}`
+  // The DURABLE record — what the title company told the agent on this deal — in the tenant's communication log
+  // (communications: agent_id → agents, the right class for tx.agent_id; contact_id null by design, this is not a client
+  // thread). The bell below is the delivery; a dismissed bell must not be the only trace of a partner's note on a deal.
+  const { error: logError } = await svc.from("communications").insert({
     brokerage_id: actor.brokerageId,
-    contact_id: tx.agent_id,
-    direction: "agent_to_client",
+    agent_id: tx.agent_id,
+    contact_id: null,
+    direction: "inbound",
     channel: "portal",
-    body: `[TITLE/ESCROW] ${titleUser?.company_name || "Title Company"} re: ${tx.property_address || "Transaction"}:\n\n${data.message}`,
-    metadata: {
-      type: "title_message",
-      title_user_id: actor.titleUserId,
-      title_email: actor.email,
-      transaction_id: data.transactionId,
-    },
-    created_at: new Date().toISOString(),
+    subject: `Title / escrow note — ${tx.property_address || "transaction"}`,
+    content_preview: data.message.slice(0, 280),
+    sent_at: new Date().toISOString(),
+    metadata: { type: "title_message", transaction_id: data.transactionId, title_user_id: actor.titleUserId, title_email: actor.email },
+  })
+  if (logError) throw logError
+
+  const { error } = await svc.from("notifications").insert({
+    user_id: agentUserId,
+    brokerage_id: actor.brokerageId,
+    type: "title_message",
+    title: `Message from ${titleUser?.company_name || "the title company"}`,
+    body,
+    entity_type: "transaction",
+    entity_id: data.transactionId,
+    priority: "medium",
+    channel: "in_app",
   })
 
   if (error) throw error

@@ -236,35 +236,29 @@ function mapInterestLevelText(interest?: string): "hot" | "warm" | "cold" | "no_
 // AI TIMING OPTIMIZER
 // ============================================
 
-/** Returns the next upcoming Saturday and Sunday from today as YYYY-MM-DD strings */
-function nextWeekendDates(): { saturday: string; sunday: string } {
-  const now = new Date()
-  const day = now.getDay() // 0=Sun, 6=Sat
-  const daysToSat = day === 6 ? 7 : (6 - day)
-  const sat = new Date(now)
-  sat.setDate(now.getDate() + daysToSat)
-  const sun = new Date(sat)
-  sun.setDate(sat.getDate() + 1)
-  const fmt = (d: Date) => d.toISOString().slice(0, 10)
-  return { saturday: fmt(sat), sunday: fmt(sun) }
-}
+// TOMBSTONE (wave 155, lane 155S2): `nextWeekendDates` deleted — its only reader was the invented-score branch of
+// optimizeOpenHouseTiming (below), which returned canned "score 92 / 88" weekend slots for an invalid id. That branch is
+// now a refusal; with no reader left the helper went with it. Real timing advice comes only from the model call in
+// optimizeOpenHouseTiming, from the listing's own data.
 
 export async function optimizeOpenHouseTiming(params: { propertyId: string; agentId: string; proposedDate?: string }) {
-  return ledgered("session", { action: "marketing.open_house_timing.optimize", subject: { type: "listing", id: params.propertyId }, riskClass: "LOW_RISK_WRITE" }, async () => {
-  if (!isValidUUID(params.agentId)) {
-    const { saturday, sunday } = nextWeekendDates()
-    return {
-      recommended_times: [
-        { date: saturday, time: "14:00-16:00", score: 92, reasoning: "Saturday afternoon is prime time — families have flexibility after morning activities. 1-3 PM captures both early and mid-afternoon browsers." },
-        { date: sunday, time: "13:00-15:00", score: 88, reasoning: "Sunday early afternoon works well for serious buyers who prefer less crowded viewings. Good natural lighting and comfortable timing." },
-      ],
-    }
+  // WAVE 155 (lane 155S2): TRUTH — an invalid id used to return two INVENTED recommendations ("score: 92" / "88" with
+  // canned reasoning) as though they had been measured. Unmeasured is unknown: an invalid id is refused, and nothing is
+  // scored. (nextWeekendDates, which fed the invention, is retired just above with a tombstone.)
+  if (!isValidUUID(params.agentId) || !isValidUUID(params.propertyId)) {
+    return { success: false, error: "Invalid listing or agent id — no open house timing was analyzed." }
   }
+  // THE GATE, before the read and the model: a session with a tenant, and the listing is read INSIDE that tenant.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const timingSession = await getAgentContext()
+  if (!timingSession.isAuthenticated || !timingSession.brokerageId) return { success: false, error: "Not authenticated" }
+  const timingBrokerageId = timingSession.brokerageId
+  return ledgered("session", { action: "marketing.open_house_timing.optimize", subject: { type: "listing", id: params.propertyId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const supabase = await createClient()
 
   try {
-    const { data: property } = await supabase.from("listings").select("*").eq("id", params.propertyId).maybeSingle()
+    const { data: property } = await supabase.from("listings").select("*").eq("id", params.propertyId).eq("brokerage_id", timingBrokerageId).maybeSingle()
     if (!property) {
       return { success: false, error: "Property not found" }
     }
@@ -327,15 +321,25 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
-      brokerageId: (property as { brokerage_id?: string | null })?.brokerage_id ?? null,
+      brokerageId: timingBrokerageId,
       model: "openai/gpt-4o",
       prompt,
     })
 
-    return parseAIJsonResponse(text)
+    // The caller (marketing-tab.tsx handleOptimizeTiming) renders ONLY `success: true` — the parsed advice never carried
+    // it, so real advice was always shown as "No timing advice was produced". A reply with no recommendations is a
+    // refusal, not an empty success; a recommendation whose score the model did not give keeps score null (unknown).
+    const advice = parseAIJsonResponse(text) as { recommended_times?: unknown } | null
+    const recs = Array.isArray(advice?.recommended_times) ? (advice!.recommended_times as Array<Record<string, unknown>>) : []
+    if (!advice || recs.length === 0) return { success: false, error: "The model returned no timing recommendations." }
+    return {
+      ...advice,
+      success: true,
+      recommended_times: recs.map((r) => ({ ...r, score: typeof r.score === "number" && Number.isFinite(r.score) ? r.score : null })),
+    }
   } catch (error) {
     console.error("Optimize timing error:", error)
-    return { error: "Failed to optimize timing" }
+    return { success: false, error: "Failed to optimize timing" }
   }
   })
 }
@@ -1316,45 +1320,55 @@ function calculateWeatherScore(weather: any): number {
 // ============================================
 
 export async function generatePerformanceInsights(eventId: string) {
-  return ledgered("session", { action: "marketing.open_house_insights.generate", subject: { type: "open_house_event", id: eventId }, riskClass: "LOW_RISK_WRITE" }, async () => {
+  // WAVE 155 (lane 155S2): TRUTH — an invalid id used to return an INVENTED report card ("overall_grade: B+", "Above
+  // average event with strong attendance…") for an event that was never read. Unmeasured is unknown: it is a refusal in
+  // the `{ error }` shape both callers already render (analytics-tab.tsx, intelligence-tab.tsx toast it).
   if (!isValidUUID(eventId)) {
-    return {
-      overall_grade: "B+",
-      performance_summary: "Above average event with strong attendance and good lead quality.",
-      strengths: ["High RSVP conversion", "Quality leads generated"],
-      weaknesses: ["Could improve follow-up speed"],
-      recommendations: ["Schedule next open house on Saturday afternoon", "Focus on hot leads within 24 hours"],
-    }
+    return { error: "Invalid event id — no performance was measured." }
   }
+  // THE GATE, before the reads and the model: a session with a tenant; the event is read INSIDE that tenant first.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const insightSession = await getAgentContext()
+  if (!insightSession.isAuthenticated || !insightSession.brokerageId) return { error: "Not authenticated" }
+  const insightBrokerageId = insightSession.brokerageId
+  return ledgered("session", { action: "marketing.open_house_insights.generate", subject: { type: "open_house_event", id: eventId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const supabase = await createClient()
 
   try {
-    const { data: analytics } = await supabase.from("open_house_analytics").select("*").eq("event_id", eventId).maybeSingle()
-
-    const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).maybeSingle()
-
-    if (!analytics || !event) {
+    const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).eq("brokerage_id", insightBrokerageId).maybeSingle()
+    if (!event) {
       return { error: "Analytics data not found" }
     }
+
+    const { data: analytics } = await supabase.from("open_house_analytics").select("*").eq("event_id", eventId).maybeSingle()
+
+    if (!analytics) {
+      return { error: "Analytics data not found" }
+    }
+    // A rate whose denominator is absent or zero is UNKNOWN — it used to print "NaN%" / "Infinity%" into the prompt the
+    // model then graded from.
+    const pct = (n: unknown, d: unknown): string =>
+      typeof n === "number" && typeof d === "number" && d > 0 ? `${((n / d) * 100).toFixed(1)}%` : "unknown"
+    const fixed = (v: unknown): string => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(1) : "unknown")
 
     const prompt = `Analyze open house performance and provide actionable insights.
 
 EVENT METRICS:
 Invitations:
-- Sent: ${analytics.total_invites_sent}
-- RSVP Yes: ${analytics.rsvp_yes_count}
-- RSVP Rate: ${((analytics.rsvp_yes_count / analytics.total_invites_sent) * 100).toFixed(1)}%
+- Sent: ${analytics.total_invites_sent ?? "unknown"}
+- RSVP Yes: ${analytics.rsvp_yes_count ?? "unknown"}
+- RSVP Rate: ${pct(analytics.rsvp_yes_count, analytics.total_invites_sent)}
 
 Attendance:
-- Predicted: ${event.attendance_prediction}
-- Actual: ${analytics.total_attendance}
-- Accuracy: ${((analytics.total_attendance / event.attendance_prediction) * 100).toFixed(1)}%
+- Predicted: ${event.attendance_prediction ?? "unknown"}
+- Actual: ${analytics.total_attendance ?? "unknown"}
+- Accuracy: ${pct(analytics.total_attendance, event.attendance_prediction)}
 
 Lead Quality:
-- Serious Buyers: ${analytics.serious_buyers_count}
-- Average Lead Score: ${analytics.avg_lead_score?.toFixed(1)}/100
-- Average Time Spent: ${analytics.avg_time_spent_minutes?.toFixed(1)} minutes
+- Serious Buyers: ${analytics.serious_buyers_count ?? "unknown"}
+- Average Lead Score: ${fixed(analytics.avg_lead_score)}/100
+- Average Time Spent: ${fixed(analytics.avg_time_spent_minutes)} minutes
 
 TASK: Provide performance analysis with letter grade (A+, A, A-, B+, B, etc.) and recommendations.
 
@@ -1373,12 +1387,16 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
-      brokerageId: (event as { brokerage_id?: string | null })?.brokerage_id ?? null,
+      brokerageId: insightBrokerageId,
       model: "openai/gpt-4o",
       prompt,
     })
 
     const insights = parseAIJsonResponse(text)
+    // A reply with no grade is not a report: refuse it (callers toast `error`) rather than store and render a blank card.
+    if (!insights || typeof insights !== "object" || typeof (insights as { overall_grade?: unknown }).overall_grade !== "string") {
+      return { error: "The model returned no performance report." }
+    }
 
     // Store insights
     await bestEffort(supabase

@@ -10,7 +10,9 @@ import { handleError } from "@/lib/errors"
 // the caller typed and can never be the tenant the AI ledger bills (§4). The
 // brokerage comes from the SESSION and nowhere else.
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { z } from "zod"
+import { authorizeForAgent } from "@/lib/auth/require-caller"
 
 // Wave 98 (98C): every model call in this file is BOOKED to the SESSION tenant (lib/ai/generate.ts::bookedGenerateObject).
 const generateObject = bookedGenerateObject("ai_training_coaching")
@@ -32,6 +34,10 @@ export async function analyzeAgentPerformance(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // WAVE 155 (lane 155S2): THE GATE, before any read or spend — the agent named is the caller's own, or (tenant roster)
+  // an agent of the SESSION's tenant (authorizeForAgent). The only callers (app/academy) pass the session's own agents.id.
+  const agentAuth = await authorizeForAgent(params.agentId)
+  if (!agentAuth.ok) return { success: false, error: agentAuth.error }
   // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
   const spendActor = await getAgentContext()
   const supabase = await createClient()
@@ -123,6 +129,16 @@ export async function generateCoachingScenario(params: {
     return { success: false, error: "Invalid agent or brokerage ID" }
   }
 
+  // WAVE 155 (lane 155S2): THE GATE, before the model — this export read a brand voice and billed a model to the BODY's
+  // brokerage with no session. The agent is the caller's own (or, tenant roster, an agent of the session tenant); the
+  // tenant is the SESSION's, and a body brokerageId naming another tenant is refused (decideClaimedTenant).
+  const agentAuth = await authorizeForAgent(params.agentId)
+  if (!agentAuth.ok) return { success: false, error: agentAuth.error }
+  if (!decideClaimedTenant({ actingBrokerageId: agentAuth.brokerageId, claimedBrokerageId: params.brokerageId }).ok) {
+    return { success: false, error: "Forbidden: that brokerage is not yours." }
+  }
+  const sessionBrokerageId = agentAuth.brokerageId
+
   const supabase = await createClient()
 
   try {
@@ -130,7 +146,7 @@ export async function generateCoachingScenario(params: {
     const { data: brandVoice } = await supabase
       .from("brand_voice_profile")
       .select("*")
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", sessionBrokerageId)
       .eq("agent_id", null) // Get brokerage-level profile
       .maybeSingle()
 
@@ -193,7 +209,8 @@ Generate a detailed role-play scenario including:
         action: "coaching_scenario_generated",
         entity_type: "training_scenario",
         entity_id: params.agentId,
-        user_id: params.agentId,
+        // audit_log.user_id → users (scripts/schema-fk-map.ts); an agents.id here was refused by the FK (§3).
+        user_id: agentAuth.userId,
         after: {
           scenario_type: params.scenarioType,
           difficulty: params.difficulty || "medium"
@@ -210,8 +227,8 @@ Generate a detailed role-play scenario including:
       const { text } = await generateText({
         prompt: `Generate a brief real estate coaching scenario for a ${params.scenarioType.replace(/_/g, " ")} situation at ${params.difficulty || "medium"} difficulty. Include a client name, background, main objection, and 2 suggested responses. Keep it concise.`,
         maxTokens: 400,
-        userId: params.agentId,
-        brokerageId: params.brokerageId,
+        userId: agentAuth.userId,
+        brokerageId: sessionBrokerageId,
         feature: "coaching_scenario",
       })
       return {
@@ -246,7 +263,26 @@ export async function generateLearningPath(params: {
     return { success: false, error: "Invalid agent ID", steps: [] }
   }
 
+  // WAVE 155 (lane 155S2): THE GATE, before the model (same rule as its siblings: own agent, or tenant roster for an agent
+  // of the session tenant; a body brokerageId naming another tenant is refused).
+  const agentAuth = await authorizeForAgent(params.agentId)
+  if (!agentAuth.ok) return { success: false, error: agentAuth.error, steps: [] }
+  if (!decideClaimedTenant({ actingBrokerageId: agentAuth.brokerageId, claimedBrokerageId: params.brokerageId }).ok) {
+    return { success: false, error: "Forbidden: that brokerage is not yours.", steps: [] }
+  }
+
   const supabase = await createClient()
+
+  // The profile below is a USERS row, and every caller passes an agents.id (app/academy → getAcademyViewer().agentId):
+  // `.eq("id", params.agentId)` compared disjoint ids (CLAUDE.md §3) and always found nothing. Cross via agents.user_id —
+  // the session's own users.id when the agent is the caller's, else the named agent's user (already proven in-tenant).
+  let profileUserId: string | null = agentAuth.isSelf ? agentAuth.userId : null
+  if (!profileUserId) {
+    const { data: agentRow, error: agentRowError } = await supabase
+      .from("agents").select("user_id").eq("id", agentAuth.agentId).eq("brokerage_id", agentAuth.brokerageId).maybeSingle()
+    if (agentRowError) return { success: false, error: agentRowError.message, steps: [] }
+    profileUserId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+  }
 
   try {
     // Get agent's profile for personalization.
@@ -261,11 +297,13 @@ export async function generateLearningPath(params: {
     // Only the human-meaningful profile columns are named; `*` inside an embed hides
     // drift from the schema guard (defect #214), and the verification flags/ids on
     // user_profiles are noise in a coaching prompt.
-    const { data: agent, error: agentError } = await supabase
-      .from("users")
-      .select("*, profile:user_profiles(bio, avatar_url)")
-      .eq("id", params.agentId)
-      .maybeSingle()
+    const { data: agent, error: agentError } = profileUserId
+      ? await supabase
+          .from("users")
+          .select("*, profile:user_profiles(bio, avatar_url)")
+          .eq("id", profileUserId)
+          .maybeSingle()
+      : { data: null, error: null }
 
     if (agentError) {
       console.error("[generateLearningPath] agent profile read failed:", agentError.message)
@@ -320,6 +358,13 @@ export async function evaluatePracticeSession(params: {
     return { success: false, error: "Invalid agent or brokerage ID" }
   }
 
+  // WAVE 155 (lane 155S2): THE GATE, before the model (same rule as generateCoachingScenario above).
+  const agentAuth = await authorizeForAgent(params.agentId)
+  if (!agentAuth.ok) return { success: false, error: agentAuth.error }
+  if (!decideClaimedTenant({ actingBrokerageId: agentAuth.brokerageId, claimedBrokerageId: params.brokerageId }).ok) {
+    return { success: false, error: "Forbidden: that brokerage is not yours." }
+  }
+
   const supabase = await createClient()
 
   try {
@@ -327,7 +372,7 @@ export async function evaluatePracticeSession(params: {
     const { data: evaluationStandards } = await supabase
       .from("brand_voice_profile")
       .select("*")
-      .eq("brokerage_id", params.brokerageId)
+      .eq("brokerage_id", agentAuth.brokerageId)
       .eq("agent_id", null)
       .maybeSingle()
 
@@ -360,7 +405,8 @@ Provide evaluation including:
         action: "practice_session_evaluated",
         entity_type: "training_evaluation",
         entity_id: params.agentId,
-        user_id: params.agentId,
+        // audit_log.user_id → users (scripts/schema-fk-map.ts); an agents.id here was refused by the FK (§3).
+        user_id: agentAuth.userId,
         after: {
           score: evaluation.score
         }

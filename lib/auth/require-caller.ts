@@ -392,3 +392,55 @@ export async function requireCallerTenant(claimedBrokerageId?: string | null): P
   }
   return caller
 }
+
+export type AuthorizeForAgentResult =
+  | {
+      ok: true
+      /** The agents.id the call acts for — the caller's own, or (tenant roster) an agent of the SESSION's tenant. */
+      agentId: string
+      /** True when `agentId` is the caller's own agents row. */
+      isSelf: boolean
+      /** The SESSION user (users.id) — never a body's. */
+      userId: string
+      /** The SESSION tenant — never a body's. */
+      brokerageId: string
+      userType: string | null
+    }
+  | { ok: false; error: string }
+
+/**
+ * requireCaller() + THE BODY-AGENT RULE (wave 155, lane 155S2) — the agents.id sibling of requireCallerTenant: "is this
+ * agent you, or an agent of YOUR tenant that your seat may act for?" Many "use server" exports take an `agentId` argument
+ * (an agents.id — DISJOINT from users.id, CLAUDE.md §3) and read, spend or write under that agent; each is a public
+ * endpoint, so the id is whatever the caller typed.
+ *   · the session and its tenant come from requireCaller() (error-checked reads; no session / no tenant refuses);
+ *   · an ABSENT target means the caller's own agents row (decideClaimedTenant's reading of an absent claim);
+ *   · the caller's own agents.id is admitted — crossed from users.id via agents.user_id, exactly as requireCallerWithAgent;
+ *   · any OTHER agents.id is admitted only for the tenant roster (isAdminOrBroker → TENANT_ADMIN_USER_TYPES) AND only when
+ *     that agent's row is in the SESSION's tenant — a tenant predicate on the read, never a hand comparison. (Unlike
+ *     lib/auth/authorize-for-user.ts authorizeForUser, an admin of tenant A is never admitted for an agent of tenant B.)
+ * Fails CLOSED: every read destructures `error`; a refused read refuses. Appended at the foot, below the census, so the
+ * `require-caller.ts:<line>` references other files hold stay true. Lives HERE (not beside authorizeForUser) because this
+ * module is already on every hot entry's graph — a new module on app/crm/page.tsx would cross its wall (test:proxy-graph-budget).
+ */
+export async function authorizeForAgent(targetAgentId?: string | null): Promise<AuthorizeForAgentResult> {
+  const caller = await requireCaller()
+  if (!caller.ok) return { ok: false, error: caller.error }
+  const { data: own, error: ownError } = await caller.supabase.from("agents").select("id").eq("user_id", caller.userId).maybeSingle()
+  if (ownError) return { ok: false, error: "Could not resolve your agent record" }
+  const ownAgentId = (own as { id?: string } | null)?.id ?? null
+  const target = targetAgentId || ownAgentId
+  if (!target) return { ok: false, error: "No agent profile for this user yet — finish account setup." }
+  const base = { userId: caller.userId, brokerageId: caller.brokerageId, userType: caller.userType }
+  if (target === ownAgentId) return { ok: true, agentId: target, isSelf: true, ...base }
+  if (!isAdminOrBroker({ user_type: caller.userType })) return { ok: false, error: "Forbidden: that agent is not you" }
+  const { data: row, error: rowError } = await caller.supabase
+    .from("agents")
+    .select("id")
+    .eq("id", target)
+    .eq("brokerage_id", caller.brokerageId)
+    .maybeSingle()
+  if (rowError) return { ok: false, error: "Could not verify that agent" }
+  if (!row) return { ok: false, error: "Forbidden: that agent is not in your brokerage" }
+  return { ok: true, agentId: target, isSelf: false, ...base }
+}

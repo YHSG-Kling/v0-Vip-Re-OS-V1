@@ -17,6 +17,8 @@ import { leadCostBySource, type LeadCostLedger } from "@/lib/lead-pipeline/sourc
 // Lane 88B — the ONE tenant-paid spend rule (never the platform-paid cost_per_record).
 import { tenantPaidLeadSpend } from "@/lib/lead-pipeline/source-conversion-learning"
 import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 
 export interface SourceMetrics {
   source: string
@@ -207,8 +209,13 @@ export async function getSourcePerformance(
   filter: SourceAnalyticsFilter
 ): Promise<SourcePerformanceResult> {
   try {
+    // WAVE 155 (lane 155S2): the tenant is the SESSION's; a filter naming another brokerage is refused
+    // (requireCallerTenant → decideClaimedTenant). A refusal lands in the catch below, the shape every caller renders.
+    const caller = await requireCallerTenant(filter.brokerageId)
+    if (!caller.ok) throw new Error(caller.error)
+    const brokerageId = caller.brokerageId
     const supabase = await createClient()
-    const { brokerageId, agentId, agentIds, teamId, dateFrom, dateTo, sourceFamilies, sortBy = "volume", sortDir = "desc" } = filter
+    const { agentId, agentIds, teamId, dateFrom, dateTo, sourceFamilies, sortBy = "volume", sortDir = "desc" } = filter
     const scopeIds = await resolveScopeAgentIds(supabase, { brokerageId, agentId, agentIds, teamId })
 
     // Build date constraints
@@ -636,7 +643,7 @@ export async function getSourcePerformance(
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function getSourceDrilldown(
-  brokerageId: string,
+  claimedBrokerageId: string,
   sourceKey: string, // format: "source_name::source_family"
   /** Lane 90A: the resolved scope (see SourceAnalyticsFilter.agentIds) — was a single users.id that matched nothing. */
   scopeAgentIds?: string[] | null,
@@ -644,6 +651,10 @@ export async function getSourceDrilldown(
   dateTo?: string
 ): Promise<SourceDrilldownResult> {
   try {
+    // WAVE 155 (lane 155S2): the SESSION's tenant; an argument naming another brokerage is refused (catch → refusal shape).
+    const caller = await requireCallerTenant(claimedBrokerageId)
+    if (!caller.ok) throw new Error(caller.error)
+    const brokerageId = caller.brokerageId
     const supabase = await createClient()
     const [sourceName, sourceFamily] = sourceKey.split("::")
     const fromDate = dateFrom ?? new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
@@ -831,7 +842,12 @@ export async function generateSourceAIInsights(
   sources: SourceMetrics[],
   summaryContext?: string
 ): Promise<{ success: boolean; insights: string; error?: string }> {
-  return ledgered("session", { action: "analytics.source_insights.generate", subject: { type: "brokerage", id: brokerageId }, riskClass: "LOW_RISK_WRITE", detail: { claimed_brokerage_id: brokerageId, sources: sources.length } }, async () => {
+  // WAVE 155 (lane 155S2): THE GATE, before the model — the AI cost was booked to the ARGUMENT's brokerage with no session.
+  // The tenant is the session's; an argument naming another brokerage is refused (requireCallerTenant).
+  const caller = await requireCallerTenant(brokerageId)
+  if (!caller.ok) return { success: false, insights: "", error: caller.error }
+  const sessionBrokerageId = caller.brokerageId
+  return ledgered("session", { action: "analytics.source_insights.generate", subject: { type: "brokerage", id: sessionBrokerageId }, riskClass: "LOW_RISK_WRITE", detail: { sources: sources.length } }, async () => {
   try {
     const topRoi = sources.filter(s => s.roi_multiple > 0).sort((a, b) => b.roi_multiple - a.roi_multiple).slice(0, 3)
     const topVolume = [...sources].sort((a, b) => b.contact_count - a.contact_count).slice(0, 3)
@@ -867,7 +883,7 @@ Keep the tone analytical and actionable. Reference specific source names and num
       system: "You are a real estate analytics expert providing source attribution insights for brokers and agents.",
       prompt,
       temperature: 0.4,
-      brokerageId,
+      brokerageId: sessionBrokerageId,
     })
 
     return { success: true, insights: text }
@@ -891,7 +907,11 @@ export async function generateSourceAISummaryForSource(
   timeline: Array<{ month: string; contacts: number; leads: number; transactions: number; revenue: number }>,
   agents: Array<{ agent_id: string; agent_name: string; contact_count: number; transaction_count: number; revenue: number }>
 ): Promise<{ success: boolean; summary: string; error?: string }> {
-  return ledgered("session", { action: "analytics.source_summary.generate", subject: { type: "lead_source", ref: source.source }, riskClass: "LOW_RISK_WRITE", detail: { claimed_brokerage_id: brokerageId, source_family: source.source_family } }, async () => {
+  // WAVE 155 (lane 155S2): THE GATE, before the model (same rule as generateSourceAIInsights above).
+  const caller = await requireCallerTenant(brokerageId)
+  if (!caller.ok) return { success: false, summary: "", error: caller.error }
+  const sessionBrokerageId = caller.brokerageId
+  return ledgered("session", { action: "analytics.source_summary.generate", subject: { type: "lead_source", ref: source.source }, riskClass: "LOW_RISK_WRITE", detail: { source_family: source.source_family } }, async () => {
   try {
     const prompt = `Analyze this single real estate acquisition source and provide a 2-3 paragraph performance summary.
 
@@ -923,7 +943,7 @@ Explain what's working, where breakdown is happening, and what action should be 
       system: "You are a real estate analytics expert providing source performance summaries.",
       prompt,
       temperature: 0.3,
-      brokerageId,
+      brokerageId: sessionBrokerageId,
     })
 
     return { success: true, summary: text }
@@ -982,10 +1002,19 @@ export async function emailSourceReport(
   reportType: "brokerage" | "agent" | "team",
   filter: SourceAnalyticsFilter
 ): Promise<{ success: boolean; error?: string }> {
-  return ledgered("session", { action: "analytics.source_report.email", subject: { type: "email_queue", ref: "source_report" }, riskClass: "COMMUNICATION", detail: { claimed_brokerage_id: brokerageId, report_type: reportType } }, async () => {
+  // WAVE 155 (lane 155S2): THE GATE, before the report is built or queued — this queued an email of a brokerage's source
+  // figures to any address, stamped with the ARGUMENT's brokerage, with no session. The tenant is the session's; an
+  // argument (or a filter) naming another brokerage is refused; the report is built for the session tenant only.
+  const caller = await requireCallerTenant(brokerageId)
+  if (!caller.ok) return { success: false, error: caller.error }
+  if (!decideClaimedTenant({ actingBrokerageId: caller.brokerageId, claimedBrokerageId: filter.brokerageId }).ok) {
+    return { success: false, error: "Forbidden: that brokerage is not yours." }
+  }
+  const sessionBrokerageId = caller.brokerageId
+  return ledgered("session", { action: "analytics.source_report.email", subject: { type: "email_queue", ref: "source_report" }, riskClass: "COMMUNICATION", detail: { report_type: reportType } }, async () => {
   try {
     const supabase = await createClient()
-    const result = await getSourcePerformance(filter)
+    const result = await getSourcePerformance({ ...filter, brokerageId: sessionBrokerageId })
     if (!result.success) return { success: false, error: result.error }
 
     const topSources = result.sources.slice(0, 5)
@@ -1020,7 +1049,7 @@ export async function emailSourceReport(
 `
 
     const { error: notifyError } = await supabase.from("email_queue").insert({
-      brokerage_id: brokerageId,
+      brokerage_id: sessionBrokerageId,
       to_email: toEmail,
       to_name: toName,
       subject: `Source Analytics Report - ${new Date().toLocaleDateString()}`,

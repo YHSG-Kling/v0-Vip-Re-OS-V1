@@ -84,7 +84,18 @@ const OPEN: Array<[string, string, string]> = [
   [A + "buyer-offer/outside-offer-loop.ts", "listOutsideOffers", "READ-ONLY: loadOutsideChain + governingContractTerms select only"],
   [A + "dotloop-integration.ts", "getDocumentAccessLog", "READ-ONLY: selects document_access_log + a name lookup"],
 ]
-const ROUTE_NO_TENANT = "app/api/admin/billing/entitlements/[brokerageId]/route.ts" // platform staff; the only tenant is the URL's — none to record against
+// The entitlements route is platform staff acting ON a tenant: there is no session tenant, so the receipt is filed against the
+// brokerage the override changes (the URL's), and only after the platform-staff gate has passed. It was left open here while it
+// carried no receipt; wave 155 (lanes R15/R17) closed it, so this guard now holds the rule instead of the waypoint.
+const ROUTE_PLATFORM_ON_TENANT = "app/api/admin/billing/entitlements/[brokerageId]/route.ts"
+/** A platform-staff route's write is receipted after its gate, against the brokerage it changes. */
+function platformRouteReceiptedAfterGate(src: string): boolean {
+  const post = src.slice(Math.max(0, src.search(/export async function POST\b/)))
+  const gate = post.search(/\brequireSuperadminAuth\s*\(/)
+  const refuse = post.search(/if\s*\(\s*!auth\.ok\s*\)\s*return\b/)
+  const receipt = post.search(/\bledgerSessionAction\s*\(\s*\{\s*brokerageId:\s*brokerageId\b/)
+  return gate >= 0 && refuse > gate && receipt > refuse && /subject:\s*\{\s*type:\s*"brokerage",\s*id:\s*brokerageId\s*\}/.test(post.slice(receipt))
+}
 
 /** The stripped body of a top-level function (export or not) — from its declaration to the next top-level `}`. */
 function fnBody(file: string, name: string): string | null {
@@ -146,7 +157,9 @@ async function main() {
       const body = fnBody(file, exp) ?? ""
       check(`open: ${exp} — ${why.split(":")[0]}, writes nothing and carries no receipt`, !!body && !/ledgerSessionAction\(/.test(body) && !/\.(insert|update|upsert|delete)\s*\(/.test(body))
     }
-    check("open: the entitlements route (platform staff — no session tenant to record against) carries no receipt", !/ledgerSessionAction\(/.test(code(ROUTE_NO_TENANT)))
+    check("the entitlements route (platform staff acting on a tenant) is receipted after its gate, against the brokerage it changes", platformRouteReceiptedAfterGate(code(ROUTE_PLATFORM_ON_TENANT)))
+    check("POSITIVE CONTROL: a receipt filed before the platform-staff gate is refused", !platformRouteReceiptedAfterGate(`export async function POST(req) { const { brokerageId } = await params; const r = await ledgerSessionAction({ brokerageId: brokerageId, subject: { type: "brokerage", id: brokerageId } }, run); const auth = await requireSuperadminAuth(supabase); if (!auth.ok) return auth.response }`))
+    check("POSITIVE CONTROL: a gated route with no receipt is refused", !platformRouteReceiptedAfterGate(`export async function POST(req) { const auth = await requireSuperadminAuth(supabase); if (!auth.ok) return auth.response; return applyFeatureOverride({ brokerageId }) }`))
     check("POSITIVE CONTROL: the write finder sees a write in an open-row specimen", /\.(insert|update|upsert|delete)\s*\(/.test(`await svc.from("offers").update({ x: 1 })`))
   }
 
@@ -311,7 +324,7 @@ const DRIVERS: Driver[] = [
     fail: { missingColumns: { contract_signatures: ["esign_status"] } }, expect: { action: "esign.signature_request.resend", subjectType: "contract_signature", subjectId: S, risk: "LEGAL" }, ran: writesTo("contract_signatures") },
   { module: A + "multi-persona.ts", seed: () => ({ transaction_milestones: [{ id: M, transaction_id: T, status: "pending" }] }), run: (m) => m.bulkUpdateMilestones([{ milestoneId: M, status: "completed" }]),
     fail: { refuse: { transaction_milestones: "permission denied (stub)" } }, expect: { action: "transaction.milestones.bulk_update", subjectType: "transaction_milestone", subjectId: M, risk: "LEGAL" }, ran: writesTo("transaction_milestones") },
-  { module: A + "compliance-monitoring.ts", seed: () => ({ trid_timeline: [] }), run: (m) => m.createTRIDTimeline(T), fail: { refuse: { trid_timeline: "permission denied (stub)" } },
+  { module: A + "compliance-monitoring.ts", seed: () => ({ transactions: [{ id: T, brokerage_id: B }], trid_timeline: [] }), run: (m) => m.createTRIDTimeline(T), fail: { refuse: { trid_timeline: "permission denied (stub)" } },
     expect: { action: "compliance.trid_timeline.create", subjectType: "transaction", subjectId: T, risk: "LEGAL" }, ran: rowsOf("trid_timeline") },
   { module: A + "ai-transaction-coordinator.ts", seed: () => ({ transactions: [{ id: T, brokerage_id: B, agent_id: AG, status: "under_contract" }], transaction_tasks: [] }),
     run: (m) => m.generateSmartTasks({ transactionId: T, agentId: U }), fail: { model: true }, anyStatus: true,

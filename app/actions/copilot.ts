@@ -452,14 +452,28 @@ export async function completeMilestone(params: { milestone_id: string; completi
 }
 
 export async function generateDailyGameplan(userId: string) {
+  // WAVE 155 (lane 155S2): THE GATE, before any read or model spend. This public endpoint took the user from its argument
+  // and never refused a missing session. Now: a session with a tenant; the named user is the caller, or the caller holds
+  // the act-for-others roster (authorizeForUser, lib/auth/authorize-for-user.ts); and the user's row is read INSIDE the
+  // session's tenant, so an admin of one brokerage cannot plan another brokerage's day. The only caller
+  // (app/dashboard/agent/page.tsx) passes the session's own users.id and treats a throw as "no gameplan".
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const gameplanSession = await sessionOf()
+  if (!gameplanSession.isAuthenticated || !gameplanSession.brokerageId) throw new Error("Unauthorized")
+  const gameplanAuth = await authorizeForUser(userId)
+  if (!gameplanAuth.ok) throw new Error(gameplanAuth.error)
+  const gameplanTenant = gameplanSession.brokerageId
   const supabase = await createServerClient()
   return ledgered("session", { action: "ai.daily_gameplan.generate", subject: { type: "user", id: userId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
-  const { data: profile } = await supabase
+  const { data: profile, error: profileError } = await supabase
     .from("users")
     .select("brokerage_id, first_name, last_name")
     .eq("id", userId)
-    .single()
+    .eq("brokerage_id", gameplanTenant)
+    .maybeSingle()
+  if (profileError) throw new Error(`Could not read the user: ${profileError.message}`)
+  if (!profile && userId !== gameplanSession.userId) throw new Error("Forbidden: that user is not in your brokerage")
 
   if (!profile?.brokerage_id) {
     return {

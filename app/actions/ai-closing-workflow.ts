@@ -36,8 +36,17 @@ export async function aiGenerateClosingChecklist(params: {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
-  return ledgered("session", { action: "transaction.closing_checklist.generate", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
+  // WAVE 155 (lane 155S2): the sibling gate (aiTrackClosingMilestones below) FIRST — this export spent on a model and wrote
+  // checklist rows stamped with the BODY's brokerageId, with no session at all. The tenant is the session's; a body
+  // brokerageId naming another tenant is refused (decideClaimedTenant inside resolveWriteContextForTenant); the deal must be
+  // the session tenant's BEFORE a token is spent. `params.agentId` is validated for shape and no longer trusted for anything.
+  const ctx = await resolveWriteContextForTenant(params.brokerageId)
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const sessionBrokerageId = ctx.brokerageId
+  const supabase = ctx.db
+  return ledgered({ userId: ctx.actorUserId, brokerageId: sessionBrokerageId, agentId: ctx.agentId }, { action: "transaction.closing_checklist.generate", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   try {
     // AMBIGUOUS EMBED — the `!constraint` hint is load-bearing, DO NOT remove it.
@@ -62,7 +71,8 @@ export async function aiGenerateClosingChecklist(params: {
         transaction_title_escrow(title_company_name, closing_scheduled_date)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .eq("brokerage_id", sessionBrokerageId)
+      .maybeSingle()
 
     // A refused read RESOLVES in supabase-js. Without this the refusal above was
     // reported as "Transaction not found" — an absence, not the hard error it was.
@@ -146,7 +156,7 @@ Generate a comprehensive, ordered closing checklist covering:
       ].filter(Boolean)
       return {
         transaction_id:  params.transactionId,
-        brokerage_id:    params.brokerageId,
+        brokerage_id:    sessionBrokerageId,
         item_name:       item.item_name,
         category:        item.category,
         sequence:        Number.isFinite(item.sequence) ? item.sequence : idx,
@@ -168,7 +178,7 @@ Generate a comprehensive, ordered closing checklist covering:
       .upsert(
         {
           transaction_id:   params.transactionId,
-          brokerage_id:     params.brokerageId,
+          brokerage_id:     sessionBrokerageId,
           closing_date:     transaction.close_date,
           readiness_score:  checklist.closing_risk === "low" ? 85 : checklist.closing_risk === "medium" ? 55 : 25,
           checklist:        { critical_path: checklist.critical_path, ai_summary: checklist.ai_summary },
@@ -239,12 +249,24 @@ export async function completeChecklistItem(params: {
   completedBy: string
   notes?: string
 }) {
-  if (!isValidUUID(params.itemId) || !isValidUUID(params.completedBy)) {
+  if (!isValidUUID(params.itemId)) {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
-  return ledgered("session", { action: "transaction.closing_checklist.complete_item", subject: { type: "closing_checklist_item", id: params.itemId }, riskClass: "LEGAL" }, async () => {
+  // WAVE 155 (lane 155S2): the sibling gate FIRST. `completed_by` is a LEGAL attestation ("who completed this closing
+  // step") and it came from the body — any caller could sign a step in anyone's name, keyed on an item id alone. It is
+  // the SESSION user now, and the item must be the session tenant's. It is also a users.id column
+  // (scripts/schema-fk-map.ts: closing_checklist_items.completed_by → users) while the only caller
+  // (app/crm/components/closing-workflow-tab.tsx) passes an agents.id — disjoint ids (CLAUDE.md §3), so that write was
+  // refused by the foreign key. `params.completedBy` is accepted for signature compatibility and not trusted.
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const sessionBrokerageId = ctx.brokerageId
+  const completedBy = ctx.actorUserId ?? ctx.userId
+  const supabase = ctx.db
+  return ledgered({ userId: ctx.actorUserId, brokerageId: sessionBrokerageId, agentId: ctx.agentId }, { action: "transaction.closing_checklist.complete_item", subject: { type: "closing_checklist_item", id: params.itemId }, riskClass: "LEGAL" }, async () => {
 
   try {
     const { data, error } = await supabase
@@ -252,14 +274,17 @@ export async function completeChecklistItem(params: {
       .update({
         completed:    true,
         completed_at: new Date().toISOString(),
-        completed_by: params.completedBy,
+        completed_by: completedBy,
         notes:        params.notes ?? null,
       })
       .eq("id", params.itemId)
+      .eq("brokerage_id", sessionBrokerageId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    // CLAUDE.md §3: an update that matched nothing resolves too — another tenant's item (or a stale id) is not a success.
+    if (!data) return { success: false, error: "Checklist item not found" }
 
     revalidatePath(`/dashboard/transactions`)
     return { success: true, data }

@@ -309,18 +309,15 @@ async function main() {
     } catch (e) { threw = `import failed: ${(e as Error).message}` }
     const rows2 = (mem.tables.agent_action_ledger ?? []).filter((r: any) => !w?.action || r.action === w.action)
     const ok = rows2.length === 2 && rows2.every((r: any) => r.brokerage_id === B1 && r.actor_user_id === U1 && ACTION_RE.test(r.action) && r.reason_code === "HUMAN_REQUESTED" && RISK.has(r.risk_class) && (!w?.risk || w.risk.split("|").includes(r.risk_class)) && (!w?.subjectType || w.subjectType === "(computed)" || r.subject_type === w.subjectType) && r.status !== "proposed")
-    // PRE-EXISTING DEFECT (not this lane's; reported in the notes): app/api/chat/stream/route.ts reads complianceCheck.violations.join(…)
-    // but checkThemFirstCompliance (app/actions/ai-chat.ts) returns { score, themFirstCount, agentFirstCount, feedback } — every request
-    // 500s BEFORE the model call, so the wrapped call is wired (section A) but unreachable. Either outcome is accepted and named.
-    if (d.file === "app/api/chat/stream/route.ts" && !ok && rows2.length === 0 && /^500 /.test(said ?? "")) {
-      console.log(`  ! ${d.file}#${d.fn}: NOT DRIVEN — the route 500s before its model call (pre-existing defect, route.ts violations.join): ${said}`)
-      continue
-    }
+    // RESTATED (wave 155, lane 155S2 — CLAUDE.md §2, a waypoint is not a rule): this used to ACCEPT a 500 from
+    // app/api/chat/stream/route.ts, because the route read complianceCheck.violations.join(…) on a result that has no
+    // `violations` and died before its model call. Lane 155S2 fixed the read (the real shape: score / counts / feedback), so the
+    // route is driven like every other wrapped export: two calls, two receipts. A 500 is a failure again.
     check(`${d.file}#${d.fn} ×2 → 2 receipts (session actor + tenant, ${w?.action ?? "?"}, settled)`, ok, { receipts: rows2.map((r: any) => ({ action: r.action, actor: r.actor_user_id, tenant: r.brokerage_id, subject: r.subject_type, risk: r.risk_class, status: r.status })), threw, said })
   }
 
   // ═══ C · failure and no-seat behavior ══════════════════════════════════════════════════════════════════════════════
-  section("C · a failed write settles failed; no session tenant → the write runs as before, unrecorded")
+  section("C · a failed write settles failed; no session → refused, nothing written, nothing recorded")
   {
     const mem = memSupabase({ transaction_coordinators: [], agent_action_ledger: [] }, { uuidIds: true, refuse: { transaction_coordinators: "new row violates row-level security policy" } })
     G.__R9.mem = mem; G.__R9.seat = true
@@ -336,7 +333,10 @@ async function main() {
     const mod = await import(pathToFileURL(join(ROOT, "app/dashboard/settings/team/tc/tc-actions.ts")).href)
     const r = await mod.updateTransactionCoordinator(ID(1), { displayName: "TC2", maxActiveDeals: 4, isActive: true })
     check("no session tenant: no receipt is invented (agent_action_ledger.brokerage_id is NOT NULL)", (mem.tables.agent_action_ledger ?? []).length === 0)
-    check("…and the write still ran exactly as before (today's behavior; RLS is the gate on the cookie client)", r?.success === true && mem.tables.transaction_coordinators[0].display_name === "TC2", r)
+    // RESTATED (wave 155, lane 155S2 — CLAUDE.md §2/§4): this pinned the HOLE ("the write still ran … RLS is the gate"). A
+    // "use server" export is a public endpoint and a gate that cannot find a session refuses (fail closed): the write must
+    // NOT run. The rule is asserted, not the waypoint.
+    check("…and the write is REFUSED — nothing changes without a session (tc-actions requireTcAdmin)", r?.success === false && mem.tables.transaction_coordinators[0].display_name === undefined, r)
   }
   {
     // the ledger table refusing a recording-only claim must not take the action down (no key → unledgered → runs).

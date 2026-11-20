@@ -398,7 +398,8 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
                     <span className="text-xs text-muted-foreground">{rec.reasoning}</span>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Badge variant="secondary" className="text-xs">Score {rec.score}</Badge>
+                    {/* WAVE 155 (lane 155S2): a score the model did not give is null (unknown) — shown as nothing, never "Score null". */}
+                    {typeof rec.score === "number" && <Badge variant="secondary" className="text-xs">Score {rec.score}</Badge>}
                     <Button
                       size="sm"
                       variant="ghost"

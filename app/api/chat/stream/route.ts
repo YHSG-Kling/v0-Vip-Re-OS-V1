@@ -126,8 +126,23 @@ export async function POST(req: NextRequest) {
       })
       .join("\n")
 
-    // Get Them-First analysis
-    const complianceCheck = await checkThemFirstCompliance(message)
+    // Get Them-First analysis.
+    //
+    // WAVE 155 (lane 155S2): READ THE SHAPE THE CHECK RETURNS. The prompt below read `complianceCheck.violations.join(…)`
+    // and `.suggestions.join(…)`, but checkThemFirstCompliance (app/actions/ai-chat.ts → analyzeThemFirstLanguage) returns
+    // { score, themFirstCount, agentFirstCount, feedback } — `violations` was undefined, `.join` threw, and EVERY request
+    // answered 500 before the model was reached (the route was dead at runtime). The field that carries what to say is
+    // `feedback`; the two counts are what was measured. Each is read defensively (the function is typed `any`): a value
+    // that is absent is "unknown", never invented.
+    const complianceRaw = (await checkThemFirstCompliance(message)) as {
+      score?: unknown; themFirstCount?: unknown; agentFirstCount?: unknown; feedback?: unknown
+    } | null
+    const complianceCheck = {
+      score: typeof complianceRaw?.score === "number" ? complianceRaw.score : null,
+      themFirstCount: typeof complianceRaw?.themFirstCount === "number" ? complianceRaw.themFirstCount : null,
+      agentFirstCount: typeof complianceRaw?.agentFirstCount === "number" ? complianceRaw.agentFirstCount : null,
+      feedback: typeof complianceRaw?.feedback === "string" && complianceRaw.feedback.trim() ? complianceRaw.feedback.trim() : null,
+    }
 
     // Get lead context if available.
     //
@@ -192,9 +207,9 @@ ${conversationHistory}
 
 Agent's current message: ${message}
 
-Them-First Score: ${complianceCheck.score}%
-Violations: ${complianceCheck.violations.join(", ") || "None"}
-Suggestions: ${complianceCheck.suggestions.join(", ") || "None"}
+Them-First Score: ${complianceCheck.score ?? "unknown"}${complianceCheck.score === null ? "" : "%"}
+Them-first phrases: ${complianceCheck.themFirstCount ?? "unknown"} · Agent-first phrases: ${complianceCheck.agentFirstCount ?? "unknown"}
+Coaching note: ${complianceCheck.feedback ?? "None"}
 
 Generate a response that helps the agent communicate more effectively while maintaining Them-First principles.`
 

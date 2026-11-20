@@ -35,6 +35,10 @@ export async function identifyReferralOpportunities(agentId: string) {
     // WAVE 155 (155R2): this public endpoint ran a paid model and stamped contacts with no session check (sibling gate: analyzeReferralProgram).
     const spendActor = await getAgentContext()
     if (!spendActor.isAuthenticated || !spendActor.brokerageId) return { success: false, error: "Unauthorized" }
+    // WAVE 155 (lane 155S2): the agent still came from the ARGUMENT — any seat could mine (and stamp) another agent's sphere.
+    // The sibling's exact rule (analyzeReferralProgram below): a DIFFERENT agent than the session's is refused, never
+    // silently swapped. The only caller (app/actions/lifetime-customers.ts findReferralOpportunities) passes the session's own.
+    if (agentId !== spendActor.agentId) return { success: false, error: "Forbidden" }
 
     const supabase = await createClient()
 

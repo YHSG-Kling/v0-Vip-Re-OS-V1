@@ -7,6 +7,26 @@ import {
   type FairHousingInteractionType,
 } from "@/lib/application/compliance-monitoring"
 import { isValidUUID } from "@/lib/validations"
+import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+
+/**
+ * WAVE 155 (lane 155S2): THE GATE for the three TRID exports (monitor / create timeline / update milestone). They are
+ * public endpoints that read no session and wrote trid_timeline rows by a transaction id alone (RLS the only fence). Now:
+ * a session with a tenant, and the deal must be that tenant's (a tenant predicate on the read — another tenant's id finds
+ * nothing) BEFORE the service runs. Throws, the convention of every export in this file. Not exported ("use server").
+ * @proofSeam scripts/wave155-ungated-deal-guard.ts
+ */
+async function requireSessionDeal(transactionId: string) {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  if (!session.isAuthenticated || !session.brokerageId) throw new Error("Unauthorized")
+  const { createClient } = await import("@/lib/supabase/server")
+  const sb = await createClient()
+  const { data, error } = await sb.from("transactions").select("id").eq("id", transactionId).eq("brokerage_id", session.brokerageId).maybeSingle()
+  if (error) throw new Error("Could not verify that transaction")
+  if (!data) throw new Error("Transaction not found")
+  return session
+}
 
 // TOMBSTONE (§1, lane E2 2026-08-28) — `logAuditEvent` deleted. Audit logging
 // lives at the call sites as direct `supabase.from("audit_log").insert(...)`
@@ -78,8 +98,7 @@ export async function analyzeFairHousingRisk(params: {
 // Monitor TRID compliance
 export async function monitorTRIDCompliance(transactionId: string) {
   if (!isValidUUID(transactionId)) throw new Error("Invalid transaction ID")
-  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
-  const session = await getAgentContext()
+  const session = await requireSessionDeal(transactionId)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const { resultFamily } = await import("@/lib/kernel/action-ledger")
   return resultFamily(await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.trid.monitor", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
@@ -140,9 +159,15 @@ export async function submitContentForApproval(data: {
   if (!data.contentTitle?.trim()) throw new Error("contentTitle is required")
   const { getAgentContext } = await import("@/lib/identity/get-agent-context")
   const session = await getAgentContext()
+  // WAVE 155 (lane 155S2): THE GATE. The submitter recorded on the approval row (activities.agent_user_id, and its tenant)
+  // came from the BODY — anyone could file content in another person's name. The submitter is the SESSION user; a body
+  // userId naming someone else is refused; the agent on the row is the session's own (or none).
+  if (!session.isAuthenticated || !session.brokerageId || !session.userId) throw new Error("Unauthorized")
+  if (data.userId !== session.userId) throw new Error("Forbidden: content is submitted in your own name")
+  const submission = { ...data, userId: session.userId, agentId: session.agentId ?? undefined }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-  return await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.content_approval.submit", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "users", id: session.userId || null, ref: session.userId ? null : "submitter" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: data.contentType, body_user_id: data.userId } }, async () => {
-  return submitContentForApprovalService(data)
+  return await ledgerSessionAction({ brokerageId: session.brokerageId, action: "compliance.content_approval.submit", actor: { type: "user", userId: session.userId, agentId: session.agentId ?? null }, subject: { type: "users", id: session.userId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: data.contentType } }, async () => {
+  return submitContentForApprovalService(submission)
   })
 }
 
@@ -159,9 +184,23 @@ export async function reviewContentApproval(data: {
   if (!data.status)                    throw new Error("status is required")
   const { getAgentContext } = await import("@/lib/identity/get-agent-context")
   const session = await getAgentContext()
+  // WAVE 155 (lane 155S2): THE GATE. A LEGAL approval decision whose reviewer (metadata.reviewed_by, and the approved
+  // library row's created_by) came from the BODY, on an approval keyed by id alone, open to any seat. Now: the reviewer is
+  // the SESSION user (a body reviewerId naming someone else is refused); the reviewer holds the tenant roster
+  // (isAdminOrBroker → TENANT_ADMIN_USER_TYPES: brokers, admin, team lead, compliance officer); and the approval row must
+  // be the session tenant's — another tenant's approval id finds nothing.
+  if (!session.isAuthenticated || !session.brokerageId || !session.userId) throw new Error("Unauthorized")
+  if (data.reviewerId !== session.userId) throw new Error("Forbidden: you review content as yourself")
+  if (!isAdminOrBroker({ user_type: session.userType })) throw new Error("Forbidden: only your brokerage's reviewers may decide content approvals")
+  const { createClient } = await import("@/lib/supabase/server")
+  const sb = await createClient()
+  const { data: approvalRow, error: approvalError } = await sb.from("activities").select("id").eq("id", data.approvalId).eq("brokerage_id", session.brokerageId).maybeSingle()
+  if (approvalError) throw new Error("Could not verify that approval")
+  if (!approvalRow) throw new Error("Approval not found")
+  const decision = { ...data, reviewerId: session.userId }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-  return await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.content_approval.review", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "content_approval", id: data.approvalId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { decision: data.status, body_reviewer_id: data.reviewerId } }, async () => {
-  return reviewContentApprovalService(data)
+  return await ledgerSessionAction({ brokerageId: session.brokerageId, action: "compliance.content_approval.review", actor: { type: "user", userId: session.userId, agentId: session.agentId ?? null }, subject: { type: "content_approval", id: data.approvalId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { decision: data.status } }, async () => {
+  return reviewContentApprovalService(decision)
   })
 }
 
@@ -214,8 +253,7 @@ export async function generateComplianceReport(filters: {
 // Create TRID timeline for transaction
 export async function createTRIDTimeline(transactionId: string) {
   if (!isValidUUID(transactionId)) throw new Error("Invalid transaction ID")
-  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
-  const session = await getAgentContext()
+  const session = await requireSessionDeal(transactionId)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.trid_timeline.create", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "transaction", id: transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
   return createTRIDTimelineService(transactionId)
@@ -254,8 +292,7 @@ export async function updateTRIDMilestone(params: {
   }
   if (!TRID_MILESTONES.includes(params.milestone as TridMilestone)) throw new Error("Unknown TRID milestone")
   if (!params.date)                        throw new Error("date is required")
-  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
-  const session = await getAgentContext()
+  const session = await requireSessionDeal(params.transactionId)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.trid_milestone.update", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { milestone: params.milestone } }, async () => {
   return updateTRIDMilestoneService(params)

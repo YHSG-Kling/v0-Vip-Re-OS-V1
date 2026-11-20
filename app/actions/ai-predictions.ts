@@ -9,6 +9,27 @@ import { generateAIJSON } from "@/lib/ai"
 import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure" // the MODULE, not the barrel (proxy-graph budget, wave 150)
 import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
 import { resolveLeadVisibilityForSession } from "@/lib/auth/lead-visibility"
+import { authorizeForAgent } from "@/lib/auth/require-caller"
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WAVE 155 (lane 155S2) — THE SESSION GATES. Twelve of this module's exports read no session (the tenant came from the
+// acted-on row, RLS the only fence) and several paid-model exports read the session only to decide whether to write a
+// receipt — then ran anyway without one (`session… ? ledgerSessionAction(…) : ledgered()`). Each export now calls one of
+// these FIRST, before any read of the acted-on row and before any provider or model is reached; the acted-on row is then
+// read with the session tenant's predicate. Both THROW: that is how every export they guard already reports a refusal.
+// @proofSeam scripts/wave155-ungated-deal-guard.ts
+// ─────────────────────────────────────────────────────────────────────────────
+function requirePredictionTenant(session: { isAuthenticated: boolean; brokerageId: string | null }): string {
+  if (!session.isAuthenticated || !session.brokerageId) throw new Error("Unauthorized")
+  return session.brokerageId
+}
+/** The agents.id named is the caller's own, or (tenant roster) an agent of the SESSION's tenant — authorizeForAgent. */
+async function requirePredictionAgent(agentId: string) {
+  const auth = await authorizeForAgent(agentId)
+  if (!auth.ok) throw new Error(auth.error)
+  return auth
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WHOSE INSIGHT IS THIS?
@@ -650,9 +671,17 @@ export async function batchPredictLeadConversions(leadIds: string[]) {
 export async function getTopConversionCandidates(limit = 10) {
   const supabase = await createClient()
 
+  // WAVE 155 (lane 155S2): the sibling's gate (getLeadPredictions above) — Leads belong to the brokerage (CLAUDE.md §5),
+  // so the lead desk only, and only its own tenant's scores. This read had no session check and no tenant predicate.
+  const visibility = await resolveLeadVisibilityForSession(supabase)
+  if (!visibility.allowed) return []
+  const readerBrokerageId = visibility.scope.kind === "platform" ? null : visibility.scope.brokerageId
+  if (!readerBrokerageId) return []
+
   const { data, error } = await supabase
     .from("predictive_lead_scores")
     .select("*, leads(*), contacts(*)")
+    .eq("brokerage_id", readerBrokerageId)
     .order("conversion_probability", { ascending: false })
     .limit(limit)
 
@@ -671,12 +700,22 @@ export async function getTopConversionCandidates(limit = 10) {
 export async function refreshStalePredictions(olderThanDays = 7) {
   const supabase = await createClient()
 
+  // WAVE 155 (lane 155S2): the same lead-desk + tenant gate — this fan-out of paid predictions read every tenant's stale
+  // scores RLS admitted, with no session check of its own.
+  const visibility = await resolveLeadVisibilityForSession(supabase)
+  // A refusal THROWS: the one caller (app/dashboard/admin/data-health/page.tsx) prints "Refreshed N" for any value, so a
+  // returned zero would read as "checked, nothing stale" (CLAUDE.md §4 fail closed); its catch says the refresh failed.
+  if (!visibility.allowed) throw new Error("Not authorized for the lead desk")
+  const readerBrokerageId = visibility.scope.kind === "platform" ? null : visibility.scope.brokerageId
+  if (!readerBrokerageId) throw new Error("No single brokerage to refresh")
+
   const cutoffDate = new Date()
   cutoffDate.setDate(cutoffDate.getDate() - olderThanDays)
 
   const { data: staleScores, error } = await supabase
     .from("predictive_lead_scores")
     .select("lead_id")
+    .eq("brokerage_id", readerBrokerageId)
     .lt("updated_at", cutoffDate.toISOString())
     .limit(50)
 
@@ -702,16 +741,27 @@ export async function enableAIPilot(data: {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  // WAVE 155 (lane 155S2): no session, no plan — and no model call (the branch below used to run unrecorded and ungated).
+  if (!session.isAuthenticated || !session.brokerageId || !session.userId) return { success: false, error: "Unauthorized" }
+  const sessionBrokerageId = session.brokerageId
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
-  // Check agent authorization
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (user?.id !== data.agentId) {
+  // Check agent authorization — CROSSED VIA agents.user_id (CLAUDE.md §3: agents.id and users.id are DISJOINT).
+  // This compared `user.id` (a users.id) with `data.agentId`, then wrote `data.agentId` into ai_autopilot_plans.agent_id,
+  // which references AGENTS (scripts/schema-fk-map.ts). The one caller (buyer-overview-client.tsx) passes the session's
+  // users.id, so the comparison passed and the insert was refused by the FK (23503) — every enable failed; a caller passing
+  // an agents.id was refused outright. The caller may name itself by EITHER id; the plan is filed under the agents.id.
+  if (data.agentId !== session.userId && data.agentId !== session.agentId) {
     return { success: false, error: "Unauthorized" }
   }
+  let pilotAgentId: string | null = session.agentId ?? null
+  if (!pilotAgentId) {
+    const { data: ownAgent, error: ownAgentError } = await supabase.from("agents").select("id").eq("user_id", session.userId).maybeSingle()
+    if (ownAgentError) return { success: false, error: "Could not resolve your agent record" }
+    pilotAgentId = (ownAgent as { id?: string } | null)?.id ?? null
+  }
+  if (!pilotAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
 
   // Gather comprehensive lead data. The error is destructured because this row is
   // now the TENANT ANCHOR for the plan written below, and supabase-js RESOLVES a
@@ -773,6 +823,12 @@ export async function enableAIPilot(data: {
     }
     autopilotBrokerageId = (contact.brokerage_id as string | null) ?? null
     planContactId = data.leadId
+  }
+  // WAVE 155 (lane 155S2): the record's tenant must be the SESSION's (decideClaimedTenant — never a hand comparison), and
+  // this runs BEFORE the model is reached. Another tenant's lead / contact reads as not found.
+  // An UNTENANTED record is refused here too (it was refused only after the model had already been paid for, below).
+  if (!autopilotBrokerageId || !decideClaimedTenant({ actingBrokerageId: sessionBrokerageId, claimedBrokerageId: autopilotBrokerageId }).ok) {
+    return { success: false, error: "Lead not found" }
   }
 
   // Get additional intelligence data
@@ -897,7 +953,7 @@ Respond with JSON matching this structure:
         brokerage_id: autopilotBrokerageId,
         lead_id: planLeadId,
         contact_id: planContactId,
-        agent_id: data.agentId,
+        agent_id: pilotAgentId,
         autopilot_level: data.autopilotLevel,
         nurture_plan: aiResponse,
         is_active: true,
@@ -931,10 +987,26 @@ Respond with JSON matching this structure:
 export async function getActiveAutoPilotPlans(agentId: string) {
   const supabase = await createClient()
 
+  // WAVE 155 (lane 155S2): the session gate, and the §3 cross. The one caller (buyer-overview-client.tsx) passes the
+  // session's USERS id, and this filtered ai_autopilot_plans.agent_id (an AGENTS column) by it — always empty. The caller
+  // may name itself by either id; the plans read are its own agents row's, inside the session's tenant. Anyone else → [].
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const session = await sessionOf()
+  if (!session.isAuthenticated || !session.brokerageId || !session.userId) return []
+  if (agentId !== session.userId && agentId !== session.agentId) return []
+  let planAgentId: string | null = session.agentId ?? null
+  if (!planAgentId) {
+    const { data: ownAgent, error: ownAgentError } = await supabase.from("agents").select("id").eq("user_id", session.userId).maybeSingle()
+    if (ownAgentError) return []
+    planAgentId = (ownAgent as { id?: string } | null)?.id ?? null
+  }
+  if (!planAgentId) return []
+
   const { data, error } = await supabase
     .from("ai_autopilot_plans")
     .select("*, leads(*), contacts(*)")
-    .eq("agent_id", agentId)
+    .eq("agent_id", planAgentId)
+    .eq("brokerage_id", session.brokerageId)
     .eq("is_active", true)
     .order("next_action_at", { ascending: true })
 
@@ -951,21 +1023,28 @@ export async function toggleAutoPilot(planId: string, pause: boolean) {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  // WAVE 155 (lane 155S2): this had NO gate at all — any caller paused / resumed any plan by id (RLS the only fence), and
+  // a zero-row update reported success. Session tenant first; the update carries the tenant predicate and counts rows.
+  if (!session.isAuthenticated || !session.brokerageId) return { success: false, error: "Unauthorized" }
+  const toggleBrokerageId = session.brokerageId
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
-  const { error } = await supabase
+  const { data: toggled, error } = await supabase
     .from("ai_autopilot_plans")
     .update({
       is_active: !pause,
       paused_at: pause ? new Date().toISOString() : null,
     })
     .eq("id", planId)
+    .eq("brokerage_id", toggleBrokerageId)
+    .select("id")
 
   if (error) {
     console.error("[v0] Error toggling autopilot:", error)
     return { success: false }
   }
+  if (!toggled?.length) return { success: false, error: "Auto-pilot plan not found" }
 
   return { success: true }
   }
@@ -980,6 +1059,7 @@ export async function predictDealCloseProbability(transactionId: string) {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  const s2DealTenant = requirePredictionTenant(session)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
@@ -1011,6 +1091,7 @@ export async function predictDealCloseProbability(transactionId: string) {
     `,
     )
     .eq("id", transactionId)
+    .eq("brokerage_id", s2DealTenant)
     .maybeSingle()
 
   if (error || !transaction) {
@@ -1232,6 +1313,9 @@ export async function analyzeConversation(data: {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  // WAVE 155 (lane 155S2): the agent the analysis is filed under is the caller's own (or, tenant roster, an agent of the
+  // session tenant) — before the model is reached.
+  await requirePredictionAgent(data.agentId)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
@@ -1565,11 +1649,15 @@ Provide ACTIONABLE coaching. Respond with JSON:
 // Get conversation intelligence history for a lead
 export async function getConversationIntelligence(leadId: string) {
   const supabase = await createClient()
+  // WAVE 155 (lane 155S2): session tenant first; the history is read inside it (it had no gate and no tenant predicate).
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const intelBrokerageId = requirePredictionTenant(await sessionOf())
 
   const { data, error } = await supabase
     .from("conversation_intelligence")
     .select("*")
     .eq("lead_id", leadId)
+    .eq("brokerage_id", intelBrokerageId)
     .order("analyzed_at", { ascending: false })
     .limit(20)
 
@@ -1584,11 +1672,17 @@ export async function getConversationIntelligence(leadId: string) {
 // Get agent coaching insights
 export async function getAgentCoachingInsights(agentId: string, limit = 10) {
   const supabase = await createClient()
+  // WAVE 155 (lane 155S2): the agent is the caller's own, or (tenant roster) an agent of the session tenant. A refusal is
+  // the bare [] this export already returns on a failed read — the one caller (coaching-dashboard-client.tsx) renders
+  // `[]` as "no rollup", never as a score.
+  const coachAuth = await authorizeForAgent(agentId)
+  if (!coachAuth.ok) return []
 
   const { data, error } = await supabase
     .from("conversation_intelligence")
     .select("them_first_score, coaching_suggestions, conversation_type, analyzed_at")
-    .eq("agent_id", agentId)
+    .eq("agent_id", coachAuth.agentId)
+    .eq("brokerage_id", coachAuth.brokerageId)
     .order("analyzed_at", { ascending: false })
     .limit(limit)
 
@@ -1699,10 +1793,11 @@ export async function aiPropertyMatchGenius(contactId: string) {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  const s2MatchTenant = requirePredictionTenant(session)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
-  // Gather the contact and its contacts-keyed property signal.
+  // Gather the contact and its contacts-keyed property signal — inside the SESSION's tenant (lane 155S2).
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
     .select(
@@ -1713,6 +1808,7 @@ export async function aiPropertyMatchGenius(contactId: string) {
     `,
     )
     .eq("id", contactId)
+    .eq("brokerage_id", s2MatchTenant)
     .maybeSingle()
 
   // supabase-js RESOLVES a refused query, so the error has to be read. A refusal
@@ -2237,6 +2333,7 @@ export async function predictWinningOffer(data: {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  requirePredictionTenant(session)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
   // TENANT ANCHOR for the ai_predictions row written below. This row keys on the
@@ -2420,6 +2517,7 @@ export async function aiNegotiationAdvisor(data: {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  const s2NegotiationTenant = requirePredictionTenant(session)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
@@ -2449,6 +2547,7 @@ export async function aiNegotiationAdvisor(data: {
     `,
     )
     .eq("id", data.transactionId)
+    .eq("brokerage_id", s2NegotiationTenant)
     .maybeSingle()
 
   if (negotiationTxnError) {
@@ -2564,6 +2663,7 @@ export async function predictMarketShift(data: {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  requirePredictionTenant(session)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
   // ONE tenant resolve for the whole function: the same brokerage whose IDX feed is
@@ -2719,6 +2819,7 @@ export async function findMarketArbitrage(data: { city: string; state: string; a
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  await requirePredictionAgent(data.agentId)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
   // TOMBSTONE (wave 81 lane B, CLAUDE.md §1.3): `new BatchDataClient()` stood here with
@@ -2993,15 +3094,18 @@ export async function detectClientChurn(leadId: string) {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  const churnTenant = requirePredictionTenant(session)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
   // Fetch lead without embedded joins — lead_behavioral_data, chat_sessions,
   // communications, and showings are not FK-registered on leads/contacts in PostgREST.
+  // Both reads run INSIDE the session's tenant (lane 155S2): another tenant's id finds nothing.
   const { data: lead, error } = await supabase
     .from("leads")
     .select("*")
     .eq("id", leadId)
+    .eq("brokerage_id", churnTenant)
     .maybeSingle()
 
   let resolvedLead: Record<string, any> | null = lead ?? null
@@ -3011,6 +3115,7 @@ export async function detectClientChurn(leadId: string) {
       .from("contacts")
       .select("*")
       .eq("id", leadId)
+      .eq("brokerage_id", churnTenant)
       .maybeSingle()
 
     if (!contact) {
@@ -3272,12 +3377,17 @@ export async function optimizeShowingRoute(data: {
   startTime: string
 }) {
   const supabase = await createClient()
+  // WAVE 155 (lane 155S2): THE SESSION FIRST — the contact was read (with no tenant predicate) before any caller was
+  // resolved. Now the session tenant gates, and the contact is read inside it.
+  const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
+  const routeSessionTenant = requirePredictionTenant(await sessionOf())
 
   // THE IDENTITY FIRST, THE PROVIDER SECOND.
   const { data: routeContact, error: routeContactError } = await supabase
     .from("contacts")
     .select("id")
     .eq("id", data.contactId)
+    .eq("brokerage_id", routeSessionTenant)
     .maybeSingle()
   if (routeContactError) {
     throw new Error(
@@ -3644,6 +3754,7 @@ export async function findHiddenOpportunities(agentId: string) {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  await requirePredictionAgent(agentId)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
@@ -3801,6 +3912,7 @@ export async function mineSphereOfInfluence(agentId: string) {
   const supabase = await createClient()
   const { getAgentContext: sessionOf } = await import("@/lib/identity/get-agent-context")
   const session = await sessionOf()
+  await requirePredictionAgent(agentId)
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const ledgered = async () => {
 
@@ -3940,6 +4052,8 @@ Output example:{
 // ============================================
 
 export async function competitiveIntelligence(data: { agentId: string; marketArea: string }) {
+  // WAVE 155 (lane 155S2): THE GATE before the IDX read and the model — this had no session check of its own.
+  await requirePredictionAgent(data.agentId)
   const supabase = await createClient()
   // `data.agentId` is caller-supplied and is not used to pick a credential — the
   // listings below are "this brokerage's own IDX-enabled active listings", and the
