@@ -43,6 +43,9 @@ interface RetiredTwin {
   twin: string
   /** `file:line` of the survivor's export — the tombstone names exactly this. */
   survivor: string
+  /** The survivor's FUNCTION name when it is not the retired name (wave 155: a duplicate that retires onto a differently named door
+   *  — a text scan, a route handler — is still a retirement with proof). The export on the survivor line must be THIS name. */
+  survivorName?: string
   steps: { file_function: string; intended_behaviour: string; candidate_survivor: string; survivor_covers: string; callers_migrated: string; unique_behaviour: string; retired_with_tombstone: string; guards_rerun: string }
 }
 interface LedgerRow {
@@ -60,9 +63,21 @@ const RERUN = "test:manager-duplicate-proofs, test:no-orphan-actions, test:use-s
 export const DUPLICATE_ACTION_LEDGER: Readonly<Record<string, LedgerRow>> = {
   addContactNote: { verdict: "kept", class: "owner_decision", survivor: "app/actions/contacts.ts:559", dependency: "communications.ts:391 (0 importers) pushes the note to GoHighLevel (syncContactToGHL + addGHLContactNote) before the local save; contacts.ts:559 is the canonical contact_notes writer (2 importers). Whether notes still sync to GHL is an owner decision (144I Still open 3): merging adds a vendor egress to the canonical writer, retiring drops it." },
   approveSocialPost: { verdict: "kept", class: "lane_domain", survivor: null, dependency: "both wired — listing-media.ts:329 (listing social panel) and social-media-automation.ts:464 (command center, social dashboard); app/actions/social* is lane 146E's domain and the approval door is contract C5 (approverFor)." },
-  // checkCompliance — ROW REMOVED (wave 155, lane 155R29): no longer a duplicate. The ai-content-generation.tsx twin was retired
-  // (case 2: the text scan lives at compliance-monitoring.ts scanContentCompliance; tombstone in that file), so only
-  // link-to-video.ts checkCompliance (the video-script review) exports the name. L5 printed it BURNED; this records why.
+  // checkCompliance — RECORDED AS RETIRED (wave 155 convergence). Lane 155R29 removed the row once the name stopped being a duplicate
+  // and left this history in a comment; the wave-146 governance canary reads VERDICTS from this ledger's data, never from comments,
+  // so a retirement with proof is recorded as one. Only link-to-video.ts checkCompliance (the video-script review) exports the name now.
+  checkCompliance: { verdict: "retired", retiredTwins: [{
+    twin: "app/actions/ai-content-generation.tsx", survivor: "app/actions/compliance-monitoring.ts:141", survivorName: "scanContentCompliance",
+    steps: {
+      file_function: "app/actions/ai-content-generation.tsx:2021 checkCompliance({ contentId, content, contentType }) (wave-155 base 6e562189)",
+      intended_behaviour: "scan a piece of generated content for fair-housing language and record the verdict on the content row",
+      candidate_survivor: "app/actions/compliance-monitoring.ts:141 scanContentCompliance — the scanner the product calls (app/components/compliance/FairHousingScanner.tsx:31)",
+      survivor_covers: "the same fair-housing scan, run on the content the caller is entitled to and recorded through the compliance monitor",
+      callers_migrated: "the twin had 0 importers and no string-keyed mention — nothing to migrate",
+      unique_behaviour: "NOT merged, on purpose: the twin set compliance_approved from CALLER-SUPPLIED text rather than the stored content, on an RLS-only client with its result unread — a verdict a caller could clear by sending clean text",
+      retired_with_tombstone: "ai-content-generation.tsx — tombstone names app/actions/compliance-monitoring.ts:141",
+      guards_rerun: RERUN + " — wave 155 lane 155R29: scripts/wave155-uncalled-platform-doors-guard.ts holds the no-call-site + tombstone rule",
+    } }] },
   checkInAttendee: { verdict: "retired", retiredTwins: [{
     twin: "app/actions/open-house-automation.ts", survivor: "app/actions/seller-open-house.ts:661",
     steps: {
@@ -88,9 +103,31 @@ export const DUPLICATE_ACTION_LEDGER: Readonly<Record<string, LedgerRow>> = {
       guards_rerun: RERUN,
     } }] },
   completeTask: { verdict: "kept", class: "homonym", survivor: null, dependency: "journey-tasks.ts:79 completes a CONTACT PORTAL journey task (client_portal_activity + client_documents; 0 importers — its caller is the portal journey, lane 146C's app/portal/**); tasks.ts:364 completes a staff task row (tasks; 1 importer). Different tables, different audiences." },
-  // connectSocialAccount — ROW REMOVED (wave 155, lane 155R29): BOTH twins (social-media-automation.ts, social-publishing.ts) were
-  // retired — neither had an importer and both stored a caller-pasted access token; the connect the product runs is
-  // app/api/social/oauth/[platform]/route.ts GET (tombstones in both files). No module exports the name now.
+  // connectSocialAccount — RECORDED AS RETIRED (wave 155 convergence; see checkCompliance above for why a comment was not enough).
+  // BOTH twins are gone; no module exports the name now. The survivor is a route handler, so it is named by survivorName.
+  connectSocialAccount: { verdict: "retired", retiredTwins: [{
+    twin: "app/actions/social-media-automation.ts", survivor: "app/api/social/oauth/[platform]/route.ts:122", survivorName: "GET",
+    steps: {
+      file_function: "app/actions/social-media-automation.ts:114 connectSocialAccount(params) (wave-155 base 6e562189)",
+      intended_behaviour: "store a connected social account (platform, tokens, owner) so the tenant can publish to it",
+      candidate_survivor: "app/api/social/oauth/[platform]/route.ts:122 GET — the OAuth callback the profile page starts (app/dashboard/profile/profile-settings-client.tsx:234)",
+      survivor_covers: "the provider's own authorization exchange, encrypted token columns, the tenant from the connecting user, the granted scope",
+      callers_migrated: "the twin had 0 importers and no string-keyed mention — nothing to migrate",
+      unique_behaviour: "MERGED onto the survivor at convergence: the twin stamped agent_id, which the survivor did not and two readers filter on (the callback now resolves the connecting user's agents row in the same tenant). NOT merged: storing a caller-PASTED access token",
+      retired_with_tombstone: "social-media-automation.ts — tombstone names app/api/social/oauth/[platform]/route.ts:122",
+      guards_rerun: RERUN + " — wave 155 lane 155R29 guard §A (no call site, tombstone) and §C (the callback stamps agent_id, with controls)",
+    } }, {
+    twin: "app/actions/social-publishing.ts", survivor: "app/api/social/oauth/[platform]/route.ts:122", survivorName: "GET",
+    steps: {
+      file_function: "app/actions/social-publishing.ts:152 connectSocialAccount(params) (wave-155 base 6e562189)",
+      intended_behaviour: "upsert a connected social account from tokens handed to it by the caller",
+      candidate_survivor: "app/api/social/oauth/[platform]/route.ts:122 GET — the same OAuth callback (profile-settings-client.tsx:234)",
+      survivor_covers: "the same row on the live unique (brokerage_id, platform, account_id), written from the provider's exchange instead of the request body",
+      callers_migrated: "the twin had 0 importers and no string-keyed mention — nothing to migrate",
+      unique_behaviour: "none preserved, on purpose: its only difference was accepting an access token from the caller, which is the defect",
+      retired_with_tombstone: "social-publishing.ts — tombstone names app/api/social/oauth/[platform]/route.ts:122",
+      guards_rerun: RERUN + " — wave 155 lane 155R29 guard §A holds the no-call-site + tombstone rule for both twins",
+    } }] },
   createOpenHouseEvent: { verdict: "kept", class: "both_wired", survivor: null, dependency: "open-house-automation.ts:1090 (acquisition open-house card) and seller-open-house.ts:589 (seller listing marketing tab) — two surfaces; consolidation is a product decision (listing_concierge)." },
   deleteSocialPost: { verdict: "kept", class: "both_wired", survivor: null, dependency: "two implementations, both wired: listing-media.ts:433 (listing media page; hard delete with receipt) and social-media-automation.ts:1308 (social dashboard; cancels, keeps publish logs). The third, social-publishing.ts, had no importer and was retired onto social-media-automation.ts (wave 155, lane 155R29 — its per-user rule merged first; tombstone in that file)." },
   disconnectProvider: { verdict: "kept", class: "both_wired", survivor: null, dependency: "accounting-sync.ts:89 and connections/connection-center.ts:397 are both imported by the accounting provider card (and the connection center); accounting books are Finance's (consequential) — converge with finance_manager, not here." },
@@ -195,8 +232,20 @@ export const DUPLICATE_ACTION_LEDGER: Readonly<Record<string, LedgerRow>> = {
       guards_rerun: RERUN + " — wave 155 lane 155R29: its own guard scripts/wave155-uncalled-platform-doors-guard.ts holds the no-call-site + tombstone rule",
     } }] },
   scheduleListingAppointment: { verdict: "kept", class: "homonym", survivor: null, dependency: "listing-lifecycle.ts:40 books a CONTACT appointment (optional real Zoom on the booker's scope, starts listing prep); seller-listing/execution-engine.ts:214 books the listing-stage appointment ≥ 5 days out (voice). Different behaviour; listing_concierge decides convergence." },
-  // scheduleOpenHouse — ROW REMOVED (wave 155, lane 155R29): no longer a duplicate. The open-house-automation.ts adapter was retired
-  // onto app/actions/open-house.ts createOpenHouse (tombstone there); only seller-listing/execution-engine.ts (voice) exports it.
+  // scheduleOpenHouse — RECORDED AS RETIRED (wave 155 convergence; see checkCompliance above). Only
+  // seller-listing/execution-engine.ts (voice) exports the name now.
+  scheduleOpenHouse: { verdict: "retired", retiredTwins: [{
+    twin: "app/actions/open-house-automation.ts", survivor: "app/actions/open-house.ts:93", survivorName: "createOpenHouse",
+    steps: {
+      file_function: "app/actions/open-house-automation.ts:27 scheduleOpenHouse(params) (wave-155 base 6e562189)",
+      intended_behaviour: "create an open house for a listing from the acquisition surface",
+      candidate_survivor: "app/actions/open-house.ts:93 createOpenHouse — the door the open-houses screen calls (open-houses-client.tsx:986)",
+      survivor_covers: "the same insert with the session gate, the tenant pin and the receipt; the twin was a pure adapter that forwarded to it",
+      callers_migrated: "the twin had 0 importers and no string-keyed mention — nothing to migrate",
+      unique_behaviour: "none: an adapter with no behaviour of its own (it renamed arguments and called createOpenHouse)",
+      retired_with_tombstone: "open-house-automation.ts — tombstone names app/actions/open-house.ts:93",
+      guards_rerun: RERUN + " — wave 155 lane 155R29: scripts/wave155-uncalled-platform-doors-guard.ts holds the no-call-site + tombstone rule",
+    } }] },
   sendMessage: { verdict: "retired", retiredTwins: [{
     twin: "app/actions/workflows.ts", survivor: "app/actions/ai-communication-hub.ts:54",
     steps: {
@@ -288,7 +337,8 @@ function twinProblems(name: string, t: RetiredTwin, rawOf: (f: string) => string
   if (survRaw === null) out.push(`survivor ${sf} does not exist`)
   else {
     const line = survRaw.split("\n")[sl - 1] ?? ""
-    if (!new RegExp(`export\\s+(?:async\\s+)?function\\s+${name}\\b`).test(line)) out.push(`survivor ${t.survivor} is not where ${name} is exported (line reads: ${line.trim().slice(0, 80)})`)
+    const survivorFn = t.survivorName ?? name
+    if (!/^[A-Za-z_$][\w$]*$/.test(survivorFn) || !new RegExp(`export\\s+(?:async\\s+)?function\\s+${survivorFn}\\b`).test(line)) out.push(`survivor ${t.survivor} is not where ${survivorFn} is exported (line reads: ${line.trim().slice(0, 80)})`)
   }
   const missingSteps = Object.entries(t.steps).filter(([, v]) => typeof v !== "string" || v.trim().length < 20).map(([k]) => k)
   if (missingSteps.length || Object.keys(t.steps).length !== 8) out.push(`eight-step proof incomplete (${missingSteps.join(", ") || `${Object.keys(t.steps).length} steps`})`)
@@ -326,6 +376,11 @@ function main() {
   check("L3 control: a twin whose FILE is deleted passes when the survivor carries a tombstone naming the deleted path", twinProblems("doIt", ctlTwin, survivorWith("// TOMBSTONE: app/actions/x.ts doIt DELETED → this file")).length === 0, twinProblems("doIt", ctlTwin, survivorWith("// TOMBSTONE: app/actions/x.ts doIt DELETED → this file")).join("; "))
   check("L3 positive control: a deleted twin with NO tombstone on its survivor is caught", twinProblems("doIt", ctlTwin, survivorWith("// nothing recorded here")).some((p) => /carries no TOMBSTONE naming it/.test(p)))
   check("L3 positive control: a tombstone naming the wrong line is caught", twinProblems("doIt", { ...ctlTwin, survivor: "app/actions/y.ts:1" }, fixture("// TOMBSTONE → app/actions/y.ts:1\n")).some((p) => /is not where/.test(p)))
+  // survivorName (wave 155): a retirement onto a DIFFERENTLY NAMED door is accepted only when the export on the survivor's line is that name.
+  const otherName = (f: string) => f === "app/actions/x.ts" ? "// TOMBSTONE: doIt DELETED → survivor\n// app/actions/y.ts:3 doTheSame\nexport async function unrelated() {}\n" : f === "app/actions/y.ts" ? "\"use server\"\n\nexport async function doTheSame() { return 1 }\n" : null
+  check("L3 control: a twin retired onto a differently named survivor passes when survivorName names the export on that line", twinProblems("doIt", { ...ctlTwin, survivorName: "doTheSame" }, otherName).length === 0, twinProblems("doIt", { ...ctlTwin, survivorName: "doTheSame" }, otherName).join("; "))
+  check("L3 positive control: without survivorName the same retirement is caught, and a survivorName the line does not export is caught",
+    twinProblems("doIt", ctlTwin, otherName).some((p) => /is not where doIt is exported/.test(p)) && twinProblems("doIt", { ...ctlTwin, survivorName: "somethingElse" }, otherName).some((p) => /is not where somethingElse is exported/.test(p)) && twinProblems("doIt", { ...ctlTwin, survivorName: ".*" }, otherName).some((p) => /is not where/.test(p)))
   check("L3 positive control: a 'tombstone' inside a string literal is not a tombstone", twinProblems("doIt", ctlTwin, fixture("const note = \"TOMBSTONE app/actions/y.ts:3\"\n")).some((p) => /in CODE/.test(p)))
 
   console.log("\nL4/L5 — a kept duplicate names its class and its dependency")

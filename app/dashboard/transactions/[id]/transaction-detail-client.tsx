@@ -3079,7 +3079,7 @@ export function TransactionDetailClient({
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="h-6 w-6 p-0"
+                            className="h-9 w-9 p-0"
                             title="Edit deadline"
                             aria-label={`Edit ${d.deadline_type.replace(/_/g, " ")}`}
                             onClick={() => openDeadlineDialog(d)}
@@ -3234,7 +3234,7 @@ export function TransactionDetailClient({
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="h-6 w-6 p-0"
+                            className="h-9 w-9 p-0"
                             title="Edit participant"
                             aria-label={`Edit ${p.name}`}
                             onClick={() => openParticipantDialog(p)}
@@ -3244,7 +3244,7 @@ export function TransactionDetailClient({
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+                            className="h-9 w-9 p-0 text-destructive hover:text-destructive"
                             title="Remove participant"
                             aria-label={`Remove ${p.name}`}
                             disabled={isPending}
@@ -3350,7 +3350,7 @@ export function TransactionDetailClient({
                   <CardTitle className="text-sm">Title & Escrow</CardTitle>
                   {/* Wave 155, lane 155R30: the one door that writes the company / officers / escrow number / closing
                       appointment — add when the deal has NO record, edit when it has one (handleSaveTitleEscrow). */}
-                  <Button size="sm" variant="outline" className="text-xs h-7" onClick={openTitleEscrowDialog}>
+                  <Button size="sm" variant="outline" className="text-xs h-9" onClick={openTitleEscrowDialog}>
                     {titleEscrow?.id ? <PenLine className="h-3 w-3 mr-1" /> : <Plus className="h-3 w-3 mr-1" />}
                     {titleEscrow?.id ? "Edit title & escrow" : "Add title & escrow"}
                   </Button>

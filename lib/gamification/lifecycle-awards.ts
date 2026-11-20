@@ -444,7 +444,7 @@ async function closeAwardHold(db: LedgerCapableClient, brokerageId: string, tran
       riskClass: "LOW_RISK_WRITE",
       systemSource: "event_reactor",
       detail: { event: KernelEvent.TRANSACTION_CLOSED, autonomy: "held" },
-    }, async () => {}, { settle: () => ({ status: "skipped", outcome: "autonomy_held", error: reason }), replay: () => undefined }, { client: db as never })
+    }, async () => {}, { settle: () => ({ status: "skipped", outcome: "autonomy_held", error: reason }), replay: (claim) => { if (claim.kind === "refused") console.error(`[lifecycle-gamification] close-award hold not receipted — the receipt was refused: ${claim.error}`) } }, { client: db as never })
   } catch (e) {
     console.error(`[lifecycle-gamification] close-award hold not receipted: ${(e as Error)?.message ?? e}`)
   }

@@ -43,14 +43,16 @@ export async function POST(request: NextRequest) {
   // anonymous visitor's beacon), subject the session row. No key: each heartbeat is a new proof of life.
   const { withActionLedger } = await import("@/lib/kernel/action-ledger")
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(liveSessionId)
-  await withActionLedger<{ stamped: true }>({
+  await withActionLedger<{ stamped: boolean }>({
     brokerageId: door.brokerageId, action: "billing.live_agent_session.heartbeat", actor: { type: "system", userId: null },
     subject: isUuid ? { type: "live_agent_session", id: liveSessionId } : { type: "live_agent_session", ref: liveSessionId },
     riskClass: "FINANCIAL", reasonCode: "CONVERSATION_RESPONSE", reasonDetail: "embed widget proof of life (visitor beacon)", channel: "web", systemSource: "embed_widget",
     detail: { door: door.basis },
   }, async () => { await heartbeatLiveAgentSession(liveSessionId); return { stamped: true as const } }, {
     settle: () => ({ status: "executed", outcome: "heartbeat_stamped" }),
-    replay: () => ({ stamped: true as const }),
+    // A refused claim means the heartbeat was NOT stamped (a FINANCIAL act with no evidence does not run) — the session is not
+    // extended and not billed for this beat; said in the log, never answered as stamped.
+    replay: (claim) => { if (claim.kind === "refused") console.error("[embed/heartbeat] heartbeat not stamped — its receipt was refused:", claim.error); return { stamped: false } },
   })
   return NextResponse.json({ ok: true })
 }

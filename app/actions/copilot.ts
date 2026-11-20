@@ -272,11 +272,11 @@ export async function handleCoachingSessionBooked(payload: any) {
 // contact_id AND user_id from the browser) on the COOKIE client, and its only
 // reference — lib/orchestrator/internal.ts EVENT_HANDLERS["lead.created"] — is
 // dispatched with no cookie, so its agents lookup read nothing and it refused.
-// It moved to lib/copilot/seven-day-plan.ts::writeSevenDayNurturePlan (server-only, tenant
-// pinned), which was itself only ever RECORDED on the orchestrator's dormant
-// "lead.created" entry and never dispatched. Wave 155 retired that entry and then the
-// writer (nothing referenced it). SURVIVOR of the job: KernelEvent.CONTACT_CREATED →
-// sequence enrollment and the concierge spawn (lib/kernel/event-reactor.ts:254, :402).
+// Its next copy, lib/copilot/seven-day-plan.ts (writeSevenDayNurturePlan), was DELETED in wave 155: server-only and tenant
+// pinned, but only ever RECORDED on the orchestrator's dormant "lead.created" entry and never dispatched; that entry was
+// retired and then the writer, which nothing referenced. Nothing the product ran is lost — the plan never ran.
+// SURVIVOR of the job (the first week after a contact is created): lib/kernel/event-reactor.ts — KernelEvent.CONTACT_CREATED
+// → sequence enrollment and the concierge spawn (:254, :402).
 
 // =====================================================
 // COPILOT SERVER ACTIONS

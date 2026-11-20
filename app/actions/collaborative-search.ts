@@ -749,7 +749,7 @@ export async function acceptInvitation(token: string) {
     reasonDetail: "family member opened the homes a buyer shared", channel: "web", systemSource: "collaborative_share_link", detail: { door: door.basis },
   }, () => collaboratorView(svc, String(token ?? "")), {
     settle: (r) => !r.ok ? { status: "failed", outcome: "view_refused", error: r.error } : r.view.viewRecorded ? { status: "executed", outcome: "member_view_recorded" } : { status: "failed", outcome: "member_view_not_recorded" },
-    replay: () => ({ ok: false, error: "We couldn't open these homes just now — please try again in a moment." }),
+    replay: (claim) => ({ ok: false, error: claim.kind === "refused" ? "We couldn't open these homes just now — please try again in a moment." : "These homes are already opening — please try again in a moment." }),
   })
 }
 
@@ -784,7 +784,7 @@ export async function submitFamilyOpinionAction(input: { token: string; sharedHo
     },
   }), {
     settle: (r) => r.ok ? { status: "executed", outcome: r.agentNotified ? "opinion_recorded_agent_notified" : "opinion_recorded" } : { status: "failed", outcome: "opinion_refused", error: r.error },
-    replay: () => ({ ok: false, error: "We couldn't save that just now — please try again." }),
+    replay: (claim) => ({ ok: false, error: claim.kind === "refused" ? "We couldn't save that just now — please try again." : "That is already being saved — please give it a moment." }),
   })
 }
 

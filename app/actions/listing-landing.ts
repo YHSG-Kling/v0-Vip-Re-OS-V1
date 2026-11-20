@@ -510,7 +510,7 @@ export async function logLandingSession(params: {
     if (!door) return
     const listingRow = { brokerage_id: door.brokerageId }
     const { withActionLedger } = await import("@/lib/kernel/action-ledger")
-    await withActionLedger<{ recorded: true }>({
+    await withActionLedger<{ recorded: boolean }>({
       brokerageId: door.brokerageId, action: "marketing.listing_landing_view.record", actor: { type: "system", userId: null },
       subject: { type: "listing", id: params.listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
       reasonDetail: "visitor opened a public listing page", channel: "web", systemSource: "listing_landing",
@@ -592,7 +592,8 @@ export async function logLandingSession(params: {
     return { recorded: true as const }
     }, {
       settle: () => ({ status: "executed", outcome: "landing_view_recorded" }),
-      replay: () => ({ recorded: true as const }),
+      // A refused claim means the view was NOT recorded (the body did not run) — never answered as if it had been.
+      replay: (claim) => { if (claim.kind === "refused") console.error("[listing-landing] landing view not recorded — its receipt was refused:", claim.error); return { recorded: claim.kind === "replay" } },
     })
   } catch (err) {
     // Fail silently - analytics should not block page load
@@ -815,7 +816,7 @@ export async function trackCtaClick(listingId: string, sessionToken: string) {
     return { counted: true }
     }, {
       settle: (r) => r.counted ? { status: "executed", outcome: "cta_click_counted" } : { status: "failed", outcome: r.why },
-      replay: () => ({ counted: false, why: "already_recorded" }),
+      replay: (claim) => ({ counted: false, why: claim.kind === "refused" ? "receipt_refused" : "already_recorded" }),
     })
   } catch (err) {
     console.error("[v0] trackCtaClick error:", err)
