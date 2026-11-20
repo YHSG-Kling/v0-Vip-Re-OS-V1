@@ -217,11 +217,12 @@ const CHECKS: Check[] = [
     mutate: (raw) =>
       replaceOnce(
         raw,
+        // RE-POINTED (wave 155, lane 155T2): lane 155R19 wrapped the log in ledgerSessionAction, so the call now closes `})))`.
         `            brokerage_id: identity.brokerageId,
             agent_id: identity.agentId,
-          })
+          })))
           if (logResult.success) {`,
-        `          })
+        `          })))
           if (logResult.success) {`
       ),
   },
@@ -274,16 +275,19 @@ const CHECKS: Check[] = [
     mutate: (raw) =>
       replaceOnce(
         raw,
+        // RE-POINTED (wave 155, lane 155T2): lane 155R19 put the receipt between the identity and the log call.
         `        const identity = await resolveLoggingIdentity()
         if (!identity.ok) {
           log_error = identity.error
         } else {
-          const logResult = await logChannelReadinessCheck(`,
-        `        const identity = { ok: true as const, brokerageId: "", agentId: "" }
+          const contentId = input.content_id
+          const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")`,
+        `        const identity = { ok: true as const, brokerageId: "", agentId: "", userId: "" }
         if (!identity.ok) {
           log_error = "unreachable"
         } else {
-          const logResult = await logChannelReadinessCheck(`
+          const contentId = input.content_id
+          const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")`
       ),
   },
   {
@@ -485,24 +489,13 @@ const CHECKS: Check[] = [
     mutate: (raw) =>
       replaceOnce(
         raw,
+        // RE-POINTED (wave 155, lane 155T2): lanes 155R9/J3 wrapped the generation in its receipt (`ledgered(auth, …)`).
         `    const auth = await requireAgentInCallerBrokerage(agentId)
     if (!auth.ok) return { success: false, error: auth.error }
-
-    const { text } = await generateText({
-      brokerageId: auth.brokerageId,
-      userId: auth.userId,
-      agentId,
-      model: "openai/gpt-4o-mini",
-      prompt: \`Generate 5 A/B test subject line variants for a real estate newsletter.`,
-        `    const auth = { ok: true as const, brokerageId: "" }
+    return await ledgered(auth, { action: "marketing.newsletter_subject.generate"`,
+        `    const auth = { ok: true as const, brokerageId: "", userId: "" }
     if (!auth.ok) return { success: false, error: "x" }
-
-    const { text } = await generateText({
-      brokerageId: auth.brokerageId,
-      userId: auth.userId,
-      agentId,
-      model: "openai/gpt-4o-mini",
-      prompt: \`Generate 5 A/B test subject line variants for a real estate newsletter.`
+    return await ledgered(auth, { action: "marketing.newsletter_subject.generate"`
       ),
   },
   {

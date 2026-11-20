@@ -318,8 +318,27 @@ async function main() {
   check("GET is read-only — it resolves and never applies",
     !/applyMailUnsubscribe/.test(tokenRoute.slice(tokenRoute.indexOf("export async function GET"), tokenRoute.indexOf("export async function POST"))))
   check("POST is the only write", /export async function POST/.test(tokenRoute) && /applyMailUnsubscribe/.test(tokenRoute))
-  check("both verbs are rate limited (entropy is the boundary; this is depth)",
-    (tokenRoute.match(/checkPublicRateLimit\(/g) ?? []).length === 2)
+  // The RULE, per verb (not a count of one spelling): each verb is throttled, and the throttle runs BEFORE that verb's
+  // first read of the request body or the token row. Wave 155 (lane 155R20) moved POST onto decidePublicDoor, whose FIRST
+  // statement is checkPublicRateLimit(surface, callerKey, cap) — the same per-IP cap, now with the recipient-row decision.
+  const verbThrottledFirst = (code: string, verb: "GET" | "POST"): boolean => {
+    const start = code.indexOf(`export async function ${verb}(`)
+    if (start < 0) return false
+    const next = code.indexOf("export async function ", start + 10)
+    const body = code.slice(start, next < 0 ? code.length : next)
+    const throttle = body.search(/\b(?:checkPublicRateLimit|decidePublicDoor)\(/)
+    const firstRead = body.search(/req\.json\(\)|resolveMailUnsubscribeToken\(|applyMailUnsubscribe\(/)
+    return throttle >= 0 && (firstRead < 0 || throttle < firstRead)
+  }
+  const tokenCode = stripComments(tokenRoute)
+  check("both verbs are rate limited (entropy is the boundary; this is depth) — each throttles BEFORE its first read",
+    verbThrottledFirst(tokenCode, "GET") && verbThrottledFirst(tokenCode, "POST"))
+  check("…decidePublicDoor carries the cap as its FIRST act (so a POST through it is throttled, not merely decided)",
+    /export async function decidePublicDoor[\s\S]*?\{\s*const rate = checkPublicRateLimit\(input\.surface/.test(stripComments(src("lib/security/public-rate-limit.ts"))))
+  check("POSITIVE CONTROL — the per-verb finder goes red on an unthrottled verb and on a body parsed before the cap",
+    !verbThrottledFirst(`export async function POST(req) { const t = await req.json(); await applyMailUnsubscribe({}) }`, "POST") &&
+    !verbThrottledFirst(`export async function POST(req) { const b = await req.json(); const v = await decidePublicDoor({}) }`, "POST") &&
+    verbThrottledFirst(`export async function POST(req) { const v = await decidePublicDoor({ optIn: async () => { await req.json() } }) }`, "POST"))
   check("an unrecognised 'request' value narrows to 'mail', never widens to 'all'",
     /body\.request === "all" \? "all" : "mail"/.test(tokenRoute))
   check("a database refusal is a retryable 503, not a 404 that sends a real person away",

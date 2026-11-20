@@ -1229,8 +1229,10 @@ const CHECKS: Check[] = [
     },
     neg: {
       file: "educationKernel",
-      find: "  const svc = createServiceClient()\n  const owns = await assertTenantOwnsAll(svc, actor.brokerageId, [input.resourceId], [input.contactId])\n  if (!owns.ok) return { success: false, error: owns.error }\n\n  try {\n    const result = await assignResource(svc, {",
-      replace: "  const svc = await createClient()\n  const owns = await assertTenantOwnsAll(svc as never, actor.brokerageId, [input.resourceId], [input.contactId])\n  if (!owns.ok) return { success: false, error: owns.error }\n\n  try {\n    const result = await assignResource(svc, {",
+      // RE-POINTED (wave 155, lane 155T2): lane 155R4's receipt put `return withSessionReceipt(actor, "education.learning_assignment.assign", …`
+      // between the ownership check and the try; the anchor follows the live code and still swaps in the RLS-bound client.
+      find: "  const svc = createServiceClient()\n  const owns = await assertTenantOwnsAll(svc, actor.brokerageId, [input.resourceId], [input.contactId])\n  if (!owns.ok) return { success: false, error: owns.error }\n  return withSessionReceipt(actor, \"education.learning_assignment.assign\",",
+      replace: "  const svc = await createClient()\n  const owns = await assertTenantOwnsAll(svc as never, actor.brokerageId, [input.resourceId], [input.contactId])\n  if (!owns.ok) return { success: false, error: owns.error }\n  return withSessionReceipt(actor, \"education.learning_assignment.assign\",",
     },
   },
   {

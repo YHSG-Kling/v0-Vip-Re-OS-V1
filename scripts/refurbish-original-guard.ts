@@ -270,7 +270,25 @@ async function main() {
   check("the competitor brief is rebuilt from the tenant-pinned row behind the exclusion gate (never a stored / client brief)", calls(fnBody(act, "buildCompetitorIdeaBrief"), "buildRefurbishIdeaBrief") && fnBody(act, "buildCompetitorIdeaBrief").includes("exclude: refurbishExcludeDefault") && fnBody(act, "loadCompetitorInspiration").includes('.eq("brokerage_id", brokerageId)'))
   for (const door of ["repurposeUrlToBrandedVideo", "repurposeUrlToBlogPost", "repurposeUrlToPodcast"]) check(`${door} routes an idea-only source through ideaOnlyDraftFromTranscript`, calls(fnBody(act, door), "ideaOnlyDraftFromTranscript"))
   check("refurbishCompetitorIdea is the SAME engine (createRepurposePipeline → executePipeline), no second refurbish engine", calls(fnBody(act, "refurbishCompetitorIdea"), "createRepurposePipeline") && calls(fnBody(act, "refurbishCompetitorIdea"), "executePipeline"))
-  check("createRepurposePipeline takes the tenant from the SESSION first", act.includes("brokerage_id: contextBrokerageId || params.brokerageId"))
+  // THE RULE (CLAUDE.md §4): the pipeline row's tenant is the SESSION's. Wave 155 tightened the waypoint this pinned
+  // (`contextBrokerageId || params.brokerageId` — a body FALLBACK) to session-ONLY: the body value is a claim checked by the
+  // survivor decideClaimedTenant against getAgentContext's brokerage, and the insert stamps the decided tenant.
+  const sessionTenantOnly = (body: string): boolean => {
+    const ctxAt = body.search(/\bgetAgentContext\(\)/)
+    const decided = /const (\w+) = decideClaimedTenant\(\{\s*actingBrokerageId: contextBrokerageId,\s*claimedBrokerageId: params\.brokerageId\s*\}\)/.exec(body)
+    if (ctxAt < 0 || !decided || decided.index < ctxAt) return false
+    const v = decided[1]
+    return new RegExp(`if \\(!${v}\\.ok\\) return`).test(body) &&
+      new RegExp(`brokerage_id: ${v}\\.brokerageId\\b`).test(body) &&
+      !/brokerage_id:\s*[^,\n]*params\.brokerageId/.test(body) && !/\|\|\s*params\.brokerageId/.test(body)
+  }
+  check("createRepurposePipeline takes the tenant from the SESSION first (decideClaimedTenant over getAgentContext; the body is only a refused-if-foreign claim)",
+    sessionTenantOnly(fnBody(act, "createRepurposePipeline")))
+  check("POSITIVE CONTROL — the tenant finder goes red on the body fallback, a body-stamped insert, and an unchecked decision",
+    !sessionTenantOnly(`function x() { const c = await getAgentContext(); insert({ brokerage_id: contextBrokerageId || params.brokerageId }) }`) &&
+    !sessionTenantOnly(`function x() { const c = await getAgentContext(); const t = decideClaimedTenant({ actingBrokerageId: contextBrokerageId, claimedBrokerageId: params.brokerageId }); if (!t.ok) return r; insert({ brokerage_id: params.brokerageId }) }`) &&
+    !sessionTenantOnly(`function x() { const c = await getAgentContext(); const t = decideClaimedTenant({ actingBrokerageId: contextBrokerageId, claimedBrokerageId: params.brokerageId }); insert({ brokerage_id: t.brokerageId }) }`) &&
+    sessionTenantOnly(`function x() { const c = await getAgentContext(); const t = decideClaimedTenant({ actingBrokerageId: contextBrokerageId, claimedBrokerageId: params.brokerageId }); if (!t.ok) return r; insert({ brokerage_id: t.brokerageId }) }`))
   check("the trends screen previews the brief and runs the refurbish", calls(panel, "previewCompetitorIdeaBrief") && calls(panel, "refurbishCompetitorIdea"))
   const results = fnBody(act, "getRefurbishResults")
   check("the results reader judges every refurbished post by the publication verdict + measured rate vs the tenant's own baseline", calls(results, "refurbishPublicationVerdict") && calls(results, "refurbishRetestDecision") && calls(results, "listSocialBaselines") && results.includes('from("social_engagement_tracking")'))

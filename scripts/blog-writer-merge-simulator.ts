@@ -258,13 +258,34 @@ async function main() {
   ok("createBlogPost is gone from lib/kernel/marketing.ts code", !/\bcreateBlogPost\b/.test(mk2))
   ok("…and from the kernel barrel", !/\bcreateBlogPost\b|\bCreateBlogPostInput\b/.test(stripComments(read("lib/kernel/index.ts"))))
   ok("POSITIVE CONTROL — the absence finder sees a live export", /\bcreateBlogPost\b/.test(stripComments("export async function createBlogPost() {}")))
+  // The RULE (§1): the createBlogPost tombstone names BOTH survivors at file:line, and EVERY file:line a tombstone in
+  // this file names still resolves. The count is scoped to the createBlogPost section: wave 155's later tombstone in the
+  // same file ("11. publishBlogPost — RETIRED", naming app/actions/blog.ts:… publishBlogPost) is not a third survivor of
+  // createBlogPost — but its file:line is held to resolve as well.
   const tomb = read("lib/kernel/marketing.ts")
-  const named = [...tomb.matchAll(/(app\/actions\/blog\.ts|lib\/kernel\/content-creators\.ts):(\d+) (\w+)/g)]
-  ok("the tombstone names both survivors at file:line", named.length === 2)
-  for (const [, file, line, fn] of named) {
-    const at = read(file).split("\n")[Number(line) - 1] ?? ""
-    ok(`tombstone line resolves: ${file}:${line} holds ${fn}`, new RegExp(`function\\s+${fn}\\b`).test(at), at.trim())
+  const SURVIVOR_REF = /(app\/actions\/blog\.ts|lib\/kernel\/content-creators\.ts):(\d+) (\w+)/g
+  const createBlogSection = (src: string): string => {
+    const start = src.indexOf("createBlogPost — TOMBSTONE")
+    if (start < 0) return ""
+    const next = src.slice(start).search(/\n\/\/ \d+\. /)
+    return next < 0 ? src.slice(start) : src.slice(start, start + next)
   }
+  const named = [...createBlogSection(tomb).matchAll(SURVIVOR_REF)]
+  const namedFns = named.map((m) => m[3]).sort().join(",")
+  ok("the createBlogPost tombstone names both survivors at file:line (generateBlogPost door, writeBlogPost body)",
+    named.length === 2 && namedFns === "generateBlogPost,writeBlogPost", namedFns)
+  const lineHolds = (src: string, line: number, fn: string): boolean =>
+    new RegExp(`function\\s+${fn}\\b`).test(src.split("\n")[line - 1] ?? "")
+  for (const [, file, line, fn] of tomb.matchAll(SURVIVOR_REF)) {
+    const at = read(file).split("\n")[Number(line) - 1] ?? ""
+    ok(`tombstone line resolves: ${file}:${line} holds ${fn}`, lineHolds(read(file), Number(line), fn), at.trim())
+  }
+  const cc = read("lib/kernel/content-creators.ts")
+  const liveLine = cc.split("\n").findIndex((l) => /function\s+writeBlogPost\b/.test(l)) + 1
+  ok("POSITIVE CONTROL — the resolver accepts the live line and refuses a line one off it (a stale tombstone)",
+    liveLine > 0 && lineHolds(cc, liveLine, "writeBlogPost") && !lineHolds(cc, liveLine - 1, "writeBlogPost"))
+  ok("POSITIVE CONTROL — the section scope excludes a later tombstone in the same file",
+    [...createBlogSection("// 9. createBlogPost — TOMBSTONE\n// app/actions/blog.ts:1 generateBlogPost\n// 10. next\n// app/actions/blog.ts:2 publishBlogPost\n").matchAll(SURVIVOR_REF)].length === 1)
   const blogCode = blankStrings(stripComments(read("app/actions/blog.ts")))
   const doorBody = blogCode.slice(blogCode.indexOf("export async function generateBlogPost"), blogCode.indexOf("async function resolveBlogActor"))
   ok("the door resolves the session actor BEFORE the kernel call", doorBody.indexOf("resolveBlogActor(") > -1 && doorBody.indexOf("resolveBlogActor(") < doorBody.indexOf("writeBlogPost("))

@@ -91,8 +91,18 @@ console.log("\n── lane 1: the tenant signs in-app ──")
   const a = mask(raw)
   check("identity is server-resolved: brokerage from the CALLER's row, signer from the session",
     a.includes("brokerage_id: caller.brokerage_id") && a.includes("signed_by: user.id"))
+  // The RULE: no caller-supplied brokerage. The one `brokerageId` the lane may carry is a key BOUND to the caller's own
+  // row (`brokerageId: caller.brokerage_id` — wave 155's ledger receipt ctx); every other occurrence (an input field, a
+  // parameter, a destructure, a key fed from anything but caller.brokerage_id) is still forbidden.
+  const callerSuppliedBrokerage = (code: string) =>
+    /brokerageId/.test(code.replace(/\bbrokerageId\s*:\s*caller\.brokerage_id\b(\s+as\s+string)?/g, ""))
   check("NEGATIVE: no caller-supplied brokerage anywhere in the tenant sign lane",
-    !/brokerageId/.test(a))
+    !callerSuppliedBrokerage(a))
+  check("POSITIVE CONTROL — the finder still goes red on a body/parameter brokerage, and on a key fed from the input",
+    callerSuppliedBrokerage("export async function sign(input: { templateId: string; brokerageId: string }) {}") &&
+    callerSuppliedBrokerage("ledgerSessionAction({ brokerageId: input.brokerageId as string }, run)") &&
+    callerSuppliedBrokerage("const { brokerageId } = input") &&
+    !callerSuppliedBrokerage("ledgerSessionAction({ brokerageId: caller.brokerage_id as string }, run)"))
   check("the WRITE gate is resolveTenantAdmin (both halves: user_type AND grant — is_brokerage_admin parity)",
     a.includes("resolveTenantAdmin(supabase, user.id, caller)") && a.includes("isTenantAdmin"))
   check("the insert goes through the AUTHED client so m481's RLS is a second, database-enforced gate",

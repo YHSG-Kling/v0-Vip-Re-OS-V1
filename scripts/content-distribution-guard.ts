@@ -522,9 +522,31 @@ async function main() {
     check("the COMPETITOR-AD promoter files the THEME (competitorAdTheme), never the rival's headline / copy — positive control: the old verbatim shape is detected",
       /competitorAdTheme\(ad\.ad_headline, ad\.ad_copy\)/.test(promoter) && !copies(promoter) && copies(`const title =\n      (ad.ad_headline ?? ad.ad_copy ?? "")`))
     const actions = raw("app/dashboard/marketing/content-intel/topic-actions.ts")
-    const exportsList = [...stripComments(actions).matchAll(/^export\s+(\w+(?:\s+\w+)?)\s+(\w+)/gm)]
-    check("the topic bank's session doors: 'use server', EVERY export an async function, tenant from getAgentContext, no brokerageId parameter",
-      /^"use server"/.test(actions) && exportsList.length === 3 && exportsList.every((m) => m[1] === "async function") && (stripComments(actions).match(/getAgentContext\(\)/g) ?? []).length === 3 && !/brokerageId\s*:\s*string/.test(stripComments(actions).split("export async function")[1] ?? ""))
+    // The RULE, per export (not a waypoint count — wave 155's lane 155H added a fourth door, getIntelligenceBriefAction):
+    // 'use server', every export an async function, EACH export resolves the tenant from getAgentContext() in its OWN
+    // body, and no export's parameter list carries a brokerageId.
+    const sessionDoorsHold = (source: string): { ok: boolean; doors: number; bad: string[] } => {
+      const code = stripComments(source)
+      const exportsList = [...code.matchAll(/^export\s+(\w+(?:\s+\w+)?)\s+(\w+)/gm)]
+      const bad: string[] = []
+      exportsList.forEach((m, i) => {
+        const end = i + 1 < exportsList.length ? exportsList[i + 1].index! : code.length
+        const chunk = code.slice(m.index!, end)
+        const params = chunk.slice(chunk.indexOf("("), chunk.indexOf("{", chunk.indexOf(")")))
+        if (m[1] !== "async function") bad.push(`${m[2]}: not an async function`)
+        if (!/getAgentContext\(\)/.test(chunk)) bad.push(`${m[2]}: no getAgentContext()`)
+        if (/brokerageId/.test(params)) bad.push(`${m[2]}: brokerageId parameter`)
+      })
+      return { ok: /^"use server"/.test(source) && exportsList.length > 0 && bad.length === 0, doors: exportsList.length, bad }
+    }
+    const doors = sessionDoorsHold(actions)
+    check(`the topic bank's session doors: 'use server', EVERY export an async function, tenant from getAgentContext, no brokerageId parameter (${doors.doors} doors)`,
+      doors.ok, doors.bad.join("; "))
+    check("POSITIVE CONTROL — the per-door finder goes red on a door with no session read, a brokerageId parameter, and a non-async export",
+      !sessionDoorsHold(`"use server"\nexport async function a() { const ctx = await getAgentContext() }\nexport async function b() { return 1 }\n`).ok &&
+      !sessionDoorsHold(`"use server"\nexport async function a(input: { brokerageId: string }) { const ctx = await getAgentContext() }\n`).ok &&
+      !sessionDoorsHold(`"use server"\nexport const a = 1\n`).ok &&
+      sessionDoorsHold(`"use server"\nexport async function a(input: { topicId: string }) { const ctx = await getAgentContext() }\n`).ok)
   }
 
   console.log("\n──────────────────────────────────────────────────")

@@ -209,7 +209,21 @@ async function main() {
   // ── W: wiring + registration (stripped source) ─────────────────────────────
   const orch = src("lib/orchestrator/internal.ts")
   const sliceOf = (body: string, fn: string) => { const i = body.indexOf(`async function ${fn}(`); return i < 0 ? "" : body.slice(i, body.indexOf("\nasync function ", i + 10)) }
-  check("W1 the Listing Concierge's media need (handleListingSigned) requests photography procurement", /requestProcurement\(createServiceClient\(\), \{[\s\S]*serviceType: "photography"/.test(sliceOf(orch, "handleListingSigned")))
+  // THE RULE: the Listing Concierge's media need — the ONE reaction to a signed listing agreement — requests photography
+  // procurement, and the kernel reactor actually runs that reaction. Wave 155's lane 155B2 merged handleListingSigned (whose
+  // `case` had no emitter) onto reactToListingAgreementSigned, run by lib/kernel/event-reactor.ts branch 21d on
+  // KernelEvent.LISTING_AGREEMENT_SIGNED; the procurement call now goes through an injectable seam whose DEFAULT is the
+  // kernel's requestProcurement, so the anchor is the survivor's body, not the retired handler's literal call shape.
+  const procuresPhotography = (body: string) =>
+    /requestProcurement\(/.test(body) && /from\s+"@\/lib\/kernel\/procurement"|import\("@\/lib\/kernel\/procurement"\)/.test(body) && /serviceType: "photography"/.test(body)
+  const reactor = src("lib/kernel/event-reactor.ts")
+  check("W1 the Listing Concierge's media need (reactToListingAgreementSigned, run by the reactor on LISTING_AGREEMENT_SIGNED) requests photography procurement",
+    procuresPhotography(sliceOf(orch, "reactToListingAgreementSigned")) &&
+    /KernelEvent\.LISTING_AGREEMENT_SIGNED[\s\S]{0,400}reactToListingAgreementSigned\(svc,/.test(reactor))
+  check("W1 POSITIVE CONTROL: the finder refuses a reaction that procures something else, or never reaches the kernel's requestProcurement",
+    !procuresPhotography(`const { requestProcurement } = await import("@/lib/kernel/procurement")\nrequestProcurement(s, { serviceType: "staging" })`) &&
+    !procuresPhotography(`await procure(svc, { serviceType: "photography" })`) &&
+    procuresPhotography(`const { requestProcurement } = await import("@/lib/kernel/procurement")\nrequestProcurement(s, { serviceType: "photography" })`))
   check("W2 POSITIVE CONTROL: the slicer finds nothing in a handler that does not procure", !/requestProcurement/.test(sliceOf(orch, "handleListingLive")) && sliceOf(orch, "handleListingLive").length > 0)
   const acm = src("lib/agents/agent-client-messages.ts")
   check("W3 the approval queue books / declines procurement requests", /approveProcurementRequest\(supabase/.test(acm) && /declineProcurementRequest\(supabase/.test(acm))

@@ -78,24 +78,28 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const ip = await publicCallerIp()
 
-  let body: { token?: unknown; request?: unknown }
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
-  }
-
-  const token = typeof body.token === "string" ? body.token : null
   // WAVE 155 (lane 155R20, G10) — THE DECISION, BEFORE THE WRITE (lib/security/public-rate-limit.ts decidePublicDoor): the
   // same per-IP cap as before, FIRST (a flood never reaches the read), then the row the printed code resolves to — the right
   // to opt out is the recipient's own, proven by that row, and the tenant is that row's. Fail closed. An unreadable read is
   // still OUR failure (503), never "your code is invalid".
+  // The body is parsed INSIDE the opt-in, i.e. AFTER the cap (lane 155T2): as it was before the decision door, a flood of
+  // malformed bodies is throttled too — an unparseable body still answers 400, but only once the cap has counted it.
+  let body: { token?: unknown; request?: unknown } = {}
+  let token: string | null = null
+  let invalidBody = false
   let unreadable = false
   const verdict = await decidePublicDoor({
     surface: "mail-unsub-apply",
     callerKey: ip,
     cap: APPLY_LIMIT,
     optIn: async () => {
+      try {
+        body = await req.json()
+      } catch {
+        invalidBody = true
+        return null
+      }
+      token = typeof body.token === "string" ? body.token : null
       const r = await resolveMailUnsubscribeToken(token)
       if (!r.ok) { unreadable = r.reason === "unreadable"; return null }
       return { brokerageId: r.recipient.brokerageId, basis: "direct_mail_recipients — the recipient row the printed unsubscribe code resolves to" }
@@ -108,6 +112,7 @@ export async function POST(req: NextRequest) {
         { status: 429, headers: { "Retry-After": String(verdict.retryAfterSeconds) } },
       )
     }
+    if (invalidBody) return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
     if (unreadable) return NextResponse.json({ error: "We could not check that code right now. Please try again." }, { status: 503 })
     return NextResponse.json({ error: "That code was not recognised." }, { status: 404 })
   }

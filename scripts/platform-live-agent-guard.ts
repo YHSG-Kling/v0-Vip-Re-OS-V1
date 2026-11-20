@@ -246,7 +246,25 @@ check("splitDemoClipToken extracts the clip and strips the token from the spoken
 check("every demo topic has a script", PRODUCT_DEMO_TOPICS.every((t) => describeProductDemo(t, { brandName: "x", surfaceCanShowClip: false }, []).walkthrough.length >= 2))
 check("show_product_demo passes surfaceCanShowClip = not-the-phone-line and the brand kit's clip (never a new render)", /surfaceCanShowClip: ctx\.source !== "phone:reception"/.test(toolsSrc) && toolsSrc.includes("clipUrl: ctx.brand.liveAgent.demoClipUrl"))
 check("the widget plays the clip only under deployment=platform and only from the agent's token", /isPlatform && demoClipUrl && \(/.test(widgetSrc) && widgetSrc.includes("splitDemoClipToken(raw)"))
-check("the session route is throttled through the shared public limiter", /checkPublicRateLimit\("platform-live-agent"/.test(sessionSrc) && sessionSrc.includes("publicCallerIp("))
+// THE RULE: the session route is throttled through the shared public limiter (lib/security/public-rate-limit.ts) under its
+// own surface key and the caller's IP, and the throttle comes BEFORE any response, the showcase read or any provider step.
+// Wave 155 (lane 155R20, G10) moved the route onto decidePublicDoor, whose first act is checkPublicRateLimit(surface, …, cap).
+const throttledFirst = (code: string): boolean => {
+  const post = code.slice(Math.max(0, code.indexOf("export async function POST(")))
+  const m = /\bcheckPublicRateLimit\(\s*"platform-live-agent"\s*,\s*await publicCallerIp\(\)|\bdecidePublicDoor\(\s*\{\s*surface:\s*"platform-live-agent"\s*,\s*callerKey:\s*await publicCallerIp\(\)/.exec(post)
+  if (!m) return false
+  const firstAct = post.search(/\breturn\b|\bensurePlatformDIDAgent\(|\bstartLiveAgentSession\(|\bfetch\(/)
+  const before = post.slice(0, m.index)
+  return (firstAct < 0 || m.index < firstAct) && !/resolvePlatformLiveAgentBrokerageId\(/.test(before)
+}
+check("the session route is throttled through the shared public limiter (its own surface, the caller's IP, before any response / read / provider step)",
+  throttledFirst(sessionSrc) &&
+  /export async function decidePublicDoor[\s\S]*?\{\s*const rate = checkPublicRateLimit\(input\.surface/.test(stripped("lib/security/public-rate-limit.ts")))
+check("POSITIVE CONTROL — the throttle finder goes red on an unthrottled route, a borrowed surface key, and a showcase read before the cap",
+  !throttledFirst(`export async function POST(r) { const id = await resolvePlatformLiveAgentBrokerageId(svc); return ok }`) &&
+  !throttledFirst(`export async function POST(r) { const v = await decidePublicDoor({ surface: "public-chat", callerKey: await publicCallerIp() }) }`) &&
+  !throttledFirst(`export async function POST(r) { const id = await resolvePlatformLiveAgentBrokerageId(svc); const v = await decidePublicDoor({ surface: "platform-live-agent", callerKey: await publicCallerIp() }) }`) &&
+  throttledFirst(`export async function POST(r) { const v = checkPublicRateLimit("platform-live-agent", await publicCallerIp(), L); if (!v.allowed) return x }`))
 check("every session-route refusal carries the text fallback (never a dead avatar)", (sessionSrc.match(/fallback: FALLBACK/g) ?? []).length >= 6)
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -31,6 +31,8 @@ import { pathToFileURL } from "node:url"
 import { randomUUID } from "node:crypto"
 import { memSupabase, type Row, type MemClient } from "./in-memory-supabase"
 import { blankComments, blankStrings } from "./strip-comments"
+// The roster is written down ONCE (CLAUDE.md §4) — the stub below reads the Set, never a copied literal (test:admin-vocabulary).
+import { TENANT_ADMIN_USER_TYPES } from "../lib/auth/resolve-user-role"
 
 const ROOT = process.env.R10_ROOT || process.cwd()
 let pass = 0
@@ -190,7 +192,7 @@ async function realAuthorizeForAgent(targetAgentId?: string | null) {
   if (!target) return { ok: false as const, error: "No agent profile for this user yet — finish account setup." }
   const base = { userId: s.userId, brokerageId: s.brokerageId, userType: s.userType }
   if (target === s.agentId) return { ok: true as const, agentId: target, isSelf: true, ...base }
-  if (!["broker", "broker_admin", "broker_owner", "team_lead", "admin", "compliance_officer"].includes(s.userType)) return { ok: false as const, error: "Forbidden: that agent is not you" }
+  if (!TENANT_ADMIN_USER_TYPES.has(s.userType)) return { ok: false as const, error: "Forbidden: that agent is not you" }
   const { data: row, error } = await R.db.from("agents").select("id").eq("id", target).eq("brokerage_id", s.brokerageId).maybeSingle()
   if (error) return { ok: false as const, error: "Could not verify that agent" }
   if (!row) return { ok: false as const, error: "Forbidden: that agent is not in your brokerage" }
