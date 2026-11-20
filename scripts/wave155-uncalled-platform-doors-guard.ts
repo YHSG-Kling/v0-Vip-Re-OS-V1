@@ -247,7 +247,8 @@ registerHooks({
     if (spec.startsWith("@/")) { const p = aliasPath(spec.slice(2)); r = p ? { url: pathToFileURL(p).href, shortCircuit: true } : next(spec, ctx) }
     else r = next(spec, ctx)
     if (String(ctx?.parentURL ?? "").startsWith("data:")) return r
-    const path = decodeURIComponent(String(r.url ?? "").replace(/^file:\/\//, "").split("?")[0])
+    const rawUrl = String(r.url ?? "")
+    const path = decodeURIComponent((rawUrl.startsWith("file://") ? rawUrl.slice("file://".length) : rawUrl).split("?")[0])
     const key = Object.keys(STUBS).find((k) => path.endsWith("/" + k))
     if (!key) return r
     return { url: dataUrl(`export * from ${JSON.stringify(pathToFileURL(path).href)}; ${STUBS[key]}`), shortCircuit: true }
