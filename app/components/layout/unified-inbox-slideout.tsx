@@ -197,7 +197,7 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
       // mapper into component state, and never rendered anywhere.
       //
       // SURVIVOR: `conversation_insights`, which is genuinely written for every
-      // analysed thread by lib/intelligence/conversation-insights.ts:429/459 —
+      // analysed thread by lib/intelligence/conversation-insights.ts:281/314 —
       // `overall_sentiment` for the sentiment reading and `escalation_urgency` /
       // `escalation_recommended` for urgency, both DERIVED there from the
       // thread's own messages. The embed is unambiguous: conversation_insights

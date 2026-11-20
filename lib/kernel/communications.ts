@@ -344,7 +344,7 @@ export async function loadUniversalInbox(
       //
       // SURVIVOR: sentiment on a text thread is measured at the THREAD level, not
       // per message — `conversation_insights.overall_sentiment`, written for
-      // every analysed conversation at lib/intelligence/conversation-insights.ts:429
+      // every analysed conversation at lib/intelligence/conversation-insights.ts:314
       // (insert) and :459 (update), and rendered on the inbox slideout and the
       // communications-intelligence board. Stamping a thread-level reading onto
       // each individual message would be a second, wrong spelling of it (§6),

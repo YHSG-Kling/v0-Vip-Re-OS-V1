@@ -82,7 +82,7 @@ export default async function IntelligencePage() {
     // 5. chart data, TEXT series — last 30 days of health scores by date.
     //    This read no longer selects `is_voice_conversation`: the ONE writer of
     //    this table stamps it false on both of its paths (it analyzes message
-    //    threads — lib/intelligence/conversation-insights.ts:205-214, a ruling
+    //    threads — lib/intelligence/conversation-insights.ts:58-70, a ruling
     //    that stands), so splitting these rows on that flag put every row in
     //    the text bucket and rendered the chart's voice line as a PERMANENT
     //    FABRICATED 0. The voice series now comes from the dialled-call ledger
@@ -170,7 +170,7 @@ export default async function IntelligencePage() {
     // (census 1b), and the filter itself could never match: the ONE writer of
     // that table stamps `is_voice_conversation: false` on both its insert and
     // its update paths, and says why in a ruling that stands
-    // (lib/intelligence/conversation-insights.ts:205-214) —
+    // (lib/intelligence/conversation-insights.ts:58-70) —
     //
     //   "This writer analyzes a TEXT thread. The voice metrics have no honest
     //    source yet (no per-utterance timestamps anywhere) and stay NULL."

@@ -1692,7 +1692,7 @@ export async function calculateComplianceRiskScore(agentId: string) {
   // 30 points as the best one.
   //
   // SURVIVOR: `conversation_insights.health_score`, which is genuinely written
-  // for every analysed thread (lib/intelligence/conversation-insights.ts:434/464)
+  // for every analysed thread (lib/intelligence/conversation-insights.ts:281/314)
   // and is DERIVED there from the thread itself — reply gaps, unanswered
   // questions, objections, sentiment. It is stored on a 0..1 scale, enforced by
   // the live CHECK (`health_score >= 0 AND <= 1`), so it is scaled to the 0-100

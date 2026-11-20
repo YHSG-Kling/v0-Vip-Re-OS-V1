@@ -1365,7 +1365,7 @@ export async function loadContactWorkspace(params: {
       // app/api/webhooks/meta-dm/route.ts) has ever named the column, so this
       // packet handed its consumer a null sentiment on every thread.
       // SURVIVOR: `conversation_insights.overall_sentiment`, written for every
-      // analysed thread at lib/intelligence/conversation-insights.ts:429/459 and
+      // analysed thread at lib/intelligence/conversation-insights.ts:281/314 and
       // reached in this same shape by lib/kernel/conversation-memory.ts:230 —
       // the contact-memory builder that actually reasons about mood. This packet
       // is a thread LIST (type, unread, last message); it does not reason about

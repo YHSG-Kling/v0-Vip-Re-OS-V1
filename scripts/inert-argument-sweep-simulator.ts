@@ -123,12 +123,10 @@ console.log("══════════════════════�
 console.log("\n[1. THE DROPPED TENANTS — resolved from the session, then not applied]")
 
 const tenantSites: Array<{ file: string; decl: string; table: string; what: string }> = [
-  {
-    file: "lib/intelligence/conversation-insights.ts",
-    decl: "export async function getContactMemory(",
-    table: "conversation_insights",
-    what: "contact memory (objections, pain points, buying signals)",
-  },
+  // RESTATED (wave 155 convergence): the first site, lib/intelligence/conversation-insights.ts getContactMemory, is RETIRED — its one
+  // caller was an uncalled "use server" export retired by lane 155R29, and the memory a prompt speaks from is the kernel's
+  // (tombstone in that file). The rule it carried ("the tenant the caller resolved reaches the memory query") moved with the
+  // read and is asserted on the SURVIVOR just below this table, in the survivor's own body.
   {
     file: "lib/deal-health/health-scorer.ts",
     decl: "async function scoreCompliance(",
@@ -150,6 +148,20 @@ for (const s of tenantSites) {
     liveColumn(s.table, "brokerage_id"))
   t(`${s.what}: the tenant the caller resolved reaches the query`,
     /\.eq\(\s*["']brokerage_id["']\s*,\s*(params\.)?brokerageId\s*\)/.test(b))
+}
+
+// THE SURVIVOR OF THE RETIRED MEMORY READER carries the same rule in its own body: lib/kernel/conversation-memory.ts
+// loadContactMemoryForPrompt refuses a call with no tenant and pins every read it makes to the tenant it was handed.
+{
+  const survivor = body("lib/kernel/conversation-memory.ts", "export async function loadContactMemoryForPrompt(")
+  const insightsSrc = code("lib/intelligence/conversation-insights.ts")
+  t("contact memory for a prompt: the survivor's body exists to be judged, refuses a missing tenant, and applies brokerage_id to its reads",
+    survivor.length > 0 && /if\s*\([^)]*!\s*input\.brokerageId\b[^)]*\)\s*return null/.test(survivor) && /\.eq\(\s*["']brokerage_id["']\s*,\s*input\.brokerageId\s*\)/.test(survivor))
+  t("the retired reader stays retired — no getContactMemory / buildContextWindow export, and nothing imports either name",
+    !/export\s+(?:async\s+)?function\s+(?:getContactMemory|buildContextWindow)\b/.test(insightsSrc) &&
+    !/\b(?:getContactMemory|buildContextWindow)\b/.test(code("app/actions/ai-auto-response.ts")) && !/\b(?:getContactMemory|buildContextWindow)\b/.test(code("lib/ai-reply-coach/reply-draft-core.ts")))
+  t("(control) the retired-export finder still sees the export when it is put back",
+    /export\s+(?:async\s+)?function\s+(?:getContactMemory|buildContextWindow)\b/.test("export async function getContactMemory(contactId: string) {}"))
 }
 
 // The tenant is worth nothing if the caller stopped resolving it.

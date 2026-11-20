@@ -99,6 +99,8 @@ export async function updateAutoResponseSettings(settings: {
 // memory (loadContactMemoryForPrompt, lib/ai-reply-coach/reply-draft-core.ts:142) and lands a draft for a person to accept — this one
 // filed a 'queued' ai_auto_response message straight into the thread. Its one unique trait, the conversation-insights summary
 // (buildContextWindow), was NOT merged: the survivor already speaks from the kernel's contact memory (one memory per prompt, law 2).
+// That formatter and its reader getContactMemory lost their only caller with this export and are retired beside it — tombstone in
+// lib/intelligence/conversation-insights.ts, naming the same survivor memory (lib/kernel/conversation-memory.ts:652).
 
 // Track behavioral event for lead scoring.
 //

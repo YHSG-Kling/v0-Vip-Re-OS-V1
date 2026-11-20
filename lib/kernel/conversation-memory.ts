@@ -392,8 +392,8 @@ async function loadContactInteractions(
     // null sentiment, and the contact memory this feeds concluded that no thread
     // had ever had a mood.
     // SURVIVOR: `conversation_insights.overall_sentiment`, written for every
-    // analysed thread at lib/intelligence/conversation-insights.ts:429 (insert)
-    // and :459 (update). The embed is unambiguous — conversation_insights has
+    // analysed thread at lib/intelligence/conversation-insights.ts:314 (insert)
+    // and :281 (update). The embed is unambiguous — conversation_insights has
     // exactly one FK to conversations — so it cannot hit PGRST201.
     supabase.from("conversations")
       .select("last_message_at, updated_at, type, intent_primary, last_ai_context_summary, conversation_insights(overall_sentiment)")
