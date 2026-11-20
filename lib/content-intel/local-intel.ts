@@ -926,7 +926,7 @@ export async function runLocalIntelPass(brokerageId: string, deps: LocalIntelDep
  * every live tenant WITH an active territory, bounded by tenants-per-run and a wall-clock budget. A
  * refused gate read fails CLOSED (nobody is searched) under its own reason.
  */
-export async function runLocalIntelSweep(db: Db, opts: { now?: Date; maxTenants?: number; budgetMs?: number; pullGate?: PullGateLike } = {}): Promise<{ tenants: number; ran: number; skipped: number; facts: number; topicIntel: number; topicRefurbish: number; platformCostUsd: number; reason: string; errors: string[] }> {
+export async function runLocalIntelSweep(db: Db, opts: { now?: Date; maxTenants?: number; budgetMs?: number; pullGate?: PullGateLike; adoptSubjectKeys?: import("./topic-intake").SubjectKeyAdopter } = {}): Promise<{ tenants: number; ran: number; skipped: number; facts: number; topicIntel: number; topicRefurbish: number; platformCostUsd: number; reason: string; errors: string[] }> {
   const started = Date.now()
   const out = { tenants: 0, ran: 0, skipped: 0, facts: 0, topicIntel: 0, topicRefurbish: 0, platformCostUsd: 0, reason: "ok", errors: [] as string[] }
   let pullGate = opts.pullGate
@@ -954,7 +954,7 @@ export async function runLocalIntelSweep(db: Db, opts: { now?: Date; maxTenants?
       // themes, high-engagement patterns, customer questions, education + AI-search gaps, property-value trends and market
       // changes (read from this OS's own survivors; no provider call, no spend) — into the ONE pool, ideas PENDING approval.
       const { runTopicIntelligencePass } = await import("./topic-intelligence")
-      const intel = await runTopicIntelligencePass(db, b, { now: opts.now })
+      const intel = await runTopicIntelligencePass(db, b, { now: opts.now, adoptSubjectKeys: opts.adoptSubjectKeys })
       out.topicIntel += intel.inserted + intel.refreshed
       for (const e of intel.errors.slice(0, 3)) out.errors.push(`${b}: topic intelligence: ${e}`)
       // wave 154 (lane 154H2, carrying lane 154G3's request): the tenant's configured local-event feeds → verified local facts in

@@ -294,7 +294,10 @@ export const DEMO_CONFIG = {
   // HARD production gate (pre-launch security audit): demo sign-in can NEVER
   // be enabled on the production deployment, even if the flag ships by
   // accident — the repo carries the demo credentials in plain text.
-  ENABLED: process.env.NEXT_PUBLIC_DEMO_MODE === 'true' && process.env.VERCEL_ENV !== 'production',
+  // Wave 155 (lane 155R17): the gate keyed on VERCEL_ENV alone, so a production build on any NON-Vercel host — where that
+  // variable is unset — had demo sign-in open. It is now also off for every production build that is not a Vercel preview.
+  ENABLED: process.env.NEXT_PUBLIC_DEMO_MODE === 'true' && process.env.VERCEL_ENV !== 'production'
+    && (process.env.VERCEL_ENV === 'preview' || process.env.NODE_ENV !== 'production'),
   MODE: 'password' as const,
   AUTO_LOGIN: false,
   PASSWORD: process.env.NEXT_PUBLIC_DEMO_PASSWORD || 'Demo@123456',

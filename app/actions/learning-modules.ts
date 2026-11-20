@@ -114,6 +114,9 @@ export async function createLearningModuleAction(
   const auth = await requireAdmin()
   if (!auth.ok) return auth
 
+  // WAVE 155 (155R17): the receipt — requireAdmin's SESSION user and tenant.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "academy.learning_module.create", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true; id: string } | { ok: false; error: string }> => {
   const supabase = createServiceClient()
   const insert = {
     brokerage_id:          auth.brokerageId,
@@ -144,6 +147,8 @@ export async function createLearningModuleAction(
 
   revalidatePath("/dashboard/admin/learning-modules")
   return { ok: true, id: data.id as string }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "Not run" }
 }
 
 // ─── Update ─────────────────────────────────────────────────────────────────
@@ -154,6 +159,9 @@ export async function updateLearningModuleAction(
   const auth = await requireAdmin()
   if (!auth.ok) return auth
 
+  // WAVE 155 (155R17): the receipt — requireAdmin's SESSION user and tenant.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "academy.learning_module.update", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module", id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.keys(patch ?? {}), status: patch?.status ?? null } }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const supabase = createServiceClient()
   const update: Record<string, unknown> = { updated_at: new Date().toISOString() }
   if (patch.title              !== undefined) update.title              = patch.title
@@ -176,15 +184,20 @@ export async function updateLearningModuleAction(
     if (patch.status === "published") update.published_at = new Date().toISOString()
   }
 
-  const { error } = await supabase
+  const { data: changed, error } = await supabase
     .from("learning_modules")
     .update(update)
     .eq("id", id)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  // §3: an UPDATE that matched nothing (another tenant's id, a deleted module) resolves — it is not a success.
+  if (!changed || changed.length === 0) return { ok: false, error: "Module not found" }
 
   revalidatePath("/dashboard/admin/learning-modules")
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "Not run" }
 }
 
 // ─── Publish (multi-channel fan-out) ────────────────────────────────────────

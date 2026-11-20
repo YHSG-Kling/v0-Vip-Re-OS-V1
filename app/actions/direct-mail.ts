@@ -261,6 +261,8 @@ export async function updateMailCampaign(
     if (!actor.isAuthenticated || !actor.userId || !actor.brokerageId) {
       return { success: false, error: "Not signed in to a brokerage" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "marketing.direct_mail_campaign.update", actor: { type: "user", userId: actor.userId }, subject: { type: "direct_mail_campaign", id: campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const supabase = await createClient()
 
     // Check current status
@@ -309,6 +311,7 @@ export async function updateMailCampaign(
 
     revalidatePath("/dashboard/campaigns/mail")
     return { success: true, campaign: data }
+    }))
   } catch (error) {
     return handleError(error, "updateMailCampaign")
   }
@@ -323,14 +326,23 @@ export async function deleteMailCampaign(campaignId: string) {
       return { success: false, error: "Invalid campaign ID" }
     }
 
+    const actor = await getAgentContext()
+    if (!actor.isAuthenticated || !actor.userId || !actor.brokerageId) {
+      return { success: false, error: "Not signed in to a brokerage" }
+    }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "marketing.direct_mail_campaign.delete", actor: { type: "user", userId: actor.userId }, subject: { type: "direct_mail_campaign", id: campaignId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const supabase = await createClient()
 
-    // Check current status
-    const { data: existing } = await supabase
+    // Check current status — under the SESSION's tenant (wave 155, lane 155R15; the sibling updateMailCampaign's gate).
+    const { data: existing, error: existingErr } = await supabase
       .from("direct_mail_campaigns")
       .select("status")
       .eq("id", campaignId)
+      .eq("brokerage_id", actor.brokerageId)
       .maybeSingle()
+    if (existingErr) return { success: false, error: `Could not read the campaign: ${existingErr.message}` }
+    if (!existing) return { success: false, error: "Campaign not found" }
 
     if (existing?.status && existing.status !== "planning") {
       return { success: false, error: "Cannot delete a campaign that is not in planning status" }
@@ -344,15 +356,19 @@ export async function deleteMailCampaign(campaignId: string) {
     if (recipientsClearErr) return { success: false, error: `Could not remove the campaign's recipients: ${recipientsClearErr.message}` }
 
     // Delete the campaign
-    const { error } = await supabase
+    const { data: removed, error } = await supabase
       .from("direct_mail_campaigns")
       .delete()
       .eq("id", campaignId)
+      .eq("brokerage_id", actor.brokerageId)
+      .select("id")
 
     if (error) throw error
+    if (!removed || removed.length === 0) return { success: false, error: "Campaign not found" }
 
     revalidatePath("/dashboard/campaigns/mail")
     return { success: true }
+    })
   } catch (error) {
     return handleError(error, "deleteMailCampaign")
   }
@@ -369,6 +385,12 @@ export async function addRecipients(params: AddRecipientsParams) {
       return { success: false, error: "Invalid campaign ID" }
     }
 
+    const actor = await getAgentContext()
+    if (!actor.isAuthenticated || !actor.userId || !actor.brokerageId) {
+      return { success: false, error: "Not signed in to a brokerage" }
+    }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "marketing.direct_mail_recipient.add", actor: { type: "user", userId: actor.userId }, subject: { type: "direct_mail_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { count: Array.isArray(params.recipients) ? params.recipients.length : 0 } }, async () => {
     const supabase = await createClient()
 
     // Get brokerage_id from campaign — and, m491, the campaign's own recipient
@@ -378,6 +400,7 @@ export async function addRecipients(params: AddRecipientsParams) {
       .from("direct_mail_campaigns")
       .select("brokerage_id, lead_id, contact_id")
       .eq("id", params.campaignId)
+      .eq("brokerage_id", actor.brokerageId)
       .maybeSingle()
 
     if (campaignError) {
@@ -421,6 +444,7 @@ export async function addRecipients(params: AddRecipientsParams) {
 
     revalidatePath("/dashboard/campaigns/mail")
     return { success: true, recipients: data }
+    }))
   } catch (error) {
     return handleError(error, "addRecipients")
   }
@@ -460,17 +484,27 @@ export async function removeRecipient(recipientId: string) {
       return { success: false, error: "Invalid recipient ID" }
     }
 
+    const actor = await getAgentContext()
+    if (!actor.isAuthenticated || !actor.userId || !actor.brokerageId) {
+      return { success: false, error: "Not signed in to a brokerage" }
+    }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "marketing.direct_mail_recipient.remove", actor: { type: "user", userId: actor.userId }, subject: { type: "direct_mail_recipient", id: recipientId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const supabase = await createClient()
 
-    const { error } = await supabase
+    const { data: removed, error } = await supabase
       .from("direct_mail_recipients")
       .delete()
       .eq("id", recipientId)
+      .eq("brokerage_id", actor.brokerageId)
+      .select("id")
 
     if (error) throw error
+    if (!removed || removed.length === 0) return { success: false, error: "Recipient not found" }
 
     revalidatePath("/dashboard/campaigns/mail")
     return { success: true }
+    })
   } catch (error) {
     return handleError(error, "removeRecipient")
   }

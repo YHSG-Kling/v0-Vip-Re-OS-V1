@@ -483,6 +483,8 @@ export async function createTier(params: {
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.marketing_tier.create", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "listing_marketing_tier", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -502,6 +504,7 @@ export async function createTier(params: {
     if (error) throw error
 
     return { success: true, tier: data }
+    }))
   } catch (error) {
     return handleError(error, "createTier")
   }
@@ -534,6 +537,8 @@ export async function updateTier(params: {
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.marketing_tier.update", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "listing_marketing_tier", id: params.tierId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -548,12 +553,14 @@ export async function updateTier(params: {
       .from("listing_marketing_tiers")
       .update(updates)
       .eq("id", params.tierId)
+      .eq("brokerage_id", gate.actor.brokerageId)
       .select()
       .single()
 
     if (error) throw error
 
     return { success: true, tier: data }
+    }))
   } catch (error) {
     return handleError(error, "updateTier")
   }
@@ -579,11 +586,15 @@ export async function createTierBudget(params: {
     // Prove the asserted actor IS the caller before trusting the entitlement.
     const gate = await resolveTierActor(params.actorUserId)
     if (!gate.ok) return { success: false, error: gate.error }
+    const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+    if (!decideClaimedTenant({ actingBrokerageId: gate.actor.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
 
     const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.tier_budget.create", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "listing_marketing_tier", id: params.tierId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -591,7 +602,7 @@ export async function createTierBudget(params: {
       .from("tier_budgets")
       .insert({
         tier_id: params.tierId,
-        brokerage_id: params.brokerageId,
+        brokerage_id: gate.actor.brokerageId,
         channel_type: params.channelType,
         default_budget: params.defaultBudget,
       })
@@ -601,6 +612,7 @@ export async function createTierBudget(params: {
     if (error) throw error
 
     return { success: true, budget: data }
+    }))
   } catch (error) {
     return handleError(error, "createTierBudget")
   }
@@ -627,11 +639,15 @@ export async function createTierDistribution(params: {
     // Prove the asserted actor IS the caller before trusting the entitlement.
     const gate = await resolveTierActor(params.actorUserId)
     if (!gate.ok) return { success: false, error: gate.error }
+    const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+    if (!decideClaimedTenant({ actingBrokerageId: gate.actor.brokerageId, claimedBrokerageId: params.brokerageId }).ok) return { success: false, error: "Unauthorized" }
 
     const access = await mayUseFeature(gate.actor.userId, "listing_marketing_tiers")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.tier_distribution.create", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "listing_marketing_tier", id: params.tierId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -639,7 +655,7 @@ export async function createTierDistribution(params: {
       .from("tier_distributions")
       .insert({
         tier_id: params.tierId,
-        brokerage_id: params.brokerageId,
+        brokerage_id: gate.actor.brokerageId,
         asset_type: params.assetType,
         channel_type: params.channelType,
         is_required: params.isRequired,
@@ -650,6 +666,7 @@ export async function createTierDistribution(params: {
     if (error) throw error
 
     return { success: true, distribution: data }
+    }))
   } catch (error) {
     return handleError(error, "createTierDistribution")
   }
@@ -673,6 +690,8 @@ export async function deleteTierBudget(budgetId: string, actorUserId: string) {
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.tier_budget.delete", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "tier_budget", id: budgetId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -693,6 +712,7 @@ export async function deleteTierBudget(budgetId: string, actorUserId: string) {
     }
 
     return { success: true }
+    })
   } catch (error) {
     return handleError(error, "deleteTierBudget")
   }
@@ -716,6 +736,8 @@ export async function deleteTierDistribution(distributionId: string, actorUserId
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Feature not available" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: gate.actor.brokerageId, action: "listing.tier_distribution.delete", actor: { type: "user", userId: gate.actor.userId }, subject: { type: "tier_distribution", id: distributionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -736,6 +758,7 @@ export async function deleteTierDistribution(distributionId: string, actorUserId
     }
 
     return { success: true }
+    })
   } catch (error) {
     return handleError(error, "deleteTierDistribution")
   }

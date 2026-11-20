@@ -105,7 +105,7 @@ const DAY_MS = 86_400_000
  * system source (idempotent per theme while fresh: a repeat refreshes the evidence instead of duplicating), then propose the
  * strongest new themes as campaign ideas PENDING approval. Tenant-pinned everywhere; never throws.
  */
-export async function runTopicIntelligencePass(db: Db, brokerageId: string, opts: { now?: Date; maxIdeas?: number } = {}): Promise<TopicIntelligenceResult> {
+export async function runTopicIntelligencePass(db: Db, brokerageId: string, opts: { now?: Date; maxIdeas?: number; adoptSubjectKeys?: import("./topic-intake").SubjectKeyAdopter } = {}): Promise<TopicIntelligenceResult> {
   const now = opts.now ?? new Date()
   const out: TopicIntelligenceResult = { brokerageId, ran: false, inserted: 0, refreshed: 0, bySource: {}, dropped: {}, proposedIdeas: 0, proposedTv: 0, blindSpots: [], errors: [] }
   const addDropped = (d: Record<string, number>) => { for (const [k, v] of Object.entries(d)) out.dropped[k] = (out.dropped[k] ?? 0) + v }
@@ -224,8 +224,9 @@ export async function runTopicIntelligencePass(db: Db, brokerageId: string, opts
     const filed: Array<{ id: string; theme: IntelTheme; isNew: boolean }> = []
     if (topicIdeas.length) {
       // ONE SUBJECT, ONE TOPIC (wave 155, lane 155F2): a live row already holding this subject under the retired question
-      // key is merged into, never duplicated beside.
-      const adoption = await (await import("@/lib/customer-intelligence/website-question-topics")).adoptLiveSubjectKeys(db, brokerageId, topicIdeas)
+      // key is merged into, never duplicated beside. The adopter is PASSED IN by the cron (topic-intake.ts SubjectKeyAdopter
+      // says why it is not imported here); a caller that passes none files each idea under its own key, as before wave 155.
+      const adoption = opts.adoptSubjectKeys ? await opts.adoptSubjectKeys(db, brokerageId, topicIdeas) : { ideas: topicIdeas, adopted: new Map<string, string>(), held: [] as string[] }
       const r = await intakeTopicIdeas(db, { brokerageId, ideas: adoption.ideas, now })
       if (r.refused) out.errors.push(`intake refused — nothing filed: ${r.refused}`)
       out.errors.push(...r.errors)

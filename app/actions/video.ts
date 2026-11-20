@@ -273,12 +273,21 @@ export async function distributeVideoProjectAction(
 ): Promise<VideoActionResult<DistributeVideoProjectOutput>> {
   const denial = await assertProjectInCallerBrokerage(input.projectId)
   if (denial) return denied(denial)
+  const run = async (): Promise<VideoActionResult<DistributeVideoProjectOutput>> => {
   try {
     const data = await distributeVideoProject(input)
     return { success: true, data }
   } catch (err) {
     return failed(err, "Failed to distribute")
   }
+  }
+  // WAVE 155 (155R17): the receipt — the SESSION's user and tenant (callerBrokerage, the gate's own resolver), as the sibling
+  // updateVideoGenerationSettingsAction above.
+  const who = await callerBrokerage()
+  if ("code" in who) return run()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: who.brokerage_id, action: "marketing.video_project.distribute", actor: { type: "user", userId: who.user_id }, subject: { type: "ai_video_project", id: input.projectId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, run)
+  return "data" in r || "code" in r ? r : denied({ code: "failed", message: r.error ?? "Failed to distribute" })
 }
 
 /**

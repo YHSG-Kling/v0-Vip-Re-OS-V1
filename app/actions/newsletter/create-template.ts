@@ -83,6 +83,8 @@ export async function createTemplate(input: CreateTemplateInput) {
 
   if (userError) throw new Error(`Failed to fetch user: ${userError.message}`)
   if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: userData.brokerage_id, action: "marketing.newsletter_template.create", actor: { type: "user", userId: user.id }, subject: { type: "newsletter_brokers_template", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const templateName = input.templateName?.trim()
   if (!templateName) throw new Error('Template name is required')
@@ -157,4 +159,5 @@ export async function createTemplate(input: CreateTemplateInput) {
     sectionCount: sections.length,
     message: `Template created with ${sections.length} section${sections.length === 1 ? '' : 's'}`,
   }
+  }))
 }

@@ -91,9 +91,16 @@ export async function publishCommunityVideoAction(input: { videoProjectId: strin
     const ctx = await getAgentContext()
     if (!ctx.brokerageId || !ctx.userId) return { success: false, error: "Not authenticated" }
     if (!TENANT_ADMIN_USER_TYPES.has(ctx.userType ?? "")) return { success: false, error: "Publishing a community video is a brokerage administrator's decision." }
+    // WAVE 155 (155R17): the receipt — the SESSION's tenant admin and tenant; a publish is a COMMUNICATION act.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const brokerageId = ctx.brokerageId, actorUserId = ctx.userId
+    const videoProjectId = String(input?.videoProjectId ?? ""), topicId = String(input?.topicId ?? "")
+    const out = await ledgerSessionAction({ brokerageId, action: "marketing.community_video.publish", actor: { type: "user", userId: actorUserId }, subject: { type: "ai_video_project", id: videoProjectId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { topic_id: topicId } }, async (): Promise<{ success: true; socialPostId: string; alreadyQueued: boolean } | { success: false; error: string }> => {
     const { publishCommunityVideo } = await import("@/lib/video/community-video-publish")
-    const r = await publishCommunityVideo({ brokerageId: ctx.brokerageId, actorUserId: ctx.userId, videoProjectId: String(input?.videoProjectId ?? ""), topicId: String(input?.topicId ?? "") })
+    const r = await publishCommunityVideo({ brokerageId, actorUserId, videoProjectId, topicId })
     return r.ok ? { success: true, socialPostId: r.socialPostId, alreadyQueued: r.alreadyQueued } : { success: false, error: r.reason }
+    })
+    return "socialPostId" in out ? out : { success: false, error: out.error ?? "Failed to publish the community video" }
   } catch (e) {
     return { success: false, error: (e as Error)?.message ?? "Failed to publish the community video" }
   }

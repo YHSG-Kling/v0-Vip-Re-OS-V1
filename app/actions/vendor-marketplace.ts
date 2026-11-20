@@ -376,6 +376,8 @@ export async function createVendorBooking(data: {
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: profile?.brokerage_id ?? "", action: "vendor.booking.create", actor: { type: "user", userId: user.id }, subject: { type: "vendor", id: data.vendorId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { transaction_id: transactionId, listing_id: listingId, service_type: data.serviceType } }, async () => {
 
   const { data: booking, error } = await supabase
     .from("vendor_bookings")
@@ -412,6 +414,7 @@ export async function createVendorBooking(data: {
   if (listingId) revalidatePath(`/dashboard/listings/${listingId}`)
   revalidatePath("/dashboard/vendors")
   return booking
+  })
 }
 
 export async function getVendorBookingsForTransaction(transactionId: string) {
@@ -1017,7 +1020,7 @@ export async function respondToVendorReview(reviewId: string, response: string):
   // one immutable public reply. `vendors` has no user_id column;
   // user_role_assignments.vendor_id is the canonical linkage (same one
   // /vendor/invoices and getAllVendorBookings resolve through).
-  const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, vendor_response").eq("id", reviewId).maybeSingle()
+  const { data: review } = await svc.from("vendor_reviews").select("id, vendor_id, vendor_response, brokerage_id").eq("id", reviewId).maybeSingle()
   if (!review) throw new Error("Review not found")
   if ((review as any).vendor_response) throw new Error("A response has already been submitted (responses are immutable).")
 
@@ -1025,6 +1028,8 @@ export async function respondToVendorReview(reviewId: string, response: string):
   if (!callerVendorId || callerVendorId !== (review as any).vendor_id) {
     throw new Error("Not authorized to respond to this review")
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: String((review as any).brokerage_id ?? ""), action: "vendor.review.respond", actor: { type: "user", userId: user.id }, subject: { type: "vendor_review", id: reviewId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true }> => {
 
   const { screenReview } = await import("@/lib/kernel/vendor-review-moderation")
   const screen = screenReview({ rating: 5, body: response.length < 50 ? response.padEnd(50, " ") : response, accountAgeDays: 999 })
@@ -1038,6 +1043,7 @@ export async function respondToVendorReview(reviewId: string, response: string):
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/vendor/reviews")
   return { ok: true }
+  }); if (!("ok" in r)) throw new Error(r.error ?? "Not recorded"); return r
 }
 
 /**
@@ -1062,6 +1068,8 @@ export async function flagVendorReview(reviewId: string, reason: string): Promis
   if (callerVendorId && callerVendorId === (review as any).vendor_id) {
     throw new Error("A vendor cannot flag a review of itself — respond to it instead.")
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: String((review as any).brokerage_id ?? ""), action: "vendor.review.flag", actor: { type: "user", userId: user.id }, subject: { type: "vendor_review", id: reviewId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const allowed = ["inappropriate", "fake", "competitor", "pii", "irrelevant"]
   const reasonCode = allowed.includes(reason) ? reason : "inappropriate"
@@ -1081,6 +1089,7 @@ export async function flagVendorReview(reviewId: string, reason: string): Promis
   const { error: flagCountErr } = await svc.from("vendor_reviews").update({ flag_count: flagCount, moderation_status: newStatus, updated_at: new Date().toISOString() }).eq("id", reviewId)
   if (flagCountErr) console.error(`[vendor-marketplace] review flag/moderation NOT saved: ${flagCountErr.message}`)
   return { flagCount, status: newStatus }
+  }); if ("success" in r) throw new Error(r.error ?? "Not recorded"); return r
 }
 
 /**

@@ -124,13 +124,13 @@ export interface TrendAlert {
  * naming a brokerage whose plan is. It never established who was asking.
  */
 async function requireBrokerage(): Promise<
-  { ok: true; brokerageId: string } | { ok: false; error: string }
+  { ok: true; brokerageId: string; userId: string } | { ok: false; error: string }
 > {
   const { getAgentContext } = await import("@/lib/identity/get-agent-context")
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { ok: false, error: "Not authenticated" }
   if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
-  return { ok: true, brokerageId: ctx.brokerageId }
+  return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId }
 }
 
 // ─── INGEST COMPETITOR AD ─────────────────────────────────────────────────────
@@ -161,6 +161,8 @@ export async function ingestCompetitorAd(
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.competitor_ad.ingest", actor: { type: "user", userId: gate.userId }, subject: { type: "competitor_ad", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source_platform: params.sourcePlatform } }, async () => {
 
     // Upsert on (brokerage_id, source_platform, ad_headline) updating last_seen_at
     const { data: existing, error: checkError } = await supabase
@@ -218,6 +220,7 @@ export async function ingestCompetitorAd(
     }
 
     return { success: true, adId: data.id }
+    })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }
@@ -246,6 +249,8 @@ export async function ingestCompetitorPost(
     if (!accessResult.allowed) {
       return { success: false, error: accessResult.reason || "Feature access denied" }
     }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.competitor_post.ingest", actor: { type: "user", userId: gate.userId }, subject: { type: "competitor_post", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source_platform: params.sourcePlatform } }, async () => {
 
     const { data, error } = await supabase
       .from("competitor_posts")
@@ -268,6 +273,7 @@ export async function ingestCompetitorPost(
     }
 
     return { success: true, postId: data.id }
+    })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }
@@ -524,21 +530,29 @@ export async function resolveAlert(
   alertId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const gate = await requireBrokerage()
+    if (!gate.ok) return { success: false, error: gate.error }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "marketing.trend_alert.resolve", actor: { type: "user", userId: gate.userId }, subject: { type: "trend_alert", id: alertId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const supabase = await createClient()
 
-    const { error } = await supabase
+    const { data: resolved, error } = await supabase
       .from("trend_alerts")
       .update({
         is_resolved: true,
         resolved_at: new Date().toISOString(),
       })
       .eq("id", alertId)
+      .eq("brokerage_id", gate.brokerageId)
+      .select("id")
 
     if (error) {
       return { success: false, error: error.message }
     }
+    if (!resolved || resolved.length === 0) return { success: false, error: "Alert not found in your brokerage" }
 
     return { success: true }
+    })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
   }

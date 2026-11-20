@@ -30,7 +30,9 @@
  * reads none (eval BIAS-005: two people differing only in such a cue get the same choice — the inputs carry no such field).
  */
 import { screenNextActionCandidates, type ArbiterChannel, type ArbiterFormat, type NextActionCandidate, type NextActionGate, type NextActionVerb } from "@/lib/ai-isa/followup-arbiter"
-import { QUESTION_TOPIC_FLOOR } from "@/lib/customer-intelligence/website-question-topics"
+// The recurrence floor is the ONE first-party privacy floor (the same number QUESTION_TOPIC_FLOOR.minDistinctAskers is derived
+// from). It is read from its home — importing the question feeder for it put three modules on every page that reaches this chooser.
+import { FIRST_PARTY_MIN_CONTACTS, FIRST_PARTY_WINDOW_DAYS } from "@/lib/content-intel/topic-intake"
 import type { QuestionClass } from "@/lib/portal/question-answer-decision"
 
 export type ArtifactSituationKind = "client_question" | "competing_offers" | "lead_magnet_topic" | "terms_changed" | "local_market_evidence" | "anniversary"
@@ -110,8 +112,8 @@ export function chooseSituationArtifact(s: ArtifactSituation): ArtifactChoice {
       video("sensitivity", false, why); plain("sensitivity", false, why)
     } else if (q.kind !== "general_education") video("artifact", false, `a ${q.kind.replace(/_/g, " ")} question is answered in words — a video would only delay the fact they asked for`)
     else if (!readyVideo) {
-      const floor = QUESTION_TOPIC_FLOOR.minDistinctAskers
-      video("artifact", s.distinctAskers == null ? null : s.distinctAskers >= floor, s.distinctAskers == null ? "how often this is asked is unknown" : s.distinctAskers >= floor ? `asked by ${s.distinctAskers} people in ${QUESTION_TOPIC_FLOOR.windowDays} days (floor ${floor}) — one video serves every asker` : `asked by ${s.distinctAskers} (floor ${floor}) — a clear written answer serves one asker; a video is made once the question recurs`)
+      const floor = FIRST_PARTY_MIN_CONTACTS
+      video("artifact", s.distinctAskers == null ? null : s.distinctAskers >= floor, s.distinctAskers == null ? "how often this is asked is unknown" : s.distinctAskers >= floor ? `asked by ${s.distinctAskers} people in ${FIRST_PARTY_WINDOW_DAYS} days (floor ${floor}) — one video serves every asker` : `asked by ${s.distinctAskers} (floor ${floor}) — a clear written answer serves one asker; a video is made once the question recurs`)
     }
   } else if (s.kind === "competing_offers") {
     video("review", s.agentAssigned, s.agentAssigned ? "a draft for the agent's review — no offer term is stated and no legal advice is given; the offers themselves govern" : "no agent to review an option explainer — nothing is drafted")

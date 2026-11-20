@@ -43,13 +43,19 @@ export async function stageVideoAction(videoId: string) {
       if (error) return { success: false as const, error: `video unreadable: ${error.message}` }
       if (!data || !ctx.agentId || (data as { agent_id?: string | null }).agent_id !== ctx.agentId) return { success: false as const, error: "Forbidden" }
     }
+    // WAVE 155 (155R17): the receipt — the SESSION's user and tenant; staging is a draft step (the approver releases).
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const brokerageId = ctx.brokerageId
+    const out = await ledgerSessionAction({ brokerageId, action: "marketing.video_project.stage", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "ai_video_project", id: videoId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const { stageVideoForPublication } = await import("@/lib/video/video-staging")
-    const r = await stageVideoForPublication(svc, { brokerageId: ctx.brokerageId, videoId })
+    const r = await stageVideoForPublication(svc, { brokerageId, videoId })
     if (!r.ok) return { success: false as const, error: r.error }
     revalidatePath("/dashboard/marketing/video-staging")
     return r.staged
       ? { success: true as const, stage: r.stage, blockers: [...r.blockers, ...r.waitingOn], notified: r.notified }
       : { success: true as const, stage: null, blockers: [r.reason], notified: 0 }
+    })
+    return "stage" in out ? out : { success: false as const, error: out.error ?? "Failed to stage the video" }
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to stage the video" }
   }

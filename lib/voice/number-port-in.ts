@@ -302,7 +302,10 @@ async function portCreds(svc: any, brokerageId: string, deps?: PortInDeps) {
   if (deps && "creds" in deps) return deps.creds ?? null
   const { ensureTenantSubaccount, resolveTenantTwilioCreds } = await import("@/lib/voice/twilio-tenancy")
   // The port lands in the tenant's OWN subaccount (A2P files from there).
-  try { await ensureTenantSubaccount(svc, brokerageId) } catch { /* falls through to existing creds */ }
+  // Falls through to the existing credentials either way — but a subaccount the provider CREATED and this side could not
+  // record is said (wave 155): swallowed, it left a provider subaccount nobody knew about.
+  const sub = await ensureTenantSubaccount(svc, brokerageId).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e), notConfigured: false }))
+  if (!sub.ok && !sub.notConfigured) console.error("[voice] tenant subaccount not ensured:", sub.error)
   return resolveTenantTwilioCreds(svc, brokerageId)
 }
 

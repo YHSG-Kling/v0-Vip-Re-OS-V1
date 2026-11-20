@@ -14,6 +14,7 @@ import { evaluateKernelOutbound, isComplianceBlocked } from "@/lib/kernel/adapte
 import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
 import { incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { mayUseFeature } from "@/lib/billing/billing-access"
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { generateAIResponse } from "@/lib/ai"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { scheduleSocialPost, getConnectedAccounts } from "@/app/actions/social-media-automation"
@@ -342,14 +343,21 @@ export async function createRepurposePipeline(
       return { success: false, error: access.reason ?? "Feature not available" }
     }
 
+    const savedTenant = decideClaimedTenant({ actingBrokerageId: contextBrokerageId, claimedBrokerageId: params.brokerageId })
+    if (!savedTenant.ok) return { success: false, error: savedTenant.reason === "tenant_mismatch" ? "Forbidden: that brokerage is not yours." : "Your account is not linked to a brokerage" }
+
     const supabase = await createClient()
 
+    // WAVE 155 (155R17): the receipt — the SESSION's user and tenant (no session tenant → no valid row; runs unreceipted).
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const run = async (): Promise<SavePipelineResult> => {
     // Create pipeline record
     const { data: pipeline, error } = await supabase
       .from("repurpose_pipelines")
       .insert({
-        // Tenant from the SESSION first (CLAUDE.md §4) — the body value is only a fallback, as in executePipeline.
-        brokerage_id: contextBrokerageId || params.brokerageId,
+        // Tenant from the SESSION only (CLAUDE.md §4). The body value was a fallback; it is now only a CLAIM, refused above when it
+        // names another brokerage (decideClaimedTenant) — and a session with no tenant is refused rather than given the body's.
+        brokerage_id: savedTenant.brokerageId,
         agent_user_id: params.agentUserId || userId,
         team_id: params.teamId,
         pipeline_name: params.pipelineName,
@@ -379,6 +387,8 @@ export async function createRepurposePipeline(
     revalidatePath("/dashboard/campaigns/repurpose")
 
     return { success: true, pipelineId: pipeline.id }
+    }
+    return contextBrokerageId ? await ledgerSessionAction({ brokerageId: contextBrokerageId, action: "marketing.repurpose_pipeline.create", actor: { type: "user", userId }, subject: { type: "repurpose_pipeline" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source_type: params.sourceType, formats: params.outputFormats } }, run) : await run()
   } catch (error: any) {
     console.error("[Pipeline] Create error:", error)
     return { success: false, error: error.message }
@@ -406,11 +416,13 @@ export async function executePipeline(params: {
       return { success: false, error: access.reason ?? "Feature not available", blockedReason: "Access denied" }
     }
 
-    // Tenant scope is derived from the session, never trusted from the client.
-    const brokerageId = contextBrokerageId || params.brokerageId
-    if (!brokerageId) {
-      return { success: false, error: "No brokerage context" }
+    // Tenant scope is the SESSION's (CLAUDE.md §4). The body value is only a claim: a different brokerage is refused, and a
+    // session with no tenant is refused rather than handed the body's (it was a fallback before wave 155).
+    const runTenant = decideClaimedTenant({ actingBrokerageId: contextBrokerageId, claimedBrokerageId: params.brokerageId })
+    if (!runTenant.ok) {
+      return { success: false, error: runTenant.reason === "tenant_mismatch" ? "Forbidden: that brokerage is not yours." : "No brokerage context" }
     }
+    const brokerageId = runTenant.brokerageId
 
     const supabase = await createClient()
 
@@ -757,20 +769,30 @@ export async function togglePipelineActive(
   isActive: boolean
 ) {
   try {
+    // WAVE 155 (155R17 — CLAUDE.md §4): the owner and tenant are the SESSION's (the sibling createRepurposePipeline's
+    // getAgentContext); the userId / brokerageId arguments stay for signature compatibility and are no longer trusted.
+    const session = await getAgentContext()
+    if (!session.isAuthenticated || !session.userId || !session.brokerageId) return { success: false, error: "Not authenticated" }
+    void userId; void brokerageId
     const supabase = await createClient()
-
-    const { error } = await supabase
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: session.brokerageId, action: "marketing.repurpose_pipeline.toggle", actor: { type: "user", userId: session.userId }, subject: { type: "repurpose_pipeline", id: pipelineId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { is_active: isActive } }, async (): Promise<{ success: boolean; error?: string }> => {
+    const { data: changed, error } = await supabase
       .from("repurpose_pipelines")
       .update({ is_active: isActive })
       .eq("id", pipelineId)
-      .eq("agent_user_id", userId)
-      .eq("brokerage_id", brokerageId)
+      .eq("agent_user_id", session.userId)
+      .eq("brokerage_id", session.brokerageId as string)
+      .select("id")
 
     if (error) throw error
+    // §3: an UPDATE that matched nothing (another owner's pipeline, a deleted one) resolves — it is not a success.
+    if (!changed || changed.length === 0) return { success: false, error: "Pipeline not found" }
 
     revalidatePath("/dashboard/campaigns/repurpose")
 
     return { success: true }
+    })
   } catch (error: any) {
     console.error("[Pipeline] Toggle error:", error)
     return { success: false, error: error.message }
@@ -782,23 +804,32 @@ export async function togglePipelineActive(
 // ═══════════════════════════════════════════════════════════════════════════════
 export async function deletePipeline(userId: string, pipelineId: string, brokerageId: string) {
   try {
+    // WAVE 155 (155R17 — CLAUDE.md §4): the owner and tenant are the SESSION's; the arguments are no longer trusted.
+    const session = await getAgentContext()
+    if (!session.isAuthenticated || !session.userId || !session.brokerageId) return { success: false, error: "Not authenticated" }
+    void userId; void brokerageId
     const supabase = await createClient()
-
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: session.brokerageId, action: "marketing.repurpose_pipeline.delete", actor: { type: "user", userId: session.userId }, subject: { type: "repurpose_pipeline", id: pipelineId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
     // repurposed_content_log entries are historical (and may reference live
     // scheduled posts), so they are intentionally retained — they are not keyed
     // to a pipeline. Delete only the pipeline definition.
-    const { error } = await supabase
+    const { data: removed, error } = await supabase
       .from("repurpose_pipelines")
       .delete()
       .eq("id", pipelineId)
-      .eq("agent_user_id", userId)
-      .eq("brokerage_id", brokerageId)
+      .eq("agent_user_id", session.userId)
+      .eq("brokerage_id", session.brokerageId as string)
+      .select("id")
 
     if (error) throw error
+    // §3: a DELETE that matched nothing resolves byte-identically to one that worked — count it.
+    if (!removed || removed.length === 0) return { success: false, error: "Pipeline not found" }
 
     revalidatePath("/dashboard/campaigns/repurpose")
 
     return { success: true }
+    })
   } catch (error: any) {
     console.error("[Pipeline] Delete error:", error)
     return { success: false, error: error.message }

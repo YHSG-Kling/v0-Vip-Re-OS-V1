@@ -1,4 +1,9 @@
-"use server"
+// WAVE 155 (lane 155R15): NOT a "use server" module any more. These are the activity-log writers (and two history readers) the
+// server actions in app/actions/content-generation-engine.ts call AFTER their own session gate, passing the session's actor and
+// tenant. As "use server" exports they were public HTTP endpoints that accepted agent_id / agent_user_id / brokerage_id from the
+// request — anyone could forge "content generated" activity rows into any tenant, or read any agent's generation history
+// (CLAUDE.md §4). The activity row they write IS the evidence of the generation; it does not need a receipt of its own, it
+// needs to stop being writable from a browser. Every caller is server-side (lib/content-generation/index.ts re-exports them).
 
 import { createClient } from "@/lib/supabase/server"
 import { ContentGenerationOutput } from "./content-generator"

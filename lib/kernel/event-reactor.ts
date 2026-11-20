@@ -222,8 +222,34 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
         params.entityType === "transaction" &&
         (params.event === KernelEvent.OFFER_ACCEPTED || params.event === KernelEvent.TRANSACTION_STAGE_CHANGED)
       ) {
-        const { spawnDealCoordinatorForTransaction } = await import("@/lib/agents/deal-coordinator")
-        await spawnDealCoordinatorForTransaction({ brokerageId: params.brokerageId, transactionId: params.entityId })
+        // WAVE 155 (155R17, G04): spawning the Deal Coordinator starts AUTONOMOUS AI work for the deal — the DECISION is the
+        // existing autonomy gate (lib/managers/autonomy-gate.ts autonomyDecision) over its two halts: the platform's god switch
+        // (loadPlatformHalt) and platform staff's per-tenant pause (loadTenantAutonomyHalt). The posture itself is NOT consulted
+        // here — `approval_required` governs the coordinator's SENDS (which reach the approval queue), not whether it drafts. A
+        // held decision spawns nothing; either way ONE receipt names what happened. A refused claim keeps today's behavior.
+        const { createServiceClient } = await import("@/lib/supabase/service")
+        const svcDc = createServiceClient()
+        const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+        const { autonomyDecision, loadTenantAutonomyHalt } = await import("@/lib/managers/autonomy-gate")
+        const { loadPlatformHalt } = await import("@/lib/platform/platform-controls")
+        const dcBrokerageId = params.brokerageId
+        const dcDecision = autonomyDecision({ managerKey: "deal_coordinator", effective: null, platformHalt: await loadPlatformHalt(svcDc as never), tenantHalt: await loadTenantAutonomyHalt(dcBrokerageId, svcDc as never) })
+        let dcSpawn: { ok: boolean; skipped?: string | null; error?: string } | null = null
+        const runDc = async (): Promise<void> => {
+          if (!dcDecision.allow) return
+          const { spawnDealCoordinatorForTransaction } = await import("@/lib/agents/deal-coordinator")
+          dcSpawn = await spawnDealCoordinatorForTransaction({ brokerageId: dcBrokerageId, transactionId: params.entityId })
+        }
+        await withActionLedger<void>({ brokerageId: dcBrokerageId, action: "agent.deal_coordinator.spawn", actor: { type: "manager", managerKey: "deal_coordinator" }, subject: { type: "transaction", id: params.entityId }, riskClass: "LOW_RISK_WRITE", systemSource: "event_reactor", detail: { event: params.event, autonomy: dcDecision.allow ? "allow" : "held" } }, runDc, {
+          settle: () => {
+            const s = dcSpawn as { ok: boolean; skipped?: string | null; error?: string } | null
+            if (!dcDecision.allow) return { status: "skipped", outcome: "autonomy_held", error: dcDecision.reason }
+            if (s?.ok) return { status: "executed", outcome: s.skipped ? `spawn_${s.skipped}` : "spawned" }
+            if (s?.skipped) return { status: "skipped", outcome: `spawn_${s.skipped}`, error: s.error ?? null }
+            return { status: "failed", outcome: "spawn_failed", error: s?.error ?? "no spawn result" }
+          },
+          replay: (claim) => (claim.kind === "refused" ? runDc() : undefined),
+        }, { client: svcDc as never })
       }
       // Contact-side — early-start on CONTACT_CREATED + re-spawn on stage changes (idempotent).
       else if (
@@ -293,7 +319,17 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
   if (params.brokerageId && params.entityType === "contact" && params.event === KernelEvent.TOUR_COMPLETED) {
     try {
       const { produceTourFollowUp } = await import("@/lib/agents/tour-followup-producer")
-      void produceTourFollowUp(params.brokerageId, params.entityId, svc)
+      // WAVE 155 (155R17, G04): ONE receipt per run. The decision stays where it was — the follow-up is only PROPOSED into the
+      // client_message approval gate (proposeClientMessage); a human releases it. Still fire-and-forget; a refused claim
+      // keeps today's behavior (the producer runs, unreceipted).
+      const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+      const tourBrokerageId = params.brokerageId
+      let tourResult: { proposed: number } | null = null
+      const runTour = async (): Promise<void> => { tourResult = await produceTourFollowUp(tourBrokerageId, params.entityId, svc) }
+      void withActionLedger<void>({ brokerageId: tourBrokerageId, action: "agent.tour_followup.propose", actor: { type: "manager", managerKey: "shopping_agent" }, subject: { type: "contact", id: params.entityId }, riskClass: "LOW_RISK_WRITE", systemSource: "event_reactor", detail: { event: params.event } }, runTour, {
+        settle: () => ((tourResult as { proposed: number } | null)?.proposed ? { status: "executed", outcome: "followup_proposed" } : { status: "skipped", outcome: "nothing_proposed" }),
+        replay: (claim) => (claim.kind === "refused" ? runTour() : undefined),
+      }, { client: svc }).catch(() => null)
     } catch { /* auto-producer is best-effort */ }
   }
 
@@ -4595,7 +4631,17 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
           const contactId = params.contactId ?? params.entityId
           if (contactId && md.module_id && md.agent_client_message_id) {
             const { stampEducationDelivered } = await import("@/lib/agents/education-delivery-producer")
-            const r = await stampEducationDelivered(svc, { brokerageId: params.brokerageId, contactId, moduleId: md.module_id, messageId: md.agent_client_message_id, channel: md.channel ?? null })
+            // WAVE 155 (155R17, G04): ONE ledger receipt for the stamp. No decision is taken HERE — the lesson was released by a
+            // human approver (approveClientMessage emits this event only after that approval); the stamp records the delivery.
+            // A refused claim keeps today's behavior (the stamp still runs, unreceipted).
+            const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+            const eduBrokerageId = params.brokerageId, moduleId = md.module_id, messageId = md.agent_client_message_id
+            let r: { ok: true; assignmentId: string } | { ok: false; error: string } = { ok: false, error: "not run" }
+            const runStamp = async (): Promise<void> => { r = await stampEducationDelivered(svc, { brokerageId: eduBrokerageId, contactId, moduleId, messageId, channel: md.channel ?? null }) }
+            await withActionLedger<void>({ brokerageId: eduBrokerageId, action: "education.delivery.stamp", actor: { type: "manager", managerKey: "recruiting_manager" }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", systemSource: "event_reactor", detail: { module_id: moduleId, agent_client_message_id: messageId } }, runStamp, {
+              settle: () => (r.ok ? { status: "executed", outcome: "delivery_stamped" } : { status: "failed", outcome: "stamp_refused", error: r.error }),
+              replay: (claim) => (claim.kind === "refused" ? runStamp() : undefined),
+            }, { client: svc })
             if (!r.ok) console.error(`[event-reactor] client_education_delivered receipt not stamped (contact ${contactId}, module ${md.module_id}): ${r.error}`)
           } else {
             console.error("[event-reactor] client_education_delivered carried no contact / module / message id — no receipt stamped")

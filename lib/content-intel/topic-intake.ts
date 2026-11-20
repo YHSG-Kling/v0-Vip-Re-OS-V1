@@ -49,6 +49,26 @@ export type TopicEvidenceKind = "measured" | "proxy" | "unknown"
  *  the article body"). It is NOT a rewording, so it never claims to be one. */
 export type TopicRights = "licensed" | "own_content" | "public_read_reworded" | "public_citation" | "first_party" | "unknown"
 
+/**
+ * THE ONE PRIVACY FLOOR FOR FIRST-PARTY DEMAND. A demand category — or a customer question — becomes a topic only when this many
+ * DISTINCT people stated it inside the window; fewer could single someone out. A privacy floor (owner-adjustable policy), not a
+ * measurement. Defined HERE (wave 155) because the one intake is what every producer and every reader of the topic pool already
+ * imports: lib/content-intel/search-demand.ts (where these lived, and which still re-exports them), the customer-question feeder
+ * (QUESTION_TOPIC_FLOOR) and the situation chooser (lib/video/situation-artifact-choice.ts) all read the SAME two numbers, and the
+ * chooser no longer has to pull the question feeder and the search-demand producers onto a page to learn the number 3.
+ */
+export const FIRST_PARTY_MIN_CONTACTS = 3
+export const FIRST_PARTY_WINDOW_DAYS = 60
+
+/**
+ * ONE SUBJECT, ONE TOPIC — the adoption step a producer runs before the intake, as a FUNCTION PASSED IN, never imported here or by
+ * the theme pass. Its implementation is lib/customer-intelligence/website-question-topics.ts adoptLiveSubjectKeys; that module
+ * imports the question lexicon and the portal answer decision, and reaching it from the theme pass put six modules on every page
+ * that reaches the topic pool (the heaviest page went one over its wall). The cron route — the one caller outside that graph —
+ * passes it down (app/api/cron/local-intel/route.ts), and test:portal-answer checks that it does.
+ */
+export type SubjectKeyAdopter = (db: any, brokerageId: string, ideas: readonly TopicIdea[]) => Promise<{ ideas: TopicIdea[]; adopted: Map<string, string>; held: string[] }>
+
 export interface TopicIdea {
   sourceKind: string
   /** The REWORDED consumer question / topic — never a source's own wording (a public_citation idea carries the credited headline). */
@@ -246,7 +266,7 @@ const KIND_WINDOWS: Readonly<Record<string, { expiresDays: number; maxSourceAgeD
   google_trends: { expiresDays: 14, maxSourceAgeDays: 30 },          // search-demand.ts TOPIC_TTL_DAYS (14 d)
   search_demand_search_console: { expiresDays: 14, maxSourceAgeDays: 45 },
   search_demand_keyword_intel: { expiresDays: 14, maxSourceAgeDays: 45 },
-  search_demand_first_party: { expiresDays: 21, maxSourceAgeDays: 60 }, // search-demand.ts FIRST_PARTY_WINDOW_DAYS (60 d)
+  search_demand_first_party: { expiresDays: 21, maxSourceAgeDays: FIRST_PARTY_WINDOW_DAYS }, // the one first-party window (above)
 })
 const DEFAULT_WINDOW = { expiresDays: 21, maxSourceAgeDays: 365 }
 

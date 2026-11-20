@@ -945,6 +945,9 @@ export async function requestValueUpdate(contactId: string) {
   const access = await requireContactAccess(contactId)
   if (!access.ok) throw new Error("Forbidden")
 
+  // WAVE 155 (155R17): the receipt — the gate's SESSION user (the client or staff) and tenant; subject = the Contact.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.value_update.request", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
   const supabase = createServiceClient()
 
   // Get contact's agent
@@ -976,9 +979,15 @@ export async function requestValueUpdate(contactId: string) {
     read: false,
     created_at: new Date().toISOString(),
   })
-  if (valueReqMsgErr) console.error(`[portal-lifetime] client's home-value request NOT delivered to their agent: ${valueReqMsgErr.message}`)
+  if (valueReqMsgErr) {
+    console.error(`[portal-lifetime] client's home-value request NOT delivered to their agent: ${valueReqMsgErr.message}`)
+    // §3: a refused insert is not a delivered request — the follow-up filer (fileHomeFollowUp) reads `success` to decide whether
+    // the client is told it was filed; it used to read true here for a request that never reached the agent.
+    return { success: false, error: "Your request could not be delivered to your agent — please try again." }
+  }
 
   return { success: true }
+  })
 }
 
 // ─── GET VENDOR RESOURCES ────────────────────────────────────────────────────
@@ -1035,6 +1044,8 @@ export async function submitPropertyFeedback(params: {
 }): Promise<{ success: boolean; error?: string }> {
   const access = await requireContactAccess(params.contactId)
   if (!access.ok) return { success: false, error: "Forbidden" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.property_feedback.submit", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { vote: params.vote, contact_self: access.isContactSelf } }, async () => {
 
   // A 1-5 scale so the agent-side preference learner can rank, alongside the
   // word the buyer actually chose.
@@ -1079,4 +1090,5 @@ export async function submitPropertyFeedback(params: {
 
   if (error) return { success: false, error: error.message }
   return { success: true }
+  })
 }

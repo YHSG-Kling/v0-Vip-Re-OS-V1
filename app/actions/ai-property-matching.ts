@@ -104,6 +104,22 @@ export async function generatePropertyMatches(params: {
       .eq("contact_id", params.contactId)
       .eq("brokerage_id", ctx.brokerageId)
 
+    // WAVE 155 (155R17, G14): THE BUYER'S OWN VOTES — the reader property_feedback was written for. learnFromBuyerFeedback
+    // (agent side, below) and submitPropertyFeedback (the portal's rating dialog, app/actions/portal-lifetime.ts) both write
+    // here "so a rating teaches the match engine", and the match engine never read it. A refused read is logged and matching
+    // proceeds on the other signals (§3 — never a silent empty).
+    const { data: feedbackRows, error: feedbackReadError } = await supabase
+      .from("property_feedback")
+      .select("listing_id, feedback_type, disliked_features")
+      .eq("contact_id", params.contactId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(50)
+    if (feedbackReadError) console.error("[ai-property-matching] generatePropertyMatches: feedback read refused:", feedbackReadError.message)
+    const feedbackLines = (feedbackRows ?? [])
+      .filter((f: { listing_id?: string | null; feedback_type?: string | null }) => f.listing_id && f.feedback_type)
+      .map((f: { listing_id?: string | null; feedback_type?: string | null; disliked_features?: string[] | null }) => `- ${f.feedback_type}: listing ${f.listing_id}${f.disliked_features?.length ? ` (disliked: ${f.disliked_features.join(", ")})` : ""}`)
+
     // Get available listings matching basic criteria
     let listingsQuery = supabase
       .from("listings")
@@ -157,6 +173,9 @@ VIEWING BEHAVIOR:
 - Properties viewed: ${viewHistory?.length || 0}
 - Most viewed property types: ${analyzeViewingPatterns(viewHistory)}
 - Saved properties: ${savedProperties?.length || 0}
+
+BUYER'S OWN PROPERTY VOTES (${feedbackLines.length}):
+${feedbackLines.length ? feedbackLines.join("\n") : "- none recorded"}
 
 AVAILABLE PROPERTIES (${listings.length} total):
 ${listings.slice(0, 20).map(l => `

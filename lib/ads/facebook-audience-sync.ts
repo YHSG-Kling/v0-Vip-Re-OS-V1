@@ -166,6 +166,8 @@ export async function createAudience(
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.ad_audience.create", actor: { type: "user", userId: userId }, subject: { type: "facebook_custom_audience", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { audience_type: params.audienceType } }, async () => {
 
   // ── 2. Delegate to kernel createAudienceSegment ──────────────────────────────
   const result = await createAudienceSegment({
@@ -186,6 +188,7 @@ export async function createAudience(
   await incrementFeatureUsage(userId, "ads_audiences")
 
   return { success: true, audienceId: result.audienceId }
+  })
 }
 
 // ─── syncAudience (the "use server" manual-sync endpoint) — DELETED ───────────
@@ -315,6 +318,8 @@ export async function deleteAudience(
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.ad_audience.delete", actor: { type: "user", userId: userId }, subject: { type: "facebook_custom_audience", id: audienceId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -360,6 +365,7 @@ export async function deleteAudience(
   }
 
   return { success: true }
+  })
 }
 
 // ─── getAudienceSyncHistory ───────────────────────────────────────────────────

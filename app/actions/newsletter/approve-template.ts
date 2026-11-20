@@ -76,6 +76,8 @@ export async function submitTemplateForApproval(templateId: string) {
     .single()
 
   if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: userData.brokerage_id, action: "marketing.newsletter_template.submit_for_approval", actor: { type: "user", userId: user.id }, subject: { type: "newsletter_brokers_template", id: templateId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // Update status to pending_review
   const { error } = await supabase
@@ -93,6 +95,7 @@ export async function submitTemplateForApproval(templateId: string) {
     success: true,
     message: 'Template submitted for broker approval',
   }
+  }))
 }
 
 /**
@@ -122,6 +125,8 @@ export async function approveTemplate(templateId: string, _approvingUserId?: str
     approverData.user_type ?? null, approverData.role ?? null, approverData.brokerage_id,
   )
   if (!allowed) throw new Error('Only broker admins can approve templates')
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: approverData.brokerage_id, action: "marketing.newsletter_template.approve", actor: { type: "user", userId: user.id }, subject: { type: "newsletter_brokers_template", id: templateId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const { error } = await supabase
     .from('newsletter_brokers_templates')
@@ -140,6 +145,7 @@ export async function approveTemplate(templateId: string, _approvingUserId?: str
     success: true,
     message: 'Template approved',
   }
+  }))
 }
 
 export async function rejectTemplate(templateId: string, rejectionReason: string) {
@@ -162,6 +168,8 @@ export async function rejectTemplate(templateId: string, rejectionReason: string
     rejectorData.user_type ?? null, rejectorData.role ?? null, rejectorData.brokerage_id,
   )
   if (!allowed) throw new Error('Only broker admins can reject templates')
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: rejectorData.brokerage_id, action: "marketing.newsletter_template.reject", actor: { type: "user", userId: user.id }, subject: { type: "newsletter_brokers_template", id: templateId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const { error } = await supabase
     .from('newsletter_brokers_templates')
@@ -180,4 +188,5 @@ export async function rejectTemplate(templateId: string, rejectionReason: string
     success: true,
     message: 'Template rejected',
   }
+  }))
 }

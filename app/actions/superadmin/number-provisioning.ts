@@ -57,6 +57,8 @@ export async function searchNumbersForTenant(params: {
   const svc = createServiceClient()
   const { data: brk } = await svc.from("brokerages").select("id").eq("id", params.brokerageId).maybeSingle()
   if (!brk) return { ok: false, error: "Tenant not found" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: params.brokerageId, action: "telephony.number_inventory.search", actor: { type: "user", userId: gate.userId }, subject: { type: "brokerage", id: params.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform_staff: true } }, async (): ReturnType<typeof searchNumbersForTenant> => {
 
   const res = await searchAvailableNumbers(svc, params.brokerageId, {
     areaCode: params.areaCode || null,
@@ -65,6 +67,7 @@ export async function searchNumbersForTenant(params: {
   })
   if (!res.ok) return res
   return { ok: true, candidates: res.candidates, credTier: res.credTier }
+  }); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
 }
 
 /** Wave 82D — LOCAL numbers nearest the chosen tenant (its area code first,

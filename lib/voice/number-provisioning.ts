@@ -62,7 +62,10 @@ export async function logPhoneNumberEvent(
 async function resolveCreds(svc: any, brokerageId: string): Promise<TwilioCreds | null> {
   // Best-effort: give the tenant its own subaccount before the first purchase
   // (idempotent; without master creds it honestly no-ops and we fall through).
-  try { await ensureTenantSubaccount(svc, brokerageId) } catch { /* falls through to existing creds */ }
+  // Falls through to the existing credentials either way — but a subaccount the provider CREATED and this side could not
+  // record is said (wave 155): swallowed, it left a provider subaccount nobody knew about.
+  const sub = await ensureTenantSubaccount(svc, brokerageId).catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e), notConfigured: false }))
+  if (!sub.ok && !sub.notConfigured) console.error("[voice] tenant subaccount not ensured:", sub.error)
   return resolveTenantTwilioCreds(svc, brokerageId)
 }
 

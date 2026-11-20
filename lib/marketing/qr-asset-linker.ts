@@ -91,7 +91,9 @@ export async function linkQrToAsset(
   if (!(QR_PLACEMENT_TYPES as readonly string[]).includes(String(params.placementType))) {
     return { success: false, error: `placement "${String(params.placementType)}" is not one of ${QR_PLACEMENT_TYPES.join(" | ")}` }
   }
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.qr_asset_link.create", actor: { type: "user", userId: userId }, subject: { type: "marketing_asset", id: params.marketingAssetId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { qr_code_id: params.qrCodeId, placement: params.placementType } }, async () => {
   const supabase = await createClient()
 
   // Validate QR code exists and belongs to brokerage
@@ -166,6 +168,7 @@ export async function linkQrToAsset(
   }).catch((err) => console.error("[QrAssetLinker] Kernel event failed:", err))
 
   return { success: true, linkId: link.id ?? "" }
+  })
 }
 
 // ─── UNLINK QR FROM ASSET ─────────────────────────────────────────────────────
@@ -178,21 +181,26 @@ export async function linkQrToAsset(
 export async function unlinkQrFromAsset(
   linkId: string
 ): Promise<{ success: boolean; error?: string }> {
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.qr_asset_link.remove", actor: { type: "user", userId: userId }, subject: { type: "marketing_asset_qr_link", id: linkId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = await createClient()
 
-  const { error } = await supabase
+  const { data: removed, error } = await supabase
     .from("marketing_asset_qr_links")
     .delete()
     .eq("id", linkId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) {
     console.error("[v0] Error unlinking QR from asset:", error)
     return { success: false, error: error.message }
   }
+  if (!removed || removed.length === 0) return { success: false, error: "That QR link is not in your brokerage (or is already gone)" }
 
   return { success: true }
+  })
 }
 
 // ─── GET ASSET QR LINKS ───────────────────────────────────────────────────────

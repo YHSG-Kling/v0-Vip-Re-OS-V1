@@ -557,7 +557,7 @@ export async function runTopicRefurbishPass(svc: Svc, brokerageId: string, opts:
  * told from a lapsed one — fail closed); a refused TERRITORY read treats every live tenant as territory-less, the STRICTER branch
  * (first-party only), and the starter's ledger key still stops a double start for a tenant the territory sweep also reached.
  */
-export async function runFirstPartyTopicSweep(svc: Svc, opts: { now?: Date; maxTenants?: number; budgetMs?: number } = {}, deps: {
+export async function runFirstPartyTopicSweep(svc: Svc, opts: { now?: Date; maxTenants?: number; budgetMs?: number; adoptSubjectKeys?: import("@/lib/content-intel/topic-intake").SubjectKeyAdopter } = {}, deps: {
   /** @proofSeam — production: resolveActiveScrapeTerritories (lib/lead-pipeline/scrape-territories.ts), the pull gate's own resolution. */
   resolve?: (svc: Svc) => Promise<{ activeBrokerageIds: string[]; territories: Array<{ brokerage_id: string | null }>; noOp: boolean; reason: string; error?: string }>
   /** @proofSeam — production: runTopicIntelligencePass (lib/content-intel/topic-intelligence.ts). */
@@ -583,7 +583,7 @@ export async function runFirstPartyTopicSweep(svc: Svc, opts: { now?: Date; maxT
       if (out.visited >= (opts.maxTenants ?? 50) || Date.now() - begun > (opts.budgetMs ?? 60_000)) { out.reason = "bounded"; break }
       out.visited++
       try {
-        const intel = deps.intel ? await deps.intel(svc, b, now) : await (await import("@/lib/content-intel/topic-intelligence")).runTopicIntelligencePass(svc as never, b, { now })
+        const intel = deps.intel ? await deps.intel(svc, b, now) : await (await import("@/lib/content-intel/topic-intelligence")).runTopicIntelligencePass(svc as never, b, { now, adoptSubjectKeys: opts.adoptSubjectKeys })
         out.topicIntel += intel.inserted + intel.refreshed
         for (const e of intel.errors.slice(0, 2)) out.errors.push(`${b}: topic intelligence: ${e}`)
         const r = await (deps.pass ?? runTopicRefurbishPass)(svc, b, { now, territory: "none" }, deps.refurbish ?? {})

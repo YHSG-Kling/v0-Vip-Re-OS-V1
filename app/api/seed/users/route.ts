@@ -6,6 +6,11 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 
 export async function POST(request: Request) {
+  // A SEED DOOR NEVER RUNS IN A DEPLOYED BUILD (wave 155; found by lane 155R17). It upserts GLOBAL users rows typed admin /
+  // broker / tc, with no tenant and a base64 "password hash", and its only gate was the maintenance check — open in
+  // production to ANY tenant's admin once ALLOW_PROD_MAINTENANCE_ROUTES is set. Previews share the live database, so the
+  // refusal covers every production BUILD, not only the production deployment. Local development is unchanged.
+  if (process.env.NODE_ENV === "production" || process.env.VERCEL_ENV === "production") return NextResponse.json({ error: "Not found" }, { status: 404 })
   const auth = await requireAdminMaintenanceAccess(request)
   if (!auth.authorized) return auth.response
 

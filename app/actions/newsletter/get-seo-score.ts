@@ -26,6 +26,15 @@ export async function getSEOScore(input: SEOScoreInput) {
     data: { user },
   } = await supabase.auth.getUser()
   if (!user) throw new Error('Not authenticated')
+  // WAVE 155 (lane 155R15): the SAME tenant proof as getStoredSEOScore below — the send must be the caller's brokerage's.
+  const { data: userData } = await supabase.from('users').select('brokerage_id').eq('id', user.id).maybeSingle()
+  if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  const { data: send, error: sendError } = await supabase
+    .from('newsletter_scheduled_sends').select('id').eq('id', input.scheduledSendId).eq('brokerage_id', userData.brokerage_id).maybeSingle()
+  if (sendError) throw new Error(`Could not verify that scheduled send: ${sendError.message}`)
+  if (!send) throw new Error('That scheduled send is not on your brokerage')
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: userData.brokerage_id, action: "marketing.newsletter_seo_score.record", actor: { type: "user", userId: user.id }, subject: { type: "newsletter_scheduled_send", id: input.scheduledSendId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const breakdown = computeSeoScore({
     subjectLine: input.subjectLine,
@@ -48,6 +57,7 @@ export async function getSEOScore(input: SEOScoreInput) {
   if (error) throw new Error(`Failed to save SEO score: ${error.message}`)
 
   return breakdown
+  }); if ("success" in r) throw new Error(r.error ?? "Not recorded"); return r
 }
 
 export interface StoredSEOScore {

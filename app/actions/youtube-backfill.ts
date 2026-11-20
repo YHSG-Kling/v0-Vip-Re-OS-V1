@@ -24,9 +24,15 @@ export async function queueApprovedVideosToYouTubeAction(): Promise<
     const admin = await resolveTenantAdmin(supabase, ctx.userId, { user_type: ctx.userType, brokerage_id: ctx.brokerageId })
     if (!admin.ok) return { success: false, error: `Could not resolve your permissions: ${admin.error}` }
     if (!admin.isTenantAdmin) return { success: false, error: "Only a broker, an admin, a team lead or a compliance officer can queue the brokerage's videos for YouTube." }
+    // WAVE 155 (155R17): the receipt — the SESSION's tenant admin and tenant; queuing public posts is a COMMUNICATION act.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const brokerageId = ctx.brokerageId
+    const out = await ledgerSessionAction({ brokerageId, action: "marketing.youtube_backfill.queue", actor: { type: "user", userId: ctx.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const { backfillYouTubeAutoPublish } = await import("@/lib/video/youtube-publish")
-    const r = await backfillYouTubeAutoPublish(createServiceClient(), ctx.brokerageId, { limit: 10 })
-    return { success: true, examined: r.examined, queued: r.queued, alreadyQueued: r.alreadyQueued, skipped: r.skipped, note: r.note ?? null }
+    const r = await backfillYouTubeAutoPublish(createServiceClient(), brokerageId, { limit: 10 })
+    return { success: true as const, examined: r.examined, queued: r.queued, alreadyQueued: r.alreadyQueued, skipped: r.skipped, note: r.note ?? null }
+    })
+    return "examined" in out ? out : { success: false, error: out.error ?? "Failed to queue the videos for YouTube" }
   } catch (e) {
     return { success: false, error: (e as Error)?.message ?? "Failed to queue the videos for YouTube" }
   }

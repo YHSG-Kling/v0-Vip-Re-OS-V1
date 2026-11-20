@@ -230,18 +230,27 @@ export async function loadMarketingReview(params: {
  * sent}, so we always use 'dismissed' here — not 'rejected'.
  */
 export async function dismissDraft(draftId: string): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
-
+  // WAVE 155 (155R17 — CLAUDE.md §4): this door updated ANY tenant's draft on the service client (no tenant predicate). The
+  // tenant and the scope are now the SESSION's, exactly as loadMarketingReview reads them (requireCallerTenant; an agent acts
+  // only on drafts addressed to them, the tenant admin roster on the tenant's), and a zero-row update is not a success (§3).
+  const caller = await requireCallerTenant(null)
+  if (!caller.ok) return { success: false, error: caller.error }
+  const agentScope = !isAdminOrBroker({ user_type: caller.userType })
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "marketing.message_draft.dismiss", actor: { type: "user", userId: caller.userId }, subject: { type: "ai_message_draft", id: draftId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
   const svc = createServiceClient()
-  const { error } = await svc
+  let q = svc
     .from("ai_message_drafts")
     .update({ status: "dismissed", acted_at: new Date().toISOString() })
     .eq("id", draftId)
+    .eq("brokerage_id", caller.brokerageId)
     .eq("status", "pending")
+  if (agentScope) q = q.eq("agent_user_id", caller.userId)
+  const { data, error } = await q.select("id")
   if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) return { success: false, error: "Draft not found or already handled" }
   return { success: true }
+  })
 }
 
 /**
@@ -251,16 +260,24 @@ export async function dismissDraft(draftId: string): Promise<{ success: boolean;
  * 'cancelled' which is the canonical "agent chose not to send" state.
  */
 export async function cancelSocialPost(postId: string): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
-
+  // WAVE 155 (155R17 — CLAUDE.md §4): same defect and same fix as dismissDraft above — the SESSION's tenant and scope
+  // (loadMarketingReview's social query: an agent's own posts, the admin roster the tenant's), and zero rows is not success.
+  const caller = await requireCallerTenant(null)
+  if (!caller.ok) return { success: false, error: caller.error }
+  const agentScope = !isAdminOrBroker({ user_type: caller.userType })
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "marketing.social_post.cancel", actor: { type: "user", userId: caller.userId }, subject: { type: "social_post", id: postId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string }> => {
   const svc = createServiceClient()
-  const { error } = await svc
+  let q = svc
     .from("social_posts")
     .update({ status: "cancelled" })
     .eq("id", postId)
+    .eq("brokerage_id", caller.brokerageId)
     .in("status", ["scheduled", "draft"])
+  if (agentScope) q = q.eq("user_id", caller.userId)
+  const { data, error } = await q.select("id")
   if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) return { success: false, error: "Post not found or already handled" }
   return { success: true }
+  })
 }

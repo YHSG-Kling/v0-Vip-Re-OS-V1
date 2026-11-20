@@ -214,13 +214,17 @@ export function memSupabase(seed: Record<string, Row[]>, opts: MemOptions = {}):
         const terms = rawTerms.map((t) => {
           // Wave 150 (lane 150QTV, the scoped global search): + `ilike` — `first_name.ilike.%ann%` (the record search's name
           // match). Same pattern grammar as `.ilike()` above.
-          const m = /^([\w]+)\.(eq|is|gte|lte|in|ilike)\.(.*)$/.exec(t.trim())
+          // Wave 155 (lane 155R15, the late receipt guard): + `not.is.null` — the plan-feature gate's override read
+          // (lib/kernel/0.1-feature-access.ts `user_id.eq.<id>,team_id.not.is.null,brokerage_id.not.is.null`). Only `null`
+          // is honoured after `not.is`; anything else still THROWS.
+          const m = /^([\w]+)\.(not\.is|eq|is|gte|lte|in|ilike)\.(.*)$/.exec(t.trim())
           if (!m) throw new Error(`memSupabase: unsupported or() term "${t}"`)
           filterCols.push(m[1])
           return m
         })
         filters.push((r) => terms.some(([, col, op, v]) =>
           op === "eq" ? String(val(r, col)) === v
+          : op === "not.is" ? (v === "null" ? !(val(r, col) === null || val(r, col) === undefined) : (() => { throw new Error(`memSupabase: unsupported or() not.is.${v}`) })())
           : op === "ilike" ? typeof val(r, col) === "string" && new RegExp(`^${v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*").replace(/_/g, ".")}$`, "i").test(val(r, col))
           : op === "in" ? new Set(parseList(v)).has(String(val(r, col)))
           : op === "gte" ? val(r, col) !== null && val(r, col) !== undefined && String(val(r, col)) >= v

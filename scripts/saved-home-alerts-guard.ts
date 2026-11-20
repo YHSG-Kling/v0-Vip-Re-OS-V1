@@ -521,7 +521,14 @@ async function main() {
     // "runs it", not "ends with it": every lane appends its own proof after this one (CLAUDE.md §2 — never pin a waypoint).
     check("package.json registers test:saved-home-alerts and the guard chain runs it", /"test:saved-home-alerts": "tsx --conditions=react-server scripts\/saved-home-alerts-guard\.ts"/.test(raw("package.json")) && /npm run test:saved-home-alerts(?= &&|")/.test(raw("package.json")))
     check("the registry owns the proof (MAINTENANCE_DOMAINS.saved_home_alerts → shopping_agent, co-owned by ai_isa + data_steward)", /saved_home_alerts: \{ manager: "shopping_agent", proof: "test:saved-home-alerts", coOwners: \["ai_isa", "data_steward"\]/.test(raw("lib/kernel/manager-registry.ts")))
-    check("the m983 file exists beside the lane's other migration number being UNUSED (m984 — no second alert table)", existsSync(join(root, "supabase/migrations/m983-saved-home-last-verified-state.sql")) && !readdirSync(migDir).some((f) => /^m984-/.test(f)))
+    // THE RULE, not the waypoint (CLAUDE.md §2): this pinned "no file is numbered m984", which was true only until another lane
+    // used that number (wave 155, office circles). What it was protecting is that the lane created NO SECOND ALERT TABLE — so
+    // that is what is asserted: no migration creates a table whose name says saved-home / property alert besides the ones the
+    // schema already had.
+    const createsAlertTable = (sql: string) => /create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?(?:saved_home_alerts?|saved_home_nudges?|saved_property_alerts?)\b/i.test(sql)
+    const secondAlertTable = readdirSync(migDir).filter((f) => /^m\d+-.*\.sql$/.test(f) && createsAlertTable(readFileSync(join(migDir, f), "utf8")))
+    check("the m983 file exists and NO migration creates a second saved-home alert table", existsSync(join(root, "supabase/migrations/m983-saved-home-last-verified-state.sql")) && secondAlertTable.length === 0, secondAlertTable)
+    check("POSITIVE CONTROL: the finder recognizes a migration that would create one", createsAlertTable("create table if not exists public.saved_home_alerts (id uuid primary key)") && !createsAlertTable("alter table public.circle_tactic_shares add column location_id uuid"))
   }
 
   // ══ J ══════════════════════════════════════════════════════════════════════════════════════════════════════════════

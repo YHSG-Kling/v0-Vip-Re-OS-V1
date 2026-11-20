@@ -403,6 +403,9 @@ export async function dismissLearningAssignmentAction(
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.userId) return { success: false, error: "Not authenticated" }
 
+  // WAVE 155 (155R17): the receipt — the SESSION's user and tenant; an account with no tenant runs unreceipted (no valid row).
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const run = async (): Promise<{ success: boolean; error?: string }> => {
   const svc = createServiceClient()
   const { data: mod } = await svc
     .from("learning_modules")
@@ -429,6 +432,8 @@ export async function dismissLearningAssignmentAction(
 
   revalidatePath("/academy")
   return { success: true }
+  }
+  return ctx.brokerageId ? ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "academy.learning_assignment.dismiss", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "learning_module", id: moduleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, run) : run()
 }
 
 export async function getAcademyViewer(): Promise<

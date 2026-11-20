@@ -1,4 +1,8 @@
-"use server"
+// NOT a server-action module (wave 155, lane 155R17 — CLAUDE.md §4). The module-level "use server" that stood here made this
+// GATE a public HTTP door taking a `Request` (which a server-action call cannot even carry). Its only callers are route
+// handlers — app/api/seed/users/route.ts and app/api/migrate/verify/route.ts — which pass their own request. The
+// maintenance.access activities row it writes is the access EVIDENCE of those routes, not a user's act.
+import "server-only"
 import { createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"

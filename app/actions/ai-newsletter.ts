@@ -978,6 +978,8 @@ export async function manageSubscribers(params: {
     if (!sessionAgentId) {
       return { success: false, error: "No agent profile for this user in this brokerage — subscribers have no owner to file under." }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: sessionBrokerageId, action: "marketing.newsletter_subscriber.manage", actor: { type: "user", userId: ctx.userId, agentId: sessionAgentId }, subject: { type: "newsletter_subscriber", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { op: params.action } }, async () => {
 
     // The live UNIQUE is `newsletter_subscribers_brokerage_id_email_key
     // (brokerage_id, email)` — on the RAW email column. Without normalising,
@@ -1039,6 +1041,7 @@ export async function manageSubscribers(params: {
     }
 
     return { success: false, error: "Invalid action" }
+    }))
   } catch (error) {
     return handleError(error, "manageSubscribers")
   }
@@ -1098,6 +1101,8 @@ export async function deleteNewsletterCampaign(newsletterId: string) {
     if (!isValidUUID(newsletterId)) {
       return { success: false, error: "Invalid newsletter ID" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: sessionBrokerageId, action: "marketing.newsletter_campaign.delete", actor: { type: "user", userId: ctx.userId }, subject: { type: "newsletter_campaign", id: newsletterId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -1132,6 +1137,7 @@ export async function deleteNewsletterCampaign(newsletterId: string) {
     }
 
     return { success: true }
+    }))
   } catch (error) {
     return handleError(error, "deleteNewsletterCampaign")
   }
@@ -1311,6 +1317,8 @@ export async function manageSubscriberBatch(params: {
     if (!sessionAgentId) {
       return { success: false, error: "No agent profile for this user in this brokerage — subscribers have no owner to file under." }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: sessionBrokerageId, action: "marketing.newsletter_subscriber.manage_batch", actor: { type: "user", userId: ctx.userId, agentId: sessionAgentId }, subject: { type: "newsletter_subscriber", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { op: params.action, requested: Array.isArray(params.contactIds) ? params.contactIds.length : 0 } }, async () => {
 
     // `contactIds` is a caller-supplied array driving one round trip per entry
     // (a scope read plus a write). Unbounded, this endpoint is an amplification
@@ -1450,6 +1458,7 @@ export async function manageSubscriberBatch(params: {
     revalidatePath("/newsletters")
 
     return { success: true, affected, skipped }
+    }))
   } catch (error) {
     console.error("[AI Newsletter] Subscriber management error:", error)
     return handleError(error, "manageSubscriberBatch")

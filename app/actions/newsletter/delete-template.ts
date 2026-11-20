@@ -17,6 +17,8 @@ export async function deleteTemplate(templateId: string) {
     .single()
 
   if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: userData.brokerage_id, action: "marketing.newsletter_template.delete", actor: { type: "user", userId: user.id }, subject: { type: "newsletter_brokers_template", id: templateId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // Verify template belongs to user's brokerage
   const { data: template } = await supabase
@@ -40,4 +42,5 @@ export async function deleteTemplate(templateId: string) {
     success: true,
     message: 'Template deleted successfully',
   }
+  }))
 }

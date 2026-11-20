@@ -578,6 +578,20 @@ async function main() {
     check("POSITIVE CONTROL: the static-import finder sees a specimen", /^import\s+(?!type\b)/m.test('import { x } from "y"\n'))
   }
 
+  // ═══ one subject, one topic — the adopter is passed down by the cron, not imported by the theme pass ═══
+  section("wiring — the theme pass adopts live subject keys through the function the cron passes in")
+  {
+    const cron = code("app/api/cron/local-intel/route.ts"), pass = code("lib/content-intel/topic-intelligence.ts")
+    const passesAdopter = (src: string) => /import\(["']@\/lib\/customer-intelligence\/website-question-topics["']\)/.test(src)
+      && /runLocalIntelSweep\(\s*svc\s*,\s*\{[^}]*adoptSubjectKeys:\s*adoptLiveSubjectKeys/.test(src) && /runFirstPartyTopicSweep\([^)]*\{[^}]*adoptSubjectKeys:\s*adoptLiveSubjectKeys/.test(src)
+    check("the local-intel cron imports adoptLiveSubjectKeys and passes it to BOTH sweeps (territory tenants and first-party tenants)", passesAdopter(cron))
+    check("POSITIVE CONTROL: a cron that calls the sweeps with no adopter is seen", !passesAdopter('const swept = await runLocalIntelSweep(svc)\nconst firstParty = await runFirstPartyTopicSweep(svc as never)'))
+    check("the theme pass uses the adopter it is given and does not import the question feeder (that edge put six modules on the heaviest page)",
+      /opts\.adoptSubjectKeys\s*\?\s*await opts\.adoptSubjectKeys\(db, brokerageId, topicIdeas\)/.test(pass) && !/website-question-topics["']\)/.test(pass))
+    const ti = await import("../lib/content-intel/topic-intake")
+    void ti
+  }
+
   // ═══ the portal assistant's own door (wired at merge) ═══
   section("wiring — the portal assistant route answers through the ONE decision, never with raw model text")
   {

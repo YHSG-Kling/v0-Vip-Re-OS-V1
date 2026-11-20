@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { requireCallerTenant } from "@/lib/auth/require-caller"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isValidUUID } from "@/lib/validations"
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
@@ -43,6 +44,14 @@ export async function distributeVideo(
     return { success: false, error: "Invalid video project ID" }
   }
 
+  // WAVE 155 (155R17 — CLAUDE.md §4): `brokerageId` and `userId` came from the request body and were written straight into
+  // social_posts / activities / email_queue rows. The tenant and the actor are now the SESSION's (requireCallerTenant — a body
+  // tenant naming another brokerage is refused), the project is read in that tenant, and the act leaves one receipt.
+  const caller = await requireCallerTenant(params.brokerageId)
+  if (!caller.ok) return { success: false, error: caller.error }
+  params = { ...params, brokerageId: caller.brokerageId, userId: caller.userId }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "marketing.video.distribute", actor: { type: "user", userId: caller.userId }, subject: { type: "ai_video_project", id: params.videoProjectId }, riskClass: params.action === "draft" || params.action === "copy_link" ? "LOW_RISK_WRITE" : "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { action: params.action, platform: params.platform ?? null } }, async (): Promise<DistributeVideoResult> => {
   const supabase = await createClient()
   // activities / social_posts / client_portal_messages agent_id all FK agents(id).
   // params.userId is a users.id — it is written to user_id in the same payloads.
@@ -53,6 +62,7 @@ export async function distributeVideo(
     .from("ai_video_projects")
     .select("id, title, video_url, thumbnail_url, status, brokerage_id, agent_id, listing_id, script_content, video_type, audience_type, usage_intent, contact_id, learning_module_id, approval_status, compliance_status")
     .eq("id", params.videoProjectId)
+    .eq("brokerage_id", caller.brokerageId)
     .maybeSingle()
 
   if (loadError || !project) {
@@ -242,4 +252,5 @@ export async function distributeVideo(
     default:
       return { success: false, error: "Unknown distribution action" }
   }
+  })
 }

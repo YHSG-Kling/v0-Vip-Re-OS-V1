@@ -67,6 +67,8 @@ export async function createContentSource(input: {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.content_source.create", actor: { type: "user", userId: ctx.userId }, subject: { type: "content_topic_source", id: null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source_type: input.type } }, async (): ReturnType<typeof createContentSource> => {
 
     // Map UI type → DB source_type. The DB column stores 'youtube_search' for
     // Exa (legacy overload from Wave 17) — we expose 'exa_query' in the UI for
@@ -97,6 +99,7 @@ export async function createContentSource(input: {
     if (error || !data) return { ok: false, error: error?.message ?? "insert failed" }
     revalidatePath("/dashboard/marketing/content-intel")
     return { ok: true, id: data.id as string }
+    }); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
   }
@@ -106,6 +109,8 @@ export async function toggleContentSource(id: string, isActive: boolean): Promis
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.content_source.toggle", actor: { type: "user", userId: ctx.userId }, subject: { type: "content_topic_source", id: id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { is_active: isActive } }, async (): ReturnType<typeof toggleContentSource> => {
     const supabase = await createClient()
     const { error } = await supabase
       .from("content_topic_sources")
@@ -115,6 +120,7 @@ export async function toggleContentSource(id: string, isActive: boolean): Promis
     if (error) return { ok: false, error: error.message }
     revalidatePath("/dashboard/marketing/content-intel")
     return { ok: true }
+    }); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
   }
@@ -124,6 +130,8 @@ export async function deleteContentSource(id: string): Promise<{ ok: boolean; er
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const signedIn = { ...ctx, brokerageId: ctx.brokerageId }; const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "marketing.content_source.delete", actor: { type: "user", userId: ctx.userId }, subject: { type: "content_topic_source", id: id }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async (ctx = signedIn): ReturnType<typeof deleteContentSource> => {
     const supabase = await createClient()
     // WAVE 154 (lane 154G1 — directive C2 / C4): the source's own topics cascade with it (content_topic_bank.source_id ON
     // DELETE CASCADE, live). A topic of ANOTHER source that merged the same public post (THE ONE intake links observations
@@ -151,6 +159,7 @@ export async function deleteContentSource(id: string): Promise<{ ok: boolean; er
     }
     revalidatePath("/dashboard/marketing/content-intel")
     return { ok: true }
+    }); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
   } catch (e) {
     return { ok: false, error: (e as Error).message }
   }

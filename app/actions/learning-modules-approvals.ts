@@ -171,6 +171,9 @@ export async function approveLearningModuleAction(
     return { ok: false, error: COURSE_NOT_COMPLETABLE_MESSAGE }
   }
 
+  // WAVE 155 (155R17): the receipt — requireAdmin's SESSION user and tenant; the approval publishes the module to the tenant.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "academy.learning_module.approve", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module", id: moduleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const now = new Date().toISOString()
   const { error } = await svc
     .from("learning_modules")
@@ -186,6 +189,8 @@ export async function approveLearningModuleAction(
 
   revalidatePath("/dashboard/admin/learning-modules/approvals")
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "Not run" }
 }
 
 export async function rejectLearningModuleAction(
@@ -210,6 +215,9 @@ export async function rejectLearningModuleAction(
     return { ok: false, error: `Cannot reject from status '${m.status}'` }
   }
 
+  // WAVE 155 (155R17): the receipt — requireAdmin's SESSION user and tenant.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "academy.learning_module.reject", actor: { type: "user", userId: auth.userId }, subject: { type: "learning_module", id: moduleId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ ok: true } | { ok: false; error: string }> => {
   const now = new Date().toISOString()
   const { error } = await svc
     .from("learning_modules")
@@ -225,4 +233,6 @@ export async function rejectLearningModuleAction(
 
   revalidatePath("/dashboard/admin/learning-modules/approvals")
   return { ok: true }
+  })
+  return "ok" in r ? r : { ok: false, error: r.error ?? "Not run" }
 }

@@ -44,6 +44,8 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
     .single()
 
   if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: userData.brokerage_id, action: "marketing.newsletter.schedule", actor: { type: "user", userId: user.id }, subject: { type: "newsletter_brokers_template", id: input.templateId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // Verify template is approved
   const { data: template } = await supabase
@@ -205,6 +207,7 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
     seoScore,
     message: 'Newsletter scheduled successfully',
   }
+  }))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -258,6 +261,8 @@ export async function scheduleExistingNewsletter(input: {
   if (userError) return { success: false, error: `Could not read your account: ${userError.message}` }
   if (!userData?.brokerage_id) return { success: false, error: 'User has no brokerage assigned' }
   const brokerageId: string = userData.brokerage_id
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.newsletter.reschedule", actor: { type: "user", userId: user.id }, subject: { type: "newsletter_campaign", id: input.newsletterId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // Same pure validator the wizard runs client-side, re-run server-side as the
   // authority — a client can post any time it likes.
@@ -343,4 +348,5 @@ export async function scheduleExistingNewsletter(input: {
   }
 
   return { success: true, scheduledFor: scheduleTime.iso }
+  })
 }

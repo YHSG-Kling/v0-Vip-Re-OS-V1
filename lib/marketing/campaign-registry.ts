@@ -217,6 +217,8 @@ export async function registerCampaignSource(params: {
   assetName?: string
 }): Promise<{ success: boolean; assetId?: string; error?: string }> {
   const { userId, agentId, brokerageId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign_source.register", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { source_table: params.sourceTable, source_id: params.sourceId } }, async () => {
   const supabase = await createClient()
 
   // Fetch source item to get metadata
@@ -270,6 +272,7 @@ export async function registerCampaignSource(params: {
   }
 
   return { success: true, assetId: asset.id }
+  })
 }
 
 // ─── UNREGISTER SOURCE ────────────────────────────────────────────────────────
@@ -281,21 +284,26 @@ export async function registerCampaignSource(params: {
  * Does NOT delete the source item itself.
  */
 export async function unregisterCampaignSource(assetId: string): Promise<{ success: boolean; error?: string }> {
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign_source.unregister", actor: { type: "user", userId: userId }, subject: { type: "marketing_asset", id: assetId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   const supabase = await createClient()
 
-  const { error } = await supabase
+  const { data: removed, error } = await supabase
     .from("marketing_assets")
     .delete()
     .eq("id", assetId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) {
     console.error("[v0] Error unregistering source:", error)
     return { success: false, error: error.message }
   }
+  if (!removed || removed.length === 0) return { success: false, error: "That asset is not in your brokerage (or is already gone)" }
 
   return { success: true }
+  })
 }
 
 // ─── GET CAMPAIGN SOURCES ─────────────────────────────────────────────────────

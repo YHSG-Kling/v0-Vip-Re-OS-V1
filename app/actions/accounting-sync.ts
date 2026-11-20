@@ -482,10 +482,14 @@ export async function updateTaxCategory(data: {
   providerAccountId?: string
   isActive?: boolean
 }) {
+  // WAVE 155 (lane 155R15): the tenant is the SESSION's — the argument is only asserted (requireCallerTenant), and the books
+  // roster gates it, exactly as this file's retrySyncError does. This was any signed-in user, tenant from the argument.
+  const caller = await requireCallerTenant(data.brokerageId)
+  if (!caller.ok) throw new Error(caller.error)
+  if (!isBrokerageFinanceAdmin({ user_type: caller.userType })) throw new Error("Only a broker or brokerage admin can change your accounting tax categories.")
   const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "finance.tax_category.update", actor: { type: "user", userId: caller.userId }, subject: { type: "tax_category", id: data.categoryId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const updates: Record<string, unknown> = {}
   if (data.taxCode !== undefined) updates.tax_code = data.taxCode
@@ -496,13 +500,14 @@ export async function updateTaxCategory(data: {
     .from("tax_categories")
     .update(updates)
     .eq("id", data.categoryId)
-    .eq("brokerage_id", data.brokerageId)
+    .eq("brokerage_id", caller.brokerageId)
 
   if (error) throw error
 
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/settings/accounting")
   return { success: true }
+  })
 }
 
 // ─── CREATE TAX CATEGORY ─────────────────────────────────────────────────────
@@ -513,15 +518,19 @@ export async function createTaxCategory(data: {
   providerAccountId?: string
   appliesTo?: string[]
 }) {
+  // WAVE 155 (lane 155R15): the tenant is the SESSION's — the argument is only asserted (requireCallerTenant), and the books
+  // roster gates it, exactly as this file's retrySyncError does. This was any signed-in user, tenant from the argument.
+  const caller = await requireCallerTenant(data.brokerageId)
+  if (!caller.ok) throw new Error(caller.error)
+  if (!isBrokerageFinanceAdmin({ user_type: caller.userType })) throw new Error("Only a broker or brokerage admin can add accounting tax categories.")
   const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "finance.tax_category.create", actor: { type: "user", userId: caller.userId }, subject: { type: "tax_category", id: null }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const { data: category, error } = await supabase
     .from("tax_categories")
     .insert({
-      brokerage_id: data.brokerageId,
+      brokerage_id: caller.brokerageId,
       category_name: data.categoryName,
       tax_code: data.taxCode,
       provider_account_id: data.providerAccountId,
@@ -537,26 +546,32 @@ export async function createTaxCategory(data: {
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/settings/accounting")
   return category
+  })
 }
 
 // ─── CLEAR RESOLVED ERRORS ───────────────────────────────────────────────────
 export async function clearResolvedErrors(brokerageId: string) {
+  // WAVE 155 (lane 155R15): the tenant is the SESSION's — the argument is only asserted (requireCallerTenant), and the books
+  // roster gates it, exactly as this file's retrySyncError does. This was any signed-in user, tenant from the argument.
+  const caller = await requireCallerTenant(brokerageId)
+  if (!caller.ok) throw new Error(caller.error)
+  if (!isBrokerageFinanceAdmin({ user_type: caller.userType })) throw new Error("Only a broker or brokerage admin can clear accounting sync errors.")
   const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "finance.sync_error.clear", actor: { type: "user", userId: caller.userId }, subject: { type: "brokerage", id: caller.brokerageId }, riskClass: "IRREVERSIBLE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // Delete all errors for this brokerage (they can retry individually if needed)
   const { error } = await supabase
     .from("sync_errors")
     .delete()
-    .eq("brokerage_id", brokerageId)
+    .eq("brokerage_id", caller.brokerageId)
 
   if (error) throw error
 
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/settings/accounting")
   return { success: true }
+  })
 }
 
 // ─── SCOPED BOOKS EXPORT (team P&L / agent commission → their OWN QuickBooks) ─

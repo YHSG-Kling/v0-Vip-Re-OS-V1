@@ -108,7 +108,7 @@ Scripts under `scripts/` that name each provider (its quoted key, aliases, crede
 
 | Provider | Payer | Price state · unit | Ledger | Booking | Health probe | Fallback (route-table order) | Route paths | Outside the rails | Scripts naming it (count · top 3) |
 |---|---|---|---|---|---|---|---|---|---|
-| anthropic | platform | fixed · $0.00002/tokens | ai_tool_usage | logAIUsage (lib/ai/cost-tracking.ts) | ledger-derived only | — | connector_gateway, connector_registry, provider_cascade | — | 23 · ai-gateway-single-lane-guard.ts, autonomy-gate-simulator.ts, manager-trust-simulator.ts |
+| anthropic | platform | fixed · $0.00002/tokens | ai_tool_usage | logAIUsage (lib/ai/cost-tracking.ts) | ledger-derived only | — | connector_gateway, connector_registry, provider_cascade | — | 24 · ai-gateway-single-lane-guard.ts, autonomy-gate-simulator.ts, manager-trust-simulator.ts |
 | apify | platform | variable · $0.2/credits | vendor_usage_tracking | planSourceSpendBooking (lib/lead-pipeline/source-cost-ledger.ts) | ledger-derived only | — | connector_gateway, connector_registry, provider_cascade | — | 14 · scraper-simulator.ts, provider-gap-matrix-guard.ts, acquisition-coverage-guard.ts |
 | arcgis | platform | free | free | none — anonymous public layers | ledger-derived only | — | connector_gateway, connector_registry | — | 4 · external-signal-lanes-simulator.ts, check-vocabularies.ts, intelligence-modules-simulator.ts |
 | authentisign | tenant | tenant_account | tenant_account | none — the tenant's own Lone Wolf account | ledger-derived only | — | connected_capability, connector_gateway, transaction_resolver | — | 9 · check-vocabularies.ts, listing-offer-lifecycle-guard.ts, addendum-signatures-guard.ts |

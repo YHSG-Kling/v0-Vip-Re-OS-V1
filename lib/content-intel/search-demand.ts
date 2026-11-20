@@ -33,6 +33,7 @@
 // every read is pinned to it. Not server-only (proofs drive it with an in-memory client and fake transports).
 
 import { displaySearchVolume } from "./search-demand-volume"
+import { FIRST_PARTY_MIN_CONTACTS, FIRST_PARTY_WINDOW_DAYS } from "./topic-intake"
 
 type Db = { from: (table: string) => any }
 
@@ -286,10 +287,10 @@ export async function searchConsoleProducer(
 
 // ── PRODUCER 3: CONSENTED FIRST-PARTY SEARCH STATEMENTS → BUYER DEMAND CATEGORIES ────────────────────────────────
 
-/** A demand category becomes a topic only when this many DISTINCT contacts stated it — fewer could single someone out.
- *  A privacy floor (owner-adjustable policy), not a measurement. */
-export const FIRST_PARTY_MIN_CONTACTS = 3
-export const FIRST_PARTY_WINDOW_DAYS = 60
+// TOMBSTONE (wave 155): FIRST_PARTY_MIN_CONTACTS / FIRST_PARTY_WINDOW_DAYS were DEFINED here. SURVIVOR:
+// lib/content-intel/topic-intake.ts (the one privacy floor for first-party demand — its comment says why it moved). They are
+// re-exported so every existing importer of this module keeps reading the same two numbers.
+export { FIRST_PARTY_MIN_CONTACTS, FIRST_PARTY_WINDOW_DAYS }
 
 /** Lifestyle kinds as topic labels (kind-level only — a named destination or the buyer's own words never leave). */
 const LIFESTYLE_TOPIC: Readonly<Record<string, string>> = {

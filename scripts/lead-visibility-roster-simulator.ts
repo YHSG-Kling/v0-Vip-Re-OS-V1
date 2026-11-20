@@ -194,8 +194,9 @@ const NOT_A_LEAD_ROSTER: Array<{ file: string; snippet: string; why: string }> =
   // healthy end state the note above describes.
   { file: "app/dashboard/admin/page.tsx", snippet: "[admin,superadmin,broker,broker_admin]",
     why: "The admin DASHBOARD's own gate. Reaches `leads` for a KPI tile." },
-  { file: "lib/kernel/manager-signals.ts", snippet: "[broker,admin]",
-    why: "Manager-signal recipient lists (four of them). lib/kernel/manager-signals.ts is under a standing do-not-touch instruction for this lane." },
+  // lib/kernel/manager-signals.ts's hand-typed "[broker,admin]" recipient lists were FOLDED in wave 155 (lane 155K2): each
+  // now spreads BROKERAGE_FINANCE_ADMIN_USER_TYPES / TENANT_ADMIN_USER_TYPES (lib/auth/resolve-user-role.ts), so the file names
+  // no roster of its own and there is nothing left to excuse (test:role-roster-fold holds the fold).
   { file: "lib/voice/broker-commands.ts", snippet: "[broker,broker_owner,admin]",
     why: "REASSIGN_MANAGER_ROLES — CONTACT reassignment by voice, kept deliberately (see the note at its declaration). Its lead roster WAS folded." },
 ]

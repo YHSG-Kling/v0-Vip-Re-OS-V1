@@ -43,7 +43,8 @@ export async function POST(
     const { brokerageId } = await params
     const body = await req.json()
 
-    const result = await updateSubscriptionState({
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const result = await ledgerSessionAction({ brokerageId: brokerageId, action: "billing.subscription.update_state", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { tier: typeof body?.tier === "string" ? body.tier : null, new_status: typeof body?.newStatus === "string" ? body.newStatus : null } }, () => updateSubscriptionState({
       brokerageId,
       tier: body.tier,
       newStatus: body.newStatus,
@@ -59,7 +60,7 @@ export async function POST(
         userType: auth.userType,
         platformRole: auth.platformRole,
       },
-    })
+    }))
 
     if (!result.success) return NextResponse.json({ error: result.error }, { status: 500 })
     return NextResponse.json(result, { status: 200 })

@@ -115,9 +115,9 @@ async function main() {
   const pull = gate.check({ brokerageId: T2 })
   check("K3.10 NEGATIVE: a paid / scraped geography pull for a tenant with no territory is STILL refused (resolveActivePullGate)", pull.allowed === false && pull.reason === "no_active_territories", JSON.stringify(pull))
   const cron = src("app/api/cron/local-intel/route.ts")
-  check("K3.11 the existing local-intel cron reaches the first-party sweep after the territory sweep (stripped source)", /runLocalIntelSweep\(svc\)[\s\S]*runFirstPartyTopicSweep\(svc as never\)/.test(cron))
+  check("K3.11 the existing local-intel cron reaches the first-party sweep after the territory sweep (stripped source)", /runLocalIntelSweep\(svc\b[^)]*\)[\s\S]*runFirstPartyTopicSweep\(svc as never\b[^)]*\)/.test(cron))
   // positive control for K3.11's regex: the same pattern on a specimen without the call does not match
-  check("K3.12 positive control: the wiring regex does not match a route that never calls the sweep", !/runLocalIntelSweep\(svc\)[\s\S]*runFirstPartyTopicSweep\(svc as never\)/.test("const swept = await runLocalIntelSweep(svc)"))
+  check("K3.12 positive control: the wiring regex does not match a route that never calls the sweep", !/runLocalIntelSweep\(svc\b[^)]*\)[\s\S]*runFirstPartyTopicSweep\(svc as never\b[^)]*\)/.test("const swept = await runLocalIntelSweep(svc)"))
 
   })
   // ═══ K4 — office circles + calibration ════════════════════════════════════════════════════════════════════════════════

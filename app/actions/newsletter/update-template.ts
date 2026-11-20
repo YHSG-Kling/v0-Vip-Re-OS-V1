@@ -31,6 +31,8 @@ export async function updateTemplate(input: UpdateTemplateInput) {
     .single()
 
   if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: userData.brokerage_id, action: "marketing.newsletter_template.update", actor: { type: "user", userId: user.id }, subject: { type: "newsletter_brokers_template", id: input.templateId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   // Verify template belongs to user's brokerage — and read the fields the
   // version bump below compares against.
@@ -77,4 +79,5 @@ export async function updateTemplate(input: UpdateTemplateInput) {
     success: true,
     message: 'Template updated successfully',
   }
+  }))
 }

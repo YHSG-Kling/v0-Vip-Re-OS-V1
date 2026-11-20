@@ -45,7 +45,8 @@ export async function POST(
     const { brokerageId } = await params
     const body = await req.json()
 
-    const result = await applyFeatureOverride({
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const result = await ledgerSessionAction({ brokerageId: brokerageId, action: "billing.feature_override.apply", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: brokerageId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { feature_key: typeof body?.featureKey === "string" ? body.featureKey : null, override_type: typeof body?.overrideType === "string" ? body.overrideType : null } }, () => applyFeatureOverride({
       brokerageId,
       featureKey: body.featureKey,
       overrideType: body.overrideType,
@@ -64,7 +65,7 @@ export async function POST(
         userType: auth.userType,
         platformRole: auth.platformRole,
       },
-    })
+    }))
 
     if (!result.success) return NextResponse.json({ error: result.error }, { status: 500 })
     return NextResponse.json(result, { status: 200 })

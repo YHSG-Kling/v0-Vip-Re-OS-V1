@@ -389,6 +389,8 @@ export async function searchBrokerageNumbersAction(params: {
   const ctx = await resolveActingContext()
   if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!isBrokerRole(ctx.userType)) return { success: false, error: "Only broker / admin can search numbers" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const signedIn = { ...ctx, brokerageId: ctx.brokerageId }; const r = await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "telephony.number_inventory.search", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "brokerage", id: ctx.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (ctx = signedIn): ReturnType<typeof searchBrokerageNumbersAction> => {
 
   const svc = createServiceClient()
   const res = await searchAvailableNumbers(svc, ctx.brokerageId, {
@@ -401,6 +403,7 @@ export async function searchBrokerageNumbersAction(params: {
     success: true,
     candidates: res.candidates.map((c) => ({ phoneNumber: c.phoneNumber, locality: c.locality, region: c.region })),
   }
+  }); return "candidates" in r ? r : { success: false, error: r.error ?? "Not recorded", ...("notConfigured" in r && r.notConfigured ? { notConfigured: true } : {}) }
 }
 
 export interface LocalNumberSuggestionView {

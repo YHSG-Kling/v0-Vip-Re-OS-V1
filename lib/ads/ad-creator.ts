@@ -797,6 +797,8 @@ export async function updateCampaignStatus(
   const actor = await resolveAdActor()
   if (!actor.ok) return { success: false, error: actor.error }
   const { brokerageId } = actor
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.ad_campaign.update_status", actor: { type: "user", userId: actor.userId }, subject: { type: "ad_campaign", id: campaignId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", detail: { status: newStatus } }, async () => {
 
   const supabase = await createClient()
 
@@ -816,6 +818,7 @@ export async function updateCampaignStatus(
   }
 
   return { success: true }
+  })
 }
 
 // ─── getCampaignCreatives — MERGED-THEN-DELETED (orphan burn-down w2s2) ───────

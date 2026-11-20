@@ -361,6 +361,8 @@ export async function updateCampaign(params: UpdateCampaignParams) {
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign.update", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -384,6 +386,7 @@ export async function updateCampaign(params: UpdateCampaignParams) {
   }
 
   return { success: true }
+  })
 }
 
 export async function transitionCampaignStatus(
@@ -764,6 +767,8 @@ export async function rejectAsset(assetId: string, reason?: string) {
   const { requireMarketingApprover } = await import("@/lib/kernel/approval-authority")
   const authority = await requireMarketingApprover({ brokerageId, approverUserId: userId, approverUserType: userType ?? null, table: "marketing_assets", id: assetId, authority: "content_brand" })
   if (!authority.ok) return { success: false, error: authority.reason }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId, action: "marketing.asset.reject", actor: { type: "user", userId: userId }, subject: { type: "marketing_asset", id: assetId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -821,6 +826,7 @@ export async function rejectAsset(assetId: string, reason?: string) {
   }
 
   return { success: true }
+  })
 }
 
 // ─── QR LINKING (delegated to qr-asset-linker) ────────────────────────────────
@@ -840,6 +846,8 @@ export async function createCalendarEvent(params: CreateCalendarEventParams) {
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
     }
+    const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.calendar_event.create", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { event_type: params.eventType } }, async () => {
 
     const supabase = await createClient()
 
@@ -867,6 +875,7 @@ export async function createCalendarEvent(params: CreateCalendarEventParams) {
     }
 
     return { success: true, event }
+    }))
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create calendar event"
     console.error("[MarketingStudio] createCalendarEvent error:", message)
@@ -927,6 +936,8 @@ export async function updateCalendarEventStatus(
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.calendar_event.update_status", actor: { type: "user", userId: userId }, subject: { type: "campaign_calendar", id: eventId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status } }, async () => {
 
   const supabase = await createClient()
 
@@ -942,6 +953,7 @@ export async function updateCalendarEventStatus(
   }
 
   return { success: true }
+  })
 }
 
 // ─── COMMENT ACTIONS ──────────────────────────────────────────────────────────
@@ -952,6 +964,8 @@ export async function addCampaignComment(params: CreateCommentParams) {
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign_comment.add", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -972,6 +986,7 @@ export async function addCampaignComment(params: CreateCommentParams) {
   }
 
   return { success: true, comment }
+  }))
 }
 
 // getCampaignComments REMOVED — TOMBSTONE.
@@ -990,6 +1005,8 @@ export async function createCampaignTask(params: CreateTaskParams) {
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign_task.create", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = await createClient()
 
@@ -1013,6 +1030,7 @@ export async function createCampaignTask(params: CreateTaskParams) {
   }
 
   return { success: true, task }
+  }))
 }
 
 // getCampaignTasks REMOVED — TOMBSTONE.
@@ -1029,6 +1047,8 @@ export async function updateTaskStatus(
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign_task.update_status", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign_task", id: taskId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status } }, async () => {
 
   const supabase = await createClient()
 
@@ -1044,6 +1064,7 @@ export async function updateTaskStatus(
   }
 
   return { success: true }
+  })
 }
 
 // TOMBSTONE (hidden-wire census, category b — orphan doctrine §1.3) — this file
@@ -1070,6 +1091,8 @@ export async function generateCampaignContent(params: {
   if (!access.allowed) {
     return { success: false, error: access.reason ?? "Access to Marketing Studio denied" }
   }
+  const { ledgerSessionAction, resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId ?? "", action: "marketing.campaign_content.generate", actor: { type: "user", userId: userId }, subject: { type: "marketing_campaign", id: params.campaignId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.contentType } }, async () => {
 
   const supabase = await createClient()
 
@@ -1176,6 +1199,7 @@ export async function generateCampaignContent(params: {
     /** What conditioned the draft on its reader, or why nothing did (wave 153, 153R). */
     readerPersona: themFirstBasisRecord(readerBrief),
   }
+  }))
 }
 
 // ─── DASHBOARD AGGREGATIONS ───────────────────────────────────────────────────

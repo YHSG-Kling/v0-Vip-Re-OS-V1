@@ -18,11 +18,11 @@ import { checkNumbersPortable, submitPortIn, loadPortIns, describePortIn, defaul
 // setting through the same derivation carrier registration files from.
 import { resolveA2pProfile } from "@/lib/voice/a2p-registration"
 
-async function requirePortCtx(mode: "read" | "write"): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
+async function requirePortCtx(mode: "read" | "write"): Promise<{ ok: true; brokerageId: string; actorUserId: string } | { ok: false; error: string }> {
   const ctx = mode === "write" ? await resolveWriteContextForTenant() : await resolveActingContext()
   if (!ctx.ok || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
   if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) return { ok: false, error: "Only broker / admin can port numbers" }
-  return { ok: true, brokerageId: ctx.brokerageId }
+  return { ok: true, brokerageId: ctx.brokerageId, actorUserId: ctx.actorUserId }
 }
 
 export interface PortInStatusView {
@@ -60,8 +60,11 @@ export async function getPortInStatusAction(): Promise<{ ok: true; ports: PortIn
 export async function checkPortabilityAction(input: { phoneNumbers: string[] }): Promise<{ ok: true; verdicts: PortabilityVerdict[] } | { ok: false; error: string }> {
   const auth = await requirePortCtx("read")
   if (!auth.ok) return auth
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "telephony.number.check_portability", actor: { type: "user", userId: auth.actorUserId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { numbers: Array.isArray(input?.phoneNumbers) ? Math.min(input.phoneNumbers.length, 20) : 0 } }, async (): ReturnType<typeof checkPortabilityAction> => {
   const svc = createServiceClient()
   return checkNumbersPortable(svc, auth.brokerageId, Array.isArray(input?.phoneNumbers) ? input.phoneNumbers.slice(0, 20) : [])
+  }); return "ok" in r ? r : { ok: false, error: r.error ?? "Not recorded" }
 }
 
 /** WRITE — file the port (utility bill + LOA details). FormData so the bill

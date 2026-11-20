@@ -1,4 +1,10 @@
-"use server"
+// NOT a server-action module (wave 155, lane 155R17 — CLAUDE.md §4; template lib/behavior-learning/preference-updater.ts:1-9).
+// The module-level "use server" that stood here published all five exports as public HTTP doors: logApprovalDecision wrote an
+// activities row with a CALLER-SUPPLIED agent_id and no session gate of its own. Every caller is in-process server code — the
+// gated actions in app/actions/content-approval-workflow.ts (evaluateContentApproval / batchEvaluateContentApproval, which
+// resolve the session agent first) through the lib/approval-workflow barrel — so the directive published nothing anyone
+// needed. The user's act is that action; this file writes its evidence row. `server-only` fails a future client import at build.
+import "server-only"
 
 import { createClient } from "@/lib/supabase/server"
 import { ApprovalDecision } from "./approval-engine"

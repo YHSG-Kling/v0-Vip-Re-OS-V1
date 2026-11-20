@@ -133,6 +133,9 @@ export async function uploadLenderDocument(data: {
     throw err
   }
 
+  // WAVE 155 (155R17): the receipt — the gate's SESSION user (the assigned lender vendor) and the tenant it resolved.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const recorded = await ledgerSessionAction({ brokerageId: actor.brokerageId, action: "transaction.lender_document.upload", actor: { type: "user", userId: actor.userId }, subject: { type: "transaction", id: data.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { doc_type: data.documentType, vendor_id: actor.vendorId } }, async () => {
   const supabase = await createClient()
 
   const { data: document, error } = await supabase
@@ -153,6 +156,11 @@ export async function uploadLenderDocument(data: {
 
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return document
+  })
+  // A refused write throws (settled failed, rethrown by the helper) exactly as before; a typed refusal never reaches here
+  // without a key, but if it does it is thrown, never handed back as a document.
+  if (recorded && typeof recorded === "object" && "success" in recorded && (recorded as { success?: unknown }).success === false) throw new Error((recorded as { error?: string }).error ?? "Upload not recorded")
+  return recorded
 }
 
 // ─── ISSUE CLEAR TO CLOSE ────────────────────────────────────────────────────
