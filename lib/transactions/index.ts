@@ -33,11 +33,11 @@ export type { StageProgressionResult } from './stage-progression'
 // ─── ROLE GUARD ───────────────────────────────────────────────────────────────
 export {
   canTransitionStage,
-  canOverrideMilestone,
-  canEditMilestoneDate,
+  // canOverrideMilestone / canEditMilestoneDate removed (wave 155) — role-only predicates with no caller; see the tombstone in
+  // lib/transactions/role-guard.ts. The gate that runs is decideDealDesk there.
   canViewFinancials,
   // canActAsExternalParty removed — see the tombstone at
-  // lib/transactions/role-guard.ts:145. The external-party gate is
+  // lib/transactions/role-guard.ts:171. The external-party gate is
   // lib/kernel/portal-auth.ts requireLenderVendorActor / requireTitleVendorActor (both on the vendor rail).
 
 } from './role-guard'

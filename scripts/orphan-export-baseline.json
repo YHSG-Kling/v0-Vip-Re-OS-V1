@@ -604,7 +604,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 13029,
+  "census": 13028,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -4864,7 +4864,7 @@
     "lib/transactions/offer-compliance-loop.ts": 1,
     "lib/transactions/offer-execution-state.ts": 3,
     "lib/transactions/participant-populator.ts": 1,
-    "lib/transactions/role-guard.ts": 4,
+    "lib/transactions/role-guard.ts": 3,
     "lib/transactions/stage-auto-tasks.ts": 1,
     "lib/transactions/stage-progression.ts": 2,
     "lib/transactions/stale-listing-sphere-sweep.ts": 1,
@@ -25790,9 +25790,8 @@
       "populateInitialParticipants"
     ],
     "lib/transactions/role-guard.ts": [
+      "decideDealDesk",
       "canTransitionStage",
-      "canOverrideMilestone",
-      "canEditMilestoneDate",
       "canViewFinancials"
     ],
     "lib/transactions/stage-auto-tasks.ts": [

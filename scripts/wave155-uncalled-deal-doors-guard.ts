@@ -217,7 +217,7 @@ function resolver(fromFile: string, target: string, known: Set<string>) {
 // ═══ §4 seams (installed BEFORE any app module loads) ═════════════════════════════════════════════════════════════════════════
 const u = (p: string, n: number) => `${p}${String(n).padStart(7, "0")}-0000-4000-8000-000000000528`
 const B1 = u("b", 1), B2 = u("b", 2)
-const U_BROKER = u("a", 1), U_AGENT = u("a", 2), U_AGENT2 = u("a", 3), U_X = u("a", 9)
+const U_BROKER = u("a", 1), U_AGENT = u("a", 2), U_AGENT2 = u("a", 3), U_X = u("a", 9), U_TC = u("a", 4), U_VENDOR = u("a", 5), U_LEAD_NO_TEAM = u("a", 6)
 const AG_A = u("e", 2), AG_B = u("e", 3), AG_X = u("e", 9)
 const TX1 = u("d", 1), TX2 = u("d", 2), TX_X = u("d", 9)
 const P1 = u("c", 1), P_X = u("c", 9), E1 = u("f", 1), E_X = u("f", 9), D1 = u("1", 1), D_X = u("1", 9)
@@ -229,7 +229,12 @@ function world(): MemClient {
       { id: U_AGENT, brokerage_id: B1, user_type: "agent", email: "ann@example.test" },
       { id: U_AGENT2, brokerage_id: B1, user_type: "agent", email: "ben@example.test" },
       { id: U_X, brokerage_id: B2, user_type: "broker", email: "x@example.test" },
+      // THE DEAL DESK seats (wave 155, test:deal-desk holds the rule; these three drive it through THIS file's doors).
+      { id: U_TC, brokerage_id: B1, user_type: "tc", email: "tc@example.test" },
+      { id: U_VENDOR, brokerage_id: B1, user_type: "vendor", email: "vendor@example.test" },
+      { id: U_LEAD_NO_TEAM, brokerage_id: B1, user_type: "team_lead", email: "lead@example.test" },
     ],
+    teams: [],
     agents: [{ id: AG_A, user_id: U_AGENT, brokerage_id: B1 }, { id: AG_B, user_id: U_AGENT2, brokerage_id: B1 }, { id: AG_X, user_id: U_X, brokerage_id: B2 }],
     transactions: [
       { id: TX1, brokerage_id: B1, agent_id: AG_A, buyer_agent_id: null, seller_agent_id: null, status: "under_contract", property_address: "1 Fixture Way", deal_type: "buyer", purchase_price: 400000 },
@@ -385,6 +390,14 @@ async function main() {
   const added = T(m, "transaction_title_escrow").find((r) => r.transaction_id === TX2)
   check("addTitleEscrow POS the agent on the deal adds it — the row carries the SESSION tenant, ONE receipt", (x.r as any)?.success === true && added?.brokerage_id === B1 && receipts(m, "transaction.title_escrow.add").length === 1, { x, added })
 
+  // THE DEAL DESK through these doors (wave 155): the deal-detail gate asks lib/transactions/role-guard.ts decideDealDesk. Before
+  // that it carried its own roster — the coordinator was refused and a team lead was admitted on every deal of the brokerage.
+  m = as(U_TC); x = await drive(() => tx.updateTitleEscrow(E1, { escrow_number: "ESC-TC-1" }))
+  check("DEAL DESK updateTitleEscrow POS the coordinator (tc) edits the record — the seat that normally enters title and escrow details", (x.r as any)?.success === true && T(m, "transaction_title_escrow").find((r) => r.id === E1)?.escrow_number === "ESC-TC-1" && receipts(m, "transaction.title_escrow.update").length === 1, x)
+  m = as(U_VENDOR); x = await drive(() => tx.updateTitleEscrow(E1, { escrow_number: "VENDOR" }))
+  check("DEAL DESK updateTitleEscrow NEG a vendor seat of the tenant: refused, unchanged, no receipt", refused(x) && T(m, "transaction_title_escrow").find((r) => r.id === E1)?.escrow_number === undefined && receipts(m, "transaction.title_escrow.update").length === 0, x)
+  m = as(U_LEAD_NO_TEAM); x = await drive(() => tx.updateTitleEscrow(E1, { escrow_number: "LEAD" }))
+  check("DEAL DESK updateTitleEscrow NEG a team lead who is not on the deal and leads no team on it: refused, unchanged (a team lead is not a brokerage-wide seat)", refused(x) && T(m, "transaction_title_escrow").find((r) => r.id === E1)?.escrow_number === undefined, x)
   // updateTitleEscrow
   m = as(U_BROKER); x = await drive(() => tx.updateTitleEscrow(E1, { brokerage_id: B2, transaction_id: TX_X }))
   check("updateTitleEscrow NEG moving the record to another tenant / deal (brokerage_id, transaction_id): refused, unchanged", refused(x) && T(m, "transaction_title_escrow").find((r) => r.id === E1)?.brokerage_id === B1 && T(m, "transaction_title_escrow").find((r) => r.id === E1)?.transaction_id === TX1, x)

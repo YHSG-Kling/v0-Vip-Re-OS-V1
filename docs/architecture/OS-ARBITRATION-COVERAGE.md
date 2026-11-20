@@ -44,8 +44,8 @@ Missing links across all rows: worker 82 · owner 24 · trigger 15 · evidence 2
 | contract step (A1) | existing component (live code) |
 |---|---|
 | OBSERVE (triggers) | `dispatchDueCrons` @ lib/kernel/cron-dispatch.ts:429 · `emitKernelEvent` @ lib/kernel/emit.ts:155 · `publishManagerSignal` @ lib/kernel/manager-signals.ts:71 · `runIngressReconciliation` @ lib/kernel/ingress-reconciliation.ts:288 |
-| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3506 · `authorityAllows` @ lib/voice/tool-registry.ts:928 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:64 |
-| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3491 · `requestDelegation` @ lib/kernel/manager-delegation.ts:408 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
+| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3507 · `authorityAllows` @ lib/voice/tool-registry.ts:928 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:64 |
+| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3492 · `requestDelegation` @ lib/kernel/manager-delegation.ts:408 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
 | CHECK AUTHORITY / POLICY / BUDGET | `isToolAllowedAtAuthority` @ lib/ai-isa/persona-tool-policy.ts:616 · `autonomyDecision` @ lib/managers/autonomy-gate.ts:91 · `approverFor` @ lib/kernel/approval-authority.ts:118 |
 | COORDINATE OR HOLD | `arbitratePlannedTouch` @ lib/ai-isa/followup-arbiter.ts:1878 · `evaluateApprovalSla` @ lib/kernel/approval-sla.ts:17 |
 | EXECUTE THROUGH ONE WRITER / EGRESS | `dispatchEmail` @ lib/providers/dispatch.ts:394 · `dispatchSms` @ lib/providers/dispatch.ts:395 · `callConnector` @ lib/agentic-os/connector-gateway.ts:246 |
@@ -342,7 +342,7 @@ Per row: 944 rows start without a person (cron / event / signal / webhook), of w
 | `server_action:app/actions/email-campaigns.ts#sendEmailCampaign` | owner-held | trigger | campaign_orchestrator | session actor (createClient() from "@/lib/supabase/server" @ app/actio | app/actions/email-campaigns.ts:456 |
 | `server_action:app/actions/listing-lifecycle.ts#scheduleListingAppointment` | owner-held | trigger | campaign_orchestrator | session actor (auth.getUser @ app/actions/listing-lifecycle.ts:53) | app/actions/listing-lifecycle.ts:40 |
 | `server_action:app/actions/social/generate-social-post.ts#generateContextualDraft` | owner-held | owner | unresolved: it writes only carriers / unstewarded tables (co | session actor (createClient() from "@/lib/supabase/server" @ lib/kerne | app/actions/social/generate-social-post.ts:516 |
-| `server_action:app/actions/transactions.ts#generateCostBreakdown` | owner-held | trigger | compliance_officer | session actor (auth.getUser @ lib/ai/pipeline.ts:299) | app/actions/transactions.ts:932 |
+| `server_action:app/actions/transactions.ts#generateCostBreakdown` | owner-held | trigger | compliance_officer | session actor (auth.getUser @ lib/ai/pipeline.ts:299) | app/actions/transactions.ts:923 |
 | `server_action:app/actions/transactions.ts#updateTransaction` | owner-held | trigger | deal_coordinator | session actor (getAgentContext @ lib/platform/acting-context.ts:214) | app/actions/transactions.ts:136 |
 
 ### P9 commission · settlement · brokerage finance — 10 not working

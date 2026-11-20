@@ -250,8 +250,8 @@ export async function setMilestoneClientVisibility(
  * client. Anyone holding a transaction id could close it (firing commission and
  * lifetime-touch writes), reopen it by claiming role "broker", or send the client
  * a portal update. The tenant now comes from the session; the transaction must
- * be in it; and the caller must be a tenant admin (the one roster,
- * isAdminOrBroker) or the agent on the deal. `requireFinance` narrows to the
+ * be in it; and the caller must be on the DEAL DESK (decideDealDesk: admins and the
+ * coordinator for any deal of the tenant, an agent or team lead for their own / led team's). `requireFinance` narrows to the
  * brokerage's books tier (isBrokerageFinanceAdmin) for reopening a closed deal.
  * Fail closed: an unreadable transaction refuses. Not exported (a "use server"
  * export would itself be a public endpoint).
@@ -263,25 +263,16 @@ async function requireTransactionActor(
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.userId) return { ok: false, error: "Not authenticated" }
   if (!ctx.brokerageId) return { ok: false, error: "Your account is not linked to a brokerage yet." }
-  const { createServiceClient } = await import("@/lib/supabase/service")
-  const svc = createServiceClient()
-  const { data: tx, error } = await svc
-    .from("transactions")
-    .select("id, agent_id, buyer_agent_id, seller_agent_id")
-    .eq("id", transactionId)
-    .eq("brokerage_id", ctx.brokerageId)
-    .maybeSingle()
-  if (error) return { ok: false, error: `Could not verify the transaction: ${error.message}` }
-  if (!tx) return { ok: false, error: "Transaction not found" }
-  if (opts.requireFinance) {
-    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
-      return { ok: false, error: "Only the brokerage's broker or admin can do this." }
-    }
-  } else {
-    const onDeal = !!ctx.agentId && [tx.agent_id, tx.buyer_agent_id, tx.seller_agent_id].includes(ctx.agentId)
-    if (!onDeal && !isAdminOrBroker({ user_type: ctx.userType })) {
-      return { ok: false, error: "Only the agent on this transaction or a brokerage admin can do this." }
-    }
+  // THE DEAL DESK (wave 155): the ONE "who may work this deal" decision, lib/transactions/role-guard.ts decideDealDesk — the
+  // stage machine's own gate. This function used to carry a second roster (the agent on the deal, or the whole tenant-admin
+  // roster): it refused the coordinator who normally enters these details and admitted a team lead on every deal of the
+  // brokerage. The session's seat and tenant go in; the deal is read there, in that tenant, on the service client.
+  const { decideDealDesk } = await import("@/lib/transactions/role-guard")
+  const desk = await decideDealDesk({ userId: ctx.userId, role: ctx.userType ?? "", brokerageId: ctx.brokerageId, transactionId })
+  if (!desk.allowed) return { ok: false, error: desk.reason }
+  // The brokerage's books tier, on top of the desk: reopening a closed deal is finance's (named subtraction of the roster).
+  if (opts.requireFinance && !isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    return { ok: false, error: "Only the brokerage's broker or admin can do this." }
   }
   return { ok: true, brokerageId: ctx.brokerageId, userId: ctx.userId, userType: ctx.userType }
 }
@@ -289,7 +280,7 @@ async function requireTransactionActor(
 /**
  * THE SAME GATE FOR A DEAL'S CHILD ROW (wave 155, lane 155R28). The kept doors below are keyed on a row id (a participant, the
  * title / escrow record, a deadline). The row's deal is read first — after the session is known — and then the deal must pass
- * requireTransactionActor: in the SESSION's tenant, and the caller the agent on it or a tenant admin. The row's own brokerage_id
+ * requireTransactionActor: in the SESSION's tenant, and the caller on the deal desk for it. The row's own brokerage_id
  * is not trusted for this (older writers never stamped it); the deal's is. Fail closed: an unreadable row refuses. Not exported.
  */
 async function requireDealRowActor(

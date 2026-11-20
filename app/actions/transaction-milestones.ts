@@ -18,7 +18,7 @@
  * transactions in their own brokerage.
  */
 
-import { createClient } from "@/lib/supabase/server"
+import type { createServiceClient } from "@/lib/supabase/service" // type only: every door here writes on the service client AFTER the deal desk
 import { revalidatePath } from "next/cache"
 import {
   completeMilestone,
@@ -48,17 +48,17 @@ export interface CompleteMilestoneActionParams extends ScopedParams {
 export async function completeMilestoneAction(
   params: CompleteMilestoneActionParams,
 ): Promise<{ success: boolean; error?: string }> {
-  // WAVE 155 (convergence): the tenant is the SESSION's. The body's brokerageId is only a CLAIM, decided by the one table (requireCallerTenant).
-  const auth = await requireCallerTenant(params.brokerageId)
-  if (!auth.ok) return { success: false, error: auth.error }
-  const supabase = await createClient()
-  const { data: tx, error: txErr } = await supabase
-    .from("transactions")
-    .select("id")
-    .eq("id", params.transactionId)
-    .eq("brokerage_id", auth.brokerageId)
-    .maybeSingle()
-  if (txErr || !tx) return { success: false, error: txErr ? "Could not verify the transaction — try again." : "Transaction not found in your brokerage" }
+  // WAVE 155: the tenant is the SESSION's (the body's brokerageId is only a CLAIM) and the seat must be on THE DEAL DESK for this
+  // deal — lib/transactions/role-guard.ts decideDealDesk, the stage machine's own gate, asked through dealDeskFor at the foot of
+  // this file. It reads the deal in the session's tenant on the service client and refuses a seat that does not work it:
+  // a vendor or contact seat, an agent on someone else's deal, a team lead outside their team. Until this, the door proved the
+  // deal with a read on the caller's row-security client, which an assigned vendor seat passes.
+  const desk = await dealDeskFor(params.transactionId, params.brokerageId)
+  if (!desk.ok) return { success: false, error: desk.error }
+  const auth = { brokerageId: desk.brokerageId, userId: desk.userId }
+
+
+
 
   try {
     await completeMilestone({
@@ -127,18 +127,18 @@ export interface MarkAppraisalCompleteParams extends ScopedParams {
 export async function markAppraisalCompleteAction(
   params: MarkAppraisalCompleteParams,
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const desk = await dealDeskFor(params.transactionId, params.brokerageId)
+  if (!desk.ok) return { success: false, error: desk.error }
+  const tenantId = desk.brokerageId
 
-  // Verify transaction belongs to caller's brokerage
-  const { data: tx } = await supabase
-    .from("transactions")
-    .select("id")
-    .eq("id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-  if (!tx) return { success: false, error: "Transaction not found in your brokerage" }
+  // (This door used to "verify the transaction belongs to the caller's brokerage" here, from the request body.)
+  // THE DEAL DESK (wave 155) — lib/transactions/role-guard.ts decideDealDesk, the stage machine's own gate, asked through
+  // dealDeskFor at the foot of this file. The tenant is the SESSION's (the body's brokerageId is only a claim), the deal is
+  // read in it, and the seat must be one that works this deal. This door used to prove the deal with a read on the
+  // caller's row-security client, which an assigned vendor seat passes. Writes below run on the service client, pinned
+  // to this deal and tenant: gate first, then the service client (CLAUDE.md §4).
+  const supabase = desk.db
+  const user = { id: desk.userId }
 
   // Update structured appraisal fields on transactions row
   const updatePayload: Record<string, unknown> = {
@@ -149,14 +149,14 @@ export async function markAppraisalCompleteAction(
     .from("transactions")
     .update(updatePayload)
     .eq("id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", tenantId)
   if (appraisalErr) return { success: false, error: `Could not record the appraisal on the transaction: ${appraisalErr.message}` }
 
   // Complete the appraisal_completed milestone — fan-out fires here.
   try {
     await completeMilestone({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   tenantId,
       milestoneName: "appraisal_completed",
       completedBy:   user.id,
     })
@@ -175,7 +175,7 @@ export async function markAppraisalCompleteAction(
     const { KernelEvent } = await import("@/lib/kernel/events")
     await emitTransactionEvent({
       event:       KernelEvent.APPRAISAL_COMPLETED,
-      brokerageId: params.brokerageId,
+      brokerageId: tenantId,
       entityId:    params.transactionId,
       actorUserId: user.id,
       metadata: {
@@ -199,7 +199,7 @@ export async function markAppraisalCompleteAction(
     try {
       await runAppraisalGapDetection({
         transactionId:  params.transactionId,
-        brokerageId:    params.brokerageId,
+        brokerageId:    tenantId,
         actorUserId:    user.id,
         appraisalValue: params.appraisalValue,
       })
@@ -388,17 +388,17 @@ export interface MarkAppraisalOrderedParams extends ScopedParams {
 export async function markAppraisalOrderedAction(
   params: MarkAppraisalOrderedParams,
 ): Promise<{ success: boolean; error?: string; packet?: { fired: boolean; reason: string; pdfUrl?: string | null; taskId?: string | null } }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const desk = await dealDeskFor(params.transactionId, params.brokerageId)
+  if (!desk.ok) return { success: false, error: desk.error }
+  const tenantId = desk.brokerageId
 
-  const { data: tx } = await supabase
-    .from("transactions")
-    .select("id")
-    .eq("id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-  if (!tx) return { success: false, error: "Transaction not found in your brokerage" }
+  // THE DEAL DESK (wave 155) — lib/transactions/role-guard.ts decideDealDesk, the stage machine's own gate, asked through
+  // dealDeskFor at the foot of this file. The tenant is the SESSION's (the body's brokerageId is only a claim), the deal is
+  // read in it, and the seat must be one that works this deal. This door used to prove the deal with a read on the
+  // caller's row-security client, which an assigned vendor seat passes. Writes below run on the service client, pinned
+  // to this deal and tenant: gate first, then the service client (CLAUDE.md §4).
+  const supabase = desk.db
+  const user = { id: desk.userId }
 
   const orderedDate = params.appraisalOrderedDate ?? new Date().toISOString().slice(0, 10)
 
@@ -407,7 +407,7 @@ export async function markAppraisalOrderedAction(
     const { updateLenderState } = await import("@/lib/kernel/transactions")
     await updateLenderState({
       transactionId:        params.transactionId,
-      brokerageId:          params.brokerageId,
+      brokerageId:          tenantId,
       appraisalOrderedDate: orderedDate,
       lenderName:           params.lenderName,
       loanOfficerName:      params.loanOfficerName,
@@ -420,7 +420,7 @@ export async function markAppraisalOrderedAction(
   try {
     await completeMilestone({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   tenantId,
       milestoneName: "appraisal_ordered",
       completedBy:   user.id,
     })
@@ -434,7 +434,7 @@ export async function markAppraisalOrderedAction(
     const { KernelEvent } = await import("@/lib/kernel/events")
     await emitTransactionEvent({
       event:       KernelEvent.APPRAISAL_ORDERED,
-      brokerageId: params.brokerageId,
+      brokerageId: tenantId,
       entityId:    params.transactionId,
       actorUserId: user.id,
       metadata:    { appraisal_ordered_date: orderedDate },
@@ -451,7 +451,7 @@ export async function markAppraisalOrderedAction(
     const { runAppraiserPacketCoaching } = await import("@/lib/kernel/appraiser-packet")
     const res = await runAppraiserPacketCoaching({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   tenantId,
       actorUserId:   user.id,
     })
     packet = { fired: res.fired, reason: res.reason, pdfUrl: res.pdfUrl, taskId: res.taskId }
@@ -518,22 +518,22 @@ export interface ScheduleFinalWalkthroughParams extends ScopedParams {
 export async function scheduleFinalWalkthroughAction(
   params: ScheduleFinalWalkthroughParams,
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const desk = await dealDeskFor(params.transactionId, params.brokerageId)
+  if (!desk.ok) return { success: false, error: desk.error }
+  const tenantId = desk.brokerageId
 
-  const { data: tx } = await supabase
-    .from("transactions")
-    .select("id")
-    .eq("id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-  if (!tx) return { success: false, error: "Transaction not found in your brokerage" }
+  // THE DEAL DESK (wave 155) — lib/transactions/role-guard.ts decideDealDesk, the stage machine's own gate, asked through
+  // dealDeskFor at the foot of this file. The tenant is the SESSION's (the body's brokerageId is only a claim), the deal is
+  // read in it, and the seat must be one that works this deal. This door used to prove the deal with a read on the
+  // caller's row-security client, which an assigned vendor seat passes. Writes below run on the service client, pinned
+  // to this deal and tenant: gate first, then the service client (CLAUDE.md §4).
+  const supabase = desk.db
+  const user = { id: desk.userId }
 
   try {
     await setMilestoneDate(
       params.transactionId,
-      params.brokerageId,
+      tenantId,
       "final_walkthrough_scheduled",
       params.walkthroughDate,
       user.id,
@@ -550,22 +550,22 @@ export async function scheduleFinalWalkthroughAction(
 export async function completeFinalWalkthroughAction(
   params: ScopedParams,
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const desk = await dealDeskFor(params.transactionId, params.brokerageId)
+  if (!desk.ok) return { success: false, error: desk.error }
+  const tenantId = desk.brokerageId
 
-  const { data: tx } = await supabase
-    .from("transactions")
-    .select("id")
-    .eq("id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-  if (!tx) return { success: false, error: "Transaction not found in your brokerage" }
+  // THE DEAL DESK (wave 155) — lib/transactions/role-guard.ts decideDealDesk, the stage machine's own gate, asked through
+  // dealDeskFor at the foot of this file. The tenant is the SESSION's (the body's brokerageId is only a claim), the deal is
+  // read in it, and the seat must be one that works this deal. This door used to prove the deal with a read on the
+  // caller's row-security client, which an assigned vendor seat passes. Writes below run on the service client, pinned
+  // to this deal and tenant: gate first, then the service client (CLAUDE.md §4).
+  const supabase = desk.db
+  const user = { id: desk.userId }
 
   try {
     await completeMilestone({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   tenantId,
       milestoneName: "final_walkthrough_scheduled",
       completedBy:   user.id,
     })
@@ -594,23 +594,23 @@ export interface RequestRepairParams extends ScopedParams {
 export async function requestRepairAction(
   params: RequestRepairParams,
 ): Promise<{ success: boolean; repairId?: string; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const desk = await dealDeskFor(params.transactionId, params.brokerageId)
+  if (!desk.ok) return { success: false, error: desk.error }
+  const tenantId = desk.brokerageId
 
-  const { data: tx } = await supabase
-    .from("transactions")
-    .select("id")
-    .eq("id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-  if (!tx) return { success: false, error: "Transaction not found in your brokerage" }
+  // THE DEAL DESK (wave 155) — lib/transactions/role-guard.ts decideDealDesk, the stage machine's own gate, asked through
+  // dealDeskFor at the foot of this file. The tenant is the SESSION's (the body's brokerageId is only a claim), the deal is
+  // read in it, and the seat must be one that works this deal. This door used to prove the deal with a read on the
+  // caller's row-security client, which an assigned vendor seat passes. Writes below run on the service client, pinned
+  // to this deal and tenant: gate first, then the service client (CLAUDE.md §4).
+  const supabase = desk.db
+  const user = { id: desk.userId }
 
   const { data, error } = await supabase
     .from("transaction_repair_negotiations")
     .insert({
       transaction_id:    params.transactionId,
-      brokerage_id:      params.brokerageId,
+      brokerage_id:      tenantId,
       requested_by:      params.requestedBy ?? "buyer",
       item_description:  params.itemDescription,
       estimated_cost:    params.estimatedCost ?? null,
@@ -631,7 +631,7 @@ export async function requestRepairAction(
     const { KernelEvent } = await import("@/lib/kernel/events")
     await emitTransactionEvent({
       event:       KernelEvent.LISTING_REPAIR_REQUIRED,
-      brokerageId: params.brokerageId,
+      brokerageId: tenantId,
       entityId:    params.transactionId,
       actorUserId: user.id,
       metadata: {
@@ -659,9 +659,9 @@ export interface CompleteRepairParams extends ScopedParams {
 export async function completeRepairAction(
   params: CompleteRepairParams,
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const desk = await dealDeskFor(params.transactionId, params.brokerageId)
+  if (!desk.ok) return { success: false, error: desk.error }
+  const supabase = desk.db, user = { id: desk.userId }, tenantId = desk.brokerageId // the deal desk (see dealDeskFor); service client after the gate
 
   // Verify repair row belongs to this brokerage + transaction
   const { data: repair } = await supabase
@@ -669,7 +669,7 @@ export async function completeRepairAction(
     .select("id, item_description")
     .eq("id", params.repairId)
     .eq("transaction_id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", tenantId)
     .maybeSingle()
   if (!repair) return { success: false, error: "Repair not found" }
 
@@ -682,7 +682,7 @@ export async function completeRepairAction(
       responded_at:  new Date().toISOString(),
       updated_at:    new Date().toISOString(),
     })
-    .eq("id", params.repairId)
+    .eq("id", params.repairId).eq("transaction_id", params.transactionId).eq("brokerage_id", tenantId) // service client: pinned to the deal and the session's tenant
 
   if (error) return { success: false, error: error.message }
 
@@ -692,7 +692,7 @@ export async function completeRepairAction(
     const { KernelEvent } = await import("@/lib/kernel/events")
     await emitTransactionEvent({
       event:       KernelEvent.LISTING_REPAIR_COMPLETED,
-      brokerageId: params.brokerageId,
+      brokerageId: tenantId,
       entityId:    params.transactionId,
       actorUserId: user.id,
       metadata: {
@@ -712,3 +712,24 @@ export async function completeRepairAction(
 // Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
 import { decideClaimedTenant } from "@/lib/platform/acting-context"
 import { requireCallerTenant } from "@/lib/auth/require-caller"
+
+/**
+ * THE DEAL DESK for this file's doors (wave 155). Not exported: a "use server" export would be a public endpoint.
+ *   1. the SESSION and its tenant — requireCallerTenant decides the body's brokerageId as a CLAIM (another tenant's is refused);
+ *   2. the ONE "who may work this deal" decision — lib/transactions/role-guard.ts decideDealDesk (admins and the coordinator for
+ *      any deal of the tenant; an agent or team lead for their own / led team's; every other seat refused), which reads the deal
+ *      in that tenant on the service client and refuses when a read is refused;
+ *   3. the service client, handed back only AFTER both — the doors write through it pinned to this deal and tenant.
+ */
+async function dealDeskFor(
+  transactionId: string,
+  claimedBrokerageId: string | null | undefined,
+): Promise<{ ok: true; brokerageId: string; userId: string; db: ReturnType<typeof createServiceClient> } | { ok: false; error: string }> {
+  const auth = await requireCallerTenant(claimedBrokerageId)
+  if (!auth.ok) return { ok: false, error: auth.error }
+  const { decideDealDesk } = await import("@/lib/transactions/role-guard")
+  const desk = await decideDealDesk({ userId: auth.userId, role: auth.userType ?? "", brokerageId: auth.brokerageId, transactionId: String(transactionId ?? "") })
+  if (!desk.allowed) return { ok: false, error: desk.reason }
+  const service = await import("@/lib/supabase/service")
+  return { ok: true, brokerageId: auth.brokerageId, userId: auth.userId, db: service.createServiceClient() }
+}

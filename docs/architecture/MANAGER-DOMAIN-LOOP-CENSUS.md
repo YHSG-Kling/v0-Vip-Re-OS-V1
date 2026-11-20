@@ -10,9 +10,9 @@ sweep) → OUTCOME evidence (ledger / arbitration record / provider truth). The 
 Planes: A authority / tenant session · E Contact engagement (the follow-up arbiter) · D outbound dispatch · G manager coordination
 (delegation, missions, the signal bus) · P human approval · R resources (entitlement, vendor budget, spend, provider route) · C closing / money gates.
 
-Classes: `loop-complete` 712 · `read-surface` 410 · `partial` 214 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 107 · `registry-only` 0 · `proof-unregistered` 0 — of 1444 rows, over 5410 source files.
+Classes: `loop-complete` 712 · `read-surface` 411 · `partial` 214 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 107 · `registry-only` 0 · `proof-unregistered` 0 — of 1445 rows, over 5410 source files.
 
-## Deal Coordinator (`deal_coordinator`) — 109 domains
+## Deal Coordinator (`deal_coordinator`) — 110 domains
 
 | Domain | Class | Trigger | Planes | Survivor | Writes (state) | Readback | Next | Recovery | Outcome | Proof |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -94,6 +94,7 @@ Classes: `loop-complete` 712 · `read-surface` 410 · `partial` 214 · `writes-u
 | `closing_watchtower` | read-surface | cron `api/cron/closing-watchtower` (+1) | — | `title-closing-watchtower.ts` | — | — | — | — | — | `test:closing-watchtower` |
 | `commission_video_step` | read-surface | cron `api/cron/campaign-sequence-steps` (+3) | — | `commission-situation.ts` | — | — | — | — | — | `test:commission-video-step` |
 | `deal_confidence` | read-surface | page `transactions/[transactionId]` (+1) | — | `deal-confidence.ts` | — | — | — | — | — | `test:deal-confidence` |
+| `deal_desk_gate` | read-surface | action `actions/transaction-milestones.ts` (+1) | — | `role-guard.ts` | — | — | — | — | — | `test:deal-desk` |
 | `deal_doc_router` | read-surface | webhook `api/webhooks/inbound-mail` (+2) | — | `deal-doc-router.ts` | — | — | — | — | — | `test:deal-doc-router` |
 | `deal_ladder` | read-surface | cron `api/cron/dotloop-sync` (+1) | — | `transaction-status.ts` | — | — | — | — | — | `test:deal-ladder` |
 | `deal_type_resolver` | read-surface | action `actions/buyer-offer/convert-to-transaction.ts` (+2) | — | `deal-type-resolver.ts` | — | — | — | — | — | `test:deal-type-resolver` |
