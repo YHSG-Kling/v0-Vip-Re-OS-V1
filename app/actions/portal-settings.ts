@@ -4,6 +4,7 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { portalChannelWithdrawals } from "@/lib/notifications/buyer-preferences"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 interface ProfileUpdate {
   first_name?: string
@@ -311,7 +312,7 @@ export async function fileDataSubjectRequestFromPortal(params: {
       .select("id")
       .eq("brokerage_id", access.brokerageId)
       // RECIPIENT FILTER: 'superadmin' dropped — matches zero users.user_type rows.
-      .in("user_type", ["admin", "broker", "broker_owner"])
+      .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
       .limit(5)
 
     for (const u of (staff ?? []) as Array<{ id: string }>) {

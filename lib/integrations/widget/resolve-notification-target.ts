@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 export interface NotificationTarget {
   user_id: string
@@ -56,7 +57,7 @@ export async function resolveWidgetNotificationTarget(
     .eq("brokerage_id", ownerId)
     // RECIPIENT FILTER: 'superadmin' dropped (matches zero users.user_type rows);
     // broker_owner added — storable seat that owns the brokerage.
-    .in("user_type", ["broker", "admin", "broker_owner"])
+    .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
     .limit(1)
     .maybeSingle()
 

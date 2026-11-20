@@ -13,7 +13,9 @@
  *
  * URL params honored by the tracker:
  *   ?p=<persona>     — persona snapshot for per-(topic, persona) attribution
- *   ?c=<contact_id>  — when sent from a tagged newsletter / drip link
+ *   (?c=<contact_id> RETIRED wave 155, lane 155K2: a raw Contact id in a public URL that no writer ever built, stored as the
+ *    viewer by an unauthenticated POST and read back as a movement signal — lib/intent/movement-source-watcher.ts. Views are
+ *    anonymous until a sealed recipient grant exists; see the lane notes.)
  *   ?utm_source=…    — traffic source (newsletter, social, organic, ai_overview)
  */
 import { notFound } from "next/navigation"
@@ -28,7 +30,6 @@ interface PageProps {
   params:       Promise<{ slug: string }>
   searchParams: Promise<{
     p?: string
-    c?: string
     utm_source?: string
   }>
 }
@@ -126,7 +127,7 @@ export async function generateMetadata({ params }: PageProps) {
 
 export default async function PublicBlogPage({ params, searchParams }: PageProps) {
   const { slug } = await params
-  const { p: persona, c: contactId, utm_source } = await searchParams
+  const { p: persona, utm_source } = await searchParams
   const r = await getPost(slug)
   if (!r) notFound()
 
@@ -213,7 +214,6 @@ export default async function PublicBlogPage({ params, searchParams }: PageProps
             shareUrl={shareUrl}
             title={post.title}
             personaSnapshot={persona ?? null}
-            contactId={contactId ?? null}
           />
         </div>
         {qrSlot.status === "placed" && qrSlot.qrCodeDataUrl && (
@@ -229,13 +229,12 @@ export default async function PublicBlogPage({ params, searchParams }: PageProps
       </div>
 
       {/* Tracker — fires track-view on mount with the URL-tag persona +
-          contact_id + source. Runs client-side AFTER the page renders so
+          source (never a contact id). Runs client-side AFTER the page renders so
           the view is attributed even if the user closes the tab before
           interacting. */}
       <BlogTracker
         blogPostId={post.id}
         personaSnapshot={persona ?? null}
-        contactId={contactId ?? null}
         utmSource={utm_source ?? null}
       />
     </article>

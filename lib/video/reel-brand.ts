@@ -135,8 +135,9 @@ export async function deliverCompletedReels(
     const { data: dup } = await svc.from("notifications").select("id")
       .eq("brokerage_id", ren.brokerage_id).ilike("body", `%${marker}%`).limit(1).maybeSingle()
     if (!dup) {
+      const { BROKERAGE_FINANCE_ADMIN_USER_TYPES } = await import("@/lib/auth/resolve-user-role")
       const { data: admins } = await svc.from("users").select("id")
-        .eq("brokerage_id", ren.brokerage_id).in("user_type", ["broker", "admin"]).limit(5)
+        .eq("brokerage_id", ren.brokerage_id).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(5)
       for (const u of ((admins ?? []) as any[])) {
         const { error: notifyError } = await svc.from("notifications").insert({
           user_id: u.id, brokerage_id: ren.brokerage_id, type: p.notificationType,

@@ -1,4 +1,5 @@
 import { CONTRACT_ESIGN_SENT_AWAITING_STATUSES } from "@/lib/transactions/coordination-status"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 // lib/kernel/signature-chase.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // SIGNATURE-CHASE AUTONOMY — PROVIDER-AGNOSTIC by the owner's rule: the tenant
@@ -113,7 +114,7 @@ export async function runSignatureChase(svc: any, now: Date = new Date()): Promi
     if (tier === "nudge" && agentUserId) recipients = [agentUserId]
     else {
       const { data: brokers, error: brokersError } = await svc.from("users").select("id")
-        .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(3)
+        .eq("brokerage_id", brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(3)
       if (brokersError) {
         // An escalation with no readable recipient list is not an escalation.
         console.error(`[signature-chase] broker lookup failed for brokerage ${brokerageId}:`, brokersError.message)

@@ -46,7 +46,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { isValidUUID } from "@/lib/validations"
 import { getIsaSystemUserIdCached } from "@/lib/auth/isa-actor"
-import { rawRoleVariantsFor } from "@/lib/security/types"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import {
   complianceFlagKey,
   recordOfferComplianceFlag,
@@ -248,7 +248,7 @@ export async function resolveUnattendedRaiserUserId(
     // rows (platform staff carry platform_role instead). broker_owner appended:
     // storable, owns the brokerage, and not a canonical role so the expansion
     // cannot carry it.
-    .in("user_type", [...rawRoleVariantsFor(["broker", "admin"]), "broker_owner"])
+    .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
     .order("created_at", { ascending: true })
     .limit(1)
 

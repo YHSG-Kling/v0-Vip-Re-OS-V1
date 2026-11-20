@@ -53,6 +53,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processOptOutFromVerifiedInbound } from "@/lib/ai-isa/opt-out-writer"
 import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -527,7 +528,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           .from("users")
           .select("id")
           .eq("brokerage_id", inbound.brokerageId)
-          .in("user_type", ["compliance_officer", "admin", "broker"])
+          .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES, "compliance_officer"])
         for (const r of reviewers ?? []) {
           await sentinelWrite(supabase, supabase.from("notifications").insert({
             user_id: r.id,

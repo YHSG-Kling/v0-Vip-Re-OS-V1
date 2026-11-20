@@ -19,6 +19,7 @@ import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status
 // PURE (no DB, no server-only) — the companion-card gate and the hint cutter.
 import { companionCard, seoHintFromNarration, SEO_HINT_MAX_CHARS, VIDEO_COVER_THUMB } from "@/lib/geo/video-landing"
 import { compactDollarsMoney } from "@/lib/format/money"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -281,7 +282,7 @@ export async function producePartnersMeeting(
 
   // ── The partners: leadership first, agents as fallback ──
   const { data: leaders } = await supabase.from("users")
-    .select("id, first_name").eq("brokerage_id", brokerageId).in("user_type", ["admin", "broker"]).limit(10)
+    .select("id, first_name").eq("brokerage_id", brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(10)
   let audience = (leaders ?? []) as Array<{ id: string; first_name: string | null }>
   if (audience.length === 0) {
     const { data: agents } = await supabase.from("agents")

@@ -15,7 +15,7 @@
  *   · rate limit at the edge (CDN) — not enforced here
  *
  * POST body:
- *   { blog_post_id, source?, referrer?, contact_id?, persona_snapshot? }
+ *   { blog_post_id, source?, referrer?, persona_snapshot? }   (a contact_id in the body is ignored — wave 155, lane 155K2)
  */
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextResponse, type NextRequest } from "next/server"
@@ -28,7 +28,6 @@ interface ReqBody {
   blog_post_id:        string
   source?:             string
   referrer?:           string
-  contact_id?:         string | null
   persona_snapshot?:   string | null
 }
 
@@ -68,20 +67,15 @@ export async function POST(req: NextRequest) {
     .digest("hex")
     .slice(0, 32)
 
-  // Wave 149Z (lane 149H Outside-lane 2): this is a PUBLIC endpoint, so a body-supplied contact id is a claim, not a fact. It is
-  // stored only when it names a contact of the POST's tenant (§4 — never another tenant's id, never an invented one); otherwise
-  // the view is recorded anonymously. A refused lookup also stores null (fail closed) and is logged.
-  let viewerContactId: string | null = null
-  if (typeof body.contact_id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.contact_id)) {
-    const { data: viewer, error: viewerErr } = await svc.from("contacts").select("id").eq("id", body.contact_id).eq("brokerage_id", p.brokerage_id).maybeSingle()
-    if (viewerErr) console.warn("[blog/track-view] viewer contact not verified — recorded anonymously:", viewerErr.message)
-    viewerContactId = (viewer as { id?: string } | null)?.id ?? null
-  }
+  // Wave 155 (lane 155K2; directive 471 — no raw ids in analytics or outbound links): a body-supplied contact id is a CLAIM from
+  // an unauthenticated POST, and this column feeds a movement signal about that person (lib/intent/movement-source-watcher.ts).
+  // No writer ever built the ?c= link it came from, so the claim is never stored: every view is recorded anonymously. The
+  // wave-149Z tenant check that used to admit a same-tenant id is retired with it — a guessed id was still a forged signal.
 
   await sentinelWrite(svc, svc.from("blog_post_views").insert({
     blog_post_id:            p.id,
     brokerage_id:            p.brokerage_id,
-    viewer_contact_id:       viewerContactId,
+    viewer_contact_id:       null,
     viewer_persona_snapshot: body.persona_snapshot ?? null,
     source:                  body.source ?? "direct",
     referrer:                body.referrer ?? null,

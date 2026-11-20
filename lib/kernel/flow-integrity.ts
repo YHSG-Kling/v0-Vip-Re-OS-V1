@@ -34,6 +34,7 @@
 // (testable); the runner rides the deal-health-scan cron.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -647,7 +648,7 @@ export async function runFlowIntegrity(svc: Svc, brokerageId: string, now: Date 
   }
 
   const { data: owners } = (escalated.length || probationHealed.size)
-    ? await svc.from("users").select("id").eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(3)
+    ? await svc.from("users").select("id").eq("brokerage_id", brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(3)
     : { data: [] as any[] }
   const ownerRows = ((owners ?? []) as Array<{ id: string }>)
 

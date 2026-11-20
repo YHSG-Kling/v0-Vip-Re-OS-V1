@@ -24,13 +24,11 @@ export function BlogShareButtons({
   shareUrl,
   title,
   personaSnapshot,
-  contactId,
 }: {
   blogPostId:       string
   shareUrl:         string
   title:            string
   personaSnapshot:  string | null
-  contactId:        string | null
 }) {
   function handleShare(channel: ShareChannel) {
     void fetch("/api/blog/track-share", {
@@ -40,7 +38,6 @@ export function BlogShareButtons({
         blog_post_id:     blogPostId,
         share_channel:    channel,
         persona_snapshot: personaSnapshot,
-        contact_id:       contactId,
       }),
       keepalive: true,
     }).catch(() => { /* best-effort */ })

@@ -12,6 +12,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import type { EntityType } from "@/lib/kernel/types"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -547,7 +548,7 @@ export async function completeOnboarding(
     .from('users')
     .select('id')
     .eq('brokerage_id', brokerageId)
-    .in('user_type', ['admin', 'broker'])
+    .in('user_type', [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
 
   for (const admin of admins || []) {
     await sentinelWrite(supabase, supabase.from('notifications').insert({

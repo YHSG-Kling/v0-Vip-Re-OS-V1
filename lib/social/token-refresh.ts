@@ -17,6 +17,7 @@
 //      expiry, once per account per week. No fake refresh, no silent death.
 
 import { encryptSecret, decryptSecretFields } from "@/lib/security/secret-crypto"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 export const RENEWAL_WINDOW_DAYS = 10
 
@@ -128,7 +129,7 @@ async function notifyReconnect(svc: any, row: SocialTokenRow, now: Date): Promis
   let userIds: string[] = row.user_id ? [row.user_id] : []
   if (userIds.length === 0 && row.brokerage_id) {
     const { data: admins } = await svc.from("users").select("id")
-      .eq("brokerage_id", row.brokerage_id).in("user_type", ["broker", "admin"]).limit(5)
+      .eq("brokerage_id", row.brokerage_id).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(5)
     userIds = ((admins ?? []) as any[]).map((u) => u.id)
   }
   const expires = row.token_expires_at ? new Date(row.token_expires_at).toLocaleDateString() : "soon"

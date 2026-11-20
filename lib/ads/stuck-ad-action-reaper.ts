@@ -8,6 +8,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { classifyStuckAdAction, AD_ACTION_STUCK_HOURS } from "./stuck-ad-action-policy"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -22,7 +23,7 @@ async function resolveAdSpendOwners(svc: Svc, brokerageId: string): Promise<stri
     .from("users")
     .select("id, user_type")
     .eq("brokerage_id", brokerageId)
-    .in("user_type", ["broker", "admin"])
+    .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
     .limit(20)
   return ((data ?? []) as Array<{ id: string }>).map((u) => u.id)
 }

@@ -12,6 +12,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 async function resolveCaller(): Promise<{ userId: string; brokerageId: string } | null> {
   const supabase = await createClient()
@@ -59,7 +60,7 @@ export async function shareCallWithCoach(input: {
   const { data: leaders } = await svc.from("users")
     .select("id, user_type")
     .eq("brokerage_id", caller.brokerageId)
-    .in("user_type", ["broker", "admin", "team_lead"])
+    .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES, "team_lead"])
     .limit(20)
 
   const targets = ((leaders ?? []) as Array<{ id: string }>).filter((u) => u.id !== caller.userId)

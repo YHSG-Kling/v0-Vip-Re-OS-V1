@@ -71,6 +71,7 @@ import {
 } from "@/lib/transactions/cda-closing-policy"
 import { buildCdaContractVerdict, buildCdaFeeDeduction, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy, type CdaFeeDeduction } from "@/lib/commission/cda-discrepancy"
 import { bestEffort } from "@/lib/db/best-effort"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 // ONE ROSTER (wave 142, lane 142C): the seats that may APPROVE a CDA are the seats that may send it
 // back, override, close the file and review the preliminary statement —
@@ -896,7 +897,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       .from("users")
       .select("id")
       .eq("brokerage_id", cda.brokerage_id)
-      .in("user_type", ["compliance_officer", "admin", "broker"])
+      .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES, "compliance_officer"])
 
     for (const u of complianceUsers ?? []) {
       await bestEffort(supabase.from("notifications").insert({
@@ -1066,7 +1067,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
     .from("users")
     .select("id")
     .eq("brokerage_id", cda.brokerage_id)
-    .in("user_type", ["broker", "admin"])
+    .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
     .limit(10)
   for (const b of (brokers ?? []) as Array<{ id: string }>) {
     await bestEffort(supabase.from("notifications").insert({

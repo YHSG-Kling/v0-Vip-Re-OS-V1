@@ -20,7 +20,7 @@
  *   G  INJECT-001 / G99      the widget session: an un-opted-in slug writes nothing (body brokerage_id ignored); a legitimate
  *                            visitor gets a session under the SLUG's tenant + one ledger row naming it.
  *   H  rules over STRIPPED source, each with a positive control: no "use server" file exports a provider applier; the voice
- *                            catalog asks the session before the provider; track-share stores only a verified contact; the
+ *                            catalog asks the session before the provider; track-share never stores the body's contact id; the
  *                            landing counter never writes a caller's number.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs"
@@ -258,8 +258,11 @@ async function main() {
   const sessionBeforeProvider = (s: string) => { const c = code(s); const at = c.indexOf("export async function listElevenLabsVoices"); const body = c.slice(at); const g = body.indexOf("auth.getUser"); const p = body.indexOf("listVoices("); return at >= 0 && g > 0 && p > g }
   ok("the voice catalog asks the session BEFORE it calls the provider", sessionBeforeProvider(read("app/actions/avatar-voice-catalog.ts")))
   ok("CONTROL: the pre-155R5 voice catalog (provider call, no session) fails that rule", !sessionBeforeProvider(`export async function listElevenLabsVoices() { const res = await listVoices(apiKey) }`))
-  const verifiedContact = (s: string) => { const c = stripComments(s); return /viewer_contact_id:\s*viewerContactId/.test(c) && !/viewer_contact_id:\s*body\.contact_id/.test(c) }
-  ok("track-share stores only a contact verified in the post's tenant", verifiedContact(read("app/api/blog/track-share/route.ts")))
+  // THE RULE, not the waypoint (CLAUDE.md §2): the claim in the body is never what is stored. Lane 155R5 stored a contact verified
+  // in the post's tenant; lane 155K2 then stored none at all (a same-tenant id can be guessed). Both satisfy the rule; a write of
+  // the body's id, or any other read of it on the way to the row, does not.
+  const verifiedContact = (s: string) => { const c = stripComments(s); return /viewer_contact_id:\s*(?:null|viewerContactId)\b/.test(c) && !/viewer_contact_id:\s*body\.contact_id/.test(c) }
+  ok("track-share never stores the body's contact id — the viewer is null, or a contact verified in the post's tenant", verifiedContact(read("app/api/blog/track-share/route.ts")))
   ok("CONTROL: the pre-155R5 track-share (body.contact_id stored) fails that rule", !verifiedContact(`insert({ viewer_contact_id: body.contact_id ?? null })`))
   const callerCount = (s: string) => /currentViewCount\s*\+\s*1/.test(stripComments(s))
   ok("the landing-page counter never writes a caller-supplied number", !callerCount(read("app/actions/listing-landing.ts")))

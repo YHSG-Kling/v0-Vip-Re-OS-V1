@@ -15,7 +15,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { rawRoleVariantsFor } from "@/lib/security/types"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -156,7 +156,7 @@ export async function runSiteTrafficInsights(svc: Svc, now = new Date()): Promis
       // expansion cannot carry it — it is appended rather than dropped.
       // 'superadmin' dropped from the expansion: it matches zero users.user_type
       // rows (platform staff carry platform_role instead).
-      .in("user_type", [...rawRoleVariantsFor(["broker", "admin"]), "broker_owner"]).limit(2)
+      .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(2)
     if (!principals || principals.length === 0) {
       const { data: anyUser } = await svc.from("users")
         .select("id").eq("brokerage_id", brokerageId).order("created_at", { ascending: true }).limit(1)

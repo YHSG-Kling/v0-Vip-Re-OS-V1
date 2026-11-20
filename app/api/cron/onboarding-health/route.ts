@@ -16,6 +16,7 @@ import {
   recordCronFailureAction,
 } from '@/app/actions/cron-kernel'
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 // Vercel Cron config
 export const runtime = 'nodejs'
@@ -143,7 +144,7 @@ export async function GET(request: NextRequest) {
         .from('users')
         .select('id')
         .eq('brokerage_id', onboarding.brokerage_id)
-        .in('user_type', ['admin', 'broker'])
+        .in('user_type', [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
 
       for (const admin of admins || []) {
         await sentinelWrite(supabase, supabase.from('notifications').insert({

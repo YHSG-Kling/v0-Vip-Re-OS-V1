@@ -10,6 +10,7 @@
 // connector-health cron the fleet scan already runs.
 
 import type { ConnectionImpactRead } from "@/lib/agentic-os/connection-impact"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 /** PURE: the dedupe tag for a brokerage's current attention set (order-independent). */
 export function nudgeTag(brokerageId: string, read: ConnectionImpactRead): string {
@@ -40,7 +41,7 @@ async function runConnectionNudge(svc: any, brokerageId: string): Promise<NudgeR
 
   // Notify the brokerage's owners/admins (the ones who can reconnect).
   const { data: owners } = await svc.from("users").select("id")
-    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(5)
+    .eq("brokerage_id", brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(5)
   const recipients = ((owners ?? []) as Array<{ id: string }>).map((u) => u.id)
   if (recipients.length === 0) return { notified: 0, skipped: true }
 

@@ -19,6 +19,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 const VALID_STATUS = "prospect" as const
 
@@ -116,7 +117,7 @@ export async function submitRecruitInquiry(
       .from("users")
       .select("id")
       .eq("brokerage_id", brokerage.id)
-      .in("user_type", ["broker", "admin"])
+      .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
       .limit(5)
     const recipients = (brokerUsers ?? []).map((u: { id: string }) => u.id)
     if (recipients.length > 0) {

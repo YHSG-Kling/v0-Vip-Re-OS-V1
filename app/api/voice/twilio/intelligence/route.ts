@@ -2,6 +2,7 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -133,7 +134,7 @@ export async function POST(request: NextRequest) {
         }
         const { data: reviewers } = await svc.from("users").select("id")
           .eq("brokerage_id", brokerageId)
-          .in("user_type", ["compliance_officer", "admin", "broker"]).limit(10)
+          .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES, "compliance_officer"]).limit(10)
         for (const r of (reviewers ?? []) as any[]) {
           await sentinelWrite(svc, svc.from("notifications").insert({
             user_id: r.id, brokerage_id: brokerageId, type: "call_compliance_watch",

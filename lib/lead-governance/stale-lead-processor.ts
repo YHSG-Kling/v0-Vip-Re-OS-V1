@@ -12,6 +12,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { detectStaleLeads } from "@/lib/lead-assignment/stale-lead-detector"
 import { triggerGhostRecovery } from "@/app/actions/ai-isa"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import {
   conversionVerdictForRow,
   describeConversionRefusal,
@@ -129,7 +130,7 @@ export async function processStaleLeadsAndSLA(
           .eq("brokerage_id", brokerageId)
           // RECIPIENT FILTER: 'superadmin' dropped (matches zero users.user_type
           // rows); broker_owner added — storable seat that owns the brokerage.
-          .in("user_type", ["broker", "admin", "broker_owner"])
+          .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
           .limit(5)
 
         for (const admin of adminUsers ?? []) {

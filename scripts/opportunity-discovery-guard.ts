@@ -251,9 +251,11 @@ async function main() {
       // 149Z (this lane's Outside-lane 2): the public view endpoint stores a viewer contact only when it is the POST's tenant's.
       const tv = blankStrings(src("app/api/blog/track-view/route.ts"))
       const tvRaw = src("app/api/blog/track-view/route.ts")
-      ok(!/viewer_contact_id:\s*body\.contact_id/.test(tvRaw) && /\.eq\("brokerage_id", p\.brokerage_id\)/.test(tvRaw) && /viewer_contact_id:\s*viewerContactId/.test(tv),
-        "the public blog view endpoint never stores a body-supplied contact id unverified — only a contact of the post's own tenant (else null)")
-      ok(/viewer_contact_id:\s*body\.contact_id/.test("viewer_contact_id: body.contact_id ?? null"), "(positive control) the finder sees the old unverified write")
+      // Wave 155 (lane 155K2): re-asserted to the RULE (CLAUDE.md §2 — the 149Z shape was a waypoint). The endpoint now stores NO
+      // body-supplied id at all (a same-tenant guessed id still forged a movement signal); either a null or a verified variable passes.
+      ok(!/\bbody\.contact_id\b/.test(tv) && /viewer_contact_id:\s*(?:null|viewerContactId)\b/.test(tv),
+        "the public blog view endpoint never stores a body-supplied contact id — the viewer is null (or a verified id), never the claim")
+      ok(/\bbody\.contact_id\b/.test("viewer_contact_id: body.contact_id ?? null"), "(positive control) the finder sees the old unverified write")
     }
     const TIMETABLE = /\b\d+\s*\*?\s*(?:DAY_MS|days?\b|hours?\b|weeks?\b)|reminderDaysBefore|cadence\s*[:=]\s*\d/
     const mod = blankStrings(src("lib/intent/opportunity-discovery.ts"))

@@ -69,8 +69,9 @@ export async function seedStarterAssistant(svc: any, brokerageId: string): Promi
         agentUserId: null as any, brokerageId,
       })
       if (intro?.videoUrl) {
+        const { BROKERAGE_FINANCE_ADMIN_USER_TYPES } = await import("@/lib/auth/resolve-user-role")
         const { data: admins } = await svc.from("users").select("id")
-          .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(3)
+          .eq("brokerage_id", brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(3)
         for (const u of ((admins ?? []) as any[])) {
           const { error: notifyError } = await svc.from("notifications").insert({
             user_id: u.id, brokerage_id: brokerageId, type: "assistant_intro",

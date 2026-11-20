@@ -14,6 +14,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { DEFAULT_FOLLOWUP_POLICY, loadFollowupPolicy } from "@/lib/ai-isa/followup-policy"
 import { createServiceClient } from "@/lib/supabase/service"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -319,7 +320,7 @@ export async function enqueueDialBatchNotifications(
   if (rows.length === 0) return { agentAlerts: 0, managerEscalations: 0 }
 
   const { data: mgrs } = await supabase.from("users").select("id")
-    .eq("brokerage_id", brokerageId).in("user_type", ["broker", "admin"]).limit(20)
+    .eq("brokerage_id", brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(20)
   const managerIds = ((mgrs ?? []) as Array<{ id: string }>).map((m) => m.id)
 
   const already = async (userId: string, batchId: string, type: string) => {

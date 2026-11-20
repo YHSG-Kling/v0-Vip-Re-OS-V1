@@ -20,7 +20,7 @@
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import { TENANT_ADMIN_USER_TYPES, BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import { MANAGERS, MANAGER_COLLABORATIONS, type ManagerKey } from "@/lib/kernel/manager-registry"
 // Pure predicate only (the engine itself stays a lazy import in the handler below, as before).
 import { isDeliberativeDomain } from "@/lib/managers/deliberation"
@@ -884,7 +884,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const agentId = (signal.payload?.agent_id as string | undefined) ?? null
     if (!agentId) return null
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(10)
     const managerIds = (mgrs ?? []) as Array<{ id: string }>
     if (managerIds.length === 0) return "no broker/admin to surface the recruiting proof to"
     let notified = 0
@@ -908,7 +908,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const agentId = (signal.payload?.agent_id as string | undefined) ?? null
     if (!agentId) return null
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(10)
     const managerIds = (mgrs ?? []) as Array<{ id: string }>
     if (managerIds.length === 0) return "no broker/admin to route the coaching prompt to"
     let notified = 0
@@ -1161,7 +1161,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     }
     // Brokerage managers (broker/admin) — so a failure surfaces to the people who own it.
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(10)
     for (const m of (mgrs ?? []) as Array<{ id: string }>) {
       const { error } = await ctx.supabase.from("notifications").insert({
         user_id: m.id, brokerage_id: ctx.brokerageId, type: "video_compliance_failed",
@@ -2501,7 +2501,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
 
     // Notify broker/admins so the coaching prompt reaches the people who develop agents.
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(10)
     let notified = 0
     for (const m of (mgrs ?? []) as Array<{ id: string }>) {
       const { error } = await ctx.supabase.from("notifications").insert({
@@ -3825,7 +3825,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // broker/admin is notified their new agent is ready for personalized content.
   "campaign_orchestrator:brand_setup_completed": async (signal, ctx) => {
     const { data: mgrs } = await ctx.supabase.from("users").select("id")
-      .eq("brokerage_id", ctx.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
+      .eq("brokerage_id", ctx.brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(10)
     const ids = ((mgrs ?? []) as { id: string }[]).map((m) => m.id)
     if (ids.length === 0) return "brand setup completed — no broker/admin seat to notify"
     const rows = ids.map((id) => ({

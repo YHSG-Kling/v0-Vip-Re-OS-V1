@@ -10,6 +10,7 @@
 // see its own header for why it stays exported.
 
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 export interface BoardPacketData {
   brokerageName: string
@@ -214,7 +215,7 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
       const packetUrl = documentOpenHref(issued.url) ?? issued.url
 
       const { data: admins } = await svc.from("users").select("id")
-        .eq("brokerage_id", b.id).in("user_type", ["broker", "admin"]).limit(5)
+        .eq("brokerage_id", b.id).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(5)
       for (const u of (admins ?? []) as any[]) {
         const { error: notifyError } = await svc.from("notifications").insert({
           user_id: u.id, brokerage_id: b.id, type: "board_packet_ready",

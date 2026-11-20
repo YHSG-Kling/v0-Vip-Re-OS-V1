@@ -28,6 +28,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 import type { PromoDispatcher } from "@/lib/kernel/voice-delegation"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -264,7 +265,7 @@ export async function runIdleHands(
     + result.enrichmentsQueued + result.reengagePredrafts + result.seasonalPlays
   if (produced > 0) {
     const { data: leaders } = await supabase.from("users").select("id")
-      .eq("brokerage_id", brokerageId).in("user_type", ["admin", "broker"]).limit(5)
+      .eq("brokerage_id", brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(5)
     let audience = ((leaders ?? []) as Array<{ id: string }>).map((u) => u.id)
     if (audience.length === 0) {
       const { data: anyAgent } = await supabase.from("agents").select("user_id")

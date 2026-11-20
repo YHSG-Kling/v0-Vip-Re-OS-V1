@@ -47,6 +47,9 @@ import { issueBucketObjectUrl } from "../lib/storage/document-buckets"
 import { loadDealWorkAccess } from "../lib/auth/deal-work-ownership"
 import { TENANT_ADMIN_USER_TYPES, BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "../lib/auth/resolve-user-role"
 import { signedUrlTtlFor } from "../lib/kernel/document-custody"
+import { classifyPublicVideo, PUBLIC_MARKETING_VIDEO_TYPES } from "../lib/video/public-video"
+import { renderHostBucketFor } from "../lib/remotion/media-host"
+import { isDocumentClassBucket } from "../lib/storage/document-buckets"
 
 const root = process.cwd()
 let failures = 0
@@ -190,6 +193,8 @@ const SITE_RES: Array<[string, RegExp]> = [
   ["window.open", /window\.open\(([^)]*)\)/g],
   ["fetch", /\bfetch\(([^)]*)\)/g],
   ["url-prop", /\b(?:url|fileUrl|formUrl|pdfUrl|documentUrl|sourceUrl|file_url|mediaUrl)\s*:\s*([^,}\n]+)/g],
+  // Wave 155 (lane 155K2): a media PLAYER takes its source as a JSX `url={…}` prop (CardVideoPlayer) — the census was blind to it.
+  ["jsx-url", /\burl=\{([^}]*)\}/g],
 ]
 type ReaderSite = { file: string; kind: string; expr: string; wrapped: boolean }
 function readerSites(file: string, code: string, rawSrc: string): ReaderSite[] {
@@ -233,6 +238,7 @@ const READER_EXCEPTIONS: Array<{ file: string; frag: string; why: string }> = [
   { file: "app/dashboard/videos/create/video-create-client.tsx", frag: "thumbnailUrl", why: "PUBLIC — stock backgrounds, never addressed to a contact" },
   { file: "app/lm/[slug]/page.tsx", frag: "videoUrl", why: "PUBLIC — a landing video is published only after stagedPublicationVerdict(…, 'landing_page') (lib/video/video-staging.ts), which refuses a video addressed to a contact (lib/video/public-video.ts:94)" },
   { file: "app/portal/[contactId]/components/seller-mode/agent-update-video-card.tsx", frag: "thumbnailUrl", why: UPSTREAM("app/portal/[contactId]/listing/page.tsx (thumbnailUrl: documentOpenHref(latestUpdate.thumbnail_url))") },
+  { file: "app/portal/[contactId]/components/seller-mode/agent-update-video-card.tsx", frag: "latestUpdate.videoUrl", why: UPSTREAM("app/portal/[contactId]/listing/page.tsx (videoUrl: documentOpenHref(latestUpdate.video_url)) — the player url={…} prop, seen since wave 155") },
   { file: "lib/did/index.ts", frag: "videoUrl", why: "VENDOR — D-ID's own result URL, downloaded and re-hosted (never a stored reference)" },
 ]
 const rawOf = new Map<string, string>()
@@ -240,14 +246,110 @@ for (const f of files) rawOf.set(f, readFileSync(join(root, f), "utf8"))
 const readers = [...code.entries()].flatMap(([f, s]) => readerSites(f, s, rawOf.get(f) ?? ""))
 const excused = (r: ReaderSite) => READER_EXCEPTIONS.find((e) => e.file === r.file && r.expr.includes(e.frag))
 const bare = readers.filter((r) => !r.wrapped && !excused(r))
-// REPORTED, NOT ENFORCED: a shared column's camelCase spelling in a file that never names its door table (videoUrl, avatarUrl,
-// thumbnailUrl, documentUrl, certificateUrl, pdfUrl are also ordinary public-media props everywhere). Counted and published.
+// ── C5 · SHARED MEDIA NAMES (wave 155, lane 155K2 — directive item 7; was "REPORTED, NOT ENFORCED" through d2d6468c) ────────
+// A shared column's camelCase spelling (videoUrl, avatarUrl, thumbnailUrl, documentUrl, certificateUrl, pdfUrl) in a file that never
+// names its door table is ALSO an ordinary public-media prop, so a blanket ban would be wrong. Instead EVERY such site carries a
+// CLASS with the file:line that proves it; an UNCLASSIFIED site is RED (it may be protected media about or for a Contact). On a
+// CONTACT-FACING surface (CONTACT_ROOTS) only a door-proven class is accepted, and PUBLIC must cite one of the named public rules.
+//   UPSTREAM — the value was minted by the door helper (or a per-read signer) at `at`; PUBLIC — public media by a named rule;
+//   AGENT — the agent's OWN likeness / photo (agent media), never a contact's; VENDOR — a provider's own result URL, re-hosted or
+//   shown to the authoring staff seat; GATEWAY — fetched server-side through callConnector asset-download (resolves at use);
+//   INPUT — a link a staff seat TYPED, stored as given (not a reference of ours); SHORT — a link issued for the requesting seat and
+//   never stored; STORED — delivery evidence keeps the grant-free reference; the outgoing body is upgraded at `at`.
+type MediaClass = "UPSTREAM" | "PUBLIC" | "AGENT" | "VENDOR" | "GATEWAY" | "INPUT" | "SHORT" | "STORED"
+const CONTACT_ROOTS = ["app/portal/", "app/vendor/", "app/client/"]
+const CONTACT_OK: ReadonlySet<MediaClass> = new Set<MediaClass>(["UPSTREAM", "SHORT", "PUBLIC"])
+/** The public rules a PUBLIC site on a contact-facing surface may cite (each is the code that makes the media public). */
+const PUBLIC_RULES = ["lib/video/public-video.ts", "lib/remotion/media-host.ts", "lib/storage/document-buckets.ts", "lib/application/transactions.ts"]
+const P_DOC = "lib/documents/client-document-producer.ts:127"
+const MEDIA_SITE_CLASSES: Array<{ file: string; frag: string; cls: MediaClass; at: string }> = [
+  { file: "app/actions/commission-policy/agreements.ts", frag: "input.documentUrl", cls: "INPUT", at: "app/dashboard/financials/agreements/agreement-governance-panel.tsx:167" },
+  { file: "app/actions/kernel-bridges.ts", frag: "produced.pdfUrl", cls: "UPSTREAM", at: P_DOC },
+  { file: "app/actions/reporting-kernel.ts", frag: "pdfResult.data.pdfUrl", cls: "SHORT", at: "lib/kernel/reporting.ts:1106" },
+  { file: "app/actions/transaction-milestones.ts", frag: "res.pdfUrl", cls: "UPSTREAM", at: "lib/kernel/appraiser-packet.ts:890" },
+  { file: "app/actions/vendor-verification.ts", frag: "certificateUrl", cls: "INPUT", at: "app/actions/vendor-verification.ts:176" },
+  { file: "app/components/features/education/EducationEditor.tsx", frag: "videoUrl", cls: "VENDOR", at: "app/components/features/education/EducationEditor.tsx:310" },
+  { file: "app/components/features/lead-magnets/BookProjectPanel.tsx", frag: "pdfUrl", cls: "UPSTREAM", at: P_DOC },
+  { file: "app/components/features/offers/offer-document-panel.tsx", frag: "documentUrl", cls: "UPSTREAM", at: "app/components/features/offers/offer-workspace.tsx:476" },
+  { file: "app/components/portal/NetSheetCalculator.tsx", frag: "pdfUrl", cls: "UPSTREAM", at: P_DOC },
+  { file: "app/dashboard/admin/billing/subscription-agreement-card.tsx", frag: "view.documentUrl", cls: "SHORT", at: "app/actions/admin/subscription-agreement.ts:194" },
+  { file: "app/dashboard/documents/document-center-client.tsx", frag: "doc.documentUrl", cls: "UPSTREAM", at: "app/actions/document-center.ts:174" },
+  { file: "app/dashboard/financials/agreements/agreement-governance-panel.tsx", frag: "g.documentUrl", cls: "UPSTREAM", at: "app/actions/commission-policy/agreements.ts:94" },
+  { file: "app/dashboard/financials/agreements/agreement-governance-panel.tsx", frag: "amend.documentUrl", cls: "INPUT", at: "app/dashboard/financials/agreements/agreement-governance-panel.tsx:167" },
+  { file: "app/dashboard/financials/agreements/page.tsx", frag: "s.documentUrl", cls: "UPSTREAM", at: "app/actions/commission-agreement-history.ts:125" },
+  { file: "app/dashboard/forms/FormsLibraryClient.tsx", frag: "record.documentUrl", cls: "UPSTREAM", at: "app/dashboard/forms/FormsLibraryClient.tsx:262" },
+  { file: "app/dashboard/intelligence/components/os/leaderboard-panel.tsx", frag: "avatarUrl", cls: "AGENT", at: "app/actions/gamification.ts:58" },
+  { file: "app/dashboard/marketing/studio/components/content-command-center.tsx", frag: "selected.thumbnailUrl", cls: "UPSTREAM", at: "lib/marketing/content-catalog.ts:1022" },
+  { file: "app/dashboard/offers/outside-offer-threads.tsx", frag: "review.documentUrl", cls: "UPSTREAM", at: "lib/esign/addendum-signature-request.ts:384" },
+  { file: "app/dashboard/onboarding/progress/progress-dashboard-client.tsx", frag: "cert.certificateUrl", cls: "UPSTREAM", at: "lib/onboarding/certification-engine.ts:608" },
+  { file: "app/dashboard/settings/license-ce/license-ce-client.tsx", frag: "c.certificateUrl", cls: "UPSTREAM", at: "app/actions/admin/license-tracking.ts:434" },
+  { file: "app/dashboard/settings/twin-studio/components/twin-card.tsx", frag: "twin.avatarUrl", cls: "AGENT", at: "app/actions/twin-studio.ts:73" },
+  { file: "app/dashboard/superadmin/growth/image-library-card.tsx", frag: "thumbnailUrl", cls: "PUBLIC", at: "lib/marketing/image-library.ts:40" },
+  { file: "app/dashboard/transactions/[id]/cda/cda-template-fields-card.tsx", frag: "pdfUrl", cls: "UPSTREAM", at: "app/actions/cda-template-field-actions.ts:321" },
+  { file: "app/dashboard/vendors/vendor-directory-client.tsx", frag: "result.status.certificateUrl", cls: "INPUT", at: "lib/vendors/insurance-posture.ts:118" },
+  { file: "app/portal/[contactId]/components/PortalWelcomeVideo.tsx", frag: "video.videoUrl", cls: "UPSTREAM", at: "lib/portal/welcome-video.ts:244" },
+  // Static generic guides (`/education/*.mp4`) chosen by persona and stage — the same file for every client of that persona.
+  { file: "app/portal/[contactId]/transaction/[transactionId]/page.tsx", frag: "educationalContent.videoUrl", cls: "PUBLIC", at: "lib/application/transactions.ts:3406" },
+  // The page reads remotion_composition_renders ONLY (never the contact-addressed chapter video in ai_video_projects); a composition
+  // render that is not a contact-addressed video project is public media by the host rule. See the lane notes' owner decision.
+  { file: "app/portal/listing-plan/[id]/listing-plan-segments.tsx", frag: "current.videoUrl", cls: "PUBLIC", at: "lib/remotion/media-host.ts:63" },
+  { file: "app/portal/listing-plan/[id]/listing-plan-segments.tsx", frag: "current.thumbnailUrl", cls: "PUBLIC", at: "lib/remotion/media-host.ts:63" },
+  { file: "app/site/[slug]/page.tsx", frag: "heroVideo.", cls: "PUBLIC", at: "lib/video/public-video.ts:167" },
+  { file: "lib/commission/agreement-terms.ts", frag: "signed.documentUrl", cls: "UPSTREAM", at: "lib/commission/agreement-terms.ts:199" },
+  { file: "lib/integrations/providers/brokermint-provider.ts", frag: "request.documentUrl", cls: "GATEWAY", at: "lib/integrations/providers/brokermint-provider.ts:141" },
+  { file: "lib/integrations/providers/docusign-provider.ts", frag: "request.documentUrl", cls: "GATEWAY", at: "lib/integrations/providers/docusign-provider.ts:285" },
+  { file: "lib/integrations/providers/dotloop-provider.ts", frag: "request.documentUrl", cls: "GATEWAY", at: "lib/integrations/providers/dotloop-provider.ts:242" },
+  { file: "lib/integrations/providers/formsimplicity-provider.ts", frag: "request.documentUrl", cls: "GATEWAY", at: "lib/integrations/providers/formsimplicity-provider.ts:167" },
+  { file: "lib/integrations/providers/skyslope-provider.ts", frag: "request.documentUrl", cls: "GATEWAY", at: "lib/integrations/providers/skyslope-provider.ts:204" },
+  { file: "lib/intelligence/partners-meeting.ts", frag: "res.videoUrl", cls: "VENDOR", at: "lib/intelligence/partners-meeting.ts:127" },
+  { file: "lib/kernel/appraiser-packet.ts", frag: "packet.pdfUrl", cls: "UPSTREAM", at: "lib/kernel/appraiser-packet.ts:890" },
+  { file: "lib/lead-magnets/book-creator.ts", frag: "r.pdfUrl", cls: "UPSTREAM", at: P_DOC },
+  { file: "lib/lead-magnets/promised-deliverables.ts", frag: "input.book.pdfUrl", cls: "STORED", at: "lib/lead-magnets/promised-deliverables.ts:267" },
+  { file: "lib/market-reports/producer.ts", frag: "r.pdfUrl", cls: "UPSTREAM", at: P_DOC },
+  { file: "lib/offers/offer-extractor.ts", frag: "pdfUrl", cls: "GATEWAY", at: "lib/offers/offer-extractor.ts:65" },
+  { file: "lib/providers/vibe.ts", frag: "videoUrl", cls: "VENDOR", at: "lib/providers/vibe.ts:207" },
+]
 const sharedCamel = new RegExp(`\\b(${SHARED_COLUMNS.map(camel).join("|")})\\b`)
-const reportedOnly = [...code.entries()].flatMap(([f, src]) => SITE_RES.flatMap(([kind, re]) => [...src.matchAll(re)].filter((m) => sharedCamel.test(m[1]) && !HELPER.test(m[1]) && !readers.some((r) => r.file === f && r.expr === m[1].trim())).map(() => `${f}<${kind}>`)))
+type MediaSite = { file: string; kind: string; expr: string }
+function mediaSites(file: string, src: string, readerExprs: ReadonlySet<string>): MediaSite[] {
+  return SITE_RES.flatMap(([kind, re]) => [...src.matchAll(re)]
+    .filter((m) => sharedCamel.test(m[1]) && !HELPER.test(m[1]) && !readerExprs.has(m[1].trim()))
+    .map((m) => ({ file, kind, expr: m[1].trim() })))
+}
+const mediaClassOf = (s: MediaSite) => MEDIA_SITE_CLASSES.find((e) => e.file === s.file && s.expr.includes(e.frag))
+const contactFacing = (f: string) => CONTACT_ROOTS.some((r) => f.startsWith(r))
+/** The verdict for one site: null = accepted, else why it is refused. */
+function mediaVerdict(s: MediaSite, classOf: (s: MediaSite) => { cls: MediaClass; at: string } | undefined = mediaClassOf): string | null {
+  const c = classOf(s)
+  if (!c) return "UNCLASSIFIED — it may be protected media about or for a Contact; classify it or route it through the door helper"
+  if (contactFacing(s.file) && !CONTACT_OK.has(c.cls)) return `${c.cls} is not accepted on a contact-facing surface (only ${[...CONTACT_OK].join(" / ")})`
+  if (contactFacing(s.file) && c.cls === "PUBLIC" && !PUBLIC_RULES.some((r) => c.at.startsWith(`${r}:`))) return `PUBLIC on a contact-facing surface must cite a named public rule (${PUBLIC_RULES.join(", ")}), not ${c.at}`
+  return null
+}
+const mediaAll = [...code.entries()].flatMap(([f, src]) => mediaSites(f, src, new Set(readers.filter((r) => r.file === f).map((r) => r.expr))))
+const mediaRefused = mediaAll.map((s) => ({ s, why: mediaVerdict(s) })).filter((x) => x.why)
+const usedMediaClasses = new Set(mediaAll.map(mediaClassOf).filter(Boolean))
+const staleMediaClasses = MEDIA_SITE_CLASSES.filter((e) => !usedMediaClasses.has(e))
+const danglingCitations = MEDIA_SITE_CLASSES.filter((e) => { const [p, ln] = e.at.split(/:(?=\d+$)/); try { return readFileSync(join(root, p), "utf8").split("\n").length < Number(ln) } catch { return true } })
 const usedExceptions = new Set(readers.filter((r) => !r.wrapped).map((r) => excused(r)).filter(Boolean))
 const staleExceptions = READER_EXCEPTIONS.filter((e) => !usedExceptions.has(e))
 console.log(`    (published) door columns ${DOOR_TABLE_OF.size} (derived from DOCUMENT_DOOR_KINDS): enforced everywhere ${UNIQUE_COLUMNS.join(", ")} (+ camelCase); shared names ${SHARED_COLUMNS.join(", ")} enforced only where the file names their door table`)
-console.log(`    (published, NOT enforced — blind spot) ${reportedOnly.length} site(s) in ${new Set(reportedOnly.map((x) => x.split("<")[0])).size} file(s) where a shared column's camelCase spelling (${SHARED_COLUMNS.map(camel).join(", ")}) reaches a link in a file that never names its door table`)
+const byClass = MEDIA_SITE_CLASSES.reduce<Record<string, number>>((a, e) => { a[e.cls] = (a[e.cls] ?? 0) + mediaAll.filter((s) => mediaClassOf(s) === e).length; return a }, {})
+console.log(`    (published, ENFORCED since wave 155) ${mediaAll.length} shared-name media site(s) in ${new Set(mediaAll.map((s) => s.file)).size} file(s) (derived); by class ${Object.entries(byClass).map(([k, v]) => `${k} ${v}`).join(" · ")}; ${mediaAll.filter((s) => contactFacing(s.file)).length} on contact-facing surfaces (${CONTACT_ROOTS.join(", ")})`)
+check("C5 every shared-name media site is classified, and on a contact-facing surface only through the door (UPSTREAM / SHORT) or a named public rule", mediaRefused.length === 0, mediaRefused.map((x) => `${x.s.file} <${x.s.kind}> ${x.s.expr.slice(0, 60)} — ${x.why}`).join(" | "))
+check("C5 every media classification still matches a site (a stale class is a hole)", staleMediaClasses.length === 0, staleMediaClasses.map((e) => `${e.file}#${e.frag}`).join(", "))
+check("C5 every classification's proof citation exists (file present, line in range)", danglingCitations.length === 0, danglingCitations.map((e) => e.at).join(", "))
+{
+  const planted = mediaSites("app/portal/[contactId]/planted.tsx", `<video src={row.videoUrl} />`, new Set())
+  const plantedPublic = (s: MediaSite) => mediaVerdict(s, () => ({ cls: "PUBLIC", at: "app/portal/somewhere.tsx:1" }))
+  const plantedVendor = (s: MediaSite) => mediaVerdict(s, () => ({ cls: "VENDOR", at: "lib/did/index.ts:625" }))
+  const plantedOk = (s: MediaSite) => mediaVerdict(s, () => ({ cls: "PUBLIC", at: "lib/video/public-video.ts:94" }))
+  const player = mediaSites("x.tsx", `<CardVideoPlayer url={latest.videoUrl} />`, new Set())
+  control("C5 catches a planted UNCLASSIFIED portal video, a PUBLIC portal site citing no public rule, a VENDOR class on a portal page, and sees a player's url={…} prop; a door-wrapped twin and a correctly cited PUBLIC pass",
+    planted.length === 1 && /UNCLASSIFIED/.test(mediaVerdict(planted[0]) ?? "") && /named public rule/.test(plantedPublic(planted[0]) ?? "")
+    && /not accepted on a contact-facing/.test(plantedVendor(planted[0]) ?? "") && plantedOk(planted[0]) === null
+    && player.length === 1 && mediaSites("x.tsx", `<video src={documentOpenHref(row.videoUrl)} />`, new Set()).length === 0)
+}
 console.log(`    (published) ${readers.length} reader site(s) in ${new Set(readers.map((r) => r.file)).size} file(s): ${readers.filter((r) => r.wrapped).length} through the helper, ${readers.length - readers.filter((r) => r.wrapped).length} on the named exception list (${READER_EXCEPTIONS.length} entries), ${bare.length} bare`)
 check("C4 no stored reference reaches a link or a fetch without the ONE helper or a named exception", bare.length === 0, bare.map((r) => `${r.file} <${r.kind}> ${r.expr.slice(0, 80)}`).join(" | "))
 check("C4 every named exception still matches a site (a stale exemption is a hole)", staleExceptions.length === 0, staleExceptions.map((e) => `${e.file}#${e.frag}`).join(", "))
@@ -264,6 +366,38 @@ control("the reader finder sees a bare stored reference in an href, a window.ope
   && readerSites("s.tsx", `<a href={documentOpenHref(doc.storage_url) ?? undefined}>`, "")[0].wrapped === true
   && readerSites("s.tsx", `<video src={v.video_url} />`, "ai_video_projects").length === 1 && readerSites("s.tsx", `<video src={v.video_url} />`, "listing_videos").length === 0)
 control("the alias finder sees `file_url:storage_url` in a select string", aliasRe.test(`id, file_url:storage_url, created_at`) && !aliasRe.test(`id, storage_url, created_at`))
+
+// ── C6 · no raw person id in a PUBLIC page's URL or a public tracker body (wave 155, lane 155K2; directive 471) ───────────
+// The blog pages honored `?c=<contact_id>` (no writer ever built it) and posted it to public trackers that stored it as the viewer.
+// Every file under an unauthenticated public root, and every public tracker component, is scanned (stripped source) for a person
+// id read from the query string or sent in a tracker body. A sealed grant (lib/marketing/tracked-qr.ts) is the only way to carry one.
+console.log("\n[C6 · no raw Contact / Lead id in a public page's query string or a public tracker body]")
+const PUBLIC_PAGE_ROOTS = ["app/blog/", "app/embed/", "app/site/", "app/lm/", "app/v/", "app/p/", "app/qr/", "app/home-value/", "app/open-house/", "app/newsletters/", "app/reviews/", "app/buyer-intake/", "app/showings/", "app/widget/", "app/trust/", "app/components/blog-landing/", "app/api/blog/"]
+const PERSON_KEY = String.raw`(?:c|cid|contact|contact_?id|contactId|lead|lead_?id|leadId|person_?id|personId)`
+const RAW_ID_RES: Array<[string, RegExp]> = [
+  ["query destructure", new RegExp(String.raw`const\s*\{[^}]*\b${PERSON_KEY}\b\s*(?::[^,}]*)?[,}][^=]*=\s*await\s+searchParams`)],
+  ["query get", new RegExp(String.raw`searchParams\.get\(\s*["'\`]${PERSON_KEY}["'\`]`)],
+  ["body claim", new RegExp(String.raw`\bbody\.(?:contact_?id|contactId|lead_?id|leadId|person_?id)\b`)],
+]
+/** A CLIENT post (a JSON.stringify'd body) that carries a person id. A server route writing an id it RESOLVED (a token's row) is not this. */
+const TRACKER_BODY = /JSON\.stringify\(\s*\{[^}]*\b(?:contact_id|lead_id|contactId|leadId)\s*:\s*(?!null\b)[A-Za-z_]/
+function rawIdHits(file: string, src: string): string[] {
+  const stripped = stripComments(src)
+  const hits = RAW_ID_RES.filter(([, re]) => re.test(stripped)).map(([k]) => `${file} <${k}>`)
+  return TRACKER_BODY.test(stripped) ? [...hits, `${file} <tracker body>`] : hits
+}
+const publicFiles = files.filter((f) => PUBLIC_PAGE_ROOTS.some((r) => f.startsWith(r)))
+const rawIdFound = publicFiles.flatMap((f) => rawIdHits(f, rawOf.get(f) ?? readFileSync(join(root, f), "utf8")))
+console.log(`    (published) ${publicFiles.length} file(s) under ${PUBLIC_PAGE_ROOTS.length} named public roots scanned (blind spot: a public page outside these roots is not scanned)`)
+check("C6 no public page reads a person id from its query string and no public tracker posts one", rawIdFound.length === 0, rawIdFound.join(" | "))
+control("C6 catches the retired blog shape (`const { p, c: contactId } = await searchParams`), a `searchParams.get(\"lead_id\")`, and a tracker body carrying `contact_id: contactId`, and a route storing `body.contact_id`; `viewer_contact_id: null` and a server-resolved `r.contact_id` pass",
+  rawIdHits("p.tsx", `const { p: persona, c: contactId, utm_source } = await searchParams`).length === 1
+  && rawIdHits("p.ts", `const id = req.nextUrl.searchParams.get("lead_id")`).length === 1
+  && rawIdHits("t.tsx", `body: JSON.stringify({ blog_post_id: id, contact_id: contactId })`).length === 1
+  && rawIdHits("r.ts", `insert({ viewer_contact_id: null })`).length === 0
+  && rawIdHits("r.ts", `if (typeof body.contact_id === "string") stored = body.contact_id`).length === 1
+  && rawIdHits("r.ts", `insert({ event_id: ev.id, contact_id: r.contact_id })`).length === 0
+  && rawIdHits("p.tsx", `const { p: persona, utm_source } = await searchParams`).length === 0)
 
 // ── EXECUTED ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 type Row = Record<string, any>
@@ -544,6 +678,30 @@ async function main() {
   const pShut = await openDocumentReference(deps(title), mkRef("transaction-documents", `${B1}/${T1}/title/commitment.pdf`))
   check("PARTY a title / lender / vendor party opens its OWN upload and the CDA delivered to it while its lane stands, is refused a deal document it did not upload, and is refused its own once the lane is gone (m888 transaction_documents_party_select, live)",
     pOwn.status === 302 && pCda.status === 302 && pOther.status === 404 && pShut.status === 404, JSON.stringify([pOwn.status, pCda.status, pOther.status, pShut.status]))
+
+  // ── PRIV-006 (wave 155, lane 155K2): a protected video opens only for its authorized viewer and fails on the NEXT click after
+  // revocation; a public marketing video plays with no login (no door, no grant, nothing minted).
+  console.log("\n[EXECUTED · SIMULATED — PRIV-006: protected vs public video]")
+  const pvRow = db.tables.ai_video_projects.find((r: Row) => r.id === "vp-1")!
+  const pvGrant = mintDocumentShareGrant(SEALER, { ref: R.personal_video.ref, purpose: "personal_video", brokerageId: B1, rowId: "vp-1", contactId: C_LEAD })
+  const pvG = pvGrant.ok ? pvGrant.grant : ""
+  const pvFirst = await openDocumentReference(anonDeps, R.personal_video.ref, pvG)
+  const pvStranger = await openDocumentReference(deps({ userId: U_B2, brokerageId: B2, userType: "agent" }), R.personal_video.ref)
+  pvRow.contact_id = C1 // the video is re-addressed: the lead's authorization is gone
+  const pvSigns = db.storage.signs.length
+  const pvAfter = await openDocumentReference(anonDeps, R.personal_video.ref, pvG)
+  pvRow.contact_id = C_LEAD
+  check("PRIV-006 the personal video opens for ITS contact's grant (302), is refused to another tenant's seat, and the SAME grant is refused on the next click once the video is re-addressed — no link minted",
+    pvFirst.status === 302 && pvStranger.status === 404 && pvAfter.status === 404 && same(pvAfter) && db.storage.signs.length === pvSigns,
+    JSON.stringify([pvFirst.status, pvStranger.status, pvAfter.status]))
+  const marketing = { video_type: PUBLIC_MARKETING_VIDEO_TYPES[0], contact_id: null, approval_status: "approved", status: "completed", compliance_status: "passed", video_url: "https://proj.supabase.co/storage/v1/object/public/video-assets/reel.mp4" }
+  const hostPublic = renderHostBucketFor({ contact_id: null })
+  const hostPersonal = renderHostBucketFor({ contact_id: C_LEAD })
+  const signsBeforePublic = db.storage.signs.length
+  check("PRIV-006 a public marketing video: classified public, hosted in a PUBLIC media bucket (its URL plays with no login, no door, nothing minted); the same video addressed to a contact is refused publication and hosted in a document-class bucket",
+    classifyPublicVideo(marketing).public === true && !isDocumentClassBucket(hostPublic) && db.storage.signs.length === signsBeforePublic
+    && classifyPublicVideo({ ...marketing, contact_id: C_LEAD }).public === false && isDocumentClassBucket(hostPersonal),
+    JSON.stringify({ hostPublic, hostPersonal }))
 
   control("the parser refuses traversal and non-references", parseDocumentRef("docref://documents/a/../b.pdf") === null && parseDocumentRef("https://example.com/a.pdf") === null && parseDocumentRef("docref://BAD BUCKET/x") === null && toDocumentRef("documents", "a b/c.pdf") === "docref://documents/a%20b/c.pdf")
 

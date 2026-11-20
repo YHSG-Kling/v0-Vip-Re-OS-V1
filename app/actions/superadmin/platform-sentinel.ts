@@ -25,6 +25,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActorNames } from "@/lib/kernel/actor-attribution"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { isEmailOnSuppressionList } from "@/lib/platform/suppression-list"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import {
   splitDraftEmail,
   SEVERITY_ORDER,
@@ -304,7 +305,7 @@ export async function approveSentinelActionAction(id: string, opts: { send?: boo
   const [{ data: admins }, { data: brk }] = await Promise.all([
     svc.from("users").select("email")
       .eq("brokerage_id", row.brokerage_id)
-      .in("user_type", ["broker", "admin"])
+      .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
       .is("deleted_at", null).limit(20),
     svc.from("brokerages").select("email").eq("id", row.brokerage_id).maybeSingle(),
   ])

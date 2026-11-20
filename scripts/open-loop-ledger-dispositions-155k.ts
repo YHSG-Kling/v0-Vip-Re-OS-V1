@@ -8,10 +8,9 @@
  *       territory-gated inside startTopicRefurbish). Brand listening is third-party listening and STAYS territory-gated by rule.
  *     146A-OL-02 — the wave-146 security gate reads EXTERNAL until m875 is applied: present (production-readiness-guard
  *       STORAGE_POLICY_MIGRATIONS_146 = m854/m855/m874/m875; the storage gate is EXTERNAL while any is unstamped).
- *   CARRIED, corrected:
- *     143G-OL-05 / 146I-OL-03 — the hand-typed `.in("user_type", ["admin","broker"…])` literals: 31 at d2d6468c (the row says 32);
- *       directive item 8 assigns the fold to lane 155K2 (the ledger's owner vocabulary predates wave 155, so `o` keeps lane149Z
- *       and the reason names the current lane).
+ *   CLOSED at merge of lane 155K2:
+ *     143G-OL-05 / 146I-OL-03 — the hand-typed `.in("user_type", ["admin","broker"…])` literals: folded onto the roster tiers by
+ *       spread (38 → 5 classified) and held by test:role-roster-fold.
  * Spread LAST into MANUAL_DISPOSITIONS (scripts/open-loop-ledger-dispositions.ts), after 154M.
  */
 import type { Disposition } from "./open-loop-ledger"
@@ -23,12 +22,17 @@ const FIRST_PARTY_SWEEP = [
   "lib/repurpose/refurbish-run.ts#if (a.territory === \"none\" && topicAcquisitionClass(sourceKind) !== \"first_party\")",
   "app/api/cron/local-intel/route.ts#const firstParty = await runFirstPartyTopicSweep(svc as never)",
 ]
-const LITERALS = "31 hand-typed `.in(\"user_type\", [\"admin\",\"broker\"…])` literals remain at d2d6468c (re-measured with the row's own grep; the row says 32) — directive K item 8 assigns the fold onto TENANT_ADMIN_USER_TYPES to lane 155K2 (positive and negative tests, no widening)"
+const ROSTER_FOLD = [
+  "key:test:role-roster-fold",
+  "app/actions/portal-settings.ts#.in(\"user_type\", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])",
+  "app/actions/call-review-actions.ts#.in(\"user_type\", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES, \"team_lead\"])",
+]
 
 export const WAVE155K_DISPOSITIONS: Record<string, Disposition> = {
   "145G-SO-02": { s: "closed", e: FIRST_PARTY_SWEEP, by: `${K} — FIXED: tenants without a territory get first-party topic intelligence + the refurbish trigger (first-party topics only)` },
   "145G-OL-09": { s: "closed", e: FIRST_PARTY_SWEEP, by: `${K} — FIXED for the topic pass; brand listening is third-party research and stays territory-gated by the K3 rule (an intentional rejection, not a gap)` },
   "146A-OL-02": { s: "closed", e: ["scripts/production-readiness-guard.ts#const STORAGE_POLICY_MIGRATIONS_146 = [854, 855, 874, 875].map(migrationNamed)", "scripts/production-readiness-guard.ts#const storageApplied146 = STORAGE_POLICY_MIGRATIONS_146.length > 0"], by: `${K} — VERIFIED ALREADY DONE: the wave-146 storage gate is EXTERNAL until every storage.objects migration of m854/m855/m874/m875 is stamped applied`, lc: true },
-  "143G-OL-05": { s: "carried", k: "missing-code", o: "lane149Z", r: LITERALS, lc: true },
-  "146I-OL-03": { s: "carried", k: "missing-code", o: "lane149Z", r: LITERALS, lc: true },
+  // CLOSED at merge of lane 155K2: the hand-typed lists are folded onto the roster tiers and a census ratchet holds the rest.
+  "143G-OL-05": { s: "closed", e: ROSTER_FOLD, by: `wave 155 lane 155K2 — FIXED: 33 hand-typed lists + 3 expander lists folded onto TENANT_ADMIN_USER_TYPES / a derived tier by spread (38 → 5, the 5 classified); test:role-roster-fold fails an unclassified hand-typed list` },
+  "146I-OL-03": { s: "closed", e: ROSTER_FOLD, by: `wave 155 lane 155K2 — FIXED: same fold as 143G-OL-05` },
 }

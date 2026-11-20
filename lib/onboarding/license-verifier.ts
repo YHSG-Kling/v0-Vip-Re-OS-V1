@@ -21,6 +21,7 @@ import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
 import { logAIUsage } from "@/lib/ai/cost-tracking"
 import { gateway } from "@ai-sdk/gateway"
 import { verifyRealEstateLicense } from "@/lib/onboarding/license-lookup"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -477,7 +478,7 @@ async function handleVerificationFailure(
       .from("users")
       .select("id")
       .eq("brokerage_id", params.brokerageId)
-      .in("user_type", ["compliance_officer", "admin", "broker"])
+      .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES, "compliance_officer"])
     if (error) throw error
     const portalLine = result.portalUrl ? ` Check the state portal: ${result.portalUrl}` : ""
     for (const r of reviewers ?? []) {

@@ -14,6 +14,7 @@ import "server-only"
 import { mintTrackedQr, normalizeOrigin, type MintedTrackedQr } from "./tracked-qr"
 import { qrInAppDefaultPath } from "./qr-contract"
 import { createServiceClient } from "@/lib/supabase/service"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 export type MarketingQrKind =
   | "listing_flyer"
@@ -128,7 +129,7 @@ async function notifyOwnerToAssignUrl(
         .eq("brokerage_id", args.brokerageId)
         // RECIPIENT FILTER: 'superadmin' dropped (matches zero users.user_type
         // rows); broker_owner added — storable seat that owns the brokerage.
-        .in("user_type", ["admin", "broker", "broker_owner"])
+        .in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])
       for (const u of admins ?? []) recipients.push(u.id)
     }
 

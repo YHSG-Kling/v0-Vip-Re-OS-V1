@@ -11,6 +11,7 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateLicenseReadiness, readinessIssueKey, type LicenseReadiness, type ReadinessIssue } from "@/lib/compliance/license-readiness"
+import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -113,7 +114,7 @@ export async function sweepLicenseReadiness(
       } catch { /* best-effort — the broker notification below still fires */ }
       try {
         const { data: mgrs } = await svc.from("users").select("id")
-          .eq("brokerage_id", params.brokerageId).in("user_type", ["broker", "admin"]).limit(10)
+          .eq("brokerage_id", params.brokerageId).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(10)
         for (const m of (mgrs ?? []) as Array<{ id: string }>) {
           const { data: seen } = await svc.from("notifications").select("id")
             .eq("user_id", m.id).eq("entity_type", "agent").eq("entity_id", a.id).eq("type", "license_readiness_blocker")
