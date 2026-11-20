@@ -782,6 +782,15 @@ function isNotAWorker(name: string): boolean {
 function actsAsGate(f: Facts): boolean {
   return (!!f.session && !/^(?:createClient\(\)|cookies\(\)|createServerClient)/.test(f.session.token)) || f.gates.some((g) => g.token.startsWith("authority:") || g.token.startsWith("policy:"))
 }
+/** PURE — an AUTHORIZATION module (integrator, wave 155): every function in it says WHO may act — a seat, a lane, a grant — so
+ *  none of its reads is the act's subject. BY LOCATION, because a lane check is handed the identity instead of resolving it and
+ *  is named like a worker: lib/kernel/portal-auth.ts externalPartnerTransactionLane reads vendor_assignments to prove a partner
+ *  is on a deal, and once lane 155T3 moved the title gate onto the vendor rail the worker hop credited the route that calls it
+ *  (/api/external-portal/actions/complete — one audit row about a TRANSACTION) to vendor_assignments' steward. The two ledgers
+ *  disagreed and test:owner-resolution said so. Blind spot: an authorization helper kept outside these locations is still
+ *  judged by name and structure only. */
+const AUTH_MODULE_RE = /(?:^|\/)(?:auth|security)\/|(?:^|\/)(?:[\w-]*-auth|auth-[\w-]*|require-[\w-]+)\.tsx?$/
+function isAuthorizationModule(file: string): boolean { return AUTH_MODULE_RE.test(file) }
 interface DelegatedWorker { name: string; at: string; reads: string[] }
 /** PURE — the worker-hop owner (rule above). `own` = the action's own span, `path` = its whole path, `workers` = its delegates. */
 function ownerOfDelegatedRead(own: Facts, path: Facts, workers: DelegatedWorker[]): { owner: string | null; why: string } | null {
@@ -805,7 +814,7 @@ function delegatedWorkers(file: string, v: Views, fns: FnSpan[], from: number, t
   const ids = v.ids.slice(from, to)
   const out = new Map<string, DelegatedWorker>()
   const add = (tFile: string, tv: Views | null, tfns: FnSpan[], fnName: string, localName: string, depth = 0): void => {
-    if (!tv || isNotAWorker(localName) || isNotAWorker(fnName)) return
+    if (!tv || isAuthorizationModule(tFile) || isNotAWorker(localName) || isNotAWorker(fnName)) return
     const key = `${tFile}#${fnName}`; if (out.has(key)) return
     const fn = tfns.find((x) => x.name === fnName)
     if (!fn) {
@@ -2811,6 +2820,14 @@ async function main(): Promise<void> {
       !!hop("plantedStructuralGateRead") && hop("plantedStructuralGateRead")!.missing.includes("owner"), hop("plantedStructuralGateRead")?.registered_manager)
     check(`G9 NEGATIVE: two workers reading two stewards' tables (${hopA} → ${TABLE_MANAGER[hopA]}, ${hopB} → ${TABLE_MANAGER[hopB]}) resolve NOTHING`,
       !!hop("plantedTwoWorkers") && hop("plantedTwoWorkers")!.missing.includes("owner"), hop("plantedTwoWorkers")?.registered_manager)
+    check("G9 LOCATION: a helper that lives in an authorization module is a gate whatever it is named — portal-auth, lib/auth/**, lib/security/**, require-*.ts; NEGATIVE: a domain module, an OAuth client and a file that merely mentions auth are not",
+      ["lib/kernel/portal-auth.ts", "lib/auth/lead-visibility.ts", "lib/security/rbac.ts", "lib/portal/require-contact-access.ts", "lib/x/session-auth.ts"].every(isAuthorizationModule)
+      && !["lib/kernel/financial.ts", "lib/connections/google-oauth.ts", "lib/kernel/authority-ledger.ts", "lib/authors/list.ts", "app/actions/superadmin/ai-ops.ts"].some(isAuthorizationModule))
+    {
+      const ext = realRows.find((r) => r.id === "http:/api/external-portal/actions/complete")
+      check("G9 LOCATION (the row that showed it): the external-portal completion route is NOT owned through the lane check it calls in lib/kernel/portal-auth.ts (unresolved, or the transaction's steward — never vendor_assignments' steward by that hop)",
+        !!ext && !/externalPartnerTransactionLane|resolveExternalPartnerIdentity/.test(String(ext.decision_owner ?? "") + String(ext.classification_evidence ?? "") + String(ext.registered_manager ?? "")) && (ext.missing.includes("owner") || ext.registered_manager === TABLE_MANAGER.transactions), `${ext?.registered_manager} · ${ext?.missing}`)
+    }
     const w9 = (reads: string[]): DelegatedWorker => ({ name: "w", at: `${FX}:1`, reads })
     check("G9 PURE: the rule applies only where the own span read no stewarded table and every write is a carrier / generic log — NEGATIVE: an own-span stewarded read, a domain write, a stewarded log written, identity-only worker reads and a worker with two stewards resolve nothing",
       ownerOfDelegatedRead(fx8([]), fx8(["audit_log"]), [w9([hopA, "users"])])?.owner === TABLE_MANAGER[hopA]
