@@ -437,30 +437,12 @@ export async function checkOverdueMilestones() {
   return { success: true, count: overdueMilestones.length }
 }
 
-export async function completeMilestone(params: { milestone_id: string; completion_notes?: string }) {
-  const supabase = await createServerClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  // Mark milestone as complete
-  const { data, error } = await supabase
-    .from("transaction_milestones")
-    .update({
-      status: "completed",
-      completed_at: new Date().toISOString(),
-      notes: params.completion_notes, // real column is notes (not completion_notes)
-    })
-    .eq("id", params.milestone_id)
-    .select()
-    .single()
-
-  if (error) throw error
-
-  return { success: true, milestone: data }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 1 — two doors for one act): completeMilestone DELETED. Survivor:
+// app/actions/transaction-milestones.ts:48 completeMilestoneAction (app/dashboard/transactions/[id]/transaction-detail-client.tsx:31
+// import, :830 call) → lib/transactions/milestone-service.ts completeMilestone, which pins the tenant, mirrors the deadline, writes
+// the lifecycle audit and fans out. This twin flipped any transaction_milestones row to completed by id on an RLS-only client with
+// no deal check, no audit and no fan-out; nothing imported it. Not merged: its free-text completion note (no caller supplies one).
+// (app/actions/transactions.ts completeMilestone, the other twin, is lane 155R28's.)
 
 export async function generateDailyGameplan(userId: string) {
   // WAVE 155 (lane 155S2): THE GATE, before any read or model spend. This public endpoint took the user from its argument

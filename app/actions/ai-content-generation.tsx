@@ -2018,52 +2018,15 @@ function generateSEORecommendations(params: any, score: number): string[] {
 // COMPLIANCE CHECKING
 // ============================================
 
-export async function checkCompliance(params: { contentId: string; content: string; contentType: string }) {
-  const fairHousingCheck = checkFairHousing(params.content)
-  const flags = [...fairHousingCheck.violations]
-
-  const supabase = await createClient()
-
-  await supabase
-    .from("ai_generated_content")
-    .update({
-      compliance_approved: flags.length === 0,
-      compliance_flags: flags,
-      compliance_status: flags.length > 0 ? "needs_revision" : "approved",
-    })
-    .eq("id", params.contentId)
-
-  return {
-    passed: flags.length === 0,
-    flags,
-  }
-}
-
-function checkFairHousing(text: string): { violations: Array<{ matched: string; message: string; fix: string }> } {
-  const violations: Array<{ matched: string; message: string; fix: string }> = []
-
-  const prohibitedPatterns = [
-    { pattern: /master bedroom/gi, fix: 'Use "primary bedroom" instead' },
-    { pattern: /walk to church/gi, fix: 'Use "walk to places of worship"' },
-    { pattern: /perfect for families/gi, fix: 'Use "spacious layout" or "multiple bedrooms"' },
-    { pattern: /great schools/gi, fix: "Cite specific school ratings instead" },
-    { pattern: /young professional/gi, fix: "Avoid age implications" },
-    { pattern: /empty nester/gi, fix: 'Use "those seeking low-maintenance"' },
-  ]
-
-  for (const { pattern, fix } of prohibitedPatterns) {
-    const matches = text.match(pattern)
-    if (matches) {
-      violations.push({
-        matched: matches[0],
-        message: `Potential Fair Housing violation: "${matches[0]}"`,
-        fix,
-      })
-    }
-  }
-
-  return { violations }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 2 — the functionality lives elsewhere): checkCompliance (+ its private
+// six-regex twin checkFairHousing) DELETED. Survivors: the text scan is app/actions/compliance-monitoring.ts:141 scanContentCompliance
+// (the DB-driven prohibited-phrase + AI scanner over lib/compliance-rules/fair-housing-patterns.ts — the canonical list that already
+// carries every phrase the twin knew), called by app/components/compliance/FairHousingScanner.tsx:11 import, :31 call and
+// app/components/shared/compliance/submit-content-form.tsx:53; the attestation on ai_generated_content is written by this file's
+// saveDescriptionToListing (session tenant, counted listing write, receipt listing.public_remarks.approve) and by the generators' own
+// compliance gates. Nothing imported this export. It was a public door that set compliance_approved / compliance_status from
+// CALLER-SUPPLIED text rather than the stored content, on an RLS-only client with no result read — a caller could clear a row's flags
+// by sending clean text. Nothing of it was merged: the stored-content attestation already lives on the survivors.
 
 // ============================================
 // CONTENT REPURPOSING — RETIRED (wave 155, lane 155R20; CLAUDE.md §1 case 1, a DUPLICATE)
@@ -2277,50 +2240,13 @@ export async function getContentCalendar(params: { agentId: string; startDate?: 
   return data || []
 }
 
-export async function scheduleContent(params: {
-  contentId: string
-  scheduledDate: string
-  scheduledTime?: string
-  platform?: string
-}) {
-  const supabase = await createClient()
-
-  const { data: content } = await supabase.from("ai_generated_content").select("*").eq("id", params.contentId).single()
-
-  if (!content) {
-    return { success: false, error: "Content not found" }
-  }
-
-  const { data: scheduled, error } = await supabase
-    .from("content_calendar")
-    .insert({
-      agent_id: content.agent_id,
-      // content_calendar's RLS is `(brokerage_id IS NULL) OR (brokerage_id =
-      // current_user_brokerage_id())` — an unstamped calendar entry is visible
-      // to every brokerage on the platform.
-      brokerage_id: content.brokerage_id,
-      content_id: params.contentId,
-      title: content.metadata?.title || `${content.content_type} content`,
-      content_type: content.content_type,
-      scheduled_date: params.scheduledDate,
-      scheduled_time: params.scheduledTime,
-      platform: params.platform,
-      status: "scheduled",
-    })
-    .select()
-    .single()
-
-  if (error) {
-    console.error("Schedule content error:", error)
-    return { success: false, error: "Failed to schedule content" }
-  }
-
-  // /dashboard/content/calendar has no page.tsx. content_calendar is revalidated at
-  // /dashboard/content, the same path generateContentPlan uses after its own
-  // content_calendar inserts.
-  revalidatePath("/dashboard/content")
-  return { success: true, data: scheduled }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 1 — a DUPLICATE): scheduleContent DELETED. Survivor:
+// app/actions/content-studio.ts:337 scheduleContent — the content-calendar booking the product calls (app/actions/workflows.ts
+// "publish-content" → `await import("./content-studio")`; app/content-studio/content-studio-client.tsx:381 executeWorkflow("publish-content")),
+// session-gated (requireCaller), tenant from the session, with a receipt (content.calendar.schedule). This twin wrote content_calendar
+// keyed on a caller-named ai_generated_content id with no session gate and no tenant predicate on the read; nothing imported it.
+// Not merged: its content_id link to ai_generated_content (no caller asks for it, and content_calendar has no live reader —
+// getContentCalendar above has no importer).
 
 // ============================================
 // A/B TESTING SYSTEM

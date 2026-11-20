@@ -3,7 +3,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import {
-  deleteContact as deleteContactService,
   mergeContacts as mergeContactsService
 } from "@/lib/services/contact-management.service"
 import { isValidUUID } from "@/lib/validations"
@@ -96,33 +95,11 @@ import { bestEffort } from "@/lib/db/best-effort"
 // this file (updateContact/deleteContact/getContacts/mergeContacts →
 // contact-management.service.ts) are untouched.
 
-/**
- * Soft-delete a contact. Verifies ownership (agent_id) or admin role before
- * delegating to the service layer (which uses the admin client and would
- * otherwise blindly trust the IDs passed from the client).
- */
-export async function deleteContact(contactId: string, agentId: string) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
-
-  // Resolve who actually owns the contact + the caller's role.
-  const [{ data: contact }, { data: callerRow }, { data: callerAgent }] = await Promise.all([
-    supabase.from("contacts").select("id, agent_id, brokerage_id").eq("id", contactId).maybeSingle(),
-    supabase.from("users").select("user_type, brokerage_id").eq("id", user.id).maybeSingle(),
-    supabase.from("agents").select("id").eq("user_id", user.id).maybeSingle(),
-  ])
-  if (!contact) return { success: false, error: "Contact not found" }
-
-  const isAdmin = callerRow && isAdminOrBroker({ user_type: (callerRow.user_type ?? "") as string })
-  const isOwner = callerAgent?.id && callerAgent.id === contact.agent_id
-  const sameBrokerage = callerRow?.brokerage_id === contact.brokerage_id
-
-  if (!sameBrokerage) return { success: false, error: "Forbidden: cross-brokerage" }
-  if (!isOwner && !isAdmin) return { success: false, error: "Forbidden: not your contact" }
-
-  return deleteContactService(contactId, agentId)
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 1 — a DUPLICATE): deleteContact(contactId, agentId) DELETED. Survivor:
+// app/actions/contacts.ts:507 archiveContact — the ONE contact-removal door (app/crm/page.tsx:13 import, :1653 call), which its own
+// header already named as the survivor of this pair: session tenant on the UPDATE predicate, the agent predicate only for an agent
+// seat (this lane's service re-checked a CALLER-SUPPLIED agentId, so the broker / admin path it admitted could never succeed), the
+// deleted_at guard, and the CONTACT_ARCHIVED event. Nothing imported this export. Nothing to merge.
 
 // TOMBSTONE (§1 orphan doctrine, DUPLICATES ROUND 3, 2026-09-11): getContacts
 // used to live here as a thin "use server" wrapper over

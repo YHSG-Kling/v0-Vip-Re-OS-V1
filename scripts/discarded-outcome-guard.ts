@@ -296,10 +296,28 @@ console.log("\n═══ 2. The discriminator holds in both directions ═══
     /return\s*\{[^}]*success:\s*false/.test(read("app/actions/transaction-inspections.ts")))
 
   // The two-functions-one-name case that name-matching got wrong.
-  ok("disconnectSocialAccount resolves per IMPORT — social-publishing THROWS and\n    must not be flagged, social-media-automation RETURNS and must be",
-    /throw new Error\("Unauthorized"\)/.test(read("app/actions/social-publishing.ts")) &&
-    RETURNS_FAILURE.has("app/actions/social-media-automation#disconnectSocialAccount") &&
-    !RETURNS_FAILURE.has("app/actions/social-publishing#disconnectSocialAccount"))
+  // RESTATED (wave 155, lane 155R29) from the pinned disconnectSocialAccount pair to the RULE: the social-media-automation twin
+  // (the one that RETURNED) was retired onto social-publishing's (tombstone there), so that pair no longer exists. The rule is
+  // "a name exported by two modules is judged per IMPORT — the returning side is cataloged, the throwing side is not"; the
+  // pairs are DERIVED from the corpus and every one found must sit on opposite sides keyed by module.
+  {
+    const exportersOf = new Map<string, string[]>()
+    for (const f of FILES.filter((x) => x.startsWith("app/actions/"))) {
+      for (const m of stripComments(read(f)).matchAll(/export\s+async\s+function\s+(\w+)/g)) {
+        const key = f.replace(/\.(ts|tsx)$/, "")
+        exportersOf.set(m[1], [...(exportersOf.get(m[1]) ?? []), key])
+      }
+    }
+    const split = [...exportersOf.entries()].filter(([n, mods]) => mods.length > 1 &&
+      mods.some((mod) => RETURNS_FAILURE.has(`${mod}#${n}`)) && mods.some((mod) => !RETURNS_FAILURE.has(`${mod}#${n}`)))
+    ok(`a name exported by two modules resolves per IMPORT — derived split pairs (${split.length}): ${split.slice(0, 3).map(([n]) => n).join(", ")}${split.length > 3 ? ", …" : ""}`,
+      split.length > 0 && split.every(([n, mods]) => new Set(mods.map((mod) => RETURNS_FAILURE.has(`${mod}#${n}`))).size === 2),
+      "no name is exported by two action modules with opposite failure styles — the per-import rule has nothing live to bite on")
+    ok("…and the retired returning twin stays gone (social-publishing's disconnectSocialAccount, which THROWS, is not cataloged)",
+      /throw new Error\("Unauthorized"\)/.test(read("app/actions/social-publishing.ts")) &&
+      !RETURNS_FAILURE.has("app/actions/social-media-automation#disconnectSocialAccount") &&
+      !RETURNS_FAILURE.has("app/actions/social-publishing#disconnectSocialAccount"))
+  }
 
   // assignTransactionCoordinator THROWS (`if (txnError) throw txnError`) and its
   // caller wraps the await in try/catch. Discarding the return value there is

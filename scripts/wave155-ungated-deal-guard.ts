@@ -279,11 +279,18 @@ async function main() {
   section("7 · model wrappers (app/actions/ai-generate.ts)")
   {
     const ag = await load("app/actions/ai-generate.ts")
-    as(null); let x = await drive(() => ag.generateAIText("write a poem"))
-    check("NEG no session: generateAIText refused, 0 model calls", refused(x) && G.__S2.model === 0, { x, model: G.__S2.model })
-    as(null); x = await drive(() => ag.generateChatResponse("hi", "ctx"))
-    check("NEG no session: generateChatResponse refused, 0 model calls", refused(x) && G.__S2.model === 0, { x, model: G.__S2.model })
-    as(U_AGENT); x = await drive(() => ag.generateAIText("write a poem"))
+    // RESTATED (wave 155, lane 155R29) to the RULE "every model wrapper this file exports refuses a caller with no session before
+    // the model": generateAIText / generateChatResponse were retired (tombstone in the file — no importer; the lib functions are the
+    // survivors), so the wrappers are DERIVED from the module's exports, and each one is driven.
+    const wrappers = Object.keys(ag).filter((k) => typeof ag[k] === "function").sort()
+    check(`the file still exports model wrappers to judge (derived: ${wrappers.join(", ") || "none"})`, wrappers.length > 0, wrappers)
+    for (const w of wrappers) {
+      as(null); const x = await drive(() => ag[w]("write a poem", {} as never))
+      check(`NEG no session: ${w} refused, 0 model calls`, refused(x) && G.__S2.model === 0, { x, model: G.__S2.model })
+    }
+    check("the retired wrappers stay retired (no ungated twin of the lib functions comes back as a public door)",
+      typeof ag.generateAIText === "undefined" && typeof ag.generateChatResponse === "undefined", wrappers)
+    as(U_AGENT); const x = await drive(() => ag.generateAIJSON("write a poem"))
     check("POS a signed-in seat reaches the (counted) model", G.__S2.model === 1, { x, model: G.__S2.model })
   }
 

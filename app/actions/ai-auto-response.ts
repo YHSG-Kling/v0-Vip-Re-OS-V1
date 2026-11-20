@@ -2,8 +2,6 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { resolveModel } from "@/lib/ai/resolve-model"
 
 // WAVE 155 (lane 155R4, G12): each write below leaves ONE agent_action_ledger receipt through ledgerSessionAction
 // (lib/kernel/action-ledger.ts, the one helper): the SESSION user, the session's tenant (getAgentContext), the subject's opaque
@@ -93,157 +91,14 @@ export async function updateAutoResponseSettings(settings: {
   }, (error) => ({ success: false, error }))
 }
 
-// Generate AI response for a message
-export async function generateAIResponse(params: {
-  conversationId: string
-  contactId: string
-  lastMessage: string
-  conversationHistory?: any[]
-}) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    return { success: false, error: "Not authenticated", response: null }
-  }
-
-  // Get contact information for context
-  const { data: contact } = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("id", params.contactId)
-    .single()
-
-  // Get conversation history
-  const { data: messages } = await supabase
-    .from("messages")
-    .select("*")
-    .eq("conversation_id", params.conversationId)
-    .order("created_at", { ascending: false })
-    .limit(10)
-
-  // Get auto-response settings
-  const { settings } = await getAutoResponseSettings()
-
-  // CONTACT MEMORY — the conversation-insights ledger distilled to ~400 tokens
-  // (topics, objections, buying signals, open questions) so the auto-reply
-  // speaks from what this contact has actually said across channels, not just
-  // the last 10 messages of one thread. buildContextWindow was written for
-  // exactly this injection point and had no caller. Best-effort: no insights
-  // (or a read failure) yields an empty string and the prompt simply omits it.
-  const { userId: memoryUserId, agentId: memoryAgentId, brokerageId: memoryBrokerageId } = await getAgentContext()
-  let contactMemory = ""
-  if (memoryAgentId && memoryBrokerageId) {
-    try {
-      const { buildContextWindow } = await import("@/lib/intelligence/conversation-insights")
-      contactMemory = await buildContextWindow(params.contactId, memoryAgentId, memoryBrokerageId)
-    } catch { /* memory is an enhancement, never a blocker */ }
-  }
-
-  // Build context for AI
-  const context = {
-    contactName: contact?.first_name
-      ? `${contact.first_name} ${contact.last_name || ""}`
-      : "there",
-    contactType: contact?.contact_type || "unknown",
-    lastMessage: params.lastMessage,
-    conversationHistory: messages || [],
-    tone: settings?.tone || "professional",
-    agentName: user.user_metadata?.full_name || "our team",
-    contactMemory,
-    // §4 — the ledger's tenant rides in from getAgentContext above, not from
-    // params. lib/ai/models.ts books under `if (request.brokerageId)`.
-    brokerageId: memoryBrokerageId,
-    userId: memoryUserId || null,
-  }
-
-  // Generate AI response — real call: generateSmartReply rides generateTextRouted
-  // (routed model + fair-use quota + usage log), compliance-constrained prompt.
-  const aiResponse = await generateSmartReply(context)
-
-  // Log the AI response.
-  //
-  // THE TENANT IS STAMPED. `messages.brokerage_id` is nullable with no backfill,
-  // and this writer omitted it — so every AI auto-response landed with a NULL
-  // tenant and was invisible to any brokerage-filtered reader of that table.
-  // A row nothing can find is the same as a row that was never written, except
-  // that it still went out to the contact.
-  //
-  // The insert result is READ. supabase-js resolves a refused write, so an
-  // unchecked insert reports success while the outbound message it was meant to
-  // record does not exist.
-  const { agentId, brokerageId } = await getAgentContext()
-  // messages live cols: conversation_id, contact_id, agent_id, type, direction,
-  // subject, body, status, compliance_checked. No content/channel/is_ai_generated/
-  // sent_at/compliance_approved fields. ai_auto provenance lives in `type`.
-  const { error: logError } = await supabase.from("messages").insert({
-    brokerage_id: brokerageId,
-    conversation_id: params.conversationId,
-    contact_id: params.contactId,
-    agent_id: agentId,
-    type: "ai_auto_response",
-    direction: "outbound",
-    // The automated reply says it is automated (wave 153, 153H outside 1): the Unified Inbox AI label and the analytics AI
-    // count read sender_type; messages.sender_type carries no CHECK.
-    sender_type: "ai",
-    body: aiResponse,
-    status: "queued",
-    compliance_checked: false,
-  })
-  if (logError) {
-    console.error("[ai-auto-response] the AI reply was generated but NOT logged:", logError.message)
-  }
-
-  return { success: true, response: aiResponse }
-}
-
-// Smart reply generation using AI
-async function generateSmartReply(context: {
-  contactName: string
-  contactType: string
-  lastMessage: string
-  conversationHistory: any[]
-  tone: string
-  agentName: string
-  /** Distilled conversation-insights memory (buildContextWindow) — may be "". */
-  contactMemory?: string
-  /** The AI cost ledger's tenant + actor, resolved from the SESSION by the
-   *  caller (§4). Null tenant = nothing books, which is the honest outcome
-   *  for an unauthenticated call, not a silent free ride. */
-  brokerageId?: string | null
-  userId?: string | null
-}): Promise<string> {
-  const recentHistory = context.conversationHistory
-    .slice(0, 5)
-    .reverse()
-    .map((m: any) =>
-      `${m.direction === "inbound" ? context.contactName : context.agentName}: ${m.content ?? m.body ?? ""}`
-    )
-    .join("\n")
-
-  const { text } = await generateText({
-    brokerageId: context.brokerageId ?? null,
-    userId: context.userId ?? null,
-    model: resolveModel("openai/gpt-4o-mini"),
-    prompt: `You are ${context.agentName}, a professional real estate agent. Write a ${context.tone} reply.
-
-Contact: ${context.contactName} (${context.contactType || "intent not yet known"})
-${context.contactMemory ? `${context.contactMemory}\n` : ""}${recentHistory ? `Recent conversation:\n${recentHistory}\n` : ""}Their latest message: "${context.lastMessage}"
-
-Rules:
-- 1–3 sentences, no bullet lists
-- Do not use "guaranteed", "can't lose", or "risk-free"
-- Match the ${context.tone} tone
-- End with a clear next step or open question when natural
-- No signature line
-
-Reply:`,
-  })
-
-  return text.trim()
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 2 — the functionality lives elsewhere): generateAIResponse (+ its private
+// generateSmartReply) DELETED. Survivor: app/actions/ai-reply-coach.ts:61 generateAIReplyDraft — the reply drafter the product calls
+// (app/components/ai-copilot/inline-ai-reply-coach.tsx:8 import, :64 call; conversation-coaching-panel.tsx:9). Nothing imported this
+// export (named, dynamic, barrel or string-keyed), and as a "use server" export it was a public door that spent on a model and read any
+// contact by id with no tenant predicate. The survivor drafts from the SESSION tenant (requireCallerTenant), injects the contact's
+// memory (loadContactMemoryForPrompt, lib/ai-reply-coach/reply-draft-core.ts:142) and lands a draft for a person to accept — this one
+// filed a 'queued' ai_auto_response message straight into the thread. Its one unique trait, the conversation-insights summary
+// (buildContextWindow), was NOT merged: the survivor already speaks from the kernel's contact memory (one memory per prompt, law 2).
 
 // Track behavioral event for lead scoring.
 //

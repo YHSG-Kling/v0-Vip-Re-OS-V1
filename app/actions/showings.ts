@@ -619,27 +619,14 @@ export async function createShowing(params: {
   }
 }
 
-export async function updateShowing(showingId: string, updates: any) {
-  try {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("showing_requests")
-      .update({ ...updates, updated_at: new Date().toISOString() })
-      .eq("id", showingId)
-      .select()
-      .single()
-
-    if (error) throw error
-
-    revalidatePath("/dashboard")
-
-    return { success: true, showing: data }
-  } catch (error: any) {
-    console.error("Error in updateShowing:", error)
-    return { success: false, error: error.message }
-  }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 2 — the functionality lives elsewhere): updateShowing(showingId, updates: any)
+// DELETED. It was a mass-assignment door — `{ ...updates }` straight onto showing_requests by id, any column, no gate beyond RLS —
+// and nothing imported it (confirmed-showings-list.tsx's `updateShowing` is a local state setter of the same name). Every real
+// change to a request has its own verb, each session-gated and tenant-checked: approve / suggest-a-time / deny / complete in
+// app/actions/seller-showings.ts (:382 approveShowingRequest, :543 suggestAlternativeTime, :596 denyShowingRequest, :646
+// markShowingCompleted — called by app/components/dashboard/listings/showings/showing-requests-panel.tsx:83/101/120 and
+// confirmed-showings-list.tsx:130) and cancelShowing below (confirmed-showings-list.tsx:26). Survivor named for the census:
+// app/actions/seller-showings.ts:543 suggestAlternativeTime. Nothing merged: a free-form patch is the defect, not a capability.
 
 /**
  * Cancel a showing request (the `cancelled` verb of the request lifecycle —

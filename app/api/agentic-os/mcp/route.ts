@@ -142,6 +142,29 @@ export async function POST(req: Request) {
       // Auto-executable read tools run for real; everything else returns a gated plan.
       const executor = READ_EXECUTORS[action.capability]
       if (executor) {
+        // WAVE 155 (lane 155R29): THE READ EXECUTORS SPEND (web search, RentCast, PeopleData), so they take the same three
+        // checks the delegate branch below and the versioned domain API (lib/kernel/domain-api.ts steps 1, 2 and 4) already
+        // run, BEFORE any provider is reached. Each was missing here: (1) a caller with NO tenant ran them with
+        // brokerageId "" — spend booked to nobody; now refused, fail closed. (2) No per-caller ceiling: a token could fan out
+        // paid lookups unbounded; now the domain API's per-credential window (120 / minute, its DEFAULT_RATE) applies per
+        // credential, or per tenant for a session. (3) No entitlement: a lapsed subscription still ran paid tools; now the one
+        // resolver (mayUseAndAfford, app.access) decides. Every refusal leaves its evidence row like every other outcome.
+        if (!caller.brokerageId) {
+          void recordInvocation({ capability: action.capability, kind: action.kind as any, verb: action.verb, decision: "unauthorized", brokerageId: null, callerVia: caller.via, authorized: false, detail: { via: "mcp", why: "no_tenant" } })
+          return rpcResult(id, { isError: true, content: [{ type: "text", text: "This credential is not bound to an account, so it cannot run paid tools." }] })
+        }
+        const { checkPublicRateLimit } = await import("@/lib/security/public-rate-limit")
+        const ceiling = checkPublicRateLimit("agentic-mcp", caller.credentialId ?? `session:${caller.brokerageId}`, { limit: 120, windowMs: 60_000 })
+        if (!ceiling.allowed) {
+          void recordInvocation({ capability: action.capability, kind: action.kind as any, verb: action.verb, decision: "rate_limited", brokerageId: caller.brokerageId, callerVia: caller.via, authorized: true, detail: { via: "mcp", retry_after_seconds: ceiling.retryAfterSeconds } })
+          return rpcError(id, -32029, `Rate limit exceeded — retry after ${ceiling.retryAfterSeconds}s`, 429)
+        }
+        const { mayUseAndAfford: mayRun } = await import("@/lib/billing/billing-access")
+        const runEntitlement = await mayRun({ brokerageId: caller.brokerageId, capability: "app.access" })
+        if (!runEntitlement.allowed) {
+          void recordInvocation({ capability: action.capability, kind: action.kind as any, verb: action.verb, decision: "blocked", brokerageId: caller.brokerageId, callerVia: caller.via, authorized: true, detail: { via: "mcp", why: "entitlement", reason: runEntitlement.reason } })
+          return rpcResult(id, { isError: true, content: [{ type: "text", text: "The account's subscription does not currently allow running tools through the API." }] })
+        }
         const startedAt = Date.now()
         try {
           const result = await executor(args, { brokerageId: caller.brokerageId ?? "" })

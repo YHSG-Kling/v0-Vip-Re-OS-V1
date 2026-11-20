@@ -153,9 +153,13 @@ for (const s of tenantSites) {
 }
 
 // The tenant is worth nothing if the caller stopped resolving it.
-t("ai-auto-response still resolves the tenant from the SESSION before asking for memory",
-  /getAgentContext\(\)/.test(code("app/actions/ai-auto-response.ts")) &&
-  /buildContextWindow\(/.test(code("app/actions/ai-auto-response.ts")))
+// RESTATED (wave 155, lane 155R29): the rule is "the AI reply drafter resolves the tenant from the SESSION before it asks for the
+// contact's memory". Its holder moved: app/actions/ai-auto-response.ts generateAIResponse was retired onto the reply coach (tombstone
+// there), so the rule is now read where the drafting runs — the door's session gate, and the core handing that tenant to the memory read.
+t("the AI reply drafter still resolves the tenant from the SESSION before asking for memory",
+  /requireCallerTenant\(params\.brokerageId\)/.test(code("app/actions/ai-reply-coach.ts")) &&
+  /loadContactMemoryForPrompt\(\{\s*contactId:\s*contact\.id,\s*brokerageId:\s*params\.brokerageId/.test(code("lib/ai-reply-coach/reply-draft-core.ts")) &&
+  !/export async function generateAIResponse\b/.test(code("app/actions/ai-auto-response.ts")))
 t("calculateDealHealth still HANDS scoreCompliance the tenant (the wire, not just the filter)",
   /scoreCompliance\(supabase,\s*transactionId,\s*brokerageId\)/.test(code("lib/deal-health/health-scorer.ts")))
 t("the onboarding surface still hands getCertificationStatus the session tenant",

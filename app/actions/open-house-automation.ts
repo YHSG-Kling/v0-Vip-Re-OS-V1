@@ -24,31 +24,10 @@ import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 // OPEN HOUSE CRUD OPERATIONS
 // ============================================
 
-export async function scheduleOpenHouse(params: {
-  listingId: string
-  /** @deprecated ignored — the host is the SESSION's agent (CLAUDE.md §4: never a body-supplied identity). */
-  agentId?: string
-  startTime: string
-  endTime: string
-  description?: string
-}) {
-  // WAVE 149 (149F — lane 148H Still open 4): ONE PRODUCER. TOMBSTONE: this door's own open_house_events insert stood here — the
-  // tenant read off the LISTING on the caller's session client and the host taken from the BODY's agentId (a "use server" export
-  // is a public endpoint: any caller could name any agent). SURVIVOR: app/actions/open-house.ts createOpenHouse (session tenant +
-  // session agent, the registry's rules, THE writer lib/kernel/open-house.ts produceEventRow). The ISO start/end are split
-  // into the event's date + wall-clock times, exactly what the one door takes.
-  try {
-    const date = String(params.startTime ?? "").slice(0, 10)
-    const hhmm = (iso: string) => (/T(\d{2}:\d{2})/.exec(String(iso ?? ""))?.[1] ?? "")
-    const { createOpenHouse } = await import("@/app/actions/open-house")
-    const r = await createOpenHouse({ listingId: params.listingId, date, startTime: hhmm(params.startTime), endTime: hhmm(params.endTime), publicDescription: params.description })
-    if (!r.success) return { success: false, error: r.error ?? "The open house was not created" }
-    revalidatePath("/dashboard")
-    return { success: true, openHouse: r.event }
-  } catch (error) {
-    return handleError(error, "scheduleOpenHouse")
-  }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 2 — the functionality lives elsewhere): scheduleOpenHouse DELETED. It was
+// already a pure adapter (wave 149F) onto the ONE producer — survivor app/actions/open-house.ts:93 createOpenHouse, which the open
+// houses page calls (app/dashboard/open-houses/open-houses-client.tsx:986) and which createOpenHouseEvent below still adapts onto.
+// Nothing imported this door; it only split ISO times. Nothing to merge.
 
 export async function getOpenHouseVisitors(openHouseId: string) {
   try {

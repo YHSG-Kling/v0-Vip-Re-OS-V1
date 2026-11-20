@@ -60,7 +60,9 @@ const RERUN = "test:manager-duplicate-proofs, test:no-orphan-actions, test:use-s
 export const DUPLICATE_ACTION_LEDGER: Readonly<Record<string, LedgerRow>> = {
   addContactNote: { verdict: "kept", class: "owner_decision", survivor: "app/actions/contacts.ts:559", dependency: "communications.ts:391 (0 importers) pushes the note to GoHighLevel (syncContactToGHL + addGHLContactNote) before the local save; contacts.ts:559 is the canonical contact_notes writer (2 importers). Whether notes still sync to GHL is an owner decision (144I Still open 3): merging adds a vendor egress to the canonical writer, retiring drops it." },
   approveSocialPost: { verdict: "kept", class: "lane_domain", survivor: null, dependency: "both wired — listing-media.ts:329 (listing social panel) and social-media-automation.ts:464 (command center, social dashboard); app/actions/social* is lane 146E's domain and the approval door is contract C5 (approverFor)." },
-  checkCompliance: { verdict: "kept", class: "homonym", survivor: null, dependency: "different functions: ai-content-generation.tsx:1983 fair-housing-scans generated TEXT and writes ai_generated_content.compliance_*; link-to-video.ts:251 runs an AI compliance review of a VIDEO SCRIPT (used twice in its own file). Neither covers the other; the text scan's caller is the content composer (routing, not retirement)." },
+  // checkCompliance — ROW REMOVED (wave 155, lane 155R29): no longer a duplicate. The ai-content-generation.tsx twin was retired
+  // (case 2: the text scan lives at compliance-monitoring.ts scanContentCompliance; tombstone in that file), so only
+  // link-to-video.ts checkCompliance (the video-script review) exports the name. L5 printed it BURNED; this records why.
   checkInAttendee: { verdict: "retired", retiredTwins: [{
     twin: "app/actions/open-house-automation.ts", survivor: "app/actions/seller-open-house.ts:661",
     steps: {
@@ -86,11 +88,24 @@ export const DUPLICATE_ACTION_LEDGER: Readonly<Record<string, LedgerRow>> = {
       guards_rerun: RERUN,
     } }] },
   completeTask: { verdict: "kept", class: "homonym", survivor: null, dependency: "journey-tasks.ts:79 completes a CONTACT PORTAL journey task (client_portal_activity + client_documents; 0 importers — its caller is the portal journey, lane 146C's app/portal/**); tasks.ts:364 completes a staff task row (tasks; 1 importer). Different tables, different audiences." },
-  connectSocialAccount: { verdict: "kept", class: "lane_domain", survivor: null, dependency: "both twins (social-media-automation.ts:114, social-publishing.ts:153) are in app/actions/social*, lane 146E's domain, and hold social credentials (OAuth) — a credential surface is consequential (ruling 14); lane E decides." },
+  // connectSocialAccount — ROW REMOVED (wave 155, lane 155R29): BOTH twins (social-media-automation.ts, social-publishing.ts) were
+  // retired — neither had an importer and both stored a caller-pasted access token; the connect the product runs is
+  // app/api/social/oauth/[platform]/route.ts GET (tombstones in both files). No module exports the name now.
   createOpenHouseEvent: { verdict: "kept", class: "both_wired", survivor: null, dependency: "open-house-automation.ts:1090 (acquisition open-house card) and seller-open-house.ts:589 (seller listing marketing tab) — two surfaces; consolidation is a product decision (listing_concierge)." },
-  deleteSocialPost: { verdict: "kept", class: "lane_domain", survivor: null, dependency: "three implementations; listing-media.ts:346 and social-media-automation.ts:1328 are wired, social-publishing.ts:425 is not — app/actions/social* is lane 146E's domain." },
+  deleteSocialPost: { verdict: "kept", class: "both_wired", survivor: null, dependency: "two implementations, both wired: listing-media.ts:433 (listing media page; hard delete with receipt) and social-media-automation.ts:1308 (social dashboard; cancels, keeps publish logs). The third, social-publishing.ts, had no importer and was retired onto social-media-automation.ts (wave 155, lane 155R29 — its per-user rule merged first; tombstone in that file)." },
   disconnectProvider: { verdict: "kept", class: "both_wired", survivor: null, dependency: "accounting-sync.ts:89 and connections/connection-center.ts:397 are both imported by the accounting provider card (and the connection center); accounting books are Finance's (consequential) — converge with finance_manager, not here." },
-  disconnectSocialAccount: { verdict: "kept", class: "lane_domain", survivor: null, dependency: "social-media-automation.ts:217 (0 importers) vs social-publishing.ts:204 (profile settings) — lane 146E's domain, credential surface." },
+  disconnectSocialAccount: { verdict: "retired", retiredTwins: [{
+    twin: "app/actions/social-media-automation.ts", survivor: "app/actions/social-publishing.ts:156",
+    steps: {
+      file_function: "app/actions/social-media-automation.ts:217 disconnectSocialAccount(accountId) (wave-155 base 6e562189)",
+      intended_behaviour: "deactivate one connected social account (is_active = false)",
+      candidate_survivor: "app/actions/social-publishing.ts:156 disconnectSocialAccount — the profile page's disconnect (profile-settings-client.tsx:13 import, :245 call)",
+      survivor_covers: "session gate (resolveCaller), the caller's own account only, a receipt (social.account.disconnect), and now the tenant pin and a counted update",
+      callers_migrated: "the twin had 0 importers and no string-keyed mention — nothing to migrate",
+      unique_behaviour: "MERGED first: the uuid check; the survivor also gained the tenant pin and the counted update (a zero-row disconnect throws) — the twin reported success on zero rows",
+      retired_with_tombstone: "social-media-automation.ts — tombstone names app/actions/social-publishing.ts:156",
+      guards_rerun: RERUN + " — wave 155 lane 155R29: its own guard scripts/wave155-uncalled-platform-doors-guard.ts holds the no-call-site + tombstone rule",
+    } }] },
   executeAITool: { verdict: "kept", class: "self_used", survivor: "app/actions/ai-tools-hub.ts:96", dependency: "workflows.ts:32 is called by executeWorkflow in its own file (:975); the workflow runner must move to the hub's tenanted-spend door first (campaign_orchestrator)." },
   executeWorkflow: { verdict: "kept", class: "both_wired", survivor: null, dependency: "multi-persona.ts:584 (admin automations) and workflows.ts:973 (content studio) — both wired surfaces." },
   generateBlogPost: { verdict: "kept", class: "self_used", survivor: "app/actions/blog.ts:69", dependency: "ai-content-generation.tsx:1434 is called by bulkGenerateContent in its own file (:2766); bulk generation must call blog.ts's writer first (blog-writer-merge rail)." },
@@ -108,9 +123,9 @@ export const DUPLICATE_ACTION_LEDGER: Readonly<Record<string, LedgerRow>> = {
       guards_rerun: RERUN,
     } }] },
   getContactDocuments: { verdict: "kept", class: "homonym", survivor: null, dependency: "both unwired; they read DIFFERENT tables (documents.ts says so beside its copy) — no survivor covers both; routing, not retirement." },
-  getContentCalendar: { verdict: "kept", class: "homonym", survivor: null, dependency: "ai-content-generation.tsx:2293 is the only reader of content_calendar (written by generateContentPlan in the same file); content-studio.ts:283 reads content_ideas. Retiring the first would leave content_calendar readerless (orphan doctrine: wire the reader)." },
+  getContentCalendar: { verdict: "kept", class: "homonym", survivor: null, dependency: "ai-content-generation.tsx:2217 is the only reader of content_calendar (written by generateContentPlan in the same file); content-studio.ts:283 reads content_ideas. Retiring the first would leave content_calendar readerless (orphan doctrine: wire the reader)." },
   getDocumentFolders: { verdict: "kept", class: "homonym", survivor: null, dependency: "documents.ts:1375 counts virtual category folders over a contact's client_documents; dotloop-integration.ts:1036 lists document_folders rows for the tenant. Different questions." },
-  getNeighborhoodData: { verdict: "kept", class: "self_used", survivor: null, dependency: "ai-content-generation.tsx:2978 is called by enhancedGenerateListingDescription (:3152); listing-landing.ts:260 serves the public listing page." },
+  getNeighborhoodData: { verdict: "kept", class: "self_used", survivor: null, dependency: "ai-content-generation.tsx:2871 is called by enhancedGenerateListingDescription (:3082); listing-landing.ts:260 serves the public listing page." },
   getShowingRequests: { verdict: "kept", class: "both_wired", survivor: null, dependency: "seller-showings.ts:335 (listing showings page) and smart-insights.ts:750 (portal showings manager) — seller vs buyer audiences." },
   getSocialAccounts: { verdict: "kept", class: "both_wired", survivor: null, dependency: "listing-media.ts:290 (listing media page) and social-publishing.ts:114 (profile page); social-publishing is lane 146E's domain." },
   getSocialPosts: { verdict: "kept", class: "lane_domain", survivor: null, dependency: "listing-media.ts:280 is wired; social-publishing.ts:225 is not — lane 146E's domain." },
@@ -153,16 +168,61 @@ export const DUPLICATE_ACTION_LEDGER: Readonly<Record<string, LedgerRow>> = {
       retired_with_tombstone: "the emptied file app/actions/notification-actions.ts is DELETED (an action file imported by nothing is an orphan); its tombstone lives on the survivor app/actions/notifications.ts and names the deleted path (lane 155R20 + integrator, wave 155)",
       guards_rerun: RERUN,
     } }] },
-  recordSellerResponse: { verdict: "kept", class: "homonym", survivor: null, dependency: "track-offer-lifecycle.ts:401 is the activities-derived lifecycle mirror, documented there (:396-399) as a DIFFERENT function from the wired record-seller-response.ts:122; offer domain (consequential — an acceptance propagates into the transaction lane)." },
+  recordSellerResponse: { verdict: "retired", retiredTwins: [{
+    twin: "app/actions/buyer-offer/track-offer-lifecycle.ts", survivor: "app/actions/buyer-offer/record-seller-response.ts:122",
+    steps: {
+      file_function: "app/actions/buyer-offer/track-offer-lifecycle.ts:401 recordSellerResponse(offerId, response) (wave-155 base 6e562189)",
+      intended_behaviour: "record the seller's ACCEPTED / REJECTED / COUNTERED answer on a pending offer as its lifecycle activity",
+      candidate_survivor: "app/actions/buyer-offer/record-seller-response.ts:122 recordSellerResponse — the offer surface's (offer-agent-actions.tsx:31 import, :100 call; seller-offers.ts:190)",
+      survivor_covers: "session caller, the offer's tenant, the buyer-signature attestation and the one compliance gate before any acceptance, the same buyer.offer.<response> event",
+      callers_migrated: "the twin had 0 importers and no string-keyed mention — nothing to migrate",
+      unique_behaviour: "none worth keeping: its 'difference' was the missing gate — it filed buyer.offer.accepted from PENDING past compliance-gate.ts and past the signature attestation, and getOfferLifecycleState (convert-to-transaction's gate) reads that row",
+      retired_with_tombstone: "track-offer-lifecycle.ts — tombstone names app/actions/buyer-offer/record-seller-response.ts:122",
+      guards_rerun: RERUN + " — wave 155 lane 155R29: its own guard scripts/wave155-uncalled-platform-doors-guard.ts holds the no-call-site + tombstone rule" + "; test:offer-gate-enforcement (its writer list restated to the rule)",
+    } }] },
   requestShowing: { verdict: "kept", class: "both_wired", survivor: null, dependency: "showings.ts:20 (7 importers incl. portal client-action dispatch and voice) and smart-insights.ts:714 (3 portal / CRM importers)." },
   saveProperty: { verdict: "kept", class: "both_wired", survivor: null, dependency: "idx-search.ts:217 (property search / detail pages) and smart-insights.ts:843 (portal property detail)." },
-  scheduleContent: { verdict: "kept", class: "homonym", survivor: null, dependency: "ai-content-generation.tsx:2319 writes content_calendar from generated content; content-studio.ts:312 writes campaign_calendar (workflows dynamic import). Different tables." },
+  scheduleContent: { verdict: "retired", retiredTwins: [{
+    twin: "app/actions/ai-content-generation.tsx", survivor: "app/actions/content-studio.ts:337",
+    steps: {
+      file_function: "app/actions/ai-content-generation.tsx:2280 scheduleContent({ contentId, scheduledDate, … }) (wave-155 base 6e562189)",
+      intended_behaviour: "put a piece of content on the content calendar for a date and platform",
+      candidate_survivor: "app/actions/content-studio.ts:337 scheduleContent — the calendar booking the product runs (workflows.ts \"publish-content\" ← content-studio-client.tsx:381)",
+      survivor_covers: "session gate (requireCaller), session tenant, a receipt (content.calendar.schedule), the live campaign_calendar the studio reads",
+      callers_migrated: "the twin had 0 importers and no string-keyed mention — nothing to migrate",
+      unique_behaviour: "not merged: the content_id link onto content_calendar — no caller asks for it and content_calendar has no live reader (getContentCalendar in that file has no importer); the earlier 'different tables' reason held only while a reader was expected",
+      retired_with_tombstone: "ai-content-generation.tsx — tombstone names app/actions/content-studio.ts:337",
+      guards_rerun: RERUN + " — wave 155 lane 155R29: its own guard scripts/wave155-uncalled-platform-doors-guard.ts holds the no-call-site + tombstone rule",
+    } }] },
   scheduleListingAppointment: { verdict: "kept", class: "homonym", survivor: null, dependency: "listing-lifecycle.ts:40 books a CONTACT appointment (optional real Zoom on the booker's scope, starts listing prep); seller-listing/execution-engine.ts:214 books the listing-stage appointment ≥ 5 days out (voice). Different behaviour; listing_concierge decides convergence." },
-  scheduleOpenHouse: { verdict: "kept", class: "homonym", survivor: null, dependency: "open-house-automation.ts:27 creates an open-house event with times; seller-listing/execution-engine.ts:2150 transitions the listing MLS_ACTIVE → OPEN_HOUSE_EVENT (voice). Different behaviour." },
-  sendMessage: { verdict: "kept", class: "self_used", survivor: "app/actions/ai-communication-hub.ts:54", dependency: "workflows.ts:502 is the workflow tool map's \"send-message\" step (string-keyed in its own file); the step must route through the comms hub's dispatch gates first (lane 146B's communications)." },
+  // scheduleOpenHouse — ROW REMOVED (wave 155, lane 155R29): no longer a duplicate. The open-house-automation.ts adapter was retired
+  // onto app/actions/open-house.ts createOpenHouse (tombstone there); only seller-listing/execution-engine.ts (voice) exports it.
+  sendMessage: { verdict: "retired", retiredTwins: [{
+    twin: "app/actions/workflows.ts", survivor: "app/actions/ai-communication-hub.ts:54",
+    steps: {
+      file_function: "app/actions/workflows.ts:513 sendMessage(contactId, message, channel) (wave-155 base 6e562189)",
+      intended_behaviour: "the workflow tool table's \"send-message\" step: send a message to a contact on a channel",
+      candidate_survivor: "app/actions/ai-communication-hub.ts:54 sendMessage — the conversation send (communications-os-client.tsx:15 import), named as this row's survivor since wave 146",
+      survivor_covers: "session gate (requireCaller), the conversation AND the contact proven in the caller's tenant, the message + thread counters",
+      callers_migrated: "the only reference was the \"send-message\" entry of executeAITool's table, which no caller dispatched — it now routes to the survivor (the earlier ruling: the step must route through the comms hub first)",
+      unique_behaviour: "MERGED into the table entry: resolving the contact's thread (ensureConversationForContact) when the step names no conversation, on the session tenant. Dropped: the arity-broken direct reference (it put the input object in contactId)",
+      retired_with_tombstone: "workflows.ts — tombstone names app/actions/ai-communication-hub.ts:54",
+      guards_rerun: RERUN + " — wave 155 lane 155R29: its own guard scripts/wave155-uncalled-platform-doors-guard.ts holds the no-call-site + tombstone rule",
+    } }] },
   submitVendorInvoice: { verdict: "kept", class: "money_legal", survivor: null, dependency: "vendor-payments.ts:297 flips an existing invoice draft → submitted (0 importers); multi-persona.ts:1967 creates an invoice from a booking (vendor bookings panel). Different money operations — Finance." },
   unsaveProperty: { verdict: "kept", class: "both_wired", survivor: null, dependency: "idx-search.ts:340 (persona properties dashboard) and smart-insights.ts:888 (portal property detail)." },
-  updateSocialPost: { verdict: "kept", class: "lane_domain", survivor: null, dependency: "social-media-automation.ts:1371 is wired (post composer); social-publishing.ts:374 is not — lane 146E's domain." },
+  updateSocialPost: { verdict: "retired", retiredTwins: [{
+    twin: "app/actions/social-publishing.ts", survivor: "app/actions/social-media-automation.ts:1360",
+    steps: {
+      file_function: "app/actions/social-publishing.ts:308 updateSocialPost(postId, params) (wave-155 base 6e562189)",
+      intended_behaviour: "edit a draft / scheduled social post's content, media, schedule or platform",
+      candidate_survivor: "app/actions/social-media-automation.ts:1360 updateSocialPost — the post composer's edit (post-composer-dialog.tsx:61 import, :355 call)",
+      survivor_covers: "session gate (requireBrokerage), only draft / scheduled posts, a receipt (social.post.update), and now the tenant pin and the own-post rule",
+      callers_migrated: "the twin had 0 importers and no string-keyed mention — nothing to migrate",
+      unique_behaviour: "MERGED first: the per-user rule (an ordinary agent edits only their own post) and the tenant pin. NOT merged on purpose: the caller-supplied status (an author could move a post past review; approvers are compliance, TC, team lead, admin)",
+      retired_with_tombstone: "social-publishing.ts — tombstone names app/actions/social-media-automation.ts:1360",
+      guards_rerun: RERUN + " — wave 155 lane 155R29: its own guard scripts/wave155-uncalled-platform-doors-guard.ts holds the no-call-site + tombstone rule",
+    } }] },
 }
 const KEPT_CLASSES: readonly KeptClass[] = ["both_wired", "homonym", "self_used", "lane_domain", "money_legal", "owner_decision"]
 

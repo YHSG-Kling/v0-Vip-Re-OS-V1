@@ -3,10 +3,10 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { isValidUUID } from "@/lib/validations"
 // Wave 97 (lane 97C): routed lane — books ai_tool_usage under the caller's tenant + user.
 import { generateTextRouted } from "@/lib/ai/models"
 import { createSocialPostDraft } from "@/lib/social/create-social-post-draft"
-import { encryptSecret } from "@/lib/security/secret-crypto"
 // resolveRecipientBrokerageId (the recipient-tenant rule for notifications) is
 // no longer imported here: its only user, handleContentApproved, was deleted
 // onto approveSocialPost, which now carries the import.
@@ -149,56 +149,9 @@ export async function getSocialAccounts(_userId?: string, _userRole?: string) {
   return data || []
 }
 
-export async function connectSocialAccount(params: {
-  platform: string
-  accountId: string
-  accountName: string
-  accessToken: string
-  refreshToken?: string
-  tokenExpiresAt?: string
-  scope?: string
-  userId?: string  // ignored — kept for backward compat
-}) {
-  const caller = await resolveCaller()
-  if (!caller.ok) throw new Error("Unauthorized")
-
-  const supabase = createServiceClient()
-
-  const { data, error } = await supabase
-    .from("social_media_accounts")
-    .upsert(
-      {
-        // pass 10: the live unique is (brokerage_id, platform, account_id) —
-        // the old onConflict "user_id,platform,account_id" matched no index
-        // and errored on every call.
-        brokerage_id: caller.brokerageId,
-        user_id: caller.userId,
-        platform: params.platform,
-        account_id: params.accountId,
-        account_name: params.accountName,
-        access_token: encryptSecret(params.accessToken),
-        refresh_token: encryptSecret(params.refreshToken),
-        token_expires_at: params.tokenExpiresAt,
-        scope: params.scope,
-        is_active: true,
-        updated_at: new Date().toISOString(),
-      },
-      {
-        onConflict: "brokerage_id,platform,account_id",
-      },
-    )
-    .select()
-    .maybeSingle()
-
-  if (error) throw error
-
-  // /settings/social-accounts has no page.tsx. social_media_accounts is connected
-  // and disconnected from app/dashboard/profile (profile-settings-client.tsx:245) and
-  // listed by the social dashboard (app/dashboard/social/page.tsx).
-  revalidatePath("/dashboard/profile")
-  revalidatePath("/dashboard/social")
-  return data
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 2): connectSocialAccount DELETED (its twin in social-media-automation.ts with
+// it). Survivor: app/api/social/oauth/[platform]/route.ts:122 GET — the OAuth connect the product runs (profile-settings-client.tsx:234
+// sends the browser there). This door stored a CALLER-PASTED access token as the tenant's credential and had no importer.
 
 export async function disconnectSocialAccount(accountId: string, _userId?: string) {
   const caller = await resolveCaller()
@@ -208,13 +161,20 @@ export async function disconnectSocialAccount(accountId: string, _userId?: strin
 
   const supabase = createServiceClient()
 
-  const { error } = await supabase
+  // MERGED (wave 155, lane 155R29) from the retired social-media-automation.ts twin, plus what neither had: a malformed id is
+  // refused before any write, the update is pinned to the SESSION tenant as well as the caller, and it is COUNTED — a disconnect
+  // that matched nothing (another user's account, another tenant's, already gone) throws instead of reporting success (§3).
+  if (!isValidUUID(accountId)) throw new Error("Invalid account ID")
+  const { data: disconnected, error } = await supabase
     .from("social_media_accounts")
     .update({ is_active: false })
     .eq("id", accountId)
+    .eq("brokerage_id", caller.brokerageId)
     .eq("user_id", caller.userId)
+    .select("id")
 
   if (error) throw error
+  if (!disconnected || disconnected.length === 0) throw new Error("That social account is not one of yours — nothing was disconnected")
 
   // /settings/social-accounts has no page.tsx. social_media_accounts is connected
   // and disconnected from app/dashboard/profile (profile-settings-client.tsx:245) and
@@ -305,87 +265,15 @@ export async function createSocialPost(params: {
   return ledgerSessionAction({ brokerageId: caller.brokerageId, action: "social.post.create_draft", actor: { type: "user", userId: caller.userId }, subject: { type: "listing", id: params.linkedListingId ?? null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platforms: params.platforms } }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
 }
 
-export async function updateSocialPost(
-  postId: string,
-  params: {
-    content?: string
-    mediaUrls?: string[]
-    scheduledFor?: string
-    platforms?: string[]
-    status?: string
-    userId?: string  // ignored — kept for backward compat
-  },
-) {
-  const caller = await resolveCaller()
-  if (!caller.ok) throw new Error("Unauthorized")
-
-  const supabase = createServiceClient()
-
-  // Verify post belongs to caller's brokerage before mutating
-  const { data: existing } = await supabase
-    .from("social_posts")
-    .select("brokerage_id, user_id")
-    .eq("id", postId)
-    .maybeSingle()
-  if (!existing) throw new Error("Post not found")
-  if (existing.brokerage_id !== caller.brokerageId) throw new Error("Forbidden")
-  // Non-admins can only edit their own posts
-  if (shouldFilterByUser(caller.userType) && existing.user_id !== caller.userId) {
-    throw new Error("Forbidden")
-  }
-
-  const updateData: any = {}
-  if (params.content !== undefined) updateData.content = params.content
-  if (params.mediaUrls !== undefined) updateData.media_urls = params.mediaUrls
-  if (params.scheduledFor !== undefined) updateData.scheduled_for = params.scheduledFor
-  if (params.platforms !== undefined) updateData.platform = params.platforms?.[0]
-  if (params.status !== undefined) updateData.status = params.status
-
-  const { data, error } = await supabase
-    .from("social_posts")
-    .update(updateData)
-    .eq("id", postId)
-    .eq("brokerage_id", caller.brokerageId)
-    .select()
-    .maybeSingle()
-
-  if (error) throw error
-
-  revalidatePath("/content-studio")
-  revalidatePath("/social-planner")
-  return data
-}
-
-export async function deleteSocialPost(postId: string, _userId?: string) {
-  const caller = await resolveCaller()
-  if (!caller.ok) throw new Error("Unauthorized")
-
-  const supabase = createServiceClient()
-
-  // Verify post belongs to caller's brokerage before deleting
-  const { data: existing } = await supabase
-    .from("social_posts")
-    .select("brokerage_id, user_id")
-    .eq("id", postId)
-    .maybeSingle()
-  if (!existing) throw new Error("Post not found")
-  if (existing.brokerage_id !== caller.brokerageId) throw new Error("Forbidden")
-  // Non-admins can only delete their own posts
-  if (shouldFilterByUser(caller.userType) && existing.user_id !== caller.userId) {
-    throw new Error("Forbidden")
-  }
-
-  const { error } = await supabase
-    .from("social_posts")
-    .delete()
-    .eq("id", postId)
-    .eq("brokerage_id", caller.brokerageId)
-
-  if (error) throw error
-
-  revalidatePath("/content-studio")
-  revalidatePath("/social-planner")
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 1 — DUPLICATES): updateSocialPost and deleteSocialPost DELETED. Survivors:
+// app/actions/social-media-automation.ts:1360 updateSocialPost (app/dashboard/social/components/post-composer-dialog.tsx:61 import,
+// :355 call) and app/actions/social-media-automation.ts:1308 deleteSocialPost (app/dashboard/social/social-dashboard-client.tsx:61
+// import, :260 call). Neither twin had an importer.
+// MERGED onto the survivors first: the per-user rule (an ordinary agent edits / cancels only their own post) and, on the edit, the
+// tenant pin. NOT merged, on purpose: this updateSocialPost accepted a caller-supplied `status`, so an author could move their own
+// post past review (owner rule: approvers are compliance, TC, team lead and admin) — status moves only through approveSocialPost /
+// rejectSocialPost and the publish cron. And this deleteSocialPost HARD-deleted the row (the survivor cancels it, so publish logs keep
+// their parent).
 
 // REMOVED (w4s1) — getSocialAnalytics.
 //

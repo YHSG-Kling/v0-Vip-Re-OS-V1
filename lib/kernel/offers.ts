@@ -635,7 +635,13 @@ export async function withdrawOffer(params: {
   // client-param overload (see issueCounterOffer) — default stays the cookie client.
   const supabase = client ?? await createClient()
 
-  const { error } = await supabase
+  // MERGED (wave 155, lane 155R29) from the retired app/actions/buyer-offer/track-offer-lifecycle.ts withdrawOffer twin, which
+  // this survivor lacked: (1) only a still-OPEN offer may be withdrawn — an accepted / rejected / expired / voided / already
+  // withdrawn offer is refused, never rewritten; (2) the update is pinned to the tenant and COUNTED (CLAUDE.md §3: a zero-row
+  // update resolves with no error, so a wrong-tenant or closed offer used to report success); (3) the buyer.offer.withdrawn
+  // lifecycle activity is filed — getOfferLifecycleState derives the state from activities, so without it a withdrawn offer
+  // still read PENDING to convert-to-transaction and the expiry sweep.
+  const { data: withdrawn, error } = await supabase
     .from("offers")
     .update({
       status:       "withdrawn",
@@ -643,8 +649,28 @@ export async function withdrawOffer(params: {
       notes:        reason ?? null,
     })
     .eq("id", offerId)
+    .eq("brokerage_id", brokerageId)
+    .not("status", "in", "(accepted,rejected,withdrawn,expired,voided)")
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!withdrawn || withdrawn.length === 0) {
+    return { success: false, error: "Offer not found in your brokerage, or it is no longer open — nothing was withdrawn" }
+  }
+
+  const { OFFER_EVENT } = await import("@/lib/buyer-offer/offer-lifecycle")
+  const { error: lifecycleError } = await supabase.from("activities").insert({
+    brokerage_id: brokerageId,
+    activity_type: OFFER_EVENT.WITHDRAWN,
+    title:        "Offer withdrawn",
+    description:  reason ?? "Offer withdrawn",
+    notes:        JSON.stringify({ offer_id: offerId, new_state: "WITHDRAWN", reason: reason ?? null }),
+    status:       "completed",
+    entity_type:  "offer",
+    entity_id:    offerId,
+  })
+  // The offer row already moved; a lost lifecycle row is said, never swallowed (§3).
+  if (lifecycleError) console.error(`[kernel/offers] withdrawOffer ${offerId}: offers.status moved but the ${OFFER_EVENT.WITHDRAWN} activity did NOT land:`, lifecycleError.message)
 
   await emitOfferEvent({
     event:       KernelEvent.OFFER_OS_WITHDRAWN,

@@ -75,7 +75,31 @@ export async function executeAITool(toolName: string, inputData: any, context: a
         }
       },
       "generate-plan": generateCopilotPlan,
-      "send-message": sendMessage,
+      // "send-message" ROUTES TO THE COMMS HUB (wave 155, lane 155R29 — the earlier ruling in
+      // scripts/manager-duplicate-proof-guard.ts: "the step must route through the comms hub's dispatch gates first"). It used to
+      // name this file's own sendMessage twin, ARITY-BROKEN (handler(inputData, context) put the whole input object in its
+      // contactId slot), which recorded a message 'sent' that no gate had cleared. The twin is retired (tombstone below); its one
+      // unique trait — resolving the contact's thread when the step names none — is kept HERE, on the session's tenant.
+      "send-message": async (input: any) => {
+        const contactId = typeof input?.contactId === "string" ? input.contactId : ""
+        const body = typeof input?.message === "string" ? input.message : typeof input?.body === "string" ? input.body : ""
+        const channel = input?.channel
+        if (!contactId) return { success: false, error: "No contact named" }
+        if (!body.trim()) return { success: false, error: "No message to send" }
+        if (channel !== "email" && channel !== "sms" && channel !== "in_app") return { success: false, error: "Unknown channel" }
+        let conversationId = typeof input?.conversationId === "string" ? input.conversationId : ""
+        if (!conversationId) {
+          const ctx = await getAgentContext()
+          if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+          const own = await assertOwnership("contacts", contactId, ctx.brokerageId)
+          if (!own.ok) return { success: false, error: own.error }
+          const { ensureConversationForContact } = await import("@/lib/kernel/conversation-thread")
+          conversationId = (await ensureConversationForContact(await createClient(), { contactId, brokerageId: ctx.brokerageId, agentId: ctx.agentId })) ?? ""
+          if (!conversationId) return { success: false, error: "Could not resolve conversation" }
+        }
+        const { sendMessage: sendThroughHub } = await import("./ai-communication-hub")
+        return sendThroughHub({ conversationId, contactId, channel, body, subject: typeof input?.subject === "string" ? input.subject : undefined })
+      },
       // Smart drip — enrolls the contact into the matching compliance-gated
       // sequence via startSmartDrip (restored lane F1 2026-08-28; identity from
       // the session inside the action, never from inputData §4).
@@ -507,55 +531,12 @@ export async function listContactDrips(
   }
 }
 
-/**
- * Send a message to a contact.
- */
-export async function sendMessage(
-  contactId: string,
-  message: string,
-  channel: string,
-  _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-    const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
-
-    // Verify contact ownership
-    const own = await assertOwnership("contacts", contactId, brokerageId)
-    if (!own.ok) return { success: false, error: own.error }
-
-    // messages.conversation_id is NOT NULL — resolve or create the thread via
-    // the ONE canonical helper (keep-one; this file had the original inline copy).
-    const { ensureConversationForContact } = await import("@/lib/kernel/conversation-thread")
-    const conversationId = await ensureConversationForContact(supabase, { contactId, brokerageId, agentId })
-    if (!conversationId) return { success: false, error: "Could not resolve conversation" }
-
-    const { data: msg, error: msgInsErr } = await supabase
-      .from("messages")
-      .insert({
-        conversation_id: conversationId,
-        contact_id: contactId,
-        agent_id: agentId,
-        brokerage_id: brokerageId,
-        type: channel,        // real column for the medium (email/sms/in_app)
-        direction: "outbound",
-        body: message,        // real column (was phantom "content")
-        status: "sent",
-      })
-      .select()
-      .single()
-    if (msgInsErr) return { success: false, error: `Could not record the message: ${msgInsErr.message}` }
-
-    return { success: true, messageId: msg?.id }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to send message" }
-  }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 1 — a DUPLICATE): sendMessage DELETED. Survivor:
+// app/actions/ai-communication-hub.ts:54 sendMessage — the conversation send the product calls
+// (app/dashboard/communications/communications-os-client.tsx:15 import), session-gated (requireCaller), conversation AND contact
+// proven in the caller's tenant. This twin was reachable only as the "send-message" entry of executeAITool's table above, which no
+// caller ever dispatched, and it was arity-broken there. That entry now routes to the survivor; the twin's thread resolution
+// (ensureConversationForContact) moved into the entry with it.
 
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `calculateListingMetrics`
 // deleted, and its "calculate-metrics" dispatcher entry in executeAITool

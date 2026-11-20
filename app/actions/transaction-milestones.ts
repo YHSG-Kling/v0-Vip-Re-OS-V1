@@ -48,24 +48,24 @@ export interface CompleteMilestoneActionParams extends ScopedParams {
 export async function completeMilestoneAction(
   params: CompleteMilestoneActionParams,
 ): Promise<{ success: boolean; error?: string }> {
+  // WAVE 155 (convergence): the tenant is the SESSION's. The body's brokerageId is only a CLAIM, decided by the one table (requireCallerTenant).
+  const auth = await requireCallerTenant(params.brokerageId)
+  if (!auth.ok) return { success: false, error: auth.error }
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
-
-  const { data: tx } = await supabase
+  const { data: tx, error: txErr } = await supabase
     .from("transactions")
     .select("id")
     .eq("id", params.transactionId)
-    .eq("brokerage_id", params.brokerageId)
+    .eq("brokerage_id", auth.brokerageId)
     .maybeSingle()
-  if (!tx) return { success: false, error: "Transaction not found in your brokerage" }
+  if (txErr || !tx) return { success: false, error: txErr ? "Could not verify the transaction — try again." : "Transaction not found in your brokerage" }
 
   try {
     await completeMilestone({
       transactionId: params.transactionId,
-      brokerageId:   params.brokerageId,
+      brokerageId:   auth.brokerageId,
       milestoneName: params.milestoneName,
-      completedBy:   user.id,
+      completedBy:   auth.userId,
       notes:         params.notes,
     })
   } catch (err) {
@@ -711,3 +711,4 @@ export async function completeRepairAction(
 
 // Imported at the foot (lane 93A) so the file:line references other files hold into this one stay true (ES imports hoist).
 import { decideClaimedTenant } from "@/lib/platform/acting-context"
+import { requireCallerTenant } from "@/lib/auth/require-caller"

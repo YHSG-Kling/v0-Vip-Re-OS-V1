@@ -2499,6 +2499,13 @@ export async function resolveIdentity(behavioralSignalId: string) {
   // Reads contact PII via email match — require auth
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
+  // WAVE 155 (lane 155R29, orphan doctrine §1 case 3 — no survivor runs a STAFF re-match of a stored signal, so the door is kept
+  // and made safe; owner question in the lane notes): a malformed id is refused before any read, and the link it may write
+  // (behavioral_signals.identified + the person evidence) leaves ONE receipt — the session user, the session's tenant, the signal.
+  // No idempotency key: a second run re-matches and records again.
+  if (!isValidUUID(behavioralSignalId)) return { success: false, error: "Invalid signal id" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "lead_intelligence.signal_identity.resolve", actor: { type: "user", userId: auth.userId }, subject: { type: "behavioral_signal", id: behavioralSignalId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ success: boolean; error?: string; message?: string; contact?: unknown; method?: string }> => {
 
   const supabase = createServiceClient()
 
@@ -2513,6 +2520,7 @@ export async function resolveIdentity(behavioralSignalId: string) {
     console.error("[v0] Identity resolution error:", error)
     return { success: false, error: String(error) }
   }
+  })
 }
 
 // ============================================

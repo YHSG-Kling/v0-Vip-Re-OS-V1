@@ -56,6 +56,23 @@ export async function scheduleListingAppointment(params: {
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
+  // WAVE 155 (lane 155R29, orphan doctrine §1 case 3): KEPT AND MADE SAFE. Nothing calls this door today — the listing-consultation
+  // scheduler books through app/actions/ai-calendar-management.ts createAppointment — but no survivor moves the listing to
+  // APPOINTMENT_SET or stamps listings.appointment_at / appointment_event_id (lib/application/listing-lifecycle.ts
+  // scheduleListingAppointmentService does both), so it stays, with an owner question in the lane notes. What it lacked: the
+  // listing and the contact were never proven to be the SESSION tenant's — the calendar row was inserted under this tenant
+  // pointing at whatever ids the body named, and only the later listing UPDATE was pinned — and the booking left no receipt.
+  const { data: listingRow, error: listingError } = await supabase
+    .from("listings").select("id").eq("id", params.listing_id).eq("brokerage_id", profile.brokerage_id).maybeSingle()
+  if (listingError) throw new Error(`Could not verify the listing: ${listingError.message}`)
+  if (!listingRow) throw new Error("Listing not found in your brokerage")
+  const { data: contactRow, error: contactError } = await supabase
+    .from("contacts").select("id").eq("id", params.contact_id).eq("brokerage_id", profile.brokerage_id).maybeSingle()
+  if (contactError) throw new Error(`Could not verify the contact: ${contactError.message}`)
+  if (!contactRow) throw new Error("Contact not found in your brokerage")
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: profile.brokerage_id, action: "listing.appointment.schedule", actor: { type: "user", userId: user.id }, subject: { type: "listing", id: params.listing_id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { meeting_mode: params.meeting_mode ?? "in_person" } }, async () => {
+
   const result = await scheduleListingAppointmentService(params, user.id, profile.brokerage_id)
 
   // THE BOOKING STARTS THE SELLER'S LISTING-PRESENTATION PREP (lane 87B, owner wave 87:
@@ -87,6 +104,7 @@ export async function scheduleListingAppointment(params: {
   }
 
   return result
+  })
 }
 
 // markListingSigned + markListingLive RETIRED — the UI drives go-live / agreement-signed through

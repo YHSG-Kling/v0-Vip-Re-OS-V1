@@ -307,6 +307,13 @@ export async function submitVendorInvoice(invoiceId: string): Promise<InvoiceRes
   const verify = await verifyInvoiceInCallerBrokerage(invoiceId, ctx.brokerageId)
   if (!verify.ok) return { success: false, error: "Forbidden" }
 
+  // WAVE 155 (lane 155R29, orphan doctrine §1 case 3): KEPT. Nothing calls this door and nothing in the product produces the
+  // draft invoices it moves (createVendorInvoice above has no importer either; the live vendor-billing lane is
+  // app/actions/multi-persona.ts submitVendorInvoice, which creates invoices already 'submitted' from a booking — a different money
+  // operation, the earlier "kept: money_legal" ruling in scripts/manager-duplicate-proof-guard.ts still holds). It was already gated,
+  // tenant-pinned and counted; what it lacked was the receipt a money state change owes (LAW 5). Owner question in the lane notes.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "vendor.invoice.submit", actor: { type: "user", userId: ctx.actorUserId }, subject: { type: "vendor_invoice", id: invoiceId }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<InvoiceResult> => {
   const svc = createServiceClient()
   // `.select("id")` — same rule as markInvoicePaid below: a zero-row UPDATE resolves
   // with no error, so without counting the rows this returned success for an invoice
@@ -323,6 +330,7 @@ export async function submitVendorInvoice(invoiceId: string): Promise<InvoiceRes
     return { success: false, error: "Nothing was submitted — that invoice is no longer one of your brokerage's invoices." }
   }
   return { success: true, invoiceId }
+  })
 }
 
 // ---------------------------------------------------------------------------

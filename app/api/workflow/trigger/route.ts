@@ -174,6 +174,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "contactId could not be resolved" }, { status: 422 })
   }
 
+  // ── The contact must be THIS tenant's (wave 155, lane 155R29) ─────────────
+  // The credential binds the brokerage, but a body `contactId` was never checked against it: a tenant's own webhook secret
+  // could enroll ANOTHER tenant's contact (any uuid) into this tenant's sequences — sequence_enrollments stamped with this
+  // brokerage, then messaged by its steps. The email path above was already pinned; the id path now is too. A refused read
+  // refuses (a gate that cannot run must not pass).
+  if (!UUID_SHAPE.test(contactId)) {
+    return NextResponse.json({ error: "contactId is not a valid id" }, { status: 422 })
+  }
+  const { data: ownedContact, error: ownedContactError } = await supabase
+    .from("contacts")
+    .select("id")
+    .eq("id", contactId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (ownedContactError) {
+    console.error("[workflow/trigger] contact tenant check refused:", ownedContactError.message)
+    return NextResponse.json({ error: "Could not verify the contact" }, { status: 503 })
+  }
+  if (!ownedContact) {
+    return NextResponse.json({ error: "contactId is not a contact of this brokerage" }, { status: 422 })
+  }
+
   // ── Log the webhook event for audit ───────────────────────────────────────
   void sentinelWrite(supabase,
     supabase.from("workflow_webhook_events").insert({

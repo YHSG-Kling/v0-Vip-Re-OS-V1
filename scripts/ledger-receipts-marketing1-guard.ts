@@ -327,7 +327,7 @@ const CASES: Case[] = [
     seed: () => ({ campaign_bundles: [{ id: ID(19), brokerage_id: TENANT, scope_type: "brokerage", scope_id: TENANT, is_active: true }] }),
     call: (m) => m.deactivateCampaignBundle(ID(19)), failCall: (m) => m.deactivateCampaignBundle(ID(20)) },
   { module: "app/actions/social-publishing.ts", fn: "disconnectSocialAccount", action: "social.account.disconnect", subjectType: "social_media_account", risk: "LOW_RISK_WRITE", table: "social_media_accounts",
-    seed: () => ({ social_media_accounts: [{ id: ID(21), user_id: USER, is_active: true }] }),
+    seed: () => ({ social_media_accounts: [{ id: ID(21), brokerage_id: TENANT, user_id: USER, is_active: true }] }), /* the live row carries its tenant (the OAuth route stamps it); the door now pins it — wave 155, lane 155R29 */
     call: (m) => m.disconnectSocialAccount(ID(21)), refuse: { social_media_accounts: "permission denied" } },
   { module: "app/actions/voice-avatar-settings.ts", fn: "updateMyVoicePreference", action: "voice.preference.update", subjectType: "user", risk: "LOW_RISK_WRITE", table: "agents",
     seed: () => ({ agents: [{ id: AGENT, user_id: USER, voice_preference: "clone" }] }),

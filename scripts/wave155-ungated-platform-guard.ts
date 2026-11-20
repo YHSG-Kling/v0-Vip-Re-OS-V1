@@ -198,7 +198,7 @@ async function driven() {
   // 3. social-media-automation retryFailedPost / deleteSocialPost ─────────────────────────────────────────────────
   {
     const m = await mod("app/actions/social-media-automation")
-    const seed = () => ({ social_posts: [{ id: X, brokerage_id: B, status: "failed", platform: "facebook" }, { id: Y, brokerage_id: A, status: "scheduled", platform: "facebook" }, { id: Z, brokerage_id: A, status: "failed", platform: "facebook" }], social_publish_log: [] })
+    const seed = () => ({ social_posts: [{ id: X, brokerage_id: B, status: "failed", platform: "facebook" }, { id: Y, brokerage_id: A, user_id: U, status: "scheduled", platform: "facebook" } /* the author (social_posts.user_id, stamped by every creator) — the cancel door now keeps an agent to their own post: wave 155, lane 155R29 */, { id: Z, brokerage_id: A, status: "failed", platform: "facebook" }], social_publish_log: [] })
     fresh(seed())
     const r = await as(AS_AGENT, () => m.deleteSocialPost(X, U))
     const r1 = await as(AS_AGENT, () => m.retryFailedPost(X, U))

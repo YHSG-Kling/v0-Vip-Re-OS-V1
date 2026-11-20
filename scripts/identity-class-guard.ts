@@ -1094,8 +1094,12 @@ console.log("\n═══ 6. Both activities writers (m372) ═══")
   // never a raw users id), and the write that moved still lands an agents-class
   // id in the agents-FK column.
   const tol = code("app/actions/buyer-offer/track-offer-lifecycle.ts")
-  ok("every activities identity in track-offer-lifecycle is RESOLVED to an agents\n    id — four sites, none writing a users id raw",
-    (tol.match(/await resolveAgentId\(/g) ?? []).length === 4 &&
+  // RESTATED (wave 155, lane 155R29) from "four sites" (a waypoint: submitOffer / withdrawOffer / recordSellerResponse were
+  // retired onto their survivors, taking three sites with them) to the RULE: EVERY agents-class identity this file writes
+  // (agent_id / actorAgentId) is resolveAgentId(...) — derived, and there is at least one to judge.
+  const tolIds = [...tol.matchAll(/\b(?:agent_id|actorAgentId):\s*([^,\n]+)/g)].map((x) => x[1].trim())
+  ok(`every activities identity in track-offer-lifecycle is RESOLVED to an agents\n    id — ${tolIds.length} site(s) derived, none writing a users id raw`,
+    tolIds.length > 0 && tolIds.every((v) => v.startsWith("await resolveAgentId(")) &&
     !/agent_id: systemUserId,/.test(tol) &&
     !/agent_id: gate\.userId/.test(tol))
   const exp = code("lib/buyer-offer/expire-offers.ts")

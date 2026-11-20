@@ -2,7 +2,7 @@
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { revalidatePath } from "next/cache"
-import { getListingsService, createListingService } from "@/lib/application/listings"
+import { getListingsService } from "@/lib/application/listings"
 import { getListingTimelineService } from "@/lib/application/listing-lifecycle"
 import { createServiceClient } from "@/lib/supabase/service"
 import { handleError } from "@/lib/errors"
@@ -164,50 +164,12 @@ export async function getListingById(listingId: string) {
   }
 }
 
-export async function createListing(params: {
-  agentId: string
-  sellerId: string
-  address: string
-  city: string
-  state: string
-  zip: string
-  price?: number
-  bedrooms?: number
-  bathrooms?: number
-  squareFootage?: number
-  propertyType?: string
-  listingType?: string
-}) {
-  // ADJACENT WRITER FIX (wave 16, not a merge): this never supplied the tenant,
-  // and createListingService writes whatever it is given — so every row created
-  // through this door carried a NULL brokerage_id and was therefore invisible to
-  // the tenant-filtered reader above (and visible to any policy that admits an
-  // untenanted row). Same class as the ai-auto-response stamp.
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { success: false as const, error: "Your account is not linked to a brokerage yet." }
-  }
-
-  const result = await createListingService({
-    agentId: params.agentId,
-    brokerageId: ctx.brokerageId,
-    sellerContactId: params.sellerId,
-    address: params.address,
-    city: params.city,
-    state: params.state,
-    zip: params.zip,
-    listPrice: params.price,
-    bedrooms: params.bedrooms,
-    bathrooms: params.bathrooms,
-    sqft: params.squareFootage,
-    propertyType: params.propertyType,
-  })
-  if (result.success) {
-    revalidatePath("/listings")
-    revalidatePath("/dashboard")
-  }
-  return result
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 1 — a DUPLICATE): createListing DELETED. Survivor:
+// app/actions/listings-kernel.ts:139 createListingWithSellerContact — the New Listing wizard's door
+// (app/components/form-wizard/FormWizard.tsx:65 import, :727 call), which opens the listing as a 'draft' behind the listing-agreement
+// gate (lib/kernel/manager-registry.ts listing_draft_gate). This export had no importer, handed a CALLER-SUPPLIED agentId to
+// createListingService unverified, and opened the row through the lib service. The session-tenant stamp it carried (the wave-16
+// adjacent fix) is already on the survivor. Nothing to merge.
 
 /**
  * THE HAND-EDIT WRITER, AND THE ONLY PRICE-CHANGE LANE.

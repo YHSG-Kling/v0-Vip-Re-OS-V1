@@ -1903,7 +1903,9 @@ async function main() {
         // ONE shared module when the client-rating door landed (§6, 2026-09-01);
         // vendor-marketplace.ts delegates to it. Pin the construct at its home.
         && src("lib/vendor-marketplace/vendor-ratings.ts").includes('onConflict: "vendor_id"')
-        && src("app/actions/social-publishing.ts").includes('onConflict: "brokerage_id,platform,account_id"')
+        // RESTATED (wave 155, lane 155R29): social-publishing's upsert lived in connectSocialAccount, retired onto the OAuth route
+        // (whose upsert is held on the next line). The rule: no social_media_accounts upsert there, or one on the live unique.
+        && (src("app/actions/social-publishing.ts").includes('onConflict: "brokerage_id,platform,account_id"') || !/\.upsert\(/.test(src("app/actions/social-publishing.ts")))
         && src("app/api/social/oauth/[platform]/route.ts").includes('onConflict: "brokerage_id,platform,account_id"')
         // wave 140H/P: the IDX page's browser upsert moved onto the server action, whose write is an
         // owner-keyed update-or-insert (the unique is a PARTIAL index a plain onConflict cannot target).

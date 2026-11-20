@@ -494,22 +494,28 @@ async function main() {
     )
 
     // The internal callers are not stranded, and not gated twice.
+    // RESTATED (wave 155, lane 155R29) from a pinned list ["submitOffer", "withdrawOffer", "recordSellerResponse"] to the RULE:
+    // those three were retired onto their survivors (tombstone in the file), so the writers are DERIVED — every export other
+    // than the entry point. Each gates through the file's session gate, never re-reads state through the public endpoint, and
+    // where it reads state it reads through the internal.
+    const writersOf = (text: string) => [...exportedBodies(text).keys()].filter((n) => n !== "getOfferLifecycleState")
     const writersUseInternal = (text: string) => {
       const bodies = exportedBodies(text)
-      const writers = ["submitOffer", "withdrawOffer", "recordSellerResponse"]
-      return writers.every((w) => {
-        const b = bodies.get(w)
-        if (!b || !internal) return false
-        const g = sessionGateOf(text)!
-        return b.includes(`${g}(`) && b.includes(`${internal}(`) && !b.includes("getOfferLifecycleState(")
+      const writers = writersOf(text)
+      const g = sessionGateOf(text)
+      return writers.length > 0 && !!g && !!internal && writers.every((w) => {
+        const b = bodies.get(w)!
+        const readsState = b.includes(`${internal}(`) || b.includes("getOfferLifecycleState(")
+        return b.includes(`${g}(`) && !b.includes("getOfferLifecycleState(") && (!readsState || b.includes(`${internal}(`))
       })
     }
+    const firstWriter = writersOf(TRACK)[0] ?? "(none)"
     controlled(
-      "the writers in this file gate ONCE and then read through the internal, not the endpoint",
+      `the writers in this file (derived: ${writersOf(TRACK).join(", ") || "none"}) gate ONCE and never read through the endpoint`,
       writersUseInternal, TRACK,
-      patched(TRACK, new RegExp(`await ${internal}\\(offerId\\)`, "g"),
-        "await getOfferLifecycleState(offerId)",
-        "the writers routed back through the public endpoint, re-proving the session per call"),
+      patched(TRACK, new RegExp(`(export async function ${firstWriter}\\b[\\s\\S]*?await ${sessionGateOf(TRACK) ?? "requireOfferActor"}\\(offerId\\);)`),
+        "$1\n    await getOfferLifecycleState(offerId);",
+        `${firstWriter} routed back through the public endpoint, re-proving the session per call`),
     )
 
     // The one external caller that keeps using the export runs in a session.

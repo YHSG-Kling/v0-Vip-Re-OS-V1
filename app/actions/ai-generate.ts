@@ -18,21 +18,20 @@
  */
 
 import {
-  generateAIText as _generateAIText,
   generateAIJSON as _generateAIJSON,
   generateAIObject as _generateAIObject,
-  generateChatResponse as _generateChatResponse,
 } from "@/lib/ai/generate"
 import type { z } from "zod"
 
-export async function generateAIText(
-  prompt: string,
-  options?: { maxTokens?: number; temperature?: number; feature?: string }
-): Promise<{ text: string; error?: string }> {
-  const refused = await refuseWithoutSession()
-  if (refused) return { text: "", error: refused }
-  return _generateAIText(prompt, options)
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 2 — the functionality lives elsewhere): generateAIText and generateChatResponse
+// DELETED from this file (generateAIJSON / generateAIObject stay — lead-intelligence.ts imports this module). No runtime file imported
+// either wrapper: every other `generateAIText` / `generateChatResponse` in the tree is the lib function itself (namesakes).
+//   · generateAIText → survivor lib/ai/generate.ts:64 generateAIText, which server code imports directly per this file's own IMPORT
+//     RULES (app/actions/neighborhood-reports.ts:7 import, :342 call; lib/ads/ad-creative-engine.ts:162; the narration modules).
+//   · generateChatResponse (a fixed "user is viewing property …" chat template) → the product's chat responders: the staff assistant
+//     app/api/internal/ai-chat/route.ts:366 POST (app/components/shared/internal-ai-assistant.tsx:596 transport) and the website
+//     visitor chat app/api/widget/message/route.ts:42 POST.
+// Both wrappers were public model-spending doors (gated in 155S2, which named retirement the integrator's census call). Nothing merged.
 
 export async function generateAIJSON<T = Record<string, unknown>>(
   prompt: string,
@@ -53,15 +52,6 @@ export async function generateAIObject<T extends z.ZodType>(
   const refused = await refuseWithoutSession()
   if (refused) return { success: false, error: refused }
   return _generateAIObject<T>(prompt, schema, options)
-}
-
-export async function generateChatResponse(
-  userMessage: string,
-  context: string
-): Promise<{ text: string; error?: string }> {
-  const refused = await refuseWithoutSession()
-  if (refused) return { text: "", error: refused }
-  return _generateChatResponse(userMessage, context)
 }
 
 /**

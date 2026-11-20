@@ -284,6 +284,15 @@ export async function getTouchpointCalendar(
 }
 
 // Calculate engagement score
+//
+// WAVE 155 (lane 155R29, orphan doctrine §1 case 3): KEPT AND MADE SAFE. This is the ONLY writer of client_engagement_scores, which
+// two live screens read (app/actions/lifetime-customers.ts:233 → the past-clients panel; app/referrals/page.tsx:214 sphere maths),
+// and nothing calls it — so the score those screens show is never computed. No survivor exists, so the door stays (owner question in
+// the lane notes: wire it, or retire it with the readers). What was unsafe, and is now refused: the tenant came from the AGENT row,
+// not the session; the contact was never checked against any tenant (the table is UNIQUE(contact_id), so an upsert could rewrite
+// another tenant's client score); the touchpoints read had no tenant predicate; both reads swallowed refusals (a refused read scored
+// the client 0); and the upsert was neither counted nor recorded. Now: session tenant, contact proven in it, tenant-pinned reads that
+// throw on refusal, a counted upsert, and ONE receipt (lifetime.engagement_score.calculate, no key — a re-score runs again).
 export async function calculateEngagementScore(contactId: string) {
   const supabase = await createClient()
   const {
@@ -296,24 +305,34 @@ export async function calculateEngagementScore(contactId: string) {
   // throws also tells the caller what to do about it ("Please complete
   // onboarding") instead of only naming the absence.
   const agentId = await requireAgentId(supabase, user.id)
-  // client_engagement_scores.brokerage_id is NOT NULL — resolve from the agent.
-  const { data: agentRow } = await supabase
-    .from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()
-  const brokerageId = agentRow?.brokerage_id ?? null
+  // client_engagement_scores.brokerage_id is NOT NULL — the SESSION's tenant (CLAUDE.md §4), never the agent row's or an argument's.
+  const session = await getAgentContext()
+  if (!session.isAuthenticated || !session.brokerageId) throw new Error("Your account is not linked to a brokerage")
+  const brokerageId = session.brokerageId
 
-  const { data: touchpoints } = await supabase
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts").select("id").eq("id", contactId).eq("brokerage_id", brokerageId).maybeSingle()
+  if (contactError) throw new Error(`Could not verify the contact: ${contactError.message}`)
+  if (!contact) throw new Error("Contact not found in your brokerage")
+
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "lifetime.engagement_score.calculate", actor: { type: "user", userId: user.id, agentId }, subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async (): Promise<{ engagementScore: number; referralPotentialScore: number }> => {
+  const { data: touchpoints, error: touchpointsError } = await supabase
     .from("lifetime_customer_touchpoints")
     .select("*")
     .eq("contact_id", contactId)
+    .eq("brokerage_id", brokerageId)
     .eq("status", "sent")
+  if (touchpointsError) throw new Error(`Could not read the touchpoints: ${touchpointsError.message}`)
 
   // referrals given BY this contact: canonical column is referred_by (text).
-  // tenant anchor (scope burn-down): pinned to the resolved agent's brokerage.
-  const { data: referrals } = await supabase
+  // tenant anchor (scope burn-down): pinned to the session's brokerage.
+  const { data: referrals, error: referralsError } = await supabase
     .from("referrals")
     .select("*")
     .eq("brokerage_id", brokerageId)
     .eq("referred_by", contactId)
+  if (referralsError) throw new Error(`Could not read the referrals: ${referralsError.message}`)
 
   const totalTouchpoints = touchpoints?.length || 0
   const respondedTouchpoints = touchpoints?.filter((t) => t.engagement_data?.replied).length || 0
@@ -333,7 +352,7 @@ export async function calculateEngagementScore(contactId: string) {
   // last_interaction/calculated_at (no engagement_score/referral_potential_score/
   // total_touchpoints/touchpoints_responded/response_rate/last_calculated_at). UNIQUE(contact_id).
   // referralPotentialScore/respondedTouchpoints/responseRate remain computed for the return value.
-  const { error } = await supabase.from("client_engagement_scores").upsert({
+  const { data: written, error } = await supabase.from("client_engagement_scores").upsert({
     brokerage_id: brokerageId,
     contact_id: contactId,
     agent_id: agentId,
@@ -342,9 +361,12 @@ export async function calculateEngagementScore(contactId: string) {
     referrals_given: referralsGiven,
     last_interaction: new Date().toISOString(),
     calculated_at: new Date().toISOString(),
-  }, { onConflict: "contact_id" })
+  }, { onConflict: "contact_id" }).select("contact_id")
 
   if (error) throw error
+  // A write that landed nothing is not a score (§3).
+  if (!written || written.length === 0) throw new Error("The engagement score was not recorded")
 
   return { engagementScore, referralPotentialScore }
+  })
 }

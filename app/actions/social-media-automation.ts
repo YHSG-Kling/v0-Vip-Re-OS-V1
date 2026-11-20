@@ -21,7 +21,6 @@ import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 // The ONE way a notifications row gets its tenant — the recipient's
 // users.brokerage_id, the exact value badge-counts compares against.
 import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
-import { encryptSecret } from "@/lib/security/secret-crypto"
 
 /**
  * Tenant guard — requires authenticated session with a brokerage.
@@ -111,71 +110,13 @@ async function verifySocialPostInBrokerage(
 // SOCIAL MEDIA ACCOUNT MANAGEMENT
 // ============================================
 
-export async function connectSocialAccount(params: {
-  agentId?: string // optional — verified to belong to ctx.brokerageId
-  userId?: string // ignored — derived from session
-  platform: "facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "youtube" | "pinterest"
-  accountName: string
-  accessToken: string
-  refreshToken?: string
-  expiresAt?: string
-  accountId?: string
-  brokerageId?: string // ignored — derived from session
-  scope?: "brokerage" | "agent"
-}) {
-  // SECURITY: OAuth tokens are brokerage-bound. The caller cannot pick which
-  // brokerage to attach the token to — we always use the authenticated
-  // session's brokerageId. Failing this open would let any tenant attach
-  // OAuth credentials to any other tenant's brokerage.
-  const auth = await requireBrokerage()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  // If caller supplied an agentId, verify it belongs to the caller's brokerage.
-  // Otherwise fall back to the session's agentId (if any).
-  let effectiveAgentId: string | null = null
-  if (params.agentId !== undefined) {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
-    }
-    const ok = await verifyAgentInBrokerage(params.agentId, auth.brokerageId)
-    if (!ok) return { success: false, error: "Forbidden" }
-    effectiveAgentId = params.agentId
-  } else {
-    effectiveAgentId = auth.agentId
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: account, error } = await supabase
-      .from("social_media_accounts")
-      .insert({
-        agent_id: effectiveAgentId,
-        user_id: auth.userId, // session-derived, NOT caller-supplied
-        brokerage_id: auth.brokerageId, // session-derived, NOT caller-supplied
-        platform: params.platform,
-        account_name: params.accountName,
-        account_id: params.accountId || null,
-        access_token: encryptSecret(params.accessToken),
-        refresh_token: encryptSecret(params.refreshToken ?? null),
-        token_expires_at: params.expiresAt ?? null,
-        scope: params.scope || "agent",
-        is_active: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select()
-      .maybeSingle()
-
-    if (error) throw error
-
-    revalidatePath("/dashboard/social")
-    return { success: true, data: account }
-  } catch (error) {
-    console.error("[social-media-automation] Connect social account error:", error)
-    return { success: false, error: "Failed to connect account" }
-  }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 2 — the functionality lives elsewhere): connectSocialAccount DELETED here and
+// its twin in app/actions/social-publishing.ts with it. Survivor: app/api/social/oauth/[platform]/route.ts:122 GET — the OAuth connect
+// the product actually runs (app/dashboard/profile/profile-settings-client.tsx:234 and app/dashboard/onboarding/tech-stack/
+// tech-stack-client.tsx:761 send the browser to /api/social/oauth/<platform>), which receives the token FROM THE PLATFORM and upserts
+// social_media_accounts on the live (brokerage_id, platform, account_id) unique. Neither twin had an importer; both accepted a
+// CALLER-PASTED access token and stored it as the tenant's credential (a credential surface with no proof the token was ever the
+// caller's). Nothing merged: a pasted token is the defect, not a capability.
 
 export async function getConnectedAccounts(agentId?: string, _brokerageId?: string) {
   // brokerageId is IGNORED — always derived from session to prevent
@@ -214,26 +155,11 @@ export async function getConnectedAccounts(agentId?: string, _brokerageId?: stri
   return data || []
 }
 
-export async function disconnectSocialAccount(accountId: string) {
-  if (!isValidUUID(accountId)) {
-    return { success: false, error: "Invalid account ID" }
-  }
-
-  const supabase = await createClient()
-
-  const { error } = await supabase
-    .from("social_media_accounts")
-    .update({ is_active: false, updated_at: new Date().toISOString() })
-    .eq("id", accountId)
-
-  if (error) {
-    console.error("[social-media-automation] Disconnect account error:", error)
-    return { success: false, error: "Failed to disconnect account" }
-  }
-
-  revalidatePath("/dashboard/social")
-  return { success: true }
-}
+// TOMBSTONE (wave 155, lane 155R29; CLAUDE.md §1 case 1 — a DUPLICATE): disconnectSocialAccount DELETED. Survivor:
+// app/actions/social-publishing.ts:156 disconnectSocialAccount (app/dashboard/profile/profile-settings-client.tsx:13 import, :245
+// call; receipt social.account.disconnect). This twin had no importer, ran on an RLS-only client with no session gate, and reported
+// success on a zero-row update. MERGED onto the survivor first: the uuid check, the tenant pin, and the counted update (a disconnect
+// that matched nothing now refuses instead of reporting success).
 
 // ============================================
 // POST SCHEDULING — KERNEL INTEGRATED
@@ -1391,7 +1317,9 @@ export async function deleteSocialPost(postId: string, userId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: post, error } = await supabase
+    // MERGED (wave 155, lane 155R29) from the retired app/actions/social-publishing.ts deleteSocialPost twin: an ordinary agent
+    // cancels only their OWN post; leadership (seesAllBrokeragePosts) any post in the tenant. Same rule the analytics reader keeps.
+    let cancelQuery = supabase
       .from("social_posts")
       .update({
         status: "cancelled",
@@ -1400,6 +1328,8 @@ export async function deleteSocialPost(postId: string, userId: string) {
       .eq("id", postId)
       .eq("brokerage_id", auth.brokerageId)
       .in("status", ["draft", "scheduled", "failed", "cancelled"])
+    if (!seesAllBrokeragePosts(auth.userType)) cancelQuery = cancelQuery.eq("user_id", auth.userId)
+    const { data: post, error } = await cancelQuery
       .select("id, brokerage_id, platform, status")
       .maybeSingle()
 
@@ -1456,11 +1386,18 @@ export async function updateSocialPost(params: {
     if (params.postType   !== undefined) updatePayload.post_type    = params.postType
     if (params.scheduledFor !== undefined) updatePayload.scheduled_for = params.scheduledFor
 
-    const { data: post, error } = await supabase
+    // MERGED (wave 155, lane 155R29) from the retired app/actions/social-publishing.ts updateSocialPost twin: the edit is pinned to
+    // the SESSION tenant (it rode RLS alone), and an ordinary agent edits only their OWN post (leadership: any in the tenant). The
+    // twin's caller-supplied `status` was NOT merged — a post's status moves only through approveSocialPost / rejectSocialPost
+    // (the approver roster) and the publish cron, never through an author's edit.
+    let editQuery = supabase
       .from("social_posts")
       .update(updatePayload)
       .eq("id", params.postId)
+      .eq("brokerage_id", auth.brokerageId)
       .in("status", ["draft", "scheduled"]) // only editable statuses
+    if (!seesAllBrokeragePosts(auth.userType)) editQuery = editQuery.eq("user_id", auth.userId)
+    const { data: post, error } = await editQuery
       .select()
       .maybeSingle()
 

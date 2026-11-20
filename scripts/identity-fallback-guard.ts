@@ -361,7 +361,11 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
   const vendorAssignNoFallback = (kernel: string, marketplace: string): boolean => {
     const resolver = /async function resolveAgentId\([\s\S]*?\n\}/.exec(kernel)?.[0] ?? ""
     const cmd = /export async function assignVendorToTransaction\([\s\S]*?\n\}/.exec(kernel)?.[0] ?? ""
-    const bound = /const (\w+) = await resolveAgentId\(/.exec(cmd)?.[1]
+    // RESTATED TO THE RULE (wave 155 convergence): the binding is whatever name RECEIVES the resolver's answer. It was pinned to
+    // `const x = await resolveAgentId(` and went red when the command began refusing a REFUSED lookup (`let x; try { x = await … }`,
+    // CLAUDE.md §3) — a stricter command failing a check written for the looser one. The rule is unchanged: the column is written
+    // from the resolver's answer (an agents id or NULL) and nothing substitutes a users id.
+    const bound = /(?:\bconst\s+)?\b(\w+)\s*=\s*await resolveAgentId\(/.exec(cmd)?.[1]
     return resolver.length > 0 && /return data\?\.id \?\? null/.test(resolver) && !/\?\?\s*agentUserId/.test(resolver) &&
       !!bound && new RegExp(`assigned_by_agent_id:\\s*${bound},`).test(cmd) &&
       !/assigned_by_agent_id:\s*[^,\n]*user/i.test(marketplace)
