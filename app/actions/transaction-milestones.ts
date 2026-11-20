@@ -41,6 +41,8 @@ interface ScopedParams {
 
 export interface CompleteMilestoneActionParams extends ScopedParams {
   milestoneName: string
+  /** MERGED (wave 155, lane 155R28): the optional completion note of the retired app/actions/transactions.ts completeMilestone. */
+  notes?: string
 }
 
 export async function completeMilestoneAction(
@@ -64,6 +66,7 @@ export async function completeMilestoneAction(
       brokerageId:   params.brokerageId,
       milestoneName: params.milestoneName,
       completedBy:   user.id,
+      notes:         params.notes,
     })
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "Milestone complete failed" }
@@ -584,6 +587,8 @@ export interface RequestRepairParams extends ScopedParams {
   estimatedCost?:  number
   priority?:       "critical" | "high" | "medium" | "low"
   requestedBy?:    "buyer" | "seller"  // defaults to "buyer"
+  /** MERGED (wave 155, lane 155R28): the free-text note the retired app/actions/transactions.ts submitRepairRequest carried. */
+  notes?:          string
 }
 
 export async function requestRepairAction(
@@ -611,6 +616,7 @@ export async function requestRepairAction(
       estimated_cost:    params.estimatedCost ?? null,
       priority:          params.priority ?? "medium",
       status:            "requested",
+      ...(params.notes?.trim() ? { notes: params.notes.trim() } : {}),
     })
     .select("id")
     .maybeSingle()

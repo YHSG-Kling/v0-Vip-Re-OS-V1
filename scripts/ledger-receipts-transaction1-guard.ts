@@ -106,6 +106,13 @@ function fnBody(file: string, name: string): string | null {
   const end = rest.search(/\n}\n/)
   return end < 0 ? rest : rest.slice(0, end + 2)
 }
+/** A retired export: its module no longer exports it (stripped) and a TOMBSTONE COMMENT names it as RETIRED with a SURVIVOR. */
+function retiredWithTombstone(raw: string, name: string): boolean {
+  const stripped = stripComments(raw)
+  if (new RegExp(`export\\s+(?:async\\s+)?function\\s+${name}\\b`).test(stripped)) return false
+  const stone = new RegExp(`TOMBSTONE[^\\n]*RETIRED ${name} → SURVIVOR \\S+:\\d+`)
+  return stone.test(raw) && !stone.test(stripped)
+}
 const CALL_RE = /ledgerSessionAction\(\{([\s\S]*?)\},\s*async\s*\(/g
 const NAME_RE = /^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/
 const RISK = new Set(["READ", "LOW_RISK_WRITE", "COMMUNICATION", "FINANCIAL", "LEGAL", "IRREVERSIBLE"])
@@ -139,8 +146,13 @@ async function main() {
   section("2 · reach — every closed row reaches the helper; every open row is open for its stated reason")
   {
     const miss: string[] = []
+    const retiredRows: string[] = []
     for (const [file, exp, site] of CLOSED) {
       const body = fnBody(file, exp)
+      // RESTATED TO THE RULE (wave 155, lane 155R28 — CLAUDE.md §2): a row is closed when its export leaves a receipt OR when the
+      // export was RETIRED with a tombstone naming its survivor (an uncalled door, CLAUDE.md §1). "export not found" with no
+      // tombstone stays a miss.
+      if (!body && retiredWithTombstone(src(file), exp)) { retiredRows.push(exp); continue }
       if (!body) { miss.push(`${exp}: export not found`); continue }
       if (!site) { if (!/ledgerSessionAction\(/.test(body)) miss.push(`${exp}: no helper call in its body`); continue }
       // "file#via>fn": the export calls `via` (same name, in the site file), which calls `fn` — the receipt site
@@ -152,7 +164,10 @@ async function main() {
       if (via !== sfn && !new RegExp(`\\b${sfn}\\s*\\(`).test(fnBody(sf, via) ?? "")) miss.push(`${exp}: ${via} does not call ${sfn}`)
     }
     // 96 = the 95 rows the analyzer now reads working + learnFromBuyerFeedback (receipted; still open on `readback`).
-    check(`${CLOSED.length} receipted rows reach ledgerSessionAction`, CLOSED.length === 96 && miss.length === 0, miss.slice(0, 5).join(" | "))
+    check(`${CLOSED.length} receipted rows reach ledgerSessionAction${retiredRows.length ? ` or are retired with a tombstone (${retiredRows.join(", ")})` : ""}`, CLOSED.length === 96 && miss.length === 0, miss.slice(0, 5).join(" | "))
+    check("POSITIVE CONTROL: a deleted export with NO tombstone is not accepted as retired", !retiredWithTombstone("export async function other() {}\n", "updateMilestone"))
+    check("POSITIVE CONTROL: a tombstone inside a string literal is not a tombstone", !retiredWithTombstone(`const s = "// TOMBSTONE (wave 155, lane 155R28 — §1 case 2) RETIRED updateMilestone → SURVIVOR a.ts:1 x"\n`, "updateMilestone"))
+    check("POSITIVE CONTROL: a module that still exports the name is not 'retired'", !retiredWithTombstone(`// TOMBSTONE (wave 155, lane 155R28 — §1 case 2) RETIRED updateMilestone → SURVIVOR a.ts:1 x\nexport async function updateMilestone() {}\n`, "updateMilestone"))
     for (const [file, exp, why] of OPEN) {
       const body = fnBody(file, exp) ?? ""
       check(`open: ${exp} — ${why.split(":")[0]}, writes nothing and carries no receipt`, !!body && !/ledgerSessionAction\(/.test(body) && !/\.(insert|update|upsert|delete)\s*\(/.test(body))
@@ -276,8 +291,10 @@ const DRIVERS: Driver[] = [
   { module: A + "ai-offer-creation.ts", seed: () => ({}), run: (m) => m.aiCalculateEscalation({ listPrice: 500000, initialOffer: 480000, maxBudget: 520000, estimatedCompetition: "high", marketTrend: "stable" }),
     fail: { model: true }, expect: { action: "offer.escalation.generate", subjectType: "ai_tool_usage", subjectId: null, risk: "LOW_RISK_WRITE" }, ran: modelRan },
   { module: A + "transactions.ts", seed: () => ({ transaction_milestones: [{ id: id(1), transaction_id: id(2), status: "pending" }] }),
-    run: (m) => m.updateMilestone(id(1), { status: "completed" }), fail: { refuse: { transaction_milestones: "permission denied (stub)" } },
-    expect: { action: "transaction.milestone.update", subjectType: "transaction_milestone", subjectId: id(1), risk: "LEGAL" }, ran: (svc) => svc.writes.filter((w) => w.table === "transaction_milestones").length },
+    // wave 155, lane 155R28: the uncalled updateMilestone door was retired; setMilestoneClientVisibility (the deal page's toggle) is
+    // the module's export that reaches the same service receipt (lib/application/transactions.ts updateMilestone).
+    run: (m) => m.setMilestoneClientVisibility(id(1), true), fail: { refuse: { transaction_milestones: "permission denied (stub)" } },
+    expect: { action: "transaction.milestone.update", subjectType: "transaction_milestone", subjectId: id(1), risk: "LOW_RISK_WRITE" }, ran: (svc) => svc.writes.filter((w) => w.table === "transaction_milestones").length },
   { module: A + "ai-identity.ts", seed: () => ({}), run: (m) => m.generateIdentityPreview({ assistantName: "Ava", personaLabel: "assistant", tone: "warm", formalityLevel: "semi_formal" }),
     fail: { model: true }, expect: { action: "assistant.identity_preview.generate", subjectType: "ai_tool_usage", subjectId: null, risk: "LOW_RISK_WRITE" }, ran: modelRan },
   { module: "app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts", seed: () => ({}), run: (m) => m.generateMarketingInsight("three angles for a listing"),

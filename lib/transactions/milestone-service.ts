@@ -18,6 +18,8 @@ export interface CompleteMilestoneParams {
   brokerageId: string
   milestoneName: string
   completedBy: string
+  /** MERGED (wave 155, lane 155R28 — CLAUDE.md §1): the completion note the retired app/actions/transactions.ts completeMilestone wrote. */
+  notes?: string
 }
 
 export interface OverrideMilestoneParams {
@@ -314,7 +316,8 @@ export async function completeMilestone(params: CompleteMilestoneParams): Promis
     .update({
       status: "completed",
       completed_at: new Date().toISOString(),
-      completed_by: completedBy
+      completed_by: completedBy,
+      ...(params.notes?.trim() ? { notes: params.notes.trim() } : {}),
     })
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)

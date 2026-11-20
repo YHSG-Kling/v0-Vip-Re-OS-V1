@@ -199,7 +199,7 @@ export async function declineInspectionQuoteAction(params: {
 export async function markInspectionCompleteAction(params: {
   inspectionId: string
   transactionId: string
-  brokerageId?: string
+  brokerageId?: string; /** MERGED (lane 155R28): the retired app/actions/transactions.ts completeInspection's findings. */ issuesFound?: string
 }) {
   const auth = await requireCallerTenant(params.brokerageId)
   if (!auth.ok) return { success: false, error: auth.error }
@@ -221,7 +221,7 @@ export async function markInspectionCompleteAction(params: {
 
   const result = await updateInspection(params.inspectionId, {
     status: "report_received",
-    completed_date: new Date().toISOString(),
+    completed_date: new Date().toISOString(), ...(params.issuesFound?.trim() ? { issues_found: params.issuesFound.trim() } : {}),
   })
 
   if (!result.success) {

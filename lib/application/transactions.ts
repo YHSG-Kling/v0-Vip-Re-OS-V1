@@ -581,12 +581,14 @@ export async function removeParticipant(participantId: string) {
   const gate = await actingWriteContext()
   if (!gate.ok) return { success: false, error: gate.error }
   const supabase = gate.db
-  const { error } = await supabase.from("transaction_participants").delete().eq("id", participantId)
+  // A DELETE that matched nothing also resolves (CLAUDE.md §3): `.select()` it and COUNT — zero rows is a refusal, not a removal.
+  const { data: removed, error } = await supabase.from("transaction_participants").delete().eq("id", participantId).select("id")
 
   if (error) {
     console.error("Error removing participant:", error)
     return { success: false, error: error.message }
   }
+  if ((removed ?? []).length !== 1) return { success: false, error: "Participant not removed (no row matched)" }
   revalidatePath("/transactions")
   return { success: true }
 }
@@ -664,6 +666,8 @@ export async function updateLender(
 
 export async function addTitleEscrow(data: {
   transaction_id: string
+  /** The SESSION tenant, stamped by the gated door (app/actions/transactions.ts addTitleEscrow) — every reader pins brokerage_id. */
+  brokerage_id?: string
   title_company_name: string
   title_officer_name?: string
   title_officer_email?: string
@@ -1804,10 +1808,12 @@ Return JSON with detailed breakdown.`
 
     const costs = JSON.parse(await runPipelineSimple(costPrompt, { feature: "transaction_costs" }))
 
+  // COUNTED (wave 155, lane 155R28): how many estimate lines actually landed, so the door can refuse "saved" on zero.
+  let written = 0
   if (costs.data) {
     for (const [costType, costData] of Object.entries(costs.data.costs || {})) {
       const cost: any = costData
-      await bestEffort(supabase.from("cost_breakdown_tracking").insert({
+      const line = await bestEffort(supabase.from("cost_breakdown_tracking").insert({
         // TENANT ANCHOR (§4) — brokerage_id is a live column
         // (schema-snapshot.ts:260) this insert never stamped, so every row
         // written here was untenanted until the new reader
@@ -1822,10 +1828,11 @@ Return JSON with detailed breakdown.`
         party: isSeller ? "seller" : "buyer", // CHECK: buyer|seller
         status: "estimated",
       }), "AI-generated estimate lines for display; the transaction is unaffected")
+      if (line.ok) written++
     }
   }
 
-  return { success: true, breakdown: costs.data }
+  return { success: true, breakdown: costs.data, written }
 }
 
 export async function generateStatusUpdate(transactionId: string) {
