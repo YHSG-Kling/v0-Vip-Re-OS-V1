@@ -527,7 +527,7 @@ async function main() {
     // schema already had.
     const createsAlertTable = (sql: string) => /create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?(?:saved_home_alerts?|saved_home_nudges?|saved_property_alerts?)\b/i.test(sql)
     const secondAlertTable = readdirSync(migDir).filter((f) => /^m\d+-.*\.sql$/.test(f) && createsAlertTable(readFileSync(join(migDir, f), "utf8")))
-    check("the m983 file exists and NO migration creates a second saved-home alert table", existsSync(join(root, "supabase/migrations/m983-saved-home-last-verified-state.sql")) && secondAlertTable.length === 0, secondAlertTable)
+    check("the m983 file exists and NO migration creates a second saved-home alert table", existsSync(join(root, "supabase/migrations/m983-saved-home-last-verified-state.sql")) && secondAlertTable.length === 0, secondAlertTable.join(", "))
     check("POSITIVE CONTROL: the finder recognizes a migration that would create one", createsAlertTable("create table if not exists public.saved_home_alerts (id uuid primary key)") && !createsAlertTable("alter table public.circle_tactic_shares add column location_id uuid"))
   }
 
