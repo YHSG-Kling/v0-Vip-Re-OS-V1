@@ -75,6 +75,18 @@
  *       against a route with no authorization in it at all, and "we deleted it"
  *       is not the same result as "we fixed it".
  *
+ *   G8  THE TITLE GATE IS ON THE VENDOR RAIL (wave 155, lane 155T3). Title is a
+ *       vendor category (CLAUDE.md §4). No app/ or lib/ code reads the writer-
+ *       less `title_company_users` (0 rows); no caller-supplied `titleUserId`
+ *       survives; `resolveTitleVendorActor` reads session → vendor role row →
+ *       title category → vendor_assignments (vendor, deal, the vendor's own
+ *       brokerage); `requireTitleVendorActor` is its only throwing form.
+ *
+ *   G9  THE TITLE GATE, DRIVEN (SIMULATED, in-memory): no session, a non-title
+ *       vendor, a title vendor of another tenant, one not on the deal and a
+ *       refused read are each refused before any deal read; the deal's title
+ *       vendor is admitted; the external-portal resolver agrees.
+ *
  * ── HOW THIS PROOF IS BUILT ──────────────────────────────────────────────────
  *   · CONSTRUCTS, never spellings. Comments are blanked (offset-preserving)
  *     before every structural assertion — a comment asserting a gate is not
@@ -123,7 +135,8 @@ const IDENTITY_KEYS = [
 /** Session-deriving gates a route may delegate its getUser() to. */
 const SESSION_GATES = [
   "resolveExternalPartnerIdentity",
-  "requireTitleActor",
+  "requireTitleVendorActor",
+  "resolveTitleVendorActor",
   "requireVendorActor",
   "requireLenderVendorActor",
 ]
@@ -622,6 +635,138 @@ function assertRoutesStillGate(): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// G8 — THE TITLE GATE IS ON THE VENDOR RAIL (wave 155, lane 155T3)
+//
+// CLAUDE.md §4: "A LENDER IS NOT A USER TYPE — it is a VENDOR CATEGORY, and so is a title agent." The old title
+// rail was public.title_company_users: 0 live rows, no writer in app code, triggers or functions — so the old gate
+// (requireTitleActor) could never admit anyone, and every title surface hung off it. The rule now held: no app/ or
+// lib/ CODE reads that table; the one title gate is resolveTitleVendorActor (session → vendor role row → title
+// category → vendor_assignments on the deal, in the vendor's own tenant); no caller-supplied titleUserId survives.
+// ─────────────────────────────────────────────────────────────────────────────
+const DEAD_TITLE_READ = /\.from\(\s*["']title_company_users["']\s*\)/
+const CLAIMED_TITLE_ID = /\btitleUserId\b/
+
+function codeFilesUnder(...dirs: string[]): string[] {
+  const out: string[] = []
+  for (const d of dirs) for (const p of walkTs(resolve(ROOT, d))) out.push(relative(ROOT, p))
+  return out.sort()
+}
+
+function assertTitleGateOnVendorRail(): boolean {
+  const files = codeFilesUnder("app", "lib")
+  const deadReaders = files.filter((f) => DEAD_TITLE_READ.test(blankComments(raw(f))))
+  const a = check(`G8a no app/ or lib/ code reads title_company_users (${files.length} files scanned, comments blanked)`, deadReaders.length === 0, deadReaders.join(", "))
+  const claimed = files.filter((f) => CLAIMED_TITLE_ID.test(blankComments(raw(f))))
+  const b = check("G8b no caller-supplied titleUserId survives in app/ or lib/ code (the actor is the SESSION's title vendor seat)", claimed.length === 0, claimed.join(", "))
+
+  const src = blankComments(raw(GATES))
+  const span = functionBody(src, "resolveTitleVendorActor")
+  const body = span ? src.slice(span[0], span[1]) : ""
+  const at = (re: RegExp) => body.search(re)
+  const getUserAt = at(/\.auth\.getUser\(\)/), roleAt = at(/\.from\(\s*["']user_role_assignments["']\s*\)/)
+  const catAt = at(/\bisTitleVendorCategory\(/), assignAt = at(/\.from\(\s*["']vendor_assignments["']\s*\)/)
+  const c = check("G8c resolveTitleVendorActor reads session → vendor role row → title category → vendor_assignments, in that order",
+    !!span && getUserAt >= 0 && getUserAt < roleAt && roleAt < catAt && catAt < assignAt,
+    span ? `getUser@${getUserAt} role@${roleAt} category@${catAt} assignment@${assignAt}` : `resolveTitleVendorActor not found in ${GATES}`)
+  const assignRead = assignAt >= 0 ? body.slice(assignAt, assignAt + 400) : ""
+  const d = check("G8d the assignment read is keyed on the resolved vendor, THIS transaction and the vendor's OWN brokerage",
+    /\.eq\(\s*["']vendor_id["']\s*,\s*v\.id\s*\)/.test(assignRead) && /\.eq\(\s*["']transaction_id["']\s*,\s*transactionId\s*\)/.test(assignRead)
+      && /\.eq\(\s*["']brokerage_id["']\s*,\s*v\.brokerage_id\s*\)/.test(assignRead), assignRead.slice(0, 200))
+  const reqSpan = functionBody(src, "requireTitleVendorActor")
+  const e = check("G8e requireTitleVendorActor delegates to resolveTitleVendorActor, and the claimed-id gate requireTitleActor is gone (one gate, not two)",
+    !!reqSpan && /\bresolveTitleVendorActor\(/.test(src.slice(reqSpan[0], reqSpan[1])) && !/\bfunction\s+requireTitleActor\b/.test(src))
+  const definers = files.filter((f) => /\bfunction\s+isTitleVendorCategory\b/.test(blankComments(raw(f))))
+  const f = check("G8f the title category test is stated ONCE, in lib/kernel/lender-linkage.ts", definers.length === 1 && definers[0] === "lib/kernel/lender-linkage.ts", definers.join(", "))
+  const pc = check("G8 POSITIVE CONTROL the finders see a live dead-rail read and a claimed id, and ignore both when commented out",
+    DEAD_TITLE_READ.test(blankComments('const r = await s.from("title_company_users").select("id")\n'))
+      && !DEAD_TITLE_READ.test(blankComments('// const r = await s.from("title_company_users").select("id")\n'))
+      && CLAIMED_TITLE_ID.test(blankComments("await updateTitleStatus({ transactionId, titleUserId: row.id })\n"))
+      && !CLAIMED_TITLE_ID.test(blankComments("// TOMBSTONE: titleUserId is gone\n")))
+  return a && b && c && d && e && f && pc
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G9 — THE TITLE GATE, DRIVEN (SIMULATED: in-memory client; the session is a seam, nothing else is stubbed)
+// The REAL resolveTitleVendorActor and resolveExternalPartnerIdentity / externalPartnerTransactionLane are run against
+// an in-memory world. Each refusal must land BEFORE any deal read (transactions / transaction_title_escrow), and the
+// two seat refusals before even the assignment read.
+// ─────────────────────────────────────────────────────────────────────────────
+async function assertTitleGateDriven(): Promise<boolean> {
+  const { memSupabase } = await import("./in-memory-supabase")
+  const pa = await import("../lib/kernel/portal-auth")
+  const B1 = "b1000000-0000-4000-8000-000000000001", B2 = "b2000000-0000-4000-8000-000000000002"
+  const TX = "d1000000-0000-4000-8000-000000000001", TX_OTHER = "d2000000-0000-4000-8000-000000000002"
+  const V_T1 = "e1000000-0000-4000-8000-000000000001", V_I = "e2000000-0000-4000-8000-000000000002"
+  const V_T2 = "e3000000-0000-4000-8000-000000000003", V_T3 = "e4000000-0000-4000-8000-000000000004"
+  const U_TITLE = "u-title", U_INSPECTOR = "u-inspector", U_OTHER_TENANT = "u-other-tenant", U_OFF_DEAL = "u-off-deal"
+  const world = (opts: { refuse?: Record<string, string> } = {}) => memSupabase({
+    user_role_assignments: [
+      { id: "r1", user_id: U_TITLE, vendor_id: V_T1, vendors: { id: V_T1, name: "Bay Title", phone: "555-0100", category: "title", brokerage_id: B1 } },
+      { id: "r2", user_id: U_INSPECTOR, vendor_id: V_I, vendors: { id: V_I, name: "Shield Inspections", phone: null, category: "inspector", brokerage_id: B1 } },
+      { id: "r3", user_id: U_OTHER_TENANT, vendor_id: V_T2, vendors: { id: V_T2, name: "Elsewhere Title", phone: null, category: "title", brokerage_id: B2 } },
+      { id: "r4", user_id: U_OFF_DEAL, vendor_id: V_T3, vendors: { id: V_T3, name: "Idle Title", phone: null, category: "title", brokerage_id: B1 } },
+    ],
+    vendor_assignments: [
+      { id: "a1", vendor_id: V_T1, transaction_id: TX, brokerage_id: B1 },
+      { id: "a2", vendor_id: V_I, transaction_id: TX, brokerage_id: B1 },       // the inspector IS on the deal: only the category refuses it
+      { id: "a3", vendor_id: V_T2, transaction_id: TX, brokerage_id: B1 },      // a row naming B1's deal for B2's title vendor: the tenant predicate refuses it
+      { id: "a4", vendor_id: V_T3, transaction_id: TX_OTHER, brokerage_id: B1 },
+    ],
+    users: [{ id: U_TITLE, brokerage_id: B1, user_type: "vendor" }, { id: U_INSPECTOR, brokerage_id: B1, user_type: "vendor" }],
+    transactions: [{ id: TX, brokerage_id: B1 }, { id: TX_OTHER, brokerage_id: B1 }],
+    transaction_title_escrow: [{ id: "te1", transaction_id: TX, brokerage_id: B1, title_company_email: "closer@baytitle.example" }],
+  }, { refuse: opts.refuse })
+  // memSupabase splits a select on commas and cannot project an embed; the seeded row carries the embed's shape and
+  // this thin view selects it whole. Every table touched is recorded, so "refused before any deal read" is observed.
+  const seam = (uid: string | null, mem = world()) => {
+    const reads: string[] = []
+    const client = {
+      auth: { getUser: async () => ({ data: { user: uid ? { id: uid, email: `${uid}@example.test` } : null }, error: null }) },
+      from: (t: string) => { reads.push(t); const q = mem.from(t) as any; const sel = q.select.bind(q); q.select = (c?: string) => sel(c && /!inner\(/.test(c) ? "*" : c); return q },
+    }
+    return { client, reads }
+  }
+  const DEAL_TABLES = ["transactions", "transaction_title_escrow"]
+  const noDealRead = (reads: string[]) => !reads.some((t) => DEAL_TABLES.includes(t))
+  const results: boolean[] = []
+  const run = async (uid: string | null, tx: string | null, mem?: ReturnType<typeof world>) => { const s = seam(uid, mem); const r = await pa.resolveTitleVendorActor(s.client, tx); return { r, reads: s.reads } }
+
+  let x = await run(null, TX)
+  results.push(check("G9a NEG no session → unauthenticated, and NOTHING is read", !x.r.ok && x.r.reason === "unauthenticated" && x.reads.length === 0, JSON.stringify(x)))
+  x = await run(U_INSPECTOR, TX)
+  results.push(check("G9b NEG a vendor seat whose vendor is NOT a title category (an inspector assigned to this very deal) → not_title_vendor, before the assignment or any deal read",
+    !x.r.ok && x.r.reason === "not_title_vendor" && !x.reads.includes("vendor_assignments") && noDealRead(x.reads), JSON.stringify(x)))
+  x = await run(U_OTHER_TENANT, TX)
+  results.push(check("G9c NEG a title vendor of ANOTHER tenant (even with an assignment row naming this deal) → not_on_deal, no deal read",
+    !x.r.ok && x.r.reason === "not_on_deal" && noDealRead(x.reads), JSON.stringify(x)))
+  x = await run(U_OFF_DEAL, TX)
+  results.push(check("G9d NEG a title vendor of THIS tenant that is not on the deal → not_on_deal, no deal read", !x.r.ok && x.r.reason === "not_on_deal" && noDealRead(x.reads), JSON.stringify(x)))
+  x = await run(U_TITLE, TX, world({ refuse: { user_role_assignments: "permission denied for table user_role_assignments" } }))
+  results.push(check("G9e NEG a refused role read is REFUSED (fail closed) — never spoken as 'not a title vendor'", !x.r.ok && x.r.reason === "refused", JSON.stringify(x)))
+  x = await run(U_TITLE, "")
+  results.push(check("G9f NEG an empty deal id is refused, not read as 'no deal named'", !x.r.ok && x.r.reason === "not_on_deal" && x.reads.length === 0, JSON.stringify(x)))
+  x = await run(U_TITLE, TX)
+  results.push(check("G9g POS the deal's title vendor is admitted: vendor id, tenant and company name come from the vendor row, the user from the session",
+    x.r.ok && x.r.actor.vendorId === V_T1 && x.r.actor.brokerageId === B1 && x.r.actor.companyName === "Bay Title" && x.r.actor.userId === U_TITLE && noDealRead(x.reads), JSON.stringify(x)))
+  x = await run(U_TITLE, null)
+  results.push(check("G9h POS with no deal named (a dashboard) the title seat resolves to its own vendor and tenant", x.r.ok && x.r.actor.vendorId === V_T1 && x.r.actor.brokerageId === B1, JSON.stringify(x)))
+
+  // The external-portal routes' resolver rides the SAME rail: a title vendor seat is a title partner with a lane on its
+  // assigned deal only; an inspector (a plain vendor) gets no title lane.
+  const titleId = await pa.resolveExternalPartnerIdentity(seam(U_TITLE).client)
+  const ownLane = titleId.ok ? await pa.externalPartnerTransactionLane(seam(U_TITLE).client, titleId.identity, TX) : null
+  const otherLane = titleId.ok ? await pa.externalPartnerTransactionLane(seam(U_TITLE).client, titleId.identity, TX_OTHER) : null
+  const inspId = await pa.resolveExternalPartnerIdentity(seam(U_INSPECTOR).client)
+  const inspLane = inspId.ok ? await pa.externalPartnerTransactionLane(seam(U_INSPECTOR).client, inspId.identity, TX) : null
+  results.push(check("G9i the external-portal identity: a title VENDOR seat is a title partner with a lane on its assigned deal only; an inspector seat has no title lane",
+    titleId.ok && titleId.identity.isTitlePartner && titleId.identity.titleVendorId === V_T1 && titleId.identity.partnerTypes.includes("title")
+      && ownLane?.ok === true && (ownLane as { grantedVia?: string }).grantedVia === "title" && otherLane?.ok === false
+      && inspId.ok && !inspId.identity.isTitlePartner && inspLane?.ok === false,
+    JSON.stringify({ titleId, ownLane, otherLane, inspId, inspLane })))
+  return results.every(Boolean)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // NEGATIVE CONTROLS
 // ─────────────────────────────────────────────────────────────────────────────
 interface Control { file: string; find: string; replace: string }
@@ -678,7 +823,7 @@ function runControl(label: string, c: Control, fn: () => boolean, expectRed: boo
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-function main(): void {
+async function main(): Promise<void> {
   console.log("EXTERNAL-PORTAL SESSION-IDENTITY GUARD — the authorization subject comes from the session\n")
 
   console.log("ASSERTIONS")
@@ -689,6 +834,8 @@ function main(): void {
   assertActionAuditRowNamesAHuman()
   assertReadsDestructureError()
   assertRoutesStillGate()
+  assertTitleGateOnVendorRail()
+  await assertTitleGateDriven()
 
   console.log(`\n  ${PORTAL_DIR}/: ${routeFiles().length} route file(s) — ${routeFiles().join(", ")}`)
 
@@ -753,8 +900,8 @@ function main(): void {
       "the title membership predicate re-keyed off a free variable instead of the resolved identity",
       {
         file: GATES,
-        find: '      .eq("user_id", identity.userId)          // ← the session, not the request',
-        replace: '      .eq("user_id", (identity as any).claimedUserId)',
+        find: '      .eq("vendor_id", identity.titleVendorId) // ← resolved from the session, not the request',
+        replace: '      .eq("vendor_id", (identity as any).claimedVendorId)',
       },
       assertLanePredicateUsesResolvedIdentity,
     )
@@ -832,6 +979,52 @@ function main(): void {
       assertRoutesStillGate,
     )
 
+    // 14. THE DEAD TITLE RAIL comes back — a gate that reads title_company_users (0 rows, no writer) admits nobody.
+    controlled(
+      "a title_company_users read reintroduced into the title gate",
+      {
+        file: GATES,
+        find: '  const { isTitleVendorCategory } = await import("@/lib/kernel/lender-linkage")',
+        replace: '  const { data: legacyTitleRows } = await supabase.from("title_company_users").select("id").eq("user_id", user.id)\n  const { isTitleVendorCategory } = await import("@/lib/kernel/lender-linkage")',
+      },
+      assertTitleGateOnVendorRail,
+    )
+
+    // 15. THE TENANT PREDICATE dropped from the assignment read — a title vendor of another brokerage named on a row
+    //     for this deal would be admitted.
+    controlled(
+      "the title gate's assignment read loses its brokerage predicate",
+      {
+        file: GATES,
+        find: '      .eq("transaction_id", transactionId)\n      .eq("brokerage_id", v.brokerage_id)\n',
+        replace: '      .eq("transaction_id", transactionId)\n',
+      },
+      assertTitleGateOnVendorRail,
+    )
+
+    // 16. A caller-supplied titleUserId comes back as an authority on a title action.
+    controlled(
+      "titleUserId reintroduced into a title action's input",
+      {
+        file: "app/actions/title-portal.ts",
+        find: "  transactionId: string\n  newStatus: TitleStatus\n",
+        replace: "  transactionId: string\n  titleUserId: string\n  newStatus: TitleStatus\n",
+      },
+      assertTitleGateOnVendorRail,
+    )
+
+    // 17. SPECIFICITY: the dead read written only as a COMMENT (a tombstone) must stay green — a tombstone is not a
+    //     call site (CLAUDE.md §2).
+    controlledStaysGreen(
+      "the dead title read present only as a COMMENT",
+      {
+        file: GATES,
+        find: '  const { isTitleVendorCategory } = await import("@/lib/kernel/lender-linkage")',
+        replace: '  // was: await supabase.from("title_company_users").select("id")\n  const { isTitleVendorCategory } = await import("@/lib/kernel/lender-linkage")',
+      },
+      assertTitleGateOnVendorRail,
+    )
+
     // 12. SPECIFICITY: the defect written as a COMMENT. A guard that reads prose
     //     as code would flag this, and the whole point is that a comment is
     //     never evidence — in either direction.
@@ -872,4 +1065,5 @@ function main(): void {
   console.log("PASSED")
 }
 
-main()
+main().catch((e) => { console.error(e); process.exit(1) })
+

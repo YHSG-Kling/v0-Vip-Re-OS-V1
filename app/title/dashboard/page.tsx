@@ -43,7 +43,7 @@ export default async function TitleDashboardPage() {
   const { data: vendor } = titleVendorId
     ? await supabase
         .from('vendors')
-        .select('id, name')
+        .select('id, name, brokerage_id')
         .eq('id', titleVendorId)
         .eq('category', VENDOR_CATEGORY_TITLE)
         .maybeSingle()
@@ -77,21 +77,22 @@ export default async function TitleDashboardPage() {
   // The doc-status and batch panels at the bottom of this page were mounted on
   // hardcoded [] — they rendered forever-empty while getTitleTransactionDetail
   // already returned this title company's documents and title-visible milestones.
-  // The loader's identity rail is title_company_users (that is the row
-  // requireTitleActor checks); the `vendors` row resolved above is the marketplace
-  // profile, not a title-portal identity, so it cannot be passed here. Each
-  // title_company_users row is scoped to one transaction.
-  const { data: titleUserRows } = await supabase
-    .from('title_company_users')
-    .select('id, transaction_id')
-    .eq('user_id', user.id)
-    .not('transaction_id', 'is', null)
-    .limit(10)
+  // TOMBSTONE (wave 155, lane 155T3): the loader's identity rail used to be title_company_users (0 rows, no writer),
+  // so these panels could never fill. The title seat IS the vendor seat resolved above (TITLE IS A VENDOR CATEGORY,
+  // CLAUDE.md §4); its files are the transactions that title vendor is assigned to (vendor_assignments —
+  // lib/kernel/lender-linkage.ts titleVendorTransactionIds), and the loader re-gates each one through
+  // lib/kernel/portal-auth.ts requireTitleVendorActor(transactionId).
+  const { titleVendorTransactionIds } = await import('@/lib/kernel/lender-linkage')
+  const ownFiles = vendor?.brokerage_id
+    ? await titleVendorTransactionIds(supabase, vendor.id, vendor.brokerage_id as string)
+    : { ok: true as const, ids: [] as string[] }
+  if (!ownFiles.ok) console.error('[title/dashboard] assigned files unreadable:', ownFiles.error)
+  const titleUserRows = (ownFiles.ok ? ownFiles.ids : []).slice(0, 10).map((transaction_id) => ({ transaction_id }))
 
   const titleDetails = await Promise.all(
-    ((titleUserRows || []) as any[]).map(async (row) => {
+    titleUserRows.map(async (row) => {
       try {
-        return await getTitleTransactionDetail(row.transaction_id, row.id)
+        return await getTitleTransactionDetail(row.transaction_id)
       } catch {
         // Throws when the title company is not assigned to that transaction (or the
         // user has no brokerage). One unassigned deal contributes nothing instead of

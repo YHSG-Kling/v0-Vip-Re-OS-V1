@@ -17,24 +17,23 @@ export default async function TitleDocumentsPage() {
   // SCOPE. This page used to select from `documents` with no filter at all, so a
   // title company saw every document the brokerage tenant holds. Documents are now
   // read off the title company's OWN files, resolved the same way getTitleDashboard
-  // resolves them: title_company_users (this signed-in user) → the escrow rows that
-  // name that company's email → those transactions' documents.
-  const { data: titleUser, error: titleUserError } = await supabase
-    .from('title_company_users')
-    .select('id, email')
-    .eq('user_id', user.id)
-    .maybeSingle()
+  // resolves them: the session's TITLE VENDOR seat (lib/kernel/portal-auth.ts
+  // resolveTitleVendorActor — title is a vendor category, CLAUDE.md §4) → the
+  // transactions that vendor is assigned to in its tenant (vendor_assignments) →
+  // those transactions' documents. TOMBSTONE (wave 155, lane 155T3): this used to
+  // read title_company_users (0 rows, no writer) and match escrow rows by email.
+  const { resolveTitleVendorActor } = await import('@/lib/kernel/portal-auth')
+  const { titleVendorTransactionIds } = await import('@/lib/kernel/lender-linkage')
+  const seat = await resolveTitleVendorActor(supabase, null)
+  const titleUser = seat.ok ? seat.actor : null
 
   let transactionIds: string[] = []
-  let escrowError: string | null = titleUserError?.message ?? null
+  let escrowError: string | null = !seat.ok && seat.reason === 'refused' ? seat.detail : null
 
-  if (titleUser?.email) {
-    const { data: escrowRows, error } = await supabase
-      .from('transaction_title_escrow')
-      .select('transaction_id')
-      .eq('title_company_email', titleUser.email)
-    if (error) escrowError = error.message
-    else transactionIds = (escrowRows ?? []).map((r) => r.transaction_id).filter(Boolean) as string[]
+  if (titleUser) {
+    const own = await titleVendorTransactionIds(supabase, titleUser.vendorId, titleUser.brokerageId)
+    if (!own.ok) escrowError = own.error
+    else transactionIds = own.ids
   }
 
   let documents: Array<{
@@ -53,6 +52,7 @@ export default async function TitleDocumentsPage() {
       .from('transaction_documents')
       .select('id, doc_type, doc_label, status, created_at, storage_url, transaction_id')
       .in('transaction_id', transactionIds)
+      .eq('brokerage_id', titleUser?.brokerageId ?? '')
       .order('created_at', { ascending: false })
       .limit(60)
     if (error) loadError = error.message

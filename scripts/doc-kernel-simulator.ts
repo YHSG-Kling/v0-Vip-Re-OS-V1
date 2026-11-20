@@ -910,8 +910,10 @@ async function main() {
       && !src("lib/education/book-authority-program.ts").includes("market updates, and blog posts"))
     check("VENDOR TRANSACTION EDITS (owner rule: 'any vendor that is part of the transaction should be able to make edits/update to their owned area') — clear-to-close/loan-status/title-status/earnest+survey checklist all ride vendor-authorized rails, and the ONE dead end is closed: submitLoanConditions now AUTHORIZES via requireLenderVendorActor and closes the loop on fresh conditions (ledger event + the agent's collection task + a GATED buyer draft, never lender→buyer raw); registered to deal_coordinator",
       src("app/actions/lender-portal-actions.ts").includes("requireLenderVendorActor")
-      && src("app/actions/title-portal.ts").includes("requireTitleActor")
-      && src("app/actions/title-portal.ts").includes("updateClosingPrepItem")
+      // lane 155T3: title is a VENDOR category (CLAUDE.md §4) — the title rail's gate is requireTitleVendorActor, and the
+      // closing-prep edit names its DEAL (the old claimed-id gate never checked the transaction). Read from stripped code.
+      && /\bupdateClosingPrepItem\b[\s\S]*?requireTitleVendorActor\(data\.transactionId\)/.test(stripComments(src("app/actions/title-portal.ts")))
+      && !/\brequireTitleActor\s*\(/.test(stripComments(src("app/actions/title-portal.ts")))
       && src("app/actions/multi-persona.ts").includes("requireLenderVendorActor")
       && src("app/actions/multi-persona.ts").includes('"lender_document_request"')
       && src("app/actions/multi-persona.ts").includes('source: "lender_condition"')

@@ -117,8 +117,7 @@ function seedWorld(): MemClient {
     open_house_analytics: [],
     calendar_blocks: [], email_queue: [], notifications: [], seller_share_feed: [], trid_timeline: [], agent_action_ledger: [],
     client_portal_messages: [], ai_suggestions: [], communications: [],
-    transaction_title_escrow: [{ transaction_id: TX1, title_company_email: "title@example.test", transactions: { brokerage_id: B1, property_address: "1 Fixture Way", agent_id: AG_A } }],
-    title_company_users: [{ id: u("8", 1), company_name: "Fixture Title" }],
+    transaction_title_escrow: [{ transaction_id: TX1, brokerage_id: B1, title_company_email: "title@example.test" }],
   }, { uuidIds: true })
 }
 
@@ -139,7 +138,9 @@ const BY_URL: Record<string, string> = {
   // THE MODEL SEAMS — counted; a provider is never reached.
   "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__S2.model++; return { text: globalThis.__S2.modelText } }; export async function generateObjectRouted(){ globalThis.__S2.model++; return { object: {} } }; export async function streamTextRouted(){ globalThis.__S2.model++; return { textStream: (async function*(){ yield 'Hi there' })() } }",
   "lib/ai/generate.ts": "export async function generateAIJSON(){ globalThis.__S2.model++; return { data: globalThis.__S2.json } }; export async function generateAIText(){ globalThis.__S2.model++; return { text: 'stub' } }; export async function generateChatResponse(){ globalThis.__S2.model++; return { text: 'stub' } }; export async function generateAIObject(){ globalThis.__S2.model++; return { success: true, object: {} } }; export async function generateObject(){ globalThis.__S2.model++; return { object: {} } }; export function bookedGenerateObject(){ return async function(){ globalThis.__S2.model++; return { object: {} } } }",
-  "lib/kernel/portal-auth.ts": `export async function requireTitleActor(){ return { userId: '${u("a", 7)}', titleUserId: '${u("8", 1)}', brokerageId: '${B1}', email: 'title@example.test' } }`,
+  // Lane 155T3: the title seat is a VENDOR seat (title is a vendor category, CLAUDE.md §4) — the gate's own proof is
+  // scripts/external-portal-session-identity-guard.ts G9; here it is a fixture: the deal's assigned title vendor.
+  "lib/kernel/portal-auth.ts": `export class PortalAuthError extends Error {}; export async function requireTitleVendorActor(){ return { userId: '${u("a", 7)}', vendorId: '${u("8", 1)}', brokerageId: '${B1}', companyName: 'Fixture Title', companyPhone: null, email: 'title@example.test' } }`,
 }
 const BY_SPEC: Record<string, string> = {
   "server-only": "export {}",
@@ -392,13 +393,51 @@ async function main() {
   section("14 · title note to the agent (app/actions/title-portal.ts sendTitleMessageToAgent)")
   {
     const tp = await load("app/actions/title-portal.ts")
-    const m = as(u("a", 7)); const x = await drive(() => tp.sendTitleMessageToAgent({ transactionId: TX1, titleUserId: u("8", 1), message: "Title commitment is in." }))
+    const m = as(u("a", 7)); const x = await drive(() => tp.sendTitleMessageToAgent({ transactionId: TX1, message: "Title commitment is in." }))
+
     check("BUG no agents.id is written into a contacts column (client_portal_messages untouched)", !T(m, "client_portal_messages").some((r) => r.contact_id === AG_A) && T(m, "client_portal_messages").length === 0, T(m, "client_portal_messages"))
     check("POS the note reaches the agent's USER seat (agents.id → users.id via agents.user_id)", (x.r as any)?.success === true && T(m, "notifications").some((r) => r.user_id === U_AGENT && r.entity_id === TX1), { x, n: T(m, "notifications") })
     check("POS …and its durable record is on the DEAL'S TIMELINE (activities.transaction_id — the table the deal page reads), with the agents.id in an AGENTS column, the session tenant and no contact",
       T(m, "activities").some((r) => r.activity_type === "title_message" && r.transaction_id === TX1 && r.agent_id === AG_A && r.brokerage_id === B1 && !r.contact_id) && T(m, "communications").length === 0, T(m, "activities").filter((r) => r.activity_type === "title_message"))
     check("…and the deal page really reads that table by transaction (a durable record nobody reads is not a record)",
       /\.from\("activities"\)[\s\S]{0,200}?\.eq\("transaction_id",\s*transactionId\)/.test(readFileSync(join(ROOT, "app/transactions/[transactionId]/page.tsx"), "utf8")))
+
+    // 14b. THE TABLES A VENDOR SEAT IS REFUSED BY POLICY (integrator, wave 155 — LIVE-VERIFIED 2026-11-20 against pg_policies:
+    // transaction_title_escrow admits the deal's agents and broker / admin / tc seats; closing_disclosure_agreement admits
+    // financial readers). The in-memory client has no row-level security, so a session-client read of either passes every driven
+    // check and is successfully EMPTY in production — the title dashboard, the deal's title record, the status update and the
+    // "is there a CDA?" branch all were. The rule, on stripped source: in this file every `.from(` of those two tables hangs
+    // off the SERVICE client, and the file calls the title gate (the service client is only ever the second step — §4).
+    const { stripComments: strip14 } = await import("./strip-comments")
+    const VENDOR_REFUSED = ["transaction_title_escrow", "closing_disclosure_agreement"] as const
+    /** PURE — `.from("<table>")` sites in `code` whose receiver is not the service client (directly, or a name bound to it). */
+    const sessionReadsOf = (code: string): string[] => {
+      const out: string[] = []
+      for (const t of VENDOR_REFUSED) {
+        const re = new RegExp(`([\\w$]+(?:\\(\\))?)\\s*\\.from\\(\\s*"${t}"\\s*\\)`, "g")
+        for (let m = re.exec(code); m; m = re.exec(code)) {
+          const recv = m[1]
+          if (recv === "createServiceClient()") continue
+          // a NAME: the nearest binding of it above the site must be the service client
+          const name = recv.replace(/\(\)$/, "")
+          const binds = [...code.slice(0, m.index).matchAll(new RegExp(`(?:const|let)\\s+${name.replace(/\$/g, "\\$")}\\s*=\\s*([^\\n]+)`, "g"))]
+          const last = binds[binds.length - 1]?.[1] ?? ""
+          if (!/^createServiceClient\(\)/.test(last.trim())) out.push(`${t} via ${recv}`)
+        }
+      }
+      return out
+    }
+    const tpSrc = strip14(readFileSync(join(ROOT, "app/actions/title-portal.ts"), "utf8"))
+    const sites = (tpSrc.match(/\.from\(\s*"(?:transaction_title_escrow|closing_disclosure_agreement)"\s*\)/g) ?? []).length
+    check(`title portal: all ${sites} reads / writes of the two tables a vendor seat is refused by policy run on the service client, after the title gate`,
+      sites >= 4 && sessionReadsOf(tpSrc).length === 0 && /requireTitleVendorActor\(/.test(tpSrc), sessionReadsOf(tpSrc))
+    check("POSITIVE CONTROL: the same read on the session client IS seen (directly, and through a name bound to createClient)",
+      sessionReadsOf(`const supabase = await createClient()\nconst { data } = await supabase.from("transaction_title_escrow").select("*")`).length === 1
+      && sessionReadsOf(`const db = await createClient()\nawait db\n  .from("closing_disclosure_agreement").select("id")`).length === 1)
+    check("NEGATIVE CONTROL: the service client is accepted directly and through a bound name; a later rebinding to the session client is seen again",
+      sessionReadsOf(`await createServiceClient().from("transaction_title_escrow").select("*")`).length === 0
+      && sessionReadsOf(`const supabase = createServiceClient()\nawait supabase.from("closing_disclosure_agreement").select("id")`).length === 0
+      && sessionReadsOf(`const supabase = createServiceClient()\nasync function g() { const supabase = await createClient()\nawait supabase.from("transaction_title_escrow").select("*") }`).length === 1)
   }
 
   // ═══ chat stream route (BUG) ══════════════════════════════════════════════════════════════════════════════════════

@@ -697,10 +697,12 @@ export function cdaDeadlineVerdict(input: {
 // ─── 4. DELIVERY — the portal inbox when title is on the deal team, else the configured email ──────
 
 /**
- * PURE — how the signed CDA (or a correction request) reaches title. "Title on the Deal Team" is a
- * title_company_users row for THIS transaction with a users account (the title portal's identity —
- * lib/kernel/portal-auth.ts requireTitleActor; deal_team_members holds no title rows at HEAD, see the
+ * PURE — how the signed CDA (or a correction request) reaches title. "Title on the Deal Team" is the
+ * TITLE VENDOR assigned to THIS transaction with a person seated on it (the title portal's identity —
+ * lib/kernel/portal-auth.ts requireTitleVendorActor; title is a vendor category, CLAUDE.md §4; lane 155T3
+ * retired the writer-less title_company_users rail; deal_team_members holds no title rows at HEAD, see the
  * tombstone in lib/transactions/role-guard.ts). Outside → the verified title email through the existing
+
  * outbound email integration. A requested route the facts cannot honour is refused by name.
  */
 export function cdaDeliveryRoute(input: {

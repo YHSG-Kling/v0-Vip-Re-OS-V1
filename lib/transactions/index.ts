@@ -38,7 +38,8 @@ export {
   canViewFinancials,
   // canActAsExternalParty removed — see the tombstone at
   // lib/transactions/role-guard.ts:145. The external-party gate is
-  // lib/kernel/portal-auth.ts:61 requireLenderVendorActor / :111 requireTitleActor.
+  // lib/kernel/portal-auth.ts requireLenderVendorActor / requireTitleVendorActor (both on the vendor rail).
+
 } from './role-guard'
 export type { UserRole, RoleContext } from './role-guard'
 

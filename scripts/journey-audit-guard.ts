@@ -210,7 +210,7 @@ export function falseSuccessOnError(body: string): string[] {
   }
   return out
 }
-export const SESSION_GATE = /\b(getUser|requireAuth|getAgentContext|resolveCallerContext|requireContactAccess|requirePlatform\w*|requireBrokerageAdmin\w*|requireTenant\w*|getAuthContext|requireVendorActor|requireTitleActor|requireLenderVendorActor|requireOverrideActor|resolveCaller\w*|requireSession\w*|requireStaff\w*|requireSuperadmin\w*|requireRole\w*|requireUser\w*|getServerSession|resolveSessionActor|resolveSeat\w*|getCurrentUser\w*|requireAdmin\w*|requireFinance\w*|authorize\w*|gate\w*)\s*\(/
+export const SESSION_GATE = /\b(getUser|requireAuth|getAgentContext|resolveCallerContext|requireContactAccess|requirePlatform\w*|requireBrokerageAdmin\w*|requireTenant\w*|getAuthContext|requireVendorActor|requireTitleVendorActor|resolveTitleVendorActor|requireLenderVendorActor|requireOverrideActor|resolveCaller\w*|requireSession\w*|requireStaff\w*|requireSuperadmin\w*|requireRole\w*|requireUser\w*|getServerSession|resolveSessionActor|resolveSeat\w*|getCurrentUser\w*|requireAdmin\w*|requireFinance\w*|authorize\w*|gate\w*)\s*\(/
 /** The door's body, or a file-local function the body calls, reaches a session read. */
 export function gated(code: string, body: string): boolean {
   if (SESSION_GATE.test(body)) return true

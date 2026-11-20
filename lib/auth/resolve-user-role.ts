@@ -66,7 +66,8 @@ export type UserRole =
   // carries 'lender' and 'title' in its live CHECK — and lender-ness is resolved
   // from it by lib/kernel/lender-linkage.ts (isLenderVendorCategory /
   // lenderVendorForUser) and gated by lib/kernel/portal-auth.ts
-  // (requireLenderVendorActor / requireTitleActor). This union claims to be the
+  // (requireLenderVendorActor / requireTitleVendorActor). This union claims to be the
+
   // COLUMN's vocabulary, so carrying a value the CHECK refuses is not
   // conservative, it is a false statement a compiler will happily enforce:
   // `user_type === 'lender'` type-checks, matches zero rows, and reads as

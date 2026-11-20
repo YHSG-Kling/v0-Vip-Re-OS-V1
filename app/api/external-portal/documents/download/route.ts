@@ -97,7 +97,8 @@ export async function GET(request: NextRequest) {
 
     // documents has no name/file_url/partner_id/partner_type columns. Real cols are
     // document_type/storage_url; partner access is scoped via the document's transaction
-    // membership (title_company_users / vendor_assignments), NOT a column on documents.
+    // membership (vendor_assignments — the title or lender vendor's own), NOT a column on documents.
+
     // `.maybeSingle()`, not `.single()`: single() turns "no such row" into an ERROR,
     // which the refusal branch below would then report as an outage.
     const { data: document, error: docError } = await supabase

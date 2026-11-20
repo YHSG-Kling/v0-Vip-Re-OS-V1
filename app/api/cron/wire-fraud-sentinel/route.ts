@@ -29,7 +29,7 @@ import type { WireFraudInput } from "@/lib/wire-fraud/wire-fraud-sentinel"
  *
  * WHAT IT SCANS — the two places a wire instruction actually lands:
  *   · transaction_documents where doc_type = 'wire_instructions' — written by
- *     app/actions/title-portal.ts:304-320 (the title portal's upload).
+ *     app/actions/title-portal.ts:264 uploadTitleDocument (the title portal's upload).
  *   · documents where classification = 'wire_instructions' — a live CHECK value
  *     (scripts/check-vocabularies.ts), extracted by
  *     lib/documents/scan-uploaded-document.ts:115 into

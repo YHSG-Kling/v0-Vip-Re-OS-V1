@@ -12,11 +12,9 @@ import { useRouter } from "next/navigation"
 
 export function TitleActions({
   transactionId,
-  titleUserId,
   currentStatus,
 }: {
   transactionId: string
-  titleUserId: string
   currentStatus: string
 }) {
   const router = useRouter()
@@ -36,7 +34,6 @@ export function TitleActions({
       // the old status was still there with nothing said.
       const r = await updateTitleStatus({
         transactionId,
-        titleUserId,
         newStatus: newStatus as TitleStatus,
       })
       if (!r?.success) {
@@ -60,7 +57,6 @@ export function TitleActions({
     try {
       await sendTitleMessageToAgent({
         transactionId,
-        titleUserId,
         message,
       })
       setMessageSent(true)

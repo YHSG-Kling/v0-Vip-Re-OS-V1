@@ -33,8 +33,9 @@ import {
  *     `referral_partners.id` — different id spaces again.
  *   · Live: `referral_partners` holds 0 rows.
  * The caller's partner identity now comes from the same session rail the rest of
- * the portal uses (`title_company_users` / `user_role_assignments` → `vendors`),
- * which is what `requireVendorActor` / `requireTitleActor` already check.
+ * the portal uses (`user_role_assignments` → `vendors`, a title company being a
+ * title-category vendor), which is what `requireVendorActor` / `requireTitleVendorActor` already check.
+
  *
  * `partnerId` and `partnerType` are no longer read from the body — see the long
  * note in `documents/download/route.ts` for why a cross-check would have been

@@ -64,11 +64,9 @@ type DocumentType = "title_commitment" | "settlement_statement" | "final_closing
 
 export function TitleDocumentUpload({
   transactionId,
-  titleUserId,
   existingDocuments,
 }: {
   transactionId: string
-  titleUserId: string
   existingDocuments: Document[]
 }) {
   const [selectedType, setSelectedType] = useState<DocumentType>("title_commitment")
@@ -129,7 +127,6 @@ export function TitleDocumentUpload({
         try {
           await uploadTitleDocument({
             transactionId,
-            titleUserId,
             documentType: selectedType,
             fileName: file.name,
             fileUrl: stored.ref,
@@ -164,7 +161,7 @@ export function TitleDocumentUpload({
         setUploading(false)
       }
     },
-    [transactionId, titleUserId, selectedType]
+    [transactionId, selectedType]
   )
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({

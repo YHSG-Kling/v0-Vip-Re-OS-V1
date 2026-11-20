@@ -1566,7 +1566,7 @@ export async function sendCdaToTitleAction(input: {
   /** Required for method 'email'; ignored for 'portal' (the title company's portal account is the recipient). */
   recipientEmail?: string
   recipientName?:  string
-  /** 'portal' = the title company on the Deal Team (a title_company_users account for this transaction) — wave 142. */
+  /** 'portal' = the title company on the Deal Team (the title VENDOR assigned to this transaction, and a person seated on it) — wave 142; vendor rail since 155T3. */
   method?:         "email" | "portal" | "docusign" | "dotloop" | "manual"
   subject?:        string
   message?:        string
@@ -2194,24 +2194,30 @@ export async function closeCdaAction(input: { cdaId: string }) {
 // lib/transactions/cda-closing-policy.ts; these are the I/O doors.
 // ────────────────────────────────────────────────────────────────────────────
 
-/** The title company on the DEAL TEAM for this transaction: a title_company_users row with a users account. */
+/**
+ * The title company on the DEAL TEAM for this transaction: the TITLE VENDOR assigned to it in this brokerage
+ * (lib/kernel/lender-linkage.ts resolveTitleVendorForTransaction — title is a vendor category, CLAUDE.md §4) and a
+ * person seated on that vendor (user_role_assignments, the one vendor → user link) — the same seat
+ * lib/kernel/portal-auth.ts requireTitleVendorActor admits to the portal that lists the delivered CDA.
+ * TOMBSTONE (wave 155, lane 155T3): this read title_company_users (0 rows, no writer), so 'portal' delivery could
+ * never find a recipient. The caller has already gated the broker and matched the CDA to the session's tenant; the
+ * service client is used AFTER that gate because a broker's session cannot read another user's role row.
+ */
 async function resolveTitlePortalUser(
-  supabase: SupabaseClient,
+  _supabase: SupabaseClient,
   transactionId: string,
   brokerageId: string,
 ): Promise<{ userId: string; email: string | null; company: string | null } | null> {
-  const { data, error } = await supabase
-    .from("title_company_users")
-    .select("user_id, email, company_name")
-    .eq("transaction_id", transactionId)
-    .eq("brokerage_id", brokerageId)
-    .not("user_id", "is", null)
-    .limit(1)
-    .maybeSingle()
-  if (error) { console.error("[cda-portal] title_company_users read refused:", error.message); return null }
-  const row = data as { user_id?: string | null; email?: string | null; company_name?: string | null } | null
-  if (!row?.user_id) return null
-  return { userId: row.user_id, email: row.email ?? null, company: row.company_name ?? null }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { resolveTitleVendorForTransaction, lenderVendorUserIds } = await import("@/lib/kernel/lender-linkage")
+  const found = await resolveTitleVendorForTransaction(svc, transactionId, brokerageId)
+  if (!found.ok) { console.error("[cda-portal] title vendor read refused:", found.error); return null }
+  if (!found.vendor) return null
+  // lenderVendorUserIds is the generic vendor → users hop (user_role_assignments by vendor_id), not lender-specific.
+  const userIds = (await lenderVendorUserIds(svc, found.vendor.vendorId)).sort()
+  if (userIds.length === 0) return null
+  return { userId: userIds[0], email: found.vendor.email, company: found.vendor.name }
 }
 
 /** The verified title email outside the platform (transaction_title_escrow), or null. */

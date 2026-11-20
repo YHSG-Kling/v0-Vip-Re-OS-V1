@@ -176,8 +176,9 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
   //
   // WHY NOTHING BREAKS, measured before the edit: no lender or title surface
   // consults this matrix. Every one of them gates on ASSIGNMENT —
-  // requireLenderVendorActor / requireTitleActor (lib/kernel/portal-auth.ts:61,
-  // :111) plus lenderVendorTransactionIds (lib/kernel/lender-linkage.ts) — and
+  // requireLenderVendorActor / requireTitleVendorActor (lib/kernel/portal-auth.ts)
+  // plus lenderVendorTransactionIds / titleVendorTransactionIds (lib/kernel/lender-linkage.ts) — and
+
   // the lender's writes land on transaction_milestones, transaction_lenders and
   // transaction_documents (app/actions/lender-portal-actions.ts:186,199,212,138),
   // never on `transactions` itself. `transactions:edit` ("Edit transaction

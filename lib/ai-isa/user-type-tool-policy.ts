@@ -29,8 +29,10 @@
  *     CLAUDE.md §4): the seat is user_type='vendor' + a user_role_assignments
  *     .vendor_id, and lender-ness is vendors.category resolved through
  *     lib/kernel/lender-linkage.ts::isLenderVendorCategory; a title partner is
- *     a title_company_users row (lib/kernel/portal-auth.ts::requireTitleActor)
- *     or a vendors.category='title' seat.
+ *     a vendors.category='title' seat (lib/kernel/lender-linkage.ts::
+ *     isTitleVendorCategory, gated by lib/kernel/portal-auth.ts::
+ *     requireTitleVendorActor). TOMBSTONE (lane 155T3): the title_company_users
+ *     row (0 rows, no writer) is no longer a second way in.
  *
  * ── THE SEAT → TOOL POLICY TABLE ─────────────────────────────────────────────
  * One table (USER_TYPE_TOOL_POLICY). Every `seatToolNames` entry is a key of
@@ -71,7 +73,7 @@
  *       status / rate-lock update (updateLenderLoanStatus), flag an issue,
  *       the deal's document list (transaction_documents, never a URL) and a
  *       message to the agent (sendLenderMessageToAgent). No BatchData/RentCast.
- *   title (title_company_users row, or vendor seat with category 'title') —
+ *   title (a vendor seat with category 'title') —
  *       SEAT TOOLS ONLY: their own title/escrow milestones
  *       (transaction_title_escrow), a title-status update (updateTitleStatus)
  *       and a message to the agent (sendTitleMessageToAgent).
@@ -94,8 +96,7 @@
  */
 
 import { TENANT_ADMIN_USER_TYPES, isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
-import { isLenderVendorCategory } from "@/lib/kernel/lender-linkage"
-import { VENDOR_CATEGORY_TITLE } from "@/lib/kernel/vendor-categories"
+import { isLenderVendorCategory, isTitleVendorCategory } from "@/lib/kernel/lender-linkage"
 import { riskClassForTool, refuseUnmountableTools } from "@/lib/ai-isa/persona-tool-policy"
 
 // ─── THE SEAT VOCABULARY ────────────────────────────────────────────────────
@@ -142,15 +143,13 @@ export interface ResolveUserTypeSeatInput {
   vendorCategory: string | null | undefined
   /** true when the session holds a vendor-bearing grant that resolved to ONE vendor. */
   hasVendorId: boolean
-  /** true when the session owns at least one title_company_users row. */
-  isTitleUser: boolean
 }
 
 /**
  * PURE — the ONE place a session's role facts become a seat. Precedence:
  *   platform staff (platform_role, or the legacy user_type 'superadmin' marker)
  *   > a LENDER-category vendor grant → lender
- *   > a title_company_users row, or a title-category vendor grant → title
+ *   > a title-category vendor grant → title
  *   > any other vendor grant, or a vendor/lender/title role word → vendor
  *     (identity may still be missing — the tool builder fails closed)
  *   > team_lead → team_lead
@@ -166,7 +165,7 @@ export function resolveUserTypeSeat(input: ResolveUserTypeSeatInput): UserTypeSe
 
   const category = String(input.vendorCategory ?? "").trim().toLowerCase()
   if (input.hasVendorId && isLenderVendorCategory(category)) return "lender"
-  if (input.isTitleUser || (input.hasVendorId && category === VENDOR_CATEGORY_TITLE)) return "title"
+  if (input.hasVendorId && isTitleVendorCategory(category)) return "title"
   if (input.hasVendorId || role === "vendor" || role === "lender" || role === "title_agent" || userType === "vendor") return "vendor"
 
   if (role === "team_lead" || (!role && userType === "team_lead")) return "team_lead"
@@ -379,7 +378,7 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
   },
   title: {
     label: "Title / escrow portal assistant",
-    audience: "a title or escrow officer (title_company_users, or a vendors.category='title' seat) on the brokerage's closings",
+    audience: "a title or escrow officer (a vendors.category='title' seat) on the brokerage's closings",
     staffToolkit: "none",
     seatToolNames: ["get_my_title_transactions", "update_title_status", "send_title_message_to_agent"],
     batchData: false,
@@ -395,7 +394,8 @@ export const USER_TYPE_TOOL_POLICY: Record<UserTypeSeat, UserTypeToolPolicy> = {
       "send the agent a note on the closing — a title issue, a scheduling change (send_title_message_to_agent)",
     ],
     rules: [
-      "Only transactions their title company is on (title_company_users.transaction_id) — never another file.",
+      "Only transactions their title company is assigned to (vendor_assignments) — never another file.",
+
       "Earnest money and wire details are never spoken or changed here (wire-fraud posture); the portal's own screens handle them.",
     ],
   },

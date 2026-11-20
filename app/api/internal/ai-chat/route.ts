@@ -167,18 +167,22 @@ async function loadTCContext(service: ReturnType<typeof createServiceClient>, us
   return { assignments, tasks, deadlines }
 }
 
-async function loadTitleContext(service: ReturnType<typeof createServiceClient>, userId: string) {
-  const { data: titleTxns } = await service
-    .from("title_company_users")
+// TOMBSTONE (wave 155, lane 155T3): this read title_company_users (0 rows, no writer). The survivor is the session's
+// title VENDOR seat's assigned deals (titleDealIds, resolved in POST from lib/kernel/lender-linkage.ts
+// titleVendorTransactionIds) — the same scope lib/kernel/portal-auth.ts requireTitleVendorActor gates.
+async function loadTitleContext(service: ReturnType<typeof createServiceClient>, brokerageId: string, titleDealIds: readonly string[]) {
+  if (titleDealIds.length === 0) return { titleTxns: [] }
+  const { data: titleTxns, error } = await service
+    .from("transactions")
     .select(`
-      transaction_id,
-      transactions(id, deal_name, property_address, status, close_date,
-        transaction_title_escrow(title_search_ordered_date, title_commitment_date, closing_scheduled_date, title_issues))
+      id, deal_name, property_address, status, close_date,
+      transaction_title_escrow(title_search_ordered_date, title_commitment_date, closing_scheduled_date, title_issues)
     `)
-    .eq("user_id", userId)
-    .limit(20)
+    .in("id", [...titleDealIds].slice(0, 20))
+    .eq("brokerage_id", brokerageId)
+  if (error) console.error("[ai-chat] title context read refused:", error.message)
 
-  return { titleTxns }
+  return { titleTxns: titleTxns ?? [] }
 }
 
 async function loadComplianceContext(service: ReturnType<typeof createServiceClient>, brokerageId: string) {
@@ -402,7 +406,7 @@ export async function POST(req: NextRequest) {
   const profileRole = userData?.role ? canonical(String(userData.role)) : null
   const platformRole = (userData?.platform_role as string | null | undefined) ?? null
   const admissible = [...heldRoles, ...(profileUserType ? [profileUserType] : []), ...(profileRole ? [profileRole] : [])]
-  const isPlatformStaff = resolveUserTypeSeat({ role: null, userType: profileUserType, platformRole, vendorCategory: null, hasVendorId: false, isTitleUser: false }) === "platform_staff"
+  const isPlatformStaff = resolveUserTypeSeat({ role: null, userType: profileUserType, platformRole, vendorCategory: null, hasVendorId: false }) === "platform_staff"
   if (!isPlatformStaff && !admissible.some((r) => COPILOT_ADMITTED_ROLES.has(r))) {
     return NextResponse.json({ error: "Role not permitted" }, { status: 403 })
   }
@@ -429,33 +433,33 @@ export async function POST(req: NextRequest) {
   // ── SEAT RESOLUTION (lane 77A — lib/ai-isa/user-type-tool-policy.ts) ──────
   // Identity facts come from the SESSION: the vendor grant (ONE vendor or
   // none — selectVendorId reports ambiguity rather than picking), that
-  // vendor's category (LENDER IS A VENDOR CATEGORY, CLAUDE.md §4), and the
-  // session's own title_company_users rows. Nothing here reads the body.
+  // vendor's category (LENDER AND TITLE ARE VENDOR CATEGORIES, CLAUDE.md §4),
+  // and — for a title vendor — the deals it is assigned to. Nothing here reads the body.
   const service = createServiceClient()
   const { vendorId: sessionVendorId, ambiguous: vendorAmbiguous } = selectVendorId(grants)
   if (vendorAmbiguous) console.error("[ai-chat] user", user.id, "is linked to more than one vendor — no vendor identity resolved (fail closed)")
-  const [vendorRow, titleRows] = await Promise.all([
-    sessionVendorId
-      ? service.from("vendors").select("id, category, brokerage_id").eq("id", sessionVendorId).maybeSingle()
-      : Promise.resolve({ data: null, error: null }),
-    service.from("title_company_users").select("id, transaction_id").eq("user_id", user.id).limit(50),
-  ])
+  const vendorRow = sessionVendorId
+    ? await service.from("vendors").select("id, category, brokerage_id").eq("id", sessionVendorId).maybeSingle()
+    : { data: null, error: null }
   if (vendorRow.error) console.error("[ai-chat] vendor category read refused:", vendorRow.error.message)
-  if (titleRows.error) console.error("[ai-chat] title membership read refused:", titleRows.error.message)
   // A vendor whose row sits in ANOTHER tenant is no identity here (fail closed).
   const vendorInTenant = !!vendorRow.data && (vendorRow.data as { brokerage_id?: string | null }).brokerage_id === brokerageId
   const vendorIdForSeat = vendorInTenant ? sessionVendorId : null
-  const titleMemberships = (titleRows.data ?? []).map((r: { id: string; transaction_id: string | null }) => ({ id: r.id, transactionId: r.transaction_id }))
+  // TOMBSTONE (lane 155T3): title_company_users memberships (0 rows, no writer) → the title vendor's assigned deals.
+  const { isTitleVendorCategory, titleVendorTransactionIds } = await import("@/lib/kernel/lender-linkage")
+  const isTitleVendorSeat = !!vendorIdForSeat && isTitleVendorCategory((vendorRow.data as { category?: string | null } | null)?.category)
+  const titleDeals = isTitleVendorSeat ? await titleVendorTransactionIds(service, vendorIdForSeat as string, brokerageId) : { ok: true as const, ids: [] as string[] }
+  if (!titleDeals.ok) console.error("[ai-chat] title deal read refused (fail closed — no title tools):", titleDeals.error)
+  const titleDealIds = titleDeals.ok ? titleDeals.ids : []
   const seat = resolveUserTypeSeat({
     role,
     userType: profileUserType,
     platformRole,
     vendorCategory: vendorInTenant ? (vendorRow.data as { category?: string | null }).category ?? null : null,
     hasVendorId: !!vendorIdForSeat,
-    isTitleUser: titleMemberships.length > 0,
   })
   const seatPolicy = USER_TYPE_TOOL_POLICY[seat]
-  const seatTools = buildUserTypeSeatTools({ seat, brokerageId, userId: user.id, vendorId: vendorIdForSeat, titleMemberships })
+  const seatTools = buildUserTypeSeatTools({ seat, brokerageId, userId: user.id, vendorId: vendorIdForSeat, titleDealIds })
   const mountedSeatToolNames = Object.keys(seatTools)
 
   // Load role-scoped context + AI identity profile in parallel
@@ -471,7 +475,8 @@ export async function POST(req: NextRequest) {
       // staff-side loaders as before.
       if (seat === "lender") return loadLenderContext(service, user.id)
       if (seat === "vendor") return loadVendorContext(service, user.id, brokerageId, vendorIdForSeat)
-      if (seat === "title") return loadTitleContext(service, user.id)
+      if (seat === "title") return loadTitleContext(service, brokerageId, titleDealIds)
+
       if (seat === "platform_staff") return loadSuperadminContext(service)
       if (role === "agent" || role === "isa" || role === "team_lead") return loadAgentContext(service, user.id, brokerageId)
       else if (role === "broker" || role === "broker_owner" || role === "broker_admin" || role === "admin") return loadBrokerContext(service, brokerageId)

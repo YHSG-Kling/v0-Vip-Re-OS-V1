@@ -1458,3 +1458,26 @@ UPDATE gamification_badges SET trigger_event='SIGNED_AGREEMENT_APPOINTMENT', bad
 -- After: the Before query returns 0 rows; the same id now reads trigger_event SIGNED_AGREEMENT_APPOINTMENT.
 -- Rollback: UPDATE gamification_badges SET trigger_event='FIRST_APPOINTMENT' WHERE id = '<id from Before>';
 ```
+
+### R.5 Drop `public.title_company_users` — an empty table nothing writes and, after lane 155T3, nothing reads
+
+- Why: the title portal was gated on this table, which has 0 rows and no writer anywhere (no code, trigger or function). A title
+  company is a VENDOR CATEGORY (CLAUDE.md §4): the portal now gates on the title vendor assigned to the deal
+  (`lib/kernel/portal-auth.ts` `requireTitleVendorActor`), and no file under `app/` or `lib/` reads the table any more.
+- Status: OPEN — optional, not release-blocking (not run). DROP TABLE is destructive; the block refuses if the table is not empty.
+
+```sql
+-- Before: expect 0
+SELECT count(*) FROM public.title_company_users;
+-- Do:
+begin;
+do $$ begin
+  if (select count(*) from public.title_company_users) <> 0 then raise exception 'title_company_users is not empty — stop'; end if;
+end $$;
+drop table public.title_company_users;  -- RESTRICT (default): refuses if any view / FK still depends on it
+commit;
+-- After: SELECT to_regclass('public.title_company_users');  -- expect null
+-- Then tell the integrator: the schema caches are regenerated (live-tables, schema-snapshot, schema-fk-map, check-vocabularies)
+-- and the table's two classification lines are removed (lib/kernel/brokerage-transfer.ts, lib/kernel/manager-registry.ts).
+-- Rollback: none (the table held no rows); its definition is in the migration history.
+```

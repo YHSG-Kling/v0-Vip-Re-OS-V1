@@ -49,8 +49,10 @@ export interface UserTypeSeatContext {
   userId: string
   /** vendors.id resolved from the session's vendor-bearing grant, or null. */
   vendorId: string | null
-  /** The session's own title_company_users rows (id + transaction_id), or []. */
-  titleMemberships: ReadonlyArray<{ id: string; transactionId: string | null }>
+  /** The deals the session's TITLE vendor seat is assigned to (vendor_assignments, in the session's tenant), or [].
+   *  Title is a vendor category (CLAUDE.md §4). TOMBSTONE (lane 155T3): this was the session's title_company_users rows
+   *  (0 rows, no writer); the survivor is lib/kernel/lender-linkage.ts titleVendorTransactionIds. */
+  titleDealIds: ReadonlyArray<string>
 }
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -380,8 +382,8 @@ function buildSendLenderMessageToAgentTool(ctx: UserTypeSeatContext & { vendorId
 
 const TITLE_STATUS_VALUES = ["title_search", "commitment_issued", "closing_ready", "closed"] as const
 
-function titleMembershipFor(ctx: UserTypeSeatContext, transactionId: string) {
-  return ctx.titleMemberships.find((m) => m.transactionId === transactionId) ?? null
+function isOwnTitleDeal(ctx: UserTypeSeatContext, transactionId: string): boolean {
+  return ctx.titleDealIds.includes(transactionId)
 }
 
 function buildGetMyTitleTransactionsTool(ctx: UserTypeSeatContext) {
@@ -389,7 +391,7 @@ function buildGetMyTitleTransactionsTool(ctx: UserTypeSeatContext) {
     description: "Your OWN closings: every transaction your title company is on, with deal name/address/status/close date and the title & escrow milestones — title search ordered/completed, commitment date, closing scheduled date, title status, open title issues. Never earnest-money or wire details.",
     inputSchema: z.object({}),
     execute: async () => {
-      const ids = ctx.titleMemberships.map((m) => m.transactionId).filter((x): x is string => !!x)
+      const ids = [...ctx.titleDealIds]
       if (ids.length === 0) return { success: true, deals: [], note: "No transactions are linked to your title account yet" }
       const svc = createServiceClient()
       const [t, e] = await Promise.all([
@@ -409,12 +411,11 @@ function buildUpdateTitleStatusTool(ctx: UserTypeSeatContext) {
     description: "Move ONE of your own files' title status forward: title_search → commitment_issued → closing_ready → closed. Only when the title officer explicitly asks.",
     inputSchema: z.object({ transaction_id: z.string(), new_status: z.enum(TITLE_STATUS_VALUES) }),
     execute: async ({ transaction_id, new_status }: { transaction_id: string; new_status: (typeof TITLE_STATUS_VALUES)[number] }) => {
-      const membership = titleMembershipFor(ctx, transaction_id)
-      if (!membership) return { success: false, error: "That transaction is not one your title company is on" }
-      // Survivor re-gates via requireTitleActor(titleUserId) — the id is OURS
-      // (the session's own title_company_users row), never model-supplied.
+      if (!isOwnTitleDeal(ctx, transaction_id)) return { success: false, error: "That transaction is not one your title company is on" }
+      // Survivor re-gates via requireTitleVendorActor(transactionId) — the actor is the SESSION's title vendor seat;
+      // no identity is model-supplied (the transaction id is a resource the gate adjudicates).
       const { updateTitleStatus } = await import("@/app/actions/title-portal")
-      const result = await updateTitleStatus({ transactionId: transaction_id, titleUserId: membership.id, newStatus: new_status })
+      const result = await updateTitleStatus({ transactionId: transaction_id, newStatus: new_status })
       return result.success ? { success: true, transactionId: transaction_id, titleStatus: new_status } : { success: false, error: result.error ?? "Could not update the title status" }
     },
   })
@@ -425,11 +426,10 @@ function buildSendTitleMessageToAgentTool(ctx: UserTypeSeatContext) {
     description: "Send a short message to the agent on ONE of your own closings. Only when the title officer asks you to pass something along.",
     inputSchema: z.object({ transaction_id: z.string(), message: z.string().min(1).max(1000) }),
     execute: async ({ transaction_id, message }: { transaction_id: string; message: string }) => {
-      const membership = titleMembershipFor(ctx, transaction_id)
-      if (!membership) return { success: false, error: "That transaction is not one your title company is on" }
+      if (!isOwnTitleDeal(ctx, transaction_id)) return { success: false, error: "That transaction is not one your title company is on" }
       const { sendTitleMessageToAgent } = await import("@/app/actions/title-portal")
       try {
-        await sendTitleMessageToAgent({ transactionId: transaction_id, titleUserId: membership.id, message })
+        await sendTitleMessageToAgent({ transactionId: transaction_id, message })
         return { success: true, transactionId: transaction_id }
       } catch (e) {
         return { success: false, error: (e as Error).message }
@@ -669,7 +669,7 @@ export function buildUserTypeSeatTools(ctx: UserTypeSeatContext): Record<string,
       if (!ctx.vendorId) continue // fail closed — no vendor identity, no vendor tool
       out[name] = (builder as VendorBuilder)({ ...ctx, vendorId: ctx.vendorId })
     } else if (name in TITLE_KEYED_BUILDERS) {
-      if (ctx.titleMemberships.length === 0) continue // fail closed
+      if (ctx.titleDealIds.length === 0) continue // fail closed — no assigned title deal, no title tool
       out[name] = (builder as SeatBuilder)(ctx)
     } else {
       out[name] = (builder as SeatBuilder)(ctx)

@@ -44,7 +44,7 @@ interface IssuerCorrectionRequest {
   original: { rail: "documents" | "transaction_documents"; id: string }
   /** Who is filing: the issuer itself (its identity resolved from the session), or tenant staff filing what the issuer sent off platform. */
   actor:
-    | { via: "issuer"; userId: string; identity: { kind: "title"; email: string } | { kind: "lender" | "vendor"; vendorId: string } }
+    | { via: "issuer"; userId: string; identity: { kind: "title"; vendorId: string } | { kind: "lender" | "vendor"; vendorId: string } }
     | { via: "staff_on_behalf"; userId: string; onBehalfOf: { kind: "title" } | { kind: "lender" | "vendor"; vendorId: string }; proof: OffPlatformProof | null }
   /** The stored file: its object path / URL (stored by the door, privately) and the sha256 of the bytes. */
   file: { storageUrl: string; storagePath: string | null; fileName: string; sha256: string }
@@ -137,11 +137,26 @@ export async function fileIssuerCorrection(svc: Svc, req: IssuerCorrectionReques
   let issuer: DocumentIssuer
   let assigned = false
   const target = req.actor.via === "issuer" ? req.actor.identity : req.actor.onBehalfOf
-  if (target.kind === "title") {
+  if (req.actor.via === "issuer" && req.actor.identity.kind === "title") {
+    const titleVendorId = req.actor.identity.vendorId
+    // THE TITLE COMPANY ITSELF (an issuer seat): title is a VENDOR CATEGORY (CLAUDE.md §4) — its assignment is the
+    // vendor rail's, the same rule as lib/kernel/portal-auth.ts requireTitleVendorActor (a title-category vendor of
+    // THIS brokerage with a vendor_assignments row on THIS deal). Lane 155T3 replaced the escrow-email match that stood
+    // here (the email came from title_company_users: 0 rows, no writer).
+    const { data: v, error: vErr } = await svc.from("vendors").select("id, category").eq("id", titleVendorId).eq("brokerage_id", B).maybeSingle()
+    if (vErr) return UNREADABLE("vendor", vErr)
+    const { isTitleVendorCategory } = await import("@/lib/kernel/lender-linkage")
+    const isTitle = !!v && isTitleVendorCategory((v as { category?: string | null }).category)
+    issuer = { kind: "title", vendorId: isTitle ? titleVendorId : null, category: "title" }
+    if (isTitle) {
+      const { data, error } = await svc.from("vendor_assignments").select("id").eq("vendor_id", titleVendorId).eq("transaction_id", T).eq("brokerage_id", B).limit(1)
+      if (error) return UNREADABLE("deal's title assignment", error)
+      assigned = (data ?? []).length > 0
+    }
+  } else if (target.kind === "title") {
+    // Staff filing ON BEHALF of the deal's title company: the deal must record one (its escrow row).
     issuer = { kind: "title", vendorId: null, category: "title" }
-    let q = svc.from("transaction_title_escrow").select("id").eq("transaction_id", T).eq("brokerage_id", B)
-    if (req.actor.via === "issuer" && "email" in target) q = q.eq("title_company_email", target.email)
-    const { data, error } = await q.limit(1)
+    const { data, error } = await svc.from("transaction_title_escrow").select("id").eq("transaction_id", T).eq("brokerage_id", B).limit(1)
     if (error) return UNREADABLE("deal's title assignment", error)
     assigned = (data ?? []).length > 0
   } else {

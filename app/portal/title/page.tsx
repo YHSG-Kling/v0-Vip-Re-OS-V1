@@ -12,27 +12,32 @@ export default async function TitlePortalDashboard() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Get title user profile
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, company_name")
-    .eq("user_id", user.id)
-    .single()
+  // The title seat is a VENDOR seat (CLAUDE.md §4). TOMBSTONE (wave 155, lane 155T3): this page read a
+  // title_company_users profile (0 rows, no writer) and handed its id to the loader as an authority. The survivor is
+  // the session's title vendor seat, resolved inside getTitleDashboard by lib/kernel/portal-auth.ts
+  // requireTitleVendorActor — this page passes nothing.
+  let dashboard: Awaited<ReturnType<typeof getTitleDashboard>> | null = null
+  let refusal: string | null = null
+  try {
+    dashboard = await getTitleDashboard()
+  } catch (err) {
+    refusal = err instanceof Error ? err.message : "Your title company access could not be confirmed."
+  }
 
-  if (!titleUser) {
+  if (!dashboard) {
     return (
       <div className="container mx-auto p-6">
         <Card>
           <CardContent className="p-8 text-center">
             <Building className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-            <p className="text-muted-foreground">No title company profile found. Please contact your administrator.</p>
+            <p className="text-muted-foreground">No title company seat is linked to this account ({refusal}). Please contact the brokerage that invited you.</p>
           </CardContent>
         </Card>
       </div>
     )
   }
 
-  const { titleUser: profile, transactions, stats } = await getTitleDashboard(titleUser.id)
+  const { titleUser: profile, transactions, stats } = dashboard
 
   return (
     <div className="container mx-auto p-6 space-y-6">

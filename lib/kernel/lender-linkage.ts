@@ -17,7 +17,7 @@
 // appraisal, rate-lock, conditions) live on transaction_lenders — the alive
 // capability layer, keyed by transaction_id and preserved untouched.
 
-import { VENDOR_CATEGORY_LENDER } from "@/lib/kernel/vendor-categories"
+import { VENDOR_CATEGORY_LENDER, VENDOR_CATEGORY_TITLE } from "@/lib/kernel/vendor-categories"
 import { isBuyerSideContactType } from "@/lib/contact-types"
 
 /** The vendor category that IS a lender. vendors.category carries a live CHECK
@@ -47,6 +47,27 @@ export function isLenderVendorCategory(category: string | null | undefined): boo
  * use isLenderVendorCategory when you already hold the row.
  */
 export const LENDER_BENCH_CATEGORIES = ["lender", "refinance_lender"] as const
+
+// ─── TITLE IS A VENDOR CATEGORY TOO (CLAUDE.md §4, owner 2026-09-04) ──────────
+// "A LENDER IS NOT A USER TYPE — it is a VENDOR CATEGORY, and so is a title agent." The title seat is
+// user_type='vendor' + vendors.category='title', on the SAME rail as the lender: user_role_assignments.vendor_id →
+// vendors.category → vendor_assignments on the deal. Wave 155 (lane 155T3) moved the title portal onto this rail;
+// its old identity table (title_company_users) had 0 rows and no writer anywhere, so no title company could ever
+// pass the gate. The gate is lib/kernel/portal-auth.ts requireTitleVendorActor; the category test is stated ONCE, here.
+
+/** The vendor category that IS a title company — one spelling, from the one vocabulary module. */
+export const TITLE_VENDOR_CATEGORY = VENDOR_CATEGORY_TITLE
+
+/** The title bench spelled for a POSTGRES filter (exact, case-sensitive) — the vendors.category CHECK values that
+ *  ARE title. Exactly one today; `isTitleVendorCategory` accepts exactly these, so the two cannot disagree. */
+export const TITLE_BENCH_CATEGORIES = [VENDOR_CATEGORY_TITLE] as const
+
+/** EXACT equality against the live CHECK value. Deliberately NOT a substring test like the lender's: the CHECK has
+ *  admitted only 'title' since m304, and a looser match ('title insurance', 'escrow') would widen who passes a gate. */
+export function isTitleVendorCategory(category: string | null | undefined): boolean {
+  const c = (category ?? "").trim().toLowerCase()
+  return (TITLE_BENCH_CATEGORIES as readonly string[]).includes(c)
+}
 
 /** A safe .in() list — never empty (an empty PostgREST .in() can error), so
  *  callers pass this sentinel for "no rows". */
@@ -188,6 +209,51 @@ export async function lenderVendorTransactionIds(
   const { data } = await q
   return ((data ?? []) as Array<{ transaction_id: string | null }>)
     .map((r) => r.transaction_id).filter((x): x is string => !!x)
+}
+
+/**
+ * The transactions a TITLE vendor is assigned to inside its own tenant (vendor_assignments.vendor_id + brokerage_id) —
+ * the title dashboard / documents / AI-seat scope. Unlike lenderVendorTransactionIds this READS the refusal (§3): a page
+ * must be able to say "your files could not be read" instead of "you have no files".
+ */
+export async function titleVendorTransactionIds(
+  client: any,
+  vendorId: string,
+  brokerageId: string,
+): Promise<{ ok: true; ids: string[] } | { ok: false; error: string }> {
+  if (!vendorId || !brokerageId) return { ok: true, ids: [] }
+  const { data, error } = await client
+    .from("vendor_assignments").select("transaction_id").eq("vendor_id", vendorId).eq("brokerage_id", brokerageId).limit(200)
+  if (error) return { ok: false, error: `vendor_assignments read refused: ${error.message}` }
+  return { ok: true, ids: [...new Set(((data ?? []) as Array<{ transaction_id: string | null }>).map((r) => r.transaction_id).filter((x): x is string => !!x))] }
+}
+
+export interface TitleVendorRef { vendorId: string; name: string | null; email: string | null; brokerageId: string }
+
+/**
+ * The TITLE vendor on a deal: a title-category vendor of THIS brokerage assigned to the transaction (vendor_assignments).
+ * The title-side twin of resolveLenderVendorForTransaction — the survivor of the retired title_company_users
+ * "title company on the Deal Team" read. Returns `{ ok: false }` on a refused read so a caller never mistakes an outage
+ * for "no title company on this deal".
+ */
+export async function resolveTitleVendorForTransaction(
+  client: any,
+  transactionId: string,
+  brokerageId: string,
+): Promise<{ ok: true; vendor: TitleVendorRef | null } | { ok: false; error: string }> {
+  const { data, error } = await client
+    .from("vendor_assignments")
+    .select("vendor_id, brokerage_id, vendors!inner(id, name, email, category, brokerage_id)")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", brokerageId)
+  if (error) return { ok: false, error: `vendor_assignments read refused: ${error.message}` }
+  for (const a of (data ?? []) as any[]) {
+    const v = a.vendors
+    if (v && isTitleVendorCategory(v.category) && v.brokerage_id === brokerageId) {
+      return { ok: true, vendor: { vendorId: v.id, name: v.name ?? null, email: v.email ?? null, brokerageId } }
+    }
+  }
+  return { ok: true, vendor: null }
 }
 
 export interface LinkLenderVendorResult {

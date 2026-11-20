@@ -48,6 +48,8 @@ const U_AGENT = "22222222-2222-4222-8222-222222222223", U_TC = "22222222-2222-42
 const AG = "33333333-3333-4333-8333-333333333333", TC_ID = "77777777-7777-4777-8777-777777777771"
 const TX = "55555555-5555-4555-8555-555555555555", TX_NEW = "55555555-5555-4555-8555-555555555556"
 const V_LENDER = "88888888-8888-4888-8888-888888888881", V_INSPECT = "88888888-8888-4888-8888-888888888882", V_FOREIGN = "88888888-8888-4888-8888-888888888883"
+// Lane 155T3: the title company is a VENDOR (category 'title' — CLAUDE.md §4), on the deal through vendor_assignments.
+const V_TITLE = "88888888-8888-4888-8888-888888888884", V_TITLE_IDLE = "88888888-8888-4888-8888-888888888885", V_TITLE_FOREIGN = "88888888-8888-4888-8888-888888888886"
 const D_CONTRACT = "66666666-6666-4666-8666-666666666661", D_TITLE_STMT = "66666666-6666-4666-8666-666666666662", D_LENDER_CD = "66666666-6666-4666-8666-666666666663", D_FEE = "66666666-6666-4666-8666-666666666664", D_AGENT_CD = "66666666-6666-4666-8666-666666666665"
 const TD_TITLE_STMT = "99999999-9999-4999-8999-999999999991"
 const both = { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }] }
@@ -64,8 +66,8 @@ function seed(o: SeedOpts = {}) {
     transactions: [TX, TX_NEW].map((id) => ({ id, brokerage_id: B, agent_id: AG, coordinator_id: TC_ID, status: o.status ?? "under_contract", stage: o.stage ?? "CLOSING_PREP", offer_id: null, listing_id: null, deal_type: "buyer", purchase_price: 500_000, earnest_money: 5_000, closing_cost_contribution: null, contract_date: "2026-10-01", close_date: "2026-12-15", contract_closing_date: "2026-12-15", contract_closing_terms: "on_or_before", contract_closing_source: "executed_contract", property_state: "TX", financing_type: o.financing ?? "conventional", loan_amount: 400_000, compliance_passed_at: "2026-10-02T00:00:00Z", buyer_contact_id: null, seller_contact_id: null, contact_id: null, buyer_agent_id: null, seller_agent_id: null, listing_offered_commission_percentage: null, created_at: "2026-10-01T00:00:00Z" })),
     brokerage_required_documents: o.rules ?? [],
     documents: o.docs ?? [],
-    vendors: [{ id: V_LENDER, brokerage_id: B, category: "lender", name: "Guard Lending" }, { id: V_INSPECT, brokerage_id: B, category: "inspector", name: "Guard Inspections" }, { id: V_FOREIGN, brokerage_id: B2, category: "lender", name: "Other Tenant Lending" }],
-    vendor_assignments: [{ id: randomUUID(), brokerage_id: B, vendor_id: V_LENDER, transaction_id: TX }],
+    vendors: [{ id: V_TITLE, brokerage_id: B, category: "title", name: "Guard Title" }, { id: V_TITLE_IDLE, brokerage_id: B, category: "title", name: "Idle Title" }, { id: V_TITLE_FOREIGN, brokerage_id: B2, category: "title", name: "Other Tenant Title" }, { id: V_LENDER, brokerage_id: B, category: "lender", name: "Guard Lending" }, { id: V_INSPECT, brokerage_id: B, category: "inspector", name: "Guard Inspections" }, { id: V_FOREIGN, brokerage_id: B2, category: "lender", name: "Other Tenant Lending" }],
+    vendor_assignments: [{ id: randomUUID(), brokerage_id: B, vendor_id: V_LENDER, transaction_id: TX }, { id: randomUUID(), brokerage_id: B, vendor_id: V_TITLE, transaction_id: TX }],
     transaction_title_escrow: [{ id: randomUUID(), brokerage_id: B, transaction_id: TX, title_company_email: "closer@title.example", title_company_name: "Guard Title" }],
     transaction_documents: [], document_field_extractions: [], contract_term_versions: [], transaction_compliance_log: [], notifications: [], closing_disclosure_agreement: [],
     commission_distributions: [], agent_commissions: [], agent_action_ledger: [], lifecycle_events: [], activities: [], transaction_tasks: [], policy_decisions: [], trid_timeline: [], tenant_policy_versions: [],
@@ -216,7 +218,7 @@ async function main() {
       notify: async () => 3,
     })
     const file = (sha: string) => ({ storageUrl: "https://storage.example/corrected.pdf", storagePath: `issuer-corrections/${B}/${TX}/x.pdf`, fileName: "corrected.pdf", sha256: sha })
-    const asTitle = { via: "issuer" as const, userId: U_TITLE, identity: { kind: "title" as const, email: "closer@title.example" } }
+    const asTitle = { via: "issuer" as const, userId: U_TITLE, identity: { kind: "title" as const, vendorId: V_TITLE } }
     const asLender = { via: "issuer" as const, userId: U_LENDER, identity: { kind: "lender" as const, vendorId: V_LENDER } }
 
     const db = world()
@@ -245,6 +247,17 @@ async function main() {
     check("ADVERSE: the LENDER cannot correct the TITLE company's statement (another issuer) — nothing written", !lenderOnTitle.ok && lenderOnTitle.code === "another_issuer" && writesBefore() === w0)
     const titleOnLender = await quiet(() => fileIssuerCorrection(fresh as never, { brokerageId: B, transactionId: TX, original: { rail: "documents", id: D_LENDER_CD }, actor: asTitle, file: file("sha-4") }, deps(fresh)))
     check("ADVERSE: the TITLE company cannot correct the LENDER's Closing Disclosure — separate issuer-owned facts", !titleOnLender.ok && titleOnLender.code === "another_issuer")
+    // Lane 155T3 — the title hat rides the VENDOR rail: a title vendor of this tenant NOT on the deal, a title vendor of
+    // ANOTHER tenant, and a non-title vendor claiming the title hat are each refused as not assigned; nothing is filed.
+    const titleAs = (vendorId: string) => ({ via: "issuer" as const, userId: U_TITLE, identity: { kind: "title" as const, vendorId } })
+    const before155 = fresh.tables.documents.length
+    const idleTitle = await quiet(() => fileIssuerCorrection(fresh as never, { brokerageId: B, transactionId: TX, original: { rail: "transaction_documents", id: TD_TITLE_STMT }, actor: titleAs(V_TITLE_IDLE), file: file("sha-t1") }, deps(fresh)))
+    const foreignTitle = await quiet(() => fileIssuerCorrection(fresh as never, { brokerageId: B, transactionId: TX, original: { rail: "transaction_documents", id: TD_TITLE_STMT }, actor: titleAs(V_TITLE_FOREIGN), file: file("sha-t2") }, deps(fresh)))
+    const inspectorAsTitle = await quiet(() => fileIssuerCorrection(fresh as never, { brokerageId: B, transactionId: TX, original: { rail: "transaction_documents", id: TD_TITLE_STMT }, actor: titleAs(V_INSPECT), file: file("sha-t3") }, deps(fresh)))
+    check("ADVERSE (vendor rail): a title vendor not on the deal, a title vendor of another tenant, and a non-title vendor wearing the title hat are each refused not_assigned — nothing filed",
+      !idleTitle.ok && idleTitle.code === "not_assigned" && !foreignTitle.ok && foreignTitle.code === "not_assigned" && !inspectorAsTitle.ok && inspectorAsTitle.code === "not_assigned" && fresh.tables.documents.length === before155,
+      JSON.stringify({ idleTitle, foreignTitle, inspectorAsTitle }))
+
     const onContract = await quiet(() => fileIssuerCorrection(fresh as never, { brokerageId: B, transactionId: TX, original: { rail: "documents", id: D_CONTRACT }, actor: asLender, file: file("sha-5") }, deps(fresh)))
     const onFee = await quiet(() => fileIssuerCorrection(fresh as never, { brokerageId: B, transactionId: TX, original: { rail: "documents", id: D_FEE }, actor: asTitle, file: file("sha-6") }, deps(fresh)))
     check("ADVERSE: no vendor touches the parties' signed contract or the brokerage's fee agreement", !onContract.ok && onContract.code === "party_document" && !onFee.ok && onFee.code === "brokerage_agreement" && writesBefore() === w0)

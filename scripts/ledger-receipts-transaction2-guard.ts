@@ -203,7 +203,7 @@ async function main() {
     "@/lib/platform/acting-context": `export * from '${real("lib/platform/acting-context.ts")}'; export async function resolveWriteContext(){ return ${wc} }; export async function resolveWriteContextForTenant(){ return ${wc} }; export async function resolveActingContext(){ return ${wc} }`,
     "@/lib/portal/require-contact-access": `export * from '${real("lib/portal/require-contact-access.ts")}'; export async function requireContactAccess(){ return { ok: true, userId: '${U1}', brokerageId: '${B1}', isContactSelf: false, userType: 'broker' } }`,
     "@/lib/kernel/api-auth": `export * from '${real("lib/kernel/api-auth.ts")}'; export async function requireAuth(){ return { ok: true, user: { id: '${U1}' }, userId: '${U1}', agentId: '${AG1}', brokerageId: '${B1}', userType: 'broker', platformRole: null } }`,
-    "@/lib/kernel/portal-auth": `export * from '${real("lib/kernel/portal-auth.ts")}'; export async function requireTitleActor(){ return { userId: '${U1}', titleUserId: '${ID(90)}', brokerageId: '${B1}', email: 'title@example.test' } }`,
+    "@/lib/kernel/portal-auth": `export * from '${real("lib/kernel/portal-auth.ts")}'; export async function requireTitleVendorActor(){ return { userId: '${U1}', vendorId: '${ID(90)}', brokerageId: '${B1}', companyName: 'Fixture Title', companyPhone: null, email: 'title@example.test' } }`,
     // the model router: COUNTED, never a provider.
     "@/lib/ai/models": `export * from '${real("lib/ai/models.ts")}'; export async function generateTextRouted(){ globalThis.__R9.model++; return { text: JSON.stringify({ score: 90, violations: [], suggestions: [] }) } }; export async function generateObjectRouted(){ globalThis.__R9.model++; return { object: { reassurance: 'ok', tips: [], suggestions: [], why: 'ok' } } }; export async function streamTextRouted(){ globalThis.__R9.model++; return { textStream: (async function*(){})(), toTextStreamResponse(){ return new Response('') }, toUIMessageStreamResponse(){ return new Response('') } } }`,
     "@/lib/ai/generate": `export * from '${real("lib/ai/generate.ts")}'; export async function generateAIJSON(){ globalThis.__R9.model++; return { data: null, error: 'stub' } }; export function bookedGenerateObject(){ return async function(){ globalThis.__R9.model++; throw new Error('model stub') } }`,
@@ -279,7 +279,7 @@ async function main() {
     { file: "app/actions/market-insights.ts", fn: "generateMarketInsights", args: [] },
     { file: "app/actions/marketing/lead-magnet-copy.ts", fn: "generateLeadMagnetCopyAction", args: [{ magnetType: "generic_form" }] },
     { file: "app/actions/repair-negotiation-copilot.ts", fn: "repairNegotiationCoPilot", args: [{ transactionId: ID(28), side: "buyer" }] },
-    { file: "app/actions/title-portal.ts", fn: "sendTitleMessageToAgent", args: [{ transactionId: ID(2), titleUserId: ID(90), message: "hi" }] },
+    { file: "app/actions/title-portal.ts", fn: "sendTitleMessageToAgent", args: [{ transactionId: ID(2), message: "hi" }] },
     { file: "app/actions/transaction-inspections.ts", fn: "uploadInspectionReportAction", args: [{ inspectionId: ID(29), transactionId: ID(2), reportUrl: "docref://x", fileName: "r.pdf" }] },
     { file: "app/actions/transaction-stage-machine.ts", fn: "markTransactionLost", args: [{ transactionId: ID(30), brokerageId: B1, lostReason: "r", category: "c", earnestMoneyOutcome: "returned" }] },
     { file: "app/actions/transaction-tasks.ts", fn: "completeTransactionTask", args: [ID(8)] },
@@ -295,7 +295,10 @@ async function main() {
   // the chat route needs a conversation it can read in its tenant before it reaches the model.
   const chatSeed = (m: MemClient) => { m.tables.conversations = [{ id: ID(34), brokerage_id: B1, contact_id: null }]; m.tables.messages = [] }
   const chatReq = { json: async () => ({ sessionId: ID(34), message: "hello" }) }
-  const titleSeed = (m: MemClient) => { m.tables.transaction_title_escrow = [{ transaction_id: ID(2), title_company_email: "title@example.test", transactions: { brokerage_id: B1, property_address: "1 Fixture Way", agent_id: AG1 } }]; m.tables.title_company_users = [{ id: ID(90), company_name: "Fixture Title" }] }
+  // Lane 155T3: the title seat is a VENDOR seat (the gate stub above returns one); the deal is read from `transactions`
+  // (seeded in world()), so the only extra fixture is the deal's escrow record — no title_company_users row exists to seed.
+  const titleSeed = (m: MemClient) => { m.tables.transaction_title_escrow = [{ transaction_id: ID(2), brokerage_id: B1, title_company_email: "title@example.test" }] }
+
   for (const d of DRIVES) {
     const w = actions.size ? [...actions.values()].find((x) => x.file === d.file && x.fn === d.fn)?.wrap : undefined
     const mem = world()

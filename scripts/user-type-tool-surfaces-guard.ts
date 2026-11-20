@@ -110,20 +110,20 @@ for (const seat of USER_TYPE_SEATS) {
   check(`${seat}: asks ≥ 2 and rules ≥ 1 (a seat with no realistic asks is not a seat)`, p.asks.length >= 2 && p.rules.length >= 1)
   if (PARTNER_SEATS.has(seat)) check(`${seat}: a partner seat promises ≥ 3 seat tools of its own`, p.seatToolNames.length >= 3, p.seatToolNames.join(","))
 }
-const vendorCtx = { seat: "vendor" as const, brokerageId: "b-1", userId: "u-1", vendorId: "v-1", titleMemberships: [] }
+const vendorCtx = { seat: "vendor" as const, brokerageId: "b-1", userId: "u-1", vendorId: "v-1", titleDealIds: [] }
 const mountedVendor = Object.keys(buildUserTypeSeatTools(vendorCtx)).sort()
 check("runtime: a vendor seat WITH an identity mounts EXACTLY the table's vendor tool names",
   mountedVendor.join(",") === [...USER_TYPE_TOOL_POLICY.vendor.seatToolNames].sort().join(","), mountedVendor.join(","))
 const mountedLender = Object.keys(buildUserTypeSeatTools({ ...vendorCtx, seat: "lender" })).sort()
 check("runtime: a lender seat WITH an identity mounts EXACTLY the table's lender tool names",
   mountedLender.join(",") === [...USER_TYPE_TOOL_POLICY.lender.seatToolNames].sort().join(","), mountedLender.join(","))
-const mountedTitle = Object.keys(buildUserTypeSeatTools({ seat: "title", brokerageId: "b-1", userId: "u-1", vendorId: null, titleMemberships: [{ id: "t-1", transactionId: "tx-1" }] })).sort()
-check("runtime: a title seat WITH a membership mounts EXACTLY the table's title tool names",
+const mountedTitle = Object.keys(buildUserTypeSeatTools({ seat: "title", brokerageId: "b-1", userId: "u-1", vendorId: "v-title", titleDealIds: ["tx-1"] })).sort()
+check("runtime: a title VENDOR seat with an assigned deal mounts EXACTLY the table's title tool names",
   mountedTitle.join(",") === [...USER_TYPE_TOOL_POLICY.title.seatToolNames].sort().join(","), mountedTitle.join(","))
-const mountedTeamLead = Object.keys(buildUserTypeSeatTools({ seat: "team_lead", brokerageId: "b-1", userId: "u-1", vendorId: null, titleMemberships: [] })).sort()
+const mountedTeamLead = Object.keys(buildUserTypeSeatTools({ seat: "team_lead", brokerageId: "b-1", userId: "u-1", vendorId: null, titleDealIds: [] })).sort()
 check("runtime: team_lead mounts its board/rules/coaching tools; broker_admin its readiness/billing/compliance tools",
   mountedTeamLead.join(",") === [...USER_TYPE_TOOL_POLICY.team_lead.seatToolNames].sort().join(",")
-  && Object.keys(buildUserTypeSeatTools({ seat: "broker_admin", brokerageId: "b-1", userId: "u-1", vendorId: null, titleMemberships: [] })).sort().join(",") === [...USER_TYPE_TOOL_POLICY.broker_admin.seatToolNames].sort().join(","))
+  && Object.keys(buildUserTypeSeatTools({ seat: "broker_admin", brokerageId: "b-1", userId: "u-1", vendorId: null, titleDealIds: [] })).sort().join(",") === [...USER_TYPE_TOOL_POLICY.broker_admin.seatToolNames].sort().join(","))
 for (const seat of USER_TYPE_SEATS) {
   const block = seatPromptBlock(seat, USER_TYPE_TOOL_POLICY[seat].seatToolNames)
   const promised = (block.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []).filter((t) => t.startsWith("get_") || t.startsWith("update_") || t.startsWith("send_") || t.startsWith("respond_") || t.startsWith("flag_") || t.startsWith("list_"))
@@ -171,14 +171,16 @@ check("POSITIVE CONTROL: the same scan DOES flag a fixture partner builder that 
   /\.from\(["'](contacts|leads)["']\)/.test(`const { data } = await svc.from("contacts").select("email").eq("id", x)`))
 check("no inputSchema in user-type-tools.ts accepts a vendor_id / brokerage_id / contact_id / lead_id from the model (identity is locked from ctx)",
   !/z\.object\(\{[^}]*\b(vendor_id|brokerage_id|contact_id|lead_id|user_id)\s*:\s*z\./s.test(toolsSrc))
-check("every lender/title write re-checks the model-named transaction against the SESSION's own list before calling the survivor (ids.includes / titleMembershipFor)",
-  (toolsSrc.match(/if \(!ids\.includes\(transaction_id\)\)/g) ?? []).length >= 4 && (toolsSrc.match(/titleMembershipFor\(ctx, transaction_id\)/g) ?? []).length >= 2)
+// Lane 155T3: the title list is the title VENDOR's assigned deals (ctx.titleDealIds), checked by isOwnTitleDeal.
+check("every lender/title write re-checks the model-named transaction against the SESSION's own list before calling the survivor (ids.includes / isOwnTitleDeal)",
+  (toolsSrc.match(/if \(!ids\.includes\(transaction_id\)\)/g) ?? []).length >= 4 && (toolsSrc.match(/if \(!isOwnTitleDeal\(ctx, transaction_id\)\) return/g) ?? []).length >= 2
+  && /function isOwnTitleDeal\(ctx: UserTypeSeatContext, transactionId: string\): boolean \{\s*return ctx\.titleDealIds\.includes\(transactionId\)/.test(toolsSrc))
 check("fail closed: a vendor seat with NO vendor identity mounts ZERO tools",
   Object.keys(buildUserTypeSeatTools({ ...vendorCtx, vendorId: null })).length === 0)
 check("fail closed: a lender seat with NO vendor identity mounts ZERO tools",
   Object.keys(buildUserTypeSeatTools({ ...vendorCtx, seat: "lender", vendorId: null })).length === 0)
-check("fail closed: a title seat with NO membership mounts ZERO tools",
-  Object.keys(buildUserTypeSeatTools({ seat: "title", brokerageId: "b-1", userId: "u-1", vendorId: null, titleMemberships: [] })).length === 0)
+check("fail closed: a title seat with NO assigned deal mounts ZERO tools",
+  Object.keys(buildUserTypeSeatTools({ seat: "title", brokerageId: "b-1", userId: "u-1", vendorId: "v-title", titleDealIds: [] })).length === 0)
 check("fail closed: the seat prompt says 'none' when nothing mounted, and names the tools when they did",
   seatPromptBlock("vendor", []).includes("none — this account is not linked") && seatPromptBlock("vendor", ["get_my_vendor_status"]).includes("get_my_vendor_status"))
 check("every seat-tool read destructures { data, error } (supabase-js RESOLVES refusals — §3): no bare `const { data } = await svc.from(` in the file",
@@ -237,13 +239,20 @@ check("staff / team_lead / broker_admin / platform_staff keep batchData: true + 
 
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 6 · seat resolution — lender is a CATEGORY, the roster is derived]")
-const base = { role: null, userType: null, platformRole: null, vendorCategory: null, hasVendorId: false, isTitleUser: false }
+const base = { role: null, userType: null, platformRole: null, vendorCategory: null, hasVendorId: false }
 check("a vendor grant on a LENDER-category vendor → lender", resolveUserTypeSeat({ ...base, role: "vendor", vendorCategory: "lender", hasVendorId: true }) === "lender")
 check("a 'lender' ROLE word on a NON-lender vendor → vendor (the category makes a lender, not the word — CLAUDE.md §4)",
   resolveUserTypeSeat({ ...base, role: "lender", vendorCategory: "inspector", hasVendorId: true }) === "vendor")
 check("a 'lender' role with NO vendor grant → vendor seat with no identity (tools fail closed), never lender",
   resolveUserTypeSeat({ ...base, role: "lender" }) === "vendor")
-check("a title_company_users row → title; a title-category vendor → title", resolveUserTypeSeat({ ...base, role: "vendor", isTitleUser: true }) === "title" && resolveUserTypeSeat({ ...base, role: "vendor", vendorCategory: "title", hasVendorId: true }) === "title")
+// TITLE IS A VENDOR CATEGORY (CLAUDE.md §4; lane 155T3 retired the title_company_users way in — 0 rows, no writer).
+check("a title-category vendor → title; the CATEGORY decides, never the word (a 'title_agent' role word, or a 'title'-ish category that is not the CHECK value, is a vendor seat)",
+  resolveUserTypeSeat({ ...base, role: "vendor", vendorCategory: "title", hasVendorId: true }) === "title"
+  && resolveUserTypeSeat({ ...base, role: "title_agent" }) === "vendor"
+  && resolveUserTypeSeat({ ...base, role: "vendor", vendorCategory: "title insurance", hasVendorId: true }) === "vendor"
+  && resolveUserTypeSeat({ ...base, role: "vendor", vendorCategory: "inspector", hasVendorId: true }) === "vendor")
+check("a title-category vendor with NO resolved vendor identity is not a title seat (no identity, no title tools)",
+  resolveUserTypeSeat({ ...base, role: "vendor", vendorCategory: "title", hasVendorId: false }) === "vendor")
 check("team_lead → team_lead", resolveUserTypeSeat({ ...base, role: "team_lead" }) === "team_lead")
 check("broker / broker_owner / broker_admin / admin / compliance_officer → broker_admin (derived from TENANT_ADMIN_USER_TYPES minus team_lead)",
   ["broker", "broker_owner", "broker_admin", "admin", "compliance_officer"].every((r) => resolveUserTypeSeat({ ...base, role: r }) === "broker_admin"))
@@ -255,8 +264,11 @@ check("COPILOT_ADMITTED_ROLES carries broker_owner and broker_admin (the two sto
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[Layer 7 · the route mounts the selection; old defects gone; registration]")
 check("route: PERMITTED_ROLES literal set is GONE; COPILOT_ADMITTED_ROLES is consulted", !/const PERMITTED_ROLES = new Set/.test(routeSrc) && routeSrc.includes("COPILOT_ADMITTED_ROLES.has(r)"))
-check("route: seat resolved from SESSION facts (selectVendorId over grants, vendors.category, title_company_users by user.id) — never the body",
-  /resolveUserTypeSeat\(\{\s*role,/.test(routeSrc) && /selectVendorId\(grants\)/.test(routeSrc) && /\.from\("title_company_users"\)[^\n]*\.eq\("user_id", user\.id\)/.test(routeSrc))
+check("route: seat resolved from SESSION facts (selectVendorId over grants, vendors.category; a title vendor's deals from its assignments in the session tenant) — never the body, never the dead title_company_users rail",
+  /resolveUserTypeSeat\(\{\s*role,/.test(routeSrc) && /selectVendorId\(grants\)/.test(routeSrc)
+  && /titleVendorTransactionIds\(service,\s*vendorIdForSeat as string,\s*brokerageId\)/.test(routeSrc)
+  && /isTitleVendorCategory\(/.test(routeSrc) && !/\.from\("title_company_users"\)/.test(routeSrc))
+
 check("route: streamTextRouted receives selectToolsForSeat's output (tools), not a hand-merged spread",
   /const tools = selectToolsForSeat\(seat, \{ staffTools: agentTools, seatTools, batchDataTools, rentCastTools, customerTools \}\)/.test(routeSrc) && /maxTokens: 1024,\s*tools,/.test(routeSrc))
 check("route: the acting-for contact is TENANT-CHECKED (contacts by id + session brokerage) and its persona derived from the row (resolveToolPersona)",

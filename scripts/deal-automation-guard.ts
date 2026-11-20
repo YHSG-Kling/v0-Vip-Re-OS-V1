@@ -193,7 +193,17 @@ async function main() {
   check("financials: a 'vendor' seat (every live lender / title user) is refused (pre-fix: allowed)", canViewFinancials({ userId: "u", role: "vendor", brokerageId: B1 }).allowed === false)
   check("financials: the canonical 'lender' / 'title_agent' permission roles stay refused; an agent is allowed", !canViewFinancials({ userId: "u", role: "lender", brokerageId: B1 }).allowed && !canViewFinancials({ userId: "u", role: "title_agent", brokerageId: B1 }).allowed && canViewFinancials({ userId: "u", role: "agent", brokerageId: B1 }).allowed)
   const badge = code("app/api/dashboard/badge-counts/route.ts")
-  check("title badge: counted for the vendor seat (title is a vendor category), keyed on this user's title_company_users rows", /userType === "vendor"\s*\?\s*supabase\s*\.from\("title_company_users"\)[\s\S]{0,120}\.eq\("user_id", user\.id\)/.test(codeWithStrings("app/api/dashboard/badge-counts/route.ts")) && !/title_agent/.test(badge))
+  // Lane 155T3: TITLE IS A VENDOR CATEGORY (CLAUDE.md §4) — the badge counts the SESSION's title vendor's assigned files
+  // (resolveTitleVendorActor → vendor_assignments by that vendor, in the session tenant), never the writer-less
+  // title_company_users table (0 rows: every title badge read 0).
+  const badgeS = codeWithStrings("app/api/dashboard/badge-counts/route.ts")
+  const TITLE_BADGE = /userType === "vendor"\s*\?\s*\(async \(\) => \{[\s\S]{0,200}resolveTitleVendorActor\(supabase, null\)[\s\S]{0,400}\.from\("vendor_assignments"\)[\s\S]{0,160}\.eq\("vendor_id", seat\.actor\.vendorId\)\s*\.eq\("brokerage_id", brokerageId\)/
+  check("title badge: counted for the vendor seat (title is a vendor category), keyed on the session's title vendor's assignments in the session tenant — no title_company_users read",
+    TITLE_BADGE.test(badgeS) && !/\.from\("title_company_users"\)/.test(badgeS) && !/title_agent/.test(badge))
+  check("title badge POSITIVE CONTROL: the finder refuses the old dead-rail shape and a version keyed on a vendor id from anywhere but the session's seat",
+    !TITLE_BADGE.test(`userType === "vendor" ? supabase.from("title_company_users").select("id", { count: "exact", head: true }).eq("user_id", user.id)`)
+      && !TITLE_BADGE.test(badgeS.replace('.eq("vendor_id", seat.actor.vendorId)', '.eq("vendor_id", body.vendorId)')))
+
 
   // ═══ D. CONTACT-ONLY WELCOME VIDEO ═════════════════════════════════════════════════════════════════════════════════════════
   section("D a contact-only welcome video is never re-published through the shared library")

@@ -69,7 +69,7 @@ const STUB: Record<string, string> = {
   // lawful-channel gate replaced by a COUNTED seam that admits the portal (in_app). Its model is the injected `decide` (counted).
   "@/lib/ai-isa/followup-arbiter": `export * from ${JSON.stringify(pathToFileURL(join(process.cwd(), "lib/ai-isa/followup-arbiter.ts")).href)}; export async function lawfulChannelsForContact(){ globalThis.__PA.arbiter++; return { ok: true, lawful: new Set(['in_app', 'email']), refusals: {} } }`,
   // Lane 155F2 — the seat gates (their own proofs live elsewhere): the lender / title SEAT is a fixture; null = no seat → refused.
-  "@/lib/kernel/portal-auth": "export class PortalAuthError extends Error {}; export async function requireLenderVendorActor(){ const a = globalThis.__PA.lender; if (!a) throw new PortalAuthError('Not an authenticated lender vendor on this transaction'); return a }; export async function requireTitleActor(){ const a = globalThis.__PA.title; if (!a) throw new PortalAuthError('Not an authenticated title user'); return a }",
+  "@/lib/kernel/portal-auth": "export class PortalAuthError extends Error {}; export async function requireLenderVendorActor(){ const a = globalThis.__PA.lender; if (!a) throw new PortalAuthError('Not an authenticated lender vendor on this transaction'); return a }; export async function requireTitleVendorActor(){ const a = globalThis.__PA.title; if (!a) throw new PortalAuthError('Not authorized — your account is not a title company vendor'); return a }",
   "@/lib/kernel/transactions": "export async function emitTransactionEvent(){ globalThis.__PA.events++; return { ok: true } }",
   "@/lib/storage/signed-doc-url": "export function documentOpenHref(){ return '#' }",
   "@/lib/transactions/milestone-service": "export async function completeMilestone(){ return { ok: true } }",
@@ -461,14 +461,14 @@ async function main() {
     await askEducationTutor(C1, "Did title come back clean?")
     const tp = await import("../app/actions/title-portal")
     G.__PA.title = null
-    const tr0 = await tp.updateTitleStatus({ transactionId: T1, titleUserId: "u-title", newStatus: "commitment_issued" })
+    const tr0 = await tp.updateTitleStatus({ transactionId: T1, newStatus: "commitment_issued" })
     check("INJECT-004 (title): no authenticated title seat → refused; the record and the question are untouched", !tr0.success && rows(db3, "transaction_title_escrow")[0].title_status === "ordered" && qTasks(db3).every((t) => t.status === "pending"))
-    G.__PA.title = { userId: "u-title", email: "closer@baytitle.example", brokerageId: B1 }
-    const tr = await tp.updateTitleStatus({ transactionId: T1, titleUserId: "u-title", newStatus: "commitment_issued" })
+    G.__PA.title = { userId: "u-title", vendorId: V_T, brokerageId: B1, companyName: "Bay Title", companyPhone: null, email: "closer@baytitle.example" } // a title VENDOR seat (lane 155T3)
+    const tr = await tp.updateTitleStatus({ transactionId: T1, newStatus: "commitment_issued" })
     const tt = qTasks(db3).find((t) => (t.tags ?? []).includes("pq_fact:title_clearance"))
     const tm = rows(db3, "client_portal_messages").filter((m) => /title record shows "commitment issued"/.test(m.body))
     check("SIMULATED: title's seat writes 'commitment issued' → the title question closes once and the client is told once", tr.success && tt?.status === "completed" && tm.length === 1, { task: tt?.status, msgs: tm.length })
-    await tp.updateTitleStatus({ transactionId: T1, titleUserId: "u-title", newStatus: "commitment_issued" })
+    await tp.updateTitleStatus({ transactionId: T1, newStatus: "commitment_issued" })
     check("a replayed title status sends nothing", rows(db3, "client_portal_messages").filter((m) => /title record shows/.test(m.body)).length === 1)
     G.__PA.lender = null; G.__PA.title = null
   }

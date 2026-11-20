@@ -2,35 +2,31 @@
 
 import { documentOpenHref } from "@/lib/storage/signed-doc-url"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import { requireTitleActor, PortalAuthError } from "@/lib/kernel/portal-auth"
+import { requireTitleVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import { TITLE_VISIBLE_MILESTONES, type TitleStatus } from "@/lib/title-portal/constants"
+import { TRANSACTION_STATUSES_TERMINAL } from "@/lib/transactions/transaction-status"
 
 // ─── GET TITLE USER DASHBOARD ────────────────────────────────────────────────
-export async function getTitleDashboard(titleUserId: string) {
-  // Auth gate — requireTitleActor verifies the session user is mapped to
-  // the claimed title_company_user row. Without this, any caller could
-  // enumerate any title company's full deal pipeline (purchase prices,
-  // close dates, buyer + agent contact info, earnest money status).
-  let actor
-  try {
-    actor = await requireTitleActor(titleUserId)
-  } catch (err) {
-    if (err instanceof PortalAuthError) throw err
-    throw err
-  }
+export async function getTitleDashboard() {
+  // Auth gate — the SESSION's title vendor seat (lib/kernel/portal-auth.ts requireTitleVendorActor: a vendor whose
+  // category is title, in a brokerage). No caller-supplied id: without a gate any caller could enumerate any title
+  // company's full deal pipeline (purchase prices, close dates, buyer + agent contact info, earnest money status).
+  const actor = await requireTitleVendorActor(null)
 
   const supabase = await createClient()
 
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, user_id, company_name, email, phone")
-    .eq("id", actor.titleUserId)
-    .single()
+  // TOMBSTONE (wave 155, lane 155T3): the profile was read from title_company_users (0 rows, no writer). Its survivor
+  // is the title VENDOR row the gate resolved (lib/kernel/portal-auth.ts requireTitleVendorActor): company name and
+  // phone from vendors, the email from the signed-in person. `id` is the vendors.id.
+  const titleUser = { id: actor.vendorId, user_id: actor.userId, company_name: actor.companyName, email: actor.email, phone: actor.companyPhone }
 
-  if (!titleUser) {
-    throw new Error("Title user not found")
-  }
+  // The seat's OWN deals: the transactions its title vendor is assigned to in its tenant (vendor_assignments) — the
+  // same rule the gate holds for one deal. (This used to match transaction_title_escrow.title_company_email.)
+  const { titleVendorTransactionIds } = await import("@/lib/kernel/lender-linkage")
+  const own = await titleVendorTransactionIds(supabase, actor.vendorId, actor.brokerageId)
+  if (!own.ok) throw new Error(`Could not load the title pipeline: ${own.error}`)
 
   // Get all transactions assigned to this title company
   //
@@ -41,7 +37,11 @@ export async function getTitleDashboard(titleUserId: string) {
   //     (agent_id, buyer_agent_id, seller_agent_id), so PostgREST could not pick
   //     one. It is now pinned to agent_id, the listing/deal agent.
   // The result was that the title company's entire deal pipeline rendered empty.
-  const { data: titleEscrowRecords, error: recordsError } = await supabase
+  // GATE FIRST, THEN THE SERVICE CLIENT (CLAUDE.md §4; wave 155, integrator — LIVE-VERIFIED 2026-11-20): the two SELECT
+  // policies on transaction_title_escrow admit the deal's agents and broker / admin / tc seats, never a vendor seat, so on
+  // the session client this read was successfully EMPTY for the very seat the gate admits. Pinned to the seat's own
+  // assigned deals and its tenant below.
+  const { data: titleEscrowRecords, error: recordsError } = await createServiceClient()
     .from("transaction_title_escrow")
     .select(`
       id,
@@ -70,7 +70,8 @@ export async function getTitleDashboard(titleUserId: string) {
         )
       )
     `)
-    .eq("title_company_email", titleUser.email)
+    .in("transaction_id", own.ids.length > 0 ? own.ids : ["00000000-0000-0000-0000-000000000000"])
+    .eq("brokerage_id", actor.brokerageId)
     .order("created_at", { ascending: false })
 
   // supabase-js RESOLVES a failed query, so `const { data }` alone reported a
@@ -104,9 +105,12 @@ export async function getTitleDashboard(titleUserId: string) {
   })
 
   // Calculate dashboard stats
+  // THE ONE VOCABULARY (§6): transactions.status has no "cancelled" — the hand-typed pair ["closed","cancelled"] counted
+  // lost / funded / archived deals as active. Surfaced by check-vocabulary once this file stopped reading the dead
+  // title_company_users table first (lane 155T3) and the comparison was attributed to `transactions`.
   const activeCount = records.filter((r) => {
     const tx = Array.isArray(r.transactions) ? r.transactions[0] : r.transactions
-    return !["closed", "cancelled"].includes(tx?.status || "")
+    return !(TRANSACTION_STATUSES_TERMINAL as readonly string[]).includes(tx?.status || "")
   }).length
   const pendingEarnestMoney = records.filter((r) => r.earnest_money_status === "pending").length
   const titleIssuesCount = records.filter((r) => (r.title_issues?.length || 0) > 0).length
@@ -139,40 +143,24 @@ export async function getTitleDashboard(titleUserId: string) {
 }
 
 // ─── GET TITLE TRANSACTION DETAIL ────────────────────────────────────────────
-export async function getTitleTransactionDetail(transactionId: string, titleUserId: string) {
-  // Auth gate — requireTitleActor verifies the session user is mapped
-  // to this title_company_user row.
-  let actor
-  try {
-    actor = await requireTitleActor(titleUserId)
-  } catch (err) {
-    if (err instanceof PortalAuthError) throw err
-    throw err
-  }
+export async function getTitleTransactionDetail(transactionId: string) {
+  // Auth gate — the SESSION's title vendor seat, ASSIGNED to this transaction in its own tenant
+  // (requireTitleVendorActor). TOMBSTONE (lane 155T3): the title_company_users profile read and the escrow-email
+  // "assignment" check lived here; both are now the gate's (lib/kernel/portal-auth.ts requireTitleVendorActor).
+  const actor = await requireTitleVendorActor(transactionId)
 
   const supabase = await createClient()
 
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, email, company_name")
-    .eq("id", actor.titleUserId)
-    .single()
-
-  if (!titleUser) {
-    throw new Error("Title user not found")
-  }
-
-  // Check assignment via transaction_title_escrow
-  const { data: titleEscrow } = await supabase
+  // The deal's title / escrow record — read AFTER the gate admitted the deal, pinned to the actor's tenant. It may
+  // not exist yet (the page renders "pending"); a refused read is not "no record".
+  // Service client after the gate, for the reason stated in getTitleDashboard: no policy lets a vendor seat read this table.
+  const { data: titleEscrow, error: escrowError } = await createServiceClient()
     .from("transaction_title_escrow")
     .select("*")
     .eq("transaction_id", transactionId)
-    .eq("title_company_email", titleUser.email)
-    .single()
-
-  if (!titleEscrow) {
-    throw new Error("Unauthorized: Title company not assigned to this transaction")
-  }
+    .eq("brokerage_id", actor.brokerageId)
+    .maybeSingle()
+  if (escrowError) throw new Error(`Could not read the title record: ${escrowError.message}`)
 
   // Fetch transaction with related data
   const { data: transaction, error: txnError } = await supabase
@@ -195,6 +183,7 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
       )
     `)
     .eq("id", transactionId)
+    .eq("brokerage_id", actor.brokerageId)
     .single()
 
   if (txnError || !transaction) {
@@ -262,6 +251,7 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
 
   return {
     transaction: transactionWithAgent,
+    titleCompany: { name: actor.companyName, email: actor.email },
     titleEscrow,
     milestones: milestones || [],
     documents: (documents || []).map((d: any) => ({ ...d, file_url: documentOpenHref(d.file_url) })), // wave 154 (154M): file_url aliases a stored docref:// reference
@@ -273,36 +263,20 @@ export async function getTitleTransactionDetail(transactionId: string, titleUser
 // ─── UPLOAD TITLE DOCUMENT ───────────────────────────────────────────────────
 export async function uploadTitleDocument(data: {
   transactionId: string
-  titleUserId: string
   documentType: "title_commitment" | "settlement_statement" | "final_closing_disclosure" | "wire_instructions"
   fileName: string
   fileUrl: string
 }) {
   // Auth gate — wire_instructions especially are CRITICAL (wire fraud
   // vector). Previously any caller could upload a wire-instructions
-  // document to any transaction in any tenant.
-  let actor
-  try {
-    actor = await requireTitleActor(data.titleUserId)
-  } catch (err) {
-    if (err instanceof PortalAuthError) throw err
-    throw err
-  }
+  // document to any transaction in any tenant. The gate admits only the
+  // SESSION's title vendor seat ASSIGNED to THIS transaction inside its own
+  // tenant (vendor_assignments.brokerage_id = vendors.brokerage_id), so the
+  // deal is proven in scope before any read or write below. (The escrow-email
+  // match that stood here is the gate's now — lane 155T3.)
+  const actor = await requireTitleVendorActor(data.transactionId)
 
   const supabase = await createClient()
-
-  // Verify this transaction is assigned to the actor's title company
-  const { data: titleEscrow } = await supabase
-    .from("transaction_title_escrow")
-    .select("transaction_id, brokerage_id, transactions(brokerage_id)")
-    .eq("transaction_id", data.transactionId)
-    .eq("title_company_email", actor.email)
-    .maybeSingle()
-  if (!titleEscrow) throw new Error("Title company not assigned to this transaction")
-  const txBrokerageId = (titleEscrow.transactions as any)?.brokerage_id ?? actor.brokerageId
-  if (txBrokerageId !== actor.brokerageId) {
-    throw new Error("Forbidden: transaction not in your brokerage scope")
-  }
 
   // Insert document with warning metadata for wire instructions
   const metadata = data.documentType === "wire_instructions"
@@ -343,7 +317,7 @@ export async function uploadTitleDocument(data: {
         const r = await notifyAgentOfPreliminaryCdAction({ transactionId: data.transactionId, documentId: document.id })
         cdaBridge = r.success ? { kind, ok: true, cdaId: r.cdaId, version: r.version } : { kind, ok: false, error: r.error }
       } else {
-        cdaBridge = await attachFinalStatementFromTitle(supabase, { transactionId: data.transactionId, documentId: document.id, brokerageId: actor.brokerageId })
+        cdaBridge = await attachFinalStatementFromTitle({ transactionId: data.transactionId, documentId: document.id, brokerageId: actor.brokerageId })
       }
     } catch (e) {
       cdaBridge = { kind, ok: false, error: e instanceof Error ? e.message : String(e) }
@@ -379,9 +353,18 @@ export async function uploadTitleDocument(data: {
  * brokerage the finalization lock still fires on the transaction. Agent + TC are told at once either way.
  */
 async function attachFinalStatementFromTitle(
-  supabase: Awaited<ReturnType<typeof createClient>>,
   args: { transactionId: string; documentId: string; brokerageId: string },
 ): Promise<{ kind: "final"; ok: boolean; cdaId?: string | null; error?: string }> {
+  // GATE FIRST, THEN THE SERVICE CLIENT (CLAUDE.md §4; wave 155, integrator — LIVE-VERIFIED 2026-11-20 against pg_policies).
+  // The only caller is uploadTitleDocument, after requireTitleVendorActor(transactionId) proved the title vendor's seat is
+  // assigned to THIS deal in THIS tenant. This helper used the caller's SESSION client, and a vendor seat is refused by policy
+  // on every row it needs: closing_disclosure_agreement SELECT admits financial readers only, so the "is there a CDA?" read came
+  // back successfully EMPTY and a CDA deal took the no-CDA branch; transactions UPDATE admits agents, so the finalization lock
+  // matched nothing; notifications INSERT admits tenant staff, so the agent and the TC were never told. Each read and write
+  // below is pinned to the proven deal and tenant. The CDA row itself is still stamped ONLY by uploadFinalCdAction (the one
+  // writer of final_cd_*): on a CDA deal a title seat's attach is refused there and the caller escalates to the brokerage's
+  // admins — the visible, human path — instead of this helper becoming a second writer.
+  const supabase = createServiceClient()
   const { data: cda, error: cdaErr } = await supabase
     .from("closing_disclosure_agreement")
     .select("id")
@@ -452,36 +435,39 @@ async function attachFinalStatementFromTitle(
 // ─── UPDATE TITLE STATUS ─────────────────────────────────────────────────────
 export async function updateTitleStatus(data: {
   transactionId: string
-  titleUserId: string
   newStatus: TitleStatus
 }): Promise<{ success: boolean; error?: string }> {
   let actor
   try {
-    actor = await requireTitleActor(data.titleUserId)
+    actor = await requireTitleVendorActor(data.transactionId)
   } catch (err) {
     if (err instanceof PortalAuthError) return { success: false, error: err.message }
     throw err
   }
-  const titleUserEmail = actor.email
+  const titleUserEmail = actor.email ?? actor.companyName ?? "title"
 
   const supabase = await createClient()
-  if (!titleUserEmail) return { success: false, error: "Title user has no email on file" }
 
-  // Update title escrow status
-  const { error } = await supabase
+  // Update title escrow status — the deal's record in the actor's tenant (the gate proved the assignment). A write that
+  // matched NOTHING is not a success (CLAUDE.md §3): `.select()` it and count.
+  // Service client after the gate (see getTitleDashboard): on the session client the update matched NOTHING for a vendor
+  // seat (no policy admits it), so title could never move its own status and was told the deal "has no record".
+  const { data: updatedRows, error } = await createServiceClient()
     .from("transaction_title_escrow")
     .update({
       title_status: data.newStatus,
       updated_at: new Date().toISOString(),
     })
     .eq("transaction_id", data.transactionId)
-    .eq("title_company_email", titleUserEmail)
+    .eq("brokerage_id", actor.brokerageId)
+    .select("transaction_id")
 
   if (error) return { success: false, error: error.message }
+  if ((updatedRows ?? []).length === 0) return { success: false, error: "This deal has no title / escrow record yet, so its title status could not be updated." }
 
   const brokerageId = actor.brokerageId
 
-  // THE CLIENT'S OPEN QUESTIONS (wave 155, lane 155F2 — owner R10): title answered through ITS OWN seat (requireTitleActor above),
+  // THE CLIENT'S OPEN QUESTIONS (wave 155, lane 155F2 — owner R10): title answered through ITS OWN seat (requireTitleVendorActor above),
   // so open portal questions on this deal are re-evaluated from the record — "did title come back clean?" closes once and the
   // client is answered once; a replay sends nothing. Gate first, then the service client. Non-blocking.
   try {
@@ -553,14 +539,15 @@ export async function updateTitleStatus(data: {
 // ─── UPDATE CLOSING PREP ITEM ────────────────────────────────────────────────
 export async function updateClosingPrepItem(data: {
   transactionId: string
-  titleUserId: string
   itemKey: string
   status: "pending" | "in_progress" | "completed"
   notes?: string
 }): Promise<{ success: boolean; error?: string }> {
+  // The gate now names the DEAL (lane 155T3): the old claimed-id gate checked only that the caller owned SOME title
+  // profile and never that this transaction was theirs, so any title seat could edit any deal's closing checklist.
   let actor
   try {
-    actor = await requireTitleActor(data.titleUserId)
+    actor = await requireTitleVendorActor(data.transactionId)
   } catch (err) {
     if (err instanceof PortalAuthError) return { success: false, error: err.message }
     throw err
@@ -628,40 +615,29 @@ export async function updateClosingPrepItem(data: {
 // ─── SEND MESSAGE TO AGENT ───────────────────────────────────────────────────
 export async function sendTitleMessageToAgent(data: {
   transactionId: string
-  titleUserId: string
   message: string
 }) {
-  // Auth gate
-  let actor
-  try {
-    actor = await requireTitleActor(data.titleUserId)
-  } catch (err) {
-    if (err instanceof PortalAuthError) throw err
-    throw err
-  }
+  // Auth gate — the SESSION's title vendor seat assigned to THIS deal in its own tenant (requireTitleVendorActor).
+  const actor = await requireTitleVendorActor(data.transactionId)
 
   const supabase = await createClient()
   return ledgered(actor, { action: "transaction.title_message.send", subject: { type: "transaction", id: data.transactionId }, riskClass: "COMMUNICATION" }, async () => {
 
-  // Verify title company is assigned to this transaction AND the
-  // transaction is in the actor's brokerage scope.
-  const { data: titleEscrow } = await supabase
-    .from("transaction_title_escrow")
-    .select("transaction_id, transactions(brokerage_id, property_address, agent_id)")
-    .eq("transaction_id", data.transactionId)
-    .eq("title_company_email", actor.email)
+  // The gate proved the assignment; the deal itself is read pinned to the actor's tenant, and a refusal is read (§3).
+  const { data: tx, error: txError } = await supabase
+    .from("transactions")
+    .select("id, brokerage_id, property_address, agent_id")
+    .eq("id", data.transactionId)
+    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
-  if (!titleEscrow) throw new Error("Title company not assigned to this transaction")
-  const tx = titleEscrow.transactions as any
+  if (txError) throw new Error(`Could not read the deal: ${txError.message}`)
   if (!tx || tx.brokerage_id !== actor.brokerageId) {
     throw new Error("Forbidden: transaction not in your brokerage scope")
   }
 
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("company_name")
-    .eq("id", actor.titleUserId)
-    .single()
+  // TOMBSTONE (lane 155T3): the company name was read from title_company_users (0 rows, no writer); its survivor is
+  // the title vendor row the gate resolved (lib/kernel/portal-auth.ts requireTitleVendorActor → vendors.name).
+  const titleUser = { company_name: actor.companyName }
 
   // WAVE 155 (lane 155S2): THE RECIPIENT IS THE AGENT'S USER SEAT, delivered through the door this file already uses to
   // reach the agent (the final-CD bridge above: notifications, user_id resolved from agents.id by
@@ -675,7 +651,7 @@ export async function sendTitleMessageToAgent(data: {
   // home reads it by contact_id), so the title company's note to the agent would have been shown to the client. Nothing
   // is written to that table now; no contact id is invented.
   //
-  // Service client AFTER the gate (requireTitleActor above, and the deal proven inside the actor's tenant): a title
+  // Service client AFTER the gate (requireTitleVendorActor above, and the deal proven inside the actor's tenant): a title
   // vendor seat's session client is not entitled to read the agents row it needs to address.
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
@@ -700,7 +676,7 @@ export async function sendTitleMessageToAgent(data: {
     title: `Title / escrow note — ${titleUser?.company_name || "title company"}`,
     description: data.message.slice(0, 2000),
     status: "completed",
-    metadata: { type: "title_message", title_user_id: actor.titleUserId, title_email: actor.email },
+    metadata: { type: "title_message", title_vendor_id: actor.vendorId, title_email: actor.email },
   })
   if (logError) throw logError
 
@@ -733,11 +709,11 @@ export async function sendTitleMessageToAgent(data: {
 // milestone completion included), once per DISTINCT transaction behind the
 // selected items — never a second status writer.
 //
-// No titleUserId is threaded in from the page: a title_company_users row is
-// scoped to ONE transaction (see getTitleTransactionDetail's own comment), so
-// there is no single company-wide id for an aggregate, multi-deal batch. This
-// resolves the caller's OWN title_company_users row per transaction instead —
-// updateTitleStatus's requireTitleActor call still re-verifies every one.
+// No id is threaded in from the page: the actor is the SESSION's title vendor
+// seat, and updateTitleStatus's requireTitleVendorActor(transactionId) re-gates
+// every distinct deal behind the selection — a deal the seat is not assigned to
+// is refused there, by name, and counted as not done. (TOMBSTONE, lane 155T3:
+// this resolved title_company_users rows per transaction — 0 rows, no writer.)
 async function batchSetTitleTransactionStatus(
   milestoneIds: string[],
   newStatus: TitleStatus,
@@ -754,21 +730,14 @@ async function batchSetTitleTransactionStatus(
     .in("id", milestoneIds)
   if (readError) return { success: false, count: 0, error: readError.message }
 
-  const transactionIds = [...new Set((rows ?? []).map((r) => r.transaction_id))]
+  const transactionIds = [...new Set((rows ?? []).map((r) => r.transaction_id).filter((x): x is string => !!x))]
   if (transactionIds.length === 0) return { success: true, count: 0 }
-
-  const { data: titleUserRows } = await supabase
-    .from("title_company_users")
-    .select("id, transaction_id")
-    .eq("user_id", user.id)
-    .in("transaction_id", transactionIds)
 
   let count = 0
   let lastError: string | undefined
-  for (const row of titleUserRows ?? []) {
+  for (const transactionId of transactionIds) {
     const result = await updateTitleStatus({
-      transactionId: row.transaction_id,
-      titleUserId: row.id,
+      transactionId,
       newStatus,
     })
     if (result.success) count++

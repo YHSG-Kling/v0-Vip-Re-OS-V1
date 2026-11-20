@@ -169,8 +169,12 @@ export function canViewFinancials(
 //   lib/kernel/portal-auth.ts:61   requireLenderVendorActor(transactionId)
 //        lender identity via user_role_assignments → vendors (lender category),
 //        assignment proven through vendor_assignments for THIS transaction.
-//   lib/kernel/portal-auth.ts:111  requireTitleActor(claimedTitleUserId)
-//        title identity via title_company_users owned by the session user.
+//   lib/kernel/portal-auth.ts      requireTitleVendorActor(transactionId)
+//        title identity via user_role_assignments → vendors (title category),
+//        assignment proven through vendor_assignments for THIS transaction
+//        (lane 155T3 — it replaced requireTitleActor, which read the writer-less
+//        title_company_users table).
+
 //
 // THE MILESTONE ALLOW-LIST IS NOT LOST — it was made unnecessary rather than
 // dropped. This function existed to keep an external party away from milestones
@@ -178,7 +182,7 @@ export function canViewFinancials(
 // surviving actions accept NO milestone parameter at all, which is the stronger
 // form of the same rule: app/actions/lender-portal-actions.ts:161
 // issueClearToClose writes only `clear_to_close_received`, and
-// app/actions/title-portal.ts:332 updateTitleStatus writes only
+// app/actions/title-portal.ts:436 updateTitleStatus writes only
 // `closing_scheduled` / `closed`. The read-side visibility vocabularies are
 // app/actions/lender-portal.ts:4 LENDER_VISIBLE_MILESTONES and
 // lib/title-portal/constants.ts:8 TITLE_VISIBLE_MILESTONES.

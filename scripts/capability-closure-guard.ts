@@ -256,8 +256,13 @@ async function main() {
   check("D3 the portfolio has BOTH readers: the vendor's own page and the agents' vendor directory (a writer with no reader is half a capability)", /listMyVendorPortfolio\(/.test(code("app/vendor/portfolio/page.tsx")) && /<VendorPortfolioStrip\b/.test(code("app/dashboard/vendors/vendor-directory-client.tsx")) && /listVendorPortfolioForStaff\(/.test(code("app/components/vendors/vendor-portfolio-strip.tsx")))
   const ca = tokens("app/actions/title/closing-appointment.ts"), caS = code("app/actions/title/closing-appointment.ts")
   const prop = ca.slice(ca.indexOf("export async function proposeClosingAppointment"))
-  check("D4 the closing-appointment writer gates on the deal's TITLE party (own-session deal read + a title vendor seat or a title_company_users row) before writing, ledgers transaction.closing_appointment.propose, lands the agent's task, refuses another day as an amendment, and NEVER writes transactions",
-    prop.search(/requireTitlePartyOnDeal\(/) >= 0 && prop.search(/requireTitlePartyOnDeal\(/) < prop.search(/createServiceClient\(\)/) && /transaction\.closing_appointment\.propose/.test(caS) && /\.from\("tasks"\)\.insert\(/.test(caS) && /amendment/.test(caS) && !/\.from\("transactions"\)\.(?:update|upsert|insert|delete)\(/.test(caS) && /vendorSeatsForUser/.test(ca))
+  // Lane 155T3: the TITLE party is the title VENDOR seat assigned to the deal (lib/kernel/portal-auth.ts
+  // resolveTitleVendorActor — title is a vendor category, CLAUDE.md §4); the writer-less title_company_users fallback is gone.
+  check("D4 the closing-appointment writer gates on the deal's TITLE party (own-session deal read + the title vendor seat ASSIGNED to that deal, through the one title gate) before writing, ledgers transaction.closing_appointment.propose, lands the agent's task, refuses another day as an amendment, and NEVER writes transactions",
+    prop.search(/requireTitlePartyOnDeal\(/) >= 0 && prop.search(/requireTitlePartyOnDeal\(/) < prop.search(/createServiceClient\(\)/) && /transaction\.closing_appointment\.propose/.test(caS) && /\.from\("tasks"\)\.insert\(/.test(caS) && /amendment/.test(caS) && !/\.from\("transactions"\)\.(?:update|upsert|insert|delete)\(/.test(caS)
+      && /resolveTitleVendorActor\(supabase,\s*d\.id\)/.test(caS) && !/\.from\("title_company_users"\)/.test(caS))
+  check("D4 POSITIVE CONTROL — the dead-rail finder catches the old fallback read", /\.from\("title_company_users"\)/.test(`await svc.from("title_company_users").select("id, company_name")`))
+
   check("D5 POSITIVE CONTROL — the 'never writes transactions' finder catches a close_date update", /\.from\("transactions"\)\.(?:update|upsert|insert|delete)\(/.test(`await svc.from("transactions").update({ close_date: d })`))
 
   console.log(`\nRESULT: ${pass} passed, ${fail} failed`)

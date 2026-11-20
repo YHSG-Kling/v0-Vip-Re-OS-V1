@@ -727,7 +727,8 @@ canary({
     // session is a seam: identity comes from auth.getUser() only, never from the request.
     const { resolveExternalPartnerIdentity, externalPartnerTransactionLane } = await import("../lib/kernel/portal-auth")
     const TXV = "75470000-0000-4000-8000-000000000001", TXX = "75470000-0000-4000-8000-000000000002"
-    ;(w.tables as any).title_company_users = []
+    // (lane 155T3: the resolver no longer reads title_company_users — a title company is a title-category VENDOR seat, held
+    // by scripts/external-portal-session-identity-guard.ts G8/G9 — so no empty table is seeded for it here.)
     ;(w.tables as any).vendor_assignments = [{ id: "va-1", vendor_id: VND, transaction_id: TXV, brokerage_id: T1 }]
     ;(w.tables as any).users = [...((w.tables as any).users ?? []), { id: VU, brokerage_id: T1, user_type: "vendor" }]
     const sessionAs = (uid: string | null) => ({ auth: { getUser: async () => ({ data: { user: uid ? { id: uid } : null }, error: null }) }, from: embedView.from })

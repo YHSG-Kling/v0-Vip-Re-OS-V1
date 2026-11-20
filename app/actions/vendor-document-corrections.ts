@@ -87,15 +87,17 @@ export async function submitIssuerDocumentCorrectionAction(input: {
   if (!who.ok) return { success: false, error: who.reason === "refused" ? "Your access couldn't be confirmed just now, so nothing was filed. Try again shortly." : "Only a lender, title company or vendor on the deal can file a corrected version of its document." }
   const id = who.identity
   if (!id.brokerageId) return { success: false, error: "Your account isn't linked to a business on the platform, so nothing was filed. Ask the agent you work with." }
-  const asTitle = input.as === "title" ? id.isTitlePartner : input.as === "vendor" ? false : !id.vendorId && id.isTitlePartner
-  let identity: { kind: "title"; email: string } | { kind: "lender" | "vendor"; vendorId: string }
+  // A title company is a VENDOR seat (CLAUDE.md §4): its identity is the title vendor, whose ASSIGNMENT to this deal
+  // the filing reads (lib/documents/vendor-document-correction.ts). TOMBSTONE (wave 155, lane 155T3): the title hat
+  // used to read an email off title_company_users (0 rows, no writer); the survivor is identity.titleVendorId from
+  // lib/kernel/portal-auth.ts resolveExternalPartnerIdentity.
+  const hasOtherVendor = !!id.vendorId && id.vendorId !== id.titleVendorId
+  const asTitle = input.as === "title" ? id.isTitlePartner : input.as === "vendor" ? false : !hasOtherVendor && id.isTitlePartner
+  let identity: { kind: "title"; vendorId: string } | { kind: "lender" | "vendor"; vendorId: string }
   if (asTitle) {
-    const { data: tu, error: tuErr } = await supabase.from("title_company_users").select("email").eq("user_id", id.userId).limit(1)
-    if (tuErr) return { success: false, error: "Your title company access couldn't be confirmed just now, so nothing was filed. Try again shortly." }
-    const email = ((tu ?? []) as Array<{ email: string | null }>)[0]?.email ?? null
-    if (!email) return { success: false, error: "Your title company profile has no email, so the deal's title assignment can't be matched. Ask the agent to update it." }
-    identity = { kind: "title", email }
-  } else if (id.vendorId) {
+    if (!id.titleVendorId) return { success: false, error: "Only a lender, title company or vendor on the deal can file a corrected version of its document." }
+    identity = { kind: "title", vendorId: id.titleVendorId }
+  } else if (id.vendorId && hasOtherVendor) {
     identity = { kind: id.isLenderVendor ? "lender" : "vendor", vendorId: id.vendorId }
   } else {
     return { success: false, error: "Only a lender, title company or vendor on the deal can file a corrected version of its document." }

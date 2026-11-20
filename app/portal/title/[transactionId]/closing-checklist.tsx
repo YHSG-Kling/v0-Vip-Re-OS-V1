@@ -51,11 +51,9 @@ const STATUS_CONFIG = {
 
 export function ClosingChecklist({
   transactionId,
-  titleUserId,
   closingPrep,
 }: {
   transactionId: string
-  titleUserId: string
   closingPrep?: ClosingPrep | null
 }) {
   const router = useRouter()
@@ -73,7 +71,6 @@ export function ClosingChecklist({
       // would appear to move and then be right back where it was on refresh.
       const r = await updateClosingPrepItem({
         transactionId,
-        titleUserId,
         itemKey,
         status: newStatus,
       })

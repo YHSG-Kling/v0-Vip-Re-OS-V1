@@ -191,6 +191,7 @@ ENGINEERING READY — OWNER ACTIONS REMAIN once none is; CONTROLLED PRODUCTION V
   name them; then regenerate the CHECK vocabulary cache.
 - **R.3** re-key live `website_question:` topic rows onto `ti:customer_question:<theme>` (§R l.1428-1445), collisions first.
 - **R.4** retarget the m705 "First Appointment" badge to `SIGNED_AGREEMENT_APPOINTMENT` (§R l.1446-1460); default: shown unavailable.
+- **R.5** (optional) drop the empty `title_company_users` table: nothing writes or reads it now; the block refuses if it is not empty.
 
 ## 12. Engineering record (no owner action)
 
@@ -214,5 +215,5 @@ ENGINEERING READY — OWNER ACTIONS REMAIN once none is; CONTROLLED PRODUCTION V
 | 6 | Counsel review + publish legal texts | Owner + counsel | before any live subscription | LEGAL status line |
 | 7 | Licenses, keys, ceilings per provider | Owner | only providers you enable | LICENSES status line |
 | 8 | Live probes on the preview | Owner | after 1-5 | LIVE-PROBES status line |
-| 9 | §P.1 drop (optional); §R.1-R.4 | Owner | when needed | §P.1 `0 · 1`; §R read-backs |
+| 9 | §P.1 drop (optional); §R.1-R.5 | Owner | when needed | §P.1 `0 · 1`; §R read-backs |
 | 10 | Flip stamps, re-run guards | Integrator | after each owner step | `test:release-blockers`, `test:production-readiness` |

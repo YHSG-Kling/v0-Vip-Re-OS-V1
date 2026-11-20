@@ -896,7 +896,7 @@ function main() {
   console.log("    be noticed here — assertion 0 only proves the twelve listed ones still exist.")
   console.log("  · The four matrix assertions prove the DECLARATION, not the runtime. No lender")
   console.log("    or title surface consults the permission matrix at all today — they gate on")
-  console.log("    ASSIGNMENT (requireLenderVendorActor / requireTitleActor, lib/kernel/portal-auth.ts")
+  console.log("    ASSIGNMENT (requireLenderVendorActor / requireTitleVendorActor, lib/kernel/portal-auth.ts")
   console.log("    :61 and :111) — so a green here does not mean any row filter is scoped. It means")
   console.log("    the table a future gate would read no longer declares the §5 violation.")
   console.log("  · EXTERNAL_SEATS is a LIST of four. A fifth outside-party role added to the")

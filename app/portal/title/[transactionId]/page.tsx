@@ -62,29 +62,12 @@ export default async function TitleTransactionDetailPage({
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Get title user profile
-  const { data: titleUser } = await supabase
-    .from("title_company_users")
-    .select("id, email, company_name")
-    .eq("user_id", user.id)
-    .single()
-
-  if (!titleUser) {
-    return (
-      <div className="container mx-auto p-6">
-        <Card>
-          <CardContent className="p-8 text-center">
-            <Building className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-            <p className="text-muted-foreground">No title company profile found.</p>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
+  // TOMBSTONE (wave 155, lane 155T3): a title_company_users profile was read here (0 rows, no writer) and its id
+  // threaded into every action as an authority. The survivor is the session's title vendor seat, assigned to THIS
+  // deal — lib/kernel/portal-auth.ts requireTitleVendorActor, called inside the loader and inside every action.
   let detail
   try {
-    detail = await getTitleTransactionDetail(transactionId, titleUser.id)
+    detail = await getTitleTransactionDetail(transactionId)
   } catch (error: any) {
     return (
       <div className="container mx-auto p-6">
@@ -101,7 +84,7 @@ export default async function TitleTransactionDetailPage({
     )
   }
 
-  const { transaction, titleEscrow, milestones, documents, closingPrep, daysUntilClose } = detail
+  const { transaction, titleCompany, titleEscrow, milestones, documents, closingPrep, daysUntilClose } = detail
   const titleStatus = titleEscrow?.title_status || "pending"
   const emdStatus = titleEscrow?.earnest_money_status || "pending"
   const titleStatusConfig = TITLE_STATUS_CONFIG[titleStatus] || TITLE_STATUS_CONFIG.pending
@@ -122,7 +105,7 @@ export default async function TitleTransactionDetailPage({
           </Button>
           <h1 className="text-2xl font-bold">{transaction.property_address || "Transaction Details"}</h1>
           <div className="flex items-center gap-2 text-muted-foreground">
-            <span>{titleUser.company_name}</span>
+            <span>{titleCompany.name}</span>
             {titleEscrow?.escrow_number && (
               <>
                 <span>|</span>
@@ -231,7 +214,6 @@ export default async function TitleTransactionDetailPage({
           {/* Closing Checklist */}
           <ClosingChecklist
             transactionId={transactionId}
-            titleUserId={titleUser.id}
             closingPrep={closingPrep}
           />
 
@@ -284,7 +266,6 @@ export default async function TitleTransactionDetailPage({
           {/* Document Upload */}
           <TitleDocumentUpload
             transactionId={transactionId}
-            titleUserId={titleUser.id}
             existingDocuments={documents}
           />
         </div>
@@ -294,7 +275,6 @@ export default async function TitleTransactionDetailPage({
           {/* Actions Card */}
           <TitleActions
             transactionId={transactionId}
-            titleUserId={titleUser.id}
             currentStatus={titleStatus}
           />
 

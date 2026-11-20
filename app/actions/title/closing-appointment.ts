@@ -21,9 +21,9 @@
  * an amendment for, is refused with the reason: that is an amendment / extension for the transaction coordinator.
  *
  * GATE FIRST (CLAUDE.md §4): the deal is read through the caller's OWN RLS session (public.transactions' SELECT
- * policies admit a vendor party only on an assigned deal), and the caller must hold a TITLE seat — a title-category
- * vendor grant in the deal's brokerage (lib/kernel/lender-linkage.ts vendorSeatsForUser, the ONE user → vendor
- * resolver; title is a VENDOR CATEGORY, never a user type) or a title_company_users row on that deal. Only then the
+ * policies admit a vendor party only on an assigned deal), and the caller must hold a TITLE seat ASSIGNED to that deal —
+ * lib/kernel/portal-auth.ts resolveTitleVendorActor (title is a VENDOR CATEGORY, never a user type: a title-category
+ * vendor grant whose vendor_assignments row names this transaction in the seat's own tenant). Only then the
  * service client writes, pinned to the deal's brokerage.
  */
 
@@ -57,17 +57,17 @@ async function requireTitlePartyOnDeal(transactionId: string): Promise<TitleGate
   if (error) return { ok: false, error: `Could not read the deal: ${error.message}` }
   if (!deal) return { ok: false, error: "That deal is not one you are a party to." }
   const d = deal as unknown as TitleDeal
-  const svc = createServiceClient()
-  const { vendorSeatsForUser } = await import("@/lib/kernel/lender-linkage")
-  const seats = (await vendorSeatsForUser(svc, user.id)).filter((s) => s.category === "title" && s.brokerageId === d.brokerage_id)
-  let seatName = seats[0]?.name ?? null
-  if (!seats.length) {
-    const { data: tcu, error: tErr } = await svc.from("title_company_users").select("id, company_name").eq("user_id", user.id).eq("transaction_id", d.id).limit(1).maybeSingle()
-    if (tErr) return { ok: false, error: `Could not verify your title seat: ${tErr.message}` }
-    if (!tcu) return { ok: false, error: "Only the deal's title company can propose its closing appointment." }
-    seatName = (tcu as { company_name?: string | null }).company_name ?? null
+  // THE ONE TITLE GATE (lib/kernel/portal-auth.ts resolveTitleVendorActor): a title-category vendor seat ASSIGNED to
+  // THIS deal in its own tenant. Two rules stood here — "a title seat in the deal's brokerage" or a title_company_users
+  // row on the deal; the gate's is the stricter (the assignment, not merely the brokerage), and it is kept.
+  // TOMBSTONE (wave 155, lane 155T3): the title_company_users fallback (0 rows, no writer) is gone.
+  const { resolveTitleVendorActor } = await import("@/lib/kernel/portal-auth")
+  const gate = await resolveTitleVendorActor(supabase, d.id)
+  if (!gate.ok) {
+    return { ok: false, error: gate.reason === "refused" ? `Could not verify your title seat: ${gate.detail}` : "Only the deal's title company can propose its closing appointment." }
   }
-  return { ok: true, userId: user.id, seatName, deal: d }
+  if (gate.actor.brokerageId !== d.brokerage_id) return { ok: false, error: "Only the deal's title company can propose its closing appointment." }
+  return { ok: true, userId: user.id, seatName: gate.actor.companyName, deal: d }
 }
 
 /** The deals with a closing date the caller can see (their own RLS session) — the form's picker. */
@@ -75,17 +75,20 @@ export async function listClosingDealsForTitle(): Promise<{ ok: true; deals: Clo
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthorized" }
-  // The brokerages this caller is a TITLE party for (a title vendor seat, or a title_company_users row) — the RLS read
-  // below is pinned to them as well, so the picker never offers a deal of a tenant the seat does not serve.
+  // The deals this caller's TITLE vendor seat is ASSIGNED to (vendor_assignments, in the seat's own tenant) — the same
+  // rule the proposal's gate holds per deal, so the picker never offers a deal the proposal would refuse.
+  // TOMBSTONE (wave 155, lane 155T3): a title_company_users brokerage list (0 rows, no writer) was merged in here.
   const svc = createServiceClient()
-  const { vendorSeatsForUser } = await import("@/lib/kernel/lender-linkage")
-  const brokerageIds = new Set((await vendorSeatsForUser(svc, user.id)).filter((s) => s.category === "title").map((s) => s.brokerageId).filter(Boolean) as string[])
-  const { data: tcu, error: tErr } = await svc.from("title_company_users").select("brokerage_id").eq("user_id", user.id).limit(50)
-  if (tErr) return { ok: false, error: `Could not verify your title seat: ${tErr.message}` }
-  for (const r of (tcu ?? []) as Array<{ brokerage_id: string | null }>) if (r.brokerage_id) brokerageIds.add(r.brokerage_id)
-  if (brokerageIds.size === 0) return { ok: true, deals: [] }
+  const { vendorSeatsForUser, isTitleVendorCategory, titleVendorTransactionIds } = await import("@/lib/kernel/lender-linkage")
+  const dealIds = new Set<string>()
+  for (const s of (await vendorSeatsForUser(svc, user.id)).filter((s) => isTitleVendorCategory(s.category) && !!s.brokerageId)) {
+    const own = await titleVendorTransactionIds(svc, s.vendorId, s.brokerageId)
+    if (!own.ok) return { ok: false, error: `Could not verify your title seat: ${own.error}` }
+    for (const id of own.ids) dealIds.add(id)
+  }
+  if (dealIds.size === 0) return { ok: true, deals: [] }
   const { data, error } = await supabase.from("transactions").select("id, property_address, close_date, contract_closing_date, contract_closing_terms")
-    .in("brokerage_id", [...brokerageIds]).not("close_date", "is", null).gte("close_date", new Date().toISOString().slice(0, 10)).order("close_date", { ascending: true }).limit(50)
+    .in("id", [...dealIds]).not("close_date", "is", null).gte("close_date", new Date().toISOString().slice(0, 10)).order("close_date", { ascending: true }).limit(50)
   if (error) return { ok: false, error: error.message }
   return { ok: true, deals: ((data ?? []) as Array<{ id: string; property_address: string | null; close_date: string; contract_closing_date: string | null; contract_closing_terms: string | null }>).map((r) => ({
     id: r.id, propertyAddress: r.property_address, closeDate: (r.contract_closing_date ?? r.close_date).slice(0, 10),

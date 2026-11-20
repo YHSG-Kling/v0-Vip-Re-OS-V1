@@ -144,13 +144,21 @@ export async function GET() {
       // Title open orders. TITLE IS A VENDOR CATEGORY (CLAUDE.md §4): 'title_agent' left the
       // users.user_type CHECK in m307, so the old `userType === "title_agent"` branch could never
       // match and every title seat's badge read 0 (wave 153, lane 153Q). The title seat is a vendor
-      // seat; the read is keyed on THIS user's title_company_users rows, so a non-title vendor counts 0.
+      // seat; the count is THIS user's title vendor's open files (lib/kernel/portal-auth.ts resolveTitleVendorActor →
+      // vendor_assignments in its tenant), so a non-title vendor counts 0. TOMBSTONE (lane 155T3): this counted
+      // title_company_users rows (0 rows, no writer) — every title badge read 0.
       userType === "vendor"
-        ? supabase
-            .from("title_company_users")
-            .select("id", { count: "exact", head: true })
-            .eq("user_id", user.id)
-            .eq("brokerage_id", brokerageId)
+        ? (async () => {
+            const { resolveTitleVendorActor } = await import("@/lib/kernel/portal-auth")
+            const seat = await resolveTitleVendorActor(supabase, null)
+            if (!seat.ok) return seat.reason === "refused" ? { count: 0, error: { message: seat.detail } } : { count: 0 }
+            if (seat.actor.brokerageId !== brokerageId) return { count: 0 }
+            return supabase
+              .from("vendor_assignments")
+              .select("id", { count: "exact", head: true })
+              .eq("vendor_id", seat.actor.vendorId)
+              .eq("brokerage_id", brokerageId)
+          })()
         : Promise.resolve({ count: 0 }),
 
       // ISA calling queue — ai_isa_qualifications awaiting outreach
