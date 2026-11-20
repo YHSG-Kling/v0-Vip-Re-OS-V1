@@ -1293,7 +1293,12 @@ function closureSpans(fns: FnSpan[], v: Views, root: FnSpan): FnSpan[] {
   while (queue.length) {
     const cur = queue.pop()!
     const body = v.ids.slice(cur.start, cur.end); walked.push(body)
-    for (const m of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+    // WAVE 155 (integrator): A CALL WRITTEN WITH EXPLICIT TYPE ARGUMENTS IS STILL A CALL. `ledgered<{ success: boolean }>(seat, …)`
+    // was not followed to the same-file helper that holds the receipt, so app/actions/copilot.ts handleCoachingSessionBooked read
+    // "missing evidence" with its receipt in place — the census accusing live code. The optional `<…>` admits one level of type
+    // arguments with no nested angle bracket or parenthesis (a function type or a nested generic there is still not followed —
+    // a blind spot, stated). Controls: section B (a followed generic call; a comparison `a < b && b > (a)` is not a call).
+    for (const m of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*(?:<[^<>()]*>)?\s*\(/g)) {
       const callee = byName.get(m[1])
       if (callee && !seen.has(callee.name)) { seen.add(callee.name); out.push(callee); queue.push(callee) }
     }
@@ -2190,6 +2195,22 @@ async function main(): Promise<void> {
   check("POSITIVE CONTROL: a write whose ledger door is only in a comment and a string has NO evidence and NO gate", fxFacts("plantedUnledgered").writes.has("transactions") && fxFacts("plantedUnledgered").evidence.length === 0 && fxFacts("plantedUnledgered").gates.length === 0 && !fxFacts("plantedUnledgered").session)
   check("…and the same write inside withActionLedger( has evidence", fxFacts("plantedLedgered").evidence.some((e) => e.token === "withActionLedger"))
   check("a read-only export is not consequential (no write, no egress)", fxFacts("plantedRead").writes.size === 0 && fxFacts("plantedRead").egress.length === 0)
+  {
+    const FX_GEN = "app/actions/__os_coverage_generic_call_fixture__.ts"
+    const fxGenV = views(FX_GEN, [
+      `async function helperLedgered<T>(run: () => Promise<T>) { return withActionLedger({ action: "x" }, run) }`,
+      `export async function plantedGenericCall(id: string) {`,
+      `  return helperLedgered<{ ok: boolean; error?: string }>(async () => svc.from("transactions").update({}).eq("id", id))`,
+      `}`,
+      `export async function plantedComparison(a: number, b: number) { if (a < b && b > (a)) return 1; return 0 }`,
+      `export async function plantedPlainCall(id: string) { return helperLedgered(async () => svc.from("transactions").update({}).eq("id", id)) }`,
+    ].join("\n"))!
+    const fxGenFns = topLevelFns(fxGenV)
+    const reach = (n: string) => closureSpans(fxGenFns, fxGenV, fxGenFns.find((f) => f.name === n)!).map((x) => x.name)
+    check("POSITIVE CONTROL (newly FOUND): a same-file helper called with explicit type arguments is followed to its receipt", reach("plantedGenericCall").includes("helperLedgered"), reach("plantedGenericCall"))
+    check("…a plain call to the same helper is still followed", reach("plantedPlainCall").includes("helperLedgered"))
+    check("NEGATIVE CONTROL: a comparison (`a < b && b > (a)`) is not read as a call", !reach("plantedComparison").includes("helperLedgered") && reach("plantedComparison").length === 1, reach("plantedComparison"))
+  }
   rmSync(fxDir, { recursive: true, force: true })
 
   section("C — the census (every population read from its registry)")
