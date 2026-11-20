@@ -74,11 +74,17 @@ export async function getListingCoaching(
     }
   }
 
+  // LAW 5 (wave 155, lane 155R23): a cache miss or a stale row (7 days) regenerates seller_stage_coaching through a PAID model
+  // inside getSellerCoaching, so this request leaves ONE receipt: the session user, the SESSION's tenant (the listing was read
+  // under it above), the listing. Spend stays on the AI cost ledger; no key — a second request is a second request.
+  const sessionTenant = userRow.brokerage_id as string
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: sessionTenant, action: "coaching.seller_stage_card.load", actor: { type: "user", userId: user.id }, subject: { type: "listing", id: listing.id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { listing_stage: listing.lifecycle_stage ?? "LEAD" } }, async (): Promise<GetListingCoachingResult> => {
   try {
     const coaching = await getSellerCoaching(
       listing.lifecycle_stage ?? "LEAD",
       persona,
-      listing.brokerage_id ?? userRow.brokerage_id
+      listing.brokerage_id ?? sessionTenant
     )
 
     return {
@@ -91,6 +97,7 @@ export async function getListingCoaching(
   } catch (err: any) {
     return { success: false, error: err?.message ?? "Coaching generation failed" }
   }
+  })
 }
 
 /**

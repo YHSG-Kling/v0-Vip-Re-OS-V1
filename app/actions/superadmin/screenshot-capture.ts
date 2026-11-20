@@ -21,12 +21,22 @@ import {
 
 type ActionResult = { ok: true; assetId: string; url: string; cached: boolean } | { ok: false; error: string }
 
+// WAVE 155 (lane 155R23 — LAW 5, no tenant): a platform-library still belongs to NO brokerage (brokerageId "platform",
+// visibility_scope 'platform'), so agent_action_ledger cannot hold its receipt and no tenant is invented. After the platform
+// gate and the act, ONE row on the platform's evidence door (lib/platform/staff-action-gate.ts recordPlatformEvidence →
+// superadmin_audit_log): who (the staff user), what, which asset, and what happened — a refusal is recorded too. NOT exported.
+async function evidence(userId: string | null, action: string, assetId: string | null, details: Record<string, unknown>): Promise<void> {
+  const { recordPlatformEvidence } = await import("@/lib/platform/staff-action-gate")
+  await recordPlatformEvidence({ actorUserId: userId, actorEmail: null, action, targetType: "marketing_asset", targetId: assetId, details })
+}
+
 /** Capture (or return today's cached) demo still for a registered OS surface. */
 export async function captureDemoStillAction(input: { surfaceId: string; redact?: string[] }): Promise<ActionResult> {
   const auth = await requireMarketing()
   if (!auth.ok) return { ok: false, error: auth.error }
   if (!DEMO_STILL_SURFACES.some((s) => s.id === input.surfaceId)) return { ok: false, error: `demo still surface "${input.surfaceId}" is not registered` }
   const r = await captureScreenshot({ kind: "os_surface", surfaceId: input.surfaceId, redact: input.redact, brokerageId: "platform" }, { svc: createServiceClient() })
+  await evidence(auth.userId, "platform_screenshot.demo_still_captured", r.ok ? r.assetId : null, r.ok ? { surface_id: input.surfaceId, cached: r.cached } : { surface_id: input.surfaceId, refused: r.reason })
   return r.ok ? { ok: true, assetId: r.assetId, url: r.url, cached: r.cached } : { ok: false, error: r.reason }
 }
 
@@ -35,6 +45,7 @@ export async function capturePublicPropertyStillAction(input: { query: string })
   const auth = await requireMarketing()
   if (!auth.ok) return { ok: false, error: auth.error }
   const r = await capturePublicPropertyPage(input.query, { svc: createServiceClient() })
+  await evidence(auth.userId, "platform_screenshot.public_page_captured", r.ok ? r.assetId : null, r.ok ? { cached: r.cached } : { refused: r.reason })
   return r.ok ? { ok: true, assetId: r.assetId, url: r.url, cached: r.cached } : { ok: false, error: r.reason }
 }
 
@@ -55,6 +66,7 @@ export async function setScreenshotUsesAction(input: { assetId: string; uses: Sc
   if (!auth.ok) return { ok: false, error: auth.error }
   if (typeof input.assetId !== "string" || !input.assetId) return { ok: false, error: "assetId required" }
   const r = await setScreenshotUses(createServiceClient(), input.assetId, Array.isArray(input.uses) ? input.uses : [])
+  await evidence(auth.userId, "platform_screenshot.uses_set", input.assetId, r.ok ? { uses: r.uses } : { refused: r.reason })
   return r.ok ? { ok: true, uses: r.uses } : { ok: false, error: r.reason }
 }
 

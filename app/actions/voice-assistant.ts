@@ -549,7 +549,12 @@ export async function getVoiceConfig(_agentId?: string) {
     .single()
 
   // Create default config if doesn't exist
+  // LAW 5 (wave 155, lane 155R23): the receipt sits on the SEED insert only — the once-per-agent default row (the settings-read
+  // rule lane 155R19 set for lib/kernel/global-settings.ts): a view that finds its row writes nothing and records nothing. The
+  // tenant is the SESSION's (resolveCallerAgentId); no key (the existence read above is this seed's once). No tenant → the seed
+  // runs exactly as before, unrecorded (agent_action_ledger.brokerage_id is NOT NULL).
   if (!config) {
+    const seed = async (): Promise<{ success: boolean; error?: string; config?: any }> => {
     const { data: newConfig, error } = await supabase
       .from("voice_assistant_config")
       .insert({
@@ -564,8 +569,15 @@ export async function getVoiceConfig(_agentId?: string) {
       console.error("[voice-assistant] Error creating config:", error)
       return { success: false, error: error.message }
     }
+    return { success: true, config: newConfig }
+    }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const seeded: { success: boolean; error?: string; config?: any } = caller.brokerageId
+      ? await ledgerSessionAction({ brokerageId: caller.brokerageId, action: "voice.assistant_config.seed", actor: { type: "user", userId: caller.userId }, subject: { type: "agent", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, seed)
+      : await seed()
+    if (!seeded.success) return { success: false, error: seeded.error ?? "Could not create the voice assistant settings" }
 
-    config = newConfig
+    config = seeded.config
   }
 
   return { success: true, config }

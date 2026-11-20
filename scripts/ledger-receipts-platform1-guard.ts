@@ -84,10 +84,10 @@ const ROWS: Record<string, string[]> = {
  *  work finished (CLAUDE.md §2: an assertion pinned to a waypoint). */
 const OPEN: Record<string, string> = {
   "app/actions/connections/connection-center.ts#getConnectionCenter": "READ-ONLY: only selects (isProviderConnected reads platform_credentials / agent_api_credentials / social_media_accounts)",
-  "app/actions/calculators.ts#calculateAffordability": "TELEMETRY: pure math; its only write is trackToolUsage (calculator usage analytics), callable anonymously",
-  "app/actions/calculators.ts#calculateRentVsBuy": "TELEMETRY: pure math; its only write is trackToolUsage (calculator usage analytics), callable anonymously",
+  // WAVE 155 (lane 155R23): calculateAffordability / calculateRentVsBuy (a SIGNED-IN caller's usage row; an anonymous visitor
+  // has no tenant and stays unrecorded) and getVoiceConfig (the once-per-agent SEED insert only — a view that finds its row
+  // records nothing) now carry their receipt in their own span, so they left OPEN and are judged as wrapped rows.
   "app/actions/superadmin/subscription-contracts.ts#listSubscriptionContractTemplatesAction": "READ-ONLY + platform staff: lists templates and signature counts",
-  "app/actions/voice-assistant.ts#getVoiceConfig": "READ with a lazy default-row insert on first view — a receipt per settings view is not a user decision",
   "app/actions/ai-predictions.ts#batchPredictLeadConversions": "FAN-OUT: no write of its own; each lead runs through predictLeadConversion, which leaves the receipt",
   "app/actions/ai-predictions.ts#refreshStalePredictions": "FAN-OUT: no write of its own; re-runs predictLeadConversion per stale lead, which leaves the receipt",
 }

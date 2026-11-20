@@ -28,6 +28,9 @@ export async function recordTosAcceptanceAction(input: { email: string; version:
   // honestly and the funnel stops (app/get-started/trial-funnel-form.tsx) — an acceptance is never dropped silently. No ledger
   // receipt: agent_action_ledger.brokerage_id is NOT NULL and a pre-account acceptance has no tenant; the acceptance row
   // (email, version, IP, user agent, accepted_at) is the legal record.
+  // WAVE 155 (lane 155R23 — LAW 5, no tenant): and the ACT is evidenced on the platform's own door once the row landed — ONE
+  // superadmin_audit_log row (recordPlatformEvidence): no actor user (pre-account), the public surface named, the acceptance
+  // row's id and the version. The email stays on the acceptance row only. Still no ledger row and no invented tenant.
   const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
   const door = await decidePublicDoor({
     surface: "platform-tos-acceptance", callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
@@ -36,12 +39,17 @@ export async function recordTosAcceptanceAction(input: { email: string; version:
   if (!door.allowed) return { ok: false, error: "Too many requests from this connection — your acceptance was NOT recorded. Please try again in a few minutes." }
   const svc = createServiceClient()
   const hdrs = await headers()
-  const { error } = await svc.from("platform_tos_acceptances").upsert({
+  const { data: accepted, error } = await svc.from("platform_tos_acceptances").upsert({
     email, tos_version: version,
     ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
     user_agent: hdrs.get("user-agent"),
-  }, { onConflict: "email,tos_version" })
+  }, { onConflict: "email,tos_version" }).select("id")
   if (error) return { ok: false, error: error.message }
+  const { recordPlatformEvidence } = await import("@/lib/platform/staff-action-gate")
+  await recordPlatformEvidence({
+    actorUserId: null, actorEmail: "public:platform-tos-acceptance", action: "platform_tos.accepted", targetType: "platform_tos_acceptance",
+    targetId: ((accepted ?? []) as Array<{ id: string }>)[0]?.id ?? null, details: { tos_version: version, door: door.basis },
+  })
   return { ok: true }
 }
 

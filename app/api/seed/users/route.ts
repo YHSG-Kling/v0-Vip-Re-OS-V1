@@ -141,6 +141,14 @@ export async function POST(request: Request) {
   }
 
   const successCount = results.filter((r) => r.success).length
+  // LAW 5 (wave 155, lane 155R23 — no tenant): a seed writes GLOBAL users rows that belong to no brokerage, so its record is the
+  // platform's evidence door (recordPlatformEvidence → superadmin_audit_log), ONE row per run, after the maintenance gate and the
+  // production refusal above: what ran and the honest counts (emails only — no password material). Never an invented tenant.
+  const { recordPlatformEvidence } = await import("@/lib/platform/staff-action-gate")
+  await recordPlatformEvidence({
+    actorUserId: null, actorEmail: "system:seed_users", action: "platform_seed.users_seeded", targetType: "platform_seed", targetId: null,
+    details: { seeded: successCount, attempted: TEST_USERS.length, failed: results.filter((r) => !r.success).map((r) => r.email) },
+  }, { client: supabase })
   return NextResponse.json({
     message: `Seeded ${successCount}/${TEST_USERS.length} test users`,
     results,

@@ -51,6 +51,8 @@ async function provisionDemoProfile(
   const userType = USER_TYPE_MAP[demoUser.role] ?? demoUser.role;
 
   const service = createServiceClient();
+  type Provisioned = { ok: true } | { ok: false; error: string };
+  const write = async (): Promise<Provisioned> => {
   const { error } = await service.from('users').upsert(
     {
       id: userId,
@@ -67,6 +69,21 @@ async function provisionDemoProfile(
   );
   if (error) return { ok: false, error: `Failed to provision demo profile: ${error.message}` };
   return { ok: true };
+  };
+  // LAW 5 (wave 155, lane 155R23): ONE receipt per provisioning — the only write this demo door makes. It runs only when
+  // DEMO_CONFIG.ENABLED (hard-off when VERCEL_ENV is production; demoSignIn refuses first), and only after verifyDemoTenant proved
+  // the fixed demo brokerage exists, so the tenant is the one this account's session IS anchored to (users.brokerage_id written
+  // right here) — never a caller's. Actor = `system` (the demo door), the account is the SUBJECT: on a first sign-up the users
+  // row does not exist until this very write, so a user actor would fail the ledger's users FK and the act would run unrecorded.
+  // No key: a heal after a failed write runs again.
+  const { withActionLedger } = await import('@/lib/kernel/action-ledger');
+  return withActionLedger<Provisioned>({
+    brokerageId: DEMO_CONFIG.BROKERAGE_ID, action: 'auth.demo_account.provision', actor: { type: 'system', userId: null }, systemSource: 'demo_auth',
+    subject: { type: 'user', id: userId }, riskClass: 'LOW_RISK_WRITE', reasonCode: 'HUMAN_REQUESTED', detail: { demo_role: demoUser.role },
+  }, write, {
+    settle: (r) => r.ok ? { status: 'executed', outcome: 'demo_profile_provisioned' } : { status: 'failed', outcome: 'demo_profile_refused', error: r.error },
+    replay: (claim) => ({ ok: false, error: claim.kind === 'refused' ? `the action ledger refused this provisioning's receipt: ${claim.error}` : 'this demo account is already being provisioned' }),
+  });
 }
 
 /**

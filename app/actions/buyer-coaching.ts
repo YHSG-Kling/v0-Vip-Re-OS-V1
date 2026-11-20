@@ -94,6 +94,14 @@ export async function getBuyerCoaching(params: {
   // renders (objections, next action, stage duration, success / risk signals) and the requesting user on
   // the ledger row. This action is now only the SESSION gate (above) in front of the survivor; the tenant
   // it passes is the session's (`brokerageId = caller.brokerageId`), never params.brokerageId.
+  //
+  // LAW 5 (wave 155, lane 155R23): this request may PAY for a model call and write buyer_stage_coaching (a cache miss or a row
+  // older than 7 days regenerates inside the survivor), so it leaves ONE receipt: the session user, the SESSION's tenant, the
+  // contact it was asked about. The model's spend stays on the AI cost ledger (no costUsd here — nothing is double-booked). No
+  // key: a second request is a second request. Whether THIS request hit the cache is decided inside the survivor and is not
+  // visible here — the receipt records the request that authorized the spend, not a claim that one occurred.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId, action: "coaching.buyer_stage_card.load", actor: { type: "user", userId: caller.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { buyer_stage: stage } }, async (): Promise<BuyerCoachingResult> => {
   try {
     const { getBuyerCoaching: coachingSurvivor } = await import("@/lib/intelligence/coaching-engine")
     const c = await coachingSurvivor(stage, persona as Parameters<typeof coachingSurvivor>[1], brokerageId, { actorUserId: caller.userId })
@@ -116,4 +124,5 @@ export async function getBuyerCoaching(params: {
   } catch (e) {
     return { success: false, error: (e as Error)?.message ?? "Coaching could not be loaded" }
   }
+  })
 }

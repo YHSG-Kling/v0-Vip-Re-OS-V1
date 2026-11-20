@@ -734,36 +734,68 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
  * emailed link could ever have succeeded.** The service client is the door this
  * lane needs; the id pair, not a session, is what authorizes it.
  */
-export async function handleRSVP(params: { eventId: string; invitationId: string; response: "yes" | "maybe" | "no" }) {
+export async function handleRSVP(params: { eventId: string; invitationId: string; response: "yes" | "maybe" | "no" }): Promise<{ success: boolean; error?: string; message?: string }> {
   if (!isValidUUID(params.eventId) || !isValidUUID(params.invitationId)) {
     return { success: false, error: "Invalid IDs" }
+  }
+  // A "use server" export is a public endpoint: the response union is a compile-time promise, not a runtime one.
+  if (params.response !== "yes" && params.response !== "maybe" && params.response !== "no") {
+    return { success: false, error: "Please choose yes, maybe or no." }
   }
 
   const supabase = createServiceClient()
 
   try {
+    // WAVE 155 (lane 155R23 — G10, P1): THE DECISION before any write — decidePublicDoor (lib/security/public-rate-limit.ts):
+    // the per-connection cap first, then the TENANT'S OWN OPT-IN, which is the invitation row the tenant's invite email was
+    // minted for (the unguessable (eventId, invitationId) pair is the sealed credential) and the brokerage THAT row proves —
+    // never a body field. No login wall: an invitee is a contact, not a user. Each refusal keeps its honest sentence; nothing
+    // is written on a refusal. Same shape as submitFeedback below (lane 155R21).
     // Destructure `error` (wave 4 slice 2). supabase-js RESOLVES a refused
     // query, so `const { data: invitation }` alone turned an RLS refusal into
     // the same "Invitation not found" as a bad id — and this path then went on
     // to write.
-    const { data: invitation, error: invErr } = await supabase
-      .from("open_house_invitations")
-      .select("*")
-      .eq("id", params.invitationId)
-      .maybeSingle()
+    const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+    const seenInvite: { invitation: any; error: boolean } = { invitation: null, error: false }
+    const rsvpDoor = await decidePublicDoor({
+      surface: "open-house-rsvp", callerKey: await publicCallerIp(), cap: { limit: 10, windowMs: 10 * 60_000 },
+      optIn: async () => {
+        const { data: row, error: invErr } = await supabase
+          .from("open_house_invitations")
+          .select("*")
+          .eq("id", params.invitationId)
+          .maybeSingle()
+        if (invErr) { seenInvite.error = true; return null }
+        // The invitation must actually belong to the event named in the link.
+        // Without this, an invitation id and an event id from two different
+        // brokerages could be combined into one tracking row.
+        if (!row || row.event_id !== params.eventId) return null
+        seenInvite.invitation = row
+        // brokerage_id is STAMPED from the invitation (open_house_rsvp_tracking's RLS admits untenanted rows to everyone —
+        // verified live); a row with no resolvable tenant is refused rather than written world-open.
+        const tenant = (row as { brokerage_id?: string | null }).brokerage_id ?? null
+        return tenant ? { brokerageId: tenant, basis: "open_house_invitations row the tenant's invite link was minted for" } : null
+      },
+    })
+    if (!rsvpDoor.allowed) {
+      if (rsvpDoor.reason === "rate_limited") return { success: false, error: "Too many responses from this connection — your RSVP was not recorded. Please try again in a few minutes." }
+      if (seenInvite.error) return { success: false, error: "Could not look up that invitation — your RSVP was not recorded." }
+      if (seenInvite.invitation) return { success: false, error: "This invitation is not linked to a brokerage — your RSVP was not recorded." }
+      return { success: false, error: "Invitation not found" }
+    }
+    const invitation = seenInvite.invitation
+    const rsvpBrokerageId = rsvpDoor.brokerageId as string
 
-    if (invErr) {
-      return { success: false, error: "Could not look up that invitation — your RSVP was not recorded." }
-    }
-    if (!invitation) {
-      return { success: false, error: "Invitation not found" }
-    }
-    // The invitation must actually belong to the event named in the link.
-    // Without this, an invitation id and an event id from two different
-    // brokerages could be combined into one tracking row.
-    if (invitation.event_id !== params.eventId) {
-      return { success: false, error: "Invitation not found" }
-    }
+    // LAW 5: ONE receipt for the RSVP — tenant = the one the door PROVED, actor `system` (an anonymous invitee holding a link),
+    // subject the invitation. No key: a changed answer ("maybe" → "yes") is a new answer and must run.
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    type Rsvp = { success: boolean; error?: string; message?: string }
+    return await withActionLedger<Rsvp>({
+      brokerageId: rsvpBrokerageId, action: "marketing.open_house_rsvp.record", actor: { type: "system", userId: null },
+      subject: { type: "open_house_invitation", id: params.invitationId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
+      reasonDetail: "invitee answered an open-house invitation", channel: "web", systemSource: "open_house_rsvp_link",
+      detail: { response: params.response, event_id: params.eventId, door: rsvpDoor.basis },
+    }, async (): Promise<Rsvp> => {
 
     // Update invitation — refuse a zero-row write instead of thanking the
     // invitee for an RSVP that was never recorded.
@@ -789,11 +821,7 @@ export async function handleRSVP(params: { eventId: string; invitationId: string
     // wrote was untenanted, which under that policy means readable AND writable
     // by every user of every tenant, and by anonymous callers. Stamping the
     // tenant closes it; a row with no resolvable tenant is refused rather than
-    // written world-open.
-    const rsvpBrokerageId = (invitation as { brokerage_id?: string | null }).brokerage_id ?? null
-    if (!rsvpBrokerageId) {
-      return { success: false, error: "This invitation is not linked to a brokerage — your RSVP was not recorded." }
-    }
+    // written world-open. (Since lane 155R23 the refusal is the door's above: rsvpBrokerageId is the tenant it proved.)
     const { error: trackErr } = await supabase.from("open_house_rsvp_tracking").insert({
       brokerage_id: rsvpBrokerageId,
       event_id: params.eventId,
@@ -816,6 +844,10 @@ export async function handleRSVP(params: { eventId: string; invitationId: string
     }[params.response]
 
     return { success: true, message }
+    }, {
+      settle: (r) => r.success ? { status: "executed", outcome: `rsvp_${params.response}` } : { status: "failed", outcome: "rsvp_not_saved", error: r.error ?? null },
+      replay: (claim) => ({ success: false, error: claim.kind === "refused" ? "Your RSVP could not be recorded just now — please try again." : "That RSVP is already being recorded." }),
+    })
   } catch (error) {
     console.error("Handle RSVP error:", error)
     return { success: false, error: "Failed to record RSVP" }

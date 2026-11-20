@@ -69,6 +69,26 @@ export async function POST(request: NextRequest) {
   }
   if (!hasAccess) return NextResponse.json({ error: "Forbidden" }, { status: 403 })
 
-  await heartbeatLiveAgentSession(liveSessionId)
+  // WAVE 155 (lane 155R23): THE SESSION ROW MUST BE THIS CONTACT'S. The gate above proved access to `contactId`, then stamped
+  // ANY `liveSessionId` — so a caller with access to one contact could keep another tenant's session alive, and the sweeper
+  // bills the heartbeat-derived duration (lib/did/live-session-metering.ts: last_seen_at − started_at). Read the row first: it
+  // must be ACTIVE, belong to this contact and to this contact's brokerage. Anything else is answered like a closed session.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { data: live, error: liveErr } = await createServiceClient().from("live_agent_sessions")
+    .select("id, brokerage_id, contact_id, status").eq("id", liveSessionId).maybeSingle()
+  const row = live as { id: string; brokerage_id: string | null; contact_id: string | null; status: string | null } | null
+  if (liveErr || !row || row.status !== "active" || row.contact_id !== contact.id || !row.brokerage_id || row.brokerage_id !== contact.brokerage_id) {
+    return NextResponse.json({ ok: true })
+  }
+  // LAW 5: ONE receipt per heartbeat — FINANCIAL, because each stamp extends the duration the sweeper bills to the tenant's
+  // invoice. Tenant = the brokerage of the record the gate proved (the contact's, equal to the session row's), actor = the
+  // signed-in caller, subject = the session row. No key: each heartbeat is a new proof of life. heartbeatLiveAgentSession is a
+  // no-op on a row that closed in between (the ordinary shutdown race); the receipt then records the attempt.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  await ledgerSessionAction({
+    brokerageId: row.brokerage_id, action: "billing.live_agent_session.heartbeat", actor: { type: "user", userId: user.id },
+    subject: { type: "live_agent_session", id: row.id }, riskClass: "FINANCIAL", reasonCode: "HUMAN_REQUESTED", channel: "portal",
+    detail: { contact_id: contact.id },
+  }, async () => { await heartbeatLiveAgentSession(row.id); return { success: true } })
   return NextResponse.json({ ok: true })
 }

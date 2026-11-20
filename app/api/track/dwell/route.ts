@@ -74,16 +74,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // WAVE 155 (lane 155R18 — G10): the DECISION before the stamp — the per-IP cap (this route had none; identify's is the
   // model), then the TENANT'S OWN OPT-IN: the visitor row the tenant's own installed pixel minted (a session the pixel never
   // recorded belongs to no tenant and is stamped nowhere). Over the cap or unknown, the answer stays OPAQUE_OK.
+  const seen: { visitorId: string | null } = { visitorId: null }
   const door = await decidePublicDoor({
     surface: 'track-dwell', callerKey: callerIpFrom(req.headers), cap: { limit: 60, windowMs: 60_000 },
     optIn: async () => {
-      const { data: v, error } = await supabase.from('website_visitors').select('brokerage_id').eq('session_id', sessionId).maybeSingle()
-      const b = (v as { brokerage_id: string | null } | null)?.brokerage_id
-      if (error || !b) return null
-      return { brokerageId: b, basis: "website_visitors row minted by the tenant's installed pixel" }
+      const { data: v, error } = await supabase.from('website_visitors').select('id, brokerage_id').eq('session_id', sessionId).maybeSingle()
+      const row = v as { id: string; brokerage_id: string | null } | null
+      if (error || !row?.brokerage_id) return null
+      seen.visitorId = row.id
+      return { brokerageId: row.brokerage_id, basis: "website_visitors row minted by the tenant's installed pixel" }
     },
   })
-  if (!door.allowed) return NextResponse.json(OPAQUE_OK)
+  if (!door.allowed || !door.brokerageId) return NextResponse.json(OPAQUE_OK)
 
   // page_url is written ALONGSIDE the seconds, on purpose: the digest reader
   // (lib/kernel/site-traffic-insights.ts) buckets on the (page_url,
@@ -98,6 +100,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // worked — so a dwell for a session the pixel never recorded (or a purged
   // row) would silently vanish and the digest would stay blind with nothing
   // anywhere saying why.
+  //
+  // LAW 5 (wave 155, lane 155R23): ONE receipt per dwell stamp. Tenant = the one the door PROVED (the visitor row's brokerage —
+  // never the body); actor `system` (an anonymous visitor's beacon); subject the visitor row. Only the seconds go in the detail —
+  // never the page URL (it can carry a visitor's query string). No key: a later page's dwell is a new measurement.
+  const { withActionLedger } = await import('@/lib/kernel/action-ledger')
+  type Dwell = { stamped: true } | { stamped: false; why: string }
+  await withActionLedger<Dwell>({
+    brokerageId: door.brokerageId, action: 'marketing.website_visitor.dwell', actor: { type: 'system', userId: null },
+    subject: seen.visitorId ? { type: 'website_visitor', id: seen.visitorId } : { type: 'website_visitor', ref: sessionId },
+    riskClass: 'LOW_RISK_WRITE', reasonCode: 'CONVERSATION_RESPONSE', channel: 'web', systemSource: 'website_pixel',
+    detail: { seconds, door: door.basis },
+  }, async (): Promise<Dwell> => {
   const { data: stamped, error: updateError } = await supabase
     .from('website_visitors')
     .update({
@@ -110,12 +124,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   if (updateError) {
     console.error('[track/dwell] dwell update refused:', updateError.message)
-    return NextResponse.json(OPAQUE_OK)
+    return { stamped: false, why: 'update_refused' }
   }
   if (!stamped || stamped.length === 0) {
     console.error('[track/dwell] dwell update matched 0 rows for session', sessionId)
-    return NextResponse.json(OPAQUE_OK)
+    return { stamped: false, why: 'matched_zero_rows' }
   }
+  return { stamped: true }
+  }, {
+    settle: (r) => r.stamped ? { status: 'executed', outcome: 'dwell_stamped' } : { status: 'failed', outcome: r.why },
+    replay: (claim) => ({ stamped: false, why: claim.kind === 'refused' ? 'ledger_refused' : 'already_recorded' }),
+  })
 
   return NextResponse.json(OPAQUE_OK)
 }

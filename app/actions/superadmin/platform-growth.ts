@@ -30,6 +30,15 @@ async function platformFunnelDoor(surface: string): Promise<{ ok: true } | { ok:
   return door.allowed ? { ok: true } : { ok: false, error: "Too many requests from this connection — please try again in a few minutes." }
 }
 
+// WAVE 155 (lane 155R23 — LAW 5, no tenant): the hand-raise is the platform's OWN funnel, so agent_action_ledger (brokerage_id
+// NOT NULL) cannot hold it and no tenant is invented. After the door allowed it and the row landed, ONE row on the platform's
+// evidence door (recordPlatformEvidence → superadmin_audit_log): no actor user (an anonymous visitor), `actor_email` names the
+// public surface, the target is the prospect row's id — never the visitor's email or note (they live on the row, not the audit).
+async function funnelEvidence(surface: string, prospectId: string, details: Record<string, unknown>): Promise<void> {
+  const { recordPlatformEvidence } = await import("@/lib/platform/staff-action-gate")
+  await recordPlatformEvidence({ actorUserId: null, actorEmail: `public:${surface}`, action: "platform_prospect.captured", targetType: "platform_prospect", targetId: prospectId, details: { surface, ...details } })
+}
+
 // ── PUBLIC: capture a prospect (no auth — a "get started / notify me" hand-raise) ──
 // TOMBSTONE (lane 76B): the inline `.upsert({...}, { onConflict: "email" })`
 // that stood here was one of THREE spellings of the platform_prospects writer
@@ -50,6 +59,7 @@ export async function capturePlatformProspectAction(input: {
     roleInterest: v.value.roleInterest, source: v.value.source, note: v.value.interestNote,
   })
   if (!saved) return { ok: false, error: "Could not save your details — please try again." }
+  await funnelEvidence("platform-prospect-capture", saved.id, { source: v.value.source ?? null })
   return { ok: true, id: saved.id }
 }
 
@@ -80,6 +90,7 @@ export async function requestPlatformDemoAction(input: {
     detailsPatch: { demo_request: { preferred_times: preferredTimes, requested_at: new Date().toISOString() } },
   })
   if (!saved) return { ok: false, error: "Could not save your request — please try again." }
+  await funnelEvidence("platform-demo-request", saved.id, { source: "demo_request" })
   return { ok: true, id: saved.id }
 }
 

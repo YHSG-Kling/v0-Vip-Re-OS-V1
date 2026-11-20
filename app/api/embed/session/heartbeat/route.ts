@@ -37,7 +37,20 @@ export async function POST(request: NextRequest) {
       return { brokerageId: r.brokerage_id, basis: "live_agent_sessions row (active, minted by the tenant's widget)" }
     },
   })
-  if (!door.allowed) return NextResponse.json({ ok: true })
-  await heartbeatLiveAgentSession(liveSessionId)
+  if (!door.allowed || !door.brokerageId) return NextResponse.json({ ok: true })
+  // LAW 5 (wave 155, lane 155R23): ONE receipt per heartbeat — FINANCIAL (each stamp extends the heartbeat-derived duration the
+  // sweeper bills). Tenant = the one the door PROVED (the session row's brokerage — never the body), actor `system` (an
+  // anonymous visitor's beacon), subject the session row. No key: each heartbeat is a new proof of life.
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(liveSessionId)
+  await withActionLedger<{ stamped: true }>({
+    brokerageId: door.brokerageId, action: "billing.live_agent_session.heartbeat", actor: { type: "system", userId: null },
+    subject: isUuid ? { type: "live_agent_session", id: liveSessionId } : { type: "live_agent_session", ref: liveSessionId },
+    riskClass: "FINANCIAL", reasonCode: "CONVERSATION_RESPONSE", reasonDetail: "embed widget proof of life (visitor beacon)", channel: "web", systemSource: "embed_widget",
+    detail: { door: door.basis },
+  }, async () => { await heartbeatLiveAgentSession(liveSessionId); return { stamped: true as const } }, {
+    settle: () => ({ status: "executed", outcome: "heartbeat_stamped" }),
+    replay: () => ({ stamped: true as const }),
+  })
   return NextResponse.json({ ok: true })
 }

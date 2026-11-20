@@ -406,9 +406,16 @@ export async function notifyPortalEducationCompleted(params: {
   }
   if (prior) return { success: true }
 
+  // LAW 5 (wave 155, lane 155R23): ONE receipt for the notice actually written — only past the dedupe above (a repeat call that
+  // finds the prior notice writes nothing and records nothing). Tenant = the one requireContactAccess proved from the SESSION
+  // (same as markLessonRead); actor = the session user; no key (the dedupe read is this act's once).
+  const recipientUserId = recipient.userId
+  const recipientBrokerageId = recipient.brokerageId
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.education_completion.notify", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: params.contactId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { self: access.isContactSelf } }, async (): Promise<{ success: boolean; error?: string }> => {
   const { error: insertError } = await service.from("notifications").insert({
-    user_id: recipient.userId,
-    brokerage_id: recipient.brokerageId,
+    user_id: recipientUserId,
+    brokerage_id: recipientBrokerageId,
     type: "portal_education_completed",
     title: `${params.contactFirstName ?? "Your client"} completed all portal lessons`,
     entity_type: "contact",
@@ -420,6 +427,7 @@ export async function notifyPortalEducationCompleted(params: {
   }
 
   return { success: true }
+  })
 }
 
 // ─── GET LESSON BY KEY ────────────────────────────────────────────────────────

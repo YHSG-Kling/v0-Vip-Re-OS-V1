@@ -52,6 +52,44 @@ export async function gateStaffAction(capability: PlatformCapability): Promise<S
 }
 
 /**
+ * THE PLATFORM'S EVIDENCE DOOR FOR AN ACT WITH NO TENANT (wave 155, lane 155R23 — LAW 5). agent_action_ledger.brokerage_id is
+ * NOT NULL, so a platform act that belongs to no brokerage (a platform topic, a platform screenshot, a platform-wide safety
+ * finding, a pre-account terms acceptance, a hand-raise on the platform's own funnel, a dev seed) cannot hold a ledger row —
+ * and a tenant is NEVER invented to make one fit. Its record is ONE superadmin_audit_log row: who (a staff user id, or null with
+ * `actor_email` naming the public / system door), what (`action`), on what (`target_type` + `target_id`, a uuid or null — the
+ * column is uuid: a non-uuid id goes into details.target_ref, never into target_id, where it would be refused), the facts.
+ * THE INSERT IS READ (CLAUDE.md §3: supabase-js RESOLVES a refusal): a refused row comes back `{ ok: false }` and is logged —
+ * never swallowed. Never throws. The act it records has already happened; the caller decides what a refused record means.
+ * @proofSeam scripts/ledger-receipts-round5-guard.ts
+ */
+export async function recordPlatformEvidence(
+  entry: { actorUserId: string | null; actorEmail: string | null; action: string; targetType: string; targetId: string | null; details: Record<string, unknown> },
+  opts?: { client?: { from: (table: string) => any } },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const targetIsUuid = !!entry.targetId && UUID.test(entry.targetId)
+  try {
+    const svc = opts?.client ?? createServiceClient()
+    let ip: string | null = null, ua: string | null = null
+    try { const h = await headers(); ip = h.get("x-forwarded-for") ?? h.get("x-real-ip"); ua = h.get("user-agent") } catch { /* no request scope (a script / a test) */ }
+    const { error } = await svc.from("superadmin_audit_log").insert({
+      actor_user_id: entry.actorUserId && UUID.test(entry.actorUserId) ? entry.actorUserId : null,
+      actor_email: entry.actorEmail ?? null,
+      action: entry.action,
+      target_type: entry.targetType,
+      target_id: targetIsUuid ? entry.targetId : null,
+      details: targetIsUuid || !entry.targetId ? entry.details : { ...entry.details, target_ref: entry.targetId },
+      ip_address: ip, user_agent: ua,
+    })
+    if (error) { console.error(`[platform evidence] ${entry.action} REFUSED:`, error.message); return { ok: false, error: error.message } }
+    return { ok: true }
+  } catch (err) {
+    console.error(`[platform evidence] ${entry.action} failed:`, err)
+    return { ok: false, error: (err as Error)?.message ?? "platform evidence insert threw" }
+  }
+}
+
+/**
  * Record a staff action against a tenant. Never throws — an audit failure must
  * not swallow the operation's own result, but it is logged loudly.
  */

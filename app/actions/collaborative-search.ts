@@ -701,19 +701,22 @@ async function collaboratorDoor(
   token: string,
   surface: string,
   resolve: typeof import("@/lib/portal/collaborative-share").resolveCollaborator,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; brokerageId: string; memberId: string; basis: string } | { ok: false; error: string }> {
   const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
-  const seen: { error: string | null } = { error: null }
+  const seen: { error: string | null; memberId: string | null } = { error: null, memberId: null }
   const door = await decidePublicDoor({
     surface, callerKey: await publicCallerIp(), cap: { limit: 60, windowMs: 10 * 60_000 },
     optIn: async () => {
       const c = await resolve(svc, token)
       if (!c.ok) { seen.error = c.error; return null }
+      seen.memberId = c.c.memberId
       return { brokerageId: c.c.brokerageId, basis: "collaborative_search_members sealed token (hash, scope, expiry, revocation, active search)" }
     },
   })
-  if (door.allowed) return { ok: true }
-  return { ok: false, error: door.reason === "rate_limited" ? "Too many tries from this connection — please wait a few minutes." : seen.error ?? "This link isn't valid. Ask the person who shared it to send a fresh one." }
+  // WAVE 155 (lane 155R23): the verdict now CARRIES the tenant and the member the token proved, so the receipt each door files
+  // names the brokerage of THAT member row — never anything the person holding the link sent.
+  if (door.allowed && door.brokerageId && seen.memberId) return { ok: true, brokerageId: door.brokerageId, memberId: seen.memberId, basis: door.basis }
+  return { ok: false, error: !door.allowed && door.reason === "rate_limited" ? "Too many tries from this connection — please wait a few minutes." : seen.error ?? "This link isn't valid. Ask the person who shared it to send a fresh one." }
 }
 
 /**
@@ -735,7 +738,19 @@ export async function acceptInvitation(token: string) {
   // words are kept for the person holding the link.
   const door = await collaboratorDoor(svc, String(token ?? ""), "collab-accept", resolveCollaborator)
   if (!door.ok) return door
-  return collaboratorView(svc, String(token ?? ""))
+  // LAW 5 (wave 155, lane 155R23): ONE receipt per open — the open stamps accepted / last-viewed on the member row. Tenant = the
+  // one the door PROVED; actor `system` (a family member holding a link, not a user); subject the member row. No key: every
+  // open re-stamps last_viewed_at. A view whose stamp was refused settles `failed` (the homes still show — collaboratorView).
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  type View = Awaited<ReturnType<typeof collaboratorView>>
+  return withActionLedger<View>({
+    brokerageId: door.brokerageId, action: "portal.collaborative_search_member.open", actor: { type: "system", userId: null },
+    subject: { type: "collaborative_search_member", id: door.memberId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
+    reasonDetail: "family member opened the homes a buyer shared", channel: "web", systemSource: "collaborative_share_link", detail: { door: door.basis },
+  }, () => collaboratorView(svc, String(token ?? "")), {
+    settle: (r) => !r.ok ? { status: "failed", outcome: "view_refused", error: r.error } : r.view.viewRecorded ? { status: "executed", outcome: "member_view_recorded" } : { status: "failed", outcome: "member_view_not_recorded" },
+    replay: () => ({ ok: false, error: "We couldn't open these homes just now — please try again in a moment." }),
+  })
 }
 
 /** The collaborator's opinion on one shared home (token only — the member is the one the token proves). */
@@ -746,7 +761,18 @@ export async function submitFamilyOpinionAction(input: { token: string; sharedHo
   // WAVE 155 (lane 155R18 — G10): the same DECISION before the opinion, the consensus or the Shopping Agent signal is written.
   const door = await collaboratorDoor(svc, String(input?.token ?? ""), "collab-opinion", resolveCollaborator)
   if (!door.ok) return door
-  return recordCollaboratorOpinion(svc, String(input?.token ?? ""), { sharedHomeId: String(input?.sharedHomeId ?? ""), vote: input?.vote, comment: input?.comment ?? null }, {
+  // LAW 5 (wave 155, lane 155R23): ONE receipt per opinion (the rating, the consensus and the Shopping Agent signal it may raise).
+  // Tenant = the one the door PROVED; actor `system` (a family member holding a link); subject the member row; only the vote in
+  // the detail — never the comment (its words reach the agent only when the buyer consented). No key: a changed vote is new.
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  type Opinion = Awaited<ReturnType<typeof recordCollaboratorOpinion>>
+  const sharedHomeIdIsUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(input?.sharedHomeId ?? ""))
+  return withActionLedger<Opinion>({
+    brokerageId: door.brokerageId, action: "portal.collaborative_search_opinion.record", actor: { type: "system", userId: null },
+    subject: { type: "collaborative_search_member", id: door.memberId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
+    reasonDetail: "family member gave an opinion on a shared home", channel: "web", systemSource: "collaborative_share_link",
+    detail: { vote: input?.vote ?? null, shared_home_id: sharedHomeIdIsUuid ? String(input.sharedHomeId) : null, door: door.basis },
+  }, () => recordCollaboratorOpinion(svc, String(input?.token ?? ""), { sharedHomeId: String(input?.sharedHomeId ?? ""), vote: input?.vote, comment: input?.comment ?? null }, {
     tellShoppingAgent: async (p) => {
       const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
       const r = await publishManagerSignal({
@@ -756,6 +782,9 @@ export async function submitFamilyOpinionAction(input: { token: string; sharedHo
       if (!r.ok) console.error("[collaborative-search] shopping agent signal refused:", r.reason)
       return r.ok
     },
+  }), {
+    settle: (r) => r.ok ? { status: "executed", outcome: r.agentNotified ? "opinion_recorded_agent_notified" : "opinion_recorded" } : { status: "failed", outcome: "opinion_refused", error: r.error },
+    replay: () => ({ ok: false, error: "We couldn't save that just now — please try again." }),
   })
 }
 

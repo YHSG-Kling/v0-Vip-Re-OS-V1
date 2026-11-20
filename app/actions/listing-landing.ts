@@ -488,7 +488,12 @@ export async function logLandingSession(params: {
   sessionToken: string
 }) {
   try {
-    const supabase = await createClient()
+    // WAVE 155 (lane 155R23): the SERVICE client, reached only past landingDoor below (gate first — CLAUDE.md §4). This ran on
+    // the caller's RLS client, and live (verified 2026-11-20) smart_landing_sessions has ONE policy, `authenticated` only, while
+    // listing_page_analytics INSERT requires a tenant staff seat — so every ANONYMOUS visitor's session row and day row was
+    // refused (bestEffort logged it) and only a signed-in staff member previewing their own listing was ever counted. The door
+    // proves the tenant from a published listing; that, not a session, is what authorizes these rows.
+    const supabase = createServiceClient()
     const today = new Date().toISOString().split("T")[0]
 
     // Resolve the listing's brokerage so the session row is tenant-attributable.
@@ -496,11 +501,21 @@ export async function logLandingSession(params: {
     // which made seller-share (and every other utm) visit impossible to scope to
     // a tenant for the monthly intelligence report. One cheap read on an already
     // fire-and-forget path — no new table, no new column.
-    const { data: listingRow } = await supabase
-      .from("listings")
-      .select("brokerage_id")
-      .eq("id", params.listingId)
-      .maybeSingle()
+    //
+    // WAVE 155 (lane 155R23 — LAW 5): that read is now THE PUBLIC-DOOR DECISION, BEFORE any write (landingDoor below): the
+    // per-connection cap, then the tenant's own opt-in — a PUBLICLY VISIBLE listing (the same status rule
+    // getListingConsentBrand uses) — and the brokerage THAT listing proves. An id that names no published listing writes
+    // nothing (it used to file an untenanted analytics row for any id at all). Then ONE receipt for the view.
+    const door = await landingDoor("listing-landing-session", params.listingId)
+    if (!door) return
+    const listingRow = { brokerage_id: door.brokerageId }
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    await withActionLedger<{ recorded: true }>({
+      brokerageId: door.brokerageId, action: "marketing.listing_landing_view.record", actor: { type: "system", userId: null },
+      subject: { type: "listing", id: params.listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
+      reasonDetail: "visitor opened a public listing page", channel: "web", systemSource: "listing_landing",
+      detail: { utm_source: params.utmSource || null, qr: !!params.qrSource, door: door.basis },
+    }, async () => {
 
     // Insert session row — the utm params already carry the attribution source
     // (SellerSharePostsRail appends utm_source=seller-share), now stamped with the
@@ -574,10 +589,37 @@ export async function logLandingSession(params: {
         lead_captures: 0,
       }), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
+    return { recorded: true as const }
+    }, {
+      settle: () => ({ status: "executed", outcome: "landing_view_recorded" }),
+      replay: () => ({ recorded: true as const }),
+    })
   } catch (err) {
     // Fail silently - analytics should not block page load
     console.error("[v0] logLandingSession error:", err)
   }
+}
+
+/**
+ * NOT exported (a "use server" export is a public endpoint) — THE PUBLIC-DOOR DECISION the two landing-page beacons share
+ * (wave 155, lane 155R23; lib/security/public-rate-limit.ts decidePublicDoor). Cap first (a page-view beacon: 60 per minute
+ * per connection), then the tenant's OWN opt-in: the listing is publicly visible (publiclyVisibleListingStatuses, not
+ * deleted) — the brokerage of THAT row, never anything the visitor sent. Null = refused; the caller writes nothing.
+ */
+async function landingDoor(surface: string, listingId: string): Promise<{ brokerageId: string; basis: string } | null> {
+  if (typeof listingId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(listingId)) return null
+  const { decidePublicDoor, publicCallerIp } = await import("@/lib/security/public-rate-limit")
+  const door = await decidePublicDoor({
+    surface, callerKey: await publicCallerIp(), cap: { limit: 60, windowMs: 60_000 },
+    optIn: async () => {
+      const { data, error } = await createServiceClient().from("listings").select("brokerage_id").eq("id", listingId)
+        .in("status", publiclyVisibleListingStatuses()).is("deleted_at", null).maybeSingle()
+      const b = (data as { brokerage_id: string | null } | null)?.brokerage_id
+      if (error || !b) return null
+      return { brokerageId: b, basis: "listings row in a publicly visible status (the tenant published it)" }
+    },
+  })
+  return door.allowed && door.brokerageId ? { brokerageId: door.brokerageId, basis: door.basis } : null
 }
 
 /**
@@ -728,14 +770,33 @@ export async function getLandingSourceBreakdown(listingId: string): Promise<
 
 export async function trackCtaClick(listingId: string, sessionToken: string) {
   try {
-    const supabase = await createClient()
+    // WAVE 155 (lane 155R23 — LAW 5): the same public-door decision as logLandingSession, BEFORE any write — a click on a
+    // listing nobody published writes nothing. FIXED on the way: the session flip was keyed on `session_token` ALONE, so a
+    // token could flip a session row of ANY listing; it is now pinned to THIS listing, and COUNTED (§3: an update that matched
+    // nothing resolves like one that worked) — no matching session row means no click is counted against the day either.
+    if (typeof sessionToken !== "string" || !sessionToken || sessionToken.length > 200) return
+    const door = await landingDoor("listing-landing-cta", listingId)
+    if (!door) return
+    // The SERVICE client past the door (same reason as logLandingSession: anon has no policy on either table, verified live).
+    const supabase = createServiceClient()
     const today = new Date().toISOString().split("T")[0]
-
+    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    type Click = { counted: true } | { counted: false; why: string }
+    await withActionLedger<Click>({
+      brokerageId: door.brokerageId, action: "marketing.listing_landing_cta.click", actor: { type: "system", userId: null },
+      subject: { type: "listing", id: listingId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
+      reasonDetail: "visitor clicked a public listing page's call to action", channel: "web", systemSource: "listing_landing",
+      detail: { door: door.basis },
+    }, async (): Promise<Click> => {
     // Update session
-    await supabase
+    const { data: flipped, error: flipErr } = await supabase
       .from("smart_landing_sessions")
       .update({ cta_clicked: true })
       .eq("session_token", sessionToken)
+      .eq("listing_id", listingId)
+      .select("id")
+    if (flipErr) return { counted: false, why: "session_update_refused" }
+    if (!flipped || flipped.length === 0) return { counted: false, why: "no_session_for_this_listing" }
 
     // Update analytics
     const { data: existing } = await supabase
@@ -751,6 +812,11 @@ export async function trackCtaClick(listingId: string, sessionToken: string) {
         .update({ cta_clicks: existing.cta_clicks + 1 })
         .eq("id", existing.id), "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent")
     }
+    return { counted: true }
+    }, {
+      settle: (r) => r.counted ? { status: "executed", outcome: "cta_click_counted" } : { status: "failed", outcome: r.why },
+      replay: () => ({ counted: false, why: "already_recorded" }),
+    })
   } catch (err) {
     console.error("[v0] trackCtaClick error:", err)
   }

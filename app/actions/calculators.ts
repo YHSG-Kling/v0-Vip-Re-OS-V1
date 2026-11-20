@@ -854,7 +854,9 @@ async function trackToolUsage(data: {
   timeSpent?: number
   /** Session- or slug-resolved tenant. NULL for a genuinely anonymous visitor. */
   brokerageId?: string | null
-}) {
+}): Promise<{ success: boolean; error?: string }> {
+  // WAVE 155 (lane 155R23): the outcome is RETURNED (it was void) so a receipt wrapped around this write settles on what
+  // happened — a dropped or refused analytics row settles `failed`, never `executed`. No caller shows it to the visitor.
   const verdict = await publicCalcRateVerdict("toolUsage")
   if (!verdict.allowed) {
     // Over the per-IP window: the analytics row is dropped, the calculation the
@@ -862,7 +864,7 @@ async function trackToolUsage(data: {
     console.warn(
       `[calculators.trackToolUsage] rate limited (tool=${data.tool}); analytics row dropped, result still returned`,
     )
-    return
+    return { success: false, error: "rate limited — analytics row dropped" }
   }
 
   const supabase = await createClient()
@@ -897,7 +899,22 @@ async function trackToolUsage(data: {
   if (error) {
     // Recorded, never rethrown — analytics must not break a public calculator.
     console.error("[calculators.trackToolUsage] tracking insert refused:", error.message)
+    return { success: false, error: error.message }
   }
+  return { success: true }
+}
+
+/**
+ * LAW 5 (wave 155, lane 155R23) — WHO a public calculator's usage receipt names, and whether one is valid at all. A SIGNED-IN
+ * caller with a tenant → `{ userId, brokerageId }` from the SESSION, and the export files ONE ledgerSessionAction receipt
+ * (`calculator.<tool>.run`) around its usage insert. An ANONYMOUS visitor → null: no tenant (agent_action_ledger.brokerage_id is
+ * NOT NULL), the row is filed untenanted exactly as before and no receipt is invented. The tenant is never an argument
+ * (calculateRentVsBuy's `brokerageId` is the caller's to name and is NOT used for the stamp). NOT exported.
+ */
+async function usageSeatOrNull(): Promise<{ userId: string; brokerageId: string } | null> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  return session.isAuthenticated && session.brokerageId && session.userId ? { userId: session.userId, brokerageId: session.brokerageId } : null
 }
 
 /**
@@ -1404,12 +1421,16 @@ export async function calculateAffordability(data: {
   // Track usage. Tenant from the SESSION only — this action takes no brokerage
   // argument and must not acquire one, so a logged-out visitor files an
   // untenanted (anonymous) row and a signed-in caller files an attributable one.
-  await trackToolUsage({
-    tool: "affordability",
-    visitorId: vid,
-    inputs: data,
-    brokerageId: await sessionBrokerageIdOrNull(),
-  })
+  // (wave 155, lane 155R23) …and a signed-in caller's usage row leaves ONE receipt (usageSeatOrNull above; no key — a second
+  // calculation is a second calculation). An anonymous visitor's row is filed exactly as before, unrecorded.
+  const usageSeat = await usageSeatOrNull()
+  const trackAffordability = () => trackToolUsage({ tool: "affordability", visitorId: vid, inputs: data, brokerageId: usageSeat?.brokerageId ?? null })
+  if (usageSeat) {
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    await ledgerSessionAction({ brokerageId: usageSeat.brokerageId, action: "calculator.affordability.run", actor: { type: "user", userId: usageSeat.userId }, subject: { type: "brokerage", id: usageSeat.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool: "affordability" } }, trackAffordability)
+  } else {
+    await trackAffordability()
+  }
 
   return {
     success: true,
@@ -1507,13 +1528,16 @@ export async function calculateRentVsBuy(data: {
   // choose which tenant's analytics they land in. The commission lookup above can
   // live with a caller-supplied id because it only READS a config; a tenant stamp
   // cannot. Resolved from the session instead, NULL when there is none.
-  await trackToolUsage({
-    tool: "rent_vs_buy",
-    visitorId: vid,
-    inputs: data,
-    location: data.city,
-    brokerageId: await sessionBrokerageIdOrNull(),
-  })
+  // (wave 155, lane 155R23) …and a signed-in caller's usage row leaves ONE receipt (usageSeatOrNull above; no key). An
+  // anonymous visitor's row is filed exactly as before, unrecorded.
+  const usageSeat = await usageSeatOrNull()
+  const trackRentVsBuy = () => trackToolUsage({ tool: "rent_vs_buy", visitorId: vid, inputs: data, location: data.city, brokerageId: usageSeat?.brokerageId ?? null })
+  if (usageSeat) {
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    await ledgerSessionAction({ brokerageId: usageSeat.brokerageId, action: "calculator.rent_vs_buy.run", actor: { type: "user", userId: usageSeat.userId }, subject: { type: "brokerage", id: usageSeat.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool: "rent_vs_buy" } }, trackRentVsBuy)
+  } else {
+    await trackRentVsBuy()
+  }
 
   const recommendation =
     breakEvenPoint <= data.yearsToStay

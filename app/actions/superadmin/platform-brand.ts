@@ -19,14 +19,14 @@ import { requireMarketing } from "@/lib/auth/platform-guard"
 // requireMarketing (imported above) — §1/§6 SAME BODY census round 3,
 // 2026-09-09.
 
-async function audit(actorUserId: string, actorEmail: string, action: string, targetId: string, details: Record<string, unknown>) {
-  try {
-    const svc = createServiceClient(); const hdrs = await headers()
-    await svc.from("superadmin_audit_log").insert({
-      actor_user_id: actorUserId, actor_email: actorEmail, action, target_type: "platform_brand", target_id: targetId,
-      details, ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"), user_agent: hdrs.get("user-agent"),
-    })
-  } catch (err) { console.error("[platform-brand audit] failed:", err) }
+// WAVE 155 (lane 155R23 — LAW 5, no tenant): the platform brand and the topic pool belong to NO brokerage, so their record is the
+// platform's evidence door (lib/platform/staff-action-gate.ts recordPlatformEvidence → superadmin_audit_log), never an invented
+// tenant. FIXED on the way: this helper wrote target_id "singleton" into a uuid column and never read the insert's error, so
+// every brand-change audit row was refused and nobody was told; the door files a non-uuid id under details.target_ref and READS
+// the refusal.
+async function audit(actorUserId: string, actorEmail: string | null | undefined, action: string, targetId: string | null, details: Record<string, unknown>, targetType = "platform_brand") {
+  const { recordPlatformEvidence } = await import("@/lib/platform/staff-action-gate")
+  return recordPlatformEvidence({ actorUserId, actorEmail: actorEmail ?? null, action, targetType, targetId, details })
 }
 
 export async function getProductBrandAction(): Promise<{ ok: true; brand: ProductBrand } | { ok: false; error: string }> {
@@ -80,8 +80,11 @@ export async function addTopicAction(input: { topic: string; source?: string; co
   const v = validateTopic({ topic: input.topic, source: input.source ?? "manual", competitor: input.competitor, url: input.url })
   if (!v.ok) return { ok: false, error: v.error }
   const svc = createServiceClient()
-  const { error } = await svc.from("platform_content_topics").insert(v.value)
+  const { data: added, error } = await svc.from("platform_content_topics").insert(v.value).select("id")
   if (error) return { ok: false, error: error.message }
+  // LAW 5 (lane 155R23): one platform evidence row after the write — the platform's topic pool has no tenant.
+  const topicId = ((added ?? []) as Array<{ id: string }>)[0]?.id ?? null
+  await audit(auth.userId, null, "platform_topics.added", topicId, { source: v.value.source ?? "manual", competitor: v.value.competitor ?? null }, "platform_content_topic")
   revalidatePath("/dashboard/superadmin/growth")
   return { ok: true }
 }
@@ -90,8 +93,12 @@ export async function dismissTopicAction(id: string): Promise<{ ok: boolean; err
   const auth = await requireMarketing()
   if (!auth.ok) return auth
   const svc = createServiceClient()
-  const { error } = await svc.from("platform_content_topics").update({ status: "dismissed" }).eq("id", id)
+  // COUNTED (CLAUDE.md §3, lane 155R23): an UPDATE that matches nothing resolves exactly like one that worked — a wrong or
+  // already-gone id used to answer "dismissed". `.select("id")` and count; zero rows is a refusal, not a success.
+  const { data: dismissed, error } = await svc.from("platform_content_topics").update({ status: "dismissed" }).eq("id", id).select("id")
   if (error) return { ok: false, error: error.message }
+  if (((dismissed ?? []) as unknown[]).length === 0) return { ok: false, error: "That topic was not found — nothing was dismissed." }
+  await audit(auth.userId, null, "platform_topics.dismissed", id, {}, "platform_content_topic")
   revalidatePath("/dashboard/superadmin/growth")
   return { ok: true }
 }

@@ -172,6 +172,9 @@ export async function getPlatformSocialAccounts(svc: ServiceClient): Promise<Pla
       .insert(missing.map((platform) => ({ platform })))
       .select("id, platform, account_name, status, credential_ref, connected_at, last_verified_at")
     if (seedAccountsErr) console.error(`[platform-social] platform social accounts NOT seeded: ${seedAccountsErr.message}`)
+    // EVIDENCE, only when it seeded (wave 155, lane 155R23 request 1 — LAW 5): this read lazily INSERTS the missing channel rows, and a
+    // write made inside a list read left no record. The platform's own door for an act with no tenant (lib/platform/staff-action-gate.ts).
+    else if ((seeded ?? []).length > 0) { const { recordPlatformEvidence } = await import("./staff-action-gate"); await recordPlatformEvidence({ actorUserId: null, actorEmail: "system:platform_social_seed", action: "platform_social.accounts_seeded", targetType: "platform_social_account", targetId: null, details: { channels: ((seeded ?? []) as Array<{ platform: string }>).map((r) => r.platform) } }, { client: svc }) }
     for (const r of (seeded ?? []) as any[]) byChannel.set(r.platform, r)
   }
 
