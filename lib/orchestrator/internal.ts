@@ -166,7 +166,7 @@ interface ProcessingResult {
 //     listings-kernel.ts:707 launchListing → mintTrackedQr (the SAME `listing:<id>` key this file's handleListingLive used).
 //   · lead.created → KernelEvent.CONTACT_CREATED (lib/kernel/event-reactor.ts:402 sequence enrollment; bell
 //     notification-engine.ts:523). Leads are the brokerage's (§5): a "reach out in 24 h" card to whoever emitted was the wrong
-//     owner. writeSevenDayNurturePlan stays — app/actions/copilot.ts calls it on an agent's request.
+//     owner. writeSevenDayNurturePlan is RETIRED with it (integrator): nothing called it — see the tombstone in EVENT_HANDLERS.
 //   · credit.status_updated / credit.target_reached → app/actions/credit-copilot.ts:399 triggerCreditFlowActions (the approved
 //     stage's kickoff task :500; the funded stage's target_score_reached + celebration task :542). The retired bodies keyed on
 //     credit_status 'approved' / 'target_reached' — values the one credit_status writer never stores (needs_work | in_program |
@@ -238,6 +238,12 @@ const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // Lead events
   // TOMBSTONE (wave 155, lane 155R24): "lead.created" → writeSevenDayNurturePlan lived here (never dispatched: the switch routed the
   // type to a local handler, and nothing emits it). SURVIVOR: KernelEvent.CONTACT_CREATED, lib/kernel/event-reactor.ts:402.
+  // TOMBSTONE (wave 155, integrator — CLAUDE.md §1 case 3): lib/copilot/seven-day-plan.ts writeSevenDayNurturePlan is DELETED.
+  // This entry was its ONLY reference, and the module's own header said why it was "recorded, not dispatched": running it beside the
+  // first-touch wiring in force "would hand one new lead two different first touches". With the entry retired the export was
+  // referenced by nothing (orphan-export category C, 0 → 1). Its job — the first week after a contact is created — lives where
+  // it actually runs: KernelEvent.CONTACT_CREATED → sequence enrollment and the concierge spawn (lib/kernel/event-reactor.ts:254,
+  // :402) and the intent-driven follow-up policy (lib/ai-isa/followup-arbiter.ts). A fixed seven-task timetable is not rebuilt.
   // TOMBSTONE (wave 155, lane 155B2): "lead.tagged_hot" and "lead.engaged" (both → assistantSuggestionsNotWired) lived here.
   // SURVIVOR: LEAD_SCORED → AI ISA, lib/kernel/event-reactor.ts branch 27 (see the WAVE 155 block in the header).
 

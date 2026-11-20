@@ -648,15 +648,16 @@ console.log("\n═══ 4. THE HUB (lane 86F) — lib/orchestrator/internal.ts 
         hubFixture.findings[0].exportName === "handleVideoPublished", JSON.stringify(hubFixture.findings.map((f) => f.path)))
   }
 
-  // (wave 155, lane 155R24) these two left the hub — their events are retired onto survivors (lib/orchestrator/internal.ts, 155R24 block);
-  // both stay server-only, tenant-pinned cores of their remaining callers (credit-copilot.ts referToCreditPartner; copilot.ts), still checked below.
-  const LEFT_HUB = new Set(["lib/credit/credit-event-handlers.ts", "lib/copilot/seven-day-plan.ts"])
+  // (wave 155, lane 155R24) the credit core left the hub — its events are retired onto survivors (lib/orchestrator/internal.ts, 155R24 block);
+  // it stays a server-only, tenant-pinned core of its remaining caller (credit-copilot.ts referToCreditPartner), still checked below.
+  // (integrator) lib/copilot/seven-day-plan.ts is not on either list any more: with its one dormant entry retired nothing referenced
+  // it, and the file is deleted (tombstone: lib/orchestrator/internal.ts EVENT_HANDLERS).
+  const LEFT_HUB = new Set(["lib/credit/credit-event-handlers.ts"])
   const HUB_CORES = [
     "lib/assistant/smart-suggestion.ts",
     "lib/listing-lifecycle/lifecycle-event-tasks.ts",
     "lib/credit/credit-event-handlers.ts",
     "lib/portal/journey-event-handlers.ts",
-    "lib/copilot/seven-day-plan.ts",
     "lib/video/video-event-reactions.ts",
   ]
   for (const core of HUB_CORES) {
