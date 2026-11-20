@@ -476,6 +476,55 @@ const LOAN_STAGES = [
 
 type LoanStage = typeof LOAN_STAGES[number]
 
+// ── THE DEAL DOORS' UI HALF (wave 155, lane 155R30 — CLAUDE.md §1 "BUILD the missing half") ─────────────────────────────────
+// addTitleEscrow / updateTitleEscrow / updateParticipant / removeParticipant / updateDeadline (app/actions/transactions.ts) were
+// gated and receipted by lane 155R28 with nothing in the product calling them. These are the fields the dialogs below send —
+// each one a key the door's own whitelist admits (TITLE_ESCROW_FIELDS / PARTICIPANT_FIELDS / updateDeadline's list there).
+// The earnest-money fields are NOT here: they have their own editor (updateEarnestMoneyAction). title_issues is NOT here: it
+// is the JSON triage trackTitleIssues writes. The door is the gate; the page shows its refusal text and never says "saved"
+// unless the door returned success.
+const TITLE_ESCROW_EDIT_FIELDS = [
+  { key: "title_company_name", label: "Title company", type: "text" },
+  { key: "title_officer_name", label: "Title officer", type: "text" },
+  { key: "title_officer_email", label: "Title officer email", type: "email" },
+  { key: "title_officer_phone", label: "Title officer phone", type: "tel" },
+  { key: "escrow_company_name", label: "Escrow company", type: "text" },
+  { key: "escrow_officer_name", label: "Escrow officer", type: "text" },
+  { key: "escrow_officer_email", label: "Escrow officer email", type: "email" },
+  { key: "escrow_officer_phone", label: "Escrow officer phone", type: "tel" },
+  { key: "escrow_number", label: "Escrow number", type: "text" },
+  { key: "closing_scheduled_date", label: "Closing appointment date", type: "date" },
+  { key: "closing_location", label: "Closing location", type: "text" },
+] as const
+type TitleEscrowEditKey = typeof TITLE_ESCROW_EDIT_FIELDS[number]["key"]
+type TitleEscrowForm = Record<TitleEscrowEditKey, string>
+
+function titleEscrowFormFrom(record: TransactionDetailClientProps["titleEscrow"]): TitleEscrowForm {
+  const form = {} as TitleEscrowForm
+  for (const f of TITLE_ESCROW_EDIT_FIELDS) {
+    const v = record?.[f.key] ?? ""
+    // A date input holds YYYY-MM-DD; a stored timestamp is shown by its date part (and is only re-sent if it is changed).
+    form[f.key] = f.type === "date" ? String(v).slice(0, 10) : String(v)
+  }
+  return form
+}
+
+/** The participant roles the Add form and the Edit dialog both offer — one list, so the two cannot drift (CLAUDE.md §6). */
+const PARTICIPANT_ROLE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "cooperating_agent", label: "Cooperating Agent" },
+  { value: "listing_agent", label: "Listing Agent" },
+  { value: "buyer", label: "Buyer" },
+  { value: "seller", label: "Seller" },
+  { value: "lender", label: "Lender" },
+  { value: "escrow_officer", label: "Escrow Officer" },
+  { value: "inspector", label: "Inspector" },
+  { value: "attorney", label: "Attorney" },
+  { value: "other", label: "Other" },
+]
+
+/** What a deal door returns, as far as this page reads it: did it succeed, and if not, its own refusal sentence. */
+type DealDoorResult = { success?: boolean; error?: string | null } | null | undefined
+
 function deriveLoanStatus(info: TransactionDetailClientProps["lenderInfo"]): LoanStage | "no_lender_assigned" {
   if (!info) return "no_lender_assigned"
   if (info.clear_to_close_date) return "clear_to_close"
@@ -761,6 +810,148 @@ export function TransactionDetailClient({
   const [newParticipantEmail, setNewParticipantEmail] = useState("")
   const [newParticipantPhone, setNewParticipantPhone] = useState("")
   const [newParticipantCompany, setNewParticipantCompany] = useState("")
+
+  // ─── THE DEAL DOORS' UI HALF (wave 155, lane 155R30 — see TITLE_ESCROW_EDIT_FIELDS above) ─────────────────────────────────
+  // Title & escrow: ONE dialog. The deal's record id decides the door — addTitleEscrow when the page loaded NO record, else
+  // updateTitleEscrow(record.id, …). "No company on file" is not "no record": the earnest-money editor can create the row
+  // first, and the add door refuses a second record per deal.
+  const [titleEscrowDialogOpen, setTitleEscrowDialogOpen] = useState(false)
+  const [titleEscrowForm, setTitleEscrowForm] = useState<TitleEscrowForm>(() => titleEscrowFormFrom(titleEscrow))
+  const [titleEscrowError, setTitleEscrowError] = useState<string | null>(null)
+
+  function openTitleEscrowDialog() {
+    setTitleEscrowForm(titleEscrowFormFrom(titleEscrow))
+    setTitleEscrowError(null)
+    setTitleEscrowDialogOpen(true)
+  }
+
+  function handleSaveTitleEscrow() {
+    const company = titleEscrowForm.title_company_name.trim()
+    if (!company) { setTitleEscrowError("The title company is required."); return }
+    const before = titleEscrowFormFrom(titleEscrow)
+    setTitleEscrowError(null)
+    startTransition(async () => {
+      const { addTitleEscrow, updateTitleEscrow } = await import("@/app/actions/transactions")
+      let result: DealDoorResult
+      if (titleEscrow?.id) {
+        // Only what changed, a cleared field as null — never a key outside the door's whitelist.
+        const changes: Record<string, string | null> = {}
+        for (const f of TITLE_ESCROW_EDIT_FIELDS) {
+          const next = titleEscrowForm[f.key].trim()
+          if (next !== before[f.key].trim()) changes[f.key] = next === "" ? null : next
+        }
+        if (Object.keys(changes).length === 0) { setTitleEscrowDialogOpen(false); return }
+        result = await updateTitleEscrow(titleEscrow.id, changes)
+      } else {
+        const payload: Parameters<typeof addTitleEscrow>[0] = { transaction_id: transaction.id, title_company_name: company }
+        for (const f of TITLE_ESCROW_EDIT_FIELDS) {
+          const v = titleEscrowForm[f.key].trim()
+          if (v && f.key !== "title_company_name") Object.assign(payload, { [f.key]: v })
+        }
+        result = await addTitleEscrow(payload)
+      }
+      if (!result?.success) {
+        const message = result?.error || "The title & escrow details were not saved."
+        setTitleEscrowError(message)
+        toast.error(message)
+        return
+      }
+      toast.success(titleEscrow?.id ? "Title & escrow updated" : "Title & escrow added")
+      setTitleEscrowDialogOpen(false)
+      router.refresh()
+    })
+  }
+
+  // Participants: edit (updateParticipant) and remove (removeParticipant, after a confirmation) — keyed on the row's own id.
+  const [editingParticipantId, setEditingParticipantId] = useState<string | null>(null)
+  const [participantForm, setParticipantForm] = useState({ name: "", role: "", email: "", phone: "", company: "" })
+  const [participantError, setParticipantError] = useState<string | null>(null)
+  const editingParticipant = participants.find((p) => p.id === editingParticipantId) ?? null
+
+  function openParticipantDialog(p: TransactionDetailClientProps["participants"][number]) {
+    setParticipantForm({ name: p.name ?? "", role: p.role ?? "", email: p.email ?? "", phone: p.phone ?? "", company: p.company ?? "" })
+    setParticipantError(null)
+    setEditingParticipantId(p.id)
+  }
+
+  function handleSaveParticipant() {
+    const p = editingParticipant
+    if (!p) return
+    const name = participantForm.name.trim()
+    if (!name) { setParticipantError("The participant's name is required."); return }
+    const changes: Record<string, string | null> = {}
+    const was = { name: p.name ?? "", role: p.role ?? "", email: p.email ?? "", phone: p.phone ?? "", company: p.company ?? "" }
+    for (const key of ["name", "role", "email", "phone", "company"] as const) {
+      const next = participantForm[key].trim()
+      if (next !== was[key].trim()) changes[key] = next === "" ? null : next
+    }
+    if (Object.keys(changes).length === 0) { setEditingParticipantId(null); return }
+    setParticipantError(null)
+    startTransition(async () => {
+      const { updateParticipant } = await import("@/app/actions/transactions")
+      const result: DealDoorResult = await updateParticipant(p.id, changes as Parameters<typeof updateParticipant>[1])
+      if (!result?.success) {
+        const message = result?.error || "The participant was not updated."
+        setParticipantError(message)
+        toast.error(message)
+        return
+      }
+      toast.success("Participant updated")
+      setEditingParticipantId(null)
+      router.refresh()
+    })
+  }
+
+  function handleRemoveParticipant(p: TransactionDetailClientProps["participants"][number]) {
+    if (!window.confirm(`Remove ${p.name} (${p.role.replace(/_/g, " ")}) from this deal?`)) return
+    startTransition(async () => {
+      const { removeParticipant } = await import("@/app/actions/transactions")
+      const result: DealDoorResult = await removeParticipant(p.id)
+      if (!result?.success) {
+        toast.error(result?.error || "The participant was not removed.")
+        return
+      }
+      toast.success("Participant removed")
+      router.refresh()
+    })
+  }
+
+  // Deadlines: edit the date and label (updateDeadline) — keyed on the row's own id. Completion stays completeDeadline.
+  const [editingDeadlineId, setEditingDeadlineId] = useState<string | null>(null)
+  const [deadlineForm, setDeadlineForm] = useState({ deadline_date: "", notes: "" })
+  const [deadlineError, setDeadlineError] = useState<string | null>(null)
+  const editingDeadline = deadlines.find((d) => d.id === editingDeadlineId) ?? null
+
+  function openDeadlineDialog(d: TransactionDetailClientProps["deadlines"][number]) {
+    setDeadlineForm({ deadline_date: (d.deadline_date ?? "").slice(0, 10), notes: d.notes ?? "" })
+    setDeadlineError(null)
+    setEditingDeadlineId(d.id)
+  }
+
+  function handleSaveDeadline() {
+    const d = editingDeadline
+    if (!d) return
+    const date = deadlineForm.deadline_date.trim()
+    if (!date) { setDeadlineError("The deadline needs a date."); return }
+    const changes: { deadline_date?: string; notes?: string } = {}
+    if (date !== (d.deadline_date ?? "").slice(0, 10)) changes.deadline_date = date
+    if (deadlineForm.notes.trim() !== (d.notes ?? "").trim()) changes.notes = deadlineForm.notes.trim()
+    if (Object.keys(changes).length === 0) { setEditingDeadlineId(null); return }
+    setDeadlineError(null)
+    startTransition(async () => {
+      const { updateDeadline } = await import("@/app/actions/transactions")
+      const result: DealDoorResult = await updateDeadline(d.id, changes)
+      if (!result?.success) {
+        const message = result?.error || "The deadline was not updated."
+        setDeadlineError(message)
+        toast.error(message)
+        return
+      }
+      toast.success("Deadline updated")
+      setEditingDeadlineId(null)
+      router.refresh()
+    })
+  }
 
   // Add Commission form
   const [showAddCommission, setShowAddCommission] = useState(false)
@@ -2888,6 +3079,18 @@ export function TransactionDetailClient({
                           <Button
                             size="sm"
                             variant="ghost"
+                            className="h-6 w-6 p-0"
+                            title="Edit deadline"
+                            aria-label={`Edit ${d.deadline_type.replace(/_/g, " ")}`}
+                            onClick={() => openDeadlineDialog(d)}
+                          >
+                            <PenLine className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        {d.status !== "completed" && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
                             className="h-6 w-6 p-0 text-green-700 hover:text-green-700"
                             title="Mark complete"
                             onClick={() => {
@@ -2946,15 +3149,9 @@ export function TransactionDetailClient({
                             value={newParticipantRole}
                             onChange={(e) => setNewParticipantRole(e.target.value)}
                           >
-                            <option value="cooperating_agent">Cooperating Agent</option>
-                            <option value="listing_agent">Listing Agent</option>
-                            <option value="buyer">Buyer</option>
-                            <option value="seller">Seller</option>
-                            <option value="lender">Lender</option>
-                            <option value="escrow_officer">Escrow Officer</option>
-                            <option value="inspector">Inspector</option>
-                            <option value="attorney">Attorney</option>
-                            <option value="other">Other</option>
+                            {PARTICIPANT_ROLE_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
                           </select>
                         </div>
                         <div className="space-y-1">
@@ -3029,9 +3226,32 @@ export function TransactionDetailClient({
                           <p className="text-sm font-medium">{p.name}</p>
                           <p className="text-xs text-muted-foreground capitalize">{p.role.replace(/_/g, " ")} {p.company ? `at ${p.company}` : ""}</p>
                         </div>
-                        <div className="text-xs text-muted-foreground text-right">
-                          {p.email && <p>{p.email}</p>}
-                          {p.phone && <p>{p.phone}</p>}
+                        <div className="flex items-center gap-2">
+                          <div className="text-xs text-muted-foreground text-right">
+                            {p.email && <p>{p.email}</p>}
+                            {p.phone && <p>{p.phone}</p>}
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0"
+                            title="Edit participant"
+                            aria-label={`Edit ${p.name}`}
+                            onClick={() => openParticipantDialog(p)}
+                          >
+                            <PenLine className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+                            title="Remove participant"
+                            aria-label={`Remove ${p.name}`}
+                            disabled={isPending}
+                            onClick={() => handleRemoveParticipant(p)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
                       </div>
                     ))}
@@ -3126,8 +3346,14 @@ export function TransactionDetailClient({
             {/* Title & Escrow Tab */}
             <TabsContent value="title" className="mt-4">
               <Card>
-                <CardHeader className="pb-2">
+                <CardHeader className="pb-2 flex flex-row items-center justify-between">
                   <CardTitle className="text-sm">Title & Escrow</CardTitle>
+                  {/* Wave 155, lane 155R30: the one door that writes the company / officers / escrow number / closing
+                      appointment — add when the deal has NO record, edit when it has one (handleSaveTitleEscrow). */}
+                  <Button size="sm" variant="outline" className="text-xs h-7" onClick={openTitleEscrowDialog}>
+                    {titleEscrow?.id ? <PenLine className="h-3 w-3 mr-1" /> : <Plus className="h-3 w-3 mr-1" />}
+                    {titleEscrow?.id ? "Edit title & escrow" : "Add title & escrow"}
+                  </Button>
                 </CardHeader>
                 <CardContent>
                   {/* Title/Escrow Company Info (read-only display) */}
@@ -3137,6 +3363,21 @@ export function TransactionDetailClient({
                       <p className="font-medium">{titleEscrow.title_company_name ?? "Not set"}</p>
                       <p className="text-sm text-muted-foreground">Escrow Company</p>
                       <p className="font-medium">{titleEscrow.escrow_company_name ?? "Not set"}</p>
+                      {titleEscrow.escrow_number && (
+                        <>
+                          <p className="text-sm text-muted-foreground">Escrow Number</p>
+                          <p className="font-medium">{titleEscrow.escrow_number}</p>
+                        </>
+                      )}
+                      {titleEscrow.closing_scheduled_date && (
+                        <>
+                          <p className="text-sm text-muted-foreground">Closing Appointment</p>
+                          <p className="font-medium">
+                            {new Date(titleEscrow.closing_scheduled_date).toLocaleDateString()}
+                            {titleEscrow.closing_location ? ` · ${titleEscrow.closing_location}` : ""}
+                          </p>
+                        </>
+                      )}
                     </div>
                   )}
 
@@ -5284,6 +5525,141 @@ export function TransactionDetailClient({
 
       {/* Appraisal completion — the value is required, because the gap detector
           compares it to transactions.purchase_price. */}
+      {/* Wave 155, lane 155R30 — the title & escrow door (addTitleEscrow / updateTitleEscrow). */}
+      <Dialog open={titleEscrowDialogOpen} onOpenChange={setTitleEscrowDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{titleEscrow?.id ? "Edit title & escrow" : "Add title & escrow"}</DialogTitle>
+            <DialogDescription>
+              The title company, officers, escrow number and closing appointment for this deal. The closing date
+              feeds the deal&apos;s closing dates and tells the deal team the closing is scheduled. Earnest money is
+              recorded in its own section.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2 max-h-[60vh] overflow-y-auto">
+            {titleEscrowError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {titleEscrowError}
+              </div>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {TITLE_ESCROW_EDIT_FIELDS.map((f) => (
+                <div key={f.key} className="space-y-1.5">
+                  <Label htmlFor={`te-${f.key}`}>{f.label}{f.key === "title_company_name" ? " *" : ""}</Label>
+                  <Input
+                    id={`te-${f.key}`}
+                    type={f.type}
+                    value={titleEscrowForm[f.key]}
+                    onChange={(e) => setTitleEscrowForm((prev) => ({ ...prev, [f.key]: e.target.value }))}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTitleEscrowDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleSaveTitleEscrow} disabled={isPending || !titleEscrowForm.title_company_name.trim()}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {titleEscrow?.id ? "Save changes" : "Add title & escrow"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Wave 155, lane 155R30 — edit one participant (updateParticipant). */}
+      <Dialog open={editingParticipantId !== null} onOpenChange={(open) => { if (!open) setEditingParticipantId(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit participant</DialogTitle>
+            <DialogDescription>Correct this participant&apos;s name, role or contact details on the deal.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {participantError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {participantError}
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="pe-name">Name *</Label>
+                <Input id="pe-name" value={participantForm.name} onChange={(e) => setParticipantForm((prev) => ({ ...prev, name: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pe-role">Role</Label>
+                <select
+                  id="pe-role"
+                  className="w-full h-9 text-sm border rounded px-2 bg-background"
+                  value={participantForm.role}
+                  onChange={(e) => setParticipantForm((prev) => ({ ...prev, role: e.target.value }))}
+                >
+                  {/* A role this list does not name (an older row) stays selectable rather than being silently rewritten. */}
+                  {editingParticipant && !PARTICIPANT_ROLE_OPTIONS.some((o) => o.value === editingParticipant.role) && (
+                    <option value={editingParticipant.role}>{editingParticipant.role.replace(/_/g, " ")}</option>
+                  )}
+                  {PARTICIPANT_ROLE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pe-email">Email</Label>
+                <Input id="pe-email" type="email" value={participantForm.email} onChange={(e) => setParticipantForm((prev) => ({ ...prev, email: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pe-phone">Phone</Label>
+                <Input id="pe-phone" type="tel" value={participantForm.phone} onChange={(e) => setParticipantForm((prev) => ({ ...prev, phone: e.target.value }))} />
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label htmlFor="pe-company">Company</Label>
+                <Input id="pe-company" value={participantForm.company} onChange={(e) => setParticipantForm((prev) => ({ ...prev, company: e.target.value }))} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingParticipantId(null)}>Cancel</Button>
+            <Button onClick={handleSaveParticipant} disabled={isPending || !participantForm.name.trim()}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Save participant
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Wave 155, lane 155R30 — edit one deadline's date and label (updateDeadline). */}
+      <Dialog open={editingDeadlineId !== null} onOpenChange={(open) => { if (!open) setEditingDeadlineId(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit deadline</DialogTitle>
+            <DialogDescription>
+              {editingDeadline ? `${editingDeadline.deadline_type.replace(/_/g, " ")} — ` : ""}change the date or the label.
+              Marking it complete stays on the deadline&apos;s check button.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {deadlineError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {deadlineError}
+              </div>
+            )}
+            <div className="space-y-1.5">
+              <Label htmlFor="de-date">Date *</Label>
+              <Input id="de-date" type="date" value={deadlineForm.deadline_date} onChange={(e) => setDeadlineForm((prev) => ({ ...prev, deadline_date: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="de-notes">Label</Label>
+              <Input id="de-notes" value={deadlineForm.notes} onChange={(e) => setDeadlineForm((prev) => ({ ...prev, notes: e.target.value }))} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingDeadlineId(null)}>Cancel</Button>
+            <Button onClick={handleSaveDeadline} disabled={isPending || !deadlineForm.deadline_date.trim()}>
+              {isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Save deadline
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={appraisalDialogOpen} onOpenChange={setAppraisalDialogOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>

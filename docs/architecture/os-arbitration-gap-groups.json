@@ -1,137 +1,54 @@
 {
  "generator": "scripts/os-coverage-ledger.ts --write (wave 155, lane 155B1) — GENERATED, do not edit; per-row ledger: coverage/os-arbitration-coverage.json (on demand)",
  "states": {
-  "working": 2869,
-  "missing": 112,
-  "owner-held": 61,
-  "partial": 13
+  "working": 2880,
+  "owner-held": 72,
+  "missing": 59
  },
  "classification": {
-  "OWNER_HELD": 61,
+  "OWNER_HELD": 72,
   "DECLARATIVE_READ_ONLY": 54,
-  "LEGACY_ORPHAN": 45,
-  "EXECUTABLE_GAP": 13,
-  "UNKNOWN": 13
+  "SIMULATED_ONLY": 4,
+  "UNKNOWN": 1
  },
  "classificationByDomain": {
   "recovery": {
-   "OWNER_HELD": 1,
-   "UNKNOWN": 1,
-   "EXECUTABLE_GAP": 3
+   "OWNER_HELD": 4,
+   "UNKNOWN": 1
   },
   "customer-facing": {
-   "UNKNOWN": 4,
+   "SIMULATED_ONLY": 1,
    "OWNER_HELD": 8,
-   "DECLARATIVE_READ_ONLY": 6,
-   "LEGACY_ORPHAN": 2
+   "DECLARATIVE_READ_ONLY": 6
   },
   "platform": {
-   "UNKNOWN": 1,
+   "SIMULATED_ONLY": 1,
    "DECLARATIVE_READ_ONLY": 25,
-   "OWNER_HELD": 28,
-   "EXECUTABLE_GAP": 9,
-   "LEGACY_ORPHAN": 1
+   "OWNER_HELD": 30
   },
   "finance": {
-   "UNKNOWN": 2,
-   "OWNER_HELD": 3,
+   "SIMULATED_ONLY": 1,
+   "OWNER_HELD": 4,
    "DECLARATIVE_READ_ONLY": 5
   },
   "education": {
-   "UNKNOWN": 1,
-   "OWNER_HELD": 3,
-   "EXECUTABLE_GAP": 1
+   "SIMULATED_ONLY": 1,
+   "OWNER_HELD": 3
   },
   "marketing": {
    "DECLARATIVE_READ_ONLY": 2,
-   "OWNER_HELD": 6,
-   "LEGACY_ORPHAN": 7
+   "OWNER_HELD": 7
   },
   "transaction": {
-   "OWNER_HELD": 11,
-   "LEGACY_ORPHAN": 34,
-   "UNKNOWN": 4
+   "OWNER_HELD": 14
   },
   "acquisition": {
-   "OWNER_HELD": 1,
-   "DECLARATIVE_READ_ONLY": 16,
-   "LEGACY_ORPHAN": 1
+   "OWNER_HELD": 2,
+   "DECLARATIVE_READ_ONLY": 16
   }
  },
- "executableGapRisk": {
-  "P2": 13
- },
- "groups": [
-  {
-   "id": "G09-log-only-owner",
-   "rows": 10,
-   "title": "paths whose only writes are carriers or evidence tables (self_heal_events, audit_log, notifications…) — no steward is derivable",
-   "risk": {
-    "P2": 10
-   },
-   "domains": {
-    "platform": 6,
-    "recovery": 3,
-    "education": 1
-   },
-   "missing": {
-    "owner": 8,
-    "evidence,owner": 2
-   },
-   "leverage": [
-    "lib/kernel/manager-registry.ts:3503 resolveTableManager"
-   ],
-   "fix": "name the owner where the action is (the module's manager) or route the record through the owner's signal; never steward a log table to move a number",
-   "proof": "census: owner resolves for each; planted log-only write stays red",
-   "split": "one lane",
-   "sample": [
-    "server_action:app/actions/admin/manager-evals.ts#completeRegionalConventionReview",
-    "server_action:app/actions/admin/manager-evals.ts#overrideDeliberationWinner",
-    "server_action:app/actions/call-review-actions.ts#shareCallWithCoach",
-    "server_action:app/actions/communications.ts#notifyBrokerageAgentsAction",
-    "server_action:app/actions/fair-housing-older-persons.ts#recordOlderPersonsVerificationAction"
-   ],
-   "modules": {
-    "app/actions/admin/manager-evals.ts": 2,
-    "app/actions/vendor-portfolio.ts": 2,
-    "app/actions/call-review-actions.ts": 1,
-    "app/actions/communications.ts": 1,
-    "app/actions/fair-housing-older-persons.ts": 1,
-    "app/actions/onboarding/progress.ts": 1,
-    "app/actions/reporting-kernel.ts": 1,
-    "app/actions/workflows.ts": 1
-   }
-  },
-  {
-   "id": "G12-session-write-unledgered-P2",
-   "rows": 3,
-   "title": "P2 user-initiated writes decided by the signed-in session that leave no action-ledger receipt",
-   "risk": {
-    "P2": 3
-   },
-   "domains": {
-    "platform": 3
-   },
-   "missing": {
-    "evidence": 3
-   },
-   "leverage": [
-    "lib/kernel/action-ledger.ts:566 withActionLedger"
-   ],
-   "fix": "per MODULE (not per export): resolve the ActionContext once where the module already resolves its session, and wrap each mutating export's write in withActionLedger (three-segment action name) — the module list with rows closed per change is in os-arbitration-gap-groups.json",
-   "proof": "per module: a canary invokes one export against memSupabase and asserts an agent_action_ledger row naming actor, tenant and policy; red at the base",
-   "split": "split by module across lanes; lowest priority",
-   "sample": [
-    "server_action:app/actions/onboarding/onboarding-ops.ts#nudgeOnboardingAgentsAction",
-    "server_action:app/actions/phone-provisioning.ts#getPhoneAllowanceStatusAction",
-    "server_action:app/actions/phone-provisioning.ts#getTenantPhoneMeterAction"
-   ],
-   "modules": {
-    "app/actions/phone-provisioning.ts": 2,
-    "app/actions/onboarding/onboarding-ops.ts": 1
-   }
-  }
- ],
+ "executableGapRisk": {},
+ "groups": [],
  "residue": {
   "DECLARATIVE_READ_ONLY": {
    "rows": 54,
@@ -150,32 +67,34 @@
    ]
   },
   "LEGACY_ORPHAN": {
-   "rows": 45,
-   "byKind": {
-    "server_action": 45
-   },
-   "evidenceClass": {
-    "no importer, no same-module caller, the export name in no other runtime file; a server action has no cron, webhook, self-call or provider-co": 45
-   },
-   "sample": [
-    "server_action:app/actions/ai-auto-response.ts#generateAIResponse",
-    "server_action:app/actions/ai-content-generation.tsx#checkCompliance",
-    "server_action:app/actions/ai-content-generation.tsx#scheduleContent",
-    "server_action:app/actions/buyer-offer/track-offer-lifecycle.ts#recordSellerResponse",
-    "server_action:app/actions/buyer-offer/track-offer-lifecycle.ts#submitOffer"
-   ]
-  },
-  "SIMULATED_ONLY": {
    "rows": 0,
    "byKind": {},
    "evidenceClass": {},
    "sample": []
   },
+  "SIMULATED_ONLY": {
+   "rows": 4,
+   "byKind": {
+    "http": 4
+   },
+   "evidenceClass": {
+    "fully linked in code; its caller is outside the app by design: a tenant's external MCP client holding a tenant-minted agent credential — rec": 1,
+    "fully linked in code; its caller is outside the app by design: a tenant's own integration holding a tenant-minted API credential (the endpoi": 1,
+    "fully linked in code; its caller is outside the app by design: inbound provider webhooks registered in the provider's own console with the w": 1,
+    "fully linked in code; its caller is outside the app by design: the relay companion process (tools/relay-companion), deployed beside the tele": 1
+   },
+   "sample": [
+    "http:/api/agentic-os/mcp",
+    "http:/api/v1/[resource]",
+    "http:/api/voice/relay/plan",
+    "http:/api/workflow/trigger"
+   ]
+  },
   "OWNER_HELD": {
-   "rows": 61,
+   "rows": 72,
    "byKind": {
     "kernel_event": 38,
-    "server_action": 20,
+    "server_action": 31,
     "orchestrator_event": 2,
     "http": 1
    },
@@ -197,11 +116,22 @@
     "OWNER_HELD entry: owner-held (platform-staff door: requireSuperadminAuth @ app/api/admin/system/providers/test/route.ts:110): Platform-staff": 1,
     "OWNER_HELD entry: owner-held pending owner decision (lane 155R24): build or retire? A closing gift (closing_gifts.price_cents) is spend; the": 1,
     "OWNER_HELD entry: owner-held pending owner decision (lane 155R24): build or retire? Nothing produces the moment — no writer of transactions.": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lane 155R29, Q1): WIRE OR RETIRE? A staff re-match of one stored visitor signal to a co": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lane 155R29, Q2): WIRE (a recalculate control on the past-clients / referrals screen, o": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lane 155R29, Q3): ROUTE THE LISTING-CONSULTATION SCHEDULER THROUGH IT (stage → APPOINTM": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lane 155R29, Q4; the wave-146 money_legal ruling still holds): WIRE draft → submit besi": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lanes 155R28 / 155R30): WIRE OR RETIRE? The only door that corrects a deal's own detail": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (lanes 155R28 / 155R30): WIRE, REPLACE OR RETIRE? The only writer of cost_breakdown_trac": 1,
     "OWNER_HELD entry: owner-held pending owner decision 2 (does a registered manager's deterministic evidence rule count as the decision owner?)": 1,
+    "OWNER_HELD entry: owner-held pending owner decision 3 (lane 155R18), the same question as its sibling draftTeamAnnouncementAction: a princip": 1,
     "OWNER_HELD entry: owner-held pending owner decision 3 (lane 155R18): a model draft returned to the composer, writing only api_response_logs ": 1,
     "OWNER_HELD entry: owner-held pending owner decision: compliance_events is GENERIC for ownership (lane 155R16) so a gated draft is not compli": 1,
+    "OWNER_HELD entry: owner-held pending owner ruling (lane 155R27): a broker/admin overrides the argued winner of a cross-manager deliberation,": 1,
+    "OWNER_HELD entry: owner-held pending owner ruling (lane 155R27): the yearly regional closing-cost convention review is typed as the Finance ": 1,
+    "OWNER_HELD entry: owner-held pending the own-record ruling (lane 155R18 owner decision 3 / rule C): the seat's OWN session-start row in the ": 1,
     "OWNER_HELD entry: owner-held pending the own-span rule: it writes only its own evidence row; the twin it projects is read inside the same-fi": 1,
-    "OWNER_HELD entry: owner-held pending the same owner decision as evaluateCompliance (an explicit compliance evaluation; reference owner compl": 1
+    "OWNER_HELD entry: owner-held pending the same owner decision as evaluateCompliance (an explicit compliance evaluation; reference owner compl": 1,
+    "OWNER_HELD entry: owner-held pending the wave-146 owner decision, unchanged (lane 155R29, Q5): should contact notes still sync to the extern": 1
    },
    "sample": [
     "http:/api/admin/system/providers/test",
@@ -212,21 +142,15 @@
    ]
   },
   "UNKNOWN": {
-   "rows": 13,
+   "rows": 1,
    "byKind": {
-    "server_action": 8,
-    "http": 5
+    "http": 1
    },
    "evidenceClass": {
-    "no importer and no same-module caller, but the name …": 8,
-    "http: the caller may be outside the repo (provider console, external client, another scheduler) — unreferenced is not dead (CLAUDE.md §1)": 5
+    "http: the caller may be outside the repo (provider console, external client, another scheduler) — unreferenced is not dead (CLAUDE.md §1)": 1
    },
    "sample": [
-    "http:/api/agentic-os/mcp",
-    "http:/api/errors/collect",
-    "http:/api/v1/[resource]",
-    "http:/api/voice/relay/plan",
-    "http:/api/workflow/trigger"
+    "http:/api/errors/collect"
    ]
   }
  },

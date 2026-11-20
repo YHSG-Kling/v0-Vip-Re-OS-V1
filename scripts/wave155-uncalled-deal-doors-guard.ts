@@ -27,8 +27,19 @@
  *      no model call); each has a POSITIVE twin (the rightful caller works and leaves ONE receipt) so a gate that refuses
  *      everyone cannot pass.
  *
+ *   §5 THE UI HALF (wave 155, lane 155R30 — CLAUDE.md §1 "BUILD the missing half"): five kept doors are now called by the deal
+ *      page (app/dashboard/transactions/[id]/transaction-detail-client.tsx). On comment-stripped source: each is called with the
+ *      id of the row it was handed (titleEscrow.id / p.id / d.id; addTitleEscrow with the page's transaction.id, chosen only when
+ *      the page has NO record), each handler reads `success` and returns BEFORE any "saved" toast, every field a dialog sends is
+ *      a key the door's own whitelist admits, and every row-keyed door (requireDealRowActor) the page imports is on that list.
+ *      A WIRED door keeps the gate R28 gave it (session gate before the service, the receipt). generateCostBreakdown stays kept
+ *      and its prompt names no percentage literal: the commission is the deal's recorded rate or "not on file" (driven in §4
+ *      through the counted model seam, which now also records the prompt it was handed).
+ *
  * RED AT THE BASE 6e562189: §1 fails (40 exports with no caller and no tag), §2 finds no tombstone, §4's cross-tenant and
  * forbidden-field negatives write rows (the doors had no session gate; updateTitleEscrow accepted brokerage_id / transaction_id).
+ * RED AT 73ec3365 (before lane 155R30): §5 fails — the page calls none of the five doors, and the cost prompt names "6%" and reads
+ * `contract_price` (not a column of transactions).
  * BLIND SPOTS (published): RLS is not modelled (the in-memory client admits every row — which is why a missing gate shows here);
  * an export reached only through a string-keyed registry would read as uncalled (none exists for this file today); the importer
  * scan covers runtime roots (scripts/runtime-roots.ts), not scripts/; the impersonation branch of getAgentContext is not driven.
@@ -43,6 +54,15 @@ import { memSupabase, type MemClient, type Row } from "./in-memory-supabase"
 
 const ROOT = process.cwd()
 const FILE = "app/actions/transactions.ts"
+const PAGE = "app/dashboard/transactions/[id]/transaction-detail-client.tsx"
+/** The doors lane 155R30 wired on the deal page, with the id expression each must be called with (the row the page was handed). */
+const WIRED_DOORS: Array<{ door: string; firstArg: RegExp; idWord: string }> = [
+  { door: "updateTitleEscrow", firstArg: /^\s*titleEscrow\.id\s*,/, idWord: "the record's id (titleEscrow.id)" },
+  { door: "addTitleEscrow", firstArg: /^\s*payload\s*\)/, idWord: "a payload built on the page's transaction.id" },
+  { door: "updateParticipant", firstArg: /^\s*p\.id\s*,/, idWord: "the participant row's id (p.id)" },
+  { door: "removeParticipant", firstArg: /^\s*p\.id\s*\)/, idWord: "the participant row's id (p.id)" },
+  { door: "updateDeadline", firstArg: /^\s*d\.id\s*,/, idWord: "the deadline row's id (d.id)" },
+]
 let passed = 0, failed = 0
 function check(name: string, ok: boolean, detail?: unknown) {
   if (ok) { passed++; console.log(`  ✓ ${name}`) } else { failed++; console.log(`  ✗ ${name}${detail === undefined ? "" : ` — ${JSON.stringify(detail)?.slice(0, 400)}`}`) }
@@ -98,6 +118,11 @@ function keptDoorProblems(rawSrc: string, stripped: string, name: string): strin
   const doc = docAbove(rawSrc, name)
   if (!/@uncalledDoor\s+case 3\b/.test(doc)) out.push("no @uncalledDoor case 3 tag")
   if (!/owner question:\s*\S.{20,}/.test(doc)) out.push("no owner question")
+  return [...out, ...gateProblems(stripped, name)]
+}
+/** The gate R28 gave a door, kept or wired: the session gate BEFORE TransactionService, and the receipt. */
+function gateProblems(stripped: string, name: string): string[] {
+  const out: string[] = []
   const body = bodyOf(stripped, name)
   const gate = body.search(/\brequire(?:Transaction|DealRow)Actor\s*\(/)
   const service = body.search(/\bTransactionService\.\w+\s*\(/)
@@ -106,6 +131,55 @@ function keptDoorProblems(rawSrc: string, stripped: string, name: string): strin
   if (!/\bledgerSessionAction\s*\(/.test(body)) out.push("no receipt (ledgerSessionAction)")
   return out
 }
+/** §1 adjudication of every export (pure — §3 runs it over a fixture). */
+function adjudicate(rawSrc: string, stripped: string, exportsNow: string[], importedNames: Map<string, string[]>, file: string) {
+  const called: string[] = [], kept: string[] = [], bare: string[] = [], keptProblems: string[] = [], stale: string[] = []
+  for (const name of exportsNow) {
+    const isCalled = importedNames.has(name) || calledInFile(stripped, name)
+    const tagged = /@uncalledDoor\b/.test(docAbove(rawSrc, name))
+    if (isCalled && tagged) stale.push(`${name} (called by ${(importedNames.get(name) ?? [file]).join(", ")})`)
+    if (isCalled) { called.push(name); continue }
+    if (!tagged) { bare.push(name); continue }
+    kept.push(name)
+    const p = keptDoorProblems(rawSrc, stripped, name)
+    if (p.length) keptProblems.push(`${name}: ${p.join("; ")}`)
+  }
+  return { called, kept, bare, keptProblems, stale }
+}
+
+// ═══ §5 machinery — the page's half (pure; §5 controls run it over fixtures) ═══════════════════════════════════════════════
+/** Bare call sites of `door(` in stripped page source: the index just past each `(`. */
+function pageCalls(page: string, door: string): number[] {
+  return [...page.matchAll(new RegExp(`(?<![.\\w$])${door}\\s*\\(`, "g"))].map((m) => m.index! + m[0].length)
+}
+/** Problems of one wired door on the page: called, with the expected id expression, and `success` read before "saved". */
+function pageDoorProblems(page: string, door: string, firstArg: RegExp): string[] {
+  const at = pageCalls(page, door)
+  if (at.length === 0) return [`${door} is not called by the page`]
+  const out: string[] = []
+  for (const i of at) {
+    const arg = page.slice(i, i + 80)
+    if (!firstArg.test(arg)) out.push(`${door}( is called with ${JSON.stringify(arg.slice(0, 30))}, not the row id it was given`)
+    const saved = page.indexOf("toast.success(", i)
+    const seg = saved < 0 ? page.slice(i, i + 600) : page.slice(i, saved)
+    if (!/if\s*\(\s*!\s*\w+\?\.success\s*\)\s*\{[^}]*\breturn\b/.test(seg)) out.push(`${door}: the handler does not read success and return before saying saved`)
+  }
+  return out
+}
+/** The string literals of a `new Set([...])` named `setName` in the action file (stripComments only — the literals ARE the data). */
+function whitelist(actionSrc: string, setName: string): Set<string> {
+  const m = new RegExp(`const\\s+${setName}[^=]*=\\s*new Set\\(\\[([\\s\\S]*?)\\]\\)`).exec(actionSrc)
+  return new Set(m ? [...m[1].matchAll(/"(\w+)"/g)].map((x) => x[1]) : [])
+}
+/** A function body in stripped page source: from `function name(` to the next line that closes a 2-space-indented block. */
+function pageFn(page: string, name: string): string {
+  const i = page.search(new RegExp(`function\\s+${name}\\s*\\(`))
+  if (i < 0) return ""
+  const end = page.indexOf("\n  }\n", i)
+  return end < 0 ? page.slice(i) : page.slice(i, end + 4)
+}
+/** A percentage written as a literal number ("6%", "6 %") in a function's source — an invented rate handed to a model. */
+const percentLiterals = (src: string): string[] => [...src.matchAll(/\d+(?:\.\d+)?\s*%/g)].map((m) => m[0])
 const TOMB_RE = /TOMBSTONE \(wave 155, lane 155R28 — §1 case (\d)\) RETIRED (\w+) → SURVIVOR (\S+):(\d+) (\S+) · CALLED BY (\S+):(\d+) (\S+)/g
 interface Stone { kase: string; name: string; sf: string; sl: number; sym: string; cf: string; cl: number; csym: string }
 function tombstones(rawSrc: string): Stone[] {
@@ -158,7 +232,7 @@ function world(): MemClient {
     ],
     agents: [{ id: AG_A, user_id: U_AGENT, brokerage_id: B1 }, { id: AG_B, user_id: U_AGENT2, brokerage_id: B1 }, { id: AG_X, user_id: U_X, brokerage_id: B2 }],
     transactions: [
-      { id: TX1, brokerage_id: B1, agent_id: AG_A, buyer_agent_id: null, seller_agent_id: null, status: "under_contract", property_address: "1 Fixture Way", deal_type: "buyer", contract_price: 400000 },
+      { id: TX1, brokerage_id: B1, agent_id: AG_A, buyer_agent_id: null, seller_agent_id: null, status: "under_contract", property_address: "1 Fixture Way", deal_type: "buyer", purchase_price: 400000 },
       { id: TX2, brokerage_id: B1, agent_id: AG_A, buyer_agent_id: null, seller_agent_id: null, status: "under_contract", property_address: "2 Fixture Way" },
       { id: TX_X, brokerage_id: B2, agent_id: AG_X, buyer_agent_id: null, seller_agent_id: null, status: "under_contract", property_address: "9 Other St" },
     ],
@@ -170,7 +244,7 @@ function world(): MemClient {
 }
 const G = globalThis as any
 G.__R28 = {
-  mem: world() as MemClient, seat: null as string | null, model: 0, modelText: "{}",
+  mem: world() as MemClient, seat: null as string | null, model: 0, modelText: "{}", prompt: "",
   sess: () => Object.assign(G.__R28.mem, { auth: { getUser: async () => ({ data: { user: G.__R28.seat ? { id: G.__R28.seat, email: "seat@example.test", user_metadata: {} } : null }, error: null }) } }),
 }
 const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
@@ -178,7 +252,7 @@ const BY_URL: Record<string, string> = {
   "lib/supabase/server.ts": "export async function createClient(){ return globalThis.__R28.sess() }; export async function createServerClient(){ return globalThis.__R28.sess() }",
   "lib/supabase/service.ts": "export function createServiceClient(){ return globalThis.__R28.sess() }",
   // THE MODEL SEAM — counted; a provider is never reached.
-  "lib/ai/pipeline.ts": "export async function runPipelineSimple(){ globalThis.__R28.model++; return globalThis.__R28.modelText }",
+  "lib/ai/pipeline.ts": "export async function runPipelineSimple(p){ globalThis.__R28.model++; globalThis.__R28.prompt = String(p); return globalThis.__R28.modelText }",
 }
 const BY_SPEC: Record<string, string> = {
   "server-only": "export {}",
@@ -206,7 +280,7 @@ const quiet = async <T,>(fn: () => Promise<T>): Promise<T> => {
 async function drive<T>(fn: () => Promise<T>): Promise<{ r: T | undefined; threw: string | null }> {
   try { return { r: await quiet(fn), threw: null } } catch (e) { return { r: undefined, threw: (e as Error)?.message ?? String(e) } }
 }
-function as(seat: string | null) { G.__R28.mem = world(); G.__R28.seat = seat; G.__R28.model = 0; G.__R28.modelText = "{}"; return G.__R28.mem as MemClient }
+function as(seat: string | null) { G.__R28.mem = world(); G.__R28.seat = seat; G.__R28.model = 0; G.__R28.modelText = "{}"; G.__R28.prompt = ""; return G.__R28.mem as MemClient }
 const T = (m: MemClient, t: string): Row[] => m.tables[t] ?? []
 const refused = (x: { r: any; threw: string | null }) => !!x.threw || x.r?.success === false
 const receipts = (m: MemClient, action: string) => T(m, "agent_action_ledger").filter((r) => r.action === action)
@@ -226,22 +300,15 @@ async function main() {
     if (!s.includes("actions/transactions")) continue
     for (const n of namesImportedFrom(s, resolver(f, FILE, known))) importedNames.set(n, [...(importedNames.get(n) ?? []), f])
   }
-  const called: string[] = [], kept: string[] = [], bare: string[] = [], keptProblems: string[] = [], stale: string[] = []
-  for (const name of exportsNow) {
-    const isCalled = importedNames.has(name) || calledInFile(stripped, name)
-    const tagged = /@uncalledDoor\b/.test(docAbove(rawSrc, name))
-    if (isCalled && tagged) stale.push(`${name} (called by ${(importedNames.get(name) ?? [FILE]).join(", ")})`)
-    if (isCalled) { called.push(name); continue }
-    if (!tagged) { bare.push(name); continue }
-    kept.push(name)
-    const p = keptDoorProblems(rawSrc, stripped, name)
-    if (p.length) keptProblems.push(`${name}: ${p.join("; ")}`)
-  }
+  const { called, kept, bare, keptProblems, stale } = adjudicate(rawSrc, stripped, exportsNow, importedNames, FILE)
   console.log(`  denominator: ${exportsNow.length} exports · ${called.length} called · ${kept.length} kept (@uncalledDoor) · ${bare.length} neither — importer scan over ${files.length} runtime files (stripped)`)
   check(`no export is uncalled AND untagged (found ${bare.length})`, bare.length === 0 && exportsNow.length > 0, bare)
   check(`every kept door (${kept.length}) carries the tag + an owner question, gates on the session before the service, and leaves a receipt`, keptProblems.length === 0, keptProblems)
   check("no @uncalledDoor tag sits on an export the product calls (a stale tag is removed, not left reading as a hold)", stale.length === 0, stale)
   check("the control set is non-empty and is reached from outside the file (a scan that sees no importer would call everything uncalled)", called.some((n) => importedNames.has(n)), called)
+  const wiredGateBad = WIRED_DOORS.map((w) => ({ n: w.door, p: gateProblems(stripped, w.door) })).filter((x) => x.p.length)
+  check(`the ${WIRED_DOORS.length} doors lane 155R30 wired keep the gate lane 155R28 gave them (session gate before the service, one receipt)`, wiredGateBad.length === 0 && WIRED_DOORS.every((w) => exportsNow.includes(w.door)), wiredGateBad)
+  check(`the ${WIRED_DOORS.length} wired doors are counted CALLED by the scan, not kept`, WIRED_DOORS.every((w) => called.includes(w.door) && !kept.includes(w.door)), WIRED_DOORS.filter((w) => !called.includes(w.door)).map((w) => w.door))
 
   // ═══ §2 ═══
   section("§2 · every tombstone names a retired export and a survivor / caller that still carry their symbol in CODE")
@@ -281,10 +348,16 @@ async function main() {
     check("POSITIVE CONTROL: a survivor that exists only in a COMMENT is caught", stoneProblems(s, [], (p) => files2[p] ?? null).some((x) => /survivor/.test(x)))
     check("POSITIVE CONTROL: a retired name that is still exported is caught", stoneProblems({ ...s }, ["gone"], (p) => ({ "s.ts": "export function survivorFn() {}", "c.ts": "survivorFn()" } as Record<string, string>)[p] ?? null).some((x) => /still exported/.test(x)))
     check("CONTROL: a tombstone written inside a string literal is not a tombstone", tombstones(`const t = "TOMBSTONE (wave 155, lane 155R28 — §1 case 2) RETIRED x → SURVIVOR a.ts:1 y · CALLED BY b.ts:1 z"\n`).length === 0)
+    // Lane 155R30: the stale-mark half of the rule (a marked door must be uncalled) gets its own positive control.
+    const staleFx = `/**\n * @uncalledDoor case 3 — owner question: wire this door at the deal page or retire it?\n */\nexport async function planted(id: string) {\n  const gate = await requireTransactionActor(id)\n  return ledgerSessionAction({}, async () => TransactionService.x(id))\n}\n`
+    const adj = adjudicate(staleFx, stripComments(staleFx), ["planted"], new Map([["planted", ["page.tsx"]]]), "fx.ts")
+    check("POSITIVE CONTROL: a door that carries @uncalledDoor AND has a caller is caught as a stale mark", adj.stale.length === 1 && adj.kept.length === 0, adj)
+    const adj2 = adjudicate(staleFx, stripComments(staleFx), ["planted"], new Map(), "fx.ts")
+    check("CONTROL: the same door with no caller is a well-formed KEPT door (not stale)", adj2.stale.length === 0 && adj2.kept.length === 1 && adj2.keptProblems.length === 0, adj2)
   }
 
   // ═══ §4 ═══
-  section("§4 · the seven kept doors, driven (SIMULATED — real gates over an in-memory database)")
+  section("§4 · the seven doors lane 155R28 kept (five now wired by lane 155R30), driven (SIMULATED — real gates over an in-memory database)")
   const tx = await import(pathToFileURL(join(ROOT, FILE)).href)
 
   // updateTransaction
@@ -361,9 +434,77 @@ async function main() {
   m = as(U_AGENT); G.__R28.modelText = JSON.stringify({ data: { costs: { title_insurance: { amount: 1200 }, escrow_fee: { amount: 650 } } } }); x = await drive(() => tx.generateCostBreakdown(TX1))
   check("generateCostBreakdown POS the agent on the deal — lines saved under the deal's tenant, ONE receipt, ONE model call", (x.r as any)?.success === true && T(m, "cost_breakdown_tracking").length === 2 && T(m, "cost_breakdown_tracking").every((r) => r.brokerage_id === B1) && receipts(m, "transaction.cost_breakdown.generate").length === 1 && G.__R28.model === 1, { x, rows: T(m, "cost_breakdown_tracking").length })
 
+  // Lane 155R30: the model is handed the deal's RECORDED commission rate, or told it is not on file — never an invented "6%".
+  m = as(U_AGENT); { const t = T(m, "transactions").find((r) => r.id === TX1)!; t.deal_type = "seller"; t.commission_percentage = null }
+  G.__R28.modelText = JSON.stringify({ data: { costs: { title_insurance: { amount: 1200 } } } }); x = await drive(() => tx.generateCostBreakdown(TX1))
+  const promptNoRate = String(G.__R28.prompt)
+  check("generateCostBreakdown PROMPT no rate on file: the model is told the commission is NOT ON FILE and is handed no percentage", G.__R28.model === 1 && /NOT ON FILE/.test(promptNoRate) && percentLiterals(promptNoRate).length === 0 && /\$400000/.test(promptNoRate), { x, promptNoRate: promptNoRate.slice(0, 300) })
+  m = as(U_AGENT); { const t = T(m, "transactions").find((r) => r.id === TX1)!; t.deal_type = "seller"; t.commission_percentage = 2.5 }
+  G.__R28.modelText = JSON.stringify({ data: { costs: { title_insurance: { amount: 1200 } } } }); x = await drive(() => tx.generateCostBreakdown(TX1))
+  const promptRate = String(G.__R28.prompt)
+  check("generateCostBreakdown PROMPT recorded rate: the deal's own 2.5% is the only percentage handed to the model", G.__R28.model === 1 && percentLiterals(promptRate).join(",") === "2.5%" && !/NOT ON FILE/.test(promptRate), { x, promptRate: promptRate.slice(0, 300) })
+
+  // ═══ §5 ═══
+  section(`§5 · the UI half — ${PAGE} calls each wired door with its row id and reads success before saying saved (stripped)`)
+  const page = stripComments(raw(PAGE))
+  for (const w of WIRED_DOORS) {
+    const p = pageDoorProblems(page, w.door, w.firstArg)
+    check(`${w.door}: called by the page with ${w.idWord}, and success read before "saved"`, p.length === 0, p)
+  }
+  {
+    const fn = pageFn(page, "handleSaveTitleEscrow")
+    const iIf = fn.search(/if\s*\(\s*titleEscrow\?\.id\s*\)/), iUpd = fn.search(/(?<![.\w$])updateTitleEscrow\s*\(/), iElse = fn.indexOf("} else {"), iAdd = fn.search(/(?<![.\w$])addTitleEscrow\s*\(/)
+    check("title / escrow: the record id chooses the door — update inside `if (titleEscrow?.id)`, add only in its else (the add door refuses a second record)", iIf >= 0 && iIf < iUpd && iUpd < iElse && iElse < iAdd, { iIf, iUpd, iElse, iAdd })
+    check("title / escrow: the add payload is built on the page's transaction.id", /transaction_id:\s*transaction\.id/.test(fn.slice(iElse, iAdd)), fn.slice(iElse, iAdd).slice(0, 200))
+    check("title / escrow: a success refreshes the page data (router.refresh after the success check)", /toast\.success\([\s\S]*router\.refresh\(\)/.test(fn.slice(iAdd)))
+  }
+  const actionSrc = stripComments(raw(FILE))
+  const pageRaw = raw(PAGE)
+  {
+    const block = /const TITLE_ESCROW_EDIT_FIELDS = \[([\s\S]*?)\] as const/.exec(stripComments(pageRaw))?.[1] ?? ""
+    const sent = [...block.matchAll(/key:\s*"(\w+)"/g)].map((m) => m[1])
+    const allow = whitelist(actionSrc, "TITLE_ESCROW_FIELDS")
+    check(`title / escrow: every field the dialog sends (${sent.length}) is on the door's whitelist (${allow.size})`, sent.length > 0 && allow.size > 0 && sent.every((k) => allow.has(k)), sent.filter((k) => !allow.has(k)))
+    const pKeys = [...(/for\s*\(const key of \[([^\]]*)\] as const\)/.exec(pageFn(stripComments(pageRaw), "handleSaveParticipant"))?.[1] ?? "").matchAll(/"(\w+)"/g)].map((m) => m[1])
+    const pAllow = whitelist(actionSrc, "PARTICIPANT_FIELDS")
+    check(`participant: every field the dialog sends (${pKeys.length}) is on the door's whitelist (${pAllow.size})`, pKeys.length > 0 && pKeys.every((k) => pAllow.has(k)), pKeys.filter((k) => !pAllow.has(k)))
+    const dKeys = [...pageFn(stripComments(pageRaw), "handleSaveDeadline").matchAll(/changes\.(\w+)\s*=/g)].map((m) => m[1])
+    const dAllow = new Set([...(/const refusedFields = Object\.keys\(updates \?\? \{\}\)\.filter\(\(k\) => !\[([^\]]*)\]\.includes\(k\)\)/.exec(bodyOf(actionSrc, "updateDeadline"))?.[1] ?? "").matchAll(/"(\w+)"/g)].map((m) => m[1]))
+    check(`deadline: every field the dialog sends (${dKeys.length}) is on the door's list (${dAllow.size}) — and status is not sent (completion keeps its own door)`, dKeys.length > 0 && dAllow.size > 0 && dKeys.every((k) => dAllow.has(k)) && !dKeys.includes("status"), { dKeys, dAllow: [...dAllow] })
+  }
+  {
+    const rowKeyed = exportedFunctions(actionSrc).filter((n) => /\brequireDealRowActor\s*\(/.test(bodyOf(actionSrc, n)))
+    const onPage = namesImportedFrom(page, (spec) => spec === "@/app/actions/transactions")
+    const unlisted = rowKeyed.filter((n) => onPage.has(n) && !WIRED_DOORS.some((w) => w.door === n))
+    check(`every row-keyed door the page imports is held by the id check above (${rowKeyed.length} row-keyed: ${rowKeyed.join(", ")})`, rowKeyed.length > 0 && unlisted.length === 0, unlisted)
+    check("removeParticipant asks for confirmation before it is called", /window\.confirm\([\s\S]{0,200}\breturn\b[\s\S]{0,200}removeParticipant\s*\(/.test(pageFn(page, "handleRemoveParticipant")))
+  }
+  {
+    const costFn = bodyOf(stripComments(raw("lib/application/transactions.ts")), "generateCostBreakdown")
+    check("generateCostBreakdown's prompt (lib/application/transactions.ts) names NO percentage literal — no invented commission rate", costFn.length > 0 && percentLiterals(costFn).length === 0, percentLiterals(costFn))
+    check("generateCostBreakdown reads the deal's recorded rate (commission_percentage) and the live price column (purchase_price), never `contract_price`", /commission_percentage/.test(costFn) && /purchase_price/.test(costFn) && !/contract_price/.test(costFn))
+    check("generateCostBreakdown is NOT wired (it stays a kept door with its owner question)", !namesImportedFrom(page, (spec) => spec === "@/app/actions/transactions").has("generateCostBreakdown"))
+  }
+  // §5 controls — the finders still see the defects they were written for.
+  {
+    const toastFirst = `async function h() {\n  const { updateDeadline } = await import("@/app/actions/transactions")\n  const result = await updateDeadline(d.id, changes)\n  toast.success("Deadline updated")\n  if (!result?.success) { return }\n}\n`
+    check("§5 POSITIVE CONTROL: a handler that says 'saved' before reading success is caught", pageDoorProblems(stripComments(toastFirst), "updateDeadline", /^\s*d\.id\s*,/).some((x) => /success/.test(x)))
+    const wrongId = `async function h() {\n  const result = await updateParticipant(body.participantId, changes)\n  if (!result?.success) { return }\n  toast.success("ok")\n}\n`
+    check("§5 POSITIVE CONTROL: a door called with an id the row did not supply is caught", pageDoorProblems(stripComments(wrongId), "updateParticipant", /^\s*p\.id\s*,/).some((x) => /not the row id/.test(x)))
+    const commentOnly = `// updateTitleEscrow(titleEscrow.id, changes) — if (!result?.success) { return }\n/* await updateTitleEscrow(titleEscrow.id, x) */\nconst x = 1\n`
+    check("§5 TOMBSTONE IS NOT A CALL SITE: a comment that writes the call is not counted", pageDoorProblems(stripComments(commentOnly), "updateTitleEscrow", /^\s*titleEscrow\.id\s*,/).some((x) => /not called/.test(x)))
+    const good = `async function h() {\n  const result = await updateDeadline(d.id, changes)\n  if (!result?.success) {\n    toast.error(result?.error)\n    return\n  }\n  toast.success("ok")\n}\n`
+    check("§5 CONTROL: a well-formed handler passes the same check", pageDoorProblems(stripComments(good), "updateDeadline", /^\s*d\.id\s*,/).length === 0, pageDoorProblems(stripComments(good), "updateDeadline", /^\s*d\.id\s*,/))
+    const fxAction = `const TITLE_ESCROW_FIELDS: ReadonlySet<string> = new Set([\n  "title_company_name", "escrow_number",\n])\n`
+    check("§5 POSITIVE CONTROL: a sent field outside the whitelist (brokerage_id) is caught by the whitelist reader", !whitelist(fxAction, "TITLE_ESCROW_FIELDS").has("brokerage_id") && whitelist(fxAction, "TITLE_ESCROW_FIELDS").has("escrow_number"))
+    check("§5 POSITIVE CONTROL: an invented rate in a prompt (\"Commission (6% …)\") is caught", percentLiterals("const p = `- Commission (6% - be transparent)`").length === 1)
+    const noGate = `export async function updateDeadline(id: string) {\n  return TransactionService.updateDeadline(id, {})\n}\n`
+    check("§5 POSITIVE CONTROL: a wired door whose gate and receipt were dropped is caught", gateProblems(stripComments(noGate), "updateDeadline").length >= 2, gateProblems(stripComments(noGate), "updateDeadline"))
+  }
+
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   if (failed) { console.log("❌ WAVE155_UNCALLED_DEAL_DOORS_FAIL"); process.exit(1) }
-  console.log("✅ WAVE155_UNCALLED_DEAL_DOORS_PASS — every export of app/actions/transactions.ts is called, or kept behind a session gate with an owner question; every retirement names a live survivor")
+  console.log("✅ WAVE155_UNCALLED_DEAL_DOORS_PASS — every export of app/actions/transactions.ts is called, or kept behind a session gate with an owner question; every retirement names a live survivor; the five wired doors are called with their row id and read success before saying saved")
   process.exit(0)
 }
 

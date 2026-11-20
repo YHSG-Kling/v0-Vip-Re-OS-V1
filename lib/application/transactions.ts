@@ -1767,16 +1767,32 @@ export async function generateCostBreakdown(transactionId: string) {
 
   const isSeller = transaction.deal_type === "seller"
 
+  // NO INVENTED NUMBERS (wave 155, lane 155R30 — owner charter: "No invented … prices or constants — unmeasured = unknown").
+  // This prompt named a "6%" commission nobody recorded and a `contract_price` that is not a column of transactions (so the
+  // sale price always read "$0"). The model is now handed ONLY what the deal records: the price is transactions.purchase_price,
+  // and the commission rate is transactions.commission_percentage — the governing term the commission-term door writes and every
+  // reader prices from (lib/commission/commission-term-change.ts, header "the GOVERNING TERMS"). Absent → "not on file", and the
+  // model is told not to supply one.
+  const recorded = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : null)
+  const salePrice = recorded(transaction.purchase_price)
+  const downPayment = recorded(transaction.down_payment_amount)
+  const commissionRate = recorded(transaction.commission_percentage)
+  const commissionLine = commissionRate !== null
+    ? `- Commission at the deal's recorded rate of ${commissionRate}% (be transparent about who earns what)`
+    : "- Commission: NOT ON FILE for this deal — do not assume or supply a rate; list it as \"not on file\" with no amount"
+
   const costPrompt = `Generate transparent cost breakdown for ${isSeller ? "SELLER" : "BUYER"}:
 
-Sale Price: $${transaction.contract_price || 0}
-${isSeller ? "" : `Down Payment: $${transaction.down_payment_amount || 0}`}
+Sale Price: ${salePrice !== null ? `$${salePrice}` : "not on file"}
+${isSeller ? "" : `Down Payment: ${downPayment !== null ? `$${downPayment}` : "not on file"}`}
+
+Use only the figures above as recorded facts. Where a figure is "not on file", do not invent it.
 
 Calculate ALL costs:
 ${
   isSeller
     ? `
-- Commission (6% - be transparent about who earns what)
+${commissionLine}
 - Title insurance
 - Escrow fees
 - Transfer tax
@@ -1802,7 +1818,7 @@ Calculate CASH NEEDED AT CLOSING.
 `
 }
 
-Be 100% transparent. Explain each cost.
+Be fully transparent. Explain each cost.
 
 Return JSON with detailed breakdown.`
 

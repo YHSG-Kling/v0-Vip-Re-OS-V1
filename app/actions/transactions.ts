@@ -197,8 +197,11 @@ const DEAL_DETAIL_FIELDS: ReadonlySet<string> = new Set(["property_address", "pr
 // ── WAVE 155, LANE 155R28 — THE UNCALLED DEAL DOORS (CLAUDE.md §1, §4) ───────────────────────────────────────────────────────
 // Every export of this "use server" file is a public endpoint. Thirty-three of them had NO caller anywhere in the product; each
 // was retired below with a tombstone naming the survivor the product calls TODAY (case 1: a duplicate, merged onto first; case 2:
-// the functionality lives elsewhere). Seven with no survivor are KEPT and gated (marked "@uncalledDoor"). The format of every line
-// below is held by scripts/wave155-uncalled-deal-doors-guard.ts (the survivor file must still carry the symbol it names).
+// the functionality lives elsewhere). Seven with no survivor were KEPT and gated (marked "@uncalledDoor"); lane 155R30 then BUILT
+// the missing UI half (§1 case 2 "build") for five of them on the deal page — addTitleEscrow, updateTitleEscrow,
+// updateParticipant, removeParticipant, updateDeadline — whose marks are gone because they are called now. Two stay marked:
+// updateTransaction (the deal header has no edit affordance) and generateCostBreakdown (model-authored money). The format of
+// every line below is held by scripts/wave155-uncalled-deal-doors-guard.ts (the survivor file must still carry the symbol it names).
 //
 // TOMBSTONE (wave 155, lane 155R28 — §1 case 2) RETIRED generateMilestones → SURVIVOR lib/application/transactions.ts:354 generateMilestones · CALLED BY lib/application/transactions.ts:262 generateMilestones
 //   The journey is seeded ONCE, from the one catalog (milestoneJourneyFor), when the deal is created (this file's createTransaction ←
@@ -594,9 +597,9 @@ export async function addParticipant(participantData: {
 }
 
 /**
- * @uncalledDoor case 3 (wave 155, lane 155R28) — owner question: wire "edit participant" on the deal page's Participants card
- * (beside the Add form that calls addParticipant) or retire this door? No other door edits a participant.
- * Made safe: the participant's deal must pass the session gate (requireDealRowActor), only the participant's own fields are
+ * WIRED (wave 155, lane 155R30): the deal page's Participants card edits a participant here (its row's "Edit" dialog,
+ * app/dashboard/transactions/[id]/transaction-detail-client.tsx) — no other door edits a participant.
+ * Made safe (lane 155R28): the participant's deal must pass the session gate (requireDealRowActor), only the participant's own fields are
  * accepted (never transaction_id / brokerage_id — the row cannot be moved to another deal), the write is counted (the service's
  * `.single()` refuses zero rows) and it leaves one receipt.
  */
@@ -622,9 +625,9 @@ export async function updateParticipant(
 const PARTICIPANT_FIELDS: ReadonlySet<string> = new Set(["role", "name", "company", "email", "phone", "license_number", "notes"])
 
 /**
- * @uncalledDoor case 3 (wave 155, lane 155R28) — owner question: wire "remove participant" on the deal page's Participants card
- * or retire this door? No other door removes a participant.
- * Made safe: the session gate on the participant's deal (requireDealRowActor), a COUNTED delete (the service now `.select()`s it —
+ * WIRED (wave 155, lane 155R30): the deal page's Participants card removes a participant here (its row's "Remove" control, after
+ * a confirmation — app/dashboard/transactions/[id]/transaction-detail-client.tsx). No other door removes a participant.
+ * Made safe (lane 155R28): the session gate on the participant's deal (requireDealRowActor), a COUNTED delete (the service now `.select()`s it —
  * zero rows is a refusal, CLAUDE.md §3) and one receipt.
  */
 export async function removeParticipant(participantId: string) {
@@ -654,10 +657,10 @@ export async function removeParticipant(participantId: string) {
 // ============================================
 
 /**
- * @uncalledDoor case 3 (wave 155, lane 155R28) — owner question: wire "add title / escrow" on the deal page or retire this door?
- * It is the only writer of the title company / officers / escrow number / closing appointment, and the producer of
+ * WIRED (wave 155, lane 155R30): the deal page's Title & Escrow card adds the record here when the deal has none (the "Add title &
+ * escrow" dialog, app/dashboard/transactions/[id]/transaction-detail-client.tsx). It is the only writer of the title company / officers / escrow number / closing appointment, and the producer of
  * CLOSING_SCHEDULED at the moment the date is written (lib/application/transactions.ts emitClosingScheduled).
- * Made safe: the session gate on the deal (requireTransactionActor), the SESSION tenant stamped on the row (it was inserted with no
+ * Made safe (lane 155R28): the session gate on the deal (requireTransactionActor), the SESSION tenant stamped on the row (it was inserted with no
  * brokerage_id, which every tenant-pinned reader then could not see), one record per deal, and one receipt.
  */
 export async function addTitleEscrow(data: {
@@ -701,11 +704,12 @@ export async function addTitleEscrow(data: {
 }
 
 /**
- * @uncalledDoor case 3 (wave 155, lane 155R28) — owner question: wire "edit title / escrow" on the deal page (the closing date it
- * sets feeds getClosingDates above and CLOSING_SCHEDULED) or retire this door? Besides it, only the title vendor's own status
+ * WIRED (wave 155, lane 155R30): the same dialog on the deal page's Title & Escrow card edits the record here when the deal has one
+ * (app/dashboard/transactions/[id]/transaction-detail-client.tsx) — the closing date it sets feeds getClosingDates above and
+ * CLOSING_SCHEDULED. Besides it, only the title vendor's own status
  * (app/actions/title-portal.ts updateTitleStatus) and the earnest-money fields (app/actions/transaction-inspections.ts
  * updateEarnestMoneyAction) write this record — nothing else sets the company, officers, escrow number or closing appointment.
- * Made safe: it took `Record<string, unknown>` straight into the row, so a caller could move the record to another deal or tenant
+ * Made safe (lane 155R28): it took `Record<string, unknown>` straight into the row, so a caller could move the record to another deal or tenant
  * (transaction_id / brokerage_id) or set the title vendor's own `title_status`. Only the detail fields pass; the record's deal must
  * pass the session gate (requireDealRowActor); the write is counted (`.single()` refuses zero rows) and leaves one receipt.
  */
@@ -800,11 +804,12 @@ export async function addDeadline(deadlineData: {
 }
 
 /**
- * @uncalledDoor case 3 (wave 155, lane 155R28) — owner question: wire "edit deadline" on the deal page's Deadlines card, or retire
- * this door? Completion has its door (completeDeadline below); nothing else edits a deadline's date or note. Should a date change
- * become an EXTENSION instead (transaction_deadlines.extension_date / extension_reason — read by lib/deal-health/health-scorer.ts
- * and written by nothing), the way the closing date became an amendment?
- * Made safe: the deadline's deal must pass the session gate (requireDealRowActor), only its own fields pass (never its deal or
+ * WIRED (wave 155, lane 155R30): the deal page's Deadlines card edits a deadline's date and label here (its row's "Edit" dialog,
+ * app/dashboard/transactions/[id]/transaction-detail-client.tsx). Completion has its door (completeDeadline below); nothing else
+ * edits a deadline's date or note. Open design note (not a hold on the door): whether a date change should be recorded as an
+ * EXTENSION instead (transaction_deadlines.extension_date / extension_reason — read by lib/deal-health/health-scorer.ts and
+ * written by nothing), the way the closing date became an amendment.
+ * Made safe (lane 155R28): the deadline's deal must pass the session gate (requireDealRowActor), only its own fields pass (never its deal or
  * tenant), the status vocabulary gate below still runs, the write is counted (`.single()` refuses zero rows), one receipt.
  */
 export async function updateDeadline(
@@ -918,8 +923,9 @@ export async function respondToRepairRequest(
 /**
  * @uncalledDoor case 3 (wave 155, lane 155R28) — owner question: wire "estimate closing costs" on the deal page (its reader, the
  * "Closing Cost Estimate" card, and ClosingCostActualInput already stand on cost_breakdown_tracking, and this is the ONLY writer of
- * those rows) or retire it? Note for the decision: the estimate is MODEL-AUTHORED money and its prompt names a "6%" commission —
- * an invented constant; a deterministic estimator would be the honest survivor.
+ * those rows) or retire it? Note for the decision: the estimate is MODEL-AUTHORED money; a deterministic estimator would be the
+ * honest survivor. Its prompt no longer names an invented "6%" commission (lane 155R30): the model is handed the deal's recorded
+ * rate (transactions.commission_percentage) or told it is not on file (lib/application/transactions.ts generateCostBreakdown).
  * Made safe: the session gate on the deal (requireTransactionActor) runs BEFORE the model is reached; the lines that actually
  * landed are COUNTED (zero saved is a refusal, not "done"); one receipt.
  */

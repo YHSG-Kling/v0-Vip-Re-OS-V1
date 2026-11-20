@@ -96,7 +96,7 @@ OS-wide arbitration is these EXISTING deciders, each at its own action boundary 
 | 5 · manager delegation | May a delegation move from one status to another? | `lib/kernel/manager-delegation.ts:119` `canDelegationTransition` (module-private: the gate is the door) | ⟨1⟩ in-file | `test:manager-delegation` |
 | 5 · manager delegation | Would this ask close a wait-for cycle between managers (deadlock)? | `lib/kernel/manager-delegation.ts:298` `delegationWaitCycle` (module-private: the gate is the door) | ⟨1⟩ in-file | `test:os-arbitration-canaries` |
 | 5 · manager delegation | What authority rung does a manager hold in this tenant? | `lib/managers/autonomy-gate.ts:298` `resolveAgentAuthorityLevel` | ⟨16⟩ file(s) | `test:autonomy-gate` |
-| 5 · manager delegation | Which manager is accountable for a domain? | `lib/kernel/manager-registry.ts:3494` `resolveMaintenanceManager` | ⟨1⟩ file(s) | `test:manager-ownership` |
+| 5 · manager delegation | Which manager is accountable for a domain? | `lib/kernel/manager-registry.ts:3497` `resolveMaintenanceManager` | ⟨1⟩ file(s) | `test:manager-ownership` |
 | 6 · human approval | Who approves this tenant's asset (owner / team lead / brokerage only by policy)? | `lib/kernel/approval-authority.ts:118` `approverFor` | ⟨10⟩ file(s) | `test:ads-tv-connections` |
 | 6 · human approval | Is a pending approval overdue (SLA → escalation)? | `lib/kernel/approval-sla.ts:17` `evaluateApprovalSla` | ⟨4⟩ file(s) | `test:social-approval` |
 | resource · entitlement | Is this subscription entitled to (and able to afford) a paid lane? | `lib/billing/billing-access.ts:325` `mayUseAndAfford` | ⟨36⟩ file(s) | `test:billing-access` |
@@ -133,7 +133,7 @@ Decision flow between the planes: a trigger (event / human goal / signal / cron)
 
 | Manager | Domains | loop-complete | read-surface | partial | writes-unread | untriggered | guard-only | registry-only | proof-unregistered | Crons | Tables | Queues | Capabilities |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Deal Coordinator | ⟨108⟩ | ⟨66⟩ | ⟨29⟩ | ⟨8⟩ | ⟨0⟩ | ⟨0⟩ | ⟨5⟩ | ⟨0⟩ | ⟨0⟩ | ⟨18⟩ | ⟨71⟩ | ⟨2⟩ | ⟨1⟩ |
+| Deal Coordinator | ⟨109⟩ | ⟨66⟩ | ⟨30⟩ | ⟨8⟩ | ⟨0⟩ | ⟨0⟩ | ⟨5⟩ | ⟨0⟩ | ⟨0⟩ | ⟨18⟩ | ⟨71⟩ | ⟨2⟩ | ⟨1⟩ |
 | Shopping Agent | ⟨60⟩ | ⟨25⟩ | ⟨22⟩ | ⟨12⟩ | ⟨0⟩ | ⟨0⟩ | ⟨1⟩ | ⟨0⟩ | ⟨0⟩ | ⟨8⟩ | ⟨42⟩ | ⟨0⟩ | ⟨3⟩ |
 | Listing Concierge | ⟨86⟩ | ⟨39⟩ | ⟨35⟩ | ⟨8⟩ | ⟨0⟩ | ⟨0⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨17⟩ | ⟨57⟩ | ⟨0⟩ | ⟨4⟩ |
 | Sphere Manager | ⟨25⟩ | ⟨14⟩ | ⟨8⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨15⟩ | ⟨2⟩ | ⟨3⟩ |
@@ -141,7 +141,7 @@ Decision flow between the planes: a trigger (event / human goal / signal / cron)
 | Asset Manager | ⟨103⟩ | ⟨32⟩ | ⟨38⟩ | ⟨29⟩ | ⟨0⟩ | ⟨0⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨32⟩ | ⟨1⟩ | ⟨1⟩ |
 | Ads Manager | ⟨15⟩ | ⟨6⟩ | ⟨5⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨7⟩ | ⟨11⟩ | ⟨2⟩ | ⟨2⟩ |
 | AI ISA | ⟨100⟩ | ⟨61⟩ | ⟨15⟩ | ⟨18⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨0⟩ | ⟨0⟩ | ⟨21⟩ | ⟨43⟩ | ⟨0⟩ | ⟨4⟩ |
-| Data Steward | ⟨496⟩ | ⟨200⟩ | ⟨159⟩ | ⟨65⟩ | ⟨0⟩ | ⟨1⟩ | ⟨71⟩ | ⟨0⟩ | ⟨0⟩ | ⟨36⟩ | ⟨262⟩ | ⟨0⟩ | ⟨2⟩ |
+| Data Steward | ⟨498⟩ | ⟨200⟩ | ⟨159⟩ | ⟨65⟩ | ⟨0⟩ | ⟨1⟩ | ⟨73⟩ | ⟨0⟩ | ⟨0⟩ | ⟨36⟩ | ⟨262⟩ | ⟨0⟩ | ⟨2⟩ |
 | Recruiting Manager | ⟨65⟩ | ⟨31⟩ | ⟨21⟩ | ⟨12⟩ | ⟨0⟩ | ⟨0⟩ | ⟨1⟩ | ⟨0⟩ | ⟨0⟩ | ⟨9⟩ | ⟨58⟩ | ⟨0⟩ | ⟨2⟩ |
 | Compliance Officer | ⟨97⟩ | ⟨63⟩ | ⟨14⟩ | ⟨17⟩ | ⟨0⟩ | ⟨0⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨18⟩ | ⟨0⟩ | ⟨1⟩ |
 | Finance Manager | ⟨96⟩ | ⟨55⟩ | ⟨19⟩ | ⟨19⟩ | ⟨0⟩ | ⟨0⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨41⟩ | ⟨0⟩ | ⟨4⟩ |
