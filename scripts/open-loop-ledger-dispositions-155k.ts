@@ -20,7 +20,7 @@ const FIRST_PARTY_SWEEP = [
   "key:test:wave154-partials",
   "lib/repurpose/refurbish-run.ts#export async function runFirstPartyTopicSweep(",
   "lib/repurpose/refurbish-run.ts#if (a.territory === \"none\" && topicAcquisitionClass(sourceKind) !== \"first_party\")",
-  "app/api/cron/local-intel/route.ts#const firstParty = await runFirstPartyTopicSweep(svc as never)",
+  "app/api/cron/local-intel/route.ts#const firstParty = await runFirstPartyTopicSweep(svc as never, { adoptSubjectKeys: adoptLiveSubjectKeys })",
 ]
 const ROSTER_FOLD = [
   "key:test:role-roster-fold",

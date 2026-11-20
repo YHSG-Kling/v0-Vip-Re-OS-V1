@@ -337,8 +337,8 @@ const joins: { faqToNewsletter: boolean | null } = { faqToNewsletter: null }
 interface CodeGap { id: string; priority: "P0" | "P1" | "P2"; requirement: string; owner: string; why: string; probe?: () => boolean | null }
 const CODE_GAPS: CodeGap[] = [
   { id: "GAP-OS-LEDGER-P0P1", priority: "P0", requirement: "Arbiter: no customer-executable P0 / P1 path missing a link (directive 509)",
-    owner: "scripts/os-coverage-ledger.ts open rows (G12 receipts · G09 / G10 owners and decisions) — lanes 155R15 / 155R17 / 155R18",
-    why: "measured at this base (FINAL_BATCH, os-coverage-ledger): EXECUTABLE_GAP 362 = P0 64 · P1 158 · P2 140; the receipt / owner lanes were not merged here — the integrator re-measures and removes this entry only when P0 = P1 = 0" },
+    owner: "scripts/os-coverage-ledger.ts open rows — G09 owners the census cannot derive (owner decision 3), G01 events with no consumer and G02 consumers with no emitter (owner-held event questions), G12 / G99 / G10 residue",
+    why: "measured on the merged head after every lane of this wave (os-coverage-ledger, 3,066 rows): EXECUTABLE_GAP 128 = P0 15 · P1 39 · P2 74 (it was 362 = P0 64 · P1 158 · P2 140 when this entry was written, and 1,240 when lane 155B1 first classified the open rows). P0 and P1 are not zero, so the verdict stays ENGINEERING BLOCKED — this entry is removed only when P0 = P1 = 0" },
 ]
 
 // ── THE ACCEPTANCE TABLE (directive 521–543) — positive and negative evidence read from the guards' own source ────────

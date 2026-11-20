@@ -20,7 +20,7 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 
 - `subscription_tiers.marketing_bullets` is **empty on all four tiers**: the public /pricing page renders no feature list from the database. Its promises are price, the trial, seat bands, seat packages, custom pricing and overage — row R29. No allowance number is hard-coded on any public surface (guarded).
 - `subscription_tiers.features` carries 8 boolean flags; **no code reads any of them as a gate** — they describe the plan, they do not enforce it. Entitlement is the subscription state plus `feature_flags`.
-- `feature_flags` holds 70 rows, all enabled at 100 % rollout; 2 are multi_location-only. 34 of the 70 keys are read by **no file** in app/ or lib/ — they are catalogue entries; the feature they name is gated by the paid-capability resolver (`mayUseAndAfford`), not by the key.
+- `feature_flags` holds 70 rows, all enabled at 100 % rollout; 2 are multi_location-only. 33 of the 70 keys are read by **no file** in app/ or lib/ — they are catalogue entries; the feature they name is gated by the paid-capability resolver (`mayUseAndAfford`), not by the key.
 - `plan_limits` holds 17 metrics per tier; 12 are measured (counted by a writer or counted live), **5 are not**.
 
 ## Summary
@@ -87,7 +87,7 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 | ai_campaign_automation | R19 | CERTIFIED | 0 |
 | ai_compliance_checking | R22 | CERTIFIED | 0 |
 | ai_conversation_analysis | R07 | CERTIFIED | 0 |
-| ai_isa | R07 | CERTIFIED | 118 |
+| ai_isa | R07 | CERTIFIED | 121 |
 | ai_lead_prediction | R07 | CERTIFIED | 0 |
 | ai_video_generation | R15 | NOT CONFIGURED | 1 |
 | agent_dashboard | R20 | CERTIFIED | 3 |
@@ -125,7 +125,7 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 | direct_mail | R12 | NOT CONFIGURED | 128 |
 | email_campaigns | R11 | NOT CONFIGURED | 13 |
 | listing_marketing_tiers | R01 | CERTIFIED | 2 |
-| marketing_studio | R19 | CERTIFIED | 1 |
+| marketing_studio | R19 | CERTIFIED | 2 |
 | newsletter_engine | R11 | NOT CONFIGURED | 2 |
 | omnipresence_repurposer | R13 | NOT CONFIGURED | 2 |
 | podcast_generation | R17 | NOT CONFIGURED | 4 |
@@ -140,7 +140,7 @@ Wave 143, lane 143J. Live census read-only on 2026-10-23 (project hrvaqgvukzxfsk
 | training_progress | R24 | CERTIFIED | 1 |
 | brokerage_settings | R23 | CERTIFIED | 60 |
 | multi_location_settings | R23 | CERTIFIED | 0 |
-| provider_override | R23 | CERTIFIED | 0 |
+| provider_override | R23 | CERTIFIED | 1 |
 | team_management | R23 | CERTIFIED | 2 |
 | commission_waterfall | R05 | CERTIFIED | 0 |
 | document_esign | R04 | NOT CONFIGURED | 0 |
