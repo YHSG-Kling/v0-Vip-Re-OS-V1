@@ -200,9 +200,11 @@ export function isInertControl(src: string, i: number): boolean {
  *
  * WHAT KEEPS THIS HONEST — the closure starts ONLY at functions some other file
  * names, and walks outward. A ring of same-file functions that call each other
- * and are reached from nowhere stays orphaned, all of it. The live proof is
- * ai-transaction-coordinator.ts: getClosingPrep calls prepareForClosing, and
- * BOTH remain reported, because nothing outside the file calls getClosingPrep.
+ * and are reached from nowhere stays orphaned, all of it. The proof is the
+ * string FIXTURE below (getClosingPrep calls prepareForClosing — the shape that
+ * once lived in ai-transaction-coordinator.ts; both were retired in wave 155,
+ * lanes 155R18 / 155R25, survivor ai-closing-workflow.ts aiGenerateClosingChecklist):
+ * BOTH stay unreached, because nothing outside the ring calls getClosingPrep.
  * A function is also never its own caller, so a recursive orphan stays an orphan.
  *
  * PURE. `src` must be COMMENT-STRIPPED by the caller — a tombstone naming a

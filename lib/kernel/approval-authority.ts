@@ -447,14 +447,25 @@ export function readApprovalStamp(metadata: unknown): { fingerprint: string; sco
  *   · no stamp (a pre-wave-155 approval, or never approved) ...................................... NOT re-opened — its
  *     staleness is unknown, and whether an unapproved piece may go out is the door's own approval rule, not this one.
  */
-export function marketingApprovalReopened(row: { approval_status?: unknown; metadata?: unknown } & Record<string, unknown>): { reopened: boolean; reason: string | null } {
+export function marketingApprovalReopened(row: { approval_status?: unknown; metadata?: unknown } & Record<string, unknown>, brokerageId?: string | null): { reopened: boolean; reason: string | null } {
   const status = String(row.approval_status ?? "")
   if (status === "rejected") return { reopened: true, reason: "it was rejected" }
   const stamp = readApprovalStamp(row.metadata)
   if (!stamp) return { reopened: false, reason: null }
   if (status !== "approved") return { reopened: true, reason: "it changed after it was approved and is waiting for approval again" }
-  if (stamp.fingerprint !== marketingAssetFingerprint(row)) return { reopened: true, reason: "it was edited after it was approved" }
-  return { reopened: false, reason: null }
+  // WAVE 155 (lane 155R25): THE inheritance rule (approvalInherits, above) — this used to compare the version ONLY, inline
+  // (`stamp.fingerprint !== marketingAssetFingerprint(row)`), so a piece re-scoped after approval (an agent's own piece moved
+  // to the brokerage's or a team's voice) kept an approval granted for a different scope. The stamp's authority must inherit
+  // AND the scope AND the version must be identical. The scope is the row's own (the key approveAsset stamped — marketingScopeKey
+  // over marketingArtifactScope's derivation); a tenant that cannot be named cannot be judged, so the approval does not hold.
+  const tenant = brokerageId ?? (typeof row.brokerage_id === "string" ? row.brokerage_id : null)
+  if (!tenant) return { reopened: true, reason: "its scope could not be read, so its approval cannot be shown to still hold" }
+  const vis = row.visibility_scope, teamId = typeof row.team_id === "string" ? row.team_id : null
+  const actsFor = vis === "brokerage" || vis === "multi_location" ? "brokerage" as const : vis === "team" && teamId ? "team" as const : null
+  const current = { scopeKey: marketingScopeKey({ brokerageId: tenant, actsFor, teamId, ownerUserId: typeof row.agent_user_id === "string" ? row.agent_user_id : null }), fingerprint: marketingAssetFingerprint(row) }
+  if (approvalInherits(stamp.authority as MarketingAuthority, stamp, current)) return { reopened: false, reason: null }
+  if (stamp.fingerprint !== current.fingerprint) return { reopened: true, reason: "it was edited after it was approved" }
+  return { reopened: true, reason: stamp.scopeKey === current.scopeKey ? "its approval was granted under an authority that does not carry over" : "it now speaks for a different owner, team or brokerage voice than the one that approved it" }
 }
 
 /**
@@ -468,14 +479,14 @@ export async function refuseReopenedMarketingAssets(client: Db, brokerageId: str
   const want = [...new Set(urls.map((u) => String(u ?? "").trim()).filter(Boolean))]
   if (!brokerageId) return { ok: false, reason: "no tenant — the approval of this piece's media could not be checked", assetIds: [] }
   if (want.length === 0) return { ok: true, matched: 0 }
-  const cols = `id, approval_status, metadata, ${MARKETING_ASSET_SUBSTANTIVE_FIELDS.join(", ")}`
+  const cols = `id, approval_status, metadata, agent_user_id, team_id, visibility_scope, ${MARKETING_ASSET_SUBSTANTIVE_FIELDS.join(", ")}`
   const rows: Array<Record<string, unknown>> = []
   for (const col of ["asset_url", "thumbnail_url"]) {
     const { data, error } = await client.from("marketing_assets").select(cols).eq("brokerage_id", brokerageId).in(col, want)
     if (error) return { ok: false, reason: `the approval of this piece's media could not be read (${error.message}) — nothing was sent`, assetIds: [] }
     for (const r of (data ?? []) as Array<Record<string, unknown>>) if (!rows.some((x) => x.id === r.id)) rows.push(r)
   }
-  const bad = rows.map((r) => ({ id: String(r.id), v: marketingApprovalReopened(r) })).filter((x) => x.v.reopened)
+  const bad = rows.map((r) => ({ id: String(r.id), v: marketingApprovalReopened(r, brokerageId) })).filter((x) => x.v.reopened)
   if (bad.length) return { ok: false, reason: `this piece uses a studio asset whose approval no longer holds — ${bad[0].v.reason}. Re-approve it, then send.`, assetIds: bad.map((x) => x.id) }
   return { ok: true, matched: rows.length }
 }

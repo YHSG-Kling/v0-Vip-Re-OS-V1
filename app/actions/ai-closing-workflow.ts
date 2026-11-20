@@ -96,6 +96,25 @@ export async function aiGenerateClosingChecklist(params: {
       { first_name: string | null; last_name: string | null } | null | undefined
     const clientName = [client?.first_name, client?.last_name].filter(Boolean).join(" ") || "Unknown"
 
+    // MERGED FROM prepareForClosing (wave 155, lane 155R25 — CLAUDE.md §1.1: what the survivor lacked goes onto the survivor
+    // BEFORE the duplicate is retired; tombstone at app/actions/ai-transaction-coordinator.ts). The retired door read the deal's
+    // documents and parties so the plan knew what was already received and who is on the deal, and it asked for the potential
+    // issues with their resolutions and the day-of-closing items. Both reads are tenant-pinned to the SESSION tenant and READ:
+    // a refused read refuses (a checklist built blind would list received documents as missing). Parties are sent as role +
+    // company only — never a name, email or phone (the retired door sent the whole participant rows to the model).
+    const [docsRead, partiesRead] = await Promise.all([
+      supabase.from("transaction_documents").select("doc_label, doc_type, status, signature_status")
+        .eq("transaction_id", params.transactionId).eq("brokerage_id", sessionBrokerageId).limit(200),
+      supabase.from("transaction_participants").select("role, company")
+        .eq("transaction_id", params.transactionId).eq("brokerage_id", sessionBrokerageId).limit(50),
+    ])
+    if (docsRead.error) return { success: false, error: `Could not read the deal's documents: ${docsRead.error.message}` }
+    if (partiesRead.error) return { success: false, error: `Could not read the deal's parties: ${partiesRead.error.message}` }
+    const docsOnFile = ((docsRead.data ?? []) as Array<{ doc_label: string | null; doc_type: string | null; status: string | null; signature_status: string | null }>)
+      .map((d) => `- ${d.doc_label || d.doc_type || "document"} (${[d.status, d.signature_status].filter(Boolean).join(", ") || "status unknown"})`)
+    const partiesOnDeal = ((partiesRead.data ?? []) as Array<{ role: string | null; company: string | null }>)
+      .map((p) => `- ${p.role || "party"}${p.company ? ` (${p.company})` : ""}`)
+
     const { object: checklist } = await generateObject({
       model: "openai/gpt-4o",
       schema: z.object({
@@ -110,6 +129,8 @@ export async function aiGenerateClosingChecklist(params: {
         })),
         closing_risk: z.enum(["low", "medium", "high"]),
         critical_path: z.array(z.string()).describe("Items that will block closing if incomplete"),
+        potential_issues: z.array(z.object({ issue: z.string(), resolution: z.string() })).describe("Likely problems before closing and how to resolve each"),
+        day_of_closing: z.array(z.object({ item: z.string(), timing: z.string(), responsible: z.string() })).describe("What happens on closing day, when, and who does it"),
         ai_summary: z.string(),
       }),
       prompt: `Generate a complete closing checklist for this transaction:
@@ -124,6 +145,12 @@ Title company: ${transaction.transaction_title_escrow?.[0]?.title_company_name ?
 Closing scheduled: ${transaction.transaction_title_escrow?.[0]?.closing_scheduled_date ?? "TBD"}
 CTC date: ${transaction.transaction_lenders?.[0]?.clear_to_close_date ?? "TBD"}
 
+Documents already on file (never list one of these as missing; flag only what its status says is outstanding):
+${docsOnFile.length ? docsOnFile.join("\n") : "- none on file"}
+
+Parties on the deal (role / company):
+${partiesOnDeal.length ? partiesOnDeal.join("\n") : "- none recorded"}
+
 Generate a comprehensive, ordered closing checklist covering:
 - Lender requirements (appraisal, CTC, funding)
 - Title requirements (title search, commitment, insurance)
@@ -132,7 +159,8 @@ Generate a comprehensive, ordered closing checklist covering:
 - Financial items (wire instructions, closing disclosure)
 - Agent tasks (walk-through, final utilities)
 - Client tasks
-- Compliance items`,
+- Compliance items
+Also list the potential issues before closing with a resolution for each, and the day-of-closing items with timing and who is responsible.`,
     })
 
     // Map AI output to the LIVE closing_checklist_items schema (pass 13: the old
@@ -181,7 +209,7 @@ Generate a comprehensive, ordered closing checklist covering:
           brokerage_id:     sessionBrokerageId,
           closing_date:     transaction.close_date,
           readiness_score:  checklist.closing_risk === "low" ? 85 : checklist.closing_risk === "medium" ? 55 : 25,
-          checklist:        { critical_path: checklist.critical_path, ai_summary: checklist.ai_summary },
+          checklist:        { critical_path: checklist.critical_path, potential_issues: checklist.potential_issues, day_of_closing: checklist.day_of_closing, ai_summary: checklist.ai_summary },
         },
         { onConflict: "transaction_id" }
       ), "closing-readiness score cache; the checklist itself was written (and checked) above")

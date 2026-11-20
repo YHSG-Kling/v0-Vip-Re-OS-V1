@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress"
 import { AlertTriangle, Sparkles, Loader2, Calendar, Copy, Check } from "lucide-react"
 import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
 import { getTaxPlanAction } from "@/app/actions/tax-planning"
+import { computeNetSelfEmploymentIncome } from "@/lib/finance/tax-planning"
 
 interface TaxReadinessPanelProps {
   agentId: string
@@ -32,9 +33,13 @@ export function TaxReadinessPanel({
   // come from THE ONE estimator (lib/finance/tax-planning.ts via getTaxPlanAction): the suggested reserve exists only
   // once the person has entered their rates (or their accountant's amounts), and the due date is the real one.
   void quarter
-  const grossTaxable = ytdGCI - ytdExpenses
   const [plan, setPlan] = useState<Extract<Awaited<ReturnType<typeof getTaxPlanAction>>, { success: true }>["plan"] | null>(null)
   useEffect(() => { getTaxPlanAction().then((r) => { if (r.success) setPlan(r.plan) }).catch(() => {}) }, [])
+  // WAVE 155 (lane 155R25): "Est. Taxable" was a second inline computation, ytdGCI − ytdExpenses: it subtracted EVERY recorded
+  // expense (deductibility is never assumed — lib/finance/tax-planning.ts) and could print a negative taxable figure. It is now
+  // THE ONE rule over the plan's own period: income recognized − CONFIRMED deductible expenses, never below 0. Unknown until
+  // the plan loads (never a number from the props in the meantime).
+  const estTaxable = plan ? computeNetSelfEmploymentIncome(plan.periodToDate.income, plan.periodToDate.confirmedDeductible) : null
   const nextQuarter = plan?.quarterly.find((q) => q.status === "open" || q.status === "partly_recorded" || q.status === "needs_input") ?? null
   const estimatedTaxLiability = plan && plan.inputs.status === "ready" ? plan.alreadySetAsideOrPaid + (plan.remainingSuggestedReserve ?? 0) : 0
   const reserveKnown = !!plan && plan.inputs.status === "ready"
@@ -97,7 +102,7 @@ export function TaxReadinessPanel({
           </div>
           <div className="p-3 rounded-lg bg-muted/50">
             <p className="text-xs text-muted-foreground">Est. Taxable</p>
-            <p className="text-lg font-semibold">{formatCurrency(grossTaxable)}</p>
+            <p className="text-lg font-semibold">{estTaxable === null ? "—" : formatCurrency(estTaxable)}</p>
           </div>
           <div className={`p-3 rounded-lg ${estimatedTaxLiability > 0 ? "bg-red-50" : "bg-muted/50"}`}>
             <p className="text-xs text-muted-foreground">Suggested reserve (planning)</p>

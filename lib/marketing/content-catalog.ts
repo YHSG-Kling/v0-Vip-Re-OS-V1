@@ -975,7 +975,7 @@ export async function readContentCatalog(db: Db, viewer: CatalogViewer, filters:
     if (src.table === "marketing_assets") {
       // wave 155 (155J): THE one re-open rule (approval-authority.ts marketingApprovalReopened) — the same rule the send / publish
       // doors refuse on; a regen that reset the row to pending after a stamped approval reads re-opened too, not merely "pending".
-      const reopen = marketingApprovalReopened(r)
+      const reopen = marketingApprovalReopened(r, B)
       if (reopen.reopened && r.approval_status !== "rejected" && status !== "failed" && status !== "blocked_by_rights") { approvalReopened = true; status = "awaiting_approval" }
       if (viewer.approver) {
         const owner = s(r.agent_user_id)

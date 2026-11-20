@@ -156,14 +156,24 @@ async function videoSection() {
 async function staleSection() {
   console.log("\n[4 · STALE APPROVAL AT THE DOOR — edited / regenerated / rejected refuses; intact passes; a refused read refuses]  SIMULATED")
   const base = { asset_type: "image", asset_name: "Open house art", asset_url: "https://cdn.example.test/oh.png", preview_text: null, variants: null, audience: null, brand: null }
-  const stamp = { approval: { fingerprint: marketingAssetFingerprint(base), scope_key: "k", approved_by: "uOwner", approved_at: now, authority: "content_brand" } }
-  const intact = { id: U(90), brokerage_id: B, ...base, approval_status: "approved", metadata: stamp }
+  // The stamp carries the REAL scope key approveAsset writes (marketingScopeKey over the row's own owner / team / voice). Wave 155,
+  // lane 155R25: the re-open rule now reads approvalInherits (authority inherits AND scope AND version identical), so a fixture
+  // stamped with a placeholder key ("k") reads re-opened, for the right reason. The rule is asserted, not the placeholder.
+  const stamp = { approval: { fingerprint: marketingAssetFingerprint(base), scope_key: AA.marketingScopeKey({ brokerageId: B, actsFor: null, teamId: null, ownerUserId: "uOwner" }), approved_by: "uOwner", approved_at: now, authority: "content_brand" } }
+  const intact = { id: U(90), brokerage_id: B, agent_user_id: "uOwner", team_id: null, visibility_scope: "agent", ...base, approval_status: "approved", metadata: stamp }
   const edited = { ...intact, id: U(91), asset_url: "https://cdn.example.test/oh-v2.png" }
   const regen = { ...intact, id: U(92), asset_url: "https://cdn.example.test/oh-regen.png", approval_status: "pending" }
   const rejected = { ...intact, id: U(93), asset_url: "https://cdn.example.test/oh-rej.png", approval_status: "rejected", metadata: {} }
   const legacy = { ...intact, id: U(94), asset_url: "https://cdn.example.test/legacy.png", metadata: {} }
   check("the rule: intact → holds; edited → re-opened; regenerated-to-pending → re-opened; rejected → refused; no stamp → not judged",
     !marketingApprovalReopened(intact).reopened && marketingApprovalReopened(edited).reopened && marketingApprovalReopened(regen).reopened && marketingApprovalReopened(rejected).reopened && !marketingApprovalReopened(legacy).reopened)
+  // 155R25 — approvalInherits on the path: the SAME version re-scoped to the brokerage's voice after approval does not inherit;
+  // neither does a stamp under an authority that never inherits (spend). Red at 15d212bf: the inline rule compared the version only.
+  const rescoped = { ...intact, id: U(96), visibility_scope: "brokerage" }
+  const spendStamp = { ...intact, id: U(97), metadata: { approval: { ...stamp.approval, authority: "spend_publication" } } }
+  check("155R25 · a piece re-scoped to the brokerage voice after approval is RE-OPENED (scope differs, version identical)", marketingApprovalReopened(rescoped).reopened && /different owner, team or brokerage voice/.test(marketingApprovalReopened(rescoped).reason ?? ""), JSON.stringify(marketingApprovalReopened(rescoped)))
+  check("155R25 · a stamp under a non-inheriting authority (spend_publication) does not carry over", marketingApprovalReopened(spendStamp).reopened, JSON.stringify(marketingApprovalReopened(spendStamp)))
+  check("155R25 · no nameable tenant → the approval is not shown to hold (fail closed); the door's tenant names it", marketingApprovalReopened({ ...intact, brokerage_id: undefined }).reopened && !marketingApprovalReopened({ ...intact, brokerage_id: undefined }, B).reopened)
   const d = memSupabase({ marketing_assets: [intact, edited, regen, rejected, legacy, { ...edited, id: U(95), brokerage_id: "bX", asset_url: "https://cdn.example.test/oh.png" }] })
   const pass = await refuseReopenedMarketingAssets(d as any, B, ["https://cdn.example.test/oh.png"])
   check("POSITIVE CONTROL: the intact approved asset PASSES the door (another tenant's same-URL edited row is not read)", pass.ok && pass.matched === 1, JSON.stringify(pass))
@@ -182,7 +192,7 @@ async function staleSection() {
   const upd = dm.slice(dm.indexOf("export async function updateMailCampaign"), dm.indexOf("export async function deleteMailCampaign"))
   check("WRITER: an approved mail campaign's substantive edit re-opens approval, tenant-pinned from the session", /mailCampaignEditReopensApproval\(/.test(upd) && /approval_status\s*=\s*"pending"/.test(upd) && /\.eq\("brokerage_id", actor\.brokerageId\)/.test(upd))
   check("WRITER: the screenshot regen resets a page capture to pending and is pinned to its own tenant (155D request 1)", /approval_status: kind === "os_surface" \? "approved" : "pending"/.test(shot) && /applyTenantScope\(regenQ, regenScope\)/.test(shot) && /tenantScope\(row\.brokerage_id,/.test(shot))
-  check("ONE rule: the catalog reads marketingApprovalReopened (no second inline copy)", /marketingApprovalReopened\(r\)/.test(cat) && !/stamp\.fingerprint !== marketingAssetFingerprint/.test(cat))
+  check("ONE rule: the catalog reads marketingApprovalReopened (no second inline copy)", /marketingApprovalReopened\(r\s*[,)]/.test(cat) && !/stamp\.fingerprint !== marketingAssetFingerprint/.test(cat))
 }
 
 async function learningSection() {

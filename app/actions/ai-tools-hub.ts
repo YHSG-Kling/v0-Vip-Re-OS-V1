@@ -1746,8 +1746,8 @@ async function calculateDeadlines(
 /**
  * document_checklist — REFUSED.
  *
- * The nearest real implementation, prepareForClosing
- * (app/actions/ai-transaction-coordinator.ts:905), produces a document
+ * The nearest real implementation, aiGenerateClosingChecklist
+ * (app/actions/ai-closing-workflow.ts:26 — prepareForClosing was merged onto it and retired, wave 155 lane 155R25), produces a document
  * checklist from an actual transaction's documents, participants and state —
  * it cannot serve a form that collects only a transaction TYPE. Finishing this
  * means either binding the tool to a transaction or agreeing that a

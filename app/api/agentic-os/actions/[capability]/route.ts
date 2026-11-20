@@ -8,7 +8,7 @@ import { parseInputSpec, SIDE_EFFECTING_VERBS, CONFIRMATION_THRESHOLD } from "@/
 import { hasScope } from "@/lib/agentic-os/agent-scopes"
 import { resolveAgenticCaller } from "@/lib/agentic-os/agent-credentials"
 import { isConnectedCapability, getConnectedCapability } from "@/lib/agentic-os/connected-vendor-registry"
-import { resolveConnectedCapability } from "@/lib/agentic-os/resolve-connected-capability"
+import { resolveConnectedCapability, resolveConnectedCapabilityForOrigin } from "@/lib/agentic-os/resolve-connected-capability"
 
 export async function GET(req: Request, ctx: { params: Promise<{ capability: string }> }) {
   const caller = await resolveAgenticCaller(req)
@@ -22,9 +22,18 @@ export async function GET(req: Request, ctx: { params: Promise<{ capability: str
   if (isConnectedCapability(capability)) {
     const def = getConnectedCapability(capability)
     const requiresConfirmation = SIDE_EFFECTING_VERBS.has(def.verb) || def.mutates
-    const connection = caller.brokerageId
-      ? await resolveConnectedCapability(capability, { brokerageId: caller.brokerageId })
-      : null
+    // WAVE 155 (lane 155R25 — the credentials sink rule): an external agent's TOKEN request probes the credential store through
+    // the stated-origin door (one decision row per credential read), and only when the token holds this capability's scope — an
+    // unscoped token learns nothing about the tenant's connections and causes no credential read. A signed-in person keeps the
+    // plain read-only probe.
+    const scoped = hasScope(caller.scopes, def.scope)
+    const connection = !caller.brokerageId ? null
+      : caller.via !== "token" ? await resolveConnectedCapability(capability, { brokerageId: caller.brokerageId })
+      : !scoped ? null
+      : await resolveConnectedCapabilityForOrigin(capability, { brokerageId: caller.brokerageId }, {
+          trustClass: "model_output",
+          sink: { verification: { kind: "deterministic", check: `agentic bearer token holds scope ${def.scope} (hasScope)` } },
+        })
     return NextResponse.json({
       action: `${def.verb} ${capability}`,
       verb: def.verb,

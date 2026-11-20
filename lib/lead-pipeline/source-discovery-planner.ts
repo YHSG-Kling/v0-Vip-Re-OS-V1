@@ -810,6 +810,7 @@ export const PRODUCTION_DATAFINITI_DATASET_SEAM: DatafinitiDatasetSeam | null = 
 /** PURE — the seam's rows as ladder candidates. A licenseHeld row is license_held (NO spend is ever offered); a row its door
  *  calls not_needed / dormant is refused here; a conditional row is available with an UNKNOWN cost, so the ladder never buys it
  *  until 155I's door supplies a count and a quote. */
+/** @ownerRuled 2026-11-19 owner R11: Datafiniti is LICENSE-HELD, no paid call without license + approval; no product decision reads this seam until a license is recorded (lane 155R25) */
 export function datafinitiLadderCandidates(seam: DatafinitiDatasetSeam | null = PRODUCTION_DATAFINITI_DATASET_SEAM): IntelligenceSourceCandidate[] {
   if (!seam) return []
   return seam().map((r) => ({
@@ -821,10 +822,12 @@ export function datafinitiLadderCandidates(seam: DatafinitiDatasetSeam | null = 
 }
 
 /** PURE — the Datafiniti rows that may be offered ANY spend (never a licenseHeld row). Today all four are license-held → []. */
+/** @ownerRuled 2026-11-19 owner R11: Datafiniti is LICENSE-HELD, no paid call without license + approval; every row is license-held, so no spend decision reads this until a license is recorded (lane 155R25) */
 export function spendableDatafinitiRows(seam: DatafinitiDatasetSeam | null = PRODUCTION_DATAFINITI_DATASET_SEAM): string[] {
   return seam ? seam().filter((r) => !r.licenseHeld).map((r) => r.dataset) : []
 }
 
+/** @ownerRuled 2026-11-19 owner R11: the licensed-dataset rung's row mapper; Datafiniti, its one provider, is LICENSE-HELD (no paid call without license + approval), so nothing builds a row until a license is recorded (lane 155R25) */
 export function licensedDatasetCandidate(row: LicensedDatasetSelectorRow): IntelligenceSourceCandidate {
   const held = row.activation === "dormant_pending_rights" || !row.rightsRecorded
   return {

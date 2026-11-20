@@ -280,7 +280,10 @@ export async function resolveScopedConnectionResult(
  * resolveScopedConnection) writes no row and must not be able to reach the record, so a read-only caller is read-only in the
  * source as well as at run time. As an optional parameter on the plain door, every reader of a connection looked like a writer
  * of the action ledger (two read-only server actions were counted as unowned writes by the arbitration census).
- * No production caller states an origin today; the record is proven by test:arbitration-sinks.
+ * Production caller (wave 155, lane 155R25): an EXTERNAL AGENT's bearer-token request on the agentic API — the describe and
+ * invoke routes (app/api/agentic-os/actions/[capability]/route.ts and …/invoke/route.ts) probe a user-connected capability
+ * through lib/agentic-os/resolve-connected-capability.ts resolveConnectedCapabilityForOrigin, trust class model_output, cleared
+ * by the named deterministic check (the token's scope). The record is proven by test:arbitration-sinks and test:proof-only-exports.
  */
 export async function resolveScopedConnectionForOrigin(
   provider: string,

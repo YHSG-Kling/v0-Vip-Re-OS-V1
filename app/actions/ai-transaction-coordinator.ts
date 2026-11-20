@@ -1044,157 +1044,15 @@ Identify:
   }
 }
 
-/**
- * AI-powered closing preparation checklist
- *
- * ── DELIBERATELY NOT WIRED TO A SURFACE ──────────────────────────────────────
- * transaction_closing_prep is UNIQUE on transaction_id (pg_constraint:
- * transaction_closing_prep_transaction_id_key), i.e. ONE row per deal, and it
- * already has a live writer reached from a real page:
- *
- *     app/actions/ai-closing-workflow.ts : aiGenerateClosingChecklist
- *       -> called by app/crm/components/closing-workflow-tab.tsx:192
- *       -> upserts transaction_closing_prep with { onConflict: "transaction_id" },
- *          stamps brokerage_id, and ALSO populates closing_checklist_items,
- *          which app/actions/ai-closing-workflow.ts:getClosingPrepSummary reads.
- *
- * Wiring this function to a second button would give one row two independent
- * authors writing different `checklist` shapes and different `readiness_score`
- * scales, and whichever ran last would win silently. So it stays unwired — but
- * NOT unfixed: the three defects below were real and are corrected, so the
- * capability is whole for whoever consolidates the two.
- */
-/** @proofSeam kept unwired on purpose — scripts/wired-surface-guard.ts:204-205 and
- *  scripts/transaction-document-wiring-simulator.ts:296-297,655-729 use this exact
- *  duplicate (prepareForClosing/getClosingPrep vs the survivor aiGenerateClosingChecklist)
- *  as their live specimen for "is a same-file-only caller correctly read as unreachable".
- *  Merging it away would blank both proofs' test fixture, not just this orphan. */
-export async function prepareForClosing(params: {
-  transactionId: string
-  /** Ignored — identity comes from the session (see scopeTransaction). */
-  agentId?: string
-  closingDate: string
-}) {
-  try {
-    const scope = await scopeTransaction(params.transactionId)
-    if (!scope.ok) return { success: false, error: scope.error }
-
-    const supabase = await createClient()
-
-    const { data: transaction, error: txnError } = await supabase
-      .from("transactions")
-      .select(`
-        *,
-        transaction_documents(*),
-        transaction_participants(*),
-        listings(*)
-      `)
-      .eq("id", params.transactionId)
-      .maybeSingle()
-
-    if (txnError) return { success: false, error: `Could not load the transaction: ${txnError.message}` }
-    if (!transaction) {
-      return { success: false, error: "Transaction not found" }
-    }
-
-    const { object: closingPrep } = await generateObject({
-      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
-      schema: z.object({
-        readinessScore: z.number(),
-        daysUntilClosing: z.number(),
-        documentChecklist: z.array(z.object({
-          document: z.string(),
-          status: z.enum(["received", "pending", "missing", "needs_signature"]),
-          responsibleParty: z.string(),
-          deadline: z.string(),
-          notes: z.string().optional(),
-        })),
-        participantReadiness: z.array(z.object({
-          participant: z.string(),
-          role: z.string(),
-          ready: z.boolean(),
-          pendingItems: z.array(z.string()),
-        })),
-        financialItems: z.array(z.object({
-          item: z.string(),
-          amount: z.number().optional(),
-          status: z.string(),
-          dueBy: z.string(),
-        })),
-        dayOfClosingChecklist: z.array(z.object({
-          item: z.string(),
-          timing: z.string(),
-          responsible: z.string(),
-        })),
-        potentialIssues: z.array(z.object({
-          issue: z.string(),
-          resolution: z.string(),
-          timeToResolve: z.string(),
-        })),
-      }),
-      prompt: `Prepare comprehensive closing checklist for:
-
-Property: ${transaction.property_address}
-Sale Price: $${transaction.purchase_price?.toLocaleString()}
-Closing Date: ${params.closingDate}
-State: ${(transaction.property_state || 'FL').toUpperCase()}
-Transaction Type: ${transaction.deal_type}
-
-Current Documents:
-${JSON.stringify(transaction.transaction_documents, null, 2)}
-
-Participants:
-${JSON.stringify(transaction.transaction_participants, null, 2)}
-
-Generate a comprehensive closing preparation plan including:
-1. Document checklist for ${(transaction.property_state || 'Florida')}
-2. Participant readiness assessment
-3. Financial items (earnest money, closing costs, etc.)
-4. Day-of-closing checklist
-5. Potential issues and resolutions`,
-    })
-
-    // ── SAVE CLOSING PREPARATION ─────────────────────────────────────────────
-    // THREE DEFECTS, all verified against the live database:
-    //  1. NO onConflict. supabase-js defaults the arbiter to the PRIMARY KEY
-    //     (id), and no id was supplied — so this "upsert" was a plain INSERT and
-    //     the SECOND call for a deal hit
-    //       duplicate key value violates unique constraint
-    //       "transaction_closing_prep_transaction_id_key"
-    //     (probed live). onConflict is now the real unique key.
-    //  2. brokerage_id was never stamped, and brok_transaction_closing_prep is
-    //     the only policy on the table: WITH CHECK (brokerage_id =
-    //     current_user_brokerage_id()) — FALSE for NULL, so even the first call
-    //     was refused by RLS.
-    //  3. Unchecked write: both of the above resolved as success.
-    //  Also: `created_at` was being re-stamped on every upsert, which rewrites
-    //  when prep STARTED. updated_at is the column that means "last touched".
-    const { error: prepError } = await supabase
-      .from("transaction_closing_prep")
-      .upsert(
-        {
-          transaction_id: params.transactionId,
-          brokerage_id: scope.brokerageId,
-          closing_date: toDateOnly(params.closingDate),
-          // readiness_score has CHECK (>= 0 AND <= 100) — clamp rather than let a
-          // model overshoot refuse the whole row.
-          readiness_score: Math.max(0, Math.min(100, Math.round(closingPrep.readinessScore ?? 0))),
-          checklist: closingPrep,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "transaction_id" },
-      )
-
-    if (prepError) {
-      return { success: false, error: `Closing prep could not be saved: ${prepError.message}` }
-    }
-
-    revalidatePath(`/dashboard/transactions/${params.transactionId}`)
-    return { success: true, closingPrep }
-  } catch (error) {
-    return handleError(error, "prepareForClosing")
-  }
-}
+// TOMBSTONE (wave 155, lane 155R25 — CLAUDE.md §1.1): prepareForClosing — a "use server" PUBLIC endpoint no surface called, a
+// DUPLICATE second author of transaction_closing_prep (UNIQUE on transaction_id: one row per deal) beside the live writer.
+// Survivor: app/actions/ai-closing-workflow.ts:26 aiGenerateClosingChecklist (closing-workflow tab). MERGED onto the survivor
+// FIRST (app/actions/ai-closing-workflow.ts:99): the deal's documents on file and its parties (role + company only) in the
+// prompt, and the potential issues with resolutions plus the day-of-closing items, kept on transaction_closing_prep.checklist.
+// Not merged, on purpose: the caller-supplied closingDate (the survivor reads the deal's own close_date) and the model-invented
+// readiness number (the survivor's score is derived from the closing risk). Its three repaired defects (onConflict, brokerage_id
+// stamp, checked write) already hold on the survivor. The two proofs that used it as a specimen now hold fixtures:
+// scripts/wired-surface-guard.ts (a string fixture) and scripts/transaction-document-wiring-simulator.ts (D1B-style rule).
 
 /**
  * AI-powered post-closing follow-up automation
@@ -1360,6 +1218,6 @@ Create a comprehensive plan including:
 }
 
 // TOMBSTONE (wave 155, lane 155R18 — CLAUDE.md §1.3; requested by 155R7): getClosingPrep — an uncalled alias of
-// prepareForClosing (app/actions/ai-transaction-coordinator.ts:1072, same file); survivor of the capability:
+// prepareForClosing (itself retired wave 155, lane 155R25 — tombstone at app/actions/ai-transaction-coordinator.ts:1047); survivor of the capability:
 // app/actions/ai-closing-workflow.ts:26 aiGenerateClosingChecklist. Nothing was merged: the alias forwarded its arguments and
 // added no behavior. No importer in app/ lib/ components/ scripts/ (grep, wave 155).

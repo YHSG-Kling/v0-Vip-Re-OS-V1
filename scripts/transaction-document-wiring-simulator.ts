@@ -298,15 +298,15 @@ const WIRED: Array<{ fn: string; from: string; surface: string }> = [
  * Deliberately NOT wired — each with the named duplicate that justifies it.
  *
  * `aiCheckDisclosures` is NOT here any more (wave 46 lane EC): unlike
- * prepareForClosing/logDocumentAccess (getClosingPrep, their alias, retired wave 155 lane 155R18), which stay unwired
- * because a second door onto the SAME row would race the first, the owner's
+ * logDocumentAccess, which stays unwired because a second door onto the SAME row would race the first, the owner's
  * orphan-doctrine ruling for this one was DELETE with a tombstone once its
  * two capabilities the survivor lacked (stateSpecificRequirements, the AI
  * reasoning field) were merged onto checkTransactionDisclosures. See D1B
  * below, which asserts that RULE instead of pinning to the now-gone export.
+ * `prepareForClosing` left this list the same way (wave 155, lane 155R25 — its alias getClosingPrep went in lane 155R18): a
+ * "use server" public endpoint that duplicated aiGenerateClosingChecklist, merged onto it and retired. D1C asserts THAT rule.
  */
 const UNWIRED: Array<{ fn: string; from: string; duplicate: string }> = [
-  { fn: "prepareForClosing", from: F.coordinator, duplicate: "ai-closing-workflow.ts:aiGenerateClosingChecklist" },
   { fn: "logDocumentAccess", from: F.dotloop, duplicate: "lib/kernel/document-custody.ts:issueGovernedDocumentUrl" },
 ]
 
@@ -316,7 +316,7 @@ const TENANT_WRITES: Array<{ file: string; fn: string; table: string }> = [
   { file: F.coordinator, fn: "generateSmartTasks", table: "transaction_tasks" },
   { file: F.coordinator, fn: "draftTransactionCommunication", table: "transaction_communications" },
   { file: F.coordinator, fn: "generatePostClosingPlan", table: "scheduled_touchpoints" },
-  { file: F.coordinator, fn: "prepareForClosing", table: "transaction_closing_prep" },
+  { file: F.closingWorkflow, fn: "aiGenerateClosingChecklist", table: "transaction_closing_prep" },
   { file: F.dotloop, fn: "createDocumentFolder", table: "document_folders" },
   { file: F.dotloop, fn: "generateDocumentFromTemplate", table: "client_documents" },
 ]
@@ -665,9 +665,11 @@ ASSERTIONS.push({
 // ── C7 · the one-row-per-deal upsert names its real arbiter ─────────────────
 ASSERTIONS.push({
   id: "C7",
-  what: "prepareForClosing's upsert names transaction_id as the conflict target (the table's real unique key), not the default primary key",
+  // Wave 155 (lane 155R25): the ONE writer of transaction_closing_prep is the survivor (prepareForClosing was merged onto it
+  // and retired), so the arbiter rule is asserted on the survivor's upsert — the rule, not the retired specimen.
+  what: "the closing-prep writer's (aiGenerateClosingChecklist) upsert names transaction_id as the conflict target (the table's real unique key), not the default primary key",
   run: () => {
-    const body = fnBody(code(F.coordinator), "prepareForClosing")
+    const body = fnBody(code(F.closingWorkflow), "aiGenerateClosingChecklist")
     if (!body) return { ok: false, detail: "body not found" }
     const idx = body.indexOf(".upsert(")
     if (idx < 0) return { ok: false, detail: "no upsert found" }
@@ -694,7 +696,7 @@ ASSERTIONS.push({
     }
   },
   breaks: [
-    { file: F.coordinator, find: '{ onConflict: "transaction_id" },\n      )\n\n    if (prepError)', replace: '      )\n\n    if (prepError)' },
+    { file: F.closingWorkflow, find: '        { onConflict: "transaction_id" }\n      ), "closing-readiness', replace: '      ), "closing-readiness' },
   ],
 })
 
@@ -718,7 +720,38 @@ ASSERTIONS.push({
   },
   breaks: [
     // Wiring one of them is exactly the mistake this guards against.
-    { file: F.coordPanel, find: "const runPostClosing = () => {", replace: "const runNope = () => { void prepareForClosing({ transactionId: \"x\", closingDate: \"y\" }) }\n  const runPostClosing = () => {" },
+    { file: F.coordPanel, find: "const runPostClosing = () => {", replace: "const runNope = () => { void logDocumentAccess({} as never) }\n  const runPostClosing = () => {" },
+  ],
+})
+
+// ── D1C · the prepareForClosing merge-then-delete holds (wave 155, lane 155R25) ───────────────────────────────────────
+// The D1B shape, not a waypoint: the export is GONE from stripped source, the tombstone (raw source — a tombstone IS a
+// comment) names the survivor at a file:line that really declares it, and the survivor carries what was merged onto it.
+ASSERTIONS.push({
+  id: "D1C",
+  what: "prepareForClosing is retired with a tombstone naming a LIVE survivor line, and aiGenerateClosingChecklist carries the merged documents / parties / issues / day-of-closing",
+  run: () => {
+    const problems: string[] = []
+    if (/export\s+async\s+function\s+prepareForClosing\b/.test(code(F.coordinator))) problems.push("prepareForClosing is still exported (a second author of transaction_closing_prep)")
+    const raw = readFileSync(resolve(ROOT, F.coordinator), "utf8")
+    const tomb = raw.match(/TOMBSTONE[^\n]*prepareForClosing[\s\S]{0,400}?Survivor:\s*(app\/actions\/ai-closing-workflow\.ts):(\d+)\s+aiGenerateClosingChecklist/)
+    if (!tomb) problems.push("no tombstone naming the survivor at file:line")
+    else {
+      const line = readFileSync(resolve(ROOT, tomb[1]), "utf8").split("\n")[Number(tomb[2]) - 1] ?? ""
+      if (!/export\s+async\s+function\s+aiGenerateClosingChecklist\b/.test(line)) problems.push(`the tombstone's survivor line ${tomb[1]}:${tomb[2]} does not declare aiGenerateClosingChecklist`)
+    }
+    const surv = fnBody(code(F.closingWorkflow), "aiGenerateClosingChecklist")
+    for (const [what, re] of [
+      ["reads the deal's documents (tenant-pinned)", /\.from\(\s*"transaction_documents"\s*\)[\s\S]{0,200}\.eq\(\s*"brokerage_id",\s*sessionBrokerageId\s*\)/],
+      ["reads the deal's parties (role + company only)", /\.from\(\s*"transaction_participants"\s*\)\.select\(\s*"role, company"\s*\)/],
+      ["asks for potential issues with resolutions", /potential_issues:\s*z\.array/],
+      ["asks for the day-of-closing items", /day_of_closing:\s*z\.array/],
+      ["keeps both on transaction_closing_prep.checklist", /checklist:\s*\{[^}]*potential_issues[^}]*day_of_closing/],
+    ] as const) if (!re.test(surv)) problems.push(`the survivor no longer ${what}`)
+    return { ok: problems.length === 0, detail: problems.join(" | ") }
+  },
+  breaks: [
+    { file: F.closingWorkflow, find: 'potential_issues: z.array(z.object({ issue: z.string(), resolution: z.string() }))', replace: 'issues_dropped: z.array(z.object({ issue: z.string(), resolution: z.string() }))' },
   ],
 })
 
