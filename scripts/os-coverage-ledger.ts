@@ -171,7 +171,11 @@ function views(file: string, rawText?: string): Views | null {
   const starts: number[] = [0]
   for (let i = 0; i < ids.length; i++) if (ids.charCodeAt(i) === 10) starts.push(i + 1)
   const froms: FromLit[] = []
-  for (const m of code.matchAll(/\.from\(\s*["'`][a-z_][a-z0-9_]*["'`]/g)) froms.push({ at: m.index!, text: fresh(code.slice(m.index!, m.index! + m[0].length + 64)) })
+  // WAVE 155 (lane 155R22 part 2, rule E): FOLLOW THE CHAIN, not a fixed window. Comments are blanked to spaces with their length
+  // kept, so a comment between `.from("t")` and `.select(` pushed the select past the 64-character window and a real reader was
+  // missed (lib/analytics/prediction-accuracy.ts contentAdapter, app/actions/analytics.ts tool_usage_sessions). The tail is read
+  // with every whitespace run (a blanked comment is one) collapsed to one space, then cut to the same 64 characters. Control: G11 E.
+  for (const m of code.matchAll(/\.from\(\s*["'`][a-z_][a-z0-9_]*["'`]/g)) froms.push({ at: m.index!, text: fresh(m[0] + chainTail(code, m.index! + m[0].length)) })
   const brokerageAt = [...code.matchAll(/["']brokerage_id["']/g)].map((m) => m.index!)
   const platformAt = [...code.matchAll(/["']platform_role["']/g)].map((m) => m.index!)
   const tokenEqAt = [...code.matchAll(TOKEN_EQ_RE)].filter((m) => ids.startsWith(".eq(", m.index!)).map((m) => m.index!)
@@ -186,6 +190,9 @@ function views(file: string, rawText?: string): Views | null {
   }
   return v
 }
+/** PURE — the 64 characters of COMMENT-BLANKED code after `from`, every whitespace run collapsed to one space (so a blanked
+ *  comment of any length between chained calls costs one character). Reads at most 4000 characters ahead. */
+function chainTail(code: string, from: number): string { return code.slice(from, from + 4000).replace(/\s+/g, " ").slice(0, 64) }
 function lineAt(v: Views, idx: number): number {
   let lo = 0, hi = v.lineStarts.length - 1
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (v.lineStarts[mid] <= idx) lo = mid; else hi = mid - 1 }
@@ -1025,7 +1032,10 @@ function finish(d: Draft): Row {
   else if (f.internal && (d.kind === "http" || d.kind === "server_action") && f.internal.at.startsWith(`${d.entry.split(":")[0]}:`)) decision = `internal caller (${f.internal.token} @ ${f.internal.at})`
   const evidence = d.evidenceHint ?? (f.evidence[0] ? `${f.evidence[0].token} @ ${f.evidence[0].at}` : null)
   const written = [...f.writes.keys()]
-  const readTables = written.filter((t) => readersOf(t, f.writes.get(t)).length > 0)
+  // WAVE 155 (lane 155R22 part 2, rule E): the RECEIPT's table is not the domain row's reader — when the path writes a domain table,
+  // a reader of agent_action_ledger does not satisfy readback (it reads that a write happened, never the row). Control: G11 E.
+  const writesDomain = written.some((t) => !CARRIER_OR_EVIDENCE(t))
+  const readTables = written.filter((t) => !(writesDomain && t === "agent_action_ledger") && readersOf(t, f.writes.get(t)).length > 0)
   let readback: string | null = d.readbackHint ?? null
   if (!readback && readTables.length) { const r = readersOf(readTables[0], f.writes.get(readTables[0])); readback = `${readTables[0]} read by ${r[0]}${r.length > 1 ? ` (+${r.length - 1})` : ""}` }
   if (!readback && !written.length && f.egress.length) readback = "send intent / provider receipt read by lib/outcomes reconciliation (dispatch door)"
@@ -2295,6 +2305,7 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
   blind.push("A: an imported DATA constant (a multi-line type annotation now read at bracket depth) carries nothing; a namespace import, `export *`, a default import, a class, or a const whose initializer calls a non-builtin still falls back to the target's whole-file facts (over-reports)")
   blind.push("B: a platform-staff door = a row whose own path (export + same-file callees) reaches a DERIVED platform gate (a gate-shaped lib/ function whose body reads platform_role or a PLATFORM_RE token, to a fixpoint) and asks no authority-plane / tenant-seat token; held ONLY when `owner` is its one missing link. A platform check written inline without those tokens is invisible; a gate that is not gate-shaped by name is not derived")
   blind.push("C: an own-record write = every write of the path in the export's own span, one table, update/delete only, pinned `.eq(\"user_id\", R.userId|R.id)` with R bound by `const R = await <call>(` — RLS-only pinning, a pin through a helper, or a pin on another column is invisible (the row stays open)")
+  blind.push("E: a `.from(t)` chain is read across blanked comments and line breaks (whitespace runs collapsed) up to 64 characters of code; a chain split by an intermediate variable (`let q = svc.from(t); q = q.select(…)`) is still invisible; an agent_action_ledger reader never satisfies readback when the path writes a domain table")
   blind.push("F: a callee block guarded by `if (<firstParam>.<flag> [&& …])` is dropped only when EVERY reference in the caller passes a literal `<flag>: false` in an object-literal first argument, the guard has no `||` / `?`, nothing reassigns the parameter or flag, and nothing consequential remains outside the guard; an inline `(await import(x)).fn(…)` call and a flag read through a destructured local are not evaluated")
   return { rows: rowsOut, denominators, blind, cronDrift, readOnlyExports, emitDoors: emitDoorsOut }
 }
@@ -3112,6 +3123,17 @@ async function main(): Promise<void> {
       p2("plantedOwnRecord")?.classification === "OWNER_HELD" && !!p2("plantedOwnRecord")?.why.includes(OWN_RECORD_Q)
       && p2("plantedOtherRecord")?.classification !== "OWNER_HELD" && p2("plantedParamPinned")?.classification !== "OWNER_HELD",
       JSON.stringify([p2("plantedOwnRecord")?.classification, p2("plantedOwnRecord")?.missing, p2("plantedOtherRecord")?.classification, p2("plantedParamPinned")?.classification]))
+    // E: the chain, not a window
+    const evC = views("app/actions/__os_coverage_chain__.ts", [`const a = await svc.from("${hopA}")`, `  // ${"x".repeat(200)}`, `  .select("id")`, `await svc.from("${hopB}")`, `await svc.from("${hopB}").update({})`].join("\n"))!
+    const er = factsOfSpan("app/actions/__os_coverage_chain__.ts", evC, 0, evC.ids.length)
+    check("G11 E POSITIVE: a `.select(` that follows a 200-character comment is a read — NEGATIVE: a `.from(t)` with no select is not a reader (an update is a write, not a read)",
+      er.reads.has(hopA) && !er.reads.has(hopB) && er.writes.has(hopB), JSON.stringify([...er.reads]))
+    const rbF = emptyFacts(); rbF.writes.set("__os_coverage_unread_domain__", `${FX}:5`); rbF.writes.set("agent_action_ledger", `${FX}:6`); rbF.evidence.push({ token: "withActionLedger", at: `${FX}:6` })
+    const rbR = finish({ id: "planted:receipt-readback", kind: "server_action", entry: `${FX}:3`, action: "planted", source_event: "planted", trigger: "t", worker: "w", owner: "deal_coordinator", facts: rbF })
+    const rbL = emptyFacts(); rbL.writes.set("agent_action_ledger", `${FX}:6`)
+    const rbLog = finish({ id: "planted:receipt-only", kind: "server_action", entry: `${FX}:3`, action: "planted", source_event: "planted", trigger: "t", worker: "w", owner: "deal_coordinator", facts: rbL })
+    check("G11 E NEGATIVE: a domain write whose only 'reader' is an agent_action_ledger read still MISSES readback — POSITIVE: a path that writes only the ledger keeps its ledger reader",
+      rbR.missing.includes("readback") && !rbLog.missing.includes("readback"), JSON.stringify([rbR.missing, rbLog.missing]))
     // F: a write behind a literal-false flag
     check("G11 F PURE: every call passing `markUsed: false` yields that flag — NEGATIVE: a variable argument, a call without it, or the function passed on yields nothing",
       falseFlagsAt(`const { pickX } = await import("x")\nconst r = await pickX({ id, markUsed: false, limit: 2 })`, "pickX").join() === "markUsed"
