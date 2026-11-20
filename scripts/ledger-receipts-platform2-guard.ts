@@ -39,7 +39,7 @@ let MEM: MemClient = memSupabase({})
 let USER_TYPE = "broker"
 const withAuth = (c: MemClient): MemClient => Object.assign(c, { auth: { getUser: async () => ({ data: { user: { id: U, email: "broker@example.test" } }, error: null }) } })
 const agentCtx = () => ({ userId: U, agentId: AG, brokerageId: A, teamId: null, userType: USER_TYPE, role: USER_TYPE, isAuthenticated: true, isImpersonating: false, impersonatorUserId: null, impersonationMode: null })
-const writeCtx = () => ({ ok: true as const, userId: U, actorUserId: U, impersonatorUserId: null, brokerageId: A, agentId: AG, userType: USER_TYPE, db: MEM, readOnly: false })
+const writeCtx = () => ({ ok: true as const, userId: U, actorUserId: U, impersonatorUserId: null, brokerageId: A, agentId: AG, userType: USER_TYPE, db: MEM, readOnly: false });
 {
   const nodeModule: any = _require("node:module")
   const realLoad = nodeModule._load
