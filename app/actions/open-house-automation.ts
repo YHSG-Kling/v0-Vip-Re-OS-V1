@@ -827,25 +827,37 @@ export async function handleRSVP(params: { eventId: string; invitationId: string
 // ============================================
 
 export async function predictAttendance(eventId: string) {
+  // WAVE 155 (integrator, census row G12): three things were wrong at this door.
+  //   · An id that is not a UUID was answered with an INVENTED forecast (12 / 18 / 24 attendees, "confidence 0.78", 5 serious
+  //     buyers) — the screen rendered it as a prediction for an open house that does not exist. It is refused now.
+  //   · No session was read: the event was found by id alone, row security the only fence. The tenant is the SESSION's and the
+  //     event is read with that tenant's predicate, so another tenant's event id finds nothing.
+  //   · The paid model call and the write of open_house_events.attendance_prediction left no receipt. They run inside ONE
+  //     ledgerSessionAction receipt (lib/kernel/action-ledger.ts); no idempotency key — a second request is a second forecast.
+  // @proofSeam scripts/wave155-ungated-deal-guard.ts
   if (!isValidUUID(eventId)) {
-    return {
-      predicted_attendance_low: 12,
-      predicted_attendance_mid: 18,
-      predicted_attendance_high: 24,
-      confidence_level: 0.78,
-      serious_buyers_expected: 5,
-    }
+    return { success: false, error: "Invalid event ID" }
   }
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const forecastSession = await getAgentContext()
+  if (!forecastSession.isAuthenticated || !forecastSession.brokerageId || !forecastSession.userId) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const forecastTenant = forecastSession.brokerageId
 
   const supabase = await createClient()
 
   try {
-    const { data: event } = await supabase
+    const { data: event, error: eventError } = await supabase
       .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", eventId)
+      .eq("brokerage_id", forecastTenant)
       .maybeSingle()
 
+    if (eventError) {
+      return { success: false, error: "Could not read that open house" }
+    }
     if (!event) {
       return { success: false, error: "Event not found" }
     }
@@ -909,23 +921,27 @@ OUTPUT FORMAT (JSON):
   "recommendation": "Good turnout expected."
 }`
 
-    const { text } = await generateText({
-      brokerageId: (event as { brokerage_id?: string | null })?.brokerage_id ?? null,
-      model: "openai/gpt-4o",
-      prompt,
-    })
-
-    const prediction = parseAIJsonResponse(text)
-
-    // Store prediction
-    await bestEffort(supabase
-      .from("open_house_events")
-      .update({
-        attendance_prediction: prediction.predicted_attendance_mid,
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: forecastTenant, action: "open_house.attendance.predict", actor: { type: "user", userId: forecastSession.userId, agentId: forecastSession.agentId ?? null }, subject: { type: "open_house_event", id: eventId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
+      const { text } = await generateText({
+        brokerageId: forecastTenant,
+        model: "openai/gpt-4o",
+        prompt,
       })
-      .eq("id", eventId), "prediction cache; the prediction is returned")
 
-    return prediction
+      const prediction = parseAIJsonResponse(text)
+
+      // Store prediction
+      await bestEffort(supabase
+        .from("open_house_events")
+        .update({
+          attendance_prediction: prediction.predicted_attendance_mid,
+        })
+        .eq("id", eventId)
+        .eq("brokerage_id", forecastTenant), "prediction cache; the prediction is returned")
+
+      return prediction
+    })
   } catch (error) {
     console.error("Predict attendance error:", error)
     return { error: "Failed to predict attendance" }

@@ -174,20 +174,29 @@ export async function handleCoachingSessionBooked(payload: any) {
   // put an entry on any agent's calendar and name an arbitrary `coach_id` as the attendee.
   const auth = await authorizeForUser(user_id)
   if (!auth.ok) return { success: false, error: auth.error }
+  // WAVE 155 (integrator, census row G12): authorizeForUser answers "is this you, or may you act for others" — it does not say
+  // WHOSE tenant the named user is in. The tenant is the SESSION's, and the agent row is read with that tenant's predicate, so a
+  // roster seat cannot book onto a calendar in another brokerage. Both writes then run inside ONE receipt (`ledgered`, below).
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const bookingSession = await getAgentContext()
+  if (!bookingSession.isAuthenticated || !bookingSession.brokerageId) return { success: false, error: "Your account is not linked to a brokerage" }
 
   const supabase = await createServerClient()
 
   // calendar_events requires brokerage_id + entity_type/entity_id (NOT NULL,
   // pass 5 live catch — this insert ALWAYS failed without them) and tasks
   // requires brokerage_id. Resolve both from the agent row once.
-  const { data: agentRow } = await supabase
+  const { data: agentRow, error: agentRowError } = await supabase
     .from("agents")
     .select("id, brokerage_id")
     .eq("user_id", user_id)
+    .eq("brokerage_id", bookingSession.brokerageId)
     .maybeSingle()
+  if (agentRowError) return { success: false, error: "Could not read that agent profile — the session was not booked" }
   if (!agentRow?.brokerage_id) {
     return { success: false, error: "No agent profile for this user — cannot book the session" }
   }
+  return ledgered(bookingSession, { action: "coaching.session.book", subject: { type: "agent", id: agentRow.id }, riskClass: "LOW_RISK_WRITE" }, async (): Promise<{ success: boolean; error?: string; warning?: string }> => {
 
   // Both writes are CHECKED. The file's own note above records that this insert
   // "ALWAYS failed" before brokerage_id was added — and nobody noticed for
@@ -230,6 +239,7 @@ export async function handleCoachingSessionBooked(payload: any) {
   revalidatePath("/dashboard/coaching/sessions")
 
   return { success: true }
+  })
 }
 
 // ─── REMOVED in the orphan burn-down ─────────────────────────────────────────

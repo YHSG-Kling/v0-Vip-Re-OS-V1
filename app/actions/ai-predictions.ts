@@ -4053,7 +4053,7 @@ Output example:{
 
 export async function competitiveIntelligence(data: { agentId: string; marketArea: string }) {
   // WAVE 155 (lane 155S2): THE GATE before the IDX read and the model — this had no session check of its own.
-  await requirePredictionAgent(data.agentId)
+  const intelCaller = await requirePredictionAgent(data.agentId)
   const supabase = await createClient()
   // `data.agentId` is caller-supplied and is not used to pick a credential — the
   // listings below are "this brokerage's own IDX-enabled active listings", and the
@@ -4120,16 +4120,22 @@ does not support a value:
 }`
 
   try {
-    const intel = await generateAIJSON(prompt)
+    // WAVE 155 (integrator, census row G12): the paid model call leaves ONE receipt against the session tenant. A claim the
+    // ledger refuses is thrown, like every other refusal of this export — it never returns a value of another shape.
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    let intelRan = false
+    const receipted = await ledgerSessionAction({ brokerageId: intelCaller.brokerageId, action: "prediction.competitive_intel.generate", actor: { type: "user", userId: intelCaller.userId, agentId: intelCaller.isSelf ? intelCaller.agentId : null }, subject: { type: "agent", id: intelCaller.agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { market_area: data.marketArea, listings_supplied: listings.length } }, async () => {
+      intelRan = true
+      const intel = await generateAIJSON(prompt)
 
-    if (!intel.data) {
-      throw new Error("No competitive intel was returned")
-    }
+      if (!intel.data) {
+        throw new Error("No competitive intel was returned")
+      }
 
-    return {
-      success: true,
-      intel: intel.data,
-    }
+      return { success: true as const, intel: intel.data }
+    })
+    if (!intelRan) throw new Error((receipted as { error?: string }).error ?? "action ledger refused the claim")
+    return receipted as { success: true; intel: any }
   } catch (error) {
     console.error("[v0] Error in competitiveIntelligence:", error)
     throw new Error("Competitive intelligence failed")

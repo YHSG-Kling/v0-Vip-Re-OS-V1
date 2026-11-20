@@ -92,7 +92,16 @@ export async function analyzeFairHousingRisk(params: {
   if (!FAIR_HOUSING_INTERACTION_TYPES.includes(params.interactionType)) {
     throw new Error("Unknown interaction type")
   }
-  return analyzeFairHousingRiskService(params)
+  // WAVE 155 (integrator, census row G12): the review spends on a model and may file a compliance_flags row, and left no
+  // receipt. Who and which tenant come from the SESSION (the service re-reads both and pins the contact to that tenant);
+  // a caller with no session tenant is refused here, before the model. No idempotency key: a second review is a second review.
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const session = await getAgentContext()
+  if (!session.isAuthenticated || !session.brokerageId || !session.userId) return { success: false as const, error: "Not authenticated" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return await ledgerSessionAction({ brokerageId: session.brokerageId, action: "compliance.fair_housing.review", actor: { type: "user", userId: session.userId, agentId: session.agentId ?? null }, subject: { type: "contact", id: params.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { interaction_type: params.interactionType } }, async () => {
+    return analyzeFairHousingRiskService(params)
+  })
 }
 
 // Monitor TRID compliance

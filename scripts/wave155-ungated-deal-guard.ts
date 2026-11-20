@@ -52,7 +52,7 @@ const U_BROKER = u("a", 1), U_AGENT = u("a", 2), U_AGENT2 = u("a", 3), U_X = u("
 const AG_A = u("e", 2), AG_B = u("e", 3), AG_X = u("e", 9)
 const TC1 = u("f", 1), TC_X = u("f", 9), TX1 = u("d", 1), TX_X = u("d", 9), ITEM1 = u("c", 1), ITEM_X = u("c", 9)
 const L_A = u("1", 1), L_X = u("1", 9), C_A = u("2", 1), C_X = u("2", 9), C_SELLER_USER = u("a", 5)
-const PLAN1 = u("3", 1), PLAN_X = u("3", 9), ACT1 = u("4", 1), CA_X = u("5", 9), CONV1 = u("6", 1), EV1 = u("7", 1)
+const PLAN1 = u("3", 1), PLAN_X = u("3", 9), ACT1 = u("4", 1), CA_X = u("5", 9), CONV1 = u("6", 1), EV1 = u("7", 1), EV_X = u("7", 9)
 
 function world(): MemClient {
   const m = seedWorld()
@@ -107,7 +107,7 @@ function seedWorld(): MemClient {
     ],
     conversations: [{ id: CONV1, brokerage_id: B1, contact_id: null }],
     messages: [],
-    open_house_events: [{ id: EV1, brokerage_id: B1, listing_id: L_A, attendance_prediction: null }],
+    open_house_events: [{ id: EV1, brokerage_id: B1, listing_id: L_A, attendance_prediction: null }, { id: EV_X, brokerage_id: B2, listing_id: L_X, attendance_prediction: null }],
     open_house_analytics: [],
     calendar_blocks: [], email_queue: [], notifications: [], seller_share_feed: [], trid_timeline: [], agent_action_ledger: [],
     client_portal_messages: [], ai_suggestions: [], communications: [],
@@ -408,9 +408,67 @@ async function main() {
     check("POS tenant staff set it", (x.r as any)?.ok === true && T(m, "listings").find((r) => r.id === L_A)?.seller_walkaway_price === 430000, x)
   }
 
+  // ═══ the four rows the corrected census exposed in this lane's files (integrator) ═══════════════════════════════════════
+  section("17 · receipts and gates on four session writes (attendance forecast, fair-housing review, coaching booking, competitive intel)")
+  {
+    const receipts = (m: MemClient, action: string) => T(m, "agent_action_ledger").filter((r) => r.action === action)
+    const oh = await load("app/actions/open-house-automation.ts")
+    let m = as(U_AGENT); let x = await drive(() => oh.predictAttendance("not-a-uuid"))
+    check("TRUTH an invalid event id is refused — no invented forecast (no 12 / 18 / 24, no confidence 0.78), 0 model calls",
+      refused(x) && !/predicted_attendance|confidence_level|serious_buyers/.test(JSON.stringify(x.r ?? null)) && G.__S2.model === 0, x.r)
+    m = as(null); x = await drive(() => oh.predictAttendance(EV1))
+    check("NEG no session: the forecast is refused, 0 model calls, no receipt", refused(x) && G.__S2.model === 0 && T(m, "agent_action_ledger").length === 0, { x, model: G.__S2.model })
+    m = as(U_AGENT); x = await drive(() => oh.predictAttendance(EV_X))
+    check("NEG another tenant's open house: not found, 0 model calls, its row unchanged", refused(x) && G.__S2.model === 0 && T(m, "open_house_events").find((r) => r.id === EV_X)?.attendance_prediction === null, { x, model: G.__S2.model })
+    m = as(U_AGENT); G.__S2.modelText = JSON.stringify({ predicted_attendance_low: 3, predicted_attendance_mid: 7, predicted_attendance_high: 9 })
+    x = await drive(() => oh.predictAttendance(EV1))
+    const fr = receipts(m, "open_house.attendance.predict")
+    check("POS the tenant's own event: the model's forecast comes back, is stored on the event, and leaves ONE receipt for the session tenant",
+      (x.r as any)?.predicted_attendance_mid === 7 && G.__S2.model === 1 && T(m, "open_house_events").find((r) => r.id === EV1)?.attendance_prediction === 7 && fr.length === 1 && fr[0].brokerage_id === B1, { r: x.r, threw: x.threw, receipts: fr.length })
+
+    const cm = await load("app/actions/compliance-monitoring.ts")
+    m = as(null); x = await drive(() => cm.analyzeFairHousingRisk({ contactId: C_A, interactionType: "email", communicationText: "perfect for families" }))
+    check("NEG no session: the fair-housing review is refused, 0 model calls, no receipt", refused(x) && G.__S2.model === 0 && T(m, "agent_action_ledger").length === 0, { x, model: G.__S2.model })
+    m = as(U_AGENT); x = await drive(() => cm.analyzeFairHousingRisk({ contactId: C_X, interactionType: "email", communicationText: "perfect for families" }))
+    check("NEG another tenant's contact: refused before the model; the receipt it leaves is the session tenant's, never the other tenant's",
+      refused(x) && G.__S2.model === 0 && T(m, "agent_action_ledger").every((r) => r.brokerage_id === B1), { x, model: G.__S2.model })
+    m = as(U_AGENT); G.__S2.modelText = JSON.stringify({ risk_score: 80, protected_class_mentioned: true, steering_detected: true, flagged_content: ["perfect for families"], explanation: "e", recommendation: "r" })
+    x = await drive(() => cm.analyzeFairHousingRisk({ contactId: C_A, interactionType: "email", communicationText: "perfect for families" }))
+    check("POS a review of the tenant's own contact leaves ONE receipt (compliance.fair_housing.review) for the session tenant",
+      receipts(m, "compliance.fair_housing.review").length === 1 && receipts(m, "compliance.fair_housing.review")[0].brokerage_id === B1, { r: x.r, threw: x.threw })
+
+    const cp = await load("app/actions/copilot.ts")
+    const booking = (user_id: string) => ({ user_id, session_date: "2026-12-01T15:00:00.000Z", coach_id: U_BROKER, topic: "Listing presentations" })
+    m = as(U_BROKER); x = await drive(() => cp.handleCoachingSessionBooked(booking(U_X)))
+    check("NEG a roster seat naming ANOTHER tenant's user books nothing there (no calendar event, no task, no receipt)",
+      refused(x) && T(m, "calendar_events").length === 0 && T(m, "tasks").length === 0 && T(m, "agent_action_ledger").length === 0, x)
+    m = as(U_AGENT); x = await drive(() => cp.handleCoachingSessionBooked(booking(U_AGENT)))
+    const br = receipts(m, "coaching.session.book")
+    check("POS an agent books their own session: one calendar event and one task in the session tenant, ONE receipt",
+      (x.r as any)?.success === true && T(m, "calendar_events").length === 1 && T(m, "calendar_events")[0].brokerage_id === B1 && T(m, "tasks").length === 1 && br.length === 1 && br[0].brokerage_id === B1, { r: x.r, threw: x.threw, receipts: br.length })
+
+    // competitiveIntelligence reads a live IDX feed (not simulated here), so its receipt is held on the stripped source: the
+    // gate comes first, the model call sits inside the receipt, and a refused claim throws.
+    const { stripComments } = await import("./strip-comments")
+    const { readFileSync } = await import("node:fs")
+    const gatedThenReceipted = (src: string): boolean => {
+      const at = src.search(/export async function competitiveIntelligence\b/)
+      if (at < 0) return false
+      const body = src.slice(at, src.indexOf("\nexport async function ", at + 10) < 0 ? undefined : src.indexOf("\nexport async function ", at + 10))
+      const gate = body.search(/\brequirePredictionAgent\s*\(/), receipt = body.search(/\bledgerSessionAction\s*\(/), model = body.search(/\bgenerateAIJSON\s*\(/)
+      return gate >= 0 && receipt > gate && model > receipt && /brokerageId:\s*intelCaller\.brokerageId/.test(body) && /if\s*\(\s*!intelRan\s*\)\s*throw\b/.test(body)
+    }
+    check("competitiveIntelligence: gate → receipt against the SESSION tenant → model inside the receipt; a refused claim throws",
+      gatedThenReceipted(stripComments(readFileSync(join(ROOT, "app/actions/ai-predictions.ts"), "utf8"))))
+    check("POSITIVE CONTROL: a model call outside any receipt is refused by the finder",
+      !gatedThenReceipted(`export async function competitiveIntelligence(data) { const intelCaller = await requirePredictionAgent(data.agentId); const intel = await generateAIJSON(prompt); return { success: true, intel } }`))
+    check("POSITIVE CONTROL: a receipt opened before the gate is refused by the finder",
+      !gatedThenReceipted(`export async function competitiveIntelligence(data) { const r = await ledgerSessionAction({ brokerageId: intelCaller.brokerageId }, async () => generateAIJSON(prompt)); const intelCaller = await requirePredictionAgent(data.agentId); if (!intelRan) throw new Error("x"); return r }`))
+  }
+
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   if (failed) { console.log("❌ WAVE155_UNGATED_DEAL_FAIL"); process.exit(1) }
-  console.log("✅ WAVE155_UNGATED_DEAL_PASS — deal-side and AI exports take tenant and person from the session; three truth bugs stay fixed")
+  console.log("✅ WAVE155_UNGATED_DEAL_PASS — deal-side and AI exports take tenant and person from the session; the truth bugs stay fixed")
   process.exit(0)
 }
 main().catch((e) => { console.error(e); process.exit(1) })
