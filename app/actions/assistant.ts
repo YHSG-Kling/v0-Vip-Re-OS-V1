@@ -272,6 +272,15 @@ async function setSuggestionStatus(
   suggestionId: string,
   status: "dismissed" | "actioned",
 ): Promise<SuggestionResult> {
+  // WAVE 155 (lane 155R26, census G12): ONE receipt per move through ledgerSessionAction (the one helper), the sibling of
+  // copilot.ts handleSuggestionAccepted's `ai.suggestion.accept`. The tenant and actor are the SESSION's (getAgentContext);
+  // no session tenant → refused before any write (fail closed — RLS refused that caller's update anyway). No key: a card moved
+  // twice records twice. The write itself is unchanged (the RLS client; the row count is still read).
+  const seat = await getAgentContext()
+  if (!seat.isAuthenticated || !seat.userId || !seat.brokerageId) return { success: false, error: "Sign in to a brokerage account to update a suggestion" }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(suggestionId)) return { success: false, error: `No suggestion ${suggestionId} is visible to you to mark ${status}` }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const r = await ledgerSessionAction({ brokerageId: seat.brokerageId, action: SUGGESTION_ACTION[status], actor: { type: "user", userId: seat.userId, agentId: seat.agentId ?? null }, subject: { type: "smart_assistant_suggestion", id: suggestionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { status } }, async (): Promise<SuggestionResult> => {
   const supabase = await createServerClient()
 
   const { data: updated, error } = await supabase
@@ -291,7 +300,12 @@ async function setSuggestionStatus(
     return { success: false, error: `No suggestion ${suggestionId} is visible to you to mark ${status}` }
   }
   return { success: true }
+  })
+  return r.success ? { success: true } : { success: false, error: ("error" in r && r.error) || `The suggestion was not marked ${status}` }
 }
+
+/** The ledger action per suggestion move (domain.entity.action) — one spelling, beside copilot.ts's `ai.suggestion.accept`. */
+const SUGGESTION_ACTION = { dismissed: "ai.suggestion.dismiss", actioned: "ai.suggestion.complete" } as const
 
 export async function dismissSuggestion(suggestionId: string): Promise<SuggestionResult> {
   return setSuggestionStatus(suggestionId, "dismissed")

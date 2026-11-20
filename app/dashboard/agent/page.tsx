@@ -272,7 +272,7 @@ export default function AgentDashboard() {
         let autopilotPlans: any[] = []
         if (agentRow?.id) {
           // ORPHAN DOCTRINE §1.2 (2026-09-04) — `metadata` joined this select.
-          // lib/kernel/open-house.ts:543/659 writes the whole substance of an
+          // lib/kernel/open-house.ts:558/674 writes the whole substance of an
           // open-house follow-up into it — the AI-DRAFTED MESSAGE
           // (`suggested_message`), the attendee's interest level, the open house
           // it came from — and nothing read any of it. So the agent was shown a

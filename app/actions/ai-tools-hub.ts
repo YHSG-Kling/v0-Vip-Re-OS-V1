@@ -1101,7 +1101,7 @@ function groupByTool(usage: any[]): Array<{ toolName: string; count: number }> {
 // ─────────────────────────────────────────────────────────────────────────────
 // property_description — DUPLICATE
 //
-// SURVIVOR: generateListingDescription, app/actions/ai-content-generation.tsx:924
+// SURVIVOR: generateListingDescription, app/actions/ai-content-generation.tsx:954
 //
 // The survivor is a full listing-copy lane: plan feature gate
 // (ai_listing_generation), brand-voice profile, persona guidance, a length
@@ -1194,7 +1194,7 @@ function renderListingCopy(data: any): string {
 // It resolves the brokerage → team → agent brand-voice hierarchy and runs
 // evaluateOutbound with messageType "email" on the draft before returning it.
 //
-// WHY NOT generateEmail (app/actions/ai-content-generation.tsx:1227), which is
+// WHY NOT generateEmail (app/actions/ai-content-generation.tsx:1257), which is
 // the more obvious name: it is built for CONTACT-BOUND campaign email. Its
 // prompt builder (lib/services/content-generation.service.ts::buildEmailPrompt)
 // reads the recipient out of a contacts row via contactId and never reads

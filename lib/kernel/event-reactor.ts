@@ -2325,7 +2325,7 @@ export async function dispatchKernelEvent(params: DispatchKernelEventParams): Pr
       } catch { /* best-effort */ }
     }
 
-    // 21 — an AI-ISA campaign was marked ended (app/actions/ai-isa.ts:477). Owner ruling
+    // 21 — an AI-ISA campaign was marked ended (app/actions/ai-isa.ts:487). Owner ruling
     // (wave 49, 2026-09-10): routes TO Campaign Orchestrator — the campaign manager — NOT
     // Finance Manager, who has nothing to do with a campaign ending (fixed from the
     // original wiring, which sent it there). Wave 50 FROM fix: the entity that ended is an

@@ -9,7 +9,6 @@ import { parseBuyerCriteria } from "@/lib/buyer-search/parse-buyer-criteria"
 // (CLAUDE.md §4) — never from an id the caller supplied.
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { PUBLICLY_VISIBLE_LISTING_STATUSES } from "@/lib/listings/listing-status-sync"
 
 /** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
@@ -25,8 +24,14 @@ async function withReceipt<T, R>(rc: { brokerageId: string | null; userId: strin
   return ran ? out as T : refused((out as { error?: string }).error ?? "The action was not recorded, so it did not run.")
 }
 
-const IDX_API_BASE = process.env.IDXBROKER_API_URL || "https://api.idxbroker.com"
-const IDX_API_KEY = process.env.IDXBROKER_API_KEY
+// TOMBSTONE (wave 155, lane 155R26 — LAW 3, §1): IDX_API_BASE / IDX_API_KEY (process.env.IDXBROKER_API_URL / IDXBROKER_API_KEY)
+// lived here and searchProperties called IDX Broker DIRECTLY with them — `callConnector` POST "/search" with a bearer token, from
+// a public endpoint that never asked who the caller was. That was a vendor chosen by the caller, not a capability routed by the
+// owner's rule, and a SECOND IDX spelling: the repo's IDX client authenticates with the `accesskey` header on GET endpoints
+// (lib/idxbroker-client.ts:124 request) and the platform-tier IDX credential is resolved there, never here.
+// Survivor: searchListingsForSession below → searchExternalListings (lib/property/external-listings-search.ts:200), whose
+// resolveListingSource (lib/property/listing-source.ts:36) is the route decision (owner: the tenant's OWN connected IDX feed,
+// else the platform's metered RentCast, else none).
 
 interface PropertyFilters {
   minPrice?: number
@@ -49,33 +54,89 @@ function logTenantForSearch(actorBrokerageId: string | null, contactBrokerageId:
   return { ok: true, brokerageId: actorBrokerageId }
 }
 
-// Standard property search via IDX API
+/**
+ * WAVE 155 (lane 155R26) — THE ONE LISTING ROUTE for both searches in this file (module-private: a "use server" export is a
+ * public endpoint). caller → capability → router → provider (LAW 3): searchExternalListings decides the provider from the
+ * TENANT's facts (resolveListingSource: its own connected IDX feed, else the platform's metered and budget-gated RentCast,
+ * else none) — the route decision is the decision; nothing here names a vendor. The tenant is the caller's resolved SESSION
+ * tenant (never a request field). Merged from smartSearch's former fallback block (the same brokerage-state read, the same
+ * row mapping), so the two searches can no longer disagree about where listings come from.
+ * The router honors city / state / ZIP, beds, baths, price and one property type; `sqft`, `keywords` and `mlsStatus` are not
+ * router filters and are not applied (stated, not faked).
+ */
+async function searchListingsForSession(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  brokerageId: string,
+  filters: PropertyFilters & { state?: string },
+  opts: { listingType?: "sale" | "rental"; contactId?: string | null; limit?: number } = {},
+): Promise<{ success: boolean; properties: any[]; error?: string; source: "idx" | "rentcast" | "none" }> {
+  const { searchExternalListings } = await import("@/lib/property/external-listings-search")
+  const { BUYER_LISTING_RECENCY_DAYS } = await import("@/lib/property-alerts/alert-cadence")
+  let state = filters.state
+  if (!state && filters.city && !filters.zip) {
+    const { data: brokerage, error: brokerageError } = await supabase.from("brokerages").select("state").eq("id", brokerageId).maybeSingle()
+    if (brokerageError) console.error("[idx-search] brokerage state read refused:", brokerageError.message)
+    state = (brokerage as { state?: string | null } | null)?.state ?? undefined
+  }
+  const ext = (filters.city && state) || filters.zip
+    ? await searchExternalListings({
+        brokerageId,
+        city: filters.zip ? undefined : filters.city,
+        state: filters.zip ? undefined : state,
+        zipCode: filters.zip,
+        bedroomsMin: filters.beds ?? undefined,
+        bathroomsMin: filters.baths ?? undefined,
+        priceMin: filters.minPrice ?? undefined,
+        priceMax: filters.maxPrice ?? undefined,
+        propertyType: filters.propertyType?.[0],
+        listingType: opts.listingType ?? "sale",
+        contactId: opts.contactId ?? null,
+        listedWithinDays: BUYER_LISTING_RECENCY_DAYS,
+        limit: opts.limit ?? 25,
+      })
+    : { listings: [], source: "none" as const, error: "Tell me a city or ZIP to search — the listing feed searches one area at a time." }
+  return {
+    success: ext.source !== "none" || ext.listings.length > 0,
+    error: ext.error,
+    source: ext.source,
+    properties: ext.listings.map((l) => ({
+      id: `ext_${l.source}_${l.externalId}`,
+      mls_number: `${l.source}-${l.externalId}`, mlsNumber: `${l.source}-${l.externalId}`,
+      address: l.address, city: l.city, state: l.state, zip: l.zip,
+      price: l.price, list_price: l.price,
+      beds: l.bedrooms, bedrooms: l.bedrooms, baths: l.bathrooms, bathrooms: l.bathrooms,
+      sqft: l.squareFeet, property_type: l.propertyType,
+      daysOnMarket: l.daysOnMarket, days_on_market: l.daysOnMarket,
+      primary_photo_url: l.photoUrl, photos: l.photoUrl ? [l.photoUrl] : [],
+      status: "Active", source: l.source, listing_type: l.listingType,
+    })),
+  }
+}
+
+// Standard property search — through the one listing route (searchListingsForSession above), under the SESSION's tenant.
 export async function searchProperties(filters: PropertyFilters) {
   try {
-    if (!IDX_API_BASE || !IDX_API_KEY) {
-      console.warn("[Production] IDX API not configured. Set IDX_API_BASE and IDX_API_KEY environment variables.")
-      return {
-        success: false,
-        error: "IDX API not configured. Please set IDX_API_BASE and IDX_API_KEY environment variables.",
-        properties: [],
-        requiresConfiguration: true,
-      }
+    // WHO IS ASKING (§4): this is a public endpoint and every search can spend a metered provider call, so an anonymous or
+    // tenantless caller is refused before any route is taken (it used to reach the vendor with no session at all).
+    const seat = await getAgentContext()
+    if (!seat.isAuthenticated || !seat.brokerageId) {
+      return { success: false, error: "Sign in to a brokerage account to search listings.", properties: [] as any[] }
     }
-
-    const response = await callConnector<{ results?: any[] }>({
-      connector: "idxbroker", baseUrl: IDX_API_BASE, path: "/search", method: "POST",
-      auth: { style: "bearer", token: IDX_API_KEY! },
-      body: { ...filters, limit: 50 },
-    })
-
-    if (!response.ok) {
-      throw new Error(`IDX API error: ${response.error ?? response.status}`)
-    }
-
-    return { success: true, properties: response.data?.results || [] }
+    const supabase = await createClient()
+    // LAW 5: the route may spend a metered provider call (RentCast, under checkVendorBudget), so the search leaves ONE receipt —
+    // who asked, under which tenant, for which area — through this file's withReceipt (ledgerSessionAction, no key: a second
+    // search is a second receipt). smartSearch's evidence is its property_search_log row; this search has no contact to log.
+    const brokerageId = seat.brokerageId
+    type SearchResult = { success: boolean; properties: any[]; error?: string; source?: "idx" | "rentcast" | "none" }
+    return await withReceipt<SearchResult, SearchResult>({ brokerageId, userId: seat.userId, agentId: seat.agentId, action: "listing.property_search.run", subject: { type: "listing_search", ref: filters.zip ?? filters.city ?? null }, riskClass: "READ", detail: { has_city: !!filters.city, has_zip: !!filters.zip } }, async () => {
+      const r = await searchListingsForSession(supabase, brokerageId, filters, { limit: 50 })
+      return r.success
+        ? { success: true, properties: r.properties, source: r.source }
+        : { success: false, error: r.error ?? "No listing source could be searched.", properties: [] }
+    }, (error) => ({ success: false, error, properties: [] }))
   } catch (error: any) {
-    console.error("IDX Search error:", error)
-    return { success: false, error: error.message, properties: [] }
+    console.error("Listing search error:", error)
+    return { success: false, error: error.message, properties: [] as any[] }
   }
 }
 
@@ -138,57 +199,21 @@ export async function smartSearch(data: {
     }
     void searchHistory // read for the log's continuity; no longer fed to a prompt
 
-    // Search using extracted filters — the tenant's IDX API when configured;
-    // otherwise THE ONE listing router (searchExternalListings: the tenant's
+    // Search using extracted filters — through THE ONE listing router (searchExternalListings: the tenant's
     // own IDX board, else the platform's RentCast — windowed to recent
     // listings). Before lane 91C an unconfigured IDX env ended the buyer's
     // natural-language search with "IDX API not configured" even though the
     // platform provider the owner named ("we use rentcast for property
     // listings … even nlp") was available.
-    let searchResult: { success: boolean; properties: any[]; error?: string; requiresConfiguration?: boolean } = await searchProperties(filters)
-    if (!searchResult.success && searchResult.requiresConfiguration && spendActor.brokerageId) {
-      const { searchExternalListings } = await import("@/lib/property/external-listings-search")
-      const { BUYER_LISTING_RECENCY_DAYS } = await import("@/lib/property-alerts/alert-cadence")
-      let state = filters.state
-      if (!state && filters.city && !filters.zip) {
-        const { data: brokerage, error: brokerageError } = await supabase.from("brokerages").select("state").eq("id", spendActor.brokerageId).maybeSingle()
-        if (brokerageError) console.error("[smartSearch] brokerage state read refused:", brokerageError.message)
-        state = (brokerage as { state?: string | null } | null)?.state ?? undefined
-      }
-      const ext = (filters.city && state) || filters.zip
-        ? await searchExternalListings({
-            brokerageId: spendActor.brokerageId,
-            city: filters.zip ? undefined : filters.city,
-            state: filters.zip ? undefined : state,
-            zipCode: filters.zip,
-            bedroomsMin: filters.beds ?? undefined,
-            bathroomsMin: filters.baths ?? undefined,
-            priceMin: filters.minPrice ?? undefined,
-            priceMax: filters.maxPrice ?? undefined,
-            propertyType: filters.propertyType?.[0],
-            listingType: parsed.criteria.listingType === "rent" ? "rental" : "sale",
-            contactId: data.contactId,
-            listedWithinDays: BUYER_LISTING_RECENCY_DAYS,
-            limit: 25,
-          })
-        : { listings: [], source: "none" as const, error: "Tell me a city or ZIP to search — the listing feed searches one area at a time." }
-      searchResult = {
-        success: ext.source !== "none" || ext.listings.length > 0,
-        error: ext.error,
-        properties: ext.listings.map((l) => ({
-          id: `ext_${l.source}_${l.externalId}`,
-          mls_number: `${l.source}-${l.externalId}`, mlsNumber: `${l.source}-${l.externalId}`,
-          address: l.address, city: l.city, state: l.state, zip: l.zip,
-          price: l.price, list_price: l.price,
-          beds: l.bedrooms, bedrooms: l.bedrooms, baths: l.bathrooms, bathrooms: l.bathrooms,
-          sqft: l.squareFeet, property_type: l.propertyType,
-          daysOnMarket: l.daysOnMarket, days_on_market: l.daysOnMarket,
-          primary_photo_url: l.photoUrl, photos: l.photoUrl ? [l.photoUrl] : [],
-          status: "Active", source: l.source, listing_type: l.listingType,
-        })),
-      }
-      if (!searchResult.success) return { success: false, error: ext.error ?? "No listing source could be searched.", properties: [], filters }
-    }
+    // WAVE 155 (lane 155R26): the router block that lived here is now searchListingsForSession (above) — the ONE route both
+    // searches take; the direct-IDX first attempt it fell back from is retired (tombstone at the top of this file).
+    if (!spendActor.brokerageId) return { success: false, error: "Sign in to a brokerage account to search listings.", properties: [], filters }
+    const searchResult = await searchListingsForSession(supabase, spendActor.brokerageId, filters, {
+      listingType: parsed.criteria.listingType === "rent" ? "rental" : "sale",
+      contactId: data.contactId,
+      limit: 25,
+    })
+    if (!searchResult.success) return { success: false, error: searchResult.error ?? "No listing source could be searched.", properties: [], filters }
 
     // THE ERROR IS READ (§3): this log is the "previous searches" history the
     // agent's search screen reads; a refused write is reported, not swallowed.
@@ -753,6 +778,4 @@ export async function getPublicPropertyByMlsNumber(mlsNumber: string): Promise<
     },
   }
 }
-
-// IDX API must be configured for property search
-// Set IDX_API_BASE and IDX_API_KEY environment variables to enable
+// (The trailing "IDX API must be configured" note that stood here described the retired env path — tombstone at the top.)

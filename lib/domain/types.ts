@@ -231,7 +231,7 @@ export interface Contact {
   // scripts/schema-snapshot.ts:239). SURVIVORS: the assignment column IS
   // contacts.agent_id (app/actions/seller-coaching.ts:49 records this exact
   // phantom having broken a query against listings); the display name is
-  // JOIN-DERIVED where needed — the app/actions/ai-isa.ts:730 pattern
+  // JOIN-DERIVED where needed — the app/actions/ai-isa.ts:740 pattern
   // (`assigned_agent:users!… (first_name, last_name)` composed at read time) —
   // never stored on the row.
 

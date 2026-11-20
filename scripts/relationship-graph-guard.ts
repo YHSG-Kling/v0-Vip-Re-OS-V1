@@ -574,7 +574,9 @@ async function main() {
       ["app/actions/admin/agent-profile.ts", /deriveTeamMembershipEdge\(/],
       ["app/actions/admin/team-members.ts", /deriveTeamMembershipEdge\(/],
       ["app/api/recruiting/provision-agent/route.ts", /planRecruitEdges\(/],
-      ["lib/learning-router/resolve-agent-learning-context.ts", /deriveCompetencyEdges\(/],
+      // wave 155 (155R26): has_competency is derived where the competency evidence is compared and recorded — the daily
+      // development cycle's UPDATE step — and no longer inside the learning-context READ (it wrote on every Academy open).
+      ["lib/education/skill-freshness-radar.ts", /deriveCompetencyEdges\(svc, \{ brokerageId: agent\.brokerage_id/],
       ["app/actions/academy-learning.ts", /deriveEducationCompletedEdge\(/],
       ["lib/kernel/education.ts", /deriveEducationCompletedEdge\(/],
       ["app/actions/leads.ts", /deriveOpportunityOwnership\(/],
@@ -600,7 +602,12 @@ async function main() {
       const unmapped = added.filter((t) => !DERIVATION[t] || !DERIVATION[t].test(kernel))
       check(`every type m715 adds (${added.length}) is planned by the kernel service (${unmapped.length ? "unmapped: " + unmapped.join(",") : "all mapped"})`, added.length === 10 && unmapped.length === 0)
       check("positive control: an invented type is unmapped", !DERIVATION["friend_of"])
-      check("the learning router derives at the curriculum's own bar (COMPETENCY_GAP_SCORE), never a second threshold", /threshold: COMPETENCY_GAP_SCORE/.test(stripped("lib/learning-router/resolve-agent-learning-context.ts")))
+      // wave 155 (155R26) — restated to the RULE: ONE threshold for the router and the graph, at the ONE place the edge is derived.
+      check("has_competency is derived at the curriculum's own bar (COMPETENCY_GAP_SCORE), never a second threshold", /deriveCompetencyEdges\(svc, \{ brokerageId: agent\.brokerage_id[^\n]*threshold: COMPETENCY_GAP_SCORE[^\n]*\)/.test(stripped("lib/education/skill-freshness-radar.ts")))
+      check("control: a derivation at a SECOND threshold does not pass the one-bar rule", !/deriveCompetencyEdges\(svc, \{ brokerageId: agent\.brokerage_id[^\n]*threshold: COMPETENCY_GAP_SCORE[^\n]*\)/.test("await deriveCompetencyEdges(svc, { brokerageId: agent.brokerage_id, agentUserId: uid, skills: [], threshold: 50, now })"))
+      const derivesIn = (src: string) => /\bderiveCompetencyEdges\s*\(/.test(src)
+      check("a READ writes no edge: the learning-context resolver makes no deriveCompetencyEdges call", !derivesIn(stripped("lib/learning-router/resolve-agent-learning-context.ts")))
+      check("positive control: the read-writes finder catches a planted derivation", derivesIn("await deriveCompetencyEdges(supabase, { brokerageId })"))
       check("the reassignment hands the OLD owner to the derivation so its edge closes; the lead hand-off uses the service client (session writes are revoked)", /fromAgentsId: fromAgentId/.test(stripped("app/actions/contact-reassignment.ts")) && /deriveOpportunityOwnership\(createServiceClient\(\)/.test(stripped("app/actions/leads.ts")))
       check("provision-agent reads the recruiter's users id ONCE and reuses it for sponsor_of (no second agents read)", (stripped("app/api/recruiting/provision-agent/route.ts").match(/from\("agents"\)\.select\("user_id"\)/g) ?? []).length === 1)
       check("the context compiler seam is an EXPORT only — this lane edits no lib/kernel/context-compiler file", /export const RELATIONSHIP_GRAPH_SEAM/.test(kernel) && /export async function graphContextFor/.test(kernel))

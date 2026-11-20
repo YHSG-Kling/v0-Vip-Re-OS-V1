@@ -443,6 +443,21 @@ export async function attachOpenHouseSourceAttribution(input: {
       return { success: false, error: "brokerage_id is required for the attribution event" }
     }
 
+    // THE SUBJECT IS READ BEFORE IT IS ATTRIBUTED (wave 155, lane 155R26). The action's gate (app/actions/open-house-kernel.ts
+    // resolveOpenHouseScope) proves the EVENT is this tenant's, but `contact_id` and `attendee_id` arrived from the caller and
+    // were never read: any contact in the tenant could be "attributed" to an open house it never attended, and the reactor
+    // then sends that contact the open-house welcome (lib/kernel/event-reactor.ts OPEN_HOUSE_CONTACT_RESOLVED →
+    // deliverConversionWelcome). Both reads are pinned to the tenant; a missing row refuses and nothing is emitted.
+    const [eventRead, attendeeRead] = await Promise.all([
+      supabase.from("open_house_events").select("id").eq("id", open_house_id).eq("brokerage_id", brokerage_id).maybeSingle(),
+      supabase.from("open_house_attendees").select("id")
+        .eq("id", attendee_id).eq("event_id", open_house_id).eq("contact_id", contact_id).eq("brokerage_id", brokerage_id).maybeSingle(),
+    ])
+    if (eventRead.error) return { success: false, error: `Open house lookup refused: ${eventRead.error.message}` }
+    if (!eventRead.data) return { success: false, error: "Open house not found in this brokerage — nothing to attribute" }
+    if (attendeeRead.error) return { success: false, error: `Check-in lookup refused: ${attendeeRead.error.message}` }
+    if (!attendeeRead.data) return { success: false, error: "No check-in of this contact at this open house — nothing to attribute" }
+
     // Emit the kernel event — audit row + reactor.
     // The error was previously not destructured, so a refused insert resolved
     // quietly and this function reported success with no audit row written —

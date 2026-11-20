@@ -892,6 +892,36 @@ export async function trackHashtagUsage(data: {
 // brokerage_id stamping was added at the same time; it was absent from both.
 
 /**
+ * THE SAVED A/B TESTS — the reader of what createABTest, analyzeABTest and updateABTestResults write (wave 155, lane 155R26).
+ *
+ * WHY IT EXISTS: content_ab_tests had three writers and no reader outside them. The Experiments panel
+ * (app/dashboard/content/panels/ab-testing-panel.tsx) listed only the tests created in the CURRENT page session and asked for a
+ * pasted UUID to read one out, so after a reload a saved analysis (winner, confidence, rates) could not be seen or reopened at
+ * all. This lists the session agent's tests in the session's tenant, newest first, with what the writers saved.
+ * Two winner spellings exist on the table — `winner_variant` (analyzeABTest) and `winner` (updateABTestResults) — and both are
+ * returned as stored; the panel shows whichever is set (§6 finding, reported, not merged here).
+ * The table has no created_at column: ordered by started_at.
+ */
+export async function listABTests(limit = 20): Promise<{ success: true; tests: any[] } | { success: false; error: string }> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const n = Math.min(50, Math.max(1, Math.floor(Number(limit) || 20)))
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("content_ab_tests")
+    .select("id, test_name, test_variable, status, winner_variant, winner, confidence_level, results_summary, started_at, completed_at, variant_a_id, variant_b_id")
+    .eq("agent_id", auth.actor.agentId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+    .order("started_at", { ascending: false, nullsFirst: false })
+    .limit(n)
+  if (error) {
+    console.error("[listABTests] Query failed:", error)
+    return { success: false, error: error.message }
+  }
+  return { success: true, tests: data ?? [] }
+}
+
+/**
  * Record externally-measured results on a test.
  *
  * Kept alongside analyzeABTest deliberately: analyzeABTest DERIVES the winner

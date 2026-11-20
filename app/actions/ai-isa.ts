@@ -400,13 +400,22 @@ export async function toggleCampaignStatus(
   // Verify campaign belongs to caller's brokerage before mutating
   const { data: existing, error: readError } = await service
     .from("ai_isa_campaigns")
-    .select("brokerage_id")
+    .select("brokerage_id, status")
     .eq("id", campaignId)
     .maybeSingle()
   if (readError) return { success: false, error: readError.message }
   if (!existing) return { success: false, error: "Campaign not found" }
   if (existing.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+  // WAVE 155 (lane 155R26): `completed` is TERMINAL (completeISACampaign below: "a completed campaign is not re-opened here").
+  // Only the two cards' disabled buttons said so; this is a public endpoint, and `currentStatus` is the CALLER's word, so a
+  // direct call with "paused" re-activated a retired campaign and its outreach. The stored status decides.
+  if (existing.status === "completed") return { success: false, error: "This campaign is completed and cannot be resumed" }
 
+  // WAVE 155 (lane 155R26, census G12): ONE receipt through ledgerSessionAction (the one helper) — the session user and tenant
+  // from requireCaller, the campaign, the stored and the new status. COMMUNICATION: a resume restarts outreach. No key: a second
+  // toggle runs and records again.
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "ai_isa.campaign.toggle", actor: { type: "user", userId: auth.userId }, subject: { type: "ai_isa_campaign", id: campaignId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED", detail: { from: existing.status ?? null, to: newStatus } }, async (): Promise<{ success: boolean; error?: string }> => {
   // COUNTED (§3, 2026-09-03): an UPDATE the tenant predicate refuses resolves
   // with error null and zero rows — byte-identical to one that worked — so the
   // toggle reported success while the campaign stayed as it was. Same shape
@@ -422,6 +431,7 @@ export async function toggleCampaignStatus(
   if (error) return { success: false, error: error.message }
   if (!toggled || toggled.length === 0) return { success: false, error: "Campaign not found" }
   return { success: true }
+  })
 }
 
 /**

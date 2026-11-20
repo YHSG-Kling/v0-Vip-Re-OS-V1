@@ -219,13 +219,34 @@ const COMMON: Record<string, Record<string, unknown>> = {
   },
   "next/cache": { revalidatePath: () => {}, revalidateTag: () => {} },
   "next/server": { NextResponse: { json: nextJson } },
+  // ── round 6 (lane 155R26) — every seam counted; no provider, no model, no network ──
+  "@/lib/auth/require-caller": { requireCaller: async () => (R.authed ? { ok: true, userId: U, brokerageId: B } : { ok: false, error: "Not authenticated" }) },
+  "@/lib/property/external-listings-search": { searchExternalListings: async (i: Record<string, unknown>) => { count("searchExternalListings"); R6.routeInputs.push(i); return { listings: [{ externalId: "e1", source: "rentcast", address: "1 Main St", city: "Pace", state: "FL", zip: "32571", price: 300000, bedrooms: 3, bathrooms: 2, squareFeet: 1500, propertyType: "Single Family", daysOnMarket: 4, photoUrl: null, listingType: "sale" }], source: "rentcast", listingType: "sale" } } },
+  "@/lib/property-alerts/alert-cadence": { BUYER_LISTING_RECENCY_DAYS: 30 },
+  "@/lib/agentic-os/connector-gateway": { callConnector: async () => { count("callConnector"); return { ok: true, status: 200, data: { results: [{ mlsNumber: "direct" }] } } } },
+  "./emit": { emitKernelEvent: async (i: Record<string, unknown>) => { count("emitKernelEvent"); R6.emitted.push(i); return { error: null } } },
+  "./events": { KernelEvent: { OPEN_HOUSE_CONTACT_RESOLVED: "open_house_contact_resolved" } },
+  "@/lib/kernel/portal-auth": {
+    resolveExternalPartnerIdentity: async () => (R.authed ? { ok: true, identity: { userId: U, vendorId: VENDOR, partnerTypes: ["lender"], isLenderVendor: true, isTitlePartner: false, titleVendorId: null } } : { ok: false, reason: "unauthenticated" }),
+    // The REAL rule: a lane exists only for an assignment of this vendor to that transaction (seeded below).
+    externalPartnerTransactionLane: async (_s: unknown, _i: unknown, txId: string) => (R6.assignedTx.has(txId) ? { ok: true, grantedVia: "lender" } : { ok: false, reason: "no_access" }),
+  },
+  "@/lib/kernel/agent-identity": { resolveAgentIdInBrokerage: async () => AG },
+  "@/lib/education/skill-freshness-radar": { loadAgentCompetency: async () => { count("loadAgentCompetency"); return { gaps: [], gapTags: ["objection:price"], skills: [{ skill: "compliance", score: 90, confidence: "high" }], overall: 90, refusedRails: [] } } },
+  "@/lib/kernel/relationship-graph": { deriveCompetencyEdges: async (s: MemClient) => { count("deriveCompetencyEdges"); await s.from("relationship_edges").insert({ relationship_type: "has_competency", brokerage_id: B }); return { planned: 1, written: 1, existing: 0, errors: [], degraded: false } } },
+  "@/lib/education/skill-freshness": { COMPETENCY_GAP_SCORE: 60 },
 }
+const VENDOR = randomUUID()
+const R6: { routeInputs: Array<Record<string, unknown>>; emitted: Array<Record<string, unknown>>; assignedTx: Set<string> } = { routeInputs: [], emitted: [], assignedTx: new Set() }
 const PROSPECT = randomUUID(), MEMBER = randomUUID(), GOOD_TOKEN = "t".repeat(40)
 interface Target { file: string }
 const TARGET_FILES = [
   `${A}open-house-automation.ts`, `${A}listing-landing.ts`, "app/api/track/dwell/route.ts", "app/api/embed/session/heartbeat/route.ts",
   "app/api/did/agents/session/heartbeat/route.ts", `${A}public/tos-acceptance.ts`, `${A}superadmin/platform-brand.ts`, `${A}tenant-safety-actions.ts`,
   `${A}superadmin/platform-growth.ts`, `${A}portal-education.ts`, `${A}voice-assistant.ts`, `${A}collaborative-search.ts`,
+  // round 6 (lane 155R26)
+  `${A}ai-isa.ts`, `${A}assistant.ts`, `${A}ai-content-generation.tsx`, `${A}idx-search.ts`, "lib/kernel/open-house.ts",
+  "app/api/external-portal/actions/complete/route.ts", "lib/learning-router/resolve-agent-learning-context.ts",
 ]
 /** The REAL doors — never stubbed: the ledger, the public-door decision and the platform evidence door are what is under proof. */
 const REAL = new Set(["@/lib/kernel/action-ledger", "@/lib/security/public-rate-limit", "@/lib/platform/staff-action-gate"])
@@ -465,10 +486,191 @@ async function drivenSection(): Promise<void> {
   }
 }
 
+// ══ ROUND 6 (wave 155, lane 155R26) — the last eight P1 / P2 rows ═══════════════════════════════════════════════════════════
+// Rows: toggleCampaignStatus · dismissSuggestion / completeSuggestion (receipts) · analyzeABTest → content_ab_tests (a reader the
+// panel uses) · searchProperties (the one listing route, session tenant) · attachOpenHouseSourceAttribution (subject reads) ·
+// /api/external-portal/actions/complete (the deal read + its tenant; a refused record is not a success) · the learning READ
+// that wrote has_competency (retired onto the daily development cycle — positive proof: test:adaptive-development §live).
+function round6Static(): void {
+  console.log("\n§R6-A — round 6, static (stripped source)")
+  const rows: StaticRow[] = [
+    { file: `${A}ai-isa.ts`, fn: "toggleCampaignStatus", kind: "session" },
+    { file: `${A}assistant.ts`, fn: "dismissSuggestion", kind: "session", via: "setSuggestionStatus" },
+    { file: `${A}assistant.ts`, fn: "completeSuggestion", kind: "session", via: "setSuggestionStatus" },
+  ]
+  for (const r of rows) {
+    const f = rowFindings(r, read(r.file))
+    check(`${r.file}#${r.fn} — session receipt, no key`, f.length === 0, f.join("; "))
+  }
+  const code6 = blankComments([`${A}ai-isa.ts`, `${A}assistant.ts`].map(read).join("\n"))
+  const code6b = code6 + blankComments(read(`${A}idx-search.ts`))
+  for (const n of ["ai_isa.campaign.toggle", "ai.suggestion.dismiss", "ai.suggestion.complete", "listing.property_search.run"]) check(`ledger action ${n} is domain.entity.action and is written in code`, ACTION_RE.test(n) && code6b.includes(`"${n}"`))
+
+  // analyzeABTest's table has a reader the PRODUCT uses: listABTests (session-gated, tenant + agent pinned) and the panel calls it.
+  const acg = blankComments(read(`${A}ai-content-generation.tsx`))
+  const list = exportSpan(acg, "listABTests") ?? ""
+  check("content_ab_tests has a reader outside its writers: listABTests reads it pinned to the session's tenant and agent",
+    /requireContentActor\(\)/.test(list) && /\.from\(\s*"content_ab_tests"\s*\)\s*\.select\(/.test(list.replace(/\s+/g, " ")) && /\.eq\("brokerage_id", auth\.actor\.brokerageId\)/.test(list) && /\.eq\("agent_id", auth\.actor\.agentId\)/.test(list) && !WRITE_TOKEN.test(list))
+  const panel = blankComments(read("app/dashboard/content/panels/ab-testing-panel.tsx"))
+  check("the Experiments panel USES the reader: imports listABTests, calls it, renders the saved winner and confidence",
+    /import \{[^}]*\blistABTests\b[^}]*\} from "@\/app\/actions\/ai-content-generation"/.test(panel) && /await listABTests\(\)/.test(panel) && /winner_variant \?\? t\.winner/.test(panel) && /confidence_level/.test(panel))
+
+  // searchProperties takes the one listing route; nothing in its path names a vendor or reads a key.
+  const idx = stripped(read(`${A}idx-search.ts`))
+  const sp = exportSpan(idx, "searchProperties") ?? ""
+  const helper = localSpan(idx, "searchListingsForSession")
+  const VENDOR_CALL = /\bcallConnector\s*\(|\bIDXBrokerClient\b|process\.env\b/
+  check("searchProperties: session gate first, then the one route (searchListingsForSession → searchExternalListings); no direct vendor call, no key",
+    /getAgentContext\(\)/.test(sp) && sp.search(/getAgentContext\(\)/) < sp.search(/searchListingsForSession\(/) && /searchExternalListings\(/.test(helper) && !VENDOR_CALL.test(sp) && !VENDOR_CALL.test(helper))
+  check("smartSearch takes the SAME route (no second listing path in this file)", /searchListingsForSession\(/.test(exportSpan(idx, "smartSearch") ?? "") && !/\bcallConnector\s*\(/.test(idx))
+  check("POSITIVE CONTROL: the vendor finder catches a planted direct call", VENDOR_CALL.test(`await callConnector({ connector: "idxbroker" })`) && VENDOR_CALL.test("const k = process.env.X"))
+
+  // The attribution worker reads both subjects, tenant-pinned, before it emits.
+  const oh = blankComments(read("lib/kernel/open-house.ts"))
+  const w = exportSpan(oh, "attachOpenHouseSourceAttribution") ?? ""
+  const ev = w.search(/from\("open_house_events"\)[^\n]*\.eq\("brokerage_id", brokerage_id\)/), at = w.search(/from\("open_house_attendees"\)/), em = w.search(/emitKernelEvent\(/)
+  check("attachOpenHouseSourceAttribution reads open_house_events (tenant-pinned) and the attendee row BEFORE emitting", ev >= 0 && at >= 0 && em > ev && em > at && /\.eq\("contact_id", contact_id\)\.eq\("brokerage_id", brokerage_id\)/.test(w))
+
+  // The learning read writes nothing; the scheduled derive is the survivor.
+  const lr = stripped(read("lib/learning-router/resolve-agent-learning-context.ts"))
+  check("the learning-context READ makes no deriveCompetencyEdges call (no write on a read)", !/\bderiveCompetencyEdges\s*\(/.test(lr) && /loadAgentCompetency\(/.test(lr))
+  check("the survivor derives has_competency on the scheduled cycle (radar UPDATE step, reached by the onboarding-reminders cron)",
+    /deriveCompetencyEdges\(svc, \{ brokerageId: agent\.brokerage_id/.test(stripped(read("lib/education/skill-freshness-radar.ts"))) && /runAdaptiveDevelopmentAll\(/.test(stripped(read("app/api/cron/onboarding-reminders/route.ts"))) && /"\/api\/cron\/onboarding-reminders"/.test(read("lib/kernel/cron-dispatch.ts")))
+}
+
+async function round6Driven(): Promise<void> {
+  console.log("\n§R6-B — round 6, driven against the in-memory client (no network, no provider, no model)")
+  // ── row 1: toggleCampaignStatus ──
+  const ai = await load(`${A}ai-isa.ts`).catch((e) => { check("ai-isa loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (ai) {
+    const CMP = randomUUID(), DONE = randomUUID(), OTHER = randomUUID()
+    const seed = () => ({ ai_isa_campaigns: [{ id: CMP, brokerage_id: B, status: "active", is_active: true }, { id: DONE, brokerage_id: B, status: "completed", is_active: false }, { id: OTHER, brokerage_id: B2, status: "paused", is_active: false }] })
+    fresh(seed()); R.authed = true
+    const r1 = await safe(() => ai.toggleCampaignStatus(CMP, "active"))
+    const camp = () => (R.db.tables.ai_isa_campaigns as Row[]).find((x) => x.id === CMP)
+    check("toggleCampaignStatus: paused, ONE receipt (ai_isa.campaign.toggle, session user + tenant, COMMUNICATION, no key)",
+      (r1.v as any)?.success === true && camp()?.status === "paused" && ledger().length === 1 && ledger()[0].action === "ai_isa.campaign.toggle" && ledger()[0].actor_user_id === U && ledger()[0].brokerage_id === B && ledger()[0].risk_class === "COMMUNICATION" && !ledger()[0].idempotency_key,
+      JSON.stringify({ r1, l: ledger().map((x) => [x.action, x.status]) }).slice(0, 220))
+    await safe(() => ai.toggleCampaignStatus(CMP, "paused"))
+    check("toggleCampaignStatus: a second toggle is a second receipt (no key)", ledger().length === 2 && camp()?.status === "active")
+    fresh(seed())
+    const done = await safe(() => ai.toggleCampaignStatus(DONE, "paused"))
+    check("NEGATIVE toggleCampaignStatus: a COMPLETED campaign is not re-opened by a caller who says \"paused\" (status stays completed, nothing recorded)",
+      (done.v as any)?.success === false && (R.db.tables.ai_isa_campaigns as Row[]).find((x) => x.id === DONE)?.status === "completed" && ledger().length === 0)
+    fresh(seed())
+    const other = await safe(() => ai.toggleCampaignStatus(OTHER, "paused"))
+    check("NEGATIVE toggleCampaignStatus: another tenant's campaign is refused, unchanged, unrecorded", (other.v as any)?.success === false && (R.db.tables.ai_isa_campaigns as Row[]).find((x) => x.id === OTHER)?.status === "paused" && ledger().length === 0)
+  }
+  // ── row 2: dismissSuggestion / completeSuggestion ──
+  const asst = await load(`${A}assistant.ts`).catch((e) => { check("assistant loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (asst) {
+    const SG = randomUUID(), SG2 = randomUUID()
+    const seed = () => ({ smart_assistant_suggestions: [{ id: SG, brokerage_id: B, status: "pending" }, { id: SG2, brokerage_id: B, status: "pending" }] })
+    fresh(seed()); R.authed = true
+    const d = await safe(() => asst.dismissSuggestion(SG))
+    const c = await safe(() => asst.completeSuggestion(SG2))
+    const st = (id: string) => (R.db.tables.smart_assistant_suggestions as Row[]).find((x) => x.id === id)?.status
+    check("dismissSuggestion / completeSuggestion: each moves its card and leaves ONE receipt (session user + tenant, subject the suggestion)",
+      (d.v as any)?.success === true && (c.v as any)?.success === true && st(SG) === "dismissed" && st(SG2) === "actioned" && ledger().length === 2
+      && ledger().some((x) => x.action === "ai.suggestion.dismiss" && x.subject_id === SG) && ledger().some((x) => x.action === "ai.suggestion.complete" && x.subject_id === SG2)
+      && ledger().every((x) => x.brokerage_id === B && x.actor_user_id === U && !x.idempotency_key), JSON.stringify({ d, c, l: ledger().map((x) => [x.action, x.status]) }).slice(0, 220))
+    fresh(seed()); R.authed = false
+    const anon = await safe(() => asst.dismissSuggestion(SG))
+    R.authed = true
+    check("NEGATIVE dismissSuggestion: no session tenant → refused before any write, nothing recorded", (anon.v as any)?.success === false && st(SG) === "pending" && ledger().length === 0)
+    fresh(seed())
+    const ghost = await safe(() => asst.completeSuggestion(randomUUID()))
+    check("NEGATIVE completeSuggestion: an id that matches no row is NOT a success (the count is read) and its receipt settles failed",
+      (ghost.v as any)?.success === false && ledger().length === 1 && ledger()[0].status === "failed")
+  }
+  // ── row 3: the A/B reader ──
+  const acg = await load(`${A}ai-content-generation.tsx`).catch((e) => { check("ai-content-generation loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (acg) {
+    const mine = randomUUID()
+    fresh({ content_ab_tests: [
+      { id: mine, agent_id: AG, brokerage_id: B, test_name: "Subject test", status: "completed", winner_variant: "A", confidence_level: 0.97, started_at: "2026-11-01T00:00:00Z" },
+      { id: randomUUID(), agent_id: randomUUID(), brokerage_id: B, test_name: "Another agent", status: "running", started_at: "2026-11-02T00:00:00Z" },
+      { id: randomUUID(), agent_id: AG, brokerage_id: B2, test_name: "Other tenant", status: "running", started_at: "2026-11-03T00:00:00Z" },
+    ] }); R.authed = true
+    const l = await safe(() => (typeof acg.listABTests === "function" ? acg.listABTests() : Promise.reject(new Error("listABTests is not exported"))))
+    const tests = (l.v as any)?.tests as Row[] | undefined
+    check("listABTests: returns the session agent's saved test in the session's tenant (winner + confidence as saved) and nothing else",
+      (l.v as any)?.success === true && tests?.length === 1 && tests[0].id === mine && tests[0].winner_variant === "A" && tests[0].confidence_level === 0.97, JSON.stringify(l).slice(0, 220))
+    R.authed = false
+    const anon = await safe(() => (typeof acg.listABTests === "function" ? acg.listABTests() : Promise.reject(new Error("listABTests is not exported"))))
+    R.authed = true
+    check("NEGATIVE listABTests: an anonymous caller is refused (a use-server export is a public endpoint)", (anon.v as any)?.success === false)
+  }
+  // ── row 4: searchProperties ──
+  const idx = await load(`${A}idx-search.ts`).catch((e) => { check("idx-search loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (idx) {
+    fresh({ brokerages: [{ id: B, state: "FL" }] }); R.authed = true; R.calls.searchExternalListings = 0; R.calls.callConnector = 0; R6.routeInputs.length = 0
+    const s = await safe(() => idx.searchProperties({ city: "Pace", beds: 3, brokerageId: B2 } as any))
+    const p = (s.v as any)?.properties?.[0]
+    check("searchProperties: ONE routed search under the SESSION's tenant (a body brokerageId is ignored), no direct vendor call; rows keep both field spellings the two screens read",
+      (s.v as any)?.success === true && R.calls.searchExternalListings === 1 && R.calls.callConnector === 0 && R6.routeInputs[0]?.brokerageId === B && R6.routeInputs[0]?.state === "FL" && R6.routeInputs[0]?.bedroomsMin === 3
+      && p?.mlsNumber === "rentcast-e1" && p?.mls_number === "rentcast-e1" && p?.list_price === 300000 && p?.price === 300000 && p?.beds === 3 && p?.bedrooms === 3, JSON.stringify({ s, calls: R.calls }).slice(0, 240))
+    check("searchProperties: the (possibly metered) routed search leaves ONE receipt — listing.property_search.run, session user + tenant, no key",
+      ledger().length === 1 && ledger()[0].action === "listing.property_search.run" && ledger()[0].brokerage_id === B && ledger()[0].actor_user_id === U && !ledger()[0].idempotency_key && ledger()[0].status === "executed", JSON.stringify(ledger().map((x) => [x.action, x.status])))
+    R.authed = false; R.calls.searchExternalListings = 0; R.calls.callConnector = 0
+    const anon = await safe(() => idx.searchProperties({ city: "Pace" }))
+    R.authed = true
+    check("NEGATIVE searchProperties: an anonymous caller reaches NO route and NO vendor (it used to reach IDX with no session at all)",
+      (anon.v as any)?.success === false && (R.calls.searchExternalListings ?? 0) === 0 && (R.calls.callConnector ?? 0) === 0, JSON.stringify({ anon, calls: R.calls }).slice(0, 200))
+  }
+  // ── row 5: attachOpenHouseSourceAttribution ──
+  const oh = await load("lib/kernel/open-house.ts").catch((e) => { check("lib/kernel/open-house loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (oh) {
+    const E = randomUUID(), ATT = randomUUID(), CX = randomUUID()
+    const seed = () => ({ open_house_events: [{ id: E, brokerage_id: B }], open_house_attendees: [{ id: ATT, event_id: E, contact_id: C, brokerage_id: B }] })
+    const run = (over: Partial<{ contact_id: string; attendee_id: string; open_house_id: string; brokerage_id: string }>) =>
+      safe(() => oh.attachOpenHouseSourceAttribution({ contact_id: C, open_house_id: E, attendee_id: ATT, brokerage_id: B, agent_id: AG, ...over }))
+    fresh(seed()); R6.emitted.length = 0
+    const ok = await run({})
+    check("attachOpenHouseSourceAttribution: a real check-in is attributed — ONE event emitted for that contact", (ok.v as any)?.success === true && R6.emitted.length === 1 && R6.emitted[0].contactId === C, JSON.stringify(ok).slice(0, 200))
+    fresh(seed()); R6.emitted.length = 0
+    const notAttendee = await run({ contact_id: CX })
+    check("NEGATIVE attribution: a contact who never checked in to THIS open house is refused and nothing is emitted (no open-house welcome)", (notAttendee.v as any)?.success === false && R6.emitted.length === 0)
+    fresh(seed()); R6.emitted.length = 0
+    const otherTenant = await run({ brokerage_id: B2 })
+    check("NEGATIVE attribution: the event and check-in of another tenant are refused and nothing is emitted", (otherTenant.v as any)?.success === false && R6.emitted.length === 0)
+  }
+  // ── row 6: /api/external-portal/actions/complete ──
+  const route = await load("app/api/external-portal/actions/complete/route.ts").catch((e) => { check("external-portal complete route loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (route) {
+    const TX = randomUUID(), GHOST = randomUUID()
+    R6.assignedTx = new Set([TX, GHOST]) // GHOST: an assignment row naming a transaction that does not exist
+    const req = (body: unknown) => ({ json: async () => body }) as any
+    fresh({ transactions: [{ id: TX, brokerage_id: B }], audit_log: [] }); R.authed = true
+    const ok = await safe(() => route.POST(req({ actionId: "upload-docs", context: { transactionId: TX } })))
+    const a = (R.db.tables.audit_log as Row[])
+    check("complete: the named deal is READ and its tenant is stamped into the one audit row", (ok.v as any)?.status === 200 && a.length === 1 && a[0].after?.transaction_id === TX && a[0].after?.brokerage_id === B && a[0].user_id === U, JSON.stringify({ ok, a }).slice(0, 220))
+    fresh({ transactions: [{ id: TX, brokerage_id: B }], audit_log: [] })
+    const ghost = await safe(() => route.POST(req({ actionId: "upload-docs", context: { transactionId: GHOST } })))
+    check("NEGATIVE complete: a transaction that does not exist is refused (403) and nothing is recorded", (ghost.v as any)?.status === 403 && (R.db.tables.audit_log as Row[]).length === 0, JSON.stringify(ghost).slice(0, 200))
+    R.db = memSupabase({ transactions: [{ id: TX, brokerage_id: B }] }, { refuse: { audit_log: "refused by the proof" } })
+    const refused = await safe(() => route.POST(req({ actionId: "upload-docs", context: { transactionId: TX } })))
+    check("NEGATIVE complete: a REFUSED audit insert (the route's only effect) is not answered success", (refused.v as any)?.status === 503 && (refused.v as any)?.body?.success === false, JSON.stringify(refused).slice(0, 200))
+  }
+  // ── row 7: the learning READ writes nothing ──
+  const lr = await load("lib/learning-router/resolve-agent-learning-context.ts").catch((e) => { check("resolve-agent-learning-context loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (lr) {
+    const db = fresh({ users: [{ id: U, brokerage_id: B, user_type: "agent", created_at: "2026-01-01T00:00:00Z" }], learning_assignments: [], transactions: [], proactive_interventions: [], listing_health_interventions: [], brokerage_intelligence_insights: [], relationship_edges: [] })
+    R.calls.deriveCompetencyEdges = 0; R.calls.loadAgentCompetency = 0
+    const ctx = await safe(() => lr.resolveAgentLearningContext(db, U))
+    check("the learning-context READ still loads the competency profile (its gap tag reaches the router) and WRITES NOTHING (no edge, no derivation)",
+      (ctx.v as any)?.gapTags?.includes("objection:price") && R.calls.loadAgentCompetency === 1 && (R.calls.deriveCompetencyEdges ?? 0) === 0 && (db.tables.relationship_edges as Row[]).length === 0, JSON.stringify({ ctx, calls: R.calls }).slice(0, 220))
+  }
+}
+
 async function main(): Promise<void> {
-  console.log("LEDGER RECEIPTS — round 5 (wave 155, lane 155R23)")
+  console.log("LEDGER RECEIPTS — round 5 (wave 155, lane 155R23) + round 6 (lane 155R26)")
+  // A PLACEHOLDER, never a real key, set in this process only: at the base, searchProperties read IDX env at load and called the
+  // vendor with it — the round-6 negative must see that call (a counted stub) rather than pass because the env is unset.
+  process.env.IDXBROKER_API_KEY = "proof-placeholder"
   staticSection()
-  if (!process.argv.includes("--static-only")) await drivenSection()
+  round6Static()
+  if (!process.argv.includes("--static-only")) { await drivenSection(); await round6Driven() }
   console.log(`\nRESULT: ${pass} passed, ${failures.length} failed`)
   if (failures.length) { console.log("❌ LEDGER_RECEIPTS_ROUND5_FAIL"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
   console.log("✅ LEDGER_RECEIPTS_ROUND5_PASS — every round-5 write decides, then leaves one receipt (or one platform evidence row); no tenant is invented")

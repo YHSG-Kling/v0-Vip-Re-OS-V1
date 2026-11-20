@@ -62,7 +62,7 @@ interface QualifiedContact {
 // not. The repo already records this: `scripts/agent-fk-columns.ts` lists this
 // exact column under `USERS_FK_AGENTISH_COLUMNS`, "columns that FK
 // public.users(id) but whose NAME reads agent-ish". And the surface that renders
-// the assignee agrees — `app/actions/ai-isa.ts:528` embeds
+// the assignee agrees — `app/actions/ai-isa.ts:538` embeds
 // `assigned_agent:users!assigned_to_agent_id (first_name, last_name)`, a join
 // through that FK into `users`.
 //

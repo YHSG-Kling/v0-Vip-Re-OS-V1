@@ -99,7 +99,7 @@ interface ProcessingResult {
 //     takes a LISTING ID, not a payload object. Handed the payload it would have queried
 //     `.eq("id", {…})` and matched nothing, which supabase-js reports as success (§3).
 //   · generateAssistantSuggestions(agentId, { page, entity_id, entity_type }) —
-//     app/actions/assistant.ts:307 takes TWO arguments including a UI page context.
+//     app/actions/assistant.ts:321 takes TWO arguments including a UI page context.
 // Each entry now adapts its own handler, so a signature change breaks the build here
 // instead of dropping an orchestration at runtime.
 //

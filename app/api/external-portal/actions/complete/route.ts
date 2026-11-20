@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import {
   resolveExternalPartnerIdentity,
   externalPartnerTransactionLane,
@@ -45,9 +46,12 @@ import {
  * ── HOW THIS ROUTE REFUSES ──────────────────────────────────────────────────
  *   401  no session — the caller is anonymous.
  *   403  a real session that holds no external-partner class, or that is not
- *        attached to the transaction it named.
+ *        attached to the transaction it named, or a named transaction that
+ *        does not exist (read after the lane check; its brokerage is stamped
+ *        into the audit row — audit_log has no tenant column).
  *   503  a read was REFUSED (supabase-js resolves refusals; a gate must not
- *        fail open into a denial and hide an outage).
+ *        fail open into a denial and hide an outage), or the audit insert —
+ *        this route's only effect — was refused.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -111,6 +115,27 @@ export async function POST(request: NextRequest) {
       grantedVia = lane.grantedVia
     }
 
+    // THE DEAL IS READ, AND ITS TENANT IS STAMPED (wave 155, lane 155R26). The lane check proves a vendor_assignments link; it
+    // never read the transaction, and audit_log has no tenant column, so the record of a partner's deal step named no
+    // brokerage at all. Gate first (the lane above), then ONE service read of the transaction by its id (CLAUDE.md §4
+    // gate-then-service): absent → refused like a deal the partner is not on; its brokerage rides in the audit row.
+    let transactionBrokerageId: string | null = null
+    if (claimedTransactionId) {
+      const { data: deal, error: dealError } = await createServiceClient()
+        .from("transactions")
+        .select("id, brokerage_id")
+        .eq("id", claimedTransactionId)
+        .maybeSingle()
+      if (dealError) {
+        console.error("[external-portal] transaction read REFUSED:", dealError.message)
+        return NextResponse.json({ success: false, error: "Access check unavailable" }, { status: 503 })
+      }
+      if (!deal || !(deal as { brokerage_id?: string | null }).brokerage_id) {
+        return NextResponse.json({ success: false, error: "Not authorized for this transaction" }, { status: 403 })
+      }
+      transactionBrokerageId = (deal as { brokerage_id: string }).brokerage_id
+    }
+
     // Log action completion to audit_log for compliance tracking.
     //
     // `al_select` is `is_platform_admin() OR (user_id = auth.uid())`, and this
@@ -136,12 +161,15 @@ export async function POST(request: NextRequest) {
           partner_id: grantedVia === "title" ? identity.userId : identity.vendorId,
           partner_type: grantedVia,
           transaction_id: claimedTransactionId,
+          brokerage_id: transactionBrokerageId,
           completed_at: new Date().toISOString(),
         },
       })
     if (auditError) {
-      // Don't fail the request if audit logging fails — but never silently.
+      // This row is the ONLY thing this route does (header above), so a refused insert is not a completion: it used to be
+      // logged and answered `success: true` with nothing recorded (wave 155, lane 155R26). Report it as the outage it is.
       console.error("[external-portal] audit_log insert REFUSED:", auditError.message)
+      return NextResponse.json({ success: false, error: "The completion could not be recorded — try again" }, { status: 503 })
     }
 
     return NextResponse.json({ success: true, partnerType: grantedVia })

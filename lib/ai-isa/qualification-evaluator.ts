@@ -98,7 +98,7 @@ export async function persistQualificationSignals(
     .insert({
       lead_id: leadId,
       // THE CONTACT SIDE OF THE QUALIFICATION. `contact_id` was read by code and
-      // written by nobody (census 1b): app/actions/ai-isa.ts:676 selects it AND
+      // written by nobody (census 1b): app/actions/ai-isa.ts:686 selects it AND
       // embeds `contacts (first_name, last_name)` off it, so the Qualification
       // Outcomes tab listed every outcome with a BLANK NAME, and
       // app/dashboard/isa/page.tsx:259 built its handoff queue off the same
@@ -198,7 +198,7 @@ export async function persistQualificationSignals(
   // agents(id) — verified against the live catalogue, and already recorded in
   // `scripts/agent-fk-columns.ts` under `USERS_FK_AGENTISH_COLUMNS`
   // ("columns that FK public.users(id) but whose NAME reads agent-ish"). The
-  // reader agrees: `app/actions/ai-isa.ts:528` embeds
+  // reader agrees: `app/actions/ai-isa.ts:538` embeds
   // `assigned_agent:users!assigned_to_agent_id (…)`.
   //
   // `evaluateAndAssignLead` returns an **agents.id** in every branch — the rule
@@ -228,7 +228,7 @@ export async function persistQualificationSignals(
         )
       }
       // THE OUTCOME IN WORDS. `notes` was read by code and written by nobody
-      // (census 1b) — app/actions/ai-isa.ts:676 renders it as the outcome's
+      // (census 1b) — app/actions/ai-isa.ts:686 renders it as the outcome's
       // explanation column and app/dashboard/admin/lead-lineage/page.tsx:35
       // reads it on the lineage detail, so both showed a permanently empty cell
       // where the reason for the handoff belongs. Everything below is a fact

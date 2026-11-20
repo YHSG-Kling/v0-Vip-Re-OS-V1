@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useCallback, useEffect, useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Loader2, FlaskConical } from "lucide-react"
 import { toast } from "sonner"
-import { createABTest, analyzeABTest, updateABTestResults } from "@/app/actions/ai-content-generation"
+import { createABTest, analyzeABTest, updateABTestResults, listABTests } from "@/app/actions/ai-content-generation"
 import { AB_TEST_VARIABLES } from "@/app/actions/ai-content-generation.utils"
 
 export function AbTestingPanel({ drafts, onChanged }: { drafts: any[]; onChanged: () => void }) {
@@ -20,7 +20,15 @@ export function AbTestingPanel({ drafts, onChanged }: { drafts: any[]; onChanged
   const [variantB, setVariantB] = useState("")
   const [variable, setVariable] = useState<(typeof AB_TEST_VARIABLES)[number]>("subject_line")
   const [sampleSize, setSampleSize] = useState("100")
-  const [createdTests, setCreatedTests] = useState<any[]>([])
+  // The SAVED tests (content_ab_tests, read back through listABTests). They used to live only in this page session's state, so
+  // after a reload a saved analysis could be reopened only by pasting a UUID nobody could see (wave 155, lane 155R26).
+  const [savedTests, setSavedTests] = useState<any[]>([])
+  const [savedError, setSavedError] = useState<string | null>(null)
+  const loadSaved = useCallback(async () => {
+    const res = await listABTests()
+    if (res.success) { setSavedTests(res.tests); setSavedError(null) } else setSavedError(res.error)
+  }, [])
+  useEffect(() => { void loadSaved() }, [loadSaved])
 
   // analyse / record
   const [testId, setTestId] = useState("")
@@ -41,8 +49,8 @@ export function AbTestingPanel({ drafts, onChanged }: { drafts: any[]; onChanged
       })
       if (!res.success) { toast.error(res.error); return }
       toast.success("Test created")
-      setCreatedTests((prev) => [res.test, ...prev])
       setTestId(res.test.id)
+      await loadSaved()
       onChanged()
     })
   }
@@ -57,6 +65,7 @@ export function AbTestingPanel({ drafts, onChanged }: { drafts: any[]; onChanged
       }
       setAnalysis(res.data)
       toast.success(`Variant ${res.data.winner} is ahead`)
+      await loadSaved()
       onChanged()
     })
   }
@@ -70,6 +79,7 @@ export function AbTestingPanel({ drafts, onChanged }: { drafts: any[]; onChanged
       })
       if (!res.success) { toast.error(res.error); return }
       toast.success("Results recorded")
+      await loadSaved()
       onChanged()
     })
   }
@@ -142,16 +152,33 @@ export function AbTestingPanel({ drafts, onChanged }: { drafts: any[]; onChanged
             Create test
           </Button>
 
-          {createdTests.length > 0 && (
+          {savedError && <p className="text-xs text-destructive">Saved tests could not be loaded: {savedError}</p>}
+          {savedTests.length > 0 && (
             <div className="divide-y">
-              {createdTests.map((t) => (
-                <div key={t.id} className="py-2 flex items-center justify-between text-xs">
-                  <span className="font-medium">{t.test_name}</span>
-                  <Badge variant="outline" className="text-[10px]">
-                    {t.status}
-                  </Badge>
-                </div>
-              ))}
+              {savedTests.map((t) => {
+                const winner = t.winner_variant ?? t.winner ?? null
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setTestId(t.id)}
+                    className={`w-full py-2 flex items-center justify-between text-xs text-left ${testId === t.id ? "font-semibold" : ""}`}
+                  >
+                    <span className="font-medium">{t.test_name}</span>
+                    <span className="flex items-center gap-2">
+                      {winner && (
+                        <span className="text-muted-foreground">
+                          Variant {winner}
+                          {t.confidence_level != null ? ` · ${Math.round(Number(t.confidence_level) * 100)}% confidence` : ""}
+                        </span>
+                      )}
+                      <Badge variant="outline" className="text-[10px]">
+                        {t.status}
+                      </Badge>
+                    </span>
+                  </button>
+                )
+              })}
             </div>
           )}
         </CardContent>

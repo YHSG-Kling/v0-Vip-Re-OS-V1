@@ -8,7 +8,7 @@
 //   app/dashboard/voice/isa/page.tsx:177          the ISA coaching card
 //   app/dashboard/voice/isa/coaching-insights-panel.tsx:89  its dismiss action
 //   app/dashboard/voice/review/[callId]/page.tsx:141        per-call review
-//   app/dashboard/coaching/page.tsx (via app/actions/assistant.ts:633)
+//   app/dashboard/coaching/page.tsx (via app/actions/assistant.ts:647)
 //   app/actions/weekly-insights.ts:228           "insights surfaced + acted on"
 //   app/actions/smarter-this-week.ts:304-311     the week-over-week metric
 //

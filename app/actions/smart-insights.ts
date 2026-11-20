@@ -929,7 +929,7 @@ export async function unsaveProperty(contactId: string, savedPropertyId: string)
 
 // TOMBSTONE (wave 144, lane 144I — the 43 duplicate action names, triaged). A second public
 // `getSavedProperties(contactId)` stood here — the byte-identical saved_properties read (same filter, same
-// order) that swallowed its refusal into `[]`, imported by nothing. SURVIVOR: app/actions/idx-search.ts:548
+// order) that swallowed its refusal into `[]`, imported by nothing. SURVIVOR: app/actions/idx-search.ts:566
 // getSavedProperties — the same read in the module that owns saving (saveProperty / unsaveProperty), returning
 // `{ success, properties, error }` so a refusal is reported instead of rendering as "no saved homes".
 

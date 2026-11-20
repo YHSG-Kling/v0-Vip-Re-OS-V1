@@ -392,7 +392,7 @@ add("propdata", "config", [
   ["BATCHDATA_TOOL_MONTHLY_CAP_CENTS", "Monthly cap in cents for the BatchData tools (lib/ai-isa/persona-tool-policy.ts:336).", "OPTIONAL"],
   ["BATCHDATA_TOOL_TIER", "Tier label gating which BatchData tools personas may use (lib/ai-isa/persona-tool-policy.ts:327).", "OPTIONAL"],
   ["BATCHDATA_SMART_SEARCH_WEBHOOK_URL", "URL registered with BatchData Smart Search for event push (app/api/cron/lead-scraping/route.ts:1462).", "OPTIONAL"],
-  ["IDXBROKER_API_URL", "IDX Broker API base override; default https://api.idxbroker.com (app/actions/idx-search.ts:14).", "OPTIONAL"],
+  ["IDXBROKER_API_URL", "RETIRED (wave 155, lane 155R26): its one reader, the direct IDX call in app/actions/idx-search.ts searchProperties, now takes the one listing route (searchExternalListings); the IDX client's base is fixed (lib/idxbroker-client.ts:51). Inert — leave unset.", "RETIRED"],
   ["MLS_API_ENDPOINT", "Legacy platform-sync endpoint stub (lib/platform-sync.ts:38).", "UNIMPLEMENTED"],
 ])
 
