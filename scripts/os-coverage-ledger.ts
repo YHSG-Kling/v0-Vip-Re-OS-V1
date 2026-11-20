@@ -68,6 +68,7 @@ import { tmpdir } from "node:os"
 import { registerHooks } from "node:module"
 import { blankComments, blankStrings, stringLiterals, stripComments } from "./strip-comments"
 import { EVENT_OWNER_HELD, conditionalAuditVerified } from "./event-claims-ledger"
+import { INFERABLE_UNIQUE_SETS } from "./unique-indexes"
 import { runtimeFiles } from "./runtime-roots"
 import { SESSION_TOKENS, hasUseServerDirective } from "./session-tokens"
 import { LIVE_TABLES } from "./live-tables"
@@ -140,6 +141,10 @@ const OWNER_HELD: Record<string, string> = {
   "kernel_event:mentor_session_held": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
   "kernel_event:user_onboarding_completed": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
   "kernel_event:user_onboarding_step_completed": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
+  "server_action:app/actions/buyer-offers.ts#startOfferDraft": "owner-held pending owner ruling (lane 155R22 part 3 — the census could not derive an accountable manager, and none is typed): When staff open the offer wizard for a buyer, is that the Shopping Agent's act (the buyer side), even though the only manager its event reaches is the Listing Concierge (a heads-up to the listing's agent)? Until ruled: the act runs for the session seat under its gate, it is recorded, and no manager acts on its own",
+  "server_action:app/actions/buyer-lifecycle-core.ts#executeBuyerStateTransition": "owner-held pending owner ruling (lane 155R22 part 3 — the census could not derive an accountable manager, and none is typed): Is every buyer lifecycle transition, whatever state it lands in, the Shopping Agent's act — or does each target state belong to the manager its event reaches? Until ruled: the act runs for the session seat under its gate, it is recorded, and no manager acts on its own",
+  "server_action:app/actions/newsletter/fetch-local-news.ts#fetchLocalNews": "owner-held pending owner ruling (lane 155R22 part 3 — the census could not derive an accountable manager, and none is typed): Are a tenant's local news SOURCES part of the newsletter (the Campaign Orchestrator stewards local_news_sources) or tenant data the Data Steward keeps? The read ties one table of each. Until ruled: the act runs for the session seat under its gate, it is recorded, and no manager acts on its own",
+  "server_action:app/actions/social/generate-social-post.ts#generateContextualDraft": "owner-held pending owner ruling (lane 155R22 part 3 — the census could not derive an accountable manager, and none is typed): Is a contextual social-post draft — returned to the composer, compliance-checked, nothing published — the Campaign Orchestrator's act? No table on its path says so (its only stewarded read is inside the compliance gate). Until ruled: the act runs for the session seat under its gate, it is recorded, and no manager acts on its own",
   "orchestrator_event:transaction.contingency_cleared": "owner-held pending owner decision (lane 155R24): build or retire? Nothing produces the moment — no writer of transactions.*_contingency_removed_at, no trigger, no catalog milestone; the consumer is kept dormant (nothing runs)",
   "orchestrator_event:transaction.closing_soon": "owner-held pending owner decision (lane 155R24): build or retire? A closing gift (closing_gifts.price_cents) is spend; the producer would be the deadline watcher's close-date approach; kept dormant (nothing runs) until the gift policy is ruled",
   "kernel_event:referral_converted": "owner-held pending owner decision 2 (does a registered manager's deterministic evidence rule count as the decision owner?): the award is decided by referralEvidenceTransaction (a closed/funded transaction must evidence the won referral) under recruiting_manager — a rule, not a named gate token",
@@ -697,12 +702,33 @@ const READERS = new Map<string, ReadSite[]>()
     }
   }
 }
-/** Readers of `table`, minus the function that holds the write at `writerAt` ("file:line"). */
+/**
+ * PURE — a CACHE-FIRST read (integrator, wave 155). The writer's own function is excluded from a table's readers because a
+ * select-then-update proves nobody consumes the row. One shape in the writer's own function IS a consumer: BEFORE the write, the
+ * function selects the table into a binding and RETURNS that binding's value — the saved row is what the next call hands back to
+ * the person (app/actions/ai-calendar-management.ts: the persisted meeting brief and weekly plan are returned unless the caller asks
+ * to regenerate). Before lane 155R22's rule E those two rows were credited through a receipt-table reader; E removed that false
+ * credit and left the real reader uncounted. Blind spot: lexical — the binding must be `data` (optionally renamed) of a direct
+ * `await x.from("t").select(` and appear in a `return` on one line; whether a screen renders the returned value is not proven.
+ */
+function cacheFirstReturn(code: string, table: string, start: number, end: number, wOff: number): boolean {
+  const body = code.slice(start, Math.min(end, wOff))
+  const re = new RegExp(`(?:const|let)\\s*\\{\\s*data(?:\\s*:\\s*([A-Za-z_$][\\w$]*))?[^}]*\\}\\s*=\\s*await\\s+[\\w$.]+\\s*\\.from\\(\\s*["'\`]${table}["'\`]\\s*\\)\\s*\\.select\\(`, "g")
+  for (let m = re.exec(body); m; m = re.exec(body)) {
+    const name = (m[1] ?? "data").replace(/\$/g, "\\$")
+    if (new RegExp(`\\breturn\\b[^;\\n]*(?<![\\w$.])${name}\\s*(?:\\?\\.|\\.)`).test(body.slice(m.index + m[0].length))) return true
+  }
+  return false
+}
+/** Readers of `table`, minus the function that holds the write at `writerAt` ("file:line") — unless that function reads it cache-first. */
 function readersOf(table: string, writerAt: string | undefined): string[] {
   let wf = "", wOff = -1
   if (writerAt) { const i = writerAt.lastIndexOf(":"); wf = writerAt.slice(0, i); const v = views(wf); const ln = Number(writerAt.slice(i + 1)); if (v && ln > 0) wOff = v.lineStarts[ln - 1] ?? -1 }
   const out = new Set<string>()
-  for (const r of READERS.get(table) ?? []) if (!(r.file === wf && wOff >= r.start && wOff < r.end)) out.add(r.file)
+  for (const r of READERS.get(table) ?? []) {
+    const sameFn = r.file === wf && wOff >= r.start && wOff < r.end
+    if (!sameFn || cacheFirstReturn(codeOf(wf), table, r.start, r.end, wOff)) out.add(r.file)
+  }
   return [...out]
 }
 const isUiFile = (f: string) => f.startsWith("app/") && !f.startsWith("app/api/")
@@ -814,6 +840,44 @@ function ownerFromWrites(f: Facts, addressed?: string | null): { owner: string |
 // (compliance_officer) must not own every gated draft. Controls: section G (G8).
 const GENERIC_TELEMETRY = new Set(["self_heal_events", "api_response_logs", "audit_log", "superadmin_audit_log", "automation_errors", "compliance_events"])
 const ACTOR_IDENTITY_READS = new Set(["users", "agents", "brokerages", "user_role_assignments", "teams", "team_members", "platform_staff", "platform_role_capability_overrides", "platform_impersonation_sessions"])
+// WAVE 155 (lane 155R22 part 3, rule H) — A TENANT CONFIGURATION READ SAYS HOW TO ACT, NOT WHAT THE ACT IS ABOUT (the reason
+// identity reads are excluded). DERIVED from the live schema, never listed: a table whose non-partial unique index is
+// `brokerage_id` ALONE holds one row per tenant (scripts/unique-indexes.ts INFERABLE_UNIQUE_SETS, generated from the database —
+// brokerage_settings is one). It is dropped from the subject reads ONLY while another stewarded subject read remains; when it
+// is the only one, it IS the subject (getCapabilitiesSettings reads the settings to show them). Controls: G12 H.
+// Blind spot: the cache covers only tables the code upserts into (137); a one-row-per-tenant table never upserted is a subject.
+function isTenantConfigTable(t: string): boolean { return (INFERABLE_UNIQUE_SETS[t] ?? []).includes("brokerage_id") }
+/** PURE — the stewarded subject reads of a set: minus identity and carriers; minus tenant configuration while anything else is left. */
+function subjectReads(reads: string[]): string[] {
+  const s = [...new Set(reads)].filter((t) => !ACTOR_IDENTITY_READS.has(t) && !CARRIER_TABLES.has(t) && !!TABLE_MANAGER[t])
+  const nonCfg = s.filter((t) => !isTenantConfigTable(t))
+  return nonCfg.length ? nonCfg : s
+}
+// WAVE 155 (lane 155R22 part 3, rule I) — A WRITE THROUGH A LITERAL TABLE MAP. `svc.from(CHANNEL_TABLE[channel]).update(…)` writes
+// one of the map's tables per call; the census cannot read a table name it does not see. When the map is a same-file top-level
+// `const MAP = { key: "table", … }` whose EVERY value is a string literal naming a LIVE, STEWARDED table, the owner is per call:
+// "per-call: steward ∈ {…}" (one steward → that manager) — the same rule the census already credits for a reactor block whose
+// toManager is a choice over literals. A value that is not a literal, not live or not stewarded → nothing. Controls: G12 I.
+// Blind spot: only the OWNER is derived; the per-call write itself stays invisible to evidence / readback, and a map built at run
+// time, imported from another module, or indexed through a variable holding the map is not read.
+function tableMapOwner(file: string, v: Views, code: string, spans: Array<{ start: number; end: number }>): { owner: string | null; why: string } | null {
+  for (const o of objectSpansOf(v)) {
+    const body = code.slice(v.ids.indexOf("{", o.start) + 1, o.end - 1)
+    const bodyIds = v.ids.slice(v.ids.indexOf("{", o.start) + 1, o.end - 1)
+    const vals = [...body.matchAll(/:\s*["']([a-z_][a-z0-9_]*)["']\s*(?:,|$)/g)].map((m) => m[1])
+    if (!vals.length || vals.length !== (bodyIds.match(/:/g) ?? []).length) continue
+    const name = reEsc(o.name)
+    for (const s of spans) for (const m of v.ids.slice(s.start, s.end).matchAll(new RegExp(`\\.from\\(\\s*${name}\\s*\\[[^\\]]*\\]\\s*\\)`, "g"))) {
+      const at = s.start + m.index!
+      if (!/^\s*\.(?:insert|update|upsert|delete)\s*\(/.test(chainTail(code, at + m[0].length))) continue
+      if (!vals.every((t) => LIVE.has(t) && !!TABLE_MANAGER[t])) return null
+      const stewards = [...new Set(vals.map((t) => TABLE_MANAGER[t]))].sort()
+      const where = `${o.name}[…] @ ${file}:${lineAt(v, at)}`
+      return stewards.length === 1 ? { owner: stewards[0], why: `steward of every table ${where} can write` } : { owner: `per-call: steward ∈ {${stewards.join(" | ")}} (${where})`, why: "the write's table is chosen per call from a literal map of stewarded tables" }
+    }
+  }
+  return null
+}
 function ownerOfAuditedRead(own: Facts, path: Facts): { owner: string | null; why: string } | null {
   if (!path.writes.size || [...path.writes.keys()].some((t) => !CARRIER_TABLES.has(t) && !isLogTable(t))) return null
   const logs = new Map<string, number>()
@@ -822,7 +886,7 @@ function ownerOfAuditedRead(own: Facts, path: Facts): { owner: string | null; wh
   if (lb.length === 1 || (lb.length > 1 && lb[0][1] > lb[1][1])) return { owner: lb[0][0], why: `steward of the log it writes (${[...path.writes.keys()].filter((t) => TABLE_MANAGER[t] === lb[0][0] && !GENERIC_TELEMETRY.has(t)).slice(0, 2).join(", ")}); its only writes are carriers / logs` }
   if (lb.length) return null
   const counts = new Map<string, number>()
-  for (const t of own.reads) { if (ACTOR_IDENTITY_READS.has(t) || CARRIER_TABLES.has(t)) continue; const m = TABLE_MANAGER[t]; if (m) counts.set(m, (counts.get(m) ?? 0) + 1) }
+  for (const t of subjectReads([...own.reads])) { const m = TABLE_MANAGER[t]; if (m) counts.set(m, (counts.get(m) ?? 0) + 1) }
   const best = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
   if (!best.length || (best.length > 1 && best[0][1] === best[1][1])) return null
   return { owner: best[0][0], why: `steward of what its own span reads (${[...own.reads].filter((t) => TABLE_MANAGER[t] === best[0][0] && !ACTOR_IDENTITY_READS.has(t)).slice(0, 2).join(", ")}); its only writes are carriers / logs` }
@@ -871,8 +935,9 @@ function ownerOfDelegatedRead(own: Facts, path: Facts, workers: DelegatedWorker[
   if ([...path.writes.keys()].some((t) => !CARRIER_TABLES.has(t) && !GENERIC_TELEMETRY.has(t) && !!TABLE_MANAGER[t])) return null
   if ([...own.reads].some((t) => !ACTOR_IDENTITY_READS.has(t) && !CARRIER_TABLES.has(t) && !!TABLE_MANAGER[t])) return null
   const by = new Map<string, Array<{ table: string; worker: DelegatedWorker }>>()
+  const subj = new Set(subjectReads(workers.flatMap((w) => w.reads)))
   for (const w of workers) for (const t of w.reads) {
-    if (ACTOR_IDENTITY_READS.has(t) || CARRIER_TABLES.has(t)) continue
+    if (!subj.has(t)) continue
     const m = TABLE_MANAGER[t]; if (!m) continue
     if (!by.has(m)) by.set(m, []); by.get(m)!.push({ table: t, worker: w })
   }
@@ -2241,7 +2306,8 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
       if (!facts.writes.size && !facts.egress.length) { readOnlyExports++; continue }
       const callers = [...(importers?.get(fn.name) ?? []), ...(importers?.get("*") ?? [])]
       // WAVE 155 (lane 155R22): …then the worker hop (ownerOfDelegatedRead) where the own span read no stewarded table at all
-      const ow = ((o) => { if (o.owner) return o; const own = factsOfSpan(file, v, fn.start, fn.end); return ownerOfAuditedRead(own, facts) ?? ownerOfDelegatedRead(own, facts, delegatedWorkers(file, v, fns, fn.start, fn.end, fn.name)) ?? o })(ownerFromWrites(facts))
+      // …and FIRST a write through a same-file literal table map (rule I, part 3): a write outranks any read
+      const ow = ((o) => { if (o.owner) return o; const tm = tableMapOwner(file, v, fixture ? codeOf(file, fixture.raw) : codeOf(file), closureSpans(fns, v, fn)); if (tm) return tm; const own = factsOfSpan(file, v, fn.start, fn.end); return ownerOfAuditedRead(own, facts) ?? ownerOfDelegatedRead(own, facts, delegatedWorkers(file, v, fns, fn.start, fn.end, fn.name)) ?? o })(ownerFromWrites(facts))
       // WAVE 155 (lane 155B1) — A SIBLING CALL IS A CALLER. An export that no file imports may still run: another export of the
       // SAME module that IS imported calls it (closureSpans — the exact same-file call graph the facts already walk). The
       // census read only importers, so such an export read as "no trigger". Controls: section F (a sibling-called export
@@ -2301,6 +2367,9 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
   // WAVE 155 (lane 155R22) — the blind spots of this lane's rules, published beside the numbers (CLAUDE.md §2)
   blind.push("owner by the WORKER HOP (ownerOfDelegatedRead): only a log-only path whose own span read no stewarded table; the workers are the callees its own span calls minus gate / identity / ledger / carrier helpers — by NAME (isNotAWorker: the census's decision, gate and ledger-door tokens plus require*/gate*/check*/can*/evaluateOutbound*, get*Context, audit*/emit*/notify* … shapes) or by STRUCTURE (the helper's own body resolves the signed-in identity or asks an authority / policy gate). A gate named like a worker and doing neither is read as a worker; a worker that resolves the identity itself is dropped (its row stays open). ONE hop: a worker's own imports, a worker reached through a call result or a class, and a dynamic `.from(variable)` are invisible; exactly ONE steward across all workers resolves, two resolve nothing")
   blind.push("kernel-event holds DERIVED from scripts/event-claims-ledger.ts EVENT_OWNER_HELD apply only to an emitted, unconsumed, not-audit-proven row; audit-only proof also reads a local door ALIAS (`const emit = … emitKernelEvent`, file-level — not scope-aware), refuses a quoted event value that is neither inside a door call nor keyed `event:` (an activity_type of the same spelling), and accepts a CONDITIONAL_AUDIT entry re-verified against its named file (file-level: one verified expression covers every site of that event in that file)")
+  // WAVE 155 (lane 155R22 part 3) — rules H, I
+  blind.push("H: a tenant CONFIGURATION table = unique on brokerage_id alone in the live unique-index cache (tables the code upserts into only); it is dropped from an owner's subject reads only while another stewarded subject read remains. A one-row-per-tenant table never upserted, or a per-seat configuration table (unique on agent_id), is still a subject")
+  blind.push("I: a write through `.from(MAP[key])` where MAP is a same-file top-level object of string-literal live stewarded tables is owned per call (steward ∈ the set); the write itself stays invisible to evidence / readback; an imported or run-time map is not read")
   // WAVE 155 (lane 155R22 part 2) — rules A, B, C, E, F
   blind.push("A: an imported DATA constant (a multi-line type annotation now read at bracket depth) carries nothing; a namespace import, `export *`, a default import, a class, or a const whose initializer calls a non-builtin still falls back to the target's whole-file facts (over-reports)")
   blind.push("B: a platform-staff door = a row whose own path (export + same-file callees) reaches a DERIVED platform gate (a gate-shaped lib/ function whose body reads platform_role or a PLATFORM_RE token, to a fixpoint) and asks no authority-plane / tenant-seat token; held ONLY when `owner` is its one missing link. A platform check written inline without those tokens is invisible; a gate that is not gate-shaped by name is not derived")
@@ -2663,6 +2732,13 @@ async function main(): Promise<void> {
     `export async function plantedOtherRecord(target: string) { ${sess2}; const ctx = await resolveWriteContext()\n  const { error } = await ctx.db.from("notifications").insert({ user_id: target, title: "x" }) }`,
     `export async function plantedParamPinned(input: { userId: string }) { ${sess2}\n  const { error } = await createServiceClient().from("notifications").update({ is_read: true }).eq("user_id", input.userId) }`,
     `export async function plantedStaffAlternative(id: string) { ${sess2}; if (sameTenant || isPlatformStaffIdentity(u.user_type, u.platform_role)) { await createServiceClient().from("superadmin_audit_log").insert({ action: id }) } }`,
+    `const PLANTED_TABLES = { a: "${hopA}", b: "${hopB}" }`,
+    `const PLANTED_BAD_TABLES = { a: "${hopA}", b: "__os_coverage_no_such_table__" }`,
+    `const PLANTED_VAR_TABLES = { a: someTable, b: "${hopA}" }`,
+    `export async function plantedMapWrite(ch: string) { await createServiceClient().from(PLANTED_TABLES[ch]).update({ x: 1 }).eq("id", ch); await createServiceClient().from("audit_log").insert({ action: ch }) }`,
+    `export async function plantedMapBad(ch: string) { await createServiceClient().from(PLANTED_BAD_TABLES[ch]).update({ x: 1 }).eq("id", ch); await createServiceClient().from("audit_log").insert({ action: ch }) }`,
+    `export async function plantedMapVar(ch: string) { await createServiceClient().from(PLANTED_VAR_TABLES[ch]).update({ x: 1 }).eq("id", ch); await createServiceClient().from("audit_log").insert({ action: ch }) }`,
+    `export async function plantedMapRead(ch: string) { const { data } = await createServiceClient().from(PLANTED_TABLES[ch]).select("id"); await createServiceClient().from("audit_log").insert({ action: ch }) }`,
     `export async function plantedStaffUnchecked(id: string) { ${sess2}; const gate = await requirePlatformCapability("providers"); await createServiceClient().from("superadmin_audit_log").insert({ action: id }) }`].join("\n")
   const c = await census([], [{ file: FX, raw: fxRaw }, { file: FX_ROUTE, raw: fxRouteRaw }, { file: FX_HOP, raw: fxHopRaw }, { file: FX_P2, raw: fxP2Raw }])
   const isFixtureRow = (id: string) => id.includes("__os_coverage_")
@@ -3126,6 +3202,17 @@ async function main(): Promise<void> {
     // E: the chain, not a window
     const evC = views("app/actions/__os_coverage_chain__.ts", [`const a = await svc.from("${hopA}")`, `  // ${"x".repeat(200)}`, `  .select("id")`, `await svc.from("${hopB}")`, `await svc.from("${hopB}").update({})`].join("\n"))!
     const er = factsOfSpan("app/actions/__os_coverage_chain__.ts", evC, 0, evC.ids.length)
+    {
+      // G11 E2 (integrator) — the cache-first reader in the writer's own function. Pure; each line can fail.
+      const cf = (body: string, t = "meeting_briefs") => cacheFirstReturn(body, t, 0, body.length, body.indexOf(".upsert(") >= 0 ? body.indexOf(".upsert(") : body.length)
+      const hit = `async function f(p) {\n  const { data: cached, error } = await supabase\n    .from("meeting_briefs")\n    .select("brief_content")\n    .eq("id", p.id).maybeSingle()\n  if (!error && cached?.brief_content) return { ok: true, brief: cached.brief_content }\n  await supabase.from("meeting_briefs").upsert({ id: p.id })\n}`
+      check("G11 E2 POSITIVE: a select of the table BEFORE the write whose value is RETURNED is a reader in the writer's own function (the persisted row is handed back on the next call)", cf(hit))
+      check("G11 E2 NEGATIVE: select-then-write with the value never returned, a select of ANOTHER table that is returned, a select AFTER the write, and a returned binding of a different name are not cache-first readers",
+        !cf(`async function f(p) {\n  const { data: row } = await supabase.from("meeting_briefs").select("id").eq("id", p.id).maybeSingle()\n  if (row) console.log("exists")\n  await supabase.from("meeting_briefs").upsert({ id: p.id })\n  return { ok: true }\n}`)
+        && !cf(`async function f(p) {\n  const { data: cached } = await supabase.from("weekly_plans").select("x").maybeSingle()\n  if (cached) return { x: cached.x }\n  await supabase.from("meeting_briefs").upsert({ id: p.id })\n}`)
+        && !cf(`async function f(p) {\n  await supabase.from("meeting_briefs").upsert({ id: p.id })\n  const { data: cached } = await supabase.from("meeting_briefs").select("x").maybeSingle()\n  return { x: cached.x }\n}`)
+        && !cf(`async function f(p) {\n  const { data: cached } = await supabase.from("meeting_briefs").select("x").maybeSingle()\n  return { x: other.x }\n  await supabase.from("meeting_briefs").upsert({ id: p.id })\n}`))
+    }
     check("G11 E POSITIVE: a `.select(` that follows a 200-character comment is a read — NEGATIVE: a `.from(t)` with no select is not a reader (an update is a write, not a read)",
       er.reads.has(hopA) && !er.reads.has(hopB) && er.writes.has(hopB), JSON.stringify([...er.reads]))
     const rbF = emptyFacts(); rbF.writes.set("__os_coverage_unread_domain__", `${FX}:5`); rbF.writes.set("agent_action_ledger", `${FX}:6`); rbF.evidence.push({ token: "withActionLedger", at: `${FX}:6` })
@@ -3134,6 +3221,21 @@ async function main(): Promise<void> {
     const rbLog = finish({ id: "planted:receipt-only", kind: "server_action", entry: `${FX}:3`, action: "planted", source_event: "planted", trigger: "t", worker: "w", owner: "deal_coordinator", facts: rbL })
     check("G11 E NEGATIVE: a domain write whose only 'reader' is an agent_action_ledger read still MISSES readback — POSITIVE: a path that writes only the ledger keeps its ledger reader",
       rbR.missing.includes("readback") && !rbLog.missing.includes("readback"), JSON.stringify([rbR.missing, rbLog.missing]))
+    // G12 — lane 155R22 part 3. H: a one-row-per-tenant table (unique on brokerage_id alone, from the live schema) is configuration
+    const cfgT = Object.keys(INFERABLE_UNIQUE_SETS).find((t) => isTenantConfigTable(t) && !!TABLE_MANAGER[t])!
+    const subjT = Object.keys(TABLE_MANAGER).find((t) => !isTenantConfigTable(t) && !ACTOR_IDENTITY_READS.has(t) && !CARRIER_TABLES.has(t) && !EVIDENCE_TABLE_RE.test(t) && TABLE_MANAGER[t] !== TABLE_MANAGER[cfgT])!
+    check(`G12 H PURE: a configuration read (${cfgT}, unique on brokerage_id alone) yields to a subject read (${subjT}) — NEGATIVE: alone it IS the subject; a subject table is not configuration`,
+      isTenantConfigTable("brokerage_settings") && !isTenantConfigTable(subjT) && subjectReads([subjT, cfgT, "agents"]).join() === subjT && subjectReads([cfgT, "users"]).join() === cfgT)
+    check(`G12 H: the worker hop with a subject read + a configuration read resolves to the subject's steward (${TABLE_MANAGER[subjT]}) — NEGATIVE: two SUBJECT stewards still resolve nothing; a configuration read alone keeps its own steward`,
+      ownerOfDelegatedRead(fx8([]), fx8(["audit_log"]), [w9([subjT, cfgT])])?.owner === TABLE_MANAGER[subjT]
+      && ownerOfDelegatedRead(fx8([]), fx8(["audit_log"]), [w9([subjT, hopA])])?.owner === (TABLE_MANAGER[subjT] === TABLE_MANAGER[hopA] ? TABLE_MANAGER[hopA] : undefined)
+      && ownerOfDelegatedRead(fx8([]), fx8(["audit_log"]), [w9([cfgT])])?.owner === TABLE_MANAGER[cfgT])
+    check("G12 H POSITIVE CONTROL (the finder still sees its shape): the live unique-index cache names at least one one-row-per-tenant table", Object.keys(INFERABLE_UNIQUE_SETS).some(isTenantConfigTable))
+    // I: a write through a same-file literal table map
+    check(`G12 I POSITIVE: a write through a literal map of two live stewarded tables is owned per call (steward ∈ {${TABLE_MANAGER[hopA]} | ${TABLE_MANAGER[hopB]}})`,
+      !!p2("plantedMapWrite")?.registered_manager.startsWith("per-call: steward ∈ {") && [TABLE_MANAGER[hopA], TABLE_MANAGER[hopB]].every((m) => p2("plantedMapWrite")!.registered_manager.includes(m)), p2("plantedMapWrite")?.registered_manager)
+    check("G12 I NEGATIVE: a map with a table that is not live, a map with a non-literal value, and a map only READ through resolve nothing",
+      ["plantedMapBad", "plantedMapVar", "plantedMapRead"].every((n) => !!p2(n)?.registered_manager.startsWith("unresolved")), JSON.stringify(["plantedMapBad", "plantedMapVar", "plantedMapRead"].map((n) => p2(n)?.registered_manager.slice(0, 40))))
     // F: a write behind a literal-false flag
     check("G11 F PURE: every call passing `markUsed: false` yields that flag — NEGATIVE: a variable argument, a call without it, or the function passed on yields nothing",
       falseFlagsAt(`const { pickX } = await import("x")\nconst r = await pickX({ id, markUsed: false, limit: 2 })`, "pickX").join() === "markUsed"
