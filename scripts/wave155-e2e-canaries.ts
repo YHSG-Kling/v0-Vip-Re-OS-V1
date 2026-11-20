@@ -18,6 +18,9 @@
  * THE CODE-GAP LIST (CODE_GAPS) is shrink-only: a gap whose probe now passes is STALE and fails this guard until it is
  * removed (the rule, not a waypoint). scripts/production-readiness-guard.ts reads the list's ids from this file's
  * stripped source to state the verdict vocabulary of directive §L3 (509–511).
+ * THE CENSUS IS MEASURED, NOT LISTED: section G also counts the P0 + P1 executable gaps of the arbitration census's own checked-in
+ * summary (censusBlockingGaps, scripts/release-rules.ts — the same rule the production-readiness guard uses). An empty list with a
+ * census gap still reads ENGINEERING BLOCKED, and a summary nobody can read blocks too.
  *
  * Seams: model / provider / email / SMS / charge are never reached by the modules composed here; global fetch is replaced
  * by a counter that refuses, and the topic intake is an injected counted seam. The run asserts every count is what the
@@ -32,6 +35,7 @@ import { readFileSync, existsSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
 import { memSupabase } from "./in-memory-supabase"
+import { ARBITRATION_SUMMARY, censusBlockingGaps } from "./release-rules"
 
 const ROOT = process.cwd()
 let pass = 0, fail = 0
@@ -335,11 +339,12 @@ function routeExists(route: string): boolean {
 // ── THE CODE-GAP LIST — shrink-only; each entry names its owning module; a probe that passes makes the entry STALE ─────
 const joins: { faqToNewsletter: boolean | null } = { faqToNewsletter: null }
 interface CodeGap { id: string; priority: "P0" | "P1" | "P2"; requirement: string; owner: string; why: string; probe?: () => boolean | null }
-const CODE_GAPS: CodeGap[] = [
-  { id: "GAP-OS-LEDGER-P0P1", priority: "P0", requirement: "Arbiter: no customer-executable P0 / P1 path missing a link (directive 509)",
-    owner: "scripts/os-coverage-ledger.ts open rows — G09 owners the census cannot derive (owner decision 3), G01 events with no consumer and G02 consumers with no emitter (owner-held event questions), G12 / G99 / G10 residue",
-    why: "measured on the merged head after every lane of this wave (os-coverage-ledger, 3,066 rows): EXECUTABLE_GAP 128 = P0 15 · P1 39 · P2 74 (it was 362 = P0 64 · P1 158 · P2 140 when this entry was written, and 1,240 when lane 155B1 first classified the open rows). P0 and P1 are not zero, so the verdict stays ENGINEERING BLOCKED — this entry is removed only when P0 = P1 = 0" },
-]
+// CLOSED AT CONVERGENCE (was GAP-OS-LEDGER-P0P1, "Arbiter: no customer-executable P0 / P1 path missing a link"): the entry carried its
+// own exit rule — "removed only when P0 = P1 = 0" — and its numbers were typed into prose. The rule is now MEASURED instead of typed:
+// section G reads the census's checked-in summary through censusBlockingGaps (scripts/release-rules.ts) and a P0 / P1 executable gap
+// there blocks the verdict whether or not anyone lists it here. History of the count: 1,240 executable gaps when lane 155B1 first
+// classified the open rows; 362 (P0 64 · P1 158 · P2 140) when the entry was written; 128 (P0 15 · P1 39 · P2 74) after round 4.
+const CODE_GAPS: CodeGap[] = []
 
 // ── THE ACCEPTANCE TABLE (directive 521–543) — positive and negative evidence read from the guards' own source ────────
 const ACCEPTANCE: Array<{ req: string; pos: Cite[]; neg: Cite[]; external?: string }> = [
@@ -417,9 +422,16 @@ main().then(() => {
     console.log(`    ${g.priority} ${g.id} — ${g.requirement} — owner: ${g.owner}`)
     check(`G · ${g.id} is still a gap (probe ${probe === null ? "none — carried with its owner" : probe ? "PASSES → remove the entry" : "fails, as listed"})`, probe !== true, probe ? "the join works now — delete this CODE_GAPS entry (shrink-only)" : undefined)
   }
+  // THE CENSUS, MEASURED: the arbitration census's own checked-in summary. Unreadable is BLOCKING, never zero.
+  const censusGaps = censusBlockingGaps(existsSync(join(ROOT, ARBITRATION_SUMMARY)) ? readFileSync(join(ROOT, ARBITRATION_SUMMARY), "utf8") : "")
+  check(`G · the arbitration census summary is readable — P0 + P1 executable gaps: ${censusGaps ?? "UNREADABLE"} (derived from ${ARBITRATION_SUMMARY}, never pinned)`, censusGaps !== null, "run scripts/os-coverage-ledger.ts --write; an unreadable census blocks the verdict")
+  check("G · POSITIVE CONTROL — the census reader counts P0 and P1, ignores P2, reads an empty risk map as zero, and answers null (blocking) for a summary it cannot read",
+    censusBlockingGaps('{"executableGapRisk":{"P0":2,"P1":3,"P2":9}}') === 5 && censusBlockingGaps('{"executableGapRisk":{"P2":13}}') === 0 && censusBlockingGaps('{"executableGapRisk":{}}') === 0
+    && censusBlockingGaps("{}") === null && censusBlockingGaps("") === null && censusBlockingGaps('{"executableGapRisk":{"P0":"none"}}') === null && censusBlockingGaps('{"executableGapRisk":[1]}') === null)
   const blocking = CODE_GAPS.filter((g) => g.priority !== "P2")
-  console.log(`\n    SCENARIOS: 6 executed (S1–S6) — ${executed} EXEC steps (SIMULATED) + ${cited} CITE steps · CODE GAPS: ${CODE_GAPS.length} (${blocking.length} P0/P1)`)
-  console.log(`    VERDICT THE IN-REPO EVIDENCE SUPPORTS: ${blocking.length ? "ENGINEERING BLOCKED — CODE GAPS REMAIN" : "ENGINEERING READY — OWNER ACTIONS REMAIN"} (CONTROLLED PRODUCTION VERIFIED is never reachable from this file)`)
+  const blocked = blocking.length > 0 || censusGaps !== 0
+  console.log(`\n    SCENARIOS: 6 executed (S1–S6) — ${executed} EXEC steps (SIMULATED) + ${cited} CITE steps · CODE GAPS: ${CODE_GAPS.length} listed (${blocking.length} P0/P1) + ${censusGaps ?? "UNREADABLE"} measured by the census`)
+  console.log(`    VERDICT THE IN-REPO EVIDENCE SUPPORTS: ${blocked ? "ENGINEERING BLOCKED — CODE GAPS REMAIN" : "ENGINEERING READY — OWNER ACTIONS REMAIN"} (CONTROLLED PRODUCTION VERIFIED is never reachable from this file)`)
   console.log(`\nRESULT: ${pass} passed, ${fail} failed`)
   if (fail) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }
 }).catch((e) => { console.error(e); process.exit(1) })

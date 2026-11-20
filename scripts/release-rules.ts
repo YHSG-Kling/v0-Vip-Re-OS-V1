@@ -271,3 +271,32 @@ export function listingMediaPoliciesResolved(ownerSqlDoc: string): boolean {
   const sec = ownerSqlDoc.split(/^### /m).find((s) => /^M\.1\.\s/.test(s)) ?? ""
   return /^- Status:\s*RESOLVED\b[^\n]*\d{4}-\d{2}-\d{2}[^\n]*\b3\b[^\n]*RESTRICTIVE/m.test(sec)
 }
+
+/**
+ * WAVE 155 (convergence) — THE ARBITRATION CENSUS FEEDS THE LAUNCH VERDICT BY MEASUREMENT, NOT BY A TYPED LIST. Directive §L3 reads
+ * ENGINEERING BLOCKED "if P0/P1 executable paths … remain unfinished". Until this rule existed the only carrier of that fact was a
+ * hand-written entry in the e2e canary's CODE_GAPS list, with its numbers typed into prose: deleting the entry would have moved the
+ * verdict whether or not the census agreed. The census writes its own checked-in summary (`scripts/os-coverage-ledger.ts --write`),
+ * `test:os-coverage-ledger` fails when that file is not the rendering of the code, and both verdict readers
+ * (scripts/wave155-e2e-canaries.ts section G, scripts/production-readiness-guard.ts L3) now count its P0 + P1 EXECUTABLE_GAP rows.
+ * ONE rule for both readers — never a copy.
+ */
+export const ARBITRATION_SUMMARY = "docs/architecture/os-arbitration-gap-groups.json"
+/**
+ * PURE — the P0 + P1 EXECUTABLE_GAP rows a census summary reports. `null` when the summary cannot be parsed, carries no risk map, or
+ * carries a count that is not a non-negative integer: the caller MUST treat null as blocking (a census nobody could read is not a
+ * census that found nothing — CLAUDE.md §2, a broken finder and a clean tree both report zero).
+ */
+export function censusBlockingGaps(json: string): number | null {
+  let risk: unknown
+  try { risk = (JSON.parse(json) as { executableGapRisk?: unknown }).executableGapRisk } catch { return null }
+  if (!risk || typeof risk !== "object" || Array.isArray(risk)) return null
+  let total = 0
+  for (const k of ["P0", "P1"]) {
+    const v = (risk as Record<string, unknown>)[k]
+    if (v === undefined) continue
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0) return null
+    total += v
+  }
+  return total
+}

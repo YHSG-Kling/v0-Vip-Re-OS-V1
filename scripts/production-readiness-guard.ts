@@ -76,7 +76,7 @@ import { WEBHOOK_CONTRACT, type WebhookContractEntry } from "../lib/providers/we
 import { classifyProxyPath } from "../app/constants/auth"
 import { TENANT_POLICY_SETTINGS_KEYS } from "../lib/kernel/tenant-policy"
 import { claimOf } from "./migration-status"
-import { readDeploymentFacts, deployBuildOpen, installParityOpen, installOf, lockDrift, readReleaseEvidence, deriveO3, o3FullOpen, listingMediaPoliciesResolved } from "./release-rules"
+import { readDeploymentFacts, deployBuildOpen, installParityOpen, installOf, lockDrift, readReleaseEvidence, deriveO3, o3FullOpen, listingMediaPoliciesResolved, ARBITRATION_SUMMARY, censusBlockingGaps } from "./release-rules"
 import { providerOfferVerdict, DEFAULT_ESIGN_PROVIDER } from "../lib/integrations/providers/catalog"
 
 const ROOT = process.cwd()
@@ -2635,8 +2635,19 @@ check(`L3 the simulation exists, is registered and chained (test:wave155-e2e-can
   e2eSrc155.length > 0 && !!pkg.scripts["test:wave155-e2e-canaries"] && /npm run test:wave155-e2e-canaries(\s|$)/.test(pkg.scripts.guard ?? "") && /CODE_GAPS/.test(stripComments(e2eSrc155)))
 check("L3 POSITIVE CONTROL — the gap reader counts a P0 and a P1 entry, skips a P2 entry and an entry inside a comment",
   JSON.stringify(codeGapIds155(`const G = [{ id: "GAP-A", priority: "P0" }, { id: "GAP-B", priority: "P1" }, { id: "GAP-C", priority: "P2" }]\n// { id: "GAP-D", priority: "P0" }\n`)) === JSON.stringify(["GAP-A", "GAP-B"]))
-const verdict155 = launchVerdict155({ simulationGreen: true, codeGapsP0P1: gaps155.length, gates: LAUNCH_GATES_155 })
-console.log(`    WAVE 155 VERDICT (directive §L3): ${verdict155} — ${gaps155.length} P0/P1 code gap(s), ${external155.length} launch gate(s) EXTERNAL`)
+// THE CENSUS, MEASURED (wave 155 convergence): the listed gaps are no longer the only carrier. The arbitration census's checked-in
+// summary is counted by the ONE shared rule (scripts/release-rules.ts censusBlockingGaps); a summary nobody can read counts as ONE
+// blocking gap, never as none. The canary's verdict line and this one therefore cannot disagree with the census.
+const censusGaps155 = censusBlockingGaps(existsSync(join(ROOT, ARBITRATION_SUMMARY)) ? read(ARBITRATION_SUMMARY) : "")
+check(`L3 the arbitration census feeds the verdict by measurement — P0 + P1 executable gaps in ${ARBITRATION_SUMMARY}: ${censusGaps155 ?? "UNREADABLE"} (derived, never pinned), and the canary reads the same rule`,
+  censusGaps155 !== null && /censusBlockingGaps\(/.test(stripComments(e2eSrc155)) && /from "\.\/release-rules"/.test(e2eSrc155))
+check("L3 CONTROL — a census P0 or P1 blocks the verdict with every gate evidenced and no listed gap; an unreadable census blocks too; P2 alone does not",
+  launchVerdict155({ simulationGreen: true, codeGapsP0P1: 0 + (censusBlockingGaps('{"executableGapRisk":{"P1":1}}') ?? 1), gates: allEvidenced155 }) === "ENGINEERING BLOCKED — CODE GAPS REMAIN"
+  && launchVerdict155({ simulationGreen: true, codeGapsP0P1: 0 + (censusBlockingGaps("not json") ?? 1), gates: allEvidenced155 }) === "ENGINEERING BLOCKED — CODE GAPS REMAIN"
+  && launchVerdict155({ simulationGreen: true, codeGapsP0P1: 0 + (censusBlockingGaps('{"executableGapRisk":{"P2":13}}') ?? 1), gates: allEvidenced155 }) === "CONTROLLED PRODUCTION VERIFIED")
+const codeGaps155 = gaps155.length + (censusGaps155 ?? 1)
+const verdict155 = launchVerdict155({ simulationGreen: true, codeGapsP0P1: codeGaps155, gates: LAUNCH_GATES_155 })
+console.log(`    WAVE 155 VERDICT (directive §L3): ${verdict155} — ${gaps155.length} listed + ${censusGaps155 ?? "UNREADABLE"} census-measured P0/P1 code gap(s), ${external155.length} launch gate(s) EXTERNAL`)
 
 console.log(`\nRELEASE GATE: ${certified.length}/${RELEASE_GATES.length} certified, ${external.length} external-verdict, ${notCertified.length} not certified${notCertified.length ? ` — ${notCertified.map((v) => v.gate).join(", ")}` : ""}`)
 console.log(`WAVE 142 GATE: ${certified142.length}/${WAVE142_GATES.length} certified, ${notCertified142.length} not certified${notCertified142.length ? ` — ${notCertified142.map((v) => v.gate).join(", ")}` : ""}`)
