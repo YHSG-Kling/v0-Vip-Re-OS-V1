@@ -34,6 +34,10 @@ function shouldFilterByUser(role: string): boolean {
 
 // Generate AI Content Ideas based on trends and persona
 export async function generateContentIdeas(persona?: string, _userId?: string, _userRole?: string) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
@@ -122,7 +126,8 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
     return { success: false, error: "Failed to generate ideas" }
   }
   }
-  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.idea.generate", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
+  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.idea.generate", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, ledgered).then(async (r) => (await import("@/lib/kernel/action-ledger")).resultFamily(r as Awaited<ReturnType<typeof ledgered>>))
+  })())
 }
 
 // Research Keywords for SEO

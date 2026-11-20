@@ -684,6 +684,24 @@ export function ledgerSessionAction<T>(ctx: ActionContext, run: () => Promise<T>
   return withActionLedger<T | { success: boolean; error?: string }>(call, run, { settle: settleToolResult, replay: toolReplay }, opts)
 }
 
+/**
+ * THE RESULT FAMILY OF A WRAPPED ACTION — an identity at run time; it only restores what the compiler knew before the wrap.
+ *
+ * An action's returns used to be object literals in ONE function, and the compiler unions those as a family: a field one
+ * return lacks reads as `undefined` on it, so a caller may write `result.copy` or `result.error` without narrowing. A wrapped
+ * body is a separate function and the refusal `{ success, error? }` is a declared type, so (a) every success shape is a
+ * subtype of the refusal and the export's inferred return type COLLAPSES to the refusal — `result.copy` stops existing — and
+ * (b) members from two scopes no longer share their fields. The first whole-project type-check after the receipt lanes merged
+ * found 59 such errors in 20 callers. An export whose callers read its result fields returns
+ * `resultFamily(await ledgerSessionAction(…))`: every member of the union gets the family's other LITERAL keys as absent.
+ * Arrays, primitives and index signatures pass through untouched. Not a second wrapper: it claims, runs and settles nothing.
+ */
+type FamilyKeysOf<W> = W extends readonly unknown[] ? never : W extends object ? { [K in keyof W]-?: K extends string ? (string extends K ? never : K) : never }[keyof W] : never
+export type ResultFamily<U, W = U> = U extends readonly unknown[] ? U : U extends object ? U & { [K in Exclude<FamilyKeysOf<W>, keyof U>]?: undefined } : U
+export function resultFamily<T>(result: T): ResultFamily<T> {
+  return result as ResultFamily<T>
+}
+
 /** The typed feedback a refused tool call returns to its caller (the model / the speaker): never a silent drop, never a 500. */
 export interface SinkRefusal {
   success: false

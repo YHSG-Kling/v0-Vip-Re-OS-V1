@@ -227,7 +227,8 @@ export async function inviteFarmContacts(params: {
   }
 
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-  return ledgerSessionAction({ brokerageId: auth.brokerageId, action: "open_house.invitation.stage", actor: { type: "user", userId: auth.userId }, subject: { type: "open_house_event", id: params.eventId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { channel: params.channel, staged: invitationRows.length } }, async () => {
+  const { resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "open_house.invitation.stage", actor: { type: "user", userId: auth.userId }, subject: { type: "open_house_event", id: params.eventId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { channel: params.channel, staged: invitationRows.length } }, async () => {
   const { error: invErr } = await supabase
     .from("open_house_invitations")
     .upsert(invitationRows, { onConflict: "event_id,contact_id,channel", ignoreDuplicates: true })
@@ -271,7 +272,7 @@ export async function inviteFarmContacts(params: {
 
   revalidatePath(`/dashboard/listings/${params.listingId}/open-house`)
   return { success: true, invited: invitationRows.length }
-  })
+  }))
 }
 
 // ─── TAB 1 — UPDATE RSVP ─────────────────────────────────────────────────────

@@ -597,7 +597,8 @@ export async function generateSellerPortalLink(params: {
     return { success: false, error: "Forbidden" }
   }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "offer.seller_link.issue", actor: { type: "user", userId: auth.userId }, subject: { type: "listing", id: listingId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async () => {
+  const { resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "offer.seller_link.issue", actor: { type: "user", userId: auth.userId }, subject: { type: "listing", id: listingId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
   const supabase = createServiceClient()
 
@@ -641,7 +642,7 @@ export async function generateSellerPortalLink(params: {
 
   const url = `${process.env.NEXT_PUBLIC_APP_URL}/seller/offers/${listingId}?token=${token}`
   return { success: true, url, expires_at: expiresAt }
-  })
+  }))
 }
 
 // ── RECORD SELLER VIEW ────────────────────────────────────────────────────────

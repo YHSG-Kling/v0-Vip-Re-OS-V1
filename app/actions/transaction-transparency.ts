@@ -11,10 +11,15 @@ export async function logTransactionDelay(params: {
   impactDays: number
   notifyClient?: boolean
 }) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   const supabase = await createClient()
   const { brokerageId, agentId, userId, isAuthenticated } = await getAgentContext()
   if (!isAuthenticated || !brokerageId) return { success: false, error: "Unauthorized" }
-  return ledgered({ userId, brokerageId, agentId }, { action: "transaction.delay.log", subject: { type: "transaction", id: params.transactionId }, riskClass: params.notifyClient ? "COMMUNICATION" : "LOW_RISK_WRITE", detail: { impact_days: params.impactDays, notify_client: params.notifyClient ?? false } }, async () => {
+  const { resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgered({ userId, brokerageId, agentId }, { action: "transaction.delay.log", subject: { type: "transaction", id: params.transactionId }, riskClass: params.notifyClient ? "COMMUNICATION" : "LOW_RISK_WRITE", detail: { impact_days: params.impactDays, notify_client: params.notifyClient ?? false } }, async () => {
 
   const { data, error } = await supabase
     .from("timeline_transparency")
@@ -61,7 +66,8 @@ export async function logTransactionDelay(params: {
   }
 
   return { success: true, delay: data }
-  })
+  }))
+  })())
 }
 
 export async function getTransactionDelays(transactionId: string) {

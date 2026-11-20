@@ -750,6 +750,10 @@ export async function getListingPacketStatus(listingId: string) {
 // =====================================================
 
 export async function aiPacketQualityCheck(packetId: string) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   if (!isValidUUID(packetId)) {
     return { success: false, error: "Invalid packet ID" }
   }
@@ -757,7 +761,8 @@ export async function aiPacketQualityCheck(packetId: string) {
   // Auth gate — burns paid AI inference
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
-  return ledgered(auth, { action: "listing.packet.quality_check", subject: { type: "listing_packet_job", id: packetId }, riskClass: "LOW_RISK_WRITE" }, async () => {
+  const { resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgered(auth, { action: "listing.packet.quality_check", subject: { type: "listing_packet_job", id: packetId }, riskClass: "LOW_RISK_WRITE" }, async () => {
 
   const supabase = await createClient()
 
@@ -827,7 +832,8 @@ Return JSON:
     console.error("AI packet quality check error:", error)
     return handleError(error, "aiPacketQualityCheck")
   }
-  })
+  }))
+  })())
 }
 
 // =====================================================

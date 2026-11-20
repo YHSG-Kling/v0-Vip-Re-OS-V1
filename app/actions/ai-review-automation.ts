@@ -261,6 +261,10 @@ export async function aiGenerateReviewRequest(params: {
   platform: "google" | "zillow" | "realtor" | "facebook" | "yelp"
   channel: "email" | "text" | "in_person"
 }) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   if (!isValidUUID(params.transactionId) || !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid IDs" }
   }
@@ -296,7 +300,8 @@ export async function aiGenerateReviewRequest(params: {
     return handleError(error, "aiGenerateReviewRequest")
   }
   })
-  return "data" in lr ? lr : { success: false, error: lr.error ?? "This draft was not recorded — nothing was saved" }
+  return (await import("@/lib/kernel/action-ledger")).resultFamily("data" in lr ? lr : { success: false, error: lr.error ?? "This draft was not recorded — nothing was saved" })
+  })())
 }
 
 // ============================================================================

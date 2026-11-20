@@ -81,9 +81,10 @@ export async function monitorTRIDCompliance(transactionId: string) {
   const { getAgentContext } = await import("@/lib/identity/get-agent-context")
   const session = await getAgentContext()
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-  return await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.trid.monitor", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
+  const { resultFamily } = await import("@/lib/kernel/action-ledger")
+  return resultFamily(await ledgerSessionAction({ brokerageId: session.brokerageId ?? "", action: "compliance.trid.monitor", actor: { type: "user", userId: session.userId || null, agentId: session.agentId ?? null }, subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
   return monitorTRIDComplianceService(transactionId)
-  })
+  }))
 }
 
 // TOMBSTONE (§1, lane E2 2026-08-28) — the `applyDocumentRetention` action

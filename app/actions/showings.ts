@@ -69,6 +69,10 @@ export async function requestShowing(data: {
  */
 caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: string | null },
 ) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   try {
     if (caller && typeof caller.client?.from !== "function") {
       return { success: false, error: "Invalid caller client" }
@@ -146,7 +150,8 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
 
     // WAVE 155 (lane 155R12): receipt — actor = the session user (or the sessionless lane's verified actor); tenant = the contact's,
     // read under that caller's client above. No actor → no receipt row (runs exactly as before).
-    return await withReceipt({ brokerageId: authUserId ? brokerageId : null, userId: authUserId ?? "", action: "buyer.showing_request.create", subject: { type: "contact", id: data.contactId }, riskClass: "COMMUNICATION", detail: { source: data.source ?? null, listing_id: data.listingId ?? null, options: data.preferredDates.length } }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await withReceipt({ brokerageId: authUserId ? brokerageId : null, userId: authUserId ?? "", action: "buyer.showing_request.create", subject: { type: "contact", id: data.contactId }, riskClass: "COMMUNICATION", detail: { source: data.source ?? null, listing_id: data.listingId ?? null, options: data.preferredDates.length } }, async () => {
     // Build a readable message from preferred dates and notes
     const datesText = data.preferredDates
       .map((d, i) => `Option ${i + 1}: ${d.date} at ${d.time}`)
@@ -385,10 +390,11 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
     revalidatePath(`/crm/contacts/${data.contactId}`)
 
     return { success: true, data: showing }
-    }, (error) => ({ success: false as const, error, data: undefined }))
+    }, (error) => ({ success: false as const, error, data: undefined })))
   } catch (error: any) {
     return { success: false, error: error.message }
   }
+  })())
 }
 
 /**

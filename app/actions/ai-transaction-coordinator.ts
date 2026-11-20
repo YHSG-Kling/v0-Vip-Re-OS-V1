@@ -143,7 +143,8 @@ export async function analyzeTransactionHealth(params: {
     const scope = await scopeTransaction(params.transactionId)
     if (!scope.ok) return { success: false, error: scope.error }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    return await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "transaction.health.analyze", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: scope.brokerageId ?? "", action: "transaction.health.analyze", actor: { type: "user", userId: scope.userId ?? null, agentId: scope.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -300,7 +301,7 @@ Analyze for:
 
     revalidatePath(`/transactions/${params.transactionId}`)
     return { success: true, analysis }
-    })
+    }))
   } catch (error) {
     console.error("[AI Transaction Coordinator] Error:", error)
     return handleError(error, "analyzeTransactionHealth")
@@ -947,7 +948,8 @@ export async function monitorTransactionRisks(agentId: string) {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "transaction.risks.monitor", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "agents", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "transaction.risks.monitor", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "agents", id: agentId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
 
     const supabase = await createClient()
 
@@ -1036,7 +1038,7 @@ Identify:
       scannedCount: transactions.length,
       appliedCount,
     }
-    })
+    }))
   } catch (error) {
     return handleError(error, "monitorTransactionRisks")
   }

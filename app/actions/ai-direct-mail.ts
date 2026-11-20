@@ -150,7 +150,8 @@ export async function aiWritePostcardCopy(params: {
     if (!tenant.ok) return { success: false, error: tenant.error }
     if (params.agentId !== tenant.userId) return { success: false, error: "Forbidden: you can only write copy as yourself." }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    return await ledgerSessionAction({ brokerageId: tenant.brokerageId, action: "direct_mail.copy.generate", actor: { type: "user", userId: tenant.userId }, subject: { type: "ai_tool_usage", ref: "direct_mail_copy" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: tenant.brokerageId, action: "direct_mail.copy.generate", actor: { type: "user", userId: tenant.userId }, subject: { type: "ai_tool_usage", ref: "direct_mail_copy" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     params = { ...params, brokerageId: tenant.brokerageId }
 
     // ── Kernel Gate: canAccessFeature ──
@@ -236,7 +237,7 @@ Create the primary copy plus 2 variants with different approaches.`,
     await incrementFeatureUsage(params.agentId, "direct_mail")
 
     return { success: true, copy, brandVoiceApplied: true }
-    })
+    }))
   } catch (error) {
     console.error("[AI Direct Mail] Copywriter error:", error)
     return handleError(error, "aiWritePostcardCopy")
@@ -258,7 +259,8 @@ export async function aiSuggestDesign(params: {
     // caller got the model call booked to nobody. Refused BEFORE the model runs.
     if (!spendActor.brokerageId) return { success: false, error: "Unauthorized" }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    return await ledgerSessionAction({ brokerageId: spendActor.brokerageId, action: "direct_mail.design.generate", actor: { type: "user", userId: spendActor.userId ?? null }, subject: { type: "ai_tool_usage", ref: "direct_mail_design" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: spendActor.brokerageId, action: "direct_mail.design.generate", actor: { type: "user", userId: spendActor.userId ?? null }, subject: { type: "ai_tool_usage", ref: "direct_mail_design" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, async () => {
     const { object: design } = await generateObjectRouted({
       ...spendActor,
       feature: "direct_mail_design",
@@ -306,7 +308,7 @@ Consider:
     })
 
     return { success: true, design }
-    })
+    }))
   } catch (error) {
     console.error("[AI Direct Mail] Design suggestion error:", error)
     return handleError(error, "aiSuggestDesign")
@@ -350,7 +352,8 @@ export async function aiSelectTargetAudience(params: {
     // caller got the model call booked to nobody. Refused BEFORE the model runs.
     if (!spendActor.brokerageId) return { success: false, error: "Unauthorized" }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    return await ledgerSessionAction({ brokerageId: spendActor.brokerageId, action: "direct_mail.audience.generate", actor: { type: "user", userId: spendActor.userId ?? null }, subject: { type: "ai_tool_usage", ref: "direct_mail_targeting" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: params.agentId } }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: spendActor.brokerageId, action: "direct_mail.audience.generate", actor: { type: "user", userId: spendActor.userId ?? null }, subject: { type: "ai_tool_usage", ref: "direct_mail_targeting" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { agent_id: params.agentId } }, async () => {
     const { object: targeting } = await generateObjectRouted({
       ...spendActor,
       feature: "direct_mail_targeting",
@@ -400,7 +403,7 @@ Recommend targeting strategy with reasoning.`,
     })
 
     return { success: true, targeting }
-    })
+    }))
   } catch (error) {
     console.error("[AI Direct Mail] Targeting error:", error)
     return handleError(error, "aiSelectTargetAudience")
@@ -442,7 +445,8 @@ export async function aiPredictCampaignROI(params: {
     // caller got the model call booked to nobody. Refused BEFORE the model runs.
     if (!spendActor.brokerageId) return { success: false, error: "Unauthorized" }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    return await ledgerSessionAction({ brokerageId: spendActor.brokerageId, action: "direct_mail.roi_forecast.generate", actor: { type: "user", userId: spendActor.userId ?? null }, subject: { type: "ai_tool_usage", ref: "direct_mail_roi_forecast" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { quantity: params.quantity, mail_type: params.mailType } }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: spendActor.brokerageId, action: "direct_mail.roi_forecast.generate", actor: { type: "user", userId: spendActor.userId ?? null }, subject: { type: "ai_tool_usage", ref: "direct_mail_roi_forecast" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { quantity: params.quantity, mail_type: params.mailType } }, async () => {
     const { object: prediction } = await generateObjectRouted({
       ...spendActor,
       feature: "direct_mail_roi_forecast",
@@ -488,7 +492,7 @@ Calculate expected outcomes and ROI.`,
         perPiece: totalCost / params.quantity,
       },
     }
-    })
+    }))
   } catch (error) {
     console.error("[AI Direct Mail] ROI prediction error:", error)
     return handleError(error, "aiPredictCampaignROI")
@@ -595,7 +599,8 @@ export async function createDirectMailCampaign(params: {
     }
     const brokerageId = actor.brokerageId
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    return await ledgerSessionAction({ brokerageId: brokerageId, action: "direct_mail.campaign.create", actor: { type: "user", userId: actor.userId }, subject: { type: "direct_mail_campaign", ref: "new" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { piece_type: params.pieceType ?? "postcard" } }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: brokerageId, action: "direct_mail.campaign.create", actor: { type: "user", userId: actor.userId }, subject: { type: "direct_mail_campaign", ref: "new" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { piece_type: params.pieceType ?? "postcard" } }, async () => {
     // users.id: the gate, the usage counter and created_by (FK users).
     const actorUserId = actor.userId
     // agents.id: direct_mail_campaigns.agent_id and qr_codes.agent_id (FK agents),
@@ -635,7 +640,7 @@ export async function createDirectMailCampaign(params: {
       qrSlug: qr?.slug ?? null,
       pieceType,
     }
-    })
+    }))
   } catch (error) {
     console.error("[AI Direct Mail] Create campaign error:", error)
     return handleError(error, "createDirectMailCampaign")
@@ -713,7 +718,8 @@ export async function validateMailingList(params: {
 
     const listCtx = await getAgentContext()
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    return await ledgerSessionAction({ brokerageId: listCtx.brokerageId ?? "", action: "direct_mail.recipients.add", actor: { type: "user", userId: listCtx.userId || null, agentId: listCtx.agentId ?? null }, subject: { type: "direct_mail_campaign", id: isValidUUID(params.campaignId) ? params.campaignId : null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { valid: validCount, invalid: invalidCount } }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await ledgerSessionAction({ brokerageId: listCtx.brokerageId ?? "", action: "direct_mail.recipients.add", actor: { type: "user", userId: listCtx.userId || null, agentId: listCtx.agentId ?? null }, subject: { type: "direct_mail_campaign", id: isValidUUID(params.campaignId) ? params.campaignId : null }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { valid: validCount, invalid: invalidCount } }, async () => {
     if (validRecipients.length > 0) {
       const recipientResult = await addRecipients({
         campaignId: params.campaignId,
@@ -737,7 +743,7 @@ export async function validateMailingList(params: {
         results: validationResults,
       },
     }
-    })
+    }))
   } catch (error) {
     console.error("[AI Direct Mail] Validation error:", error)
     return handleError(error, "validateMailingList")

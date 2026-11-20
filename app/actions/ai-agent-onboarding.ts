@@ -199,6 +199,10 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
  * Generate personalized onboarding welcome message
  */
 export async function generateWelcomeMessage(agentId: string) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   if (!isValidUUID(agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
@@ -303,7 +307,8 @@ The message should:
     return handleError(error, "generateWelcomeMessage")
   }
   })
-  return "welcomeMessage" in lr ? lr : { success: false, error: lr.error ?? "This action was not recorded — nothing was generated" }
+  return (await import("@/lib/kernel/action-ledger")).resultFamily("welcomeMessage" in lr ? lr : { success: false, error: lr.error ?? "This action was not recorded — nothing was generated" })
+  })())
 }
 
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `askOnboardingBuddy` deleted.

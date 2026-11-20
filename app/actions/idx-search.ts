@@ -252,12 +252,17 @@ export async function saveProperty(data: {
     brokerageId?: string
   }
 }) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   try {
     const supabase = await createClient()
     // WAVE 155 (lane 155R12): the receipt's actor + tenant come from the contact gate (the session). This export has no gate of its
     // own (it writes under RLS); a caller the gate does not admit still writes exactly as before — unrecorded, never an invented tenant.
     const { requireContactAccess: receiptGate } = await import("@/lib/portal/require-contact-access"); const rcpt = await receiptGate(data.contactId)
-    return await withReceipt({ brokerageId: rcpt.ok ? rcpt.brokerageId : null, userId: rcpt.ok ? rcpt.userId : "", action: "buyer.saved_property.save", subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", detail: { mls_number: data.mlsNumber ?? null, listing_id: data.listingId ?? null } }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await withReceipt({ brokerageId: rcpt.ok ? rcpt.brokerageId : null, userId: rcpt.ok ? rcpt.userId : "", action: "buyer.saved_property.save", subject: { type: "contact", id: data.contactId }, riskClass: "LOW_RISK_WRITE", detail: { mls_number: data.mlsNumber ?? null, listing_id: data.listingId ?? null } }, async () => {
 
     // Dedup — same contact already saved this property?
     const dedupQuery = supabase
@@ -348,11 +353,12 @@ export async function saveProperty(data: {
     // app/components/portal/PersonaPropertiesDashboard.tsx (Saved tab).
     revalidatePath(`/portal/${data.contactId}/properties`)
     return { success: true, message: "Property saved successfully" }
-    }, (error) => ({ success: false as const, error }))
+    }, (error) => ({ success: false as const, error })))
   } catch (error: any) {
     console.error("Save property error:", error)
     return { success: false, error: error.message }
   }
+  })())
 }
 
 // Remove saved property

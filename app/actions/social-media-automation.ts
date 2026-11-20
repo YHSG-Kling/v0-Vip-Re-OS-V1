@@ -482,6 +482,10 @@ export async function scheduleSocialPost(params: {
  * Approve a social post
  */
 export async function approveSocialPost(postId: string, _approverUserId?: string) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   if (!isValidUUID(postId)) {
     return { success: false, error: "Invalid post ID" }
   }
@@ -576,11 +580,12 @@ export async function approveSocialPost(postId: string, _approverUserId?: string
     revalidatePath("/dashboard/social")
     return { success: true, data: post }
   }
-  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "social.post.approve", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "social_post", id: postId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, ledgered).then((r) => r as Awaited<ReturnType<typeof ledgered>>)
+  return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "social.post.approve", actor: { type: "user", userId: auth.userId, agentId: auth.agentId }, subject: { type: "social_post", id: postId }, riskClass: "COMMUNICATION", reasonCode: "HUMAN_REQUESTED" }, ledgered).then(async (r) => (await import("@/lib/kernel/action-ledger")).resultFamily(r as Awaited<ReturnType<typeof ledgered>>))
   } catch (error: any) {
     console.error("[social-media-automation] Approve post error:", error)
     return { success: false, error: error.message || "Failed to approve post" }
   }
+  })())
 }
 
 /**

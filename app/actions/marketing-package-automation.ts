@@ -612,6 +612,10 @@ export async function getSyndicationStatus(transactionId: string) {
 // ============================================
 
 export async function generateListingOptimizations(transactionId: string) {
+  // The result family is restored at the export's boundary (lib/kernel/action-ledger.ts resultFamily): this export's refusals come
+  // from two scopes, so its callers could no longer read the fields of its result. The body below is unchanged.
+  const { resultFamily: familyOf } = await import("@/lib/kernel/action-ledger")
+  return familyOf(await (async () => {
   if (!isValidUUID(transactionId)) {
     return { success: false, error: "Invalid transaction ID" }
   }
@@ -625,7 +629,8 @@ export async function generateListingOptimizations(transactionId: string) {
   const supabase = await createClient()
 
   try {
-    return await withReceipt({ brokerageId: auth.brokerageId, userId: auth.userId, agentId: auth.agentId, action: "marketing.listing_optimization.generate", subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
+    const { resultFamily } = await import("@/lib/kernel/action-ledger")
+    return resultFamily(await withReceipt({ brokerageId: auth.brokerageId, userId: auth.userId, agentId: auth.agentId, action: "marketing.listing_optimization.generate", subject: { type: "transaction", id: transactionId }, riskClass: "LOW_RISK_WRITE" }, async () => {
     // Only `listings` is embedded here, and only because a real FK joins the
     // two. Two other tables were embedded off this same select in the past —
     // listing photos and AI content — and neither has a foreign key to a
@@ -730,11 +735,12 @@ OUTPUT FORMAT (JSON):
 
     revalidatePath("/dashboard/listings")
     return { success: true, data: optimizations }
-    }, (error) => ({ success: false as const, error }))
+    }, (error) => ({ success: false as const, error })))
   } catch (error) {
     console.error("Generate optimizations error:", error)
     return { success: false, error: "Failed to generate optimizations" }
   }
+  })())
 }
 
 function parseAIJsonResponse(text: string): any {
