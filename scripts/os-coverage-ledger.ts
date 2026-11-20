@@ -1161,7 +1161,8 @@ function finish(d: Draft): Row {
   const domain_b2 = domainOf(planes, text)
   const risk_class = riskOf(text, effects.egress, d.toolRisk, consequential, domain_b2)
   const cls = classify({ id: d.id, kind: d.kind, state: st, missing, consequential, worker: !!d.worker, effects, auditOnlyEmits: d.auditOnlyEmits, elsewhere: d.elsewhere,
-    providerRoute: d.kind !== "server_action" && PROVIDER_ROUTES.has("/" + d.entry.split(":")[0].replace(/^app\//, "").replace(/\/route\.tsx?$/, "")), ownerHeldWhy: heldWhy })
+    providerRoute: d.kind !== "server_action" && PROVIDER_ROUTES.has("/" + d.entry.split(":")[0].replace(/^app\//, "").replace(/\/route\.tsx?$/, "")),
+    externalCaller: d.kind === "server_action" ? null : verifiedExternalCaller("/" + d.entry.split(":")[0].replace(/^app\//, "").replace(/\/route\.tsx?$/, ""), readRepoFile), ownerHeldWhy: heldWhy })
   const sourceTrust = f.session ? "authenticated session" : d.kind === "webhook" || (d.kind === "http" && decision?.startsWith("provider of record")) ? (f.signature ? "provider (signature-verified)" : "provider (UNVERIFIED)")
     : d.kind === "cron" ? "scheduler (CRON_SECRET)" : ["kernel_event", "orchestrator_event", "manager_signal"].includes(d.kind) ? "internal bus (trusted emitter)"
     : decision?.startsWith("internal caller") ? "platform internal caller (fail-closed shared secret)"
@@ -1209,6 +1210,30 @@ function finish(d: Draft): Row {
 }
 /** Callback routes the providers deliver to, read from lib/providers/channel-provider-matrix.ts PROVIDER_RECEIVE_TRUTH (census). */
 let PROVIDER_ROUTES = new Set<string>()
+/**
+ * ROUTES WHOSE CALLER LIVES OUTSIDE THE APP BY DESIGN (wave 155 convergence; the evidence is lane 155R29's, route by route).
+ * "Unreferenced is not dead" (CLAUDE.md §1) left these UNKNOWN forever: no in-repo fetch can exist for a relay process, a
+ * provider's console registration, or a tenant's own integration. Each entry names the caller CLASS and CITES where the
+ * repository itself records that caller. Every citation is VERIFIED on each run — the cited file must exist and still carry the
+ * needle — and an entry whose evidence no longer verifies reads UNKNOWN again (fail closed), never SIMULATED_ONLY.
+ * This is not a list of exemptions: only the TRIGGER is accepted as external. A route here that is also missing its owner, its
+ * decision, its evidence or its read-back stays an open row exactly as before (the rule requires `missing` to be the trigger alone).
+ * /api/errors/collect is deliberately ABSENT: no caller is recorded anywhere in the repository, so it stays "unresolved".
+ */
+const EXTERNAL_CALLERS: Record<string, { who: string; cites: ReadonlyArray<readonly [file: string, needle: string]> }> = {
+  "/api/voice/relay/plan": { who: "the relay companion process (tools/relay-companion), deployed beside the telephony provider and holding the relay secret", cites: [["tools/relay-companion/server.mjs", "/api/voice/relay/plan"], ["docs/PHONE-SYSTEM-SETUP.md", "/api/voice/relay/plan"]] },
+  "/api/workflow/trigger": { who: "inbound provider webhooks registered in the provider's own console with the workflow webhook secret or a tenant signing secret", cites: [["docs/SERVICE-SECRETS.md", "/api/workflow/trigger"]] },
+  "/api/agentic-os/mcp": { who: "a tenant's external MCP client holding a tenant-minted agent credential", cites: [["docs/SERVICE-SECRETS.md", "/api/agentic-os/mcp"], ["lib/agentic-os/mcp-tools.ts", "app/api/agentic-os/mcp/route.ts"]] },
+  "/api/v1/[resource]": { who: "a tenant's own integration holding a tenant-minted API credential (the endpoint is published on the developers settings screen)", cites: [["app/settings/developers/developers-client.tsx", "/api/v1/"]] },
+}
+/** PURE — the caller class of a route when EVERY citation verifies through `readFile` (null for an absent file); otherwise null. */
+function verifiedExternalCaller(route: string, readFile: (f: string) => string | null, table: typeof EXTERNAL_CALLERS = EXTERNAL_CALLERS): string | null {
+  const e = Object.prototype.hasOwnProperty.call(table, route) ? table[route] : null
+  if (!e || e.cites.length === 0) return null
+  for (const [file, needle] of e.cites) { const text = readFile(file); if (text === null || !needle || !text.includes(needle)) return null }
+  return `${e.who} — recorded in ${e.cites.map(([f]) => f).join(", ")}`
+}
+const readRepoFile = (f: string): string | null => { try { return readFileSync(join(ROOT, f), "utf8") } catch { return null } }
 let SQL_TEXT: string | undefined
 const TRIGGER_WHY: Record<TriggerKind, string> = {
   cron: "not in CRON_REGISTRY and no in-repo self-call", kernel_event: "no emission site (an emit call carrying KernelEvent.X, its literal or a named constant)",
@@ -1262,7 +1287,7 @@ function effectsOf(d: Draft): Row["path_effects"] {
   return { writes: [...o.writes.keys()], egress: [...new Set(o.egress.map((e) => e.token))], spend: o.budget ? `${o.budget.token} @ ${o.budget.at}` : null }
 }
 interface ClassInput { id: string; kind: TriggerKind; state: State; missing: Link[]; consequential: boolean; worker: boolean; effects: Row["path_effects"]
-  auditOnlyEmits?: boolean | null; elsewhere?: string[]; providerRoute?: boolean; ownerHeldWhy?: string }
+  auditOnlyEmits?: boolean | null; elsewhere?: string[]; providerRoute?: boolean; externalCaller?: string | null; ownerHeldWhy?: string }
 /** PURE — the classification rule (directive B1). Returns null for a working row (nothing to classify). */
 function classify(x: ClassInput): { c: Classification; ev: string } | null {
   if (x.state === "working") return null
@@ -1281,6 +1306,7 @@ function classify(x: ClassInput): { c: Classification; ev: string } | null {
       return { c: "LEGACY_ORPHAN", ev: "no importer, no same-module caller, the export name in no other runtime file; a server action has no cron, webhook, self-call or provider-console surface (it is reachable only through a bundled import)" }
     }
     if (x.providerRoute && x.missing.length === 1) return { c: "SIMULATED_ONLY", ev: "fully linked in code; the only absent link is the provider's own callback registration (PROVIDER_RECEIVE_TRUTH route), which is a console setting, not code" }
+    if (x.externalCaller && x.missing.length === 1 && (x.kind === "http" || x.kind === "webhook")) return { c: "SIMULATED_ONLY", ev: `fully linked in code; its caller is outside the app by design: ${x.externalCaller}. In-repo proof drives the route with a constructed request; the live call needs that caller's own registration / credential` }
     return { c: "UNKNOWN", ev: `${x.kind}: the caller may be outside the repo (provider console, external client, another scheduler) — unreferenced is not dead (CLAUDE.md §1)` }
   }
   if (x.missing.includes("worker")) {
@@ -2887,6 +2913,25 @@ async function main(): Promise<void> {
     && cOf({ kind: "http", missing: ["trigger"] }) === "UNKNOWN" && cOf({ kind: "cron", missing: ["trigger"] }) === "UNKNOWN")
   check("a consumer waiting on an event nothing emits is an EXECUTABLE_GAP (reads with no writer), not an orphan", cOf({ kind: "orchestrator_event", missing: ["trigger"], elsewhere: [] }) === "EXECUTABLE_GAP")
   check("SIMULATED_ONLY: only a provider-callback route whose ONE absent link is its trigger — NEGATIVE: the same route also missing evidence is not", cOf({ kind: "http", missing: ["trigger"], providerRoute: true }) === "SIMULATED_ONLY" && cOf({ kind: "http", missing: ["trigger", "evidence"], providerRoute: true }) === "UNKNOWN")
+  {
+    // WAVE 155 (convergence) — a route whose caller is outside the app by design. The rule accepts ONLY the trigger as external and ONLY
+    // on verified evidence; these controls hold both halves and the fail-closed read.
+    const fx = { "/api/x": { who: "an outside caller", cites: [["docs/x.md", "/api/x"], ["tools/x.mjs", "fetch(`${APP}/api/x`"]] as const } }
+    const files: Record<string, string> = { "docs/x.md": "POST /api/x is called by …", "tools/x.mjs": "await fetch(`${APP}/api/x`, {})" }
+    const rd = (m: Record<string, string>) => (f: string) => (Object.prototype.hasOwnProperty.call(m, f) ? m[f] : null)
+    check("EXTERNAL CALLER — POSITIVE: every citation verified → the caller class is returned and a route missing ONLY its trigger is SIMULATED_ONLY",
+      !!verifiedExternalCaller("/api/x", rd(files), fx) && cOf({ kind: "http", missing: ["trigger"], externalCaller: "an outside caller" }) === "SIMULATED_ONLY")
+    check("EXTERNAL CALLER — NEGATIVE: a cited file that is gone, a needle that is gone, an unlisted route, or an entry with no citation verifies NOTHING (fail closed)",
+      verifiedExternalCaller("/api/x", rd({ "docs/x.md": files["docs/x.md"] }), fx) === null && verifiedExternalCaller("/api/x", rd({ ...files, "tools/x.mjs": "await fetch(other)" }), fx) === null
+      && verifiedExternalCaller("/api/y", rd(files), fx) === null && verifiedExternalCaller("/api/x", rd(files), { "/api/x": { who: "nobody", cites: [] } }) === null)
+    check("EXTERNAL CALLER — NEGATIVE: the same route also missing its evidence, owner or decision is NOT accepted; a server action is never accepted; no evidence → UNKNOWN",
+      cOf({ kind: "http", missing: ["trigger", "evidence"], externalCaller: "x" }) === "UNKNOWN" && cOf({ kind: "http", missing: ["trigger", "owner"], externalCaller: "x" }) === "UNKNOWN"
+      && cOf({ kind: "server_action", missing: ["trigger"], elsewhere: [], externalCaller: "x" }) === "LEGACY_ORPHAN" && cOf({ kind: "http", missing: ["trigger"], externalCaller: null }) === "UNKNOWN")
+    const liveVerified = Object.keys(EXTERNAL_CALLERS).filter((r) => verifiedExternalCaller(r, readRepoFile) !== null)
+    check(`EXTERNAL CALLER — LIVE: every listed route's evidence verifies in this tree (${liveVerified.length}/${Object.keys(EXTERNAL_CALLERS).length}), each is a route file that exists, and /api/errors/collect (no recorded caller) is not listed`,
+      liveVerified.length === Object.keys(EXTERNAL_CALLERS).length && Object.keys(EXTERNAL_CALLERS).every((r) => existsSync(join(ROOT, "app", r.slice(1), "route.ts"))) && !("/api/errors/collect" in EXTERNAL_CALLERS),
+      Object.keys(EXTERNAL_CALLERS).filter((r) => !liveVerified.includes(r)).join(", "))
+  }
   {
     // RESTATED (wave 155, lane 155R16 — lane 155R6 request 2, CLAUDE.md §2 / lesson 7): `const e = KernelEvent.X` used by a later
     // audit-only door call now RIDES that call (true; it read null before — the shape the census could not see).
