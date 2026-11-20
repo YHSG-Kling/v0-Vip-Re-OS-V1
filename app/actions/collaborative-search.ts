@@ -585,7 +585,7 @@ export async function trackPortalActivity(
     metadata: activityData || {},
     property_id: propertyId ?? null,
   }
-  const { error } = await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.portal_activity.track", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { activity_type: activityType } }, async () => { const r = await svc.from("client_portal_activity").insert(activityRow); return { success: !r.error, error: r.error } }, (message) => ({ success: false, error: { message } }))
+  const { error } = await withReceipt({ brokerageId: access.brokerageId, userId: access.userId, action: "buyer.portal_activity.track", subject: { type: "contact", id: contactId }, riskClass: "LOW_RISK_WRITE", detail: { activity_type: activityType } }, async () => { const { error: insertError } = await svc.from("client_portal_activity").insert(activityRow); return { success: !insertError, error: insertError } }, (message) => ({ success: false, error: { message } }))
 
   if (error) {
     console.error(`[collaborative-search] activity '${activityType}' NOT recorded:`, error.message)

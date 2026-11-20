@@ -2022,7 +2022,10 @@ const W25_TRIGGER_COVERED: ReadonlyArray<{ file: string; sites: number; client: 
   { file: "lib/buyer-lifecycle/extensions/sla-metadata.ts", sites: 3, client: "service", why: "entity_type 'contact' + entity_id" },
   { file: "lib/buyer-lifecycle/financial-verification.ts", sites: 1, client: "service", why: "entity_type 'contact' + entity_id" },
   { file: "lib/buyer-search/search-logger.ts", sites: 2, client: "service", why: "entity_type 'contact' + entity_id" },
-  { file: "lib/property-matching/match-logger.ts", sites: 2, client: "service", why: "entity_type 'listing' + entity_id" },
+  // `lib/property-matching/match-logger.ts` (2 sites) WAS HERE AND IS DELIBERATELY GONE (wave 155, lane 155R19, verified
+  // live 2026-11-20): `entity_type 'listing'` never made the trigger resolve for these rows — every buyer-match signal was
+  // REFUSED 23502 and nobody read it. Both writers now stamp `brokerage_id: tenant.brokerageId` (a REQUIRED tenant from the
+  // gated caller), so they are not trigger-covered; they moved to W25_REPAIRED (E1) with floor 2.
   // ── SESSION CLIENT: the anchor is readable by THIS caller, established here. ─
   {
     file: "app/actions/cma-presentation/presentation-assembler.ts",
@@ -2048,12 +2051,9 @@ const W25_TRIGGER_COVERED: ReadonlyArray<{ file: string; sites: number; client: 
     client: "session",
     why: "the anchor is the CALLER: `agent_user_id: user.id`, and `users` RLS admits `id = auth.uid()` unconditionally",
   },
-  {
-    file: "lib/approval-workflow/approval-logger.ts",
-    sites: 1,
-    client: "session",
-    why: "the anchor is the caller's OWN `agents.id` (`getSessionAgentId` refuses without one), and `agents_read_own` admits `user_id = auth.uid()`",
-  },
+  // `lib/approval-workflow/approval-logger.ts` (1 site) WAS HERE AND IS DELIBERATELY GONE (wave 155, lanes 155R19/155R17):
+  // the approval signal was refused 23502 too; the row now stamps `brokerage_id: params.brokerage_id` (REQUIRED, refused
+  // when absent) and the module lost its "use server" doors. Not trigger-covered any more — moved to W25_REPAIRED (E1), floor 1.
   {
     file: "lib/content-generation/generation-logger.ts",
     sites: 2,
@@ -2084,6 +2084,9 @@ const W25_REPAIRED: ReadonlyArray<{ file: string; floor: number }> = [
   { file: "app/api/cron/referral-asks/route.ts", floor: 1 },
   { file: "app/actions/cma-presentation/net-sheet-calculator.ts", floor: 2 },
   { file: "app/actions/ai-voice-transcription.ts", floor: 1 },
+  // wave 155 (lane 155R19): left the trigger-covered list because they now stamp — E1 holds them stamped from here on.
+  { file: "lib/property-matching/match-logger.ts", floor: 2 },
+  { file: "lib/approval-workflow/approval-logger.ts", floor: 1 },
 ]
 
 /**

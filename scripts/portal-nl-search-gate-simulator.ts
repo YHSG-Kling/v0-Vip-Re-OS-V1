@@ -548,9 +548,21 @@ A.push({
     const binding = gateBinding(body)
     if (!binding) return { ok: false, detail: "no binding is taken from an awaited authorization call" }
     const used = [...body.matchAll(new RegExp(`\\b${binding}\\s*\\.\\s*(\\w+)`, "g"))].map((m) => m[1])
-    const forbidden = used.filter((p) => /^(userId|user_id)$/.test(p))
-    if (forbidden.length) return { ok: false, detail: `the action reads ${binding}.${forbidden[0]} — a users.id in a tree where the columns nearby are agents-class` }
-    if (!used.includes("brokerageId")) return { ok: false, detail: "the action never uses the tenant the gate resolved — the gate's answer is being discarded" }
+    // RULE (restated wave 155): the gate's users.id may fill ONLY a slot named as users-class —
+    // the action-ledger receipt's `actor: { type: "user", userId: … }` (lane 155 receipts; the
+    // receipt's actor IS a users id, agents.id and users.id being disjoint). Every other read of
+    // it — an agent_id, an owner column, an agentId — is the defect this assertion exists for.
+    const userIdReads = [...body.matchAll(new RegExp(`\\b${binding}\\s*\\.\\s*(userId|user_id)\\b`, "g"))].length
+    const usersClassSlots = [...body.matchAll(new RegExp(`\\buserId\\s*:\\s*${binding}\\s*\\.\\s*userId\\b`, "g"))].length
+    if (userIdReads > usersClassSlots) return { ok: false, detail: `the action reads ${binding}.userId outside a users-class slot — a users.id in a tree where the columns nearby are agents-class` }
+    // The receipt's descriptor (`ledgerSessionAction({ brokerageId: access.brokerageId, … })`)
+    // stamps the tenant on the EVIDENCE row; it bounds no read. The gate's answer counts as
+    // used only where the action's own data path uses it — stricter than before the receipt,
+    // so a dropped tenant filter still flips this (control [2]).
+    const ledgerAt = body.search(/\bledgerSessionAction\s*\(\s*\{/)
+    const ledgerClose = ledgerAt === -1 ? -1 : matchBrace(body, body.indexOf("{", ledgerAt))
+    const dataPath = ledgerAt === -1 || ledgerClose === -1 ? body : body.slice(0, ledgerAt) + body.slice(ledgerClose + 1)
+    if (!new RegExp(`\\b${binding}\\s*\\.\\s*brokerageId\\b`).test(dataPath)) return { ok: false, detail: "the action never uses the tenant the gate resolved outside its receipt — the gate's answer is being discarded" }
     return { ok: true, detail: `${binding}.{${[...new Set(used)].join(", ")}}` }
   },
   breaks: [
@@ -558,6 +570,12 @@ A.push({
       file: F.action,
       find: `    agent_id: (contact as { agent_id: string | null }).agent_id,`,
       replace: `    agent_id: access.userId,`,
+    },
+    {
+      // The receipt actor's slot re-labelled agents-class while still fed the gate's users.id.
+      file: F.action,
+      find: `actor: { type: "user", userId: access.userId }`,
+      replace: `actor: { type: "user", userId: access.userId, agentId: access.userId }`,
     },
     {
       // The gate's tenant discarded: the privileged read stops being bounded by

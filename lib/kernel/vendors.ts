@@ -260,12 +260,12 @@ async function resolveAgentId(
   agentUserId: string,
   brokerageId: string
 ): Promise<string | null> {
-  const { data } = await supabase
-    .from("agents")
-    .select("id")
+  const { data, error } = await supabase
+    .from("agents").select("id")
     .eq("user_id", agentUserId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
+  if (error) throw new Error(`Could not verify the assigning agent: ${error.message}`) // a refused read is not "no agent row" (§3)
   return data?.id ?? null
 }
 
@@ -677,8 +677,10 @@ export async function assignVendorToTransaction(
     return { success: false, error: "Vendor not found or not accessible to this brokerage." }
   }
 
-  // Resolve agents.id from users.id for the FK constraint
-  const agentId = await resolveAgentId(supabase, agentUserId, brokerageId)
+  // Resolve agents.id from users.id for the FK constraint. NULL is a real answer (staff with no agents row assign vendors too);
+  // a REFUSED read is not — the assignment is refused instead of being written with nobody named as its assigner.
+  let agentId: string | null
+  try { agentId = await resolveAgentId(supabase, agentUserId, brokerageId) } catch (e) { return { success: false, error: e instanceof Error ? e.message : "Could not verify the assigning agent." } }
 
   const { data: assignment, error: assignError } = await supabase
     .from("vendor_assignments")

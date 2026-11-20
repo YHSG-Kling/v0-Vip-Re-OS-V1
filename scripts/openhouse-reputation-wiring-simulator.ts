@@ -303,8 +303,27 @@ function staticLayer(): void {
       /event\.brokerage_id\s*!==\s*ctx\.brokerageId/.test(scope))
     check("OH-SCOPE-ERR", "scope resolver destructures the event read's error",
       !hasBareDataDestructure(scope) && /eventErr/.test(scope))
-    check("OH-IDENTITY", "scope resolver takes agents.id from the identity helper, never users.id",
-      /ctx\.agentId/.test(scope) && !/ctx\.userId/.test(scope))
+    // RULE: every agents-class slot of the scope is filled from ctx.agentId, and a
+    // users.id (ctx.userId) may sit ONLY in a slot NAMED as users-class (`…UserId`).
+    // Wave 155 (lane 155R12) added `actingUserId: ctx.userId` as the action-ledger
+    // receipt's actor — agents.id and users.id are disjoint, so the receipt needs
+    // the users id under its own name. The earlier form ("ctx.userId appears
+    // nowhere") pinned that waypoint; the rule it protects is the class of each slot.
+    const ohIdentityHolds = (src: string): boolean => {
+      const userIdBindings = [...src.matchAll(/(\w+)\s*:\s*ctx\.userId\b/g)]
+      const bareUses = (src.match(/ctx\.userId\b/g) ?? []).length
+      return /actingAgentId:\s*ctx\.agentId\b/.test(src) &&
+        bareUses === userIdBindings.length &&
+        userIdBindings.every((m) => /UserId$/.test(m[1]))
+    }
+    check("OH-IDENTITY", "scope resolver takes agents.id from the identity helper; a users.id appears only in a users-class slot",
+      ohIdentityHolds(scope))
+    // [control] the restated finder still sees the defect it was written for: a
+    // users.id in the agents-class actor slot, or in the assigned-agent fallback.
+    check("OH-IDENTITY-CONTROL", "[control] a users.id substituted into an agents-class slot is still caught",
+      scope.length > 0 &&
+      !ohIdentityHolds(scope.replace(/actingAgentId:\s*ctx\.agentId/, "actingAgentId: ctx.userId")) &&
+      !ohIdentityHolds(scope.replace(/\?\?\s*ctx\.agentId/, "?? ctx.userId")))
 
     const complete = functionBody(S.ohAction, "completeOpenHouseCheckInAction")
     check("OH-NORMALISE", "composite check-in normalises the incoming agent_id class",

@@ -802,11 +802,34 @@ console.log("\n═══ 3c. The CMA generated, and left no trace ═══")
   const cma = code("app/actions/cma-presentation/cma-generator.ts")
   ok("the CMA activity writes use the RESOLVED agents id, so the timeline the\n    OS claims to keep actually receives the rows",
     /agent_id: cmaAgentRecordId,/.test(cma) && !/agent_id: input\.agentId,/.test(cma))
+  // RESTATED (wave 155, lane 155S3 put generateCMA behind requireCallerWithAgent): the agents.id
+  // and the tenant are now the SESSION's and are handed to emitCMAFailed by the gated caller, so
+  // the per-path users→agents lookups (failAgentRow, the users brokerage read keyed on
+  // input.agentId) these two checks pinned are gone — stricter, not looser. The RULE they
+  // protect: the failure row carries the SAME resolved agents id as the other two, and a
+  // users-class id never reaches activities.agent_id; the users id is used only to recognise
+  // the caller, and the tenant is never read from an argument.
+  const cmaFailureCarriesAgentsId = (src: string): boolean => {
+    const calls = [...src.matchAll(/emitCMAFailed\(([^)]*)\)/g)].map((m) => m[1].split(",").map((a) => a.trim()))
+    const callSites = calls.filter((a) => a.length === 5 && !a.some((x) => x.includes(":")))  // calls, not the typed declaration
+    return /const cmaAgentRecordId = caller\.agentId\b/.test(src) &&
+      callSites.length >= 2 && callSites.every((a) => a[3] === "cmaAgentRecordId") &&
+      /async function emitCMAFailed\([\s\S]*?agentRecordId: string[\s\S]*?agent_id: agentRecordId,/.test(src)
+  }
   ok("...and the failure event does the same, rather than logging a failure that\n    itself fails to record",
-    /const \{ data: failAgentRow \}/.test(cma) && /agent_id: \(failAgentRow as \{ id\?: string \} \| null\)\?\.id \?\? null,/.test(cma))
-  ok("...while the brokerage lookups keep the USERS id, which is the class that\n    query needs — the split is deliberate, not a blanket conversion",
-    /\.from\("users"\)[\s\S]{0,120}\.eq\("id", input\.agentId\)/.test(cma) &&
-    /\.eq\("id", agentId\)/.test(cma))
+    cmaFailureCarriesAgentsId(cma))
+  ok("(control) the failure-path finder still sees a users id handed to the failure event",
+    !cmaFailureCarriesAgentsId(cma.replace(/(emitCMAFailed\([^,]+,[^,]+,[^,]+,\s*)cmaAgentRecordId/, "$1caller.userId")))
+  const cmaClassSplitHolds = (src: string): boolean =>
+    !/agent_id:\s*(input\.agentId|caller\.userId)\b/.test(src) &&
+    (src.match(/caller\.userId\b/g) ?? []).length === (src.match(/input\.agentId !== caller\.userId\b/g) ?? []).length &&
+    /decideClaimedTenant\(\{\s*actingBrokerageId: caller\.brokerageId/.test(src) &&
+    !/\.from\("users"\)[\s\S]{0,120}\.eq\("id", input\.agentId\)[\s\S]{0,200}brokerage_id/.test(src) &&
+    (src.match(/brokerage_id: brokerageId,/g) ?? []).length >= 3
+  ok("...while the users id is used only to recognise the caller and the tenant is\n    the session's — the split is deliberate, not a blanket conversion",
+    cmaClassSplitHolds(cma))
+  ok("(control) the split finder still sees a users id written into activities.agent_id",
+    !cmaClassSplitHolds(cma.replace(/agent_id: cmaAgentRecordId,/, "agent_id: caller.userId,")))
 }
 
 console.log("\n═══ 3d. The CDA: four defects, one class confusion ═══")

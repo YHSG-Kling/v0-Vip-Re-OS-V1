@@ -145,6 +145,27 @@ function policyLayer(): void {
 type Row = Record<string, any>
 interface Fault { table: string; op: "select" | "insert"; message: string }
 
+/** Every query any fake client has settled, across scenarios — the drain below watches it. */
+let fakeActivity = 0
+
+/**
+ * DRAIN before a scenario swaps the stubs. An action may launch fire-and-forget work
+ * (offer-strategy-producer's `void emitKernelEvent(…)` → processKernelEvent → the staff bell)
+ * that resolves AFTER the action returns. The stubs are global, so un-drained work from one
+ * scenario lands in the NEXT scenario's store and is counted against it. Wave 155 (lane 155R20)
+ * put the autonomy gate and the reaction receipt ahead of the bell, which moved that leak from a
+ * harmless store into the happy-path one; the assertions were right, the isolation was not.
+ * Waits until no fake client has settled a query for three consecutive windows (bounded).
+ */
+async function quiesce(): Promise<void> {
+  let quiet = 0
+  for (let i = 0; i < 200 && quiet < 3; i++) {
+    const before = fakeActivity
+    await new Promise((r) => setTimeout(r, 15))
+    quiet = fakeActivity === before ? quiet + 1 : 0
+  }
+}
+
 function makeFakeSupabase(store: Record<string, Row[]>, faults: Fault[] = []) {
   const log: Array<{ table: string; op: string; filters: Array<[string, any]>; payload?: Row }> = []
   const faultFor = (table: string, op: "select" | "insert") => faults.find(f => f.table === table && f.op === op)
@@ -159,6 +180,7 @@ function makeFakeSupabase(store: Record<string, Row[]>, faults: Fault[] = []) {
       filters.every(([c, v]) => r[c] === v) && ins.every(([c, vs]) => vs.includes(r[c])))
 
     const settle = (kind: "one" | "list") => {
+      fakeActivity++
       if (mode === "insert") {
         const f = faultFor(table, "insert")
         log.push({ table, op: "insert", filters, payload: payload ?? undefined })
@@ -217,7 +239,8 @@ function seedStore(opts: { agentId?: string | null } = {}): Record<string, Row[]
 }
 
 /** Install the stub implementations the intercepted modules dispatch to. */
-function installStubs(client: any, access: any) {
+async function installStubs(client: any, access: any) {
+  await quiesce()
   ;(globalThis as any).__PSV = {
     createServiceClient: () => client,
     requireContactAccess: async () => access,
@@ -244,7 +267,7 @@ async function behaviourLayer() {
   console.log("\n[behaviour · V1 — every row the actions write is inside the agent's read policy]")
   {
     const { client, log } = makeFakeSupabase(seedStore())
-    installStubs(client, GRANTED)
+    await installStubs(client, GRANTED)
     await tools.signalAffordabilityChecked({ contactId: BUYER, propertyId: PROPERTY, propertyAddress: ADDRESS, price: 600000, monthlyEstimate: 3900, verdict: "within_reach" })
     await tools.requestComparisonReview({ contactId: BUYER, addresses: [ADDRESS, "9 Elm Street"] })
     await tools.requestPreApprovalRefresh({ contactId: BUYER, propertyId: PROPERTY, propertyAddress: ADDRESS })
@@ -265,7 +288,7 @@ async function behaviourLayer() {
   // ── a buyer whose contact has NO agent still produces a row staff can reach ──
   {
     const { client, log } = makeFakeSupabase(seedStore({ agentId: null }))
-    installStubs(client, GRANTED)
+    await installStubs(client, GRANTED)
     await tools.signalAffordabilityChecked({ contactId: BUYER, propertyId: PROPERTY, propertyAddress: ADDRESS, price: 600000, monthlyEstimate: 3900, verdict: "within_reach" })
     const rows = activityWrites(log)
     check("an unassigned buyer's row still carries the tenant, so the BROKERAGE can still see it",
@@ -286,7 +309,7 @@ async function behaviourLayer() {
   const refusedResults: Array<{ name: string; r: any }> = []
   for (const n of notifiers) {
     const { client } = makeFakeSupabase(seedStore(), NOTIFY_REFUSED)
-    installStubs(client, GRANTED)
+    await installStubs(client, GRANTED)
     refusedResults.push({ name: n.name, r: await n.run(tools) })
   }
   check("a REFUSED notification write is never reported to the buyer as success",
@@ -302,7 +325,7 @@ async function behaviourLayer() {
   const noAgentResults: Array<{ name: string; r: any }> = []
   for (const n of notifiers) {
     const { client } = makeFakeSupabase(seedStore({ agentId: null }))
-    installStubs(client, GRANTED)
+    await installStubs(client, GRANTED)
     noAgentResults.push({ name: n.name, r: await n.run(tools) })
   }
   check("a buyer with NO assigned agent is told so, never told an agent was notified",
@@ -311,7 +334,7 @@ async function behaviourLayer() {
 
   {
     const { client, log } = makeFakeSupabase(seedStore())
-    installStubs(client, GRANTED)
+    await installStubs(client, GRANTED)
     const r: any = await tools.signalAffordabilityChecked({ contactId: BUYER, propertyId: PROPERTY, propertyAddress: ADDRESS, price: 600000, monthlyEstimate: 3900, verdict: "within_reach" })
     check("success is reported only when a notification really was written",
       r.success === true && r.notified === true && notifyWrites(log).length === 1)
@@ -323,7 +346,7 @@ async function behaviourLayer() {
   console.log("\n[behaviour · the research tool — the analysis is the deliverable, and it says so]")
   {
     const { client, log } = makeFakeSupabase(seedStore(), [{ table: "client_portal_activity", op: "insert", message: "permission denied" }])
-    installStubs(client, GRANTED)
+    await installStubs(client, GRANTED)
     const r: any = await tools.analyzeAddressForBuyer({ contactId: BUYER, address: "77 Cedar Court, Raleigh NC" })
     check("a refused ledger write does NOT take the analysis away from the buyer",
       r.success === true && !!r.analysis)
@@ -334,7 +357,7 @@ async function behaviourLayer() {
   }
   {
     const { client, log } = makeFakeSupabase(seedStore())
-    installStubs(client, GRANTED)
+    await installStubs(client, GRANTED)
     const r: any = await tools.analyzeAddressForBuyer({ contactId: BUYER, address: "77 Cedar Court, Raleigh NC" })
     check("on the happy path it reports the ledger honestly too",
       r.success === true && r.recorded === true && activityWrites(log).length === 1)
@@ -349,7 +372,7 @@ async function behaviourLayer() {
   const refusedGate: Array<{ name: string; r: any; writes: number }> = []
   for (const n of allFive) {
     const { client, log } = makeFakeSupabase(seedStore())
-    installStubs(client, REFUSED)
+    await installStubs(client, REFUSED)
     const r = await n.run(tools)
     refusedGate.push({ name: n.name, r, writes: log.filter(q => q.op === "insert").length })
   }
@@ -625,6 +648,8 @@ const CONTROLS: Control[] = [
     file: "app/actions/buyer-offer-tools.ts",
     find: `    const access = await requireContactAccess(input.contactId)
     if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.comparison_review.request", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { homes: homes.length, caller_is_contact: access.isContactSelf } }, async () => {
 
     const svc = createServiceClient()
     const resolved = await resolveContactAgent(svc, input.contactId, access.brokerageId)
@@ -638,7 +663,10 @@ const CONTROLS: Control[] = [
     const recorded = await recordPortalActivity(svc, {
       contactId: input.contactId, brokerageId: contact.brokerage_id, agentId: contact.agent_id,
       activityType: "comparison_review_requested",`,
-    replace: `    const svc = createServiceClient()
+    replace: `    // (control) no gate ⇒ no session tenant ⇒ no receipt; a pass-through keeps the closure balanced
+    return await (async (run: () => Promise<any>) => run())(async () => {
+
+    const svc = createServiceClient()
     const resolved = await resolveContactAgent(svc, input.contactId)
     if (!resolved.ok) {
       return resolved.reason === "unreadable"
@@ -657,6 +685,8 @@ const CONTROLS: Control[] = [
     file: "app/actions/buyer-offer-tools.ts",
     find: `    const access = await requireContactAccess(input.contactId)
     if (!access.ok) return { success: false, error: accessRefusal(access.error) }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    return await ledgerSessionAction({ brokerageId: access.brokerageId, action: "portal.address_analysis.request", actor: { type: "user", userId: access.userId }, subject: { type: "contact", id: input.contactId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { caller_is_contact: access.isContactSelf } }, async () => {
 
     const svc = createServiceClient()
     const resolved = await resolveContactAgent(svc, input.contactId, access.brokerageId)
@@ -666,7 +696,10 @@ const CONTROLS: Control[] = [
         : { success: false, error: "We couldn't find your client record — reply to your agent's last message and they'll pick this up." }
     }
     const brokerageId = resolved.contact.brokerage_id`,
-    replace: `    const svc = createServiceClient()
+    replace: `    // (control) no gate ⇒ no session tenant ⇒ no receipt; a pass-through keeps the closure balanced
+    return await (async (run: () => Promise<any>) => run())(async () => {
+
+    const svc = createServiceClient()
     const resolved = await resolveContactAgent(svc, input.contactId)
     if (!resolved.ok) {
       return resolved.reason === "unreadable"

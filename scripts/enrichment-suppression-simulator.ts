@@ -493,8 +493,32 @@ function leadSourceLayer() {
   // the same disjoint-id-space error the whole lane exists to avoid.
   check("...reading the lead id from metadata.lead_id, not from entityId",
     /LEAD_CREATE_EVENTS[\s\S]{0,900}?metadata[\s\S]{0,120}?lead_id/.test(reactor))
-  check("the lead create hook cannot fail lead creation (guarded)",
-    /queueLeadEnrichment\([\s\S]{0,400}?\}\s*catch/.test(reactor))
+  // RESTATED (wave 155, lane 155R6 wrapped the enqueue in a withActionLedger receipt): the
+  // earlier form pinned the DISTANCE (400 chars) from the call to its `} catch`. The RULE is
+  // structural: the queueLeadEnrichment call sits inside a `try { … }` whose `catch` swallows
+  // (logs, never rethrows), so a failed enqueue can never fail lead creation.
+  const enqueueIsGuarded = (src: string): boolean => {
+    const at = src.search(/queueLeadEnrichment\s*\(\s*\{/)
+    if (at === -1) return false
+    for (const t of [...src.slice(0, at).matchAll(/\btry\s*\{/g)].reverse()) {
+      const open = (t.index ?? 0) + t[0].length - 1
+      let depth = 0, close = -1
+      for (let i = open; i < src.length; i++) { if (src[i] === "{") depth++; else if (src[i] === "}") { depth--; if (depth === 0) { close = i; break } } }
+      if (close < at) continue // this try closed before the call — not the enclosing one
+      const after = /^\s*catch\s*(?:\([^)]*\))?\s*\{/.exec(src.slice(close + 1))
+      if (!after) return false
+      const cOpen = close + 1 + after[0].length - 1
+      let d = 0, cClose = -1
+      for (let i = cOpen; i < src.length; i++) { if (src[i] === "{") d++; else if (src[i] === "}") { d--; if (d === 0) { cClose = i; break } } }
+      return cClose !== -1 && !/\bthrow\b/.test(src.slice(cOpen, cClose))
+    }
+    return false
+  }
+  check("the lead create hook cannot fail lead creation (guarded)", enqueueIsGuarded(reactor))
+  check("...and that finder still sees an UNGUARDED or RETHROWING enqueue (control)",
+    !enqueueIsGuarded(reactor.replace(/(lead enrichment enqueue failed:", err\))/, "$1; throw err")) &&
+    !enqueueIsGuarded("async function hook() {\n  try { await other() } catch (e) { log(e) }\n  await queueLeadEnrichment({ leadId })\n}") &&
+    enqueueIsGuarded("async function hook() {\n  try {\n    await queueLeadEnrichment({ leadId })\n  } catch (e) { log(e) }\n}"))
 
   // EVERY DIRECTLY-HOOKED LEAD DOOR, BY NAME.
   //

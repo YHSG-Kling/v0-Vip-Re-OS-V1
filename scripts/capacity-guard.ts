@@ -190,7 +190,19 @@ console.log("\nC. contact fatigue — every outbound chokepoint consults the con
   }
   check("C1 POSITIVE CONTROL — a dispatcher body without the gate is flagged", !/deconflictGate\(\{/.test("export async function dispatchX(p) { return send(p) }"))
   const gate = fnBody(dispatch, "deconflictGate") || dispatch.slice(dispatch.indexOf("async function deconflictGate("), dispatch.indexOf("async function deconflictGate(") + 800)
-  check("C2 deconflictGate calls evaluateDeconflict and refuses on a suppression", /evaluateDeconflict\(args\)/.test(gate) && /if \(d\.allowed\) return null/.test(gate))
+  // RESTATED (wave 155, lane 155R8 names the requesting manager: `evaluateDeconflict({ ...args, requestingManager })`):
+  // the earlier form pinned the literal `evaluateDeconflict(args)`. The RULE: every argument the gate received reaches the
+  // engine (bare `args`, or `{ ...args, … }` spread FIRST so nothing the caller sent is dropped or overridden by omission),
+  // the gate passes only on `d.allowed`, and a suppression comes back as a `success: false` refusal.
+  const gateRefusesOnSuppression = (g: string): boolean =>
+    /const d = await evaluateDeconflict\(\s*(?:args|\{\s*\.\.\.args\b[^}]*\})\s*\)/.test(g) &&
+    /if \(d\.allowed\) return null/.test(g) &&
+    /success:\s*false/.test(g.slice(g.search(/if \(d\.allowed\) return null/)))
+  check("C2 deconflictGate calls evaluateDeconflict and refuses on a suppression", gateRefusesOnSuppression(gate))
+  check("C2 POSITIVE CONTROL — a gate that drops the caller's args, or never refuses, is flagged",
+    !gateRefusesOnSuppression("const d = await evaluateDeconflict({ contactId: args.contactId })\n  if (d.allowed) return null\n  return { success: false }") &&
+    !gateRefusesOnSuppression("const d = await evaluateDeconflict({ ...args })\n  if (d.allowed) return null\n  return null") &&
+    gateRefusesOnSuppression("const d = await evaluateDeconflict({ ...args, requestingManager: m })\n  if (d.allowed) return null\n  const refusal = { success: false }"))
   const phone = src("lib/voice/outbound-call-gates.ts")
   check("C3 phone: the pre-dial gate stack consults evaluateDeconflict", /evaluateDeconflict\(\{/.test(phone) && /OUTBOUND_CALL_GATES/.test(phone))
   const lifetime = src("app/api/cron/lifetime-customer-touchpoints/route.ts")

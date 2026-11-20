@@ -351,11 +351,39 @@ console.log("\n═══ 4. The sites fixed in this pass stay fixed ═══")
   ok("the reporting ctx every report action reads through no longer substitutes —\n    it produced a complete, internally consistent set of zeros: a quiet month",
     /agentId:\s*agent\?\.id \?\? "",/.test(rk))
 
+  // RE-POINTED (wave 155, lane 155B2): the copy of assignVendorToTransaction in
+  // app/actions/vendor-marketplace.ts had no caller and was retired with a tombstone naming
+  // its SURVIVOR, lib/kernel/vendors.ts assignVendorToTransaction (reached through the
+  // session-gated door app/actions/vendors-kernel.ts). The rule moves with the write: the
+  // survivor's assigned_by_agent_id is a RESOLVED agents id or NULL, never the users id.
   const vm = code(read("app/actions/vendor-marketplace.ts"))
+  const vk = code(read("lib/kernel/vendors.ts"))
+  const vendorAssignNoFallback = (kernel: string, marketplace: string): boolean => {
+    const resolver = /async function resolveAgentId\([\s\S]*?\n\}/.exec(kernel)?.[0] ?? ""
+    const cmd = /export async function assignVendorToTransaction\([\s\S]*?\n\}/.exec(kernel)?.[0] ?? ""
+    const bound = /const (\w+) = await resolveAgentId\(/.exec(cmd)?.[1]
+    return resolver.length > 0 && /return data\?\.id \?\? null/.test(resolver) && !/\?\?\s*agentUserId/.test(resolver) &&
+      !!bound && new RegExp(`assigned_by_agent_id:\\s*${bound},`).test(cmd) &&
+      !/assigned_by_agent_id:\s*[^,\n]*user/i.test(marketplace)
+  }
   ok("vendor assignment uses NULL for an absent agent, which is what the nullable\n    assigned_by_agent_id column was designed for — the users id was FK-rejected,\n    so the assignment threw for exactly the user the fallback meant to help",
-    /const agentRowId = agent\?\.id \?\? null/.test(vm))
+    vendorAssignNoFallback(vk, vm))
+  ok("(control) the vendor-assignment finder still sees the users-id fallback when it returns",
+    !vendorAssignNoFallback(vk.replace(/return data\?\.id \?\? null/, "return data?.id ?? agentUserId"), vm))
+  // The lifecycle_events metadata may name the assigning agent only by the SAME variable the row
+  // carries; the survivor names none, which cannot disagree.
+  const vendorMetadataAgrees = (kernel: string): boolean => {
+    const cmd = /export async function assignVendorToTransaction\([\s\S]*?\n\}/.exec(kernel)?.[0] ?? ""
+    const bound = /const (\w+) = await resolveAgentId\(/.exec(cmd)?.[1] ?? "\u0000"
+    const meta = /metadata:\s*\{([^}]*)\}/.exec(cmd)?.[1]
+    if (meta === undefined) return false
+    const named = [...meta.matchAll(/\b(agentId|agent_id|assignedByAgentId|assigned_by_agent_id)\s*:\s*([\w.?]+)/g)]
+    return named.every((m) => m[2] === bound) && !/\b(agentId|agent_id)\b(?!\s*:)/.test(meta.replace(new RegExp(`\\b${bound}\\b`, "g"), ""))
+  }
   ok("...and the lifecycle_events metadata reports the SAME id as the row it\n    describes, rather than disagreeing with it",
-    /assigned_by_agent_id: agentRowId,/.test(vm))
+    vendorMetadataAgrees(vk))
+  ok("(control) the metadata finder still sees a users id reported beside an agents-id row",
+    !vendorMetadataAgrees(vk.replace(/metadata:(\s*)\{ vendorId, transactionId, assignmentType,/, "metadata:$1{ agentId: agentUserId, vendorId, transactionId, assignmentType,")))
 
   const goals = code(read("app/actions/ai-agent-goals.ts"))
   // INVERTED BY m366, same reason: the count is keyed on the agents id now,

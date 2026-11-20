@@ -430,12 +430,22 @@ console.log("\n[T8 · seat reassignment, several memberships, revocation — wav
    *  assumption). Stripped source, whitespace folded. */
   const singleRowMembershipRead = (src: string) => {
     const flat = src.replace(/\s+/g, " ")
-    for (const m of flat.matchAll(/from\( ?["'`]organization_members["'`] ?\)([^;]{0,600}?)\.(maybeSingle|single)\(/g)) {
+    // The chain ENDS at the next `.from(` (wave 155): inside a Promise.all the elements are comma-separated, so `[^;]` ran
+    // from organization_members' list read straight into the NEXT element's `brokerage_settings … .maybeSingle()`
+    // (lib/kernel/approval-authority.ts loadMarketingApproverFacts) and accused a list reader of being a one-row reader.
+    for (const m of flat.matchAll(/from\( ?["'`]organization_members["'`] ?\)((?:(?!\.from\()[^;]){0,600}?)\.(maybeSingle|single)\(/g)) {
       if (!/\.eq\( ?["'`]id["'`]/.test(m[1])) return true
     }
     return false
   }
   const offenders = [...walk("lib"), ...walk("app")].filter((f) => { const s = read(f); return /organization_members/.test(s) && singleRowMembershipRead(stripComments(s)) })
+  // POSITIVE CONTROLS — the finder still sees the defect it was written for, in both shapes, and does not see a list read
+  // that merely sits beside another table's single-row read.
+  check("T8 CENSUS (control) the finder still catches a per-person maybeSingle, alone and inside a Promise.all",
+    singleRowMembershipRead(`await svc.from("organization_members").select("id").eq("brokerage_id", b).eq("user_id", u).maybeSingle()`) &&
+    singleRowMembershipRead(`await Promise.all([svc.from("teams").select("id").eq("brokerage_id", b), svc.from("organization_members").select("id").eq("user_id", u).is("revoked_at", null).single()])`) &&
+    !singleRowMembershipRead(`await Promise.all([svc.from("organization_members").select("id").eq("user_id", u).is("revoked_at", null), svc.from("brokerage_settings").select("settings").eq("brokerage_id", b).maybeSingle()])`) &&
+    !singleRowMembershipRead(`await svc.from("organization_members").select("id").eq("id", membershipId).maybeSingle()`))
   check("T8 CENSUS — no lib/ or app/ reader of organization_members reads ONE row per person (a maybeSingle / single not keyed on the row id); every per-person reader takes the list (several memberships per person is the rule)", offenders.length === 0, offenders.join(", "))
   check("T8 POSITIVE CONTROL — the census catches a per-person one-row read, ignores a list read, a by-id row read and a commented one",
     singleRowMembershipRead(`const { data } = await svc.from("organization_members").select("id").eq("brokerage_id", b).eq("user_id", u).maybeSingle()`) && !singleRowMembershipRead(`const { data } = await svc.from("organization_members").select("id").eq("user_id", u)`)

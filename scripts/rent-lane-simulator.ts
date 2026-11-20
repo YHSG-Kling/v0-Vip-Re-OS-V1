@@ -689,8 +689,26 @@ async function main(): Promise<void> {
     check("the portal asks the rent provider", /estimateMonthlyRentFromComps/.test(insights))
     check("the portal resolves its tenant from the contacts table",
       /from\("contacts"\)[\s\S]{0,80}brokerage_id/.test(insights))
+    // RESTATED (wave 155): the earlier form scanned the whole file PREFIX for `brokerageId: string`,
+    // so lane 155R12's private receipt helper (`withReceipt(rc: { brokerageId: string | null … })`,
+    // a descriptor filled from the session gate) read as a tenant argument. The RULE is about the
+    // PUBLIC doors: no exported action of this "use server" file declares a brokerageId parameter —
+    // every export is an endpoint, so this now covers all of them, not only the prefix.
+    const exportedParamLists = (src: string): string[] => {
+      const out: string[] = []
+      for (const m of src.matchAll(/export\s+async\s+function\s+\w+\s*(?:<[^>]*>)?\s*\(/g)) {
+        const open = (m.index ?? 0) + m[0].length - 1
+        let depth = 0, i = open
+        for (; i < src.length; i++) { if (src[i] === "(") depth++; else if (src[i] === ")") { depth--; if (depth === 0) break } }
+        out.push(src.slice(open, i + 1))
+      }
+      return out
+    }
+    const takesTenantArg = (src: string) => exportedParamLists(src).some((p) => /\bbrokerageId\s*\??\s*:/.test(p))
     check("the portal does not accept a brokerage id as an argument",
-      !/brokerageId\s*[?:]\s*string/.test(insights.split("async function generateInvestmentInsights")[0] ?? ""))
+      exportedParamLists(insights).length > 0 && !takesTenantArg(insights))
+    check("...and that finder still sees a tenant argument on an exported door (control)",
+      takesTenantArg(insights.replace(/export async function generateSmartInsights\s*\(/, "export async function generateSmartInsights(brokerageId: string, ")))
 
     const evaluation = code(F.evaluation)
     check("the evaluation PROMPT no longer asks for a monthly rent",

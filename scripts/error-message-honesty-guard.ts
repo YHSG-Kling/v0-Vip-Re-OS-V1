@@ -206,7 +206,7 @@ const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { ret
  * guard out of the corpus silently, which is the blind spot, not a pass.
  */
 const GUARD_RE = new RegExp(
-  String.raw`if\s*\(\s*!([A-Za-z_$][\w.$?]*)\s*\)\s*\{?[^{}]{0,200}?` +
+  String.raw`if\s*\(\s*!([A-Za-z_$][\w.$?]*)\s*\)\s*\{?(?:(?!\bif\s*\()[^{}]){0,200}?` +
   String.raw`(?:error:\s*|Error\(\s*|message:\s*)` +
   String.raw`(?:\`([^\`]{6,200})\`|"([^"]{6,200})"|'([^']{6,200})')`,
   "gs",
@@ -446,7 +446,29 @@ function ok(label: string, cond: boolean, detail?: string) {
 //   out of the corpus entirely), and no new offender surfaced in what it added.
 //
 //   = 72, measured, not chosen.
-const BASELINE = 72
+//
+// 2026-11-20, wave 155 (lane 155T1) — 72 → 70, DOWNWARD.
+//
+//   69  measured at the wave base (9d9626b9), under the 72 ceiling
+//   +4  wave-155 session gates: app/actions/ai-chat.ts updateAgentChatPreferences,
+//       ai-predictions.ts refreshStalePredictions, compliance-monitoring.ts
+//       requireSessionDeal, knowledge/search.ts regenerateEmbedding
+//   = 73, which turned this guard red.
+//   -3  a REAL BLIND SPOT, closed in GUARD_RE: the body ran past a gate whose
+//       message is not a literal (`throw new Error(identity.error)`) into the NEXT
+//       `if (…)`'s literal. ai-chat.ts:1239 (`!identity.ok` judged by
+//       `!isValidUUID`'s "Invalid agent id"), business-card-actions.ts (`!auth.ok`)
+//       and lib/kernel/video.ts (`!result.success`) were each judged by another
+//       guard's sentence. Two more hits were RE-PAIRED to the condition that owns
+//       the sentence (link-to-video `!access.ok`, multi-persona
+//       `!access.isContactSelf`) — same count, now honest about which guard it is.
+//   The three wave-155 entries that remain were READ and are consequences, not
+//   different causes: `!visibility.allowed` → "Not authorized for the lead desk"
+//   (lead visibility IS the authorization), `!data` → "Transaction not found"
+//   (`data` is the tenant-scoped transaction read), `!row` → "That article was
+//   not found" (`row` is the knowledge row being re-embedded).
+//   = 70, measured, not chosen.
+const BASELINE = 70
 
 console.log("\n═══ 1. No NEW guard blames something it did not test ═══")
 const hits = findMismatches()
@@ -566,6 +588,20 @@ console.log("\n═══ 3. And stays quiet on the honest forms it must not flag
   ok("NEGATIVE CONTROL a double-quoted message still ENDS at its own closing quote",
     extract('if (!x.ok) throw new Error("first message"); const s = "second message"')?.msg
       === "first message")
+
+  // ── A GUARD'S MESSAGE IS ITS OWN, NOT THE NEXT GUARD'S (wave 155) ─────────
+  // A gate that throws a NON-literal (`throw new Error(identity.error)`) has no
+  // sentence for this file to read. The 200-char body used to run on past it into
+  // the NEXT `if (…)`'s literal and judge the first condition by the second one's
+  // words — app/actions/ai-chat.ts paired `!identity.ok` with `!isValidUUID`'s
+  // "Invalid agent id", and the same blind spot paired three more (73 → 70, and
+  // two hits re-paired to the condition that owns them). The body now stops at the
+  // next `if (`.
+  ok("NEGATIVE CONTROL a gate with a non-literal message does not borrow the NEXT guard's literal",
+    extract('if (!identity.ok) throw new Error(identity.error)\n  const supabase = await createClient()\n  if (!isValidUUID(agentId)) throw new Error("Invalid agent id")')?.cond
+      !== "identity.ok")
+  ok("POSITIVE CONTROL …while a guard's OWN literal, after a non-if statement, is still read",
+    extract('if (!profile?.brokerage_id) {\n    console.warn(why(1))\n    throw new Error("Not authenticated")')?.msg === "Not authenticated")
 }
 
 console.log(`\n${"═".repeat(70)}`)
