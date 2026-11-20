@@ -195,43 +195,10 @@ export async function generateVideoScript(params: ContentGenerationParams & { vi
   }
 }
 
-/**
- * Generate IMAGE prompts (for external image generation tools)
- */
-export async function generateImagePrompt(params: ContentGenerationParams): Promise<ContentGenerationOutput> {
-  const prompt = buildImagePromptGenerator(params)
-
-  // WAS: feature: "content_generation_image_prompt" — not an AI_TASK_ROUTING
-  // key, so it missed the table and took AI_TASK_ROUTING["unspecified"].
-  //
-  // Keyed off the LITERAL "image_prompt" because this function hardcodes
-  // `content_type: "image_prompt"` in its own output regardless of what the
-  // caller passed — the feature must describe the work actually done.
-  // CONTENT_TYPE_FEATURE maps it to `generate_text` on purpose: this path
-  // returns a PROMPT STRING for an external image tool, it does not generate an
-  // image, so routing it to an image feature would describe work it never does.
-  const text = await runPipelineSimple(prompt, {
-    feature: contentFeatureForType("image_prompt"),
-  })
-
-  const parsed = parseImagePrompt(text)
-
-  return {
-    content_type: "image_prompt",
-    channel_intent: params.channel_intent || "visual",
-    raw_content: parsed.prompt,
-    source_inputs: {
-      custom_prompt: params.custom_prompt,
-      style: params.tone,
-    },
-    intended_audience: params.target_audience,
-    suggested_usage: "Use with DALL-E, Midjourney, or other image generation tools",
-    generated_at: new Date().toISOString(),
-    metadata: {
-      ...parsed.metadata,
-    },
-  }
-}
+// TOMBSTONE (wave 155, lane 155R20): generateImagePrompt (+ its private buildImagePromptGenerator / parseImagePrompt) DELETED.
+// Its only caller was app/actions/content-generation-engine.ts generateImage, a prompt-only public door nothing imported (retired
+// with it). Images are rendered by the survivor app/actions/generate-marketing-image.ts:98 generateMarketingImage through
+// lib/ai/image-generation.ts generateImage, which writes its own prompt. The "image_prompt" content type stays in the union.
 
 /**
  * Generate OMNIPRESENT content (one idea → many formats)
@@ -450,25 +417,6 @@ function buildVideoPrompt(params: ContentGenerationParams & { video_length_secon
   return prompt
 }
 
-function buildImagePromptGenerator(params: ContentGenerationParams): string {
-  let prompt = `Generate a detailed image prompt for AI image generation (DALL-E, Midjourney, etc.).\n\n`
-
-  if (params.custom_prompt) {
-    prompt += `CONCEPT: ${params.custom_prompt}\n\n`
-  }
-
-  prompt += `OUTPUT FORMAT (JSON):\n`
-  prompt += `{\n`
-  prompt += `  "prompt": "Detailed image generation prompt",\n`
-  prompt += `  "style": "photorealistic|illustration|modern|etc",\n`
-  prompt += `  "caption": "Social media caption for the image",\n`
-  prompt += `  "alt_text": "Accessibility description",\n`
-  prompt += `  "usage": "Suggested usage context"\n`
-  prompt += `}\n`
-
-  return prompt
-}
-
 // ============================================
 // PARSERS
 // ============================================
@@ -506,31 +454,6 @@ function parseVideoScript(text: string): { script: string; scenes?: any[] } {
   return {
     script: text,
     scenes: [], // Could parse [SCENE X] markers if needed
-  }
-}
-
-function parseImagePrompt(text: string): { prompt: string; metadata: any } {
-  try {
-    const jsonMatch = text.match(/\{[\s\S]*\}/)
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0])
-      return {
-        prompt: parsed.prompt || text,
-        metadata: {
-          style: parsed.style,
-          caption: parsed.caption,
-          alt_text: parsed.alt_text,
-          usage: parsed.usage,
-        },
-      }
-    }
-  } catch (e) {
-    // Fall through
-  }
-
-  return {
-    prompt: text,
-    metadata: {},
   }
 }
 

@@ -32,7 +32,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { checkPublicRateLimit, publicCallerIp } from "@/lib/security/public-rate-limit"
+import { checkPublicRateLimit, decidePublicDoor, publicCallerIp } from "@/lib/security/public-rate-limit"
 import {
   resolveMailUnsubscribeToken,
   applyMailUnsubscribe,
@@ -77,13 +77,6 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const ip = await publicCallerIp()
-  const verdict = checkPublicRateLimit("mail-unsub-apply", ip, APPLY_LIMIT)
-  if (!verdict.allowed) {
-    return NextResponse.json(
-      { error: "Too many attempts. Please wait a moment and try again." },
-      { status: 429, headers: { "Retry-After": String(verdict.retryAfterSeconds) } },
-    )
-  }
 
   let body: { token?: unknown; request?: unknown }
   try {
@@ -93,6 +86,31 @@ export async function POST(req: NextRequest) {
   }
 
   const token = typeof body.token === "string" ? body.token : null
+  // WAVE 155 (lane 155R20, G10) — THE DECISION, BEFORE THE WRITE (lib/security/public-rate-limit.ts decidePublicDoor): the
+  // same per-IP cap as before, FIRST (a flood never reaches the read), then the row the printed code resolves to — the right
+  // to opt out is the recipient's own, proven by that row, and the tenant is that row's. Fail closed. An unreadable read is
+  // still OUR failure (503), never "your code is invalid".
+  let unreadable = false
+  const verdict = await decidePublicDoor({
+    surface: "mail-unsub-apply",
+    callerKey: ip,
+    cap: APPLY_LIMIT,
+    optIn: async () => {
+      const r = await resolveMailUnsubscribeToken(token)
+      if (!r.ok) { unreadable = r.reason === "unreadable"; return null }
+      return { brokerageId: r.recipient.brokerageId, basis: "direct_mail_recipients — the recipient row the printed unsubscribe code resolves to" }
+    },
+  })
+  if (!verdict.allowed) {
+    if (verdict.reason === "rate_limited") {
+      return NextResponse.json(
+        { error: "Too many attempts. Please wait a moment and try again." },
+        { status: 429, headers: { "Retry-After": String(verdict.retryAfterSeconds) } },
+      )
+    }
+    if (unreadable) return NextResponse.json({ error: "We could not check that code right now. Please try again." }, { status: 503 })
+    return NextResponse.json({ error: "That code was not recognised." }, { status: 404 })
+  }
   // Anything that is not the explicit global request is the narrow one. An
   // unrecognised value must never widen a suppression the person did not ask for.
   const request: MailUnsubRequest = body.request === "all" ? "all" : "mail"

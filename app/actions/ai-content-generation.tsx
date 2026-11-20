@@ -2036,103 +2036,14 @@ function checkFairHousing(text: string): { violations: Array<{ matched: string; 
 }
 
 // ============================================
-// CONTENT REPURPOSING
+// CONTENT REPURPOSING — RETIRED (wave 155, lane 155R20; CLAUDE.md §1 case 1, a DUPLICATE)
 // ============================================
-
-export async function repurposeContent(params: { sourceContentId: string; targetFormats: string[] }) {
-  if (!isValidUUID(params.sourceContentId)) {
-    return { success: false, error: "Invalid content ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: source } = await supabase.from("ai_generated_content").select("*").eq("id", params.sourceContentId).single()
-
-    if (!source) {
-      return { success: false, error: "Content not found" }
-    }
-
-    const repurposed: any = {}
-
-    if (params.targetFormats.includes("social_posts") && source.content_type === "blog_post") {
-      repurposed.social_posts = await generateSocialFromBlog(source)
-    }
-
-    if (params.targetFormats.includes("email") && source.content_type === "blog_post") {
-      repurposed.email = await generateEmailFromBlog(source)
-    }
-
-    return { success: true, data: repurposed }
-  } catch (error) {
-    console.error("Repurpose content error:", error)
-    return { success: false, error: "Failed to repurpose content" }
-  }
-}
-
-async function generateSocialFromBlog(blogContent: any): Promise<any[]> {
-  const prompt = `Extract 5 social media posts from this blog post:
-
-BLOG TITLE: ${blogContent.title || ""}
-BLOG CONTENT: ${blogContent.content || blogContent.generated_content}
-
-Generate 5 different social posts (varying lengths and angles) suitable for Instagram/Facebook.
-
-OUTPUT FORMAT (JSON):
-{
-  "posts": [
-    {"platform": "instagram", "text": "...", "hook": "..."},
-    {"platform": "facebook", "text": "...", "hook": "..."}
-  ]
-}`
-
-  // Get agent context for AI routing
-  const agentContext = await getAgentContext()
-
-  const response = await generateAIResponse({
-    prompt,
-    metadata: {
-      userId: agentContext.userId,
-      brokerageId: agentContext.brokerageId,
-      agentId: agentContext.agentId,
-      feature: "social_post_generation",
-    },
-  })
-
-  const result = parseAIJsonResponse(response.text)
-  return result.posts || []
-}
-
-async function generateEmailFromBlog(blogContent: any): Promise<any> {
-  const prompt = `Convert this blog post into an email newsletter:
-
-BLOG TITLE: ${blogContent.title || ""}
-BLOG CONTENT: ${blogContent.content || blogContent.generated_content}
-
-Create email with subject line, preview text, and condensed body.
-
-OUTPUT FORMAT (JSON):
-{
-  "subject_line": "...",
-  "preview_text": "...",
-  "email_body": "..."
-}`
-
-  // Get agent context for AI routing
-  const agentContext = await getAgentContext()
-
-  const response = await generateAIResponse({
-    prompt,
-    metadata: {
-      userId: agentContext.userId,
-      brokerageId: agentContext.brokerageId,
-      agentId: agentContext.agentId,
-      feature: "email_generation",
-    },
-  })
-
-  return parseAIJsonResponse(response.text)
-}
+// TOMBSTONE: repurposeContent (+ its private generateSocialFromBlog / generateEmailFromBlog) DELETED → survivor
+// app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts:377 repurposeContent — the export the Repurpose Engine panel
+// (repurpose-engine-panel.tsx:90) calls. Nothing imported this one (named, dynamic, barrel or string-keyed; app, lib, scripts),
+// and as a "use server" export it was a public door that ran two paid model calls. The survivor already covers blog → social
+// posts and blog → email newsletter (and six more channels, in the agent's brand voice). Its one unique trait — loading a stored
+// ai_generated_content row by id — was NOT merged: no caller asks for it (the panel passes the source text it holds).
 
 // ============================================
 // CONTENT CALENDAR INTEGRATION

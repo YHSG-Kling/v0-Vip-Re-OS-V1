@@ -23,6 +23,9 @@
  */
 import { census } from "./os-coverage-ledger" // registers the `server-only` / service-client stubs before the imports below run
 import { memSupabase } from "./in-memory-supabase"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { stripComments, blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -229,7 +232,28 @@ async function main(): Promise<void> {
     "server_action:app/actions/vendor-portfolio.ts#addVendorPortfolioItem": { via: "read:vendor_portfolio_items" },
     "server_action:app/actions/vendor-portfolio.ts#removeVendorPortfolioItem": { via: "read:vendor_portfolio_items" },
     "server_action:app/actions/workflows.ts#logUserActivity": { via: "lane:155S3" },
+    // WAVE 155 (lane 155R20) — the 7 log-only rows lane 155R16's census correction newly exposed (compliance_events became GENERIC
+    // telemetry for ownership, so the evaluation actions lost their borrowed owner). "retired:<survivor>" = the door no longer exists.
+    "server_action:app/actions/content-compliance.ts#evaluateCompliance": { via: "domain", owner: "compliance_officer" },
+    "server_action:app/actions/content-compliance.ts#batchEvaluate": { via: "domain", owner: "compliance_officer" },
+    "server_action:app/actions/communications.ts#draftTeamAnnouncementAction": { via: "domain", owner: "recruiting_manager" },
+    "server_action:app/actions/twin-scenario.ts#simulateTwinScenario": { via: "read:brokerage_twin_snapshots" },
+    "server_action:app/actions/notification-actions.ts#markOneRead": { via: "retired:app/actions/notifications.ts:84" },
+    "server_action:app/actions/notification-actions.ts#markAllRead": { via: "retired:app/actions/notifications.ts:115" },
+    "server_action:lib/kernel/communications.ts#evaluateOutboundEligibility": { via: "retired:server-only (app/actions/inbox.ts resolves the actor from the session)" },
+    // …and three FROZEN G09 rows the same census change exposed (not lane 155R20's rows; named so the check below stays a rule):
+    "server_action:app/actions/channel-presets.ts#upsertChannelPreset": { via: "per-call", owner: undefined }, // CHANNEL_TABLE[channel]: each preset table has its own steward
+    "server_action:app/actions/podcast-generation.ts#generatePodcastScriptDraft": { via: "domain", owner: "campaign_orchestrator" }, // podcast_episodes' steward
+    "server_action:app/actions/social/generate-social-post.ts#generateContextualDraft": { via: "domain", owner: "campaign_orchestrator" }, // social_posts' steward
   }
+  // A RETIRED door stays retired: it is no longer a census row, and its file no longer exports it as a public endpoint.
+  const retired = Object.entries(G09).filter(([, d]) => d.via.startsWith("retired:"))
+  const stillRows = retired.filter(([id]) => byId.has(id)).map(([id]) => id)
+  check(`every G09 door this wave RETIRED is no longer a census row (${retired.length - stillRows.length}/${retired.length})`, stillRows.length === 0, stillRows.join(", "))
+  const exportsAsDoor = (src: string, fn: string) => { const s = stripComments(src); return /^\s*["']use server["']\s*;?\s*$/m.test(s) && new RegExp(`export\\s+async\\s+function\\s+${fn}\\b`).test(blankStrings(s)) }
+  const retiredStillDoors = retired.filter(([id]) => { const m = /^server_action:(.+)#(\w+)$/.exec(id); if (!m) return false; try { return exportsAsDoor(readFileSync(join(process.cwd(), m[1]), "utf8"), m[2]) } catch { return false } }).map(([id]) => id)
+  check("…and no retired door's file still publishes it as a \"use server\" export", retiredStillDoors.length === 0, retiredStillDoors.join(", "))
+  check("POSITIVE CONTROL: a \"use server\" file that still exports the name IS caught", exportsAsDoor(`"use server"\nexport async function markAllRead() {}\n`, "markAllRead") && !exportsAsDoor(`import "server-only"\nexport async function markAllRead() {}\n`, "markAllRead") && !exportsAsDoor(`// "use server" was here\nexport {}\n`, "markAllRead"))
   const ownerOf = (d: Disp): string | null => d.owner ?? (/^(read|log):/.test(d.via) ? TM[d.via.split(":")[1]] ?? null : null)
   const named = Object.entries(G09).filter(([, d]) => /^(read|log|domain)/.test(d.via) || (d.via === "per-call" && d.owner))
   const badOwner = named.filter(([, d]) => !ownerOf(d) || !MANAGER_KEYS.has(ownerOf(d)!)).map(([id, d]) => `${id} (${d.via})`)
@@ -239,8 +263,15 @@ async function main(): Promise<void> {
   check(`every row the census groups as G09 today has a disposition (${g09Now.length} rows; a NEW log-only path must be classified)`, unclassified.length === 0, unclassified.join(", "))
   const logWrites = Object.entries(G09).filter(([id, d]) => d.via.startsWith("log:") && byId.has(id)).filter(([id, d]) => !byId.get(id)!.path_effects.writes.includes(d.via.slice(4)))
   check("every \"log:<table>\" owner names a table the row's path REALLY writes (the census's own write list)", logWrites.length === 0, logWrites.map(([id]) => id).join(", "))
-  const disagree = Object.entries(G09).filter(([id, d]) => { const r = byId.get(id); const o = ownerOf(d); return !!r && !!o && !r.registered_manager.startsWith("unresolved") && r.registered_manager !== o })
-  check("the census never credits a G09 row to a DIFFERENT manager than the one derived here (unresolved, or exactly this owner)", disagree.length === 0, disagree.map(([id]) => `${id}: census ${byId.get(id)!.registered_manager}`).join(" | "))
+  // RESTATED TO THE RULE (wave 155, lane 155R20; CLAUDE.md §2): the derivation applies only while the path is LOG-ONLY (the rule's
+  // own precondition). A row whose census path now writes a DOMAIN table (explainCdaArithmeticAction → compliance_flags, seen once
+  // lane 155R16 followed barrels) is owned by that write's steward and has left this rule — it is printed, not compared.
+  const logOnlyPath = (r: { path_effects: { writes: string[] } }) => r.path_effects.writes.every((t) => CARRIERS.has(t) || LOGLIKE.test(t))
+  const leftRule = Object.keys(G09).filter((id) => byId.has(id) && !logOnlyPath(byId.get(id)!))
+  if (leftRule.length) console.log(`  · left the audited-read rule (now writes a domain table; owned by that write): ${leftRule.join(", ")}`)
+  const disagree = Object.entries(G09).filter(([id, d]) => { const r = byId.get(id); const o = ownerOf(d); return !!r && logOnlyPath(r) && !!o && !r.registered_manager.startsWith("unresolved") && r.registered_manager !== o })
+  check("the census never credits a LOG-ONLY G09 row to a DIFFERENT manager than the one derived here (unresolved, or exactly this owner)", disagree.length === 0, disagree.map(([id]) => `${id}: census ${byId.get(id)!.registered_manager}`).join(" | "))
+  check("CONTROL: the log-only precondition is the rule's (a carrier/log-only path is in it; a domain write is not)", logOnlyPath({ path_effects: { writes: ["notifications", "audit_log"] } }) && !logOnlyPath({ path_effects: { writes: ["compliance_flags", "agent_action_ledger"] } }))
   check("POSITIVE CONTROL: a planted log-only path still has NO census owner (the derivation is named here, not credited behind the census's back)", !!logOnly && logOnly.missing.includes("owner"))
 
   console.log(`\nRESULT: ${pass} passed, ${fail} failed`)

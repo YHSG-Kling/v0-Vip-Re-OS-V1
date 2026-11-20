@@ -51,6 +51,34 @@ async function requireSession(): Promise<{ ok: true } | { ok: false; error: stri
   return ctx.isAuthenticated ? { ok: true } : { ok: false, error: "Not authenticated" }
 }
 
+/**
+ * THE AUDIT WRITE'S DOOR (wave 155, lane 155R20, G10). NOT EXPORTED (see above). The three single-item actions below are
+ * public endpoints; their COMPUTATION is pure and stays open, but `logActivity` WRITES an activities row onto a brand
+ * template — and that write used to run for ANY caller, onto ANY tenant's template, stamped with a caller-supplied
+ * `userId`. Now the write runs only for a signed-in seat whose SESSION tenant owns the template (the template row's tenant
+ * is the claim — decideClaimedTenant, lib/platform/acting-context.ts), is stamped with the SESSION user (never the
+ * argument), and leaves ONE receipt (ledgerSessionAction). Fail closed: an unreadable or unknown template refuses.
+ */
+async function logTemplateEvaluation(
+  contentId: string,
+  action: string,
+  write: (sessionUserId: string) => Promise<{ success: boolean; error?: string }>,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return { ok: false, error: "Not authenticated" }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { resolveBrandTemplateBrokerageId } = await import("@/lib/activities/activity-tenant")
+  const { decideClaimedTenant } = await import("@/lib/platform/acting-context")
+  const owner = await resolveBrandTemplateBrokerageId(createServiceClient(), contentId)
+  if (!owner.ok || !owner.brokerageId) return { ok: false, error: "Template not found" }
+  const tenant = decideClaimedTenant({ actingBrokerageId: ctx.brokerageId, claimedBrokerageId: owner.brokerageId })
+  if (!tenant.ok) return { ok: false, error: "Not authorized for that template" }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  await ledgerSessionAction({ brokerageId: tenant.brokerageId, action, actor: { type: "user", userId: ctx.userId }, subject: { type: "brand_template", id: contentId }, riskClass: "LOW_RISK_WRITE" }, () => write(ctx.userId))
+  return { ok: true }
+}
+
 // ============================================
 // TEMPLATE CLASSIFICATION ACTIONS
 // ============================================
@@ -90,7 +118,9 @@ export async function classifyTemplateAction(
 
     // Optional: Log to activities table
     if (options?.logActivity && options.contentId) {
-      await logTemplateClassification(options.contentId, classification, options.userId)
+      const contentId = options.contentId
+      const door = await logTemplateEvaluation(contentId, "brand.template.classify", (userId) => logTemplateClassification(contentId, classification, userId))
+      if (!door.ok) return { success: false, error: door.error }
     }
 
     return { success: true, data: classification }
@@ -215,7 +245,9 @@ export async function getBrandRequirementsAction(
 
     // Optional: Log to activities table
     if (options?.logActivity && options.contentId) {
-      await logBrandRequirements(options.contentId, requirements, options.userId)
+      const contentId = options.contentId
+      const door = await logTemplateEvaluation(contentId, "brand.template.evaluate_requirements", (userId) => logBrandRequirements(contentId, requirements, userId))
+      if (!door.ok) return { success: false, error: door.error }
     }
 
     return { success: true, data: requirements }
@@ -303,7 +335,9 @@ export async function validateBrandComplianceAction(
 
     // Optional: Log to activities table
     if (options?.logActivity && options.contentId) {
-      await logBrandCompliance(options.contentId, validation, options.userId)
+      const contentId = options.contentId
+      const door = await logTemplateEvaluation(contentId, "brand.template.validate_compliance", (userId) => logBrandCompliance(contentId, validation, userId))
+      if (!door.ok) return { success: false, error: door.error }
     }
 
     return { success: true, data: validation }

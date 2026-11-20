@@ -6,7 +6,6 @@ import {
   generateTextContent,
   generateAudioScript,
   generateVideoScript,
-  generateImagePrompt,
   generateOmnipresentContent,
   generateContentVariations,
   gatherContext,
@@ -347,62 +346,12 @@ export async function generateVideo(params: {
   }
 }
 
-/**
- * Generate IMAGE prompt (for external image generation)
- */
-export async function generateImage(params: {
-  agent_id?: string // ignored — derived from session
-  channel_intent?: string
-  listing_id?: string
-  contact_id?: string
-  custom_prompt?: string
-  tone?: string
-}): Promise<ContentGenerationResult> {
-  try {
-    const auth = await resolveAuthorizedAgentId()
-    if (!auth.ok) return { success: false, error: auth.error }
-    const agentId = auth.agentId
-
-    const context = await gatherContext({
-      listing_id: params.listing_id,
-      contact_id: params.contact_id,
-    })
-
-    const enrichedPrompt = params.custom_prompt
-      ? await enrichPromptWithContext(params.custom_prompt, context)
-      : ""
-
-    const content = await generateImagePrompt({
-      content_type: "image_prompt",
-      channel_intent: params.channel_intent as any,
-      custom_prompt: enrichedPrompt || params.custom_prompt,
-      tone: params.tone,
-      listing_id: params.listing_id,
-      contact_id: params.contact_id,
-    })
-
-    const content_id = uuidv4()
-
-    await logContentGeneration({
-      // agentId is an agents.id or NULL; auth.userId is a users.id. Distinct
-      // columns, distinct FKs — never collapse them into one.
-      agent_id: agentId,
-      agent_user_id: auth.userId,
-      brokerage_id: auth.brokerageId,
-      content_output: content,
-      entity_id: content_id,
-      entity_type: "content",
-    })
-
-    return {
-      success: true,
-      content,
-      content_id,
-    }
-  } catch (error) {
-    return handleError(error, "generateImage")
-  }
-}
+// TOMBSTONE (wave 155, lane 155R20; CLAUDE.md §1 case 3 — the functionality lives elsewhere): generateImage DELETED → survivor
+// app/actions/generate-marketing-image.ts:98 generateMarketingImage — the wired image door (app/components/ai-image/
+// generate-image-button.tsx), which builds its own prompt and RENDERS the image through lib/ai/image-generation.ts generateImage
+// (spend attributed, logo composited). This export only returned a PROMPT STRING for an external tool, nothing imported it
+// (named, dynamic, barrel or string-keyed; app, lib, scripts), and as a "use server" export it was a public door to a paid model
+// call. Its one inner call, lib/content-generation/content-generator.ts generateImagePrompt, is retired with it.
 
 /**
  * Generate OMNIPRESENT content (one idea → many formats)

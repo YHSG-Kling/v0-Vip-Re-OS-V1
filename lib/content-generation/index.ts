@@ -4,7 +4,7 @@ export {
   generateTextContent,
   generateAudioScript,
   generateVideoScript,
-  generateImagePrompt,
+  // generateImagePrompt RETIRED (wave 155, lane 155R20) — see the tombstone in ./content-generator.ts
   generateOmnipresentContent,
   generateContentVariations,
 } from "./content-generator"

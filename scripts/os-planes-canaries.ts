@@ -741,6 +741,10 @@ async function main() {
     const arj = await ar.json() as Row
     check("P15e AUTOPILOT · with the platform god switch HALTED the weekly drafts are NOT written (autonomyDecision holds) and the hold is ledgered `skipped` under the house tenant",
       arj.held === true && (pw.tables.platform_social_drafts as Row[]).length === 0 && actionRows(pw, "platform.product_autopilot.run")[0]?.status === "skipped", JSON.stringify({ arj, rows: actionRows(pw, "platform.product_autopilot.run").map((r) => r.status) }))
+    // ISOLATION (wave 155, lane 155R20): the halted platform above is CACHED for 20 s (loadPlatformHalt). Since every kernel reaction
+    // now asks that same gate (lib/kernel/notification-engine.ts processKernelEvent), a later canary's emit in this process would be
+    // held by THIS canary's emergency mode. Clear the cache so the next world's own platform_settings decide.
+    ;(await import("../lib/platform/platform-controls")).__clearPlatformHaltCache()
     base("ai-overage-billing, generate-brokerage-fee-charges and platform-product-autopilot wrote with no ledger evidence and (autopilot) no decision; a non-duplicate fee-charge refusal was a silent skip.")
 
     // P15f — THE AGENTIC SURFACE OFFERS ONLY WHAT IT CAN RUN (gap row 9).

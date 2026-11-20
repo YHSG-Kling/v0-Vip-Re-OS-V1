@@ -118,6 +118,27 @@ const OWNER_HELD: Record<string, string> = {
   // (app/newsletters/newsletters-client.tsx and marketing-studio-client.tsx say why NOT to call it); the scheduled path's survivor is
   // app/api/cron/send-email-campaigns; scripts/orphan-export-guard.ts already lists it as owner-ruled.
   "server_action:app/actions/email-campaigns.ts#sendEmailCampaign": "@ownerRuled documented-hold — manual counterpart of the send-email-campaigns cron, waiting on an email-campaign management surface (email-campaigns.ts:454)",
+  // WAVE 155 (lane 155R20 request R2, applied by the integrator): four rows whose owner the census rule cannot derive. Each is
+  // dispositioned in scripts/owner-resolution-guard.ts §D with a reference owner; whether that reference IS the owner is the
+  // owner's ruling (lane 155R18 owner decision 3), so they are held with the question — never frozen into the baseline.
+  "server_action:app/actions/content-compliance.ts#evaluateCompliance": "owner-held pending owner decision: compliance_events is GENERIC for ownership (lane 155R16) so a gated draft is not compliance_officer's — but is an EXPLICIT compliance evaluation the user asked for? reference owner compliance_officer (scripts/owner-resolution-guard.ts §D)",
+  "server_action:app/actions/content-compliance.ts#batchEvaluate": "owner-held pending the same owner decision as evaluateCompliance (an explicit compliance evaluation; reference owner compliance_officer)",
+  "server_action:app/actions/communications.ts#draftTeamAnnouncementAction": "owner-held pending owner decision 3 (lane 155R18): a model draft returned to the composer, writing only api_response_logs telemetry — reference owner recruiting_manager (its sibling notifyBrokerageAgentsAction reads teams)",
+  "server_action:app/actions/twin-scenario.ts#simulateTwinScenario": "owner-held pending the own-span rule: it writes only its own evidence row; the twin it projects is read inside the same-file helper project() → readBrokerageTwin — reference owner data_steward (brokerage_twin_snapshots)",
+  // WAVE 155 (integrator): THE OTHER LIFECYCLE AWARDS ASK THE SAME QUESTION. These nine events are consumed by the ONE award trigger
+  // (lib/kernel/event-reactor.ts, block L6 → awardLifecycleMilestones), exactly as referral_converted is: whether an award is made
+  // is decided by LIFECYCLE_AWARD_RULES — a deterministic evidence rule under recruiting_manager, not a named gate token. They were
+  // open and unfrozen since the census was corrected (lane 155R16 listed them as unresolved); the fan-out's autonomy halt
+  // (lane 155R20) holds their reactor block but is not the award rule. One owner question (decision 2), ten rows; held with it.
+  "kernel_event:agent_work_anniversary": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
+  "kernel_event:buyer_broker_agreement_signed": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
+  "kernel_event:ce_completed": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
+  "kernel_event:competency_improved": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
+  "kernel_event:lifetime_customer": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
+  "kernel_event:lifetime_customer_touchpoint_sent": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
+  "kernel_event:mentor_session_held": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
+  "kernel_event:user_onboarding_completed": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
+  "kernel_event:user_onboarding_step_completed": "owner-held pending owner decision 2 (the same question as referral_converted): the award is decided by LIFECYCLE_AWARD_RULES through the one award trigger under recruiting_manager — a rule, not a named gate token",
   "kernel_event:referral_converted": "owner-held pending owner decision 2 (does a registered manager's deterministic evidence rule count as the decision owner?): the award is decided by referralEvidenceTransaction (a closed/funded transaction must evidence the won referral) under recruiting_manager — a rule, not a named gate token",
 }
 /** Set by the census: manifest capabilities that are discoverable but not callable over MCP / REST (published, not rows). */
@@ -504,7 +525,13 @@ function memberFacts(file: string, name: string, hop: number): Facts {
     const k = name === "*" || name === "default" ? "unknown" : bindingKind(v.ids, name)
     if (k === "type" || k === "data") { const e0 = emptyFacts(); memberMemo.set(key, e0); return e0 }
     const via = name === "*" || name === "default" ? undefined : edgesOf(file).find((e) => e.target !== file && e.pairs.some((p) => p.local === "" && p.name === name))
-    if (via) { memberMemo.set(key, emptyFacts()); const ff = memberFacts(via.target, name, hop); memberMemo.set(key, ff); return ff }
+    if (via) {
+      // …and a name re-exported FROM the fan-out file (lib/kernel/index.ts re-exports processKernelEvent) is the same door: the
+      // re-export must not carry the fan-out's own gate and receipt back to whoever imported the barrel (lane 155R20 request R1).
+      memberMemo.set(key, emptyFacts()); const f0 = memberFacts(via.target, name, hop)
+      const ff = FANOUT_DOOR_FILES.includes(via.target) ? { ...f0, evidence: [], gates: [], budget: null } : f0
+      memberMemo.set(key, ff); return ff
+    }
     const ff = fileFacts(file); memberMemo.set(key, ff); return ff
   }
   memberMemo.set(key, emptyFacts()) // cycle guard
@@ -527,7 +554,14 @@ function pathFacts(file: string, from?: number, to?: number, v0?: Views, hop = 0
   // …and the same for a DECISION (lane 155R17 request 2): a gate inside the reactor (the Deal Coordinator gate on the offer_accepted
   // block) decides THAT block; transaction_closed / referral_converted / updateTrainingJobStatus borrowed it by emitting into the
   // reactor. Writes beyond the door are still merged (a blind spot, stated). Controls: section G (G2).
-  const crossesIntoReactor = (target: string) => REACTOR_FILES.includes(target) && !REACTOR_FILES.includes(file)
+  // WAVE 155 (lane 155R20 request R1, applied by the integrator) — THE FAN-OUT IS THE SAME KIND OF DOOR. Once processKernelEvent
+  // (lib/kernel/notification-engine.ts) asks the autonomy gate and writes ONE receipt for the REACTION, every caller that emits an
+  // event reached that gate and receipt through emit → processKernelEvent and was credited with a decision and evidence for its
+  // OWN write — 21 rows, measured (ten award events, two tracking routes, createNewsletterCampaign, createMailCampaign …). The
+  // reaction's decision is the reaction's. Gates, evidence and budget are dropped at the edge into a fan-out file from any other
+  // file; the kernel-event rows that are consumed INSIDE the fan-out keep them through their own consumer site.
+  // Control: section G ("a caller whose only gate is beyond the fan-out has no decision").
+  const crossesIntoReactor = (target: string) => (REACTOR_FILES.includes(target) && !REACTOR_FILES.includes(file)) || (FANOUT_DOOR_FILES.includes(target) && file !== target)
   const add = (target: string, mf: Facts) => merge(f, crossesIntoReactor(target) ? { ...mf, evidence: [], gates: [], budget: null } : mf)
   for (const e of edgesOf(file)) {
     if (e.target === file) continue
@@ -546,6 +580,8 @@ function pathFacts(file: string, from?: number, to?: number, v0?: Views, hop = 0
 }
 /** The kernel reactor (the files dispatchKernelEvent runs in) — the census's kernel-event consumer files. */
 const REACTOR_FILES = ["lib/kernel/event-reactor.ts", "lib/kernel/event-fanout.ts"]
+/** The one typed-event fan-out (processKernelEvent): its gate and receipt decide the REACTION, never the emitter's own write. */
+const FANOUT_DOOR_FILES = ["lib/kernel/notification-engine.ts"]
 
 // ══ 5. READERS, CALLERS, TESTS (whole-tree indexes, built once) ═════════════════════════════════════════════════════════
 // A READER of a table is any `.select` of it — EXCEPT one inside the very function that performs the path's write (a writer's
@@ -2207,9 +2243,9 @@ async function main(): Promise<void> {
     ].join("\n"))!
     const fxGenFns = topLevelFns(fxGenV)
     const reach = (n: string) => closureSpans(fxGenFns, fxGenV, fxGenFns.find((f) => f.name === n)!).map((x) => x.name)
-    check("POSITIVE CONTROL (newly FOUND): a same-file helper called with explicit type arguments is followed to its receipt", reach("plantedGenericCall").includes("helperLedgered"), reach("plantedGenericCall"))
+    check("POSITIVE CONTROL (newly FOUND): a same-file helper called with explicit type arguments is followed to its receipt", reach("plantedGenericCall").includes("helperLedgered"), JSON.stringify(reach("plantedGenericCall")))
     check("…a plain call to the same helper is still followed", reach("plantedPlainCall").includes("helperLedgered"))
-    check("NEGATIVE CONTROL: a comparison (`a < b && b > (a)`) is not read as a call", !reach("plantedComparison").includes("helperLedgered") && reach("plantedComparison").length === 1, reach("plantedComparison"))
+    check("NEGATIVE CONTROL: a comparison (`a < b && b > (a)`) is not read as a call", !reach("plantedComparison").includes("helperLedgered") && reach("plantedComparison").length === 1, JSON.stringify(reach("plantedComparison")))
   }
   rmSync(fxDir, { recursive: true, force: true })
 
@@ -2427,13 +2463,17 @@ async function main(): Promise<void> {
       "lib/__os_coverage_barrel__.ts": `export { writer } from "./__os_coverage_lib__"`,
       "app/actions/__os_coverage_walk__.ts": [`"use server"`, `import { LIMIT, RULES, Shape, writer } from "@/lib/__os_coverage_lib__"`, `import { writer as viaBarrel } from "@/lib/__os_coverage_barrel__"`,
         `import { dispatchKernelEvent } from "@/lib/kernel/event-reactor"`,
+        `import { processKernelEvent } from "@/lib/kernel/notification-engine"`, `import { processKernelEvent as viaKernelIndex } from "@/lib/kernel"`,
         `const deps = { ledger: async () => withActionLedger({ action: "a.b.c" }, async () => 1), read: async () => 1 }`,
         `export async function readsConst(x: Shape): Promise<number> { return LIMIT + RULES.a }`,
         `export async function inlineType(): Promise<import("@/lib/__os_coverage_lib__").Shape | null> { return null }`,
         `export async function callsWriter() { await writer() }`, `export async function callsViaBarrel() { await viaBarrel() }`,
         `export async function usesDepsRead() { const d = { ...deps }; return d.read() }`, `export async function usesDepsLedger() { const d = { ...deps }; return d.ledger() }`,
         `export async function emitsOnly() { await svc.from("deals").update({}); await dispatchKernelEvent({ event: "x" }) }`,
-        `export async function emitsAndLedgers() { await withActionLedger({ action: "a.b.c" }, async () => svc.from("deals").update({})); await dispatchKernelEvent({ event: "x" }) }`].join("\n"),
+        `export async function emitsAndLedgers() { await withActionLedger({ action: "a.b.c" }, async () => svc.from("deals").update({})); await dispatchKernelEvent({ event: "x" }) }`,
+        `export async function fansOutOnly() { await svc.from("deals").update({}); await processKernelEvent({ event: "x" }) }`,
+        `export async function fansOutViaIndex() { await svc.from("deals").update({}); await viaKernelIndex({ event: "x" }) }`,
+        `export async function fansOutAndLedgers() { await withActionLedger({ action: "a.b.c" }, async () => svc.from("deals").update({})); await processKernelEvent({ event: "x" }) }`].join("\n"),
     }
     for (const f of Object.keys(files)) FILE_SET.add(f)
     for (const [f, raw] of Object.entries(files)) { viewCache.set(f, views(f, raw)); edgeCache.set(f, parseEdges(f, blankComments(raw))); fnsCache.delete(f) }
@@ -2460,6 +2500,13 @@ async function main(): Promise<void> {
         ef("emitsOnly").writes.has("deals") && !ef("emitsOnly").evidence.length && ef("emitsAndLedgers").evidence.some((e) => /withActionLedger/.test(e.token)), JSON.stringify(ef("emitsOnly").evidence))
       check("G2 (lane 155R17 request 2) PRECONDITION: the reactor's own walk carries a gate — POSITIVE: a caller borrows NO gate from beyond the emit door",
         reactorOwn.gates.length > 0 && !ef("emitsOnly").gates.length, JSON.stringify(ef("emitsOnly").gates.map((g) => g.token)))
+      // G2b — the typed-event fan-out is the same kind of door (lane 155R20 request R1)
+      const fanoutOwn = memberFacts("lib/kernel/notification-engine.ts", "processKernelEvent", 1)
+      check("G2b PRECONDITION (else the next controls prove nothing): the fan-out's own walk carries a gate AND a ledger receipt", fanoutOwn.gates.length > 0 && fanoutOwn.evidence.length > 0, JSON.stringify([fanoutOwn.gates.map((g) => g.token), fanoutOwn.evidence.map((e) => e.token)]))
+      check("G2b POSITIVE: a caller whose only gate and receipt are beyond processKernelEvent has NO decision and NO evidence (its own write stays) — directly and through the lib/kernel barrel",
+        ef("fansOutOnly").writes.has("deals") && !ef("fansOutOnly").evidence.length && !ef("fansOutOnly").gates.length && !ef("fansOutViaIndex").evidence.length && !ef("fansOutViaIndex").gates.length,
+        JSON.stringify([ef("fansOutOnly").evidence.map((e) => e.token), ef("fansOutOnly").gates.map((g) => g.token), ef("fansOutViaIndex").evidence.map((e) => e.token), ef("fansOutViaIndex").gates.map((g) => g.token)]))
+      check("G2b NEGATIVE: the same caller with its OWN withActionLedger keeps its own receipt", ef("fansOutAndLedgers").evidence.some((e) => /withActionLedger/.test(e.token)))
     } finally {
       for (const f of Object.keys(files)) { FILE_SET.delete(f); viewCache.delete(f); edgeCache.delete(f); fnsCache.delete(f); fileFactsCache.delete(f) }
       memberMemo.clear()

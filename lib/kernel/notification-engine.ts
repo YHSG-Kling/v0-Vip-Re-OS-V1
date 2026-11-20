@@ -7,8 +7,10 @@
 // Kernel defines meaning. Database configures delivery.
 //
 // Rules:
-// - This file ONLY reads notification_rules and writes notifications.
-// - No side effects beyond those two tables.
+// - This file ONLY reads notification_rules and writes notifications — plus, since wave 155
+//   (lane 155R20), the ONE decision (the autonomy gate's halts) and the ONE agent_action_ledger
+//   receipt per reaction (processKernelEvent, below).
+// - No other side effects of its own (the reactor it dispatches into has its own).
 // - resolveRecipients failures are caught by the processKernelEvent caller.
 // - TypeScript strict mode throughout.
 
@@ -56,6 +58,72 @@ export async function processKernelEvent(params: {
   }
 
   const supabase = createServiceClient()
+
+  // ─── THE REACTION'S DECISION AND ITS ONE RECEIPT (wave 155, lane 155R20, G04) ───────────────
+  // This function is THE fan-out every typed kernel event passes (emitKernelEvent, the lifecycle
+  // logger, the ~20 direct callers): the staff bell below, then the agentic reactor. Each reaction
+  // used to write and send with no decision and no evidence of its own (the census had credited it
+  // with the reactor's receipts — a false credit, withdrawn). Survivor pattern of lane 155R17
+  // (lib/kernel/event-reactor.ts, the Deal Coordinator spawn): the EXISTING autonomy gate
+  // (lib/managers/autonomy-gate.ts autonomyDecision) over its two halts — the platform's god switch
+  // and platform staff's per-tenant pause, both cached reads — decides, and ONE withActionLedger
+  // receipt (`kernel.reaction.<event>`) records what happened. No model is asked: a routine permitted
+  // reaction stops at the first rung. A HELD decision holds the AUTONOMOUS reaction (the reactor: enrollment,
+  // client cards, copies, spawns); the in-app bell to the tenant's own staff still rings — under a halt the
+  // humans are the fallback, and the bell is how they learn (owner decision, default stated in the lane notes).
+  // Keyed by the lifecycle event when there is one: a replay of the SAME event adds nothing. A refusing ledger
+  // changes nothing (the reaction runs exactly as before).
+  const { autonomyDecision, loadTenantAutonomyHalt } = await import("@/lib/managers/autonomy-gate")
+  const { loadPlatformHalt } = await import("@/lib/platform/platform-controls")
+  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const decision = autonomyDecision({
+    managerKey: KERNEL_REACTION_MANAGER,
+    effective: null,
+    platformHalt: await loadPlatformHalt(supabase as never),
+    tenantHalt: await loadTenantAutonomyHalt(params.brokerageId, supabase as never),
+  })
+  let reaction: KernelReaction | null = null
+  const react = async (): Promise<void> => { reaction = await reactToKernelEvent(supabase, params, decision.allow) }
+  const detail = { event: params.event, lifecycle_event_id: params.lifecycleEventId ?? null, autonomy: decision.allow ? "allow" : "held" }
+  await withActionLedger<void>({
+    brokerageId: params.brokerageId,
+    action: `kernel.reaction.${params.event}`,
+    actor: { type: "manager", managerKey: KERNEL_REACTION_MANAGER },
+    subject: { type: params.entityType, id: params.entityId },
+    cycle: params.lifecycleEventId ?? null,
+    riskClass: "COMMUNICATION",
+    systemSource: "event_reactor",
+    detail,
+  }, react, {
+    settle: () => settleKernelReaction(decision, reaction, detail),
+    replay: (claim) => (claim.kind === "refused" ? react() : undefined),
+  }, { client: supabase as never })
+}
+
+/** The registered manager accountable for the kernel bus's reaction receipt (the receipt contract's steward). */
+const KERNEL_REACTION_MANAGER = "data_steward"
+
+interface KernelReaction { notified: number; reactor: "dispatched" | "held" | "failed"; error: string | null }
+
+/** PURE — what the one reaction receipt settles to. Held → `skipped / autonomy_held` (the refusal row). */
+function settleKernelReaction(
+  decision: { allow: boolean; reason: string | null },
+  reaction: KernelReaction | null,
+  detail: Record<string, unknown>,
+): { status: "executed" | "skipped" | "failed"; outcome: string; error?: string | null; detail?: Record<string, unknown> } {
+  const full = { ...detail, notified: reaction?.notified ?? 0, reactor: reaction?.reactor ?? null }
+  if (!decision.allow) return { status: "skipped", outcome: "autonomy_held", error: decision.reason, detail: full }
+  if (reaction?.reactor === "failed") return { status: "failed", outcome: "reactor_failed", error: reaction.error, detail: full }
+  return { status: "executed", outcome: "reacted", detail: full }
+}
+
+/** The reaction itself: the staff bell, then (when the decision allows) the agentic reactor. Private, every parameter required. */
+async function reactToKernelEvent(
+  supabase: ReturnType<typeof createServiceClient>,
+  params: Parameters<typeof processKernelEvent>[0],
+  reactorAllowed: boolean,
+): Promise<KernelReaction> {
+  let notifiedCount = 0
 
   // 1. Load rules from database.
   // Query uses trigger_event (string) which matches KernelEvent enum value exactly.
@@ -158,6 +226,7 @@ export async function processKernelEvent(params: {
         }
 
         console.log(`[NotificationEngine] Created notification for user ${recipient.user_id}`)
+        notifiedCount++
       } catch (err) {
         console.error("[NotificationEngine] Error creating notification:", err)
       }
@@ -170,6 +239,8 @@ export async function processKernelEvent(params: {
   // failure must never break the notification path above. The safety-net cron still sweeps
   // lifecycle_events, and the reactor's enrollment is cooldown-idempotent, so the two never
   // double-enroll. Side-effecting sends stay gated downstream in the channel adapters.
+  // WAVE 155 (lane 155R20): a HELD autonomy decision (platform halt / per-tenant pause) holds the reactor here.
+  if (!reactorAllowed) return { notified: notifiedCount, reactor: "held", error: null }
   try {
     const { dispatchKernelEvent } = await import("@/lib/kernel/event-reactor")
     await dispatchKernelEvent({
@@ -188,7 +259,9 @@ export async function processKernelEvent(params: {
     })
   } catch (err) {
     console.error("[NotificationEngine] reactor dispatch failed:", err)
+    return { notified: notifiedCount, reactor: "failed", error: (err as Error)?.message ?? String(err) }
   }
+  return { notified: notifiedCount, reactor: "dispatched", error: null }
 }
 
 // ─── RECIPIENT RESOLVER ───────────────────────────────────────────────────────

@@ -12,8 +12,7 @@ export { processKernelEvent } from "./notification-engine"
 export {
   listNotifications,
   countUnreadNotifications,
-  markNotificationRead,
-  markAllNotificationsRead,
+  // markNotificationRead / markAllNotificationsRead RETIRED (wave 155, lane 155R20) — survivor app/actions/notifications.ts:84 / :115
 } from "./notification-center"
 export { transitionLifecycle } from "./lifecycle"
 export { evaluateOutbound } from "./compliance"

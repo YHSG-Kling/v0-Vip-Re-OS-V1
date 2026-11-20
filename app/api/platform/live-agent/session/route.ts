@@ -23,7 +23,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { issueClientKey } from "@/lib/did/agents"
 import { ensurePlatformDIDAgent, resolvePlatformLiveAgentBrokerageId } from "@/lib/did/platform-live-agent"
 import { startLiveAgentSession, recordLiveAgentInitFailure } from "@/lib/did/live-session-metering"
-import { checkPublicRateLimit, publicCallerIp } from "@/lib/security/public-rate-limit"
+import { decidePublicDoor, publicCallerIp } from "@/lib/security/public-rate-limit"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -33,18 +33,29 @@ interface Body { visitorId?: string; origin?: string | null; pageUrl?: string | 
 const FALLBACK = { text: true as const }
 
 export async function POST(request: NextRequest) {
-  const verdict = checkPublicRateLimit("platform-live-agent", await publicCallerIp(), { limit: 10, windowMs: 10 * 60_000 })
-  if (!verdict.allowed) {
-    return NextResponse.json({ error: "Too many sessions — give it a moment.", fallback: FALLBACK }, { status: 429, headers: { "Retry-After": String(verdict.retryAfterSeconds) } })
-  }
   const body = await request.json().catch(() => null) as Body | null
-  if (!body?.visitorId) return NextResponse.json({ error: "visitorId required", fallback: FALLBACK }, { status: 400 })
-
   const svc = createServiceClient()
 
-  // The platform's own brokerage for metering — the showcase tenant. Not
-  // seeded → not available (operator action, never a tenant borrowed).
-  const brokerageId = await resolvePlatformLiveAgentBrokerageId(svc)
+  // WAVE 155 (lane 155R20, G10) — THE DECISION, BEFORE ANY SPEND (lib/security/public-rate-limit.ts decidePublicDoor): the SAME
+  // per-IP cap as before, FIRST, then the opt-in — the platform's own seeded showcase tenant, under which these minutes are
+  // metered (resolvePlatformLiveAgentBrokerageId). Not seeded → not available (operator action, never a tenant borrowed). The
+  // session is opened under the tenant the decision proved. No login wall: a prospect has no account.
+  const verdict = await decidePublicDoor({
+    surface: "platform-live-agent",
+    callerKey: await publicCallerIp(),
+    cap: { limit: 10, windowMs: 10 * 60_000 },
+    optIn: async () => {
+      if (!body?.visitorId) return null
+      const showcase = await resolvePlatformLiveAgentBrokerageId(svc)
+      return showcase ? { brokerageId: showcase, basis: "the platform's own showcase tenant (findDemoBrokerage) — the platform live agent's metering tenant" } : null
+    },
+  })
+  if (!verdict.allowed && verdict.reason === "rate_limited") {
+    return NextResponse.json({ error: "Too many sessions — give it a moment.", fallback: FALLBACK }, { status: 429, headers: { "Retry-After": String(verdict.retryAfterSeconds) } })
+  }
+  if (!body?.visitorId) return NextResponse.json({ error: "visitorId required", fallback: FALLBACK }, { status: 400 })
+
+  const brokerageId = verdict.allowed ? verdict.brokerageId : null
   if (!brokerageId) {
     return NextResponse.json({
       error: "The live agent isn't set up yet.",

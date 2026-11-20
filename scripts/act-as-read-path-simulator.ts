@@ -602,11 +602,19 @@ async function main() {
     }
 
     // A NORMAL TENANT SEAT MUST NOT MOVE AT ALL.
+    // RESTATED TO THE RULE (wave 155, lane 155R20): the action's OWN writes ride the seat's cookie client. Since the kernel fan-out
+    // (lib/kernel/notification-engine.ts processKernelEvent) leaves ONE action-ledger receipt per reaction, an action that emits an
+    // event also causes an agent_action_ledger write on the SERVICE client — the ledger's own contract (lib/kernel/action-ledger.ts
+    // claimAction), not the action's write. Only that carrier is set aside; any other service write still fails this check.
+    const ledgerCarrier = (c: any) => c.table === "agent_action_ledger" && c.channel === "service"
     for (const [fn, args] of WRITERS) {
       const a = await underSession(session(), () => after[fn](...args))
+      const own = a.calls.filter((c: any) => !ledgerCarrier(c))
       check(`transactions · a normal tenant user still writes on their OWN RLS client — ${fn}`,
-        a.calls.length > 0 && a.calls.every((c: any) => c.channel === "cookie"))
+        own.length > 0 && own.every((c: any) => c.channel === "cookie"), JSON.stringify(a.calls))
     }
+    check("transactions · CONTROL: only the ledger carrier is set aside — a domain write on the service client is still caught",
+      ledgerCarrier({ table: "agent_action_ledger", channel: "service" }) && !ledgerCarrier({ table: "transactions", channel: "service" }) && !ledgerCarrier({ table: "agent_action_ledger", channel: "cookie" }))
 
     // READERS ARE DELIBERATELY NOT CONVERTED — that is what keeps a read_only
     // grant able to SEE the tenant. Negative control in the other direction.

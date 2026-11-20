@@ -13,7 +13,15 @@
 //
 // Import from '@/lib/kernel' — never import this file directly outside the kernel.
 
-"use server"
+// NOT A SERVER-ACTION MODULE (wave 155, lane 155R20; template lib/lead-readiness/readiness-logger.ts:1-12). The module-level
+// "use server" that stood here published all three exports as PUBLIC HTTP DOORS with no gate: evaluateOutboundEligibility took a
+// caller-supplied actorContext — brokerageId included (the IDOR shape, CLAUDE.md §4) — so an anonymous caller could probe any
+// tenant's suppression list by email / phone and file compliance_events / notifications under a tenant it named;
+// loadUniversalInbox and sendInboxReply took the same caller-built actorContext. Every caller is in-process server code:
+//   · app/actions/inbox.ts:34-35 ("use server"; it resolves the actor from the SESSION — resolveActorContext — then calls in)
+//   · lib/kernel/index.ts:319 (the barrel; itself `import "server-only"`)
+// so the directive published nothing anyone needed. `server-only` makes a future client import fail at build time.
+import "server-only"
 
 import { evaluateOutbound } from "./compliance"
 import { checkSuppression } from "./compliance/check-suppression"

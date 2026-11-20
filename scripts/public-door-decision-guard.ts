@@ -281,6 +281,13 @@ async function main() {
   console.log("\n[I · lane 155R18 — every public door decides (cap → tenant opt-in) before it writes]")
   await sectionI()
 
+  // ── J · lane 155R20: six more doors decide before they write or spend ────────────────────────────────────────────────────
+  // RED AT 76fa3d53: an anonymous caller filed brand-template audit rows onto ANOTHER tenant's template stamped with a user it
+  // named; an anonymous caller read any tenant's lead readiness and filed rows under it; the two public routes had only a rate
+  // limit (no decision) in front of the write / the spend.
+  console.log("\n[J · lane 155R20 — brand-template audit, lead readiness, the mail opt-out and the platform live agent decide first]")
+  await sectionJ()
+
   console.log(`\n${"─".repeat(60)}\n RESULT: ${pass} passed, ${fail} failed`)
   if (fail) { console.log(" ❌ PUBLIC_DOOR_DECISION_FAIL"); process.exit(1) }
   console.log(" ✅ PUBLIC_DOOR_DECISION_PASS — public doors decide from the session / the tenant's own opt-in / the cap, provider callbacks leave one receipt per event, AI spend leaves a receipt beside the same cost row (SIMULATED)")
@@ -414,6 +421,122 @@ async function sectionI(): Promise<void> {
   ok("POSITIVE CONTROL: a door that writes BEFORE it decides is caught", !decidesFirst(`export async function POST() { await svc.from("x").insert({}); await decidePublicDoor({}) }`, "POST"))
   ok("POSITIVE CONTROL: a door with no decision at all is caught", !decidesFirst(`export async function POST() { await svc.from("x").insert({}) }`, "POST"))
   ok("CONTROL: a decision named only in a comment is not a decision", !decidesFirst(`export async function POST() { // decidePublicDoor(\n await svc.from("x").insert({}) }`, "POST"))
+}
+
+/** Section J (lane 155R20) — counted reads, the real doors, SIMULATED. */
+async function sectionJ(): Promise<void> {
+  const counted = (mem: MemClient) => {
+    const reads: string[] = []
+    const proxy = new Proxy(mem, { get(t, k, r) { if (k === "from") return (tbl: string) => { reads.push(tbl); return t.from(tbl) }; return Reflect.get(t, k, r) } }) as MemClient
+    return { proxy, reads }
+  }
+  const jpost = (url: string, body: unknown, ip: string) => new Request(`http://localhost${url}`, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", "x-forwarded-for": ip } }) as never
+
+  // J1 — the brand-template audit write: compute stays open, the WRITE needs the session tenant that owns the template.
+  const TPL_A = "13000000-0000-4000-8000-000000000001", TPL_B = "13000000-0000-4000-8000-000000000002", EVIL = "e0000000-0000-4000-8000-0000000000e1"
+  const bt = await import("../app/actions/brand-template-registry")
+  const meta = { content_type: "email", channel_intent: "email", is_from_template: true, template_source: "brokerage" } as never
+  const tplWorld = () => memSupabase({ brand_templates: [{ id: TPL_A, brokerage_id: BRK_A }, { id: TPL_B, brokerage_id: BRK_B }], activities: [], agent_action_ledger: [] })
+  G.__R5.svc = tplWorld(); G.__R5.ctx = agentCtx(null, false)
+  const anonCompute = await quiet(() => bt.classifyTemplateAction(meta))
+  ok("J1 POSITIVE: the pure classification still answers an anonymous caller (no write, no login wall on compute)", anonCompute.success === true && writesTo(G.__R5.svc, "activities") === 0)
+  const anonLog = await quiet(() => bt.classifyTemplateAction(meta, { contentId: TPL_A, logActivity: true, userId: EVIL }))
+  ok("J1 NEGATIVE: an anonymous caller asking to LOG is refused — zero activities rows, zero receipts", anonLog.success === false && writesTo(G.__R5.svc, "activities") === 0 && ledger(G.__R5.svc).length === 0, JSON.stringify(anonLog))
+  G.__R5.ctx = agentCtx(BRK_A)
+  const foreign = await quiet(() => bt.validateBrandComplianceAction({ raw_content: "x" }, { required_elements: [], optional_elements: [], channel_specific_notes: [], legal_disclaimers: [], generated_at: "" } as never, { contentId: TPL_B, logActivity: true }))
+  ok("J1 NEGATIVE: a signed-in seat of tenant A cannot file an audit row onto tenant B's template", foreign.success === false && writesTo(G.__R5.svc, "activities") === 0, JSON.stringify(foreign))
+  const own = await quiet(() => bt.classifyTemplateAction(meta, { contentId: TPL_A, logActivity: true, userId: EVIL }))
+  const acts = G.__R5.svc.tables.activities as Row[]
+  const rc = ledger(G.__R5.svc, "brand.template.classify")
+  ok("J1 POSITIVE: the owning tenant's seat files ONE row under the template's tenant, stamped with the SESSION user (never the argument), and ONE receipt",
+    own.success === true && acts.length === 1 && acts[0].brokerage_id === BRK_A && acts[0].agent_user_id === U_AGENT && rc.length === 1 && rc[0].status === "executed" && rc[0].actor_user_id === U_AGENT,
+    JSON.stringify({ own, acts, rc: rc.map((r) => [r.status, r.actor_user_id]) }))
+
+  // J2 — lead readiness: the lead desk's resolver, then the lead in scope, before any read of the lead's facts or any write.
+  const LEAD_A = "14000000-0000-4000-8000-000000000001", LEAD_B = "14000000-0000-4000-8000-000000000002", U_BROKER = "a0000000-0000-4000-8000-0000000000b1"
+  const er = await import("../app/actions/lead-readiness/evaluate-readiness")
+  const leadWorld = () => memSupabase({
+    users: [{ id: U_BROKER, brokerage_id: BRK_A, user_type: "broker", platform_role: null }, { id: U_AGENT, brokerage_id: BRK_A, user_type: "agent", platform_role: null }],
+    leads: [{ id: LEAD_A, brokerage_id: BRK_A, agent_id: null, lead_score: 80, lead_stage: "new", created_at: new Date().toISOString() }, { id: LEAD_B, brokerage_id: BRK_B, agent_id: null, lead_score: 90, lead_stage: "new", created_at: new Date().toISOString() }],
+    activities: [], automation_errors: [], agent_action_ledger: [], user_role_assignments: [],
+  })
+  G.__R5.svc = leadWorld(); G.__R5.user = null
+  const anonLead = await quiet(() => er.evaluateAndLogLeadReadiness(LEAD_A))
+  ok("J2 NEGATIVE: an anonymous caller gets no evaluation and writes nothing (not even the crash-path anomaly row)", anonLead.evaluation === null && G.__R5.svc.writes.length === 0, JSON.stringify(anonLead))
+  G.__R5.user = { id: U_AGENT }
+  const agentLead = await quiet(() => er.evaluateAndLogLeadReadiness(LEAD_A))
+  ok("J2 NEGATIVE: an AGENT (not on the lead desk — leads belong to the brokerage) is refused with zero writes", agentLead.evaluation === null && G.__R5.svc.writes.length === 0, JSON.stringify(agentLead))
+  G.__R5.user = { id: U_BROKER }
+  const crossLead = await quiet(() => er.evaluateAndLogLeadReadiness(LEAD_B))
+  ok("J2 NEGATIVE: the broker of tenant A cannot read tenant B's lead (\"not found\", zero writes)", crossLead.evaluation === null && G.__R5.svc.writes.length === 0, JSON.stringify(crossLead))
+  const ownLead = await quiet(() => er.evaluateAndLogLeadReadiness(LEAD_A))
+  const lr = ledger(G.__R5.svc, "lead.readiness.evaluate")
+  ok("J2 POSITIVE: the broker's own lead is evaluated and its log write leaves ONE receipt under the lead's tenant",
+    ownLead.evaluation !== null && lr.length === 1 && lr[0].brokerage_id === BRK_A && lr[0].actor_user_id === U_BROKER, JSON.stringify({ e: ownLead.error, lr: lr.map((r) => [r.status, r.brokerage_id]) }))
+
+  // J3 — the mail opt-out POST: cap first, then the row the printed code resolves to; an unreadable read stays a 503.
+  const tokMod = await import("../lib/direct-mail/unsubscribe-token")
+  const TOK = tokMod.normalizeMailUnsubToken("K7M2N-P4RQ8-TVWX")
+  const REC = "15000000-0000-4000-8000-000000000001"
+  const unsub = await import("../app/api/unsubscribe/token/route")
+  const mailWorld = (refuse?: boolean) => memSupabase({ direct_mail_recipients: [{ id: REC, brokerage_id: BRK_A, campaign_id: null, lead_id: null, contact_id: null, first_name: "Pat", unsubscribed_at: null, unsubscribe_token: TOK }], contact_suppression_list: [], contact_consent_events: [] },
+    refuse ? { refuse: { direct_mail_recipients: "permission denied for table direct_mail_recipients" } } : {})
+  G.__R5.svc = mailWorld()
+  const forgedTok = await quiet(() => unsub.POST(jpost("/api/unsubscribe/token", { token: "ZZZZZ-ZZZZZ-ZZZZ", request: "mail" }, "10.9.0.1")))
+  ok("J3 NEGATIVE: an unknown code → 404 and ZERO writes", forgedTok.status === 404 && G.__R5.svc.writes.length === 0)
+  G.__R5.svc = mailWorld(true)
+  const down = await quiet(() => unsub.POST(jpost("/api/unsubscribe/token", { token: TOK, request: "mail" }, "10.9.0.2")))
+  ok("J3 NEGATIVE: a refused read is OUR failure — 503, never \"invalid code\", zero writes", down.status === 503 && G.__R5.svc.writes.length === 0)
+  // (this harness has no request headers for publicCallerIp, so every call shares ONE bucket — the positive runs before the cap
+  // is spent, and the cap case then spends it.)
+  G.__R5.svc = mailWorld()
+  const real = await quiet(() => unsub.POST(jpost("/api/unsubscribe/token", { token: TOK, request: "mail" }, "10.9.0.4")))
+  ok("J3 POSITIVE: the real printed code passes the decision and reaches the opt-out (not a 404 / 429)", real.status !== 404 && real.status !== 429 && G.__R5.svc.writes.length > 0, `status ${real.status}, writes ${G.__R5.svc.writes.map((w: any) => w.table).join(",")}`)
+  const c3 = counted(mailWorld()); G.__R5.svc = c3.proxy
+  for (let i = 0; i < 10; i++) await quiet(() => unsub.POST(jpost("/api/unsubscribe/token", { token: "ZZZZZ-ZZZZZ-ZZZZ", request: "mail" }, "10.9.0.3")))
+  const before = c3.reads.length
+  const capped = await quiet(() => unsub.POST(jpost("/api/unsubscribe/token", { token: TOK, request: "mail" }, "10.9.0.3")))
+  ok("J3 NEGATIVE: past the cap → 429 and the recipient read is NEVER reached (the cap is first)", capped.status === 429 && c3.reads.length === before, `reads ${before} → ${c3.reads.length}`)
+
+  // J4 — the platform live agent: cap first, then the platform's own showcase tenant, BEFORE any provider call.
+  let fetches = 0
+  const realFetch = G.fetch
+  G.fetch = async () => { fetches++; return new Response("refused in test", { status: 503 }) }
+  try {
+    const la = await import("../app/api/platform/live-agent/session/route")
+    const SHOW = "16000000-0000-4000-8000-000000000001"
+    const c4 = counted(memSupabase({ brokerages: [], platform_settings: [] })); G.__R5.svc = c4.proxy
+    const noShow = await quiet(() => la.POST(jpost("/api/platform/live-agent/session", { visitorId: "v-1" }, "10.8.0.1")))
+    ok("J4 NEGATIVE: no seeded showcase tenant → 503 with the text fallback, ZERO provider calls", noShow.status === 503 && fetches === 0)
+    G.__R5.svc = memSupabase({ brokerages: [{ id: SHOW, name: "Showcase", slug: "showcase", status: "active", is_demo: true, deleted_at: null, created_at: "2026-01-01T00:00:00Z" }], platform_settings: [], live_agent_sessions: [] })
+    const passed = await quiet(() => la.POST(jpost("/api/platform/live-agent/session", { visitorId: "v-2" }, "10.8.0.2")))
+    ok("J4 POSITIVE: with the showcase tenant seeded the decision ALLOWS and the route reaches the presenter step (an unconfigured presenter → 409, still no live session and no provider call)", passed.status === 409 && writesTo(G.__R5.svc, "live_agent_sessions") === 0 && fetches === 0, `status ${passed.status}, fetches ${fetches}`)
+    G.__R5.svc = c4.proxy
+    for (let i = 0; i < 9; i++) await quiet(() => la.POST(jpost("/api/platform/live-agent/session", { visitorId: "v-1" }, "10.8.0.1")))
+    const r0 = c4.reads.length
+    const over = await quiet(() => la.POST(jpost("/api/platform/live-agent/session", { visitorId: "v-1" }, "10.8.0.1")))
+    ok("J4 NEGATIVE: past the cap → 429 and the showcase read is NEVER reached", over.status === 429 && c4.reads.length === r0 && fetches === 0, `reads ${r0} → ${c4.reads.length}`)
+  } finally { G.fetch = realFetch }
+
+  // J5 — the STRIPPED order rule for the six, with the same controls as section I.
+  const WRITE_OR_SPEND = /\.(?:insert|upsert|update|delete)\s*\(|\b(?:applyMailUnsubscribe|ensurePlatformDIDAgent|issueClientKey|startLiveAgentSession|logTemplateClassification|logBrandRequirements|logBrandCompliance|logReadinessTransition|logReadinessAnomaly|evaluateLeadReadiness)\s*\(/
+  const DECIDE = /\b(?:decidePublicDoor|logTemplateEvaluation|leadReadinessDoor)\s*\(/
+  const firstIn = (src: string, fn: string): boolean => {
+    const c = blankStrings(stripComments(src))
+    const at = c.search(new RegExp(`export\\s+(?:async\\s+)?function\\s+${fn}\\b`)); if (at < 0) return false
+    const next = c.slice(at + 10).search(/\nexport\s/); const body = c.slice(at, next < 0 ? c.length : at + 10 + next)
+    const d = body.search(DECIDE), w = body.search(WRITE_OR_SPEND)
+    return d >= 0 && (w < 0 || d < w)
+  }
+  const SIX: Array<[string, string]> = [
+    ["app/api/unsubscribe/token/route.ts", "POST"], ["app/api/platform/live-agent/session/route.ts", "POST"],
+    ["app/actions/brand-template-registry.ts", "classifyTemplateAction"], ["app/actions/brand-template-registry.ts", "getBrandRequirementsAction"],
+    ["app/actions/brand-template-registry.ts", "validateBrandComplianceAction"], ["app/actions/lead-readiness/evaluate-readiness.ts", "evaluateAndLogLeadReadiness"],
+  ]
+  const late = SIX.filter(([f, fn]) => !firstIn(read(f), fn)).map(([f, fn]) => `${f}#${fn}`)
+  ok(`J5 every one of the six decides before its first write / spend (${SIX.length - late.length}/${SIX.length})`, late.length === 0, late.join(", "))
+  ok("J5 POSITIVE CONTROL: the base shape of the lead-readiness door (evaluate + log, no decision) is caught", !firstIn(`export async function evaluateAndLogLeadReadiness(id) { const e = await evaluateLeadReadiness(id); await logReadinessTransition(id, e) }`, "evaluateAndLogLeadReadiness"))
+  ok("J5 POSITIVE CONTROL: the base shape of the opt-out (rate limit only, then apply) is caught", !firstIn(`export async function POST(req) { checkPublicRateLimit("x", ip, L); await applyMailUnsubscribe({}) }`, "POST"))
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

@@ -2,7 +2,10 @@ import Link from "next/link"
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { listNotifications, countUnreadNotifications } from "@/lib/kernel"
-import { markOneRead, markAllRead } from "@/app/actions/notification-actions"
+// WAVE 155 (lane 155R20): the two marks ride the ONE survivor, app/actions/notifications.ts markNotificationRead / markAllRead
+// (the act-as write seam: a read_only grant is refused, zero rows is a refusal). The duplicate app/actions/notification-actions.ts
+// is retired — it is now a tombstone naming this survivor.
+import { markNotificationRead, markAllRead } from "@/app/actions/notifications"
 import { resolveNotificationHref } from "@/lib/notifications/route-resolver"
 
 const PAGE_SIZE = 20
@@ -59,7 +62,12 @@ export default async function NotificationsPage({ searchParams }: PageProps) {
         </div>
 
         {unreadCount > 0 && (
-          <form action={markAllRead}>
+          <form
+            action={async () => {
+              "use server"
+              await markAllRead()
+            }}
+          >
             <button
               type="submit"
               className="text-sm text-muted-foreground hover:text-foreground underline-offset-2 hover:underline transition-colors"
@@ -147,7 +155,7 @@ export default async function NotificationsPage({ searchParams }: PageProps) {
                 <form
                   action={async () => {
                     "use server"
-                    await markOneRead(n.id)
+                    await markNotificationRead(n.id)
                   }}
                   className="shrink-0"
                 >

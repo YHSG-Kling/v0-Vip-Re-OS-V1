@@ -630,7 +630,7 @@ export async function createScriptVariation(data: {
 
 // TOMBSTONE (wave 146, lane 146G — owner ruling 15; eight-step proof row `getVideoQueue` in
 // scripts/manager-duplicate-proof-guard.ts): getVideoQueue DELETED here → survivor
-// app/actions/link-to-video.ts:507 getVideoQueue — the session-gated, tenant-scoped reader of
+// app/actions/link-to-video.ts:511 getVideoQueue — the session-gated, tenant-scoped reader of
 // video_generation_queue (brokerage + its teams, with the project's rendered file embedded). This twin had
 // no importer and no unique behaviour: after its auth gate it always returned [] (its own note: the queue has
 // no agent_id column), so nothing was merged.
