@@ -597,10 +597,59 @@ function pathFacts(file: string, from?: number, to?: number, v0?: Views, hop = 0
         const members = new Set([...ids.matchAll(new RegExp(`\\b${l}\\s*\\.\\s*([A-Za-z_$][\\w$]*)`, "g"))].map((m) => m[1]))
         if (members.size) for (const mb of members) add(e.target, memberFacts(e.target, mb, hop + 1))
         else if (new RegExp(`\\b${l}\\b`).test(ids)) add(e.target, fileFacts(e.target))
-      } else if (new RegExp(`\\b${l}\\b`).test(ids)) add(e.target, memberFacts(e.target, p.name, hop + 1))
+      } else if (new RegExp(`\\b${l}\\b`).test(ids)) {
+        // WAVE 155 (lane 155R22 part 2, rule F): every call of the binding here passes a literal `<flag>: false` → the callee's
+        // blocks guarded by that flag are not on THIS caller's path (falseFlagGatedFacts proves it or returns null)
+        const flags = falseFlagsAt(ids, p.local)
+        add(e.target, (flags.length ? falseFlagGatedFacts(e.target, p.name, hop + 1, flags) : null) ?? memberFacts(e.target, p.name, hop + 1))
+      }
     }
   }
   return f
+}
+/** PURE (rule F) — the flags EVERY reference to `local` in `ids` passes as a literal `false` in an object-literal FIRST argument
+ *  (`local({ …, markUsed: false, … })`). Any reference that is not such a call (the function passed on, a call with a variable
+ *  argument) → []. Only depth-1 keys of the literal count. */
+function falseFlagsAt(ids: string, local: string): string[] {
+  const refs = [...ids.matchAll(new RegExp(`\\b${reEsc(local)}\\b`, "g"))]
+  let common = null as Set<string> | null
+  for (const r of refs) {
+    if (/(?:\.|\{\s*|,\s*)$/.test(ids.slice(Math.max(0, r.index! - 3), r.index!)) && /^\s*[,}:]/.test(ids.slice(r.index! + local.length, r.index! + local.length + 3))) continue // the destructure that binds it
+    const m = /^\s*\(\s*\{/.exec(ids.slice(r.index! + local.length)); if (!m) return []
+    const open = r.index! + local.length + m[0].length - 1; const obj = ids.slice(open + 1, matchBrace(ids, open))
+    const flat = obj.replace(/\{[^{}]*\}|\([^()]*\)|\[[^[\]]*\]/g, "")
+    const fl = new Set([...flat.matchAll(/(?:^|,)\s*([A-Za-z_$][\w$]*)\s*:\s*false\b/g)].map((x) => x[1]))
+    common = common ? new Set([...common].filter((x) => fl.has(x))) : fl
+    if (!common.size) return []
+  }
+  return common ? [...common] : []
+}
+/** Rule F — the callee's facts WITHOUT the blocks guarded by `if (<firstParam>.<flag> [&& …]) { … }` for a flag the caller passes
+ *  as literal false. PROVEN or null: the guard's condition has no `||` / `?` (so false short-circuits it), the parameter and the
+ *  flag are never reassigned in the body, and what remains outside the blocks writes, sends and spends NOTHING (every write of the
+ *  callee sits under the guard) — otherwise null and the caller keeps the full callee facts. */
+function falseFlagGatedFacts(file: string, name: string, hop: number, flags: string[]): Facts | null {
+  const v = views(file); if (!v) return null
+  const fn = fnsOf(file).find((x) => x.name === name); if (!fn) return null
+  const body = v.ids.slice(fn.start, fn.end)
+  const P = /^[^(]*\(\s*([A-Za-z_$][\w$]*)/.exec(body)?.[1]; if (!P) return null
+  if (new RegExp(`\\b${reEsc(P)}\\s*=(?![=>])|\\b${reEsc(P)}\\.(?:${flags.map(reEsc).join("|")})\\s*=(?!=)`).test(body)) return null
+  const blocks: Array<[number, number]> = []
+  for (const m of body.matchAll(new RegExp(`\\bif\\s*\\(\\s*${reEsc(P)}\\.(?:${flags.map(reEsc).join("|")})\\b([^{]*?)\\)\\s*\\{`, "g"))) {
+    if (m[1].trim() && !/^&&[^|?]*$/.test(m[1].trim())) continue
+    const open = fn.start + m.index! + m[0].length - 1; blocks.push([fn.start + m.index!, matchBrace(v.ids, open) + 1])
+  }
+  if (!blocks.length) return null
+  const f = emptyFacts(); let at = fn.start
+  const pieces: Array<[number, number]> = []
+  for (const [s, e] of blocks.sort((a, b) => a[0] - b[0])) { if (s > at) pieces.push([at, s]); at = Math.max(at, e) }
+  if (at < fn.end) pieces.push([at, fn.end])
+  const byName = new Map(fnsOf(file).map((x) => [x.name, x]))
+  for (const [s, e] of pieces) {
+    merge(f, pathFacts(file, s, e, v, hop))
+    for (const m of v.ids.slice(s, e).matchAll(CALLEE_RE)) { const c = byName.get(m[1]); if (c && c.name !== name) merge(f, memberFacts(file, c.name, hop)) }
+  }
+  return f.writes.size || f.egress.length || f.budget ? null : f
 }
 /** The kernel reactor (the files dispatchKernelEvent runs in) — the census's kernel-event consumer files. */
 const REACTOR_FILES = ["lib/kernel/event-reactor.ts", "lib/kernel/event-fanout.ts"]
@@ -719,6 +768,21 @@ interface Draft {
   /** WAVE 155 (lane 155R22): a hold DERIVED from a ledger another guard on the chain keeps (scripts/event-claims-ledger.ts
    *  EVENT_OWNER_HELD), applied by the population only where its own row has the shape the ledger holds — never typed here */
   heldWhy?: string
+  /** WAVE 155 (lane 155R22 part 2, rule B): the platform-role gate on the row's OWN path (token @ file:line) when it has no
+   *  tenant-seat gate there — derived by platformStaffDoorAt, never typed */
+  staffDoor?: string
+  /** rule C: the own-record write (table @ file:line) when every write of the path is an update / delete pinned to the session
+   *  user's own id — derived by ownRecordWriteAt */
+  ownRecord?: string
+}
+const STAFF_DOOR_Q = "Platform-staff acts: only platform_sentinel is a registered platform manager. Is a platform act owned by the tenant steward of what it touches (the Data Steward for credentials and connections), or by a platform manager? Until ruled: the act runs only for a platform role, is recorded in the staff audit log, and no manager performs it."
+const OWN_RECORD_Q = "The seat's own record (lane 155R18 owner decision 3): is a write pinned to the signed-in user's OWN rows that touches nothing else (marking one's own notifications read) a manager action that needs an owner and a receipt? Until ruled: it runs only on the caller's own rows, under the session, and no manager performs it."
+/** PURE (rules B / C) — the hold a derived door earns, from its final `missing` set: a staff door missing ONLY `owner`; an own-record
+ *  write decided by the session and missing nothing but `owner` / `evidence`. Anything else keeps its gap. */
+function derivedDoorHold(d: Pick<Draft, "staffDoor" | "ownRecord">, missing: Link[], decision: string | null): string | undefined {
+  if (d.staffDoor && missing.length === 1 && missing[0] === "owner") return `owner-held (platform-staff door: ${d.staffDoor}): ${STAFF_DOOR_Q}`
+  if (d.ownRecord && missing.includes("owner") && missing.every((m) => m === "owner" || m === "evidence") && !!decision?.startsWith("session actor")) return `owner-held (own record: ${d.ownRecord}): ${OWN_RECORD_Q}`
+  return undefined
 }
 
 // TABLE_MANAGER (imported below) gives the steward of each written table; the owner of a path is the steward of what it writes.
@@ -851,6 +915,93 @@ function delegatedWorkers(file: string, v: Views, fns: FnSpan[], from: number, t
   }
   return [...out.values()]
 }
+// WAVE 155 (lane 155R22 part 2, rule B) — THE PLATFORM-STAFF DOOR, DERIVED. A platform gate is a GATE-SHAPED function in lib/
+// (isNotAWorker's shapes, or a name ending Auth / Guard / Identity / Gate) whose own body reads the platform role (the literal
+// "platform_role", or a PLATFORM_RE token: requirePlatform*, isPlatformStaff*, requireSuperadmin*) — or calls such a gate, to a
+// fixpoint (requireProviders → requirePlatformCapability; requireSuperadminAuth → isPlatformSuperadminIdentity …). Nothing listed.
+let platformGates: Set<string> | null = null
+const gateShaped = (n: string) => isNotAWorker(n) || /(?:Auth|Guard|Identity|Gate)$/.test(n)
+function platformGateSet(): Set<string> {
+  if (platformGates) return platformGates
+  const set = new Set<string>()
+  const lib = FILES.filter((f) => f.startsWith("lib/"))
+  for (const f of lib) {
+    const v = views(f); if (!v || !/platform/i.test(v.ids) && !v.platformAt.length) continue
+    for (const fn of fnsOf(f)) if (gateShaped(fn.name) && (PLATFORM_RE.test(v.ids.slice(fn.start, fn.end)) || v.platformAt.some((x) => x >= fn.start && x < fn.end))) set.add(`${f}#${fn.name}`)
+  }
+  for (let round = 0, grew = true; grew && round < 6; round++) {
+    grew = false
+    for (const f of lib) {
+      const v = views(f); if (!v) continue
+      const imported = new Map<string, string>()
+      for (const e of edgesOf(f)) for (const p of e.pairs) if (p.local && p.name !== "*") imported.set(p.local, `${e.target}#${p.name}`)
+      for (const fn of fnsOf(f)) {
+        const key = `${f}#${fn.name}`; if (set.has(key) || !gateShaped(fn.name)) continue
+        const called = [...v.ids.slice(fn.start, fn.end).matchAll(CALLEE_RE)].map((m) => m[1])
+        if (called.some((n) => set.has(`${f}#${n}`) || set.has(imported.get(n) ?? ""))) { set.add(key); grew = true }
+      }
+    }
+  }
+  return (platformGates = set)
+}
+/** The platform-role gate on the OWN path [spans] of `file` (token @ file:line) when that path asks NO tenant-seat gate (an
+ *  authority-plane token — requireCallerTenant, getAgentContext … — or a tenant-seat session resolver); null otherwise. */
+function platformStaffDoorAt(file: string, v: Views, spans: Array<{ start: number; end: number }>): string | null {
+  const set = platformGateSet()
+  const imported = new Map<string, string>()
+  for (const e of edgesOf(file)) for (const p of e.pairs) if (p.local && p.name !== "*") imported.set(p.local, `${e.target}#${p.name}`)
+  let hit: string | null = null
+  for (const s of spans) {
+    const f = factsOfSpan(file, v, s.start, s.end)
+    if (f.gates.some((g) => g.token.startsWith("authority:")) || (f.session && /^(?:getAgentContext|requireCaller|requireActor|resolveActor)$/.test(f.session.token))) return null
+    // only a REFUSING call of a platform gate counts (refusingGateCall): `const g = await gate(…)` then `if (!g.ok …) return|throw`,
+    // or `if (!gate(…)) return|throw`. An admitting alternative (`if (sameTenant || isPlatformStaffIdentity(…)) {` —
+    // app/actions/self-book-showing.ts) and a bare platform_role read are not a staff-only door.
+    const ids = v.ids.slice(s.start, s.end)
+    const platRe = new RegExp(`^(?:${PLATFORM_RE.source.replace(/^\\b\(\?:|\)\\b$/g, "")})$`)
+    for (const m of ids.matchAll(CALLEE_RE)) {
+      const k = imported.get(m[1]) ?? `${file}#${m[1]}`
+      if (!(set.has(k) || platRe.test(m[1])) || !refusingGateCall(ids, m.index!, m[1])) continue
+      hit ??= `${m[1]} @ ${file}:${lineAt(v, s.start + m.index!)}`; break
+    }
+  }
+  return hit
+}
+/** PURE (rule B) — the call of `name` at `at` in `ids` REFUSES the act when it fails: it is the negated condition of an `if` that
+ *  returns / throws, or its awaited result is bound and then negated in such an `if` before anything else is called. */
+function refusingGateCall(ids: string, at: number, name: string): boolean {
+  if (/\bif\s*\([^(){}]*!\s*$/.test(ids.slice(Math.max(0, at - 60), at))) {
+    const open = ids.indexOf("(", at); const close = matchParen(ids, open)
+    const cond = ids.slice(ids.lastIndexOf("if", at), close)
+    const condEnd = matchParen(ids, ids.indexOf("(", ids.lastIndexOf("if", at)))
+    return !/\|\|[^!]*$/.test(cond.slice(0, at - ids.lastIndexOf("if", at))) && /^\s*\)\s*(?:\{\s*)?(?:return|throw)\b/.test(ids.slice(condEnd, condEnd + 40))
+  }
+  const b = /(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?$/.exec(ids.slice(Math.max(0, at - 60), at)); if (!b) return false
+  const after = ids.slice(matchParen(ids, ids.indexOf("(", at)) + 1, matchParen(ids, ids.indexOf("(", at)) + 300)
+  return new RegExp(`^[^]*?\\bif\\s*\\(\\s*!\\s*${reEsc(b[1])}\\b(?:\\.ok\\b)?[^{}]*?\\)\\s*(?:\\{\\s*)?(?:return|throw)\\b`).test(after)
+    || new RegExp(`^[^]*?\\bif\\s*\\(\\s*${reEsc(b[1])}\\s+instanceof\\s+\\w+\\s*\\)\\s*(?:\\{\\s*)?(?:return|throw)\\b`).test(after)
+}
+/** PURE-ish (rule C) — the own-record write of an export: every write the WHOLE path makes is in the export's own span, to one
+ *  table, each an `.update(` / `.delete(` (never an insert / upsert) whose chain pins `.eq("user_id", R.userId | R.id)` where R
+ *  is bound in that span as `const R = await <call>(` (not a parameter). Returns "table @ file:line" or null. */
+function ownRecordWriteAt(file: string, v: Views, fn: { start: number; end: number }, pathWrites: string[], code: string): string | null {
+  const own = factsOfSpan(file, v, fn.start, fn.end)
+  if (!pathWrites.length || pathWrites.length !== own.writes.size || pathWrites.some((t) => !own.writes.has(t)) || own.writes.size !== 1) return null
+  const W = new RegExp(WRITE_RE.source)
+  const span = code.slice(fn.start, fn.end)
+  const params = /\(([^)]*)\)/.exec(v.ids.slice(fn.start, fn.end))?.[1] ?? ""
+  let first: string | null = null
+  for (const s of v.froms) {
+    if (s.at < fn.start || s.at >= fn.end || !W.test(s.text)) continue
+    const rest = code.slice(s.at, fn.end); const stop = rest.search(/;|\n\s*\n|\n\s*(?:const|let|if|return|for|throw)\b/)
+    const chain = stop < 0 ? rest : rest.slice(0, stop)
+    if (/\.(?:insert|upsert)\s*\(/.test(chain) || !/\.(?:update|delete)\s*\(/.test(chain)) return null
+    const pin = /\.eq\(\s*["']user_id["']\s*,\s*([A-Za-z_$][\w$]*)\.(?:userId|id)\s*\)/.exec(chain)
+    if (!pin || new RegExp(`\\b${reEsc(pin[1])}\\b`).test(params) || !new RegExp(`\\b(?:const|let)\\s+${reEsc(pin[1])}\\s*=\\s*await\\s+[\\w$.]+\\s*\\(`).test(span)) return null
+    first ??= `${[...own.writes.keys()][0]} @ ${file}:${lineAt(v, s.at)}`
+  }
+  return first
+}
 function finish(d: Draft): Row {
   const f = d.facts
   const consequential = d.consequentialHint ?? (f.writes.size > 0 || f.egress.length > 0)
@@ -890,7 +1041,7 @@ function finish(d: Draft): Row {
     if (!readback) missing.push("readback")
   }
   if (notLive.length) missing.push("schema")
-  const heldWhy = OWNER_HELD[d.id] ?? d.heldWhy
+  const heldWhy = OWNER_HELD[d.id] ?? d.heldWhy ?? derivedDoorHold(d, missing, decision)
   const st: State = heldWhy ? "owner-held" : stateOf(missing)
   const planes = planesOf(d, d.lensTables ?? written)
   const surfaces = surfacesOf(d, d.lensTables ?? written)
@@ -1464,14 +1615,39 @@ function topLevelFns(v: Views): FnSpan[] {
  *  `new` of anything but Set / Map / RegExp / Date / URL, and no call but a pure builtin), or "unknown" (anything else — the
  *  caller keeps its whole-file fallback). Lane 155R16; controls: section G. */
 const DATA_CALLEES = /^(?:Object\.(?:freeze|fromEntries|entries|keys|values|assign)|Symbol|Array\.from|String|Number|Boolean|new\s+(?:Set|Map|RegExp|Date|URL))$/
+/** PURE — the top-level `const|let|var NAME[: <annotation, any number of lines>] =` of a file: the declaration's offset and the
+ *  offset just past its `=` (null when there is none). The annotation is walked at bracket depth (< > { } [ ] ( )); an `=>` inside it
+ *  (a function type) is skipped; an `=` at depth 0 starts the initializer. */
+function declInitAt(ids: string, n: string): { index: number; end: number } | null {
+  const h = new RegExp(`(?:^|\\n)\\s*(?:export\\s+)?(?:declare\\s+)?(?:const|let|var)\\s+${n}\\b\\s*`).exec(ids)
+  if (!h) return null
+  let i = h.index + h[0].length
+  if (ids[i] === "=") return ids[i + 1] === "=" || ids[i + 1] === ">" ? null : { index: h.index, end: i + 1 }
+  if (ids[i] !== ":") return null
+  let depth = 0
+  for (i++; i < ids.length && i - h.index < 20000; i++) {
+    const c = ids[i]
+    if (c === "<" || c === "{" || c === "[" || c === "(") depth++
+    else if (c === ">" && ids[i - 1] !== "=") depth--
+    else if (c === "}" || c === "]" || c === ")") depth--
+    else if (c === "=" && depth === 0) { if (ids[i + 1] === ">" || ids[i + 1] === "=") { i++; continue } return { index: h.index, end: i + 1 } }
+    else if (c === ";" && depth === 0) return null
+    if (depth < 0) return null
+  }
+  return null
+}
 function bindingKind(ids: string, name: string): "type" | "data" | "unknown" {
   const n = reEsc(name)
   if (new RegExp(`(?:^|\\n)\\s*(?:export\\s+)?(?:declare\\s+)?(?:interface\\s+${n}\\b|type\\s+${n}\\b[^=\\n]*=)`).test(ids)) return "type"
   if (new RegExp(`(?:^|\\n)\\s*(?:export\\s+)?(?:declare\\s+)?(?:const\\s+)?enum\\s+${n}\\b`).test(ids)) return "data"
-  const d = new RegExp(`(?:^|\\n)\\s*(?:export\\s+)?(?:declare\\s+)?(?:const|let|var)\\s+${n}\\s*(?::[^=\\n]+)?=(?![=>])`).exec(ids)
+  // WAVE 155 (lane 155R22 part 2): the type annotation may span LINES (`export const PROVIDER_METADATA: Record<ProviderName, {\n …\n }> = {`
+  // — lib/onboarding/integration-tester.ts). The one-line pattern missed it, the binding read "unknown", and the whole-file
+  // fallback credited the tester's callConnector to every importer of the constant (getIntegrationStatus / getMaskedCredentials
+  // read as P0 acts). The annotation is now scanned at bracket depth (<>{}[]()) to the `=` that starts the initializer. Control: G11.
+  const d = declInitAt(ids, n)
   if (!d) return "unknown"
   // the initializer: to the first `;` or line end at bracket depth 0 that does not continue the expression
-  let depth = 0, i = d.index + d[0].length, init = ""
+  let depth = 0, i = d.end, init = ""
   for (; i < ids.length && i - d.index < 20000; i++) {
     const c = ids[i]
     if (c === "(" || c === "[" || c === "{") depth++
@@ -2032,6 +2208,7 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
       source_event: hook ? "provider callback" : "HTTP request",
       trigger: hook ? (methods.length ? `external provider callback (${methods.join("/")})` : null) : callers.length ? `fetch from ${callers[0]}${callers.length > 1 ? ` (+${callers.length - 1})` : ""}` : null,
       worker: methods.length ? `${file} ${methods.join("/")}` : null, owner: ow.owner, ownerWhy: ow.why, facts,
+      staffDoor: ow.owner ? undefined : platformStaffDoorAt(file, v, [{ start: 0, end: v.ids.length }]) ?? undefined,
     })
   }
   blind.push("webhook triggers: a provider console registration cannot be read from code — an exported handler on a callback path is taken as reachable; http triggers count only in-repo `/api/…` literals (an external caller reads as no trigger — unresolved, not dead, CLAUDE.md §1)")
@@ -2064,6 +2241,9 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
         id: `server_action:${file}#${fn.name}`, kind: "server_action", entry: `${file}:${fn.line}`, action: fn.name, source_event: "UI / caller invocation (public server action)",
         trigger: callers.length ? `imported by ${callers[0]}${callers.length > 1 ? ` (+${callers.length - 1})` : ""}` : fixture ? `fixture caller` : sibling ? `called by ${sibling.name} (same module), imported by ${[...importers!.get(sibling.name)!][0]}` : null,
         worker: `${file} ${fn.name}`, owner: ow.owner, ownerWhy: ow.why, facts,
+        // WAVE 155 (lane 155R22 part 2): rules B and C — derived only for a row no owner rule resolved
+        staffDoor: ow.owner ? undefined : platformStaffDoorAt(file, v, closureSpans(fns, v, fn)) ?? undefined,
+        ownRecord: ow.owner ? undefined : ownRecordWriteAt(file, v, fn, [...facts.writes.keys()], fixture ? codeOf(file, fixture.raw) : codeOf(file)) ?? undefined,
       }
       if (!d.trigger) { d.elsewhere = []; orphanCandidates.push({ d, name: fn.name, file, start: fn.start, end: fn.end }) }
       drafts.push(d)
@@ -2111,6 +2291,11 @@ async function census(extraCron: Array<{ path: string; schedule: string }> = [],
   // WAVE 155 (lane 155R22) — the blind spots of this lane's rules, published beside the numbers (CLAUDE.md §2)
   blind.push("owner by the WORKER HOP (ownerOfDelegatedRead): only a log-only path whose own span read no stewarded table; the workers are the callees its own span calls minus gate / identity / ledger / carrier helpers — by NAME (isNotAWorker: the census's decision, gate and ledger-door tokens plus require*/gate*/check*/can*/evaluateOutbound*, get*Context, audit*/emit*/notify* … shapes) or by STRUCTURE (the helper's own body resolves the signed-in identity or asks an authority / policy gate). A gate named like a worker and doing neither is read as a worker; a worker that resolves the identity itself is dropped (its row stays open). ONE hop: a worker's own imports, a worker reached through a call result or a class, and a dynamic `.from(variable)` are invisible; exactly ONE steward across all workers resolves, two resolve nothing")
   blind.push("kernel-event holds DERIVED from scripts/event-claims-ledger.ts EVENT_OWNER_HELD apply only to an emitted, unconsumed, not-audit-proven row; audit-only proof also reads a local door ALIAS (`const emit = … emitKernelEvent`, file-level — not scope-aware), refuses a quoted event value that is neither inside a door call nor keyed `event:` (an activity_type of the same spelling), and accepts a CONDITIONAL_AUDIT entry re-verified against its named file (file-level: one verified expression covers every site of that event in that file)")
+  // WAVE 155 (lane 155R22 part 2) — rules A, B, C, E, F
+  blind.push("A: an imported DATA constant (a multi-line type annotation now read at bracket depth) carries nothing; a namespace import, `export *`, a default import, a class, or a const whose initializer calls a non-builtin still falls back to the target's whole-file facts (over-reports)")
+  blind.push("B: a platform-staff door = a row whose own path (export + same-file callees) reaches a DERIVED platform gate (a gate-shaped lib/ function whose body reads platform_role or a PLATFORM_RE token, to a fixpoint) and asks no authority-plane / tenant-seat token; held ONLY when `owner` is its one missing link. A platform check written inline without those tokens is invisible; a gate that is not gate-shaped by name is not derived")
+  blind.push("C: an own-record write = every write of the path in the export's own span, one table, update/delete only, pinned `.eq(\"user_id\", R.userId|R.id)` with R bound by `const R = await <call>(` — RLS-only pinning, a pin through a helper, or a pin on another column is invisible (the row stays open)")
+  blind.push("F: a callee block guarded by `if (<firstParam>.<flag> [&& …])` is dropped only when EVERY reference in the caller passes a literal `<flag>: false` in an object-literal first argument, the guard has no `||` / `?`, nothing reassigns the parameter or flag, and nothing consequential remains outside the guard; an inline `(await import(x)).fn(…)` call and a flag read through a destructured local are not evaluated")
   return { rows: rowsOut, denominators, blind, cronDrift, readOnlyExports, emitDoors: emitDoorsOut }
 }
 
@@ -2455,7 +2640,20 @@ async function main(): Promise<void> {
     `export async function plantedGateOnlyRead(id: string) { await requireSeat(id); ${logW} }`,
     `export async function plantedStructuralGateRead(id: string) { await loadScope(id); ${logW} }`,
     `export async function plantedTwoWorkers(id: string) { await loadThing(id); await loadOther(id); ${logW} }`].join("\n")
-  const c = await census([], [{ file: FX, raw: fxRaw }, { file: FX_ROUTE, raw: fxRouteRaw }, { file: FX_HOP, raw: fxHopRaw }])
+  // WAVE 155 (lane 155R22 part 2): the staff-door (B) and own-record (C) fixture (section G, G11)
+  const FX_P2 = "app/actions/__os_coverage_p2_fixture__.ts"
+  const sess2 = `const { data: { user } } = await supabase.auth.getUser()`
+  const fxP2Raw = [`"use server"`, `import { createServiceClient } from "@/lib/supabase/service"`,
+    `export async function plantedStaffLogOnly(id: string) { ${sess2}; const gate = await requirePlatformCapability("providers"); if (!gate.ok) return; await createServiceClient().from("superadmin_audit_log").insert({ action: id }) }`,
+    `export async function plantedTenantLogOnly(id: string) { ${sess2}; const t = await requireCallerTenant(id); await createServiceClient().from("superadmin_audit_log").insert({ action: id }) }`,
+    `export async function plantedStaffOwned(id: string) { ${sess2}; const gate = await requirePlatformCapability("providers"); if (!gate.ok) return; await createServiceClient().from("${hopA}").update({ x: id }).eq("id", id); await createServiceClient().from("superadmin_audit_log").insert({ action: id }) }`,
+    `export async function plantedStaffNoEvidence(id: string) { ${sess2}; const gate = await requirePlatformCapability("providers"); if (!gate.ok) return; await createServiceClient().from("notifications").insert({ title: id }) }`,
+    `export async function plantedOwnRecord(id: string) { ${sess2}; const ctx = await resolveWriteContext()\n  const { error } = await ctx.db.from("notifications").update({ is_read: true }).eq("id", id).eq("user_id", ctx.userId) }`,
+    `export async function plantedOtherRecord(target: string) { ${sess2}; const ctx = await resolveWriteContext()\n  const { error } = await ctx.db.from("notifications").insert({ user_id: target, title: "x" }) }`,
+    `export async function plantedParamPinned(input: { userId: string }) { ${sess2}\n  const { error } = await createServiceClient().from("notifications").update({ is_read: true }).eq("user_id", input.userId) }`,
+    `export async function plantedStaffAlternative(id: string) { ${sess2}; if (sameTenant || isPlatformStaffIdentity(u.user_type, u.platform_role)) { await createServiceClient().from("superadmin_audit_log").insert({ action: id }) } }`,
+    `export async function plantedStaffUnchecked(id: string) { ${sess2}; const gate = await requirePlatformCapability("providers"); await createServiceClient().from("superadmin_audit_log").insert({ action: id }) }`].join("\n")
+  const c = await census([], [{ file: FX, raw: fxRaw }, { file: FX_ROUTE, raw: fxRouteRaw }, { file: FX_HOP, raw: fxHopRaw }, { file: FX_P2, raw: fxP2Raw }])
   const isFixtureRow = (id: string) => id.includes("__os_coverage_")
   const fxRows = c.rows.filter((r) => r.id.startsWith(`server_action:${FX}`))
   const realRows = c.rows.filter((r) => !isFixtureRow(r.id))
@@ -2529,7 +2727,7 @@ async function main(): Promise<void> {
   // planted files) — a planted control moved a published number. Recounted here from realRows; the fixture files are subtracted.
   const realDen: Record<string, number> = { ...c.denominators }
   for (const k of Object.keys(realDen)) if (c.rows.some((r) => r.trigger_kind === k)) realDen[k] = realRows.filter((r) => r.trigger_kind === k).length
-  realDen["use-server modules scanned"] = (c.denominators["use-server modules scanned"] ?? 0) - [FX, FX_ROUTE, FX_HOP].length
+  realDen["use-server modules scanned"] = (c.denominators["use-server modules scanned"] ?? 0) - [FX, FX_ROUTE, FX_HOP, FX_P2].length
   c.denominators = realDen
   const out = render({ ...c, rows: realRows }, matrix)
   const mapSection = out.md.slice(out.md.indexOf("## 2."), out.md.indexOf("## 3."))
@@ -2880,6 +3078,48 @@ async function main(): Promise<void> {
       && !conditionalAuditVerified("commission_calculated", "lib/kernel/financial.ts", fin.replace(/auditOnly:\s*nextStatus !== "approved"/g, "auditOnly: false")) && !conditionalAuditVerified("contact_archived", "lib/kernel/financial.ts", fin))
     check("G10 POSITIVE CONTROL (the alias finder still sees its shape in the tree): some runtime file binds a local alias of a kernel emit door",
       FILES.some((f) => { const v = views(f); return !!v && v.ids.includes("emitKernelEvent") && doorAliases(v.ids, c.emitDoors ?? ["emitKernelEvent"]).names.length > 0 }))
+
+    // G11 — lane 155R22 part 2. A: a constant with a MULTI-LINE annotation is data (it executes nothing in its module)
+    const bk = (src: string, n: string) => bindingKind(blankStrings(src), n)
+    check("G11 A PURE: a const whose type annotation spans lines and whose initializer is an object literal is DATA — NEGATIVE: a multi-line-annotated FUNCTION, and a multi-line-annotated call result, stay unknown (the whole-file fallback keeps them)",
+      bk(`export const META: Record<string, {\n  label: string\n  fields: Array<{ key: string }>\n}> = {\n  a: { label: "x", fields: [] },\n}\n`, "META") === "data"
+      && bk(`export const send: (\n  x: string,\n) => Promise<void> = async (x) => { await dispatchEmail(x) }\n`, "send") === "unknown"
+      && bk(`export const client: Record<string,\n  string> = makeClient()\n`, "client") === "unknown")
+    const IT = "lib/onboarding/integration-tester.ts"
+    check("G11 A POSITIVE: importing the tester's data constant (PROVIDER_METADATA) carries NOTHING — NEGATIVE: CALLING its function (testIntegration) carries the connector send, and a namespace / unknown binding still over-reports the whole file",
+      memberFacts(IT, "PROVIDER_METADATA", 1).egress.length === 0 && memberFacts(IT, "PROVIDER_METADATA", 1).writes.size === 0
+      && memberFacts(IT, "testIntegration", 1).egress.length > 0 && memberFacts(IT, "*", 1).egress.length > 0)
+    // B: the platform-staff door
+    const p2 = (n: string) => c.rows.find((r) => r.id === `server_action:${FX_P2}#${n}`)
+    check("G11 B POSITIVE: a platform-gated (requirePlatformCapability) log-only action missing ONLY owner is OWNER_HELD with the staff-door question verbatim",
+      p2("plantedStaffLogOnly")?.classification === "OWNER_HELD" && !!p2("plantedStaffLogOnly")?.why.includes(STAFF_DOOR_Q), JSON.stringify([p2("plantedStaffLogOnly")?.classification, p2("plantedStaffLogOnly")?.missing]))
+    check("G11 B NEGATIVE: the same action behind a TENANT gate (requireCallerTenant) stays an EXECUTABLE_GAP; a staff act with a derivable owner keeps that owner; a staff act that also misses evidence stays a gap",
+      p2("plantedTenantLogOnly")?.classification === "EXECUTABLE_GAP" && p2("plantedStaffOwned")?.registered_manager === TABLE_MANAGER[hopA] && p2("plantedStaffOwned")?.state !== "owner-held"
+      && p2("plantedStaffNoEvidence")?.classification === "EXECUTABLE_GAP" && !!p2("plantedStaffNoEvidence")?.missing.includes("evidence"),
+      JSON.stringify([p2("plantedTenantLogOnly")?.classification, p2("plantedStaffOwned")?.registered_manager, p2("plantedStaffNoEvidence")?.classification]))
+    check("G11 B NEGATIVE: a platform check that only ADMITS as an alternative (`sameTenant || isPlatformStaffIdentity(…)`), and a platform gate whose result is never checked, are not staff-only doors",
+      p2("plantedStaffAlternative")?.classification === "EXECUTABLE_GAP" && p2("plantedStaffUnchecked")?.classification === "EXECUTABLE_GAP",
+      JSON.stringify([p2("plantedStaffAlternative")?.classification, p2("plantedStaffUnchecked")?.classification]))
+    check("G11 B PURE: refusingGateCall sees `if (!gate(…)) return` and `const g = await gate(…); if (!g.ok) return` — NEGATIVE: `if (a || gate(…)) {` and an unchecked binding",
+      refusingGateCall(`if (!platformStaffCan(role, "p")) return { ok: false }`, 5, "platformStaffCan") && refusingGateCall(`const g = await gateX("t")\n  if (!g.ok || !g.userId) return g`, 16, "gateX")
+      && !refusingGateCall(`if (a || gateX(b)) { go() }`, 9, "gateX") && !refusingGateCall(`const g = await gateX("t")\n  go(g)`, 16, "gateX"))
+    const pg = platformGateSet()
+    check(`G11 B DERIVED: the platform gates are derived from what their bodies read (${pg.size}): gateStaffAction and requireProviders (which only calls requirePlatformCapability) are in — NEGATIVE: a non-gate-shaped function that reads platform_role is not`,
+      pg.has("lib/platform/staff-action-gate.ts#gateStaffAction") && pg.has("lib/auth/platform-guard.ts#requireProviders")
+      && FILES.some((f) => f.startsWith("lib/") && fnsOf(f).some((fn) => !gateShaped(fn.name) && (views(f)?.platformAt ?? []).some((x) => x >= fn.start && x < fn.end) && !pg.has(`${f}#${fn.name}`))))
+    // C: the own-record write
+    check("G11 C POSITIVE: an update pinned to the session-resolved user's id, touching nothing else, is held with the own-record question — NEGATIVE: an insert for ANOTHER user, and a pin to a PARAMETER's userId, are not",
+      p2("plantedOwnRecord")?.classification === "OWNER_HELD" && !!p2("plantedOwnRecord")?.why.includes(OWN_RECORD_Q)
+      && p2("plantedOtherRecord")?.classification !== "OWNER_HELD" && p2("plantedParamPinned")?.classification !== "OWNER_HELD",
+      JSON.stringify([p2("plantedOwnRecord")?.classification, p2("plantedOwnRecord")?.missing, p2("plantedOtherRecord")?.classification, p2("plantedParamPinned")?.classification]))
+    // F: a write behind a literal-false flag
+    check("G11 F PURE: every call passing `markUsed: false` yields that flag — NEGATIVE: a variable argument, a call without it, or the function passed on yields nothing",
+      falseFlagsAt(`const { pickX } = await import("x")\nconst r = await pickX({ id, markUsed: false, limit: 2 })`, "pickX").join() === "markUsed"
+      && falseFlagsAt(`await pickX({ markUsed: flag })`, "pickX").length === 0 && falseFlagsAt(`await pickX({ markUsed: false })\nawait pickX({ id })`, "pickX").length === 0
+      && falseFlagsAt(`await pickX({ markUsed: false })\nrun(pickX)`, "pickX").length === 0)
+    const TB = "lib/content-intel/topic-bank.ts"
+    check("G11 F POSITIVE: pickTopics with markUsed false carries no write (its update and logTopicUses sit under `if (args.markUsed && …)`) — NEGATIVE: without the flag the full callee still writes, and a flag no guard names proves nothing",
+      falseFlagGatedFacts(TB, "pickTopics", 1, ["markUsed"])?.writes.size === 0 && memberFacts(TB, "pickTopics", 1).writes.size > 0 && falseFlagGatedFacts(TB, "pickTopics", 1, ["__no_such_flag__"]) === null)
   }
 
   const st = { working: 0, partial: 0, missing: 0, "owner-held": 0 } as Record<State, number>
