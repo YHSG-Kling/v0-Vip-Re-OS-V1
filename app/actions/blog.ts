@@ -260,14 +260,25 @@ export async function publishBlogPost(
   const supabase = await createClient()
   const { data: post } = await supabase
     .from("blog_posts")
-    .select("id, brokerage_id, slug, publish_status, publish_target, content")
+    .select("id, brokerage_id, slug, publish_status, publish_target, content, featured_image_url")
     .eq("id", postId)
     .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
-  const p = post as { id: string; brokerage_id: string; slug: string; publish_status: string; publish_target: string; content: string | null } | null
+  const p = post as { id: string; brokerage_id: string; slug: string; publish_status: string; publish_target: string; content: string | null; featured_image_url?: string | null } | null
   if (!p) return { success: false, error: "Blog post not found" }
   if (p.publish_status !== "approved" && p.publish_status !== "published") {
     return { success: false, error: "Post must be approved before publishing" }
+  }
+  // MERGED FROM THE RETIRED KERNEL DUPLICATE (wave 155; lib/kernel/marketing.ts publishBlogPost): an empty post is not published.
+  if (!String(p.content ?? "").trim()) return { success: false, error: "Cannot publish a post with no content." }
+  // WAVE 155 (lane 155J — carries lane 155D Outside-lane 5): a featured image that is a studio asset publishes only while
+  // its own approval holds (edited, regenerated or rejected since approval refuses — approval-authority.ts
+  // marketingApprovalReopened). A refused read refuses (fail closed).
+  {
+    const { refuseReopenedMarketingAssets } = await import("@/lib/kernel/approval-authority")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const media = await refuseReopenedMarketingAssets(createServiceClient() as any, actor.brokerageId, [p.featured_image_url ?? null])
+    if (!media.ok) return { success: false, error: `Not published — ${media.reason}` }
   }
   // THE VERSION THAT WENT OUT (owner ruling 20 — wave 145, lane 145Z; lane 145G Outside-lane 4): after the post is live, its exact
   // content is recorded against its humanized final — the person publishing an approved post is the approval evidence.

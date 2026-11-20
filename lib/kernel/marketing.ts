@@ -879,42 +879,15 @@ export async function previewBlogPost(params: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 11. publishBlogPost
+// 11. publishBlogPost — RETIRED (wave 155)
 //
-// Transitions a blog post from draft → published.
-// Business rule: previewBlogPost must show preview_ready before this.
-// Input:  postId, brokerageId, userId
-// Output: void
-// Tables write: blog_posts (publish_status=published, published_at=now)
+// TOMBSTONE (§1.1). This was a SECOND blog publish door: re-exported from lib/kernel/index.ts and called by nothing. It
+// moved a post from any status straight to "published" on a service client, with the tenant taken from its argument and
+// no approval check — the one door the approval rules did not cover (lane 155J named it as the unwired gap in its
+// reopened-approval rule). SURVIVOR: app/actions/blog.ts:253 publishBlogPost — the session actor, the tenant from the
+// session, "approved before publishing", the reopened studio-asset check, and the record of the version that went out.
+// Merged onto the survivor FIRST: this door's one check the survivor lacked — a post with no content is not published.
 // ─────────────────────────────────────────────────────────────────────────────
-
-export async function publishBlogPost(params: {
-  postId:      string
-  brokerageId: string
-  userId:      string
-}): Promise<KernelMarketingResult<void>> {
-  const supabase = await createServiceClient()
-
-  const { data: post } = await supabase
-    .from("blog_posts")
-    .select("publish_status, content, title")
-    .eq("id", params.postId)
-    .eq("brokerage_id", params.brokerageId)
-    .maybeSingle()
-
-  if (!post) return { success: false, error: "Post not found." }
-  if (!post.content) return { success: false, error: "Cannot publish a post with no content." }
-  if (post.publish_status === "published") return { success: false, error: "Post is already published." }
-
-  const { error } = await supabase
-    .from("blog_posts")
-    .update({ publish_status: "published", published_at: new Date().toISOString() })
-    .eq("id", params.postId)
-    .eq("brokerage_id", params.brokerageId)
-
-  if (error) return { success: false, error: error.message }
-  return { success: true }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 12. createVideoProject — MOVED (wave 85F)

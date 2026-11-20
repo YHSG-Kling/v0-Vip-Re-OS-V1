@@ -834,6 +834,14 @@ export default function QRCodesClient({
                   {activity.data.summary.unclassified ? ` · ${activity.data.summary.unclassified} older ${activity.data.summary.unclassified === 1 ? 'scan' : 'scans'} not classified` : ''}.
                   A scan never creates a Contact; appointments and closings appear in your ROI report only when they are linked.
                 </p>
+                {/* WAVE 155 (155J): scans that reached this code while it could not answer — the code's state only, never the scanner. */}
+                <p className="text-[11px] text-muted-foreground">
+                  {activity.data.refusedScans === null || activity.data.refusedScans === undefined
+                    ? 'Scans while paused or retired: not measured right now.'
+                    : activity.data.refusedScans.total === 0
+                      ? 'No one scanned this code while it was paused, expired or retired.'
+                      : `${activity.data.refusedScans.total} ${activity.data.refusedScans.total === 1 ? 'scan' : 'scans'} reached this code while it could not answer (${Object.entries(activity.data.refusedScans.byState).map(([k, v]) => `${v} ${k}`).join(', ')})${activity.data.refusedScans.lastAt ? `, latest ${new Date(activity.data.refusedScans.lastAt).toLocaleDateString()}` : ''} — those visitors saw the friendly page, and nothing about them was saved.`}
+                </p>
                 {activity.data.history.length > 0 && (
                   <div className="space-y-1">
                     <p className="text-xs font-semibold text-foreground">Destination history</p>

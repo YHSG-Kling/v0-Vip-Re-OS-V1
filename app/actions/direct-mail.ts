@@ -229,6 +229,13 @@ export async function getMailCampaigns(brokerageId: string) {
 // all — a bare .eq("id", …) leaning entirely on RLS. Nothing to merge.
 // See docs/orphan-burndown-slice3.md.
 
+/** WAVE 155 (155J): the printed / spent fields of a mail campaign — a change to one re-opens an approval (not exported: "use server"). */
+const MAIL_CAMPAIGN_SUBSTANTIVE_FIELDS = ["design_url", "target_audience", "quantity", "per_piece_cost"] as const
+function mailCampaignEditReopensApproval(existing: Record<string, unknown>, patch: Record<string, unknown>): boolean {
+  if (String(existing.approval_status ?? "") !== "approved") return false
+  return MAIL_CAMPAIGN_SUBSTANTIVE_FIELDS.some((k) => k in patch && String(patch[k] ?? "") !== String(existing[k] ?? ""))
+}
+
 /**
  * Updates a campaign. Only allowed when status is 'planning'.
  */
@@ -249,15 +256,23 @@ export async function updateMailCampaign(
       return { success: false, error: "Invalid campaign ID" }
     }
 
+    // WAVE 155 (lane 155J): tenant from the SESSION (§4) — this read and update were pinned by id alone.
+    const actor = await getAgentContext()
+    if (!actor.isAuthenticated || !actor.userId || !actor.brokerageId) {
+      return { success: false, error: "Not signed in to a brokerage" }
+    }
     const supabase = await createClient()
 
     // Check current status
-    const { data: existing } = await supabase
+    const { data: existing, error: existingErr } = await supabase
       .from("direct_mail_campaigns")
-      .select("status")
+      .select("status, approval_status, design_url, target_audience, quantity, per_piece_cost")
       .eq("id", campaignId)
+      .eq("brokerage_id", actor.brokerageId)
       .maybeSingle()
 
+    if (existingErr) return { success: false, error: `Could not read the campaign: ${existingErr.message}` }
+    if (!existing) return { success: false, error: "Campaign not found" }
     if (existing?.status === "mailed") {
       return { success: false, error: "Cannot update a mailed campaign" }
     }
@@ -271,14 +286,26 @@ export async function updateMailCampaign(
     if (updates.perPieceCost !== undefined) updatePayload.per_piece_cost = updates.perPieceCost
     if (updates.status !== undefined) updatePayload.status = updates.status
 
+    // WAVE 155 (lane 155J — the stale-approval half of lane 155D Outside-lane 5): an APPROVED campaign whose printed design,
+    // audience, quantity or unit cost changes is no longer the piece a person approved. The approval RE-OPENS here, at the
+    // writer, so sendCampaign's approval gate (campaignSendGate) refuses it until it is approved again — before, the edit
+    // kept approval_status 'approved' and the next Send printed what nobody had approved.
+    if (mailCampaignEditReopensApproval(existing as Record<string, unknown>, updatePayload)) {
+      updatePayload.approval_status = "pending"
+      updatePayload.approved_at = null
+      updatePayload.approved_by_user_id = null
+    }
+
     const { data, error } = await supabase
       .from("direct_mail_campaigns")
       .update(updatePayload)
       .eq("id", campaignId)
+      .eq("brokerage_id", actor.brokerageId)
       .select()
       .maybeSingle()
 
     if (error) throw error
+    if (!data) return { success: false, error: "Campaign not found" }
 
     revalidatePath("/dashboard/campaigns/mail")
     return { success: true, campaign: data }
@@ -942,6 +969,16 @@ export async function sendCampaign(params: SendCampaignParams) {
 
     if (campaign.status === "mailed") {
       return { success: false, error: "Campaign already mailed" }
+    }
+
+    // ── WAVE 155 (lane 155J — carries lane 155D Outside-lane 5): THE PRINTED DESIGN'S OWN APPROVAL STILL HOLDS ──
+    // When the design is a studio asset (marketing_assets.asset_url / thumbnail_url), that asset's approval must not have
+    // re-opened since — edited after approval, regenerated, or rejected (approval-authority.ts marketingApprovalReopened,
+    // the same rule the catalog shows). A refused read refuses the release (fail closed).
+    {
+      const { refuseReopenedMarketingAssets } = await import("@/lib/kernel/approval-authority")
+      const designCheck = await refuseReopenedMarketingAssets(createServiceClient() as any, params.brokerageId, [campaign.design_url as string | null])
+      if (!designCheck.ok) return { success: false, error: `Not mailed — ${designCheck.reason}`, gate: "stale_approval" }
     }
 
     // ── WAVE 154 (lane 154H2, carrying lane 154G2's request 1): A PRINTED QR MUST HAVE A LIVE DESTINATION — AT THE WRITER ──

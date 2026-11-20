@@ -437,6 +437,49 @@ export function readApprovalStamp(metadata: unknown): { fingerprint: string; sco
   const x = m as Record<string, unknown>
   return typeof x.fingerprint === "string" ? { fingerprint: x.fingerprint, scopeKey: typeof x.scope_key === "string" ? x.scope_key : "", approvedBy: typeof x.approved_by === "string" ? x.approved_by : null, approvedAt: typeof x.approved_at === "string" ? x.approved_at : null, authority: typeof x.authority === "string" ? x.authority : null } : null
 }
+/**
+ * WAVE 155 (lane 155J — carries lane 155D Outside-lane 5): PURE — is a marketing_assets row's approval RE-OPENED? The ONE
+ * rule the catalog's status and every send / publish door read (never a second spelling):
+ *   · rejected .................................................. refused (a person said no);
+ *   · stamped (approveAsset recorded a version) and the row is no longer `approved` — a writer re-opened it (e.g. the
+ *     screenshot regen that replaces the pixels resets it to pending) ............................. re-opened;
+ *   · stamped, still `approved`, but the substantive content differs from the stamped version .... re-opened (edited);
+ *   · no stamp (a pre-wave-155 approval, or never approved) ...................................... NOT re-opened — its
+ *     staleness is unknown, and whether an unapproved piece may go out is the door's own approval rule, not this one.
+ */
+export function marketingApprovalReopened(row: { approval_status?: unknown; metadata?: unknown } & Record<string, unknown>): { reopened: boolean; reason: string | null } {
+  const status = String(row.approval_status ?? "")
+  if (status === "rejected") return { reopened: true, reason: "it was rejected" }
+  const stamp = readApprovalStamp(row.metadata)
+  if (!stamp) return { reopened: false, reason: null }
+  if (status !== "approved") return { reopened: true, reason: "it changed after it was approved and is waiting for approval again" }
+  if (stamp.fingerprint !== marketingAssetFingerprint(row)) return { reopened: true, reason: "it was edited after it was approved" }
+  return { reopened: false, reason: null }
+}
+
+/**
+ * WAVE 155 (lane 155J): THE DOOR CHECK — before a send / publish puts a studio asset in front of anyone (direct mail's
+ * design, a social post's media, a blog's featured image), the tenant's marketing_assets rows whose asset_url or
+ * thumbnail_url IS one of those URLs are read, and an asset whose approval is re-opened (marketingApprovalReopened)
+ * refuses the door. Tenant-pinned; a refused read refuses (fail closed, §4 — "nobody checked" never reads as approved).
+ * A URL that names no studio asset (a listing photo, an upload) is not this rule's to judge.
+ */
+export async function refuseReopenedMarketingAssets(client: Db, brokerageId: string, urls: ReadonlyArray<string | null | undefined>): Promise<{ ok: true; matched: number } | { ok: false; reason: string; assetIds: string[] }> {
+  const want = [...new Set(urls.map((u) => String(u ?? "").trim()).filter(Boolean))]
+  if (!brokerageId) return { ok: false, reason: "no tenant — the approval of this piece's media could not be checked", assetIds: [] }
+  if (want.length === 0) return { ok: true, matched: 0 }
+  const cols = `id, approval_status, metadata, ${MARKETING_ASSET_SUBSTANTIVE_FIELDS.join(", ")}`
+  const rows: Array<Record<string, unknown>> = []
+  for (const col of ["asset_url", "thumbnail_url"]) {
+    const { data, error } = await client.from("marketing_assets").select(cols).eq("brokerage_id", brokerageId).in(col, want)
+    if (error) return { ok: false, reason: `the approval of this piece's media could not be read (${error.message}) — nothing was sent`, assetIds: [] }
+    for (const r of (data ?? []) as Array<Record<string, unknown>>) if (!rows.some((x) => x.id === r.id)) rows.push(r)
+  }
+  const bad = rows.map((r) => ({ id: String(r.id), v: marketingApprovalReopened(r) })).filter((x) => x.v.reopened)
+  if (bad.length) return { ok: false, reason: `this piece uses a studio asset whose approval no longer holds — ${bad[0].v.reason}. Re-approve it, then send.`, assetIds: bad.map((x) => x.id) }
+  return { ok: true, matched: rows.length }
+}
+
 export const marketingScopeKey = (a: Pick<MarketingArtifactScope, "brokerageId" | "actsFor" | "teamId" | "ownerUserId">) => `${a.brokerageId}|${a.actsFor ?? "owner"}|${a.teamId ?? ""}|${a.actsFor ? "" : a.ownerUserId ?? ""}`
 
 /** PURE: parse organization_members.permissions into a delegation (or null). */

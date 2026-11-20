@@ -124,6 +124,19 @@ export default async function CampaignROIPage({
     agents = agentData || []
   }
 
+  // Wave 155 (lane 155J — carries lane 155F request 2): the client-question loop's results, a READER only (null = unmeasured,
+  // never 0), for the tenant-wide view (the same rule as the channel rows: a narrower seat does not see the tenant's totals).
+  // Dynamic import: the reader is not pulled into this page's static graph.
+  let clientQuestions: import("@/lib/customer-intelligence/website-question-topics").QuestionLoopMetrics | null = null
+  if (channelVisible) {
+    try {
+      const { readQuestionLoopMetrics } = await import("@/lib/customer-intelligence/website-question-topics")
+      clientQuestions = await readQuestionLoopMetrics(createServiceClient(), { brokerageId: profile.brokerage_id })
+    } catch (e) {
+      console.error("[campaigns/roi] client-question results not read:", (e as Error)?.message ?? e)
+    }
+  }
+
   return (
     <ROIDashboardClient
       userId={user.id}
@@ -139,6 +152,8 @@ export default async function CampaignROIPage({
       outcomes={outcomes.ok ? outcomes.ledger : null}
       outcomesError={outcomes.ok ? null : outcomes.error}
       outcomesCsv={outcomes.ok ? roiOutcomeCsv(outcomes.ledger) : null}
+      clientQuestions={clientQuestions}
+      canDecideRecommendations={TENANT_ADMIN_USER_TYPES.has(profile.user_type ?? "")}
     />
   )
 }

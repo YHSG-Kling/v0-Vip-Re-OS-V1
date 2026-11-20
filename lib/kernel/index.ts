@@ -445,7 +445,7 @@ export {
   previewDirectMailAsset,
   submitDirectMailCampaign,
   previewBlogPost,
-  publishBlogPost,
+  // publishBlogPost — RETIRED (wave 155): the unwired second blog door. SURVIVOR: app/actions/blog.ts:253 publishBlogPost.
   previewVideoProject,
   distributeVideoAsset,
   previewPodcastEpisode,

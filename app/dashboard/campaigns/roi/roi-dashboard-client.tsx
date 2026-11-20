@@ -4,6 +4,9 @@ import { useState, useMemo, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { ROI_WINDOW_OPTIONS, isRoiWindowKey, resolveRoiWindow, type RoiWindowKey } from "./roi-window"
+// Wave 155 (lane 155J): the reader's one write — decline a recommendation with why (recorded in the proposal kernel).
+import { declineRoiRecommendation } from "./actions"
+import type { QuestionLoopMetrics } from "@/lib/customer-intelligence/website-question-topics"
 import {
   Card,
   CardContent,
@@ -152,6 +155,10 @@ interface ROIDashboardClientProps {
   outcomesError?: string | null
   /** The CSV built on the server from the SAME ledger object — the export cannot disagree with this page. */
   outcomesCsv?: string | null
+  /** Wave 155 (155J, carrying 155F): the client-question loop's measured results (tenant view only); null = not measured. */
+  clientQuestions?: QuestionLoopMetrics | null
+  /** Wave 155 (155J): the session seat is on TENANT_ADMIN_USER_TYPES (decided on the server; the action re-checks it). */
+  canDecideRecommendations?: boolean
 }
 
 export function ROIDashboardClient({
@@ -168,6 +175,8 @@ export function ROIDashboardClient({
   outcomes = null,
   outcomesError = null,
   outcomesCsv = null,
+  clientQuestions = null,
+  canDecideRecommendations = false,
 }: ROIDashboardClientProps) {
   const router = useRouter()
   const [refreshing, setRefreshing] = useState(false)
@@ -238,7 +247,7 @@ export function ROIDashboardClient({
       // Wave 152: an N/A return stays null (no bar) — charting it as 0% drew a number the data does not have.
       roi: ch.roi_percentage ?? null,
       spend: ch.spend ?? 0,
-      leads: ch.leads ?? 0,
+      leads: ch.leads ?? null,
       conversions: ch.conversions ?? 0,
     }))
   }, [channelPerformance])
@@ -389,7 +398,7 @@ export function ROIDashboardClient({
         {/* Outcomes Tab — wave 152 (152B): the authorized ROI outcome ledger, every number with its reason */}
         <TabsContent value="outcomes" className="space-y-4">
           {outcomes ? (
-            <OutcomesPanel ledger={outcomes} csv={outcomesCsv} windowLabel={windowLabel} />
+            <OutcomesPanel ledger={outcomes} csv={outcomesCsv} windowLabel={windowLabel} clientQuestions={clientQuestions} canDecide={canDecideRecommendations} />
           ) : (
             <Card>
               <CardContent className="py-8 text-center text-muted-foreground">
@@ -697,7 +706,7 @@ export function ROIDashboardClient({
                       <TableCell className="text-right">
                         {ch.spend == null ? <span className="text-muted-foreground">Unknown</span> : `$${Number(ch.spend).toLocaleString()}`}
                       </TableCell>
-                      <TableCell className="text-right">{ch.leads ?? 0}</TableCell>
+                      <TableCell className="text-right">{ch.leads == null ? <span className="text-muted-foreground" title="No ledger measures this channel's leads (wave 155) — unmeasured, not zero">Unknown</span> : ch.leads}</TableCell>
                       <TableCell className="text-right">
                         {ch.conversions ?? 0}
                       </TableCell>
@@ -821,7 +830,7 @@ export function ROIDashboardClient({
 // never mixed, every N/A with its reason, a "why this number?" per campaign, Contact → deal journeys with their
 // evidence rows, provider economics, and recommendations that change nothing until a person acts. The CSV is the
 // server's serialization of the same object, so the download cannot disagree with what is on screen.
-function OutcomesPanel({ ledger, csv, windowLabel }: { ledger: RoiOutcomeLedger; csv: string | null; windowLabel: string }) {
+function OutcomesPanel({ ledger, csv, windowLabel, clientQuestions = null, canDecide = false }: { ledger: RoiOutcomeLedger; csv: string | null; windowLabel: string; clientQuestions?: QuestionLoopMetrics | null; canDecide?: boolean }) {
   const download = () => {
     if (!csv) return
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }))
@@ -1086,12 +1095,66 @@ function OutcomesPanel({ ledger, csv, windowLabel }: { ledger: RoiOutcomeLedger;
                 <p className="text-[11px] text-muted-foreground">
                   {r.comparableSample ? `Compared with ${r.comparableSample} similar campaign(s). ` : ""}Evidence: {r.evidence.slice(0, 3).join(", ") || "—"}
                 </p>
+                {canDecide && <DeclineRecommendation kind={r.kind} campaignId={r.campaignId} />}
               </div>
             ))}
+            {ledger.declinedRecommendations && ledger.declinedRecommendations.length > 0 && (
+              <div className="pt-2">
+                <p className="text-xs font-semibold">Declined by your team — not suggested again</p>
+                <ul className="text-[11px] text-muted-foreground space-y-0.5">
+                  {ledger.declinedRecommendations.slice(0, 10).map((d) => (
+                    <li key={d.proposalId}>{d.kind.replace(/_/g, " ")}{d.campaignId ? " (one campaign)" : ""}: {d.reason ?? "no reason recorded"}{d.decidedAt ? ` · ${new Date(d.decidedAt).toLocaleDateString()}` : ""}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </CardContent>
         </Card>
+        {/* Wave 155 (155J, carrying 155F request 2): the client-question loop's results. Every unmeasured figure reads "Not measured". */}
+        <ClientQuestionsCard metrics={clientQuestions} />
       </div>
     </div>
+  )
+}
+
+function DeclineRecommendation({ kind, campaignId }: { kind: string; campaignId: string | null }) {
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState("")
+  const [msg, setMsg] = useState<string | null>(null)
+  const [pending, start] = useTransition()
+  if (msg) return <p className="text-[11px] text-muted-foreground pt-1">{msg}</p>
+  if (!open) return <Button variant="ghost" size="sm" className="h-9 px-3 text-xs" onClick={() => setOpen(true)}>Not useful</Button>
+  return (
+    <div className="flex flex-wrap items-center gap-2 pt-1">
+      <input aria-label="Why this recommendation is not useful" className="h-9 flex-1 min-w-[160px] rounded border px-2 text-xs bg-background" placeholder="Why not? (it will not be suggested again)" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
+      <Button size="sm" className="h-9 px-3 text-xs" disabled={pending || reason.trim().length < 3}
+        onClick={() => start(async () => { const r = await declineRoiRecommendation({ kind, campaignId, reason }); setMsg(r.ok ? "Declined — it will not be suggested again." : r.error) })}>
+        Decline
+      </Button>
+    </div>
+  )
+}
+
+function ClientQuestionsCard({ metrics }: { metrics: QuestionLoopMetrics | null }) {
+  const nm = <span className="text-muted-foreground">Not measured</span>
+  const themes = metrics ? Object.entries(metrics.repeatAskersByTheme).sort((a, b) => b[1] - a[1]).slice(0, 5) : []
+  return (
+    <Card>
+      <CardHeader><CardTitle className="text-base">Client questions</CardTitle><CardDescription>Questions from your portal, website chat and home assistant — answered from the record, or a person asked once.</CardDescription></CardHeader>
+      <CardContent className="space-y-1 text-sm">
+        {!metrics ? <p className="text-muted-foreground">Client-question results are shown on the brokerage-wide view.</p> : (
+          <>
+            <p>Median time to an authoritative answer: {metrics.medianHoursToAuthoritativeAnswer == null ? nm : `${metrics.medianHoursToAuthoritativeAnswer.toFixed(1)} h`}</p>
+            <p>Open question tasks: {metrics.openQuestionTasks} · reopened: {metrics.reopenedQuestionTasks} · knowledge to repair: {metrics.openKnowledgeRepairs}</p>
+            <p>Repeat askers ({metrics.windowDays} days): {themes.length ? themes.map(([t, n]) => `${t} ${n}`).join(", ") : nm}</p>
+            {metrics.repeatsAroundPublication.slice(0, 5).map((r) => (
+              <p key={r.theme} className="text-xs text-muted-foreground">After the {r.theme} topic went out: {r.before} askers before · {r.after == null ? "not measurable yet" : `${r.after} after`}</p>
+            ))}
+            {metrics.blindSpots.map((b) => <p key={b} className="text-[11px] text-muted-foreground">{b}</p>)}
+          </>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

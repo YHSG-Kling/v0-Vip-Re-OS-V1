@@ -699,7 +699,9 @@ export async function recalculateChannelPerformance(
   brokerageId: string,
   windowStart: string, // YYYY-MM-DD
   windowEnd: string,   // YYYY-MM-DD
-  useServiceClient = false
+  useServiceClient = false,
+  /** Proof seam (scripts/marketing-attribution-guard.ts): an injected client; production callers omit it. */
+  client?: any,
 ): Promise<{
   success: boolean
   error?: string
@@ -707,21 +709,29 @@ export async function recalculateChannelPerformance(
     channel_type: string
     /** NULL when the channel has no spend ledger (unknown, never $0) — wave 152. */
     spend: number | null
-    leads: number
+    /** NULL when no ledger MEASURES this channel's leads (wave 155: newsletter) — unmeasured, never an estimate and never 0. */
+    leads: number | null
     conversions: number
     /** Earned commission on deals closed in the window that this channel's campaigns sourced; NULL when not established. */
     revenue: number | null
     roi_percentage: number | null
   }>
+  /**
+   * WAVE 155 (lane 155J — owner R9; carries lane 155D Outside-lane 3): video is an ARTIFACT, not a channel. Its measured
+   * outcomes are reported HERE, by artifact, and never as a channel_performance row: the leads it carried are already the
+   * delivering channel's (an email / social / newsletter send), so a "video" channel row would count the same lead twice.
+   */
+  artifacts?: Array<{ artifact: string; leads: number; spend: null; note: string }>
 }> {
   try {
-    const supabase = useServiceClient ? createServiceClient() : await createClient()
+    const supabase = (client as ReturnType<typeof createServiceClient> | undefined) ?? (useServiceClient ? createServiceClient() : await createClient())
 
-    const channelTypes = ["social", "newsletter", "direct_mail", "video", "ad", "podcast"]
+    // R9: "video" is NOT here (it was) — see `artifacts` below.
+    const channelTypes = ["social", "newsletter", "direct_mail", "ad", "podcast"]
     const results: Array<{
       channel_type: string
       spend: number | null
-      leads: number
+      leads: number | null
       conversions: number
       revenue: number | null
       roi_percentage: number | null
@@ -730,6 +740,8 @@ export async function recalculateChannelPerformance(
     for (const channelType of channelTypes) {
       let spend = 0
       let leads = 0
+      // Wave 155 (155J): false when no ledger measures this channel's leads (the stored value is then NULL, never a guess).
+      let leadsMeasured = true
       let conversions = 0
       // Wave 152 (152B): the channel's cost in the reader's vocabulary. Only `ad` and `direct_mail` have a spend
       // ledger; every other channel's spend is UNKNOWN (stored NULL), never $0.
@@ -934,9 +946,13 @@ export async function recalculateChannelPerformance(
           }
         }
 
-        for (const s of sends ?? []) {
-          leads += Math.floor((s.recipient_count ?? 0) * NEWSLETTER_LEAD_RATE)
-        }
+        // WAVE 155 (lane 155J — directive J4 "attribution is measured, never a model's estimate"): this rollup STORED
+        // recipients × NEWSLETTER_LEAD_RATE as the channel's `leads` — an invented conversion count no ledger recorded,
+        // read on the Channel Comparison tab as a measured number. No newsletter ledger records a lead, so the channel's
+        // leads are UNMEASURED: stored NULL and shown "Unknown". (The campaign arm keeps its estimate, flagged
+        // `leadsEstimated` and never summed with a measured count.) The read above still runs, so a refused read refuses.
+        void (sends ?? []).length
+        leadsMeasured = false
       }
 
       if (channelType === "podcast") {
@@ -958,45 +974,12 @@ export async function recalculateChannelPerformance(
         leads += (events ?? []).length
       }
 
-      if (channelType === "video") {
-        // NO SPEND SOURCE EXISTS: video_performance_tracking and
-        // ai_video_projects carry no cost/spend/budget column.
-        //
-        // RECONCILED (§6, 2026-09-02): video_performance_tracking.estimated_roi
-        // WAS a second spelling of video ROI — not "no writer feeds it", as an
-        // earlier note here said (true of this file, false tree-wide): it was
-        // written at app/actions/video-generation.ts and
-        // app/api/video/engagement/route.ts as a flat `lead_conversions × $500`
-        // and summed onto /dashboard/videos/analytics as "Est. ROI". That is
-        // not an ROI — no cost is subtracted, and the column carried nothing
-        // `lead_conversions` did not (always exactly ×500). THIS FILE IS THE
-        // SURVIVOR of the word: roi_percentage = (revenue − spend) / spend, and
-        // NULL when spend is unknown, which for video it is. The column is no
-        // longer written or read anywhere (tombstones at both writers and the
-        // reader); the analytics figure is now derived at read time from
-        // lead_conversions and documented as an estimated lead VALUE.
-        const { data: videoPerf, error: videoPerfError } = await supabase
-          .from("video_performance_tracking")
-          .select("lead_conversions")
-          .eq("brokerage_id", brokerageId)
-          .gte("created_at", windowStart)
-          .lte("created_at", windowEnd)
-
-        if (videoPerfError) {
-          console.error("[ROI Calculator] video_performance_tracking read refused:", videoPerfError.message)
-          return { success: false, error: `video_performance_tracking read refused: ${videoPerfError.message}` }
-        }
-        for (const v of videoPerf ?? []) {
-          leads += v.lead_conversions ?? 0
-        }
-      }
-
       // Calculate revenue and ROI.
       // `spend > 0 ? … : null` is the honest half that was already here: a
       // channel whose cost is not recorded reports roi_percentage NULL, never a
-      // number. Of the six channels only `ad` (ad_performance.spend) and now
+      // number. Of the five channels only `ad` (ad_performance.spend) and now
       // `direct_mail` (per_piece_cost × pieces_mailed) have a spend source in
-      // the live schema at all — social, newsletter, podcast and video have no
+      // the live schema at all — social, newsletter and podcast have no
       // cost column on any table this rollup reads, so their ROI stays null by
       // construction until one is added. That is a MISSING LEDGER, not a bug in
       // this file.
@@ -1032,10 +1015,11 @@ export async function recalculateChannelPerformance(
       })
       const roiPercentage = roi.value == null ? null : roi.value * 100
 
+      const storedLeads: number | null = leadsMeasured ? leads : null
       results.push({
         channel_type: channelType,
         spend: storedSpend,
-        leads,
+        leads: storedLeads,
         conversions,
         revenue,
         roi_percentage: roiPercentage,
@@ -1052,7 +1036,7 @@ export async function recalculateChannelPerformance(
           window_start: windowStart,
           window_end: windowEnd,
           spend: storedSpend,
-          leads,
+          leads: storedLeads,
           conversions,
           revenue,
           roi_percentage: roiPercentage,
@@ -1064,7 +1048,27 @@ export async function recalculateChannelPerformance(
       ), { table: "channel_performance", flow: "channel_performance_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
     }
 
-    return { success: true, channels: results }
+    // ── R9: THE VIDEO ARTIFACT BREAKDOWN (was the "video" channel arm) ─────────────────────────────────────────────
+    // RECONCILED (§6, 2026-09-02) — kept from the retired arm: video_performance_tracking.estimated_roi was a second
+    // spelling of video ROI (lead_conversions × $500, no cost subtracted); it is no longer written or read anywhere.
+    // NO SPEND SOURCE EXISTS: video_performance_tracking and ai_video_projects carry no cost column, so spend is null.
+    const { data: videoPerf, error: videoPerfError } = await supabase
+      .from("video_performance_tracking")
+      .select("lead_conversions")
+      .eq("brokerage_id", brokerageId)
+      .gte("created_at", windowStart)
+      .lte("created_at", windowEnd)
+    if (videoPerfError) {
+      console.error("[ROI Calculator] video_performance_tracking read refused:", videoPerfError.message)
+      return { success: false, error: `video_performance_tracking read refused: ${videoPerfError.message}` }
+    }
+    const videoLeads = (videoPerf ?? []).reduce((n: number, v: { lead_conversions?: number | null }) => n + (v.lead_conversions ?? 0), 0)
+    const artifacts = [{
+      artifact: "video", leads: videoLeads, spend: null as null,
+      note: "Video is an artifact, not a channel: these leads arrived through the email, social or newsletter send that delivered the video and are already counted on that channel — shown here as a breakdown, never added to a channel total. What the renders cost is not recorded.",
+    }]
+
+    return { success: true, channels: results, artifacts }
   } catch (error: any) {
     console.error("[ROI Calculator] recalculateChannelPerformance error:", error)
     return { success: false, error: error.message }

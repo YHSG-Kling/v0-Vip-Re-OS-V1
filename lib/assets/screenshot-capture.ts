@@ -1220,11 +1220,24 @@ export async function recaptureScreenshotAsset(svc: any, row: ScreenshotAssetRow
   // Capture as a fresh still (its own cache key for today), then point THIS row at it.
   const fresh = await captureScreenshot({ ...req, dayIso: plan.dayIso }, { ...deps, svc })
   if (!fresh.ok) return fresh
-  const { error } = await svc.from("marketing_assets").update({
-    asset_url: fresh.url, thumbnail_url: fresh.url, regen_status: null, updated_at: new Date().toISOString(),
+  // WAVE 155 (lane 155J — carries lane 155D Outside-lane 1): a regen REPLACES the pixels a person approved, so the approval
+  // re-opens AT THE WRITER (the same rule the capture insert above uses: a platform-owned OS still is approved by
+  // construction; a page capture waits for a person). The catalog and every send / publish door read the re-open through
+  // marketingApprovalReopened. The update is pinned to the row's OWN tenant as well as its id (it was id-only).
+  const regenQ = svc.from("marketing_assets").update({
+    asset_url: fresh.url, thumbnail_url: fresh.url, regen_status: null, approval_status: kind === "os_surface" ? "approved" : "pending", updated_at: new Date().toISOString(),
     metadata: { ...meta, captured_at: fresh.capturedAt, cache_key: plan.cacheKey, day: plan.dayIso, regen_count: (typeof meta.regen_count === "number" ? meta.regen_count : 0) + 1, last_regen_at: fresh.capturedAt },
   }).eq("id", row.id)
+  // The tenant is the row's own (lib/kernel/tenant-scope.ts): a tenant still is pinned to its tenant; a platform-owned still
+  // (brokerage_id null — the regen cron's own OS / campaign captures) is a platform write said out loud, pinned by its id.
+  const { tenantScope, platformScope, applyTenantScope } = await import("@/lib/kernel/tenant-scope")
+  const regenScope = row.brokerage_id
+    ? tenantScope(row.brokerage_id, "recaptureScreenshotAsset")
+    : platformScope("the regen cron re-captures a PLATFORM-owned still (brokerage_id null) in place, by its id")
+  const { data: regenRows, error } = await applyTenantScope(regenQ, regenScope).select("id")
   if (error) return { ok: false, reason: `screenshot row ${row.id} update refused: ${error.message}` }
+  // §3: an update that matched nothing also resolves — a row whose tenant moved is a refusal, never a silent success.
+  if (!Array.isArray(regenRows) || regenRows.length === 0) return { ok: false, reason: `screenshot row ${row.id} matched no row under its own tenant — nothing was replaced` }
   // The fresh capture wrote its own row too (cache); keep ONE row per surface.
   if (!fresh.cached && fresh.assetId !== row.id) {
     const { error: dupErr } = await svc.from("marketing_assets").delete().eq("id", fresh.assetId).eq("metadata->>asset_kind", SCREENSHOT_ASSET_KIND)

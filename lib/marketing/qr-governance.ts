@@ -831,6 +831,28 @@ export interface QrActivity {
   history: QrDestinationVersion[]
   /** Contacts created through this code's consented landing form (qr_codes.lead_count — the submit door's counter). */
   consentedContacts: number
+  /**
+   * WAVE 155 (lane 155J — carries lane 155E request 5): scans that reached this code while it was paused / expired / retired /
+   * revoked (lifecycle_events 'qr_scan_refused', written by app/api/qr/scan/route.ts recordRefusedScan — a writer that had no
+   * reader). Counts by state only: the event names the CODE, never the scanner. null when the events could not be read
+   * (unmeasured — never 0).
+   */
+  refusedScans: QrRefusedScanSummary | null
+}
+
+/** The refused-scan panel: total, per refusal state, and the latest one. */
+export interface QrRefusedScanSummary { total: number; byState: Record<string, number>; lastAt: string | null }
+
+/** PURE — summarize qr_scan_refused events (newest first or any order). */
+export function summarizeRefusedScans(rows: ReadonlyArray<{ created_at?: string | null; metadata?: { state?: unknown } | null }>): QrRefusedScanSummary {
+  const byState: Record<string, number> = {}
+  let lastAt: string | null = null
+  for (const r of rows) {
+    const st = typeof r.metadata?.state === "string" && r.metadata.state.trim() ? r.metadata.state.trim().toLowerCase() : "unrecorded"
+    byState[st] = (byState[st] ?? 0) + 1
+    if (r.created_at && (!lastAt || r.created_at > lastAt)) lastAt = r.created_at
+  }
+  return { total: rows.length, byState, lastAt }
 }
 
 /** Tenant-scoped scan history for one code. Raw scans, filtered visits, unique visitor-days and consented submissions
@@ -852,6 +874,12 @@ export async function loadQrActivity(qrCodeId: string, actor: QrActor, deps: QrD
   if (evErr) return { ok: false, code: "refused", message: "We couldn't load this code's scans. Try again in a moment." }
   const rows = (events ?? []) as Array<{ scanned_at?: string | null; traffic_class?: string | null; visitor_key?: string | null; device_class?: string | null; contact_id?: string | null; referrer?: string | null }>
   const c = code as { lead_count?: number | null; destination_history?: QrDestinationVersion[] | null }
+  // WAVE 155 (155J): the refused-scan events for THIS code under THIS tenant. A refused read is "not measured" (null) and
+  // logged — the rest of the panel still renders (the scans above are the panel's own read).
+  const { data: refused, error: refusedErr } = await db.from("lifecycle_events").select("created_at, metadata")
+    .eq("brokerage_id", actor.brokerageId).eq("entity_type", "qr_code").eq("entity_id", qrCodeId).eq("event_type", "qr_scan_refused")
+    .order("created_at", { ascending: false }).limit(500)
+  if (refusedErr) console.error("[qr-governance] refused-scan events read refused:", refusedErr.message)
   return {
     ok: true,
     activity: {
@@ -867,6 +895,7 @@ export async function loadQrActivity(qrCodeId: string, actor: QrActor, deps: QrD
       })),
       history: Array.isArray(c.destination_history) ? c.destination_history : [],
       consentedContacts: c.lead_count ?? 0,
+      refusedScans: refusedErr ? null : summarizeRefusedScans((refused ?? []) as Array<{ created_at?: string | null; metadata?: { state?: unknown } | null }>),
     },
   }
 }

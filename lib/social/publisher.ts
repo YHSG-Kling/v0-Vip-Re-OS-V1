@@ -69,6 +69,15 @@ export async function publishToSocialPlatform(
   // A publish whose status flip failed is retried by the cron; with a cycle the retry REPLAYS
   // the external post id instead of posting twice.
   if (!ledger?.brokerageId) return publishToSocialPlatformUnledgered(platform, params)
+  // WAVE 155 (lane 155J — carries lane 155D Outside-lane 5): a tenant post whose media is a studio asset publishes only while
+  // that asset's approval still holds (approval-authority.ts marketingApprovalReopened — edited, regenerated or rejected
+  // since it was approved refuses). Checked BEFORE the ledger claim, so a refusal posts nothing and claims nothing; a refused
+  // read refuses (fail closed). The platform's own posts (no tenant) carry no tenant asset and are unaffected.
+  if (params.mediaUrls?.length) {
+    const [{ refuseReopenedMarketingAssets }, { createServiceClient }] = await Promise.all([import("@/lib/kernel/approval-authority"), import("@/lib/supabase/service")])
+    const media = await refuseReopenedMarketingAssets(createServiceClient() as any, ledger.brokerageId, params.mediaUrls)
+    if (!media.ok) return { success: false, platform, error: `Not published — ${media.reason}` }
+  }
   return ledgerSocialPublish(platform, params, ledger as SocialPublishLedger & { brokerageId: string }, () => publishToSocialPlatformUnledgered(platform, params))
 }
 

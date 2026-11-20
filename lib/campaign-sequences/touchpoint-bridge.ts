@@ -15,13 +15,22 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 // Map a sequence step.channel → the marketing_campaign_touchpoints.channel vocabulary.
-// De-confliction counts touchpoints per contact for email / sms / video (and mail/phone via
-// other sources). Non-outreach steps (wait / condition / task / segment ops) map to null and
+// De-confliction counts touchpoints per contact for email / sms (and mail/phone via other
+// sources). Non-outreach steps (wait / condition / task / segment ops) map to null and
 // record no touchpoint. Unmapped channels are skipped rather than risking a CHECK violation.
+//
+// WAVE 155 (lane 155J — owner R9 "video is an artifact not a channel"; carries lane 155D
+// Outside-lane 2, corrected): a `video` STEP makes an ARTIFACT. It is not in this map. Its
+// adapter (lib/workflow/adapters/video.ts) DELIVERS the video by email through dispatchVideo,
+// which already spends the contact's EMAIL allowance at the de-confliction gate
+// (lib/providers/dispatch.ts — channel "email"). Deleting the old `video: "video"` row alone
+// would have dropped that real email touch from the ledger de-confliction reads; recording it as
+// "video" counted a lane no cap reads. So the touch is recorded ONCE, on its DELIVERING channel
+// (email), stamped metadata.artifact = "video" — and only when the Contact had an email to be
+// delivered to (a render with no recipient touched nobody). See deliveringChannelForStep.
 const STEP_TO_TOUCHPOINT_CHANNEL: Record<string, string> = {
   email:        "email",
   sms:          "sms",
-  video:        "video",
   voice_drop:   "phone",
   ai_call:      "phone",
   direct_mail:  "direct_mail",
@@ -32,6 +41,20 @@ const STEP_TO_TOUCHPOINT_CHANNEL: Record<string, string> = {
 /** Pure: the touchpoint channel for a sequence step, or null when the step records no touch. */
 export function touchpointChannelForStep(stepChannel: string): string | null {
   return STEP_TO_TOUCHPOINT_CHANNEL[stepChannel] ?? null
+}
+
+/** The sequence steps that produce an ARTIFACT delivered on another channel (R9): step → the channel its adapter delivers on. */
+const ARTIFACT_STEP_DELIVERY: Record<string, { artifact: string; channel: string }> = {
+  video: { artifact: "video", channel: "email" },
+}
+
+/**
+ * Pure: where an ARTIFACT step's touch is recorded — its delivering channel, and only when it was actually delivered
+ * (`delivered` = the Contact had an address on that channel). null for a non-artifact step or an undelivered render.
+ */
+export function deliveringChannelForStep(stepChannel: string, delivered: boolean): { channel: string; artifact: string } | null {
+  const a = ARTIFACT_STEP_DELIVERY[stepChannel]
+  return a && delivered ? { channel: a.channel, artifact: a.artifact } : null
 }
 
 // PROVENANCE — which manager produced this touch. The send itself is the Campaign Orchestrator's
@@ -92,7 +115,17 @@ export async function recordSequenceTouchpoint(
   supabase: SupabaseClient,
   input: RecordSequenceTouchpointInput,
 ): Promise<boolean> {
-  const channel = touchpointChannelForStep(input.stepChannel)
+  let channel = touchpointChannelForStep(input.stepChannel)
+  let artifact: string | null = null
+  if (!channel && ARTIFACT_STEP_DELIVERY[input.stepChannel]) {
+    // The adapter delivers only to a Contact with an email; read it under THIS tenant (a refused read records nothing —
+    // an unknown delivery is never written as a touch).
+    try {
+      const { data, error } = await supabase.from("contacts").select("email").eq("id", input.contactId).eq("brokerage_id", input.brokerageId).maybeSingle()
+      const d = error ? null : deliveringChannelForStep(input.stepChannel, !!String((data as { email?: string | null } | null)?.email ?? "").trim())
+      if (d) { channel = d.channel; artifact = d.artifact }
+    } catch { /* best-effort ledger: no row */ }
+  }
   if (!channel) return false
   try {
     const { error } = await supabase.from("marketing_campaign_touchpoints").insert({
@@ -113,6 +146,8 @@ export async function recordSequenceTouchpoint(
         enrollment_id: input.enrollmentId,
         step_id:       input.stepId,
         step_channel:  input.stepChannel,
+        // R9: the artifact the delivering channel carried (null for a plain email / sms step).
+        artifact,
         manager:       touchpointManagerForChannel(input.stepChannel),
         ai_intent:     input.aiIntent ?? null,
       },

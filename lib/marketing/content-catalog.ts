@@ -19,7 +19,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { resolveEgressScopeForViewer, describeScope, type EgressScope } from "@/lib/kernel/egress-scope"
 import { BROKERAGE_FINANCE_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 import {
-  loadMarketingApproverFacts, decideMarketingApproval, readApprovalStamp, marketingAssetFingerprint, MARKETING_AUTHORITY_KEYS,
+  loadMarketingApproverFacts, decideMarketingApproval, marketingApprovalReopened, MARKETING_AUTHORITY_KEYS,
   type MarketingApproverFacts, type MarketingArtifactScope, type MarketingAuthority,
 } from "@/lib/kernel/approval-authority"
 import { documentOpenHref } from "@/lib/storage/signed-doc-url"
@@ -591,7 +591,9 @@ export interface CatalogNextAction {
   /** a proposal the Command Center door can accept or decline */
   door: { queue: "marketing" | "asset" | "client_message"; actionId: string } | null
 }
-export interface CatalogQrLink { qrCodeId: string; slug: string | null; targetUrl: string | null; active: boolean; version: number | null; scans: number | null }
+export interface CatalogQrLink { qrCodeId: string; slug: string | null; targetUrl: string | null; active: boolean; version: number | null; scans: number | null
+  /** wave 155 (155J): where on the artifact the code sits (mint_context.artifact_slot) and the printed placement (mint_context.placement) — null when the minter recorded none. */
+  slot?: string | null; placement?: string | null }
 export interface CatalogDependency { kind: string; ref: string | null; satisfied: boolean; note: string }
 export interface OfferedAction { kind: CatalogActionKind; label: string; writer: CatalogWriterId }
 
@@ -842,10 +844,27 @@ export async function readContentCatalog(db: Db, viewer: CatalogViewer, filters:
     for (const x of l.rows) qrByAsset.set(`marketing_assets:${x.marketing_asset_id}`, [...(qrByAsset.get(`marketing_assets:${x.marketing_asset_id}`) ?? []), String(x.qr_code_id)])
   }
   for (const b of base) if (b.m.qrCodeId) qrByAsset.set(`${b.src.table}:${b.r.id}`, uniq([...(qrByAsset.get(`${b.src.table}:${b.r.id}`) ?? []), b.m.qrCodeId]))
-  const qrIds = uniq([...qrByAsset.values()].flat())
+  // wave 155 (lane 155J — carries lane 155E request 5): NO source row carries a qr_code_id for blogs, newsletters, podcasts,
+  // presentations … — the ONE minter (lib/marketing/tracked-qr.ts resolveArtifactQrSlot) records the artifact ON THE CODE:
+  // qr_codes.mint_context->>source_table / ->>asset_id (artifact_slot names the slot). Read back by that lineage, tenant-pinned,
+  // and joined to the row whose table matches — never by id alone (two tables can share an id space). mint_context.lead_id
+  // is NOT projected here (it reaches LEAD_DESK_USER_TYPES only, through the lead link below).
   const qrRow = new Map<string, Row>()
+  if (allIds.length) {
+    const minted = await readIn(db, "qr_codes", "id, slug, target_url, is_active, retired_at, expires_at, destination_history, scan_count, mint_context", B, "mint_context->>asset_id", allIds)
+    if (minted.error) unreadable.push({ table: "qr_codes (artifact lineage)", error: minted.error })
+    const baseKeys = new Set(base.map((b) => `${b.src.table}:${b.r.id}`))
+    for (const x of minted.rows) {
+      const mc = (x.mint_context && typeof x.mint_context === "object" ? x.mint_context : {}) as Record<string, unknown>
+      const k = `${s(mc.source_table) ?? ""}:${s(mc.asset_id) ?? ""}`
+      if (!baseKeys.has(k)) continue
+      qrByAsset.set(k, uniq([...(qrByAsset.get(k) ?? []), String(x.id)]))
+      qrRow.set(String(x.id), x)
+    }
+  }
+  const qrIds = uniq([...qrByAsset.values()].flat()).filter((id) => !qrRow.has(id))
   if (qrIds.length) {
-    const q = await readIn(db, "qr_codes", "id, slug, target_url, is_active, retired_at, expires_at, destination_history, scan_count", B, "id", qrIds)
+    const q = await readIn(db, "qr_codes", "id, slug, target_url, is_active, retired_at, expires_at, destination_history, scan_count, mint_context", B, "id", qrIds)
     if (q.error) unreadable.push({ table: "qr_codes", error: q.error })
     for (const x of q.rows) qrRow.set(String(x.id), x)
   }
@@ -929,7 +948,8 @@ export async function readContentCatalog(db: Db, viewer: CatalogViewer, filters:
     const qrLinks: CatalogQrLink[] = (qrByAsset.get(key) ?? []).map((qid) => {
       const q = qrRow.get(qid)
       return { qrCodeId: qid, slug: s(q?.slug), targetUrl: s(q?.target_url), active: !!q && q.is_active !== false && !q.retired_at && !(s(q.expires_at) && q.expires_at < new Date().toISOString()),
-        version: Array.isArray(q?.destination_history) ? q!.destination_history.length || 1 : q ? 1 : null, scans: n(q?.scan_count) }
+        version: Array.isArray(q?.destination_history) ? q!.destination_history.length || 1 : q ? 1 : null, scans: n(q?.scan_count),
+        slot: s(q?.mint_context?.artifact_slot), placement: s(q?.mint_context?.placement) }
     })
     const mySignals = signals.rows.filter((x) => String(x.entity_id) === id).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
     const myLedger = ledger.rows.filter((x) => String(x.subject_id) === id).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
@@ -953,8 +973,10 @@ export async function readContentCatalog(db: Db, viewer: CatalogViewer, filters:
     let approvalReopened = false
     let approvals: CatalogRow["approvals"] = null
     if (src.table === "marketing_assets") {
-      const stamp = readApprovalStamp(r.metadata)
-      if (r.approval_status === "approved" && stamp && stamp.fingerprint !== marketingAssetFingerprint(r) && status !== "failed" && status !== "blocked_by_rights") { approvalReopened = true; status = "awaiting_approval" }
+      // wave 155 (155J): THE one re-open rule (approval-authority.ts marketingApprovalReopened) — the same rule the send / publish
+      // doors refuse on; a regen that reset the row to pending after a stamped approval reads re-opened too, not merely "pending".
+      const reopen = marketingApprovalReopened(r)
+      if (reopen.reopened && r.approval_status !== "rejected" && status !== "failed" && status !== "blocked_by_rights") { approvalReopened = true; status = "awaiting_approval" }
       if (viewer.approver) {
         const owner = s(r.agent_user_id)
         const scope: MarketingArtifactScope = {

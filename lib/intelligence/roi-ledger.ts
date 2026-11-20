@@ -1089,6 +1089,34 @@ interface RoiRecommendation {
   requiresApproval: true
 }
 
+/**
+ * WAVE 155 (lane 155J — directive J4 "audit when suggested content was rejected and why, so the OS avoids proposing the same
+ * low-value action"). A person who declines a reader recommendation records it in THE proposal kernel
+ * (lib/kernel/improvement-proposals.ts — improvement_proposals, subject kind `allocation` = "a marketing budget recommendation a
+ * human approves", status REJECTED with its decision_reason); this reader reads those rows back and does not propose the same
+ * (kind, campaign) again. No second store, no new table. The subject key is the ONE spelling below.
+ */
+export const ROI_RECOMMENDATION_SUBJECT_PREFIX = "roi_recommendation"
+export const roiRecommendationSubjectKey = (kind: RoiRecommendation["kind"], campaignId: string | null): string => `${ROI_RECOMMENDATION_SUBJECT_PREFIX}:${kind}:${campaignId ?? "tenant"}`
+export interface RoiDeclinedRecommendation { kind: string; campaignId: string | null; reason: string | null; decidedAt: string | null; proposalId: string }
+
+/** PURE — drop every recommendation a person already declined (same kind + campaign); the declined ones are listed with their reason. */
+export function applyDeclinedRecommendations<T extends { kind: string; campaignId: string | null }>(
+  recs: T[],
+  rejected: ReadonlyArray<{ id: string; subject_key: string; decision_reason?: string | null; decided_at?: string | null }>,
+): { kept: T[]; declined: RoiDeclinedRecommendation[] } {
+  const byKey = new Map<string, RoiDeclinedRecommendation>()
+  for (const r of rejected) {
+    const parts = String(r.subject_key ?? "").split(":")
+    if (parts.length !== 3 || parts[0] !== ROI_RECOMMENDATION_SUBJECT_PREFIX) continue
+    const prev = byKey.get(r.subject_key)
+    if (prev && (prev.decidedAt ?? "") >= (r.decided_at ?? "")) continue
+    byKey.set(r.subject_key, { kind: parts[1], campaignId: parts[2] === "tenant" ? null : parts[2], reason: r.decision_reason ?? null, decidedAt: r.decided_at ?? null, proposalId: r.id })
+  }
+  const keyOf = (x: { kind: string; campaignId: string | null }) => `${ROI_RECOMMENDATION_SUBJECT_PREFIX}:${x.kind}:${x.campaignId ?? "tenant"}`
+  return { kept: recs.filter((x) => !byKey.has(keyOf(x))), declined: [...byKey.values()] }
+}
+
 /** The authorized ROI outcome ledger — every figure carries its family, its denominator and its reason when N/A. */
 export interface RoiOutcomeLedger {
   generatedAt: string
@@ -1135,6 +1163,8 @@ export interface RoiOutcomeLedger {
     notMeasured: string[]
   }
   recommendations: RoiRecommendation[]
+  /** WAVE 155 (155J): recommendations a person declined, with why — not proposed again. null when the record could not be read. */
+  declinedRecommendations: RoiDeclinedRecommendation[] | null
   completeness: { label: "complete" | "partial" | "incomplete"; notes: string[] }
   why: Record<string, string>
   /** Rows another tenant's id was stamped on, dropped before any figure was made (should be 0 — a non-zero count is a finding). */
@@ -1539,6 +1569,19 @@ export async function loadRoiOutcomeLedger(
     }
     if (notEstablishedClosed) recommendations.push({ manager: "finance_manager", kind: "finalize_commission", campaignId: null, text: `${notEstablishedClosed} closed deal(s) are waiting on a finalized commission. Finalizing them lets their marketing return be measured.`, evidence: [...money.entries()].filter(([, m]) => m.earnedCents == null).flatMap(([, m]) => m.refs).slice(0, 10), comparableSample: null, requiresApproval: true })
     if (!reconciled) recommendations.push({ manager: "data_steward", kind: "repair_attribution", campaignId: null, text: "A closed deal's campaign credit does not split exactly. Re-running attribution for it restores an exact split.", evidence: reconciliation.filter((r) => r.earnedCents !== r.creditedCents).map((r) => `transactions:${r.transactionId}`), comparableSample: null, requiresApproval: true })
+    // WAVE 155 (155J, J4): a recommendation a person DECLINED is not proposed again — read back from the proposal kernel under
+    // THIS tenant. A refused read keeps every recommendation (they only ever propose) and says the record was not read.
+    let declinedRecommendations: RoiDeclinedRecommendation[] | null = null
+    {
+      const { data: rej, error: rejErr } = await svc.from("improvement_proposals").select("id, subject_key, decision_reason, decided_at")
+        .eq("brokerage_id", brokerageId).eq("subject_kind", "allocation").eq("status", "REJECTED").limit(ROI_READ_LIMIT)
+      if (rejErr) notes.push("Recommendations your team declined could not be read just now, so a declined one may show again.")
+      else {
+        const applied = applyDeclinedRecommendations(recommendations, (rej ?? []) as Array<{ id: string; subject_key: string; decision_reason?: string | null; decided_at?: string | null }>)
+        recommendations.splice(0, recommendations.length, ...applied.kept)
+        declinedRecommendations = applied.declined
+      }
+    }
 
     const ledger: RoiOutcomeLedger = {
       generatedAt: new Date().toISOString(), window: { sinceDay, untilDay }, model: ROI_SOURCED_MODEL,
@@ -1566,7 +1609,7 @@ export async function loadRoiOutcomeLedger(
         costPerPromotedRecord: !accountLevel ? naRatio("Provider costs are shown on the account-wide view.") : rawUnpriced > 0 ? naRatio(`${rawUnpriced} acquired record(s) carry no price, so a cost per promoted record would understate it.`) : costPer(rawKnown, true, rawPromoted, "promoted record"),
         notMeasured: [],
       },
-      recommendations, completeness: { label, notes },
+      recommendations, declinedRecommendations, completeness: { label, notes },
       why: {
         realizedReturnOnMarketingSpend: `(earned commission credited to campaigns − their recorded spend) ÷ their recorded spend, over closed deals in ${sinceDay}…${untilDay}. Sale price is never used.${scopeNote}`,
         sourced: `Each closed deal's earned commission is split once across the campaigns that touched its people within 180 days before the contract, by the ${ROI_SOURCED_MODEL} model; the campaign shares add up to the deal exactly.`,
