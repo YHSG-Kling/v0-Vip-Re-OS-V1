@@ -61,6 +61,13 @@ export async function nudgeOnboardingAgentsAction(agentIds: string[]): Promise<
     return { success: false, error: "Select at least one agent" }
   }
 
+  // WAVE 155 (lane 155R27, census G12): ONE receipt per nudge through ledgerSessionAction (the one helper). Tenant and actor
+  // are the SESSION's (requireOnboardingOps → getAgentContext), never the request's. No key: a second nudge is a second act.
+  // This is also the ONE onboarding-reminder door now — app/actions/onboarding/progress.ts sendOnboardingReminder is retired
+  // onto it (its tombstone names this function).
+  type NudgeResult = { success: true; notified: number; skipped: number } | { success: false; error: string }
+  const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+  const receipted = await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "onboarding.agent_nudge.send", actor: { type: "user", userId: auth.userId }, subject: { type: "brokerage", id: auth.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { requested: agentIds.length } }, async (): Promise<NudgeResult> => {
   try {
     const svc = createServiceClient()
     // Re-read the roster from the caller's own brokerage: a client-supplied id
@@ -102,4 +109,8 @@ export async function nudgeOnboardingAgentsAction(agentIds: string[]): Promise<
   } catch (err: any) {
     return { success: false, error: err?.message ?? "Nudge failed" }
   }
+  })
+  // A refused claim comes back as the helper's { success:false, error? } — normalize it to this export's refusal shape.
+  if (receipted.success === true && "notified" in receipted) return receipted as NudgeResult
+  return { success: false, error: (receipted as { error?: string }).error ?? "The nudge could not be recorded" }
 }

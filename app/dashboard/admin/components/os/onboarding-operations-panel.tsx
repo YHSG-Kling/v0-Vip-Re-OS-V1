@@ -6,7 +6,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { ActionConfirmSheet } from "@/app/components/action-framework/action-confirm-sheet"
-import { sendOnboardingReminder } from "@/app/actions/onboarding/progress"
+// The one onboarding-reminder door (wave 155, lane 155R27): it takes agents.id — what agent_onboarding.agent_id holds.
+import { nudgeOnboardingAgentsAction } from "@/app/actions/onboarding/onboarding-ops"
 import {
   UserPlus,
   ChevronRight,
@@ -111,9 +112,11 @@ export function OnboardingOperationsPanel({ brokerageId, stats }: OnboardingOper
   })
 
   async function handleSendReminder(record: OnboardingRecord) {
-    const result = await sendOnboardingReminder(record.agent_id)
-    if (result.success) {
+    const result = await nudgeOnboardingAgentsAction([record.agent_id])
+    if (result.success && result.notified > 0) {
       setToastMsg(`Reminder sent to ${record.agentName}`)
+    } else if (result.success) {
+      setToastMsg(`Not sent: ${record.agentName} has no linked user account to notify`)
     } else {
       setToastMsg(`Failed: ${result.error || "Unknown error"}`)
     }

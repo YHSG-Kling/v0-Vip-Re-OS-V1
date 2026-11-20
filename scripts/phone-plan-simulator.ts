@@ -107,8 +107,13 @@ console.log("\n── price_not_configured: no administered rate → the overage
   check("no numeric overage rate literal remains in phone-plan.ts (positive control: the finder sees a fixture)",
     !/overage(Number|VoiceMinute|Sms)Cents:\s*\d/.test(srcPlan) && /overage(Number|VoiceMinute|Sms)Cents:\s*\d/.test("overageNumberCents: 300"))
   const resolveSrc = src("lib/billing/phone-plan-resolve.ts")
-  check("the server resolver raises the platform incident on a price_not_configured verdict and on an unpriced meter line",
-    (resolveSrc.match(/raisePriceNotConfiguredIncident\(/g) ?? []).length === 2)
+  // RESTATED TO THE RULE (wave 155, lane 155R27; CLAUDE.md §2 — this pinned a COUNT of two raise sites, one of them on the
+  // tenant's meter READ): the incident is raised by the provisioning verdict a purchase / port consults, and by no read.
+  const resolveCode = resolveSrc.split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n")
+  const bodyOf = (name: string) => { const i = resolveCode.indexOf(`export async function ${name}(`); if (i < 0) return ""; const j = resolveCode.indexOf("\nexport ", i + 1); return resolveCode.slice(i, j < 0 ? resolveCode.length : j) }
+  check("the server resolver raises the platform incident on a refused provisioning verdict — and neither read (the status card's readTenantNumberProvisioning, the meter's loadTenantPhoneMeter) raises it",
+    /raisePriceNotConfiguredIncident\(/.test(bodyOf("evaluateTenantNumberProvisioning")) && !!bodyOf("readTenantNumberProvisioning") && !/raisePriceNotConfiguredIncident\(/.test(bodyOf("readTenantNumberProvisioning"))
+      && !!bodyOf("loadTenantPhoneMeter") && !/raisePriceNotConfiguredIncident\(/.test(bodyOf("loadTenantPhoneMeter")))
   const core = src("lib/voice/number-provisioning.ts")
   check("the provisioning core tells the two refusals apart (priceNotConfigured is not capReached)",
     /priceNotConfigured: true/.test(core) && /capReached: true/.test(core))

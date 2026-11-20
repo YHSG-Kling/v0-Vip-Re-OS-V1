@@ -17,7 +17,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { provisionNumber, searchAvailableNumbers, suggestLocalNumbers, attachOwnedNumber } from "@/lib/voice/number-provisioning"
-import { evaluateTenantNumberProvisioning } from "@/lib/billing/phone-plan-resolve"
+import { readTenantNumberProvisioning } from "@/lib/billing/phone-plan-resolve"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 // ─── Brokerage-level settings ────────────────────────────────────────────────
@@ -316,7 +316,8 @@ export async function getPhoneAllowanceStatusAction(): Promise<
   const ctx = await resolveActingContext()
   if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const svc = createServiceClient()
-  const v = await evaluateTenantNumberProvisioning(svc, ctx.brokerageId)
+  // READ ONLY (wave 155, lane 155R27): the card never pages staff; a refused purchase does (evaluateTenantNumberProvisioning).
+  const v = await readTenantNumberProvisioning(svc, ctx.brokerageId)
   return {
     success: true,
     status: {

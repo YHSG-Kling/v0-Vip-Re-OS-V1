@@ -552,7 +552,7 @@ export type {
 //     SESSION's brokerage_id and then by agent_id — never by agent_id alone.
 //   • generated_documents table does NOT exist — exportReportPdf uses Vercel Blob
 //   • generateAgentPerformanceReport is the only command that writes to DB
-//   • exportReportCsv returns CSV string — no DB write; caller drives browser download
+//   • exportReportCsv returns CSV string — writes only its export audit note (as exportReportPdf); caller drives browser download
 //   • Every mutation emits KernelEvent via lifecycle_events
 export {
   loadReportingWorkspace,

@@ -54,8 +54,17 @@ export async function shareCallWithCoach(input: {
 }): Promise<{ success: boolean; error?: string; notified?: number }> {
   const caller = await resolveCaller()
   if (!caller) return { success: false, error: "Not authenticated" }
+  // WAVE 155 (lane 155R27): the share names ONE call, so it proves that call first — the same row the review page opens
+  // (app/dashboard/voice/review/[callId]/page.tsx reads voice_calls by id AND the session's brokerage). Before this, any
+  // callId — another tenant's, or none at all — fanned a "shared for coaching" notice out to every leader. One receipt per
+  // share through the file's ledgered helper (session tenant, no key: a second share is a second act).
+  const svcForCall = createServiceClient()
+  const { data: call, error: callErr } = await svcForCall.from("voice_calls").select("id").eq("id", String(input.callId ?? "")).eq("brokerage_id", caller.brokerageId).maybeSingle()
+  if (callErr) return { success: false, error: "Could not read the call — try again." }
+  if (!call) return { success: false, error: "That call is not in your brokerage." }
+  return ledgered(caller, { action: "coaching.call_review.share", subject: { type: "voice_call", id: (call as { id: string }).id }, riskClass: "LOW_RISK_WRITE" }, async (): Promise<{ success: boolean; error?: string; notified?: number }> => {
 
-  const svc = createServiceClient()
+  const svc = svcForCall
   // The coaching audience the coaching loop already targets: broker / team leads.
   const { data: leaders } = await svc.from("users")
     .select("id, user_type")
@@ -81,6 +90,7 @@ export async function shareCallWithCoach(input: {
     if (!error) notified++
   }
   return notified > 0 ? { success: true, notified } : { success: false, error: "Could not notify — try again." }
+  })
 }
 
 /**

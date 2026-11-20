@@ -20,7 +20,7 @@
 //   6. generateAgentPerformanceReport  — agent metrics + saves to agent_performance_reports
 //   7. generateFinancialSummaryReport  — YTD commission + expenses via agent_commissions
 //   8. generateReputationReport        — agent_reviews aggregation
-//   9. exportReportCsv                 — returns CSV string (no DB write)
+//   9. exportReportCsv                 — returns CSV string (writes only its audit note, as exportReportPdf does)
 //  10. exportReportPdf                 — Vercel Blob upload, returns URL
 //  11. emailReport                     — inserts to email_queue
 //
@@ -1020,7 +1020,7 @@ export async function generateReputationReport(
   }
 }
 
-// 9. exportReportCsv — no DB write; returns CSV string to caller for browser download
+// 9. exportReportCsv — returns the CSV string to the caller for browser download; writes only its audit note + event
 export async function exportReportCsv(
   input: ExportReportCsvInput
 ): Promise<KernelReportingResult<ExportReportCsvOutput>> {
@@ -1042,8 +1042,20 @@ export async function exportReportCsv(
     const csv      = `${header}\n${body}`
     const filename = `${reportType}-${new Date().toISOString().slice(0, 10)}.csv`
 
-    // Emit event (fire and forget — no await needed for export CSV)
     const supabase = await createServiceClient()
+    // WAVE 155 (lane 155R27): a CSV export carries this tenant's figures (the financial summary carries commissions) out of the
+    // platform exactly as the PDF export does, so it leaves the SAME audit note exportReportPdf leaves below — ai_assistant_notes,
+    // entity_type "report" — with the report type and the row count, never the content. Checked through sentinelWrite (a lost
+    // note is logged, never silent); it never blocks the download, as for the PDF.
+    await sentinelWrite(supabase, supabase.from("ai_assistant_notes").insert({
+      brokerage_id: ctx.brokerageId, // NOT NULL — the SESSION's tenant (resolveActorContext)
+      created_by:   ctx.userId,      // NOT NULL
+      entity_type:  "report",
+      entity_id:    crypto.randomUUID(),
+      note_text:    JSON.stringify({ type: "csv_export", reportType, rowCount: rows.length, columns }),
+      source:       "ai_assistant",
+      created_at:   new Date().toISOString(),
+    }).select(), { table: "ai_assistant_notes", flow: "ai_assistant_notes_write", reason: "export audit note: its loss does not change what the caller downloads — logged, never silent" })
     await emitEvent(supabase, ctx, KernelEvent.REPORT_EXPORTED_CSV, crypto.randomUUID(), {
       reportType, rowCount: rows.length,
     })

@@ -32,7 +32,7 @@
  * proven statically only.
  */
 import { registerHooks } from "node:module"
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { randomUUID } from "node:crypto"
@@ -192,9 +192,10 @@ function staticSection(): void {
 
 // ══ §B DRIVEN ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 const U = randomUUID(), B = randomUUID(), B2 = randomUUID(), C = randomUUID(), C2 = randomUUID(), AG = randomUUID(), U2 = randomUUID()
-const R: { db: MemClient; calls: Record<string, number>; authed: boolean } = { db: memSupabase({}), calls: {}, authed: true }
+const R: { db: MemClient; calls: Record<string, number>; authed: boolean; role?: string } = { db: memSupabase({}), calls: {}, authed: true }
 const count = (k: string) => { R.calls[k] = (R.calls[k] ?? 0) + 1 }
-const agentCtx = () => (R.authed ? { isAuthenticated: true, userId: U, brokerageId: B, agentId: AG, userType: "agent", role: "agent" } : { isAuthenticated: false, userId: "", brokerageId: null, agentId: null })
+// round 7 (lane 155R27): `R.role` lets a driven check sit in an admin seat; unset → "agent", exactly as rounds 5 and 6 ran.
+const agentCtx = () => (R.authed ? { isAuthenticated: true, userId: U, brokerageId: B, agentId: AG, userType: R.role ?? "agent", role: R.role ?? "agent" } : { isAuthenticated: false, userId: "", brokerageId: null, agentId: null })
 const nextJson = (body: unknown, init?: { status?: number }) => ({ body, status: init?.status ?? 200 })
 const COMMON: Record<string, Record<string, unknown>> = {
   "@/lib/identity/get-agent-context": { getAgentContext: async () => agentCtx() },
@@ -247,9 +248,12 @@ const TARGET_FILES = [
   // round 6 (lane 155R26)
   `${A}ai-isa.ts`, `${A}assistant.ts`, `${A}ai-content-generation.tsx`, `${A}idx-search.ts`, "lib/kernel/open-house.ts",
   "app/api/external-portal/actions/complete/route.ts", "lib/learning-router/resolve-agent-learning-context.ts",
+  // round 7 (lane 155R27)
+  `${A}call-review-actions.ts`, `${A}onboarding/onboarding-ops.ts`, `${A}fair-housing-older-persons.ts`, "lib/kernel/reporting.ts", `${A}workflows.ts`,
 ]
 /** The REAL doors — never stubbed: the ledger, the public-door decision and the platform evidence door are what is under proof. */
-const REAL = new Set(["@/lib/kernel/action-ledger", "@/lib/security/public-rate-limit", "@/lib/platform/staff-action-gate"])
+// round 7 (lane 155R27): + the older-persons store — its counted, tenant-pinned delete is what the withdrawal receipt wraps.
+const REAL = new Set(["@/lib/kernel/action-ledger", "@/lib/security/public-rate-limit", "@/lib/platform/staff-action-gate", "@/lib/compliance/fair-housing-older-persons-store"])
 function importsOf(file: string): Map<string, Set<string>> {
   const src = blankComments(read(file))
   const out = new Map<string, Set<string>>()
@@ -266,9 +270,13 @@ function importsOf(file: string): Map<string, Set<string>> {
   for (const m of src.matchAll(/\b(?:const|let)\s*\{([^{}]*)\}\s*=\s*await\s+import\(\s*["']([^"']+)["']\s*\)/g)) add(m[2], m[1].split(",").map((p) => p.trim().split(":")[0].trim()))
   return out
 }
+/** round 7 (lane 155R27): stubs for ONE target file only — filled before that file is loaded, so the earlier rounds' targets
+ *  keep exactly the stand-ins they were proven with. */
+const FILE_COMMON: Record<string, Record<string, Record<string, unknown>>> = {}
 const g = globalThis as any
 g.__R23 = {
   bind: (file: string, spec: string, name: string) => {
+    const fc = FILE_COMMON[file]?.[spec]; if (fc && name in fc) return fc[name]
     if (COMMON[spec] && name in COMMON[spec]) return COMMON[spec][name]
     // An unstubbed import resolves to a stand-in that throws only when CALLED (never at load), naming itself.
     return new Proxy(function () {}, { apply: () => { throw new Error(`R23 harness: unstubbed ${spec}#${name} called from ${file}`) }, get: (_t, k) => (k === "then" ? undefined : `${spec}#${name}.${String(k)}`) })
@@ -288,6 +296,7 @@ registerHooks({
     if (file && !REAL.has(spec) && (spec.startsWith("@/") || spec.startsWith(".") || spec.startsWith("next/"))) {
       const names = new Set(IMPORTS.get(file)?.get(spec) ?? [])
       for (const n of Object.keys(COMMON[spec] ?? {})) names.add(n)
+      for (const n of Object.keys(FILE_COMMON[file]?.[spec] ?? {})) names.add(n)
       const lines = [...names].map((n) => n === "default"
         ? `export default globalThis.__R23.bind(${JSON.stringify(file)}, ${JSON.stringify(spec)}, "default")`
         : `export const ${n} = globalThis.__R23.bind(${JSON.stringify(file)}, ${JSON.stringify(spec)}, ${JSON.stringify(n)})`)
@@ -663,14 +672,233 @@ async function round6Driven(): Promise<void> {
   }
 }
 
+// ══ ROUND 7 (wave 155, lane 155R27) — the thirteen P2 EXECUTABLE_GAP rows ══════════════════════════════════════════════════
+// Closed by code: shareCallWithCoach (proves the call in the session's tenant, one receipt) · nudgeOnboardingAgentsAction (one
+// receipt) · sendOnboardingReminder (RETIRED onto the nudge: it looked an agents.id up in users) · exportReportCsvAction (the PDF
+// sibling's audit note) · the phone allowance card and meter (READS that paged platform staff — the bell stays on the money path)
+// · removeOlderPersonsVerificationAction (exposed by rule J, one receipt) · the twin read can no longer reach the snapshot insert.
+// Closed by a census RULE (J, scripts/os-coverage-ledger.ts tableConstFroms; its controls are section G13 there): the vendor
+// portfolio pair and recordOlderPersonsVerificationAction write through a same-file table CONSTANT. logUserActivity is an owner
+// question, but its forged-action hole is fixed and driven here.
+function walkRuntime(dir: string, out: string[] = []): string[] {
+  for (const n of readdirSync(join(ROOT, dir))) {
+    if (n === "node_modules" || n.startsWith(".")) continue
+    const p = `${dir}/${n}`
+    if (statSync(join(ROOT, p)).isDirectory()) walkRuntime(p, out); else if (/\.(ts|tsx)$/.test(n)) out.push(p)
+  }
+  return out
+}
+/** The runtime files that CALL `name(` — stripped source (a tombstone or a string is never a call site). */
+function callSitesOf(name: string, files: string[]): string[] {
+  const re = new RegExp(`\\b${name}\\s*\\(`)
+  return files.filter((f) => { const raw = read(f); return raw.includes(name) && re.test(stripped(raw).replace(new RegExp(`export\\s+async\\s+function\\s+${name}\\b`), "")) })
+}
+function round7Static(): void {
+  console.log("\n§R7-A — round 7, static (stripped source)")
+  const rows: StaticRow[] = [
+    { file: `${A}call-review-actions.ts`, fn: "shareCallWithCoach", kind: "session", via: "ledgered" },
+    { file: `${A}onboarding/onboarding-ops.ts`, fn: "nudgeOnboardingAgentsAction", kind: "session" },
+    { file: `${A}fair-housing-older-persons.ts`, fn: "removeOlderPersonsVerificationAction", kind: "session" },
+  ]
+  for (const r of rows) { const f = rowFindings(r, read(r.file)); check(`${r.file}#${r.fn} — session receipt, no key`, f.length === 0, f.join("; ")) }
+  const code7 = blankComments([`${A}call-review-actions.ts`, `${A}onboarding/onboarding-ops.ts`, `${A}fair-housing-older-persons.ts`].map(read).join("\n"))
+  for (const n of ["coaching.call_review.share", "onboarding.agent_nudge.send", "compliance.older_persons.withdraw"]) check(`ledger action ${n} is domain.entity.action and is written in code`, ACTION_RE.test(n) && code7.includes(`"${n}"`))
+
+  // shareCallWithCoach proves the call (tenant-pinned) BEFORE the receipt and before any notification.
+  const share = exportSpan(blankComments(read(`${A}call-review-actions.ts`)), "shareCallWithCoach") ?? ""
+  const rd = share.search(/\.from\("voice_calls"\)\.select\("id"\)\.eq\("id", String\(input\.callId \?\? ""\)\)\.eq\("brokerage_id", caller\.brokerageId\)/), lg = share.search(/\bledgered\(/), nt = share.search(/\.from\("notifications"\)\.insert\(/)
+  check("shareCallWithCoach reads voice_calls pinned to the SESSION's brokerage before the receipt and before any notification", rd >= 0 && lg > rd && nt > lg, JSON.stringify({ rd, lg, nt }))
+
+  // sendOnboardingReminder is retired onto a survivor that EXISTS at the file:line its tombstone names, and nothing calls it.
+  const progRaw = read(`${A}onboarding/progress.ts`)
+  check("sendOnboardingReminder is no longer an export of the \"use server\" file (stripped source)", !/export\s+async\s+function\s+sendOnboardingReminder\b/.test(stripped(progRaw)))
+  const tomb = /TOMBSTONE[^\n]*sendOnboardingReminder[\s\S]{0,200}?(app\/actions\/[\w/-]+\.ts):(\d+)\s+(\w+)/.exec(progRaw)
+  const survivorLine = tomb ? (read(tomb[1]).split("\n")[Number(tomb[2]) - 1] ?? "") : ""
+  check("…its tombstone names the survivor at file:line, and that line IS `export async function <survivor>`", !!tomb && new RegExp(`^export async function ${tomb[3]}\\b`).test(survivorLine), tomb ? `${tomb[1]}:${tomb[2]} → ${survivorLine.slice(0, 80)}` : "no tombstone")
+  const runtime = [...walkRuntime("app"), ...walkRuntime("lib")]
+  const callers = callSitesOf("sendOnboardingReminder", runtime)
+  check("…and no runtime file calls it (stripped source)", callers.length === 0, callers.join(", "))
+  check("POSITIVE CONTROL: the call finder sees a planted call and ignores a tombstone / a string",
+    /\bsendOnboardingReminder\s*\(/.test(stripped(`await sendOnboardingReminder(id)`)) && !/\bsendOnboardingReminder\s*\(/.test(stripped(`// sendOnboardingReminder(id) was here\nconst s = "sendOnboardingReminder(x)"`)))
+  const panel = blankComments(read("app/dashboard/admin/components/os/onboarding-operations-panel.tsx"))
+  check("the Onboarding Operations panel calls the survivor with the agents.id it holds (agent_onboarding.agent_id)",
+    /import \{ nudgeOnboardingAgentsAction \} from "@\/app\/actions\/onboarding\/onboarding-ops"/.test(panel) && /await nudgeOnboardingAgentsAction\(\[record\.agent_id\]\)/.test(panel))
+
+  // The CSV export leaves the PDF sibling's audit note (ai_assistant_notes, entity_type "report").
+  const rep = blankComments(read("lib/kernel/reporting.ts"))
+  const csv = exportSpan(rep, "exportReportCsv") ?? ""
+  check("exportReportCsv writes its export audit note (ai_assistant_notes, entity_type \"report\", type csv_export) through sentinelWrite",
+    /sentinelWrite\(supabase, supabase\.from\("ai_assistant_notes"\)\.insert\(/.test(csv) && /entity_type:\s*"report"/.test(csv) && /type: "csv_export"/.test(csv))
+
+  // The phone READS never raise the platform incident; the money-path verdict still does.
+  const pp = blankComments(read(`${A}phone-provisioning.ts`))
+  const status = exportSpan(pp, "getPhoneAllowanceStatusAction") ?? ""
+  check("the allowance card reads the verdict READ ONLY (readTenantNumberProvisioning, never the incident-raising evaluateTenantNumberProvisioning)",
+    /\breadTenantNumberProvisioning\(/.test(status) && !/\bevaluateTenantNumberProvisioning\(/.test(status))
+
+  // The twin READ cannot reach the snapshot insert.
+  const tw = stripped(read("lib/kernel/brokerage-twin.ts"))
+  const readSpan = exportSpan(tw, "readBrokerageTwin") ?? "", composeSpan = localSpan(tw, "composeTwinNow"), buildSpan = exportSpan(tw, "buildBrokerageTwin") ?? ""
+  check("readBrokerageTwin builds through composeTwinNow (no insert), never through the persisting buildBrokerageTwin; the builder still persists",
+    /\bcomposeTwinNow\(/.test(readSpan) && !/\bbuildBrokerageTwin\(/.test(readSpan) && !!composeSpan && !WRITE_TOKEN.test(composeSpan) && /\.insert\(/.test(buildSpan) && /\bcomposeTwinNow\(/.test(buildSpan))
+
+  // Rule J lives in the census and is wired into views(); its controls are section G13 of the census guard.
+  const led = blankComments(read("scripts/os-coverage-ledger.ts"))
+  check("the census reads a same-file table CONSTANT (rule J: tableConstFroms, called from views()) and carries its controls (G13 J POSITIVE / NEGATIVE / LIVE)",
+    /function tableConstFroms\(/.test(led) && /const constFroms = tableConstFroms\(code, ids\)/.test(led) && ["G13 J POSITIVE", "G13 J NEGATIVE", "G13 J LIVE"].every((s) => led.includes(s)))
+}
+
+async function round7Driven(): Promise<void> {
+  console.log("\n§R7-B — round 7, driven against the in-memory client (no network, no provider, no model)")
+  const RUR = await import(pathToFileURL(join(ROOT, "lib/auth/resolve-user-role.ts")).href)
+  const roster = RUR.TENANT_ADMIN_USER_TYPES as Set<string>
+  const realRole = { BROKERAGE_FINANCE_ADMIN_USER_TYPES: RUR.BROKERAGE_FINANCE_ADMIN_USER_TYPES, isAdminOrBroker: RUR.isAdminOrBroker,
+    resolveTenantAdmin: async (_s: unknown, _u: string, p: { user_type?: string | null }) => ({ ok: true, isTenantAdmin: roster.has(String(p?.user_type ?? "")) }) }
+  FILE_COMMON[`${A}call-review-actions.ts`] = { "@/lib/auth/resolve-user-role": realRole }
+  FILE_COMMON[`${A}onboarding/onboarding-ops.ts`] = {
+    "@/lib/auth/resolve-user-role": realRole,
+    // The REAL rule: the roster is read from the brokerage the caller passes (the session's), nothing else.
+    "@/lib/onboarding/onboarding-roster": { loadOnboardingRoster: async (_s: unknown, brokerageId: string) => ({ agents: R7.roster.filter((a) => a.brokerageId === brokerageId) }) },
+  }
+  FILE_COMMON[`${A}fair-housing-older-persons.ts`] = { "@/lib/auth/resolve-user-role": realRole }
+  FILE_COMMON["lib/kernel/reporting.ts"] = { "@/lib/transactions/transaction-status": await import(pathToFileURL(join(ROOT, "lib/transactions/transaction-status.ts")).href) }
+  FILE_COMMON[`${A}workflows.ts`] = { "@/lib/identity": { getAgentContext: async () => agentCtx() } }
+  const LEAD = randomUUID(), LEAD2 = randomUUID(), CALL = randomUUID(), CALL2 = randomUUID()
+
+  // ── shareCallWithCoach ──
+  const cr = await load(`${A}call-review-actions.ts`).catch((e) => { check("call-review-actions loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (cr) {
+    const seed = () => ({ users: [{ id: U, brokerage_id: B, user_type: "agent" }, { id: LEAD, brokerage_id: B, user_type: "broker" }, { id: LEAD2, brokerage_id: B2, user_type: "broker" }],
+      voice_calls: [{ id: CALL, brokerage_id: B }, { id: CALL2, brokerage_id: B2 }], notifications: [] })
+    const notes = () => (R.db.tables.notifications as Row[]).filter((n) => n.type === "call_review_share")
+    fresh(seed()); R.authed = true; R.role = undefined
+    const ok = await safe(() => cr.shareCallWithCoach({ callId: CALL }))
+    check("shareCallWithCoach: the tenant's leader is notified and ONE receipt is filed (coaching.call_review.share, subject the call, session user + tenant, no key)",
+      (ok.v as any)?.success === true && notes().length === 1 && notes()[0].user_id === LEAD && ledger().length === 1 && ledger()[0].action === "coaching.call_review.share"
+      && ledger()[0].subject_id === CALL && ledger()[0].brokerage_id === B && ledger()[0].actor_user_id === U && !ledger()[0].idempotency_key, JSON.stringify({ ok, n: notes().length, l: ledger().map((x) => [x.action, x.subject_id === CALL]) }).slice(0, 220))
+    await safe(() => cr.shareCallWithCoach({ callId: CALL }))
+    check("shareCallWithCoach: a second share is a second receipt (no key)", ledger().length === 2)
+    fresh(seed())
+    const other = await safe(() => cr.shareCallWithCoach({ callId: CALL2 }))
+    check("NEGATIVE shareCallWithCoach: another tenant's call is refused — no leader notified, nothing recorded", (other.v as any)?.success === false && notes().length === 0 && ledger().length === 0, JSON.stringify(other).slice(0, 200))
+    fresh(seed())
+    const ghost = await safe(() => cr.shareCallWithCoach({ callId: randomUUID() }))
+    check("NEGATIVE shareCallWithCoach: a call id that names no call is refused — no leader notified", (ghost.v as any)?.success === false && notes().length === 0 && ledger().length === 0, JSON.stringify(ghost).slice(0, 200))
+  }
+
+  // ── nudgeOnboardingAgentsAction (the one onboarding-reminder door) ──
+  const ops = await load(`${A}onboarding/onboarding-ops.ts`).catch((e) => { check("onboarding-ops loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (ops) {
+    const AG1 = randomUUID(), AG_NOUSER = randomUUID(), AG_OTHER = randomUUID()
+    R7.roster = [{ agentId: AG1, userId: U2, percentComplete: 40, brokerageId: B }, { agentId: AG_NOUSER, userId: null, percentComplete: 0, brokerageId: B }, { agentId: AG_OTHER, userId: randomUUID(), percentComplete: 10, brokerageId: B2 }]
+    const nudges = () => (R.db.tables.notifications as Row[]).filter((n) => n.type === "onboarding_nudge")
+    fresh({ notifications: [] }); R.authed = true; R.role = "broker"
+    const r1 = await safe(() => ops.nudgeOnboardingAgentsAction([AG1, AG_NOUSER, AG_OTHER]))
+    check("nudge: the in-tenant agent with a user row is notified, the seat with none is skipped, another tenant's agent is invisible — ONE receipt (onboarding.agent_nudge.send, session user + tenant, no key)",
+      (r1.v as any)?.success === true && (r1.v as any)?.notified === 1 && (r1.v as any)?.skipped === 1 && nudges().length === 1 && nudges()[0].user_id === U2
+      && ledger().length === 1 && ledger()[0].action === "onboarding.agent_nudge.send" && ledger()[0].brokerage_id === B && ledger()[0].actor_user_id === U && !ledger()[0].idempotency_key, JSON.stringify({ r1, l: ledger().map((x) => [x.action, x.status]) }).slice(0, 220))
+    await safe(() => ops.nudgeOnboardingAgentsAction([AG1]))
+    check("nudge: a second nudge is a second receipt (no key)", ledger().length === 2 && nudges().length === 2)
+    fresh({ notifications: [] }); R.role = "agent"
+    const no = await safe(() => ops.nudgeOnboardingAgentsAction([AG1]))
+    check("NEGATIVE nudge: an agent seat (not the admin roster) is refused — nothing sent, nothing recorded", (no.v as any)?.success === false && nudges().length === 0 && ledger().length === 0)
+    R.role = undefined
+  }
+
+  // ── removeOlderPersonsVerificationAction ──
+  const fh = await load(`${A}fair-housing-older-persons.ts`).catch((e) => { check("fair-housing-older-persons loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (fh) {
+    const V = randomUUID(), V2 = randomUUID()
+    const seed = () => ({ older_persons_housing_verifications: [{ id: V, brokerage_id: B, community_name: "Oak Glen" }, { id: V2, brokerage_id: B2, community_name: "Elsewhere" }] })
+    const rows = () => (R.db.tables.older_persons_housing_verifications as Row[]).map((x) => x.id)
+    fresh(seed()); R.authed = true; R.role = "broker"
+    const ok = await safe(() => fh.removeOlderPersonsVerificationAction(V))
+    check("withdraw: the tenant's attestation is removed and ONE receipt is filed (compliance.older_persons.withdraw, subject the record, session user + tenant)",
+      (ok.v as any)?.success === true && !rows().includes(V) && ledger().length === 1 && ledger()[0].action === "compliance.older_persons.withdraw" && ledger()[0].subject_id === V && ledger()[0].brokerage_id === B && ledger()[0].actor_user_id === U, JSON.stringify({ ok, l: ledger().map((x) => [x.action, x.status]) }).slice(0, 220))
+    fresh(seed())
+    const other = await safe(() => fh.removeOlderPersonsVerificationAction(V2))
+    check("NEGATIVE withdraw: another tenant's attestation matches no row — not a success, still there, and the receipt settles failed", (other.v as any)?.success === false && rows().includes(V2) && ledger().every((x) => x.status === "failed"), JSON.stringify({ other, l: ledger().map((x) => x.status) }).slice(0, 200))
+    fresh(seed()); R.role = "team_lead"
+    const tl = await safe(() => fh.removeOlderPersonsVerificationAction(V))
+    check("NEGATIVE withdraw: a team lead (the roster minus team_lead attests) is refused before anything is removed or recorded", (tl.v as any)?.success === false && rows().includes(V) && ledger().length === 0)
+    R.role = undefined
+  }
+
+  // ── exportReportCsv: the audit note, never the content ──
+  const rp = await load("lib/kernel/reporting.ts").catch((e) => { check("reporting loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (rp) {
+    fresh({ ai_assistant_notes: [] })
+    const r = await safe(() => rp.exportReportCsv({ ctx: { brokerageId: B, userId: U, agentId: AG }, reportType: "financial", rows: [{ id: "r1", gross_commission: "SENTINEL-4471" }], columns: ["id", "gross_commission"] }))
+    const n = (R.db.tables.ai_assistant_notes as Row[])
+    check("exportReportCsv: the CSV comes back AND one audit note is written under the session's tenant and user (type csv_export, row count) — never the exported values",
+      (r.v as any)?.success === true && /SENTINEL-4471/.test((r.v as any)?.data?.csv ?? "") && n.length === 1 && n[0].brokerage_id === B && n[0].created_by === U && n[0].entity_type === "report"
+      && /"csv_export"/.test(n[0].note_text) && /"rowCount":1/.test(n[0].note_text) && !/SENTINEL/.test(n[0].note_text), JSON.stringify({ r: (r.v as any)?.success, n }).slice(0, 220))
+  }
+
+  // ── the phone READS page nobody; the money-path verdict still raises the incident ──
+  const ppr = await import(pathToFileURL(join(ROOT, "lib/billing/phone-plan-resolve.ts")).href).catch((e) => { check("phone-plan-resolve loads", false, (e as Error).message.slice(0, 200)); return null })
+  const plan = await import(pathToFileURL(join(ROOT, "lib/billing/phone-plan.ts")).href)
+  if (ppr) {
+    const STAFF = randomUUID()
+    const al = plan.resolvePhoneAllowance("solo_agent", null)
+    const now = new Date(), month = now.toISOString().slice(0, 7)
+    const seed = () => ({
+      brokerages: [{ id: B, plan_tier: "solo_agent" }], subscription_tiers: [], notifications: [],
+      users: [{ id: STAFF, platform_role: "superadmin", brokerage_id: B2 }],
+      tenant_phone_numbers: Array.from({ length: al.includedNumbers }, () => ({ id: randomUUID(), brokerage_id: B, is_active: true })),
+      messages: Array.from({ length: al.includedSmsSegments + 3 }, () => ({ id: randomUUID(), brokerage_id: B, type: "sms", created_at: now.toISOString() })),
+      usage_logs: [],
+    })
+    const incidents = () => (R.db.tables.notifications as Row[]).filter((x) => x.type === "price_not_configured")
+    // scripts/in-memory-supabase.ts returns no `count` for `.select(c, { count: "exact", head: true })`; the phone reads count
+    // numbers and SMS that way. This wrapper (this section only) answers count = the rows the same filters matched.
+    const counted = (raw: MemClient): MemClient => new Proxy(raw, { get(t, k) {
+      if (k !== "from") return (t as any)[k]
+      return (table: string) => {
+        const b: any = (t as any).from(table); let wantCount = false, head = false
+        const sel = b.select.bind(b); b.select = (c?: string, o?: { count?: string; head?: boolean }) => { wantCount = !!o?.count; head = !!o?.head; sel(c); return b }
+        const then = b.then.bind(b); b.then = (res: any, rej: any) => then((r: any) => res(wantCount ? { ...r, data: head ? null : r.data, count: (r.data ?? []).length } : r), rej)
+        return b
+      }
+    } }) as MemClient
+    let db = counted(fresh(seed()))
+    const rd = typeof ppr.readTenantNumberProvisioning === "function" ? await ppr.readTenantNumberProvisioning(db, B) : null
+    check("NEGATIVE the allowance card's read: the next number is unpriced (priceNotConfigured shown) and NO platform incident is raised", !!rd?.priceNotConfigured && rd?.allowed === false && incidents().length === 0, JSON.stringify({ rd: rd ? { allowed: rd.allowed, p: !!rd.priceNotConfigured } : "readTenantNumberProvisioning absent", i: incidents().length }))
+    db = counted(fresh(seed()))
+    const ev = await ppr.evaluateTenantNumberProvisioning(db, B)
+    check("POSITIVE the money-path verdict (purchase / port / carrier tick) still raises ONE platform incident naming the missing number rate", ev.allowed === false && incidents().length === 1 && incidents()[0].user_id === STAFF && /overage_number_cents/.test(incidents()[0].body), JSON.stringify(incidents().map((x) => x.title)))
+    db = counted(fresh(seed()))
+    const m = await ppr.loadTenantPhoneMeter(db, B, month)
+    check("NEGATIVE the tenant's meter read: unpriced overage units are SHOWN (no amount) and NO platform incident is raised", m.meter.priceNotConfigured.length >= 1 && m.meter.overageTotalCents === null && incidents().length === 0, JSON.stringify({ p: m.meter.priceNotConfigured.length, i: incidents().length }))
+  }
+
+  // ── logUserActivity: only the verbs its caller sends; a refusal is not a success ──
+  const wf = await load(`${A}workflows.ts`).catch((e) => { check("workflows loads under the harness", false, (e as Error).message.slice(0, 200)); return null })
+  if (wf) {
+    const auditRows = () => (R.db.tables.audit_log as Row[])
+    fresh({ audit_log: [] }); R.authed = true
+    const ok = await safe(() => wf.logUserActivity(undefined, "session_started", { path: "/dashboard", injected: "x".repeat(10) }))
+    check("logUserActivity: \"session_started\" records ONE audit row for the session user with ONLY the route it started on", (ok.v as any)?.success === true && auditRows().length === 1 && auditRows()[0].user_id === U && auditRows()[0].action === "session_started" && JSON.stringify(auditRows()[0].after) === JSON.stringify({ path: "/dashboard" }), JSON.stringify({ ok, a: auditRows() }).slice(0, 220))
+    fresh({ audit_log: [] })
+    const forged = await safe(() => wf.logUserActivity(undefined, "regional_convention_review_completed", { entity: "forged" }))
+    check("NEGATIVE logUserActivity: an action name its caller never sends is refused — no audit row is forged", (forged.v as any)?.success === false && auditRows().length === 0, JSON.stringify({ forged, a: auditRows().length }))
+    fresh({ audit_log: [] }); R.authed = false
+    const anon = await safe(() => wf.logUserActivity(undefined, "session_started", { path: "/x" }))
+    R.authed = true
+    check("NEGATIVE logUserActivity: an anonymous call is not reported as success and writes nothing", (anon.v as any)?.success === false && auditRows().length === 0, JSON.stringify(anon))
+  }
+}
+const R7: { roster: Array<{ agentId: string; userId: string | null; percentComplete: number; brokerageId: string }> } = { roster: [] }
+
 async function main(): Promise<void> {
-  console.log("LEDGER RECEIPTS — round 5 (wave 155, lane 155R23) + round 6 (lane 155R26)")
+  console.log("LEDGER RECEIPTS — round 5 (wave 155, lane 155R23) + round 6 (lane 155R26) + round 7 (lane 155R27)")
   // A PLACEHOLDER, never a real key, set in this process only: at the base, searchProperties read IDX env at load and called the
   // vendor with it — the round-6 negative must see that call (a counted stub) rather than pass because the env is unset.
   process.env.IDXBROKER_API_KEY = "proof-placeholder"
   staticSection()
   round6Static()
-  if (!process.argv.includes("--static-only")) { await drivenSection(); await round6Driven() }
+  round7Static()
+  if (!process.argv.includes("--static-only")) { await drivenSection(); await round6Driven(); await round7Driven() }
   console.log(`\nRESULT: ${pass} passed, ${failures.length} failed`)
   if (failures.length) { console.log("❌ LEDGER_RECEIPTS_ROUND5_FAIL"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
   console.log("✅ LEDGER_RECEIPTS_ROUND5_PASS — every round-5 write decides, then leaves one receipt (or one platform evidence row); no tenant is invented")

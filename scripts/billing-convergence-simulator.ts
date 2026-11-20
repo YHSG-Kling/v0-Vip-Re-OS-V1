@@ -407,8 +407,15 @@ async function main() {
   check("census: lib/billing/phone-plan.ts carries no numeric overage rate and lib/kernel/vendor-subscription.ts no numeric tier price (stripped source)",
     !phoneLiteral.test(code("lib/billing/phone-plan.ts")) && !vendorLiteral.test(code("lib/kernel/vendor-subscription.ts")))
   check("census positive control: the literal finders see fixtures", phoneLiteral.test("overageNumberCents: 300,") && vendorLiteral.test("monthlyPriceUsd: 49,"))
-  check("the resolver + the meter raise the incident on the server (phone-plan-resolve.ts), the activation checkout raises it, the webhook never prices anything",
-    (code("lib/billing/phone-plan-resolve.ts").match(/raisePriceNotConfiguredIncident\(/g) ?? []).length === 2 && /raisePriceNotConfiguredIncident\(/.test(code("lib/billing/subscription-activation.ts")) && !/unit_amount/.test(hook))
+  // RESTATED TO THE RULE (wave 155, lane 155R27; CLAUDE.md §2 — this pinned a COUNT of two raise sites): the incident is raised
+  // where a money move is refused (the provisioning verdict the purchase / port / carrier-tick paths call) and NEVER from a
+  // read (the status card's readTenantNumberProvisioning, the tenant meter's loadTenantPhoneMeter).
+  const ppr = code("lib/billing/phone-plan-resolve.ts")
+  const fnBody = (name: string) => { const i = ppr.indexOf(`export async function ${name}(`); if (i < 0) return ""; const j = ppr.indexOf("\nexport ", i + 1); return ppr.slice(i, j < 0 ? ppr.length : j) }
+  check("the provisioning verdict raises the incident on the server, the two READS never do, the activation checkout raises it, the webhook never prices anything",
+    /raisePriceNotConfiguredIncident\(/.test(fnBody("evaluateTenantNumberProvisioning")) && !!fnBody("readTenantNumberProvisioning") && !/raisePriceNotConfiguredIncident\(/.test(fnBody("readTenantNumberProvisioning"))
+      && !!fnBody("loadTenantPhoneMeter") && !/raisePriceNotConfiguredIncident\(/.test(fnBody("loadTenantPhoneMeter"))
+      && /raisePriceNotConfiguredIncident\(/.test(code("lib/billing/subscription-activation.ts")) && !/unit_amount/.test(hook))
 
   console.log("\n[Layer 7 · tenant-facing language — no rendered 'platform-covered']")
   const phrase = /platform[- ]covered/i

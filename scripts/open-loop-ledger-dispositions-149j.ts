@@ -141,7 +141,7 @@ export const WAVE149J_DISPOSITIONS: Record<string, Disposition> = {
   "143G-OL-02": ca("handed-to-lane", "lane149D", "Lead-magnet URL producers still emit the bare /lm/<slug> — ruling 12 is lane 149D's."),
   "143G-OL-03": ca("handed-to-lane", "lane149D", "app/lm/[slug]/page.tsx sets no alternates.canonical to the in-website path (grep: 0) — lane 149D (ruling 12)."),
   "143G-OL-04": ca("missing-code", "lane149Z", "floating-voice-fab hides on /lm/ only, not /site/*/lm/* (cosmetic, logged-in agents only)."),
-  "143G-OL-05": ca("missing-code", "lane149Z", "`.in('user_type', ['admin','broker'…])` literals remain (e.g. app/actions/portal-settings.ts:285, cda-portal.ts:972, call-review-actions.ts:60) — each should spread TENANT_ADMIN_USER_TYPES or a named tier; a roster-census guard is the durable fix.", true),
+  "143G-OL-05": ca("missing-code", "lane149Z", "`.in('user_type', ['admin','broker'…])` literals remain (e.g. app/actions/portal-settings.ts:285, cda-portal.ts:972, call-review-actions.ts:69) — each should spread TENANT_ADMIN_USER_TYPES or a named tier; a roster-census guard is the durable fix.", true),
   "143G-OL-06": ca("deferred", "integrator", DOCS),
   // ── 143 · H (operations) ─────────────────────────────────────────────────────────────────────────────────────────────
   "143H-SO-01": ca("owner-decision", "owner", OWNERQ),

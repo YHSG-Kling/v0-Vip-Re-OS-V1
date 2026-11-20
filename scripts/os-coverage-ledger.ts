@@ -148,6 +148,12 @@ const OWNER_HELD: Record<string, string> = {
   "orchestrator_event:transaction.contingency_cleared": "owner-held pending owner decision (lane 155R24): build or retire? Nothing produces the moment — no writer of transactions.*_contingency_removed_at, no trigger, no catalog milestone; the consumer is kept dormant (nothing runs)",
   "orchestrator_event:transaction.closing_soon": "owner-held pending owner decision (lane 155R24): build or retire? A closing gift (closing_gifts.price_cents) is spend; the producer would be the deadline watcher's close-date approach; kept dormant (nothing runs) until the gift policy is ruled",
   "kernel_event:referral_converted": "owner-held pending owner decision 2 (does a registered manager's deterministic evidence rule count as the decision owner?): the award is decided by referralEvidenceTransaction (a closed/funded transaction must evidence the won referral) under recruiting_manager — a rule, not a named gate token",
+  // ROUND 7 (lane 155R27) — four P2 rows whose only writes are carriers, each folded into a question the owner already holds: a principal's
+  // governance act over the managers (two), the roster announcement beside its held sibling, and the seat's own audit row (own-record ruling).
+  "server_action:app/actions/admin/manager-evals.ts#completeRegionalConventionReview": "owner-held pending owner ruling (lane 155R27): the yearly regional closing-cost convention review is typed as the Finance Manager's (lib/managers/regional-convention-review.ts:51 owner: finance_manager) and renders under it on the governance surface; its completion is a broker/admin attestation whose only write is one audit_log row (the due-date ledger). Is the completion the Finance Manager's act (the census may then credit a StandingReviewSpec's typed owner), or a principal's attestation no manager performs?",
+  "server_action:app/actions/admin/manager-evals.ts#overrideDeliberationWinner": "owner-held pending owner ruling (lane 155R27): a broker/admin overrides the argued winner of a cross-manager deliberation, recorded on that referral's manager_signals payload (lib/managers/deliberation.ts recordPrincipalOverride). Is the principal's call owned by the manager the referral was addressed to, by the winner it names, or is it a governance act above the managers that no manager performs?",
+  "server_action:app/actions/communications.ts#notifyBrokerageAgentsAction": "owner-held pending owner decision 3 (lane 155R18), the same question as its sibling draftTeamAnnouncementAction: a principal's in-app announcement to the brokerage / team roster (notifications + a lifecycle event); the only tables it reads are roster identity (agents, teams, users), so no steward is derivable — reference owner recruiting_manager (teams' steward; §D read:teams)",
+  "server_action:app/actions/workflows.ts#logUserActivity": "owner-held pending the own-record ruling (lane 155R18 owner decision 3 / rule C): the seat's OWN session-start row in the audit trail (one verb, its own user id, no tenant column) — is recording one's own activity a manager action that needs an owner? Until ruled: only the verbs its caller sends are accepted (lane 155R27)",
 }
 /** Set by the census: manifest capabilities that are discoverable but not callable over MCP / REST (published, not rows). */
 let capabilityCatalogOnly = 0
@@ -181,6 +187,8 @@ function views(file: string, rawText?: string): Views | null {
   // missed (lib/analytics/prediction-accuracy.ts contentAdapter, app/actions/analytics.ts tool_usage_sessions). The tail is read
   // with every whitespace run (a blanked comment is one) collapsed to one space, then cut to the same 64 characters. Control: G11 E.
   for (const m of code.matchAll(/\.from\(\s*["'`][a-z_][a-z0-9_]*["'`]/g)) froms.push({ at: m.index!, text: fresh(m[0] + chainTail(code, m.index! + m[0].length)) })
+  const constFroms = tableConstFroms(code, ids)
+  if (constFroms.length) { froms.push(...constFroms); froms.sort((a, b) => a.at - b.at) }
   const brokerageAt = [...code.matchAll(/["']brokerage_id["']/g)].map((m) => m.index!)
   const platformAt = [...code.matchAll(/["']platform_role["']/g)].map((m) => m.index!)
   const tokenEqAt = [...code.matchAll(TOKEN_EQ_RE)].filter((m) => ids.startsWith(".eq(", m.index!)).map((m) => m.index!)
@@ -198,6 +206,32 @@ function views(file: string, rawText?: string): Views | null {
 /** PURE — the 64 characters of COMMENT-BLANKED code after `from`, every whitespace run collapsed to one space (so a blanked
  *  comment of any length between chained calls costs one character). Reads at most 4000 characters ahead. */
 function chainTail(code: string, from: number): string { return code.slice(from, from + 4000).replace(/\s+/g, " ").slice(0, 64) }
+// WAVE 155 (lane 155R27, rule J) — A TABLE NAMED BY A SAME-FILE CONSTANT IS THAT TABLE. Table names were read only from a
+// `.from("literal")`, so `svc.from(TABLE).insert(…)` with `const TABLE = "vendor_portfolio_items"` at the top of the file was
+// invisible: app/actions/vendor-portfolio.ts (the vendor's own work samples) and lib/compliance/fair-housing-older-persons-store.ts
+// (OLDER_PERSONS_TABLE, the 55+ exemption record) read as "writes only the ledger, no steward" although TABLE_MANAGER stewards
+// both tables. The identifier is resolved ONLY when it is declared exactly once in the file, at the top level (`const X = "t"` /
+// `export const X: string = "t"`, a plain string literal), and never re-declared (no other const / let / var / function / class
+// of that name) — then the call is read exactly as the literal would be (same chain tail, same WRITE / READ regexes, so no new
+// credit a literal would not earn). `x.storage.from(BUCKET)` is a STORAGE bucket, never a table. Only real calls count (the
+// string-blanked view). Controls: section G (G13 J). Blind spots: a constant imported from another module, built at run time,
+// or held in a local variable stays invisible, as before; a FUNCTION PARAMETER that shadows the constant's name is not detected
+// (no such parameter exists in the four files the rule reads today — vendor-portfolio, fair-housing-older-persons-store,
+// protected-research-store, brokerage-twin).
+function tableConstFroms(code: string, ids: string): FromLit[] {
+  const out: FromLit[] = []
+  for (const m of ids.matchAll(/\.from\(\s*([A-Za-z_$][\w$]*)\s*\)/g)) {
+    const at = m.index!; const name = m[1]
+    if (/\bstorage\s*$/.test(ids.slice(Math.max(0, at - 80), at))) continue
+    const n = name.replace(/\$/g, "\\$")
+    const decl = [...code.matchAll(new RegExp(`^(?:export\\s+)?const\\s+${n}\\s*(?::\\s*string\\s*)?=\\s*["'\`]([a-z_][a-z0-9_]*)["'\`]\\s*;?[ \\t]*$`, "gm"))]
+    if (decl.length !== 1) continue
+    const bindings = (ids.match(new RegExp(`\\b(?:const|let|var|function|class)\\s+${n}\\b`, "g")) ?? []).length
+    if (bindings !== 1) continue
+    out.push({ at, text: fresh(`.from("${decl[0][1]}")` + chainTail(code, at + m[0].length)) })
+  }
+  return out
+}
 function lineAt(v: Views, idx: number): number {
   let lo = 0, hi = v.lineStarts.length - 1
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (v.lineStarts[mid] <= idx) lo = mid; else hi = mid - 1 }
@@ -3244,6 +3278,30 @@ async function main(): Promise<void> {
     const TB = "lib/content-intel/topic-bank.ts"
     check("G11 F POSITIVE: pickTopics with markUsed false carries no write (its update and logTopicUses sit under `if (args.markUsed && …)`) — NEGATIVE: without the flag the full callee still writes, and a flag no guard names proves nothing",
       falseFlagGatedFacts(TB, "pickTopics", 1, ["markUsed"])?.writes.size === 0 && memberFacts(TB, "pickTopics", 1).writes.size > 0 && falseFlagGatedFacts(TB, "pickTopics", 1, ["__no_such_flag__"]) === null)
+    // G13 — lane 155R27, rule J: a table named by a same-file top-level string constant (tableConstFroms)
+    {
+      const JF = "app/actions/__os_coverage_const__.ts"
+      const jf = (src: string) => { const v = views(JF, src)!; return factsOfSpan(JF, v, 0, v.ids.length) }
+      const pos = jf(`const TABLE = "${hopA}"\nexport async function f() { await svc.from(TABLE).insert({ a: 1 }) }`)
+      const posR = jf(`export const T2: string = "${hopB}";\nexport async function f() {\n  const { data } = await svc\n    .from(T2)\n    .select("id")\n}`)
+      check(`G13 J POSITIVE: \`.from(TABLE)\` with a top-level \`const TABLE = "${hopA}"\` is a write of ${hopA}; an exported, typed constant read through a split chain is a read of ${hopB}`,
+        pos.writes.has(hopA) && posR.reads.has(hopB), JSON.stringify([[...pos.writes.keys()], [...posR.reads]]))
+      const negs: Array<[string, Facts]> = [
+        ["a storage bucket", jf(`const BUCKET = "${hopA}"\nexport async function f() { await svc.storage\n  .from(BUCKET).upload("p", b) }`)],
+        ["a `let`", jf(`let TABLE = "${hopA}"\nexport async function f() { await svc.from(TABLE).insert({}) }`)],
+        ["a re-declared name", jf(`const TABLE = "${hopA}"\nfunction g() { const TABLE = "other_table" }\nexport async function f() { await svc.from(TABLE).insert({}) }`)],
+        ["a function-local constant", jf(`export async function f() {\n  const TABLE = "${hopA}"\n  await svc.from(TABLE).insert({})\n}`)],
+        ["an interpolated template", jf(`const TABLE = \`${hopA}_\${env}\`\nexport async function f() { await svc.from(TABLE).insert({}) }`)],
+        ["a tombstone comment naming the call", jf(`const TABLE = "${hopA}"\n// retired: await svc.from(TABLE).insert({}) — survivor elsewhere\nexport async function f() { return TABLE }`)],
+        ["a call inside a string", jf(`const TABLE = "${hopA}"\nexport const SPECIMEN = "await svc.from(TABLE).insert({})"`)],
+      ]
+      const leaked = negs.filter(([, f]) => f.writes.size > 0 || f.reads.size > 0).map(([n]) => n)
+      check("G13 J NEGATIVE: a storage bucket, a `let`, a re-declared name, a function-local constant, an interpolated template, a tombstone comment and a specimen string resolve NO table", leaked.length === 0, leaked.join(", "))
+      const vp = views("app/actions/vendor-portfolio.ts")
+      const vpFacts = vp ? factsOfSpan("app/actions/vendor-portfolio.ts", vp, 0, vp.ids.length) : emptyFacts()
+      check("G13 J LIVE: app/actions/vendor-portfolio.ts writes and reads vendor_portfolio_items through its TABLE constant, and its `.storage.from(BUCKET)` (\"documents\") is NOT read as the documents table",
+        vpFacts.writes.has("vendor_portfolio_items") && vpFacts.reads.has("vendor_portfolio_items") && !vpFacts.writes.has("documents"), JSON.stringify([...vpFacts.writes.keys()]))
+    }
   }
 
   const st = { working: 0, partial: 0, missing: 0, "owner-held": 0 } as Record<State, number>

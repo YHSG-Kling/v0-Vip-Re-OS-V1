@@ -265,7 +265,7 @@ const P_DOC = "lib/documents/client-document-producer.ts:127"
 const MEDIA_SITE_CLASSES: Array<{ file: string; frag: string; cls: MediaClass; at: string }> = [
   { file: "app/actions/commission-policy/agreements.ts", frag: "input.documentUrl", cls: "INPUT", at: "app/dashboard/financials/agreements/agreement-governance-panel.tsx:167" },
   { file: "app/actions/kernel-bridges.ts", frag: "produced.pdfUrl", cls: "UPSTREAM", at: P_DOC },
-  { file: "app/actions/reporting-kernel.ts", frag: "pdfResult.data.pdfUrl", cls: "SHORT", at: "lib/kernel/reporting.ts:1106" },
+  { file: "app/actions/reporting-kernel.ts", frag: "pdfResult.data.pdfUrl", cls: "SHORT", at: "lib/kernel/reporting.ts:1118" },
   { file: "app/actions/transaction-milestones.ts", frag: "res.pdfUrl", cls: "UPSTREAM", at: "lib/kernel/appraiser-packet.ts:890" },
   { file: "app/actions/vendor-verification.ts", frag: "certificateUrl", cls: "INPUT", at: "app/actions/vendor-verification.ts:176" },
   { file: "app/components/features/education/EducationEditor.tsx", frag: "videoUrl", cls: "VENDOR", at: "app/components/features/education/EducationEditor.tsx:310" },

@@ -1599,8 +1599,7 @@ export async function buildBrokerageTwin(
 ): Promise<BuildTwinResult> {
   if (!brokerageId) throw new Error("brokerage-twin: brokerageId is required (resolve it from the session)")
   const svc: Svc = opts.svc ?? (await import("@/lib/supabase/service")).createServiceClient()
-  const facts = await loadBrokerageTwinFacts(svc, brokerageId, { ...opts, at })
-  const twin = composeBrokerageTwin(facts)
+  const twin = await composeTwinNow(svc, brokerageId, at, opts)
   const persist: BuildTwinResult["persist"] = { attempted: opts.persist !== false, snapshotId: null, error: null }
   if (persist.attempted) {
     const { data, error } = await svc.from(TWIN_SNAPSHOT_TABLE).insert({
@@ -1611,6 +1610,15 @@ export async function buildBrokerageTwin(
     else persist.snapshotId = (data as { id?: string } | null)?.id ?? null
   }
   return { twin, persist }
+}
+
+/** READ ONLY (wave 155, lane 155R27) — load the facts and compose the twin; never persists. The read path
+ *  (readBrokerageTwin's fresh build) used to go through buildBrokerageTwin with `persist: false`, so its snapshot insert was
+ *  one flag away from every reader — and the census, which cannot evaluate that flag, counted getRecruitingNeeds as a writer
+ *  once it could see the TWIN_SNAPSHOT_TABLE insert. The read now calls the half that structurally cannot write. */
+async function composeTwinNow(svc: Svc, brokerageId: string, at: Date, opts: LoadTwinOptions): Promise<BrokerageTwin> {
+  const facts = await loadBrokerageTwinFacts(svc, brokerageId, { ...opts, at })
+  return composeBrokerageTwin(facts)
 }
 
 /** A persisted twin older than this is NOT handed to a per-agent surface — it falls back to the live
@@ -1646,8 +1654,10 @@ export async function readBrokerageTwin(
       return row?.twin && row.twin.brokerageId === brokerageId ? row.twin : null
     } catch (e) { console.error(`[brokerage-twin] snapshot read failed for ${brokerageId}: ${e instanceof Error ? e.message : String(e)}`); return null }
   }
-  try { return (await buildBrokerageTwin(brokerageId, opts.at, { ...opts, persist: false })).twin }
-  catch (e) { console.error(`[brokerage-twin] build failed for ${brokerageId}: ${e instanceof Error ? e.message : String(e)}`); return null }
+  try {
+    const svc: Svc = opts.svc ?? (await import("@/lib/supabase/service")).createServiceClient()
+    return await composeTwinNow(svc, brokerageId, opts.at ?? new Date(), opts)
+  } catch (e) { console.error(`[brokerage-twin] build failed for ${brokerageId}: ${e instanceof Error ? e.message : String(e)}`); return null }
 }
 
 /** PURE: the agent's capacity line from the twin (the morning stand-up's one read). */

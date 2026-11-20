@@ -213,7 +213,7 @@ async function main(): Promise<void> {
     "server_action:app/actions/ai-training-coaching.ts#evaluatePracticeSession": { via: "lane:155S2" },
     "server_action:app/actions/assistant.ts#handleAutomationTriggered": { via: "log:automation_logs" },
     "server_action:app/actions/calculators.ts#saveCalculatorResult": { via: "log:calculator_history" },
-    "server_action:app/actions/call-review-actions.ts#shareCallWithCoach": { via: "held:coaching share — no table on its path names the coach's domain; R7 owner decision 2" },
+    "server_action:app/actions/call-review-actions.ts#shareCallWithCoach": { via: "read:voice_calls" }, // lane 155R27: the share now proves the call (voice_calls, tenant-pinned) before it notifies — the subject is on its path
     "server_action:app/actions/communications.ts#notifyBrokerageAgentsAction": { via: "read:teams" },
     "server_action:app/actions/cron-kernel.ts#recordCronProgressAction": { via: "log:cron_execution_logs" },
     "server_action:app/actions/cron-kernel.ts#recordCronStartAction": { via: "log:cron_execution_logs" },
@@ -225,7 +225,7 @@ async function main(): Promise<void> {
     "server_action:app/actions/notifications.ts#markAllRead": { via: "held:the seat's own record — R7 owner decision 2" },
     "server_action:app/actions/notifications.ts#markNotificationRead": { via: "held:the seat's own record — R7 owner decision 2" },
     "server_action:app/actions/onboarding/onboarding-ops.ts#nudgeOnboardingAgentsAction": { via: "read:agent_onboarding" },
-    "server_action:app/actions/onboarding/progress.ts#sendOnboardingReminder": { via: "read:agent_onboarding" },
+    "server_action:app/actions/onboarding/progress.ts#sendOnboardingReminder": { via: "retired:app/actions/onboarding/onboarding-ops.ts:55" }, // lane 155R27: duplicate of nudgeOnboardingAgentsAction (it looked an agents.id up in users)
     "server_action:app/actions/phone-provisioning.ts#getPhoneAllowanceStatusAction": { via: "read:tenant_phone_numbers" },
     "server_action:app/actions/phone-provisioning.ts#getTenantPhoneMeterAction": { via: "read:tenant_phone_numbers" },
     "server_action:app/actions/reporting-kernel.ts#exportReportCsvAction": { via: "read:financial_reports" },

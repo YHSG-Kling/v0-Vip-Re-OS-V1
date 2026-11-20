@@ -903,50 +903,11 @@ export async function getAdminOnboardingOverview(
 }
 
 // ─── Admin: Send Reminder ────────────────────────────────────────────────────
-
-export async function sendOnboardingReminder(
-  agentId: string
-): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return { success: false, error: 'Not authenticated' }
-  }
-
-  const { data: userData } = await supabase
-    .from('users')
-    .select('brokerage_id, user_type')
-    .eq('id', user.id)
-    .single()
-
-  if (!isAdminOrBroker({ user_type: userData?.user_type || '' })) {
-    return { success: false, error: 'Unauthorized' }
-  }
-
-  // Verify the agent is in the caller's brokerage — previously any
-  // admin could send "reminder" notifications to any user across tenants.
-  const { data: targetUser } = await supabase
-    .from('users').select('brokerage_id').eq('id', agentId).maybeSingle()
-  if (!targetUser || targetUser.brokerage_id !== userData!.brokerage_id) {
-    return { success: false, error: 'Forbidden: agent not in your brokerage' }
-  }
-
-  // Create notification for the agent
-  const { error } = await supabase.from('notifications').insert({
-    user_id: agentId,
-    brokerage_id: userData!.brokerage_id,
-    type: 'onboarding_reminder',
-    entity_type: 'agent_onboarding',
-    entity_id: agentId,
-    title: 'Onboarding Reminder',
-    body: 'Your brokerage admin has sent you a reminder to complete your onboarding. Please continue your training to get certified.',
-    is_read: false,
-  })
-
-  if (error) {
-    return { success: false, error: error.message }
-  }
-
-  return { success: true }
-}
+// TOMBSTONE (wave 155, lane 155R27; CLAUDE.md §1 case 1): sendOnboardingReminder(agentId) is RETIRED onto its duplicate
+// app/actions/onboarding/onboarding-ops.ts:55 nudgeOnboardingAgentsAction — one in-app onboarding notice per agent, the
+// roster re-read from the SESSION's brokerage, one receipt. Nothing had to be merged first: the survivor already gates the
+// same admin roster, pins the tenant and deep-links the same agent_onboarding entity. Why this copy could not stay: its one
+// caller (app/dashboard/admin/components/os/onboarding-operations-panel.tsx) passes agent_onboarding.agent_id — an
+// agents.id — and this function looked that id up in `users` and wrote it as notifications.user_id. agents.id and users.id
+// are DISJOINT (CLAUDE.md §3), so every reminder from that panel was refused as "agent not in your brokerage". The panel now
+// calls the survivor with the agents.id it already holds.

@@ -66,6 +66,28 @@ export async function evaluateTenantNumberProvisioning(
   svc: Svc,
   brokerageId: string,
 ): Promise<NumberProvisioningVerdict & { tier: string; allowance: PhoneAllowance }> {
+  const v = await readTenantNumberProvisioning(svc, brokerageId)
+  // price_not_configured (wave 140J): the money move is refused by this verdict; this is the platform incident that names
+  // the missing rate (once per day per surface). It is raised HERE — on the paths that are about to buy / port a number
+  // (lib/voice/number-provisioning.ts, lib/voice/number-port-in.ts) and on the hourly carrier tick
+  // (lib/voice/carrier-registration-loop.ts) — and never from the broker's status card (readTenantNumberProvisioning).
+  if (v.priceNotConfigured) {
+    const { raisePriceNotConfiguredIncident } = await import("./price-not-configured")
+    await raisePriceNotConfiguredIncident(svc, v.priceNotConfigured, { brokerageId })
+  }
+  return v
+}
+
+/**
+ * The SAME verdict, READ ONLY (wave 155, lane 155R27): what the "Add a Number" card shows before the broker buys. It used to
+ * be evaluateTenantNumberProvisioning itself, so opening the card paged platform staff "a purchase was refused" when no
+ * purchase had been attempted — a read that wrote. The card still shows priceNotConfigured honestly; the incident is raised
+ * when a purchase or a port is actually refused (evaluateTenantNumberProvisioning above).
+ */
+export async function readTenantNumberProvisioning(
+  svc: Svc,
+  brokerageId: string,
+): Promise<NumberProvisioningVerdict & { tier: string; allowance: PhoneAllowance }> {
   const { tier, allowance } = await resolveTenantPhoneAllowance(svc, brokerageId)
   let activeNumbers = 0
   try {
@@ -79,12 +101,6 @@ export async function evaluateTenantNumberProvisioning(
     activeNumbers = 0
   }
   const verdict = evaluateNumberProvisioning({ allowance, activeNumbers, tier })
-  // price_not_configured (wave 140J): the money move is refused above; this is
-  // the platform incident that names the missing rate (once per day per surface).
-  if (verdict.priceNotConfigured) {
-    const { raisePriceNotConfiguredIncident } = await import("./price-not-configured")
-    await raisePriceNotConfiguredIncident(svc, verdict.priceNotConfigured, { brokerageId })
-  }
   return { ...verdict, tier, allowance }
 }
 
@@ -130,11 +146,11 @@ export async function loadTenantPhoneMeter(
   } catch { /* fail-safe zero */ }
 
   const meter = evaluatePhoneMetering({ allowance, voiceMinutes, smsSegments, activeNumbers, tier })
-  // Overage UNITS exist but their rate is not configured: the meter shows the
-  // units with no amount, and staff are told which rate is missing (deduped).
-  if (meter.priceNotConfigured.length > 0) {
-    const { raisePriceNotConfiguredIncident } = await import("./price-not-configured")
-    await raisePriceNotConfiguredIncident(svc, meter.priceNotConfigured[0], { brokerageId })
-  }
+  // Overage UNITS whose rate is not configured are shown with NO amount (meter.priceNotConfigured names the gap). WAVE 155
+  // (lane 155R27): this is a READ — its one caller is the tenant's meter view (app/actions/phone-provisioning.ts
+  // getTenantPhoneMeterAction) — so it no longer pages platform staff: opening the meter raised the incident titled "a purchase
+  // was refused" when nothing was bought or refused. An unpriced NUMBER rate is still raised on every refused purchase / port
+  // and on the hourly carrier tick (evaluateTenantNumberProvisioning above). Nothing bills phone voice / SMS overage today, so
+  // WHERE an unpriced voice / SMS rate should page staff from is an owner question (lane 155R27 notes), not a read's job.
   return { tier, allowance, meter, month: m }
 }

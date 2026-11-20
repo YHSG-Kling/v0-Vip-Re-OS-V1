@@ -9,6 +9,7 @@
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { blankComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 function check(name: string, ok: boolean, detail?: string) {
@@ -26,8 +27,13 @@ console.log("\n── tenant actions: allowance status → search → purchase �
     a.includes("export async function purchaseBrokerageNumberAction"))
   check("search + purchase are broker/admin gated",
     (a.match(/isBrokerRole\(ctx\.userType\)/g) ?? []).length >= 2)
-  check("allowance status resolves through the plan gate (evaluateTenantNumberProvisioning)",
-    a.includes("evaluateTenantNumberProvisioning"))
+  // RESTATED TO THE RULE (wave 155, lane 155R27; CLAUDE.md §2): the status card resolves the SAME plan verdict READ ONLY —
+  // readTenantNumberProvisioning, the verdict without the platform incident (a refused purchase raises it). Read on
+  // comment-blanked source: the name in a comment is not a call (this check used to pass on any mention).
+  const aCode = blankComments(a)
+  const statusBody = aCode.slice(aCode.indexOf("export async function getPhoneAllowanceStatusAction"), aCode.indexOf("export async function getTenantPhoneMeterAction"))
+  check("allowance status resolves through the plan verdict, READ ONLY (readTenantNumberProvisioning — never the incident-raising evaluateTenantNumberProvisioning)",
+    /\breadTenantNumberProvisioning\s*\(/.test(statusBody) && !/\bevaluateTenantNumberProvisioning\s*\(/.test(statusBody))
   check("purchase runs the ONE provisioning core with the plan allowance ENFORCED",
     a.includes("enforceTenantAllowance: true") && a.includes("provisionNumber("))
   check("purchase reports the billing disposition (included vs metered overage)",

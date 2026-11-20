@@ -961,26 +961,40 @@ export async function logUserActivity(
   activity: string,
   details: any = {}
 ): Promise<{ success: boolean; activityId?: string }> {
+  // WAVE 155 (lane 155R27): a "use server" export is a public endpoint (CLAUDE.md §4), and this one wrote ANY `activity` string
+  // and ANY payload into audit_log under the caller's name — the tenant audit trail could be filled with forged action names.
+  // It now records only the verbs a caller of it actually sends (app/components/layout/app-shell.tsx: "session_started", with
+  // the route it started on), reads the insert's error, and never reports a refused / anonymous call as success (the shell
+  // fires it with `void`, so an honest false breaks no navigation).
+  const USER_ACTIVITY_VERBS: Record<string, (d: any) => Record<string, unknown> | null> = {
+    session_started: (d) => ({ path: typeof d?.path === "string" ? d.path.slice(0, 300) : null }),
+  }
+  const shape = Object.prototype.hasOwnProperty.call(USER_ACTIVITY_VERBS, activity) ? USER_ACTIVITY_VERBS[activity] : null
+  if (!shape) return { success: false }
   try {
     const supabase = await createClient()
     const ctx = await getAgentContext()
 
-    if (!ctx.isAuthenticated) return { success: true } // silently no-op for unauth
+    if (!ctx.isAuthenticated || !ctx.userId) return { success: false }
 
-    const { data: log } = await supabase
+    const { data: log, error } = await supabase
       .from("audit_log")
       .insert({
         user_id: ctx.userId,
         action: activity,
-        after: details ?? null, // canonical payload column (no brokerage_id/details columns)
+        after: shape(details), // canonical payload column (no brokerage_id/details columns)
       })
-      .select()
+      .select("id")
       .single()
+    if (error || !log) {
+      console.error("[logUserActivity] audit_log insert refused:", error?.message ?? "no row")
+      return { success: false }
+    }
 
-    return { success: true, activityId: log?.id }
+    return { success: true, activityId: (log as { id: string }).id }
   } catch (error: any) {
     console.error("[logUserActivity] Error:", error)
-    return { success: true } // Don't fail user action if logging fails
+    return { success: false } // never a success that did not happen; the caller ignores the result
   }
 }
 

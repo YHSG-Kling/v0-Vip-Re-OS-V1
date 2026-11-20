@@ -98,8 +98,16 @@ export async function removeOlderPersonsVerificationAction(id: string): Promise<
   try {
     const gate = await requireAttester()
     if (!gate.ok) return { success: false, error: gate.error }
-    const r = await removeOlderPersonsVerification(createServiceClient(), { brokerageId: gate.brokerageId, id })
-    return r.ok ? { success: true } : { success: false, error: r.error }
+    // WAVE 155 (lane 155R27): withdrawing an attestation is the mirror of making one (the store's save files
+    // `compliance.older_persons.verify`), so it leaves ONE receipt too — session actor and tenant (requireAttester), no key.
+    // The census could not see this delete until it read the store's OLDER_PERSONS_TABLE constant (rule J).
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id ?? ""))) return { success: false, error: "No verification matched this tenant and id." }
+    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+    const r = await ledgerSessionAction({ brokerageId: gate.brokerageId, action: "compliance.older_persons.withdraw", actor: { type: "user", userId: gate.userId }, subject: { type: "older_persons_housing_verification", id }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", systemSource: "fair_housing_older_persons" }, async (): Promise<{ success: boolean; error?: string }> => {
+      const out = await removeOlderPersonsVerification(createServiceClient(), { brokerageId: gate.brokerageId, id })
+      return out.ok ? { success: true } : { success: false, error: out.error }
+    })
+    return r.success ? { success: true } : { success: false, error: r.error ?? "The withdrawal could not be recorded." }
   } catch (e) {
     return { success: false, error: (e as Error)?.message ?? "Failed to remove the exemption verification" }
   }
