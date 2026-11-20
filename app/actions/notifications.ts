@@ -15,14 +15,14 @@ import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type NotificationType =
-  | "lead_alert"
-  | "deal_update"
-  | "task_due"
-  | "message_received"
-  | "system_alert"
-  | "market_update"
-  | "ai_insight"
+// TOMBSTONE (wave 155, integrator — CLAUDE.md §1 case 3 and §6). A seven-value `NotificationType` union stood on these eight
+// lines: lead_alert, deal_update, task_due, message_received, system_alert, market_update, ai_insight. It typed ONE thing —
+// the `type` argument of createNotification, the public endpoint retired at the end of this file — and nothing imported it.
+// It was also a second vocabulary: the notifications a tenant actually receives are named by the kernel's notification
+// engine (lib/kernel/notification-engine.ts, the survivor the retirement tombstone below names), and a row read back here
+// carries `type: string` (the Notification interface below), so no reader ever narrowed on this list.
+// The block is kept at the same height on purpose: tombstones in lib/kernel/index.ts and lib/kernel/notification-center.ts
+// name markNotificationRead and markAllRead in this file by line.
 
 export interface Notification {
   id: string

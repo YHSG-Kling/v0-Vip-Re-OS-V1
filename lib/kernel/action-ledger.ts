@@ -941,7 +941,7 @@ export function governanceRecord(i: GovernanceRecordInput): Record<string, unkno
 /** What a decision rests on. The first three are TRUSTED (established by the platform / a person with authority); the rest are
  *  UNTRUSTED (a model's output, a person's inbound words, public text, a document's text, a vendor claim with no seat). */
 export const DECISION_TRUST_CLASSES = ["verified_first_party", "authorized_human", "tenant_policy", "model_output", "inbound_message", "public_web_text", "uploaded_document_text", "unseated_vendor_claim"] as const
-export type DecisionTrustClass = (typeof DECISION_TRUST_CLASSES)[number]
+type DecisionTrustClass = (typeof DECISION_TRUST_CLASSES)[number]
 const TRUSTED_CLASSES: ReadonlySet<DecisionTrustClass> = new Set(["verified_first_party", "authorized_human", "tenant_policy"])
 
 /** THE ONE TRUST MAPPING: an existing spelling → its class. Canonical spellings map to themselves. */
@@ -958,7 +958,7 @@ const TRUST_CLASS_MAP: Readonly<Record<string, DecisionTrustClass>> = {
 
 /** WHY a decision may execute. Reuses the existing spellings where they exist (APPROVAL_BASIS_MAP). */
 export const APPROVAL_BASES = ["policy_permitted", "human_approval", "tenant_override", "standing_authority"] as const
-export type ApprovalBasis = (typeof APPROVAL_BASES)[number]
+type ApprovalBasis = (typeof APPROVAL_BASES)[number]
 const APPROVAL_BASIS_MAP: Readonly<Record<string, ApprovalBasis>> = {
   ...Object.fromEntries(APPROVAL_BASES.map((b) => [b, b])),
   // the approval plane's `approved`; lib/managers/autonomy-gate.ts HUMAN_APPROVED_SYSTEM_SOURCE; video-render-hold `releasedBy`
