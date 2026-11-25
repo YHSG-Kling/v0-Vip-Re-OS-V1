@@ -1557,8 +1557,8 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
 
         <TabsContent value="my-forms" className="mt-3 space-y-3">
           {/* WAVE 156 (156C, re-hosted by 156L): "Add a form or packet" is mounted here again and stays on the Forms page (app/dashboard/forms);
-              lane 156L brought app/crm/page.tsx back under its import budget (test:proxy-graph-budget). A form added here is listed when this step is next entered. */}
-          <AddFormOrPacket defaultState={state.propertyState} onAdded={() => setFormsLoaded(false)} />
+              lane 156L brought app/crm/page.tsx back under its import budget (test:proxy-graph-budget). A form added here joins My Forms the next time that list loads (it loads once per wizard session). */}
+          <AddFormOrPacket defaultState={state.propertyState} />
           <StatePackagePanel mode={mode} stateCode={state.propertyState} myForms={myForms} selected={selected} onSelect={(forms) => {
             const add = forms.filter(f => !selected.find(s => s.source === "my_forms" && s.formRef === f.path))
             if (add.length) update("selectedForms", [...selected, ...add.map(f => ({ source: "my_forms" as const, formRef: f.path, name: f.name, scope: f.scope }))])
