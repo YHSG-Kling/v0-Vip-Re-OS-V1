@@ -68,8 +68,8 @@ export type SellerCommissionInput =
 
 export interface SellerCostInput {
   salePrice: number
-  /** the property's state ("TX" / "Texas"); unknown → generic industry bands,
-   *  no regional labels (never a guessed state). */
+  /** the property's state ("TX" / "Texas"); unknown → the regional lines are PENDING
+   *  (asked for), no regional labels (never a guessed state, never a generic band). */
   state?: string | null
   /** null = NO commission record on the listing/transaction — the line goes
    *  PENDING. A percentage is NEVER assumed. */
@@ -224,7 +224,7 @@ function prorationLine(i: SellerCostInput, fallbackNote: string, sourceLabel: st
 }
 
 export interface SellerClosingEstimate {
-  /** resolved region ("TX") when state conventions applied; null = generic bands */
+  /** resolved region ("TX") when state conventions applied; null = no state — those lines are pending */
   regionState: string | null
   /** "regional estimate — Texas conventions" when regionState is set */
   regionLabel: string | null
@@ -362,7 +362,7 @@ export function estimateSellerClosingCosts(i: SellerCostInput): SellerClosingEst
       // half-to-full of the state's settlement band rather than faking a custom.
       lines.push({
         label: "Settlement / escrow fee (seller share)",
-        low: r(conv.settlementFeeLow * 0.5),
+        low: r(conv.settlementFeeLow * sellerShareFactor("split").low),
         high: conv.settlementFeeHigh,
         note: "settlement/escrow charges are customarily shared between the parties — your contract controls",
         source: "regional_estimate",
@@ -387,33 +387,15 @@ export function estimateSellerClosingCosts(i: SellerCostInput): SellerClosingEst
       regLabel!,
     ))
   } else {
-    lines.push({
-      label: "Transfer / deed tax (seller share)",
-      low: 0,
-      high: r(price * 0.01),
-      note: "transfer taxes — and who customarily pays them — vary widely by state (0% to 1%+ where seller-customary)",
-      source: "industry_band",
-    })
-    lines.push({
-      label: "Owner's title insurance (seller share)",
-      low: 0,
-      high: r(price * 0.005),
-      note: "who pays the owner's policy varies by region and contract",
-      source: "industry_band",
-    })
-    lines.push({
-      label: "Settlement / escrow fee (seller share)",
-      low: 250,
-      high: 1200,
-      note: "the seller's share of settlement charges varies by regional custom",
-      source: "industry_band",
-    })
-    lines.push({
-      label: "Recording — deed & payoff release",
-      low: 50,
-      high: 300,
-      source: "industry_band",
-    })
+    // WAVE 156 (lane 156H, round 4): with NO state there is no reviewed convention to estimate from, so these lines are PENDING —
+    // the generic bands that stood here (transfer tax 0–1% of price, owner's title 0–0.5%, settlement $250–$1,200, recording
+    // $50–$300) were figures nobody sourced. SURVIVOR of the estimate: the state's row of lib/offers/regional-closing-costs.ts
+    // (REGIONAL_CONVENTION_CITATION) or the seller's own quotes.
+    const ask = "pending — enter the property's state (for the reviewed regional convention) or a quote from the title / settlement company; no generic band is assumed"
+    lines.push({ label: "Transfer / deed tax (seller share)", low: 0, high: 0, pending: true, note: ask })
+    lines.push({ label: "Owner's title insurance (seller share)", low: 0, high: 0, pending: true, note: ask })
+    lines.push({ label: "Settlement / escrow fee (seller share)", low: 0, high: 0, pending: true, note: ask })
+    lines.push({ label: "Recording — deed & payoff release", low: 0, high: 0, pending: true, note: ask })
     lines.push(prorationLine(i, "prorated to your closing date — depends on the close date and the county's paid-through status", null))
   }
 

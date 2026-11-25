@@ -15,7 +15,9 @@ import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { getFinancialDefaults } from "@/lib/brokerage/get-brokerage-settings"
-import { computeNetSheetScenario } from "@/lib/cma/net-sheet-math"
+import { sellerNetScenario, scenarioPrice, type SellerNetScenario, type AgreedCommission as EngineAgreedCommission } from "@/lib/calculators/engine"
+import { agreedCommissionFromStructure } from "@/lib/calculators/artifact"
+import { REGIONAL_CONVENTION_CITATION } from "@/lib/offers/regional-closing-costs"
 
 /** WAVE 155 (lane 155R12): ONE action-ledger receipt per user-initiated write, through the one helper (lib/kernel/action-ledger.ts
  *  ledgerSessionAction) with NO key — recording only, so a second save runs again and leaves a second receipt. Tenant and actor are
@@ -39,10 +41,16 @@ export interface NetSheetInput {
   salePrice: number
   alternatePrice?: number // For "what if" scenarios
   
-  // Costs
-  listingCommissionRate?: number // Default 3%
-  buyerCommissionRate?: number // Default 3%
-  closingCosts?: number // Default 2% of sale price
+  // Costs. WAVE 156 (lane 156H, round 4): nothing here has a default. The two rates are PERCENTS of price and are the AGENT's
+  // stated assumption — shown as the agent's estimate with the date it was prepared. Absent, the listing commission comes from
+  // the executed listing agreement, else the listing record's rate, else the brokerage's configured commission structure, else
+  // it is ASKED for; the buyer-broker side is never assumed. Closing costs in dollars: absent → the brokerage's configured
+  // percent, else the reviewed regional convention (REGIONAL_CONVENTION_CITATION), else ASKED for.
+  listingCommissionRate?: number
+  buyerCommissionRate?: number
+  closingCosts?: number
+  /** Prorations the buyer reimburses at closing — a CREDIT to the seller. */
+  creditsToSeller?: number
   
   // Existing mortgage
   mortgageBalance?: number
@@ -66,27 +74,13 @@ export interface NetSheetResult {
    *  payer. Null when no accepted offer discloses one — never an assumed co-op
    *  split (lib/offers/seller-closing-costs.ts:disclosedBuyerAgentCommissionNote). */
   disclosedBuyerAgentCommissionNote?: string | null
+  /** The date the agent's stated assumptions were prepared (YYYY-MM-DD). */
+  assumptionsAsOf?: string
 }
 
-export interface NetSheetScenario {
-  scenarioName: string
-  salePrice: number
-  grossProceeds: number
-  totalCosts: number
-  netProceeds: number
-  breakdown: {
-    salePrice: number
-    listingCommission: number
-    buyerCommission: number
-    closingCosts: number
-    mortgagePayoff: number
-    propertyTaxes: number
-    hoaFees: number
-    repairCredits: number
-    sellerConcessions: number
-    otherCosts: number
-  }
-}
+/** One scenario — the engine's shape (lib/calculators/engine.ts SellerNetScenario): `netProceeds` is null and `missing` says
+ *  what to enter when a figure is absent. */
+export type NetSheetScenario = SellerNetScenario
 
 /**
  * NET SHEET VALIDITY: 90 days from generation
@@ -143,7 +137,8 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
     return await withReceipt({ brokerageId: brokerageId as string, userId: sessionUser.id, action: "seller.net_sheet.generate", subject: { type: "listing", id: input.listingId }, riskClass: "LOW_RISK_WRITE", detail: { contact_id: input.contactId } }, async (): Promise<NetSheetResult> => {
     // Fetch brokerage commission structure and financial defaults in parallel
     const [commissionStructure, financialDefaults] = await Promise.all([
-      getDefaultCommissionStructure(brokerageId),
+      // The resolver THROWS when the brokerage configured no rate — that is "no term on file" (asked for), not a failed sheet.
+      getDefaultCommissionStructure(brokerageId).catch(() => null),
       getFinancialDefaults(brokerageId),
     ])
 
@@ -251,23 +246,30 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       console.error("[net-sheet] seller.net_sheet.started NOT recorded:", nsStartError.message)
     }
 
-    // Calculate scenarios
+    // Calculate scenarios — every one through the ONE engine (lib/calculators/engine.ts sellerNetScenario → runCalculator).
+    // WAVE 156 (lane 156H, round 4): the listing commission is, in order, the executed agreement, the agent's stated rate, the
+    // listing record's rate, the brokerage's configured structure (its GROSS rate — the agent-split rates that priced this sheet
+    // before were the agent's share, not the seller's cost), or ASKED for. Never a house number.
+    const confirmed = !nsAgreed.isEstimate && !nsAgreed.missing
+    const pctOf = (rateDecimal: number) => Math.round(rateDecimal * 100 * 10_000) / 10_000
+    const engineAgreed: EngineAgreedCommission | null = confirmed
+      ? (nsAgreed.isFlatFee
+          ? { listingRatePct: null, flatAmount: nsAgreed.flatAmount, label: nsAgreed.label }
+          : { listingRatePct: pctOf(nsAgreed.rate), flatAmount: null, label: nsAgreed.label })
+      : input.listingCommissionRate != null
+        ? null
+        : nsAgreed.source === "template"
+          ? { listingRatePct: pctOf(nsAgreed.rate), flatAmount: null, label: `${pctOf(nsAgreed.rate)}% — the listing record's rate (no executed agreement on file)` }
+          : commissionStructure ? agreedCommissionFromStructure(commissionStructure) : null
     const scenarios: NetSheetScenario[] = []
-    
-    // Primary scenario
-    const nsCtx = { agreed: nsAgreed, transactionFee: nsTransactionFee, state: nsListingState, brokeragePercent: closingCostPercent }
-    scenarios.push(calculateScenario("Primary Scenario", input.salePrice, input, commissionStructure, closingCostPercent, nsCtx))
-    
-    // Alternate scenario if provided
+    const preparedOn = new Date().toISOString().slice(0, 10)
+    const nsCtx = { agreed: engineAgreed, agreementConfirmed: confirmed, transactionFee: nsTransactionFee, state: nsListingState, brokeragePercent: closingCostPercent, preparedOn }
+    scenarios.push(calculateScenario("Primary Scenario", input.salePrice, input, nsCtx))
     if (input.alternatePrice && input.alternatePrice > 0) {
-      scenarios.push(calculateScenario("Alternate Scenario", input.alternatePrice, input, commissionStructure, closingCostPercent, nsCtx))
+      scenarios.push(calculateScenario("Alternate Scenario", input.alternatePrice, input, nsCtx))
     }
-    
-    // Conservative scenario (-5%)
-    scenarios.push(calculateScenario("Conservative (-5%)", input.salePrice * 0.95, input, commissionStructure, closingCostPercent, nsCtx))
-    
-    // Optimistic scenario (+5%)
-    scenarios.push(calculateScenario("Optimistic (+5%)", input.salePrice * 1.05, input, commissionStructure, closingCostPercent, nsCtx))
+    scenarios.push(calculateScenario(`Conservative (-${SCENARIO_OFFSET_PCT}%)`, scenarioPrice(input.salePrice, -SCENARIO_OFFSET_PCT), input, nsCtx))
+    scenarios.push(calculateScenario(`Optimistic (+${SCENARIO_OFFSET_PCT}%)`, scenarioPrice(input.salePrice, SCENARIO_OFFSET_PCT), input, nsCtx))
 
     // Calculate expiration (90 days)
     const expiresAt = new Date()
@@ -286,6 +288,7 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
         net_sheet_id: netSheetId,
         scenario_count: scenarios.length,
         primary_net_proceeds: scenarios[0].netProceeds,
+        missing: scenarios[0].missing,
         expires_at: expiresAt.toISOString(),
         validity_days: NET_SHEET_VALIDITY_DAYS
       }
@@ -325,6 +328,7 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       // Null when nothing real is disclosed — the sheet then carries no line,
       // which is the honest state, not a missing feature.
       disclosedBuyerAgentCommissionNote: nsDisclosedBuyerAgentNote,
+      assumptionsAsOf: preparedOn,
     }
     }, (error) => ({ success: false as const, error }))
   } catch (error: any) {
@@ -336,62 +340,57 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
   }
 }
 
+/** The scenario spread, in whole percent of the primary price — a presentation choice, not a market figure. */
+const SCENARIO_OFFSET_PCT = 5
+
 /**
- * Calculate a single net sheet scenario.
- * Pure synchronous function — all async brokerage data is resolved upstream in generateNetSheet.
+ * One net sheet scenario. Pure — all brokerage data is resolved upstream in generateNetSheet.
+ *
+ * TOMBSTONE (wave 156, lane 156H, round 4) — lib/cma/net-sheet-math.ts (computeNetSheetScenario) is DELETED; this delegated to it with the
+ * brokerage's agent-split rates on both sides and a closing-cost percent fallback. SURVIVOR: lib/calculators/engine.ts:815
+ * sellerNetScenario → runCalculator("seller_net_sheet"). Closing costs are still tiered by the canonical resolver per scenario
+ * price (entered → brokerage's configured percent → the reviewed regional convention), and with none of those the figure is
+ * ASKED for — the scenario's net is then null and `missing` names it.
  */
 function calculateScenario(
   scenarioName: string,
   salePrice: number,
   input: NetSheetInput,
-  commissionStructure: Awaited<ReturnType<typeof getDefaultCommissionStructure>>,
-  closingCostPercent: number,
-  ctx?: {
-    agreed: ReturnType<typeof resolveAgreedCommission>
+  ctx: {
+    agreed: EngineAgreedCommission | null
+    agreementConfirmed: boolean
     transactionFee: number
     state: string | null
     brokeragePercent: number
+    preparedOn: string
   },
 ): NetSheetScenario {
-  // Commission Engine 8.0 will compute final values.
-  // Pure arithmetic lives in @/lib/cma/net-sheet-math (computeNetSheetScenario).
-  //
-  // Closing costs are tiered by the canonical resolver, recomputed PER SCENARIO so
-  // the regional band tracks the scenario price instead of being scaled after the
-  // fact: entered figure → brokerage percent (only when actually configured) →
-  // county-customary band → 2% house default.
-  const resolvedClosing = ctx
-    ? resolveClosingCosts({
-        explicitAmount: input.closingCosts,
-        brokerageClosingCostPercent: ctx.brokeragePercent,
-        regionalMidpoint: deriveNetSheetClosingCostSection(salePrice, ctx.state)?.midpoint ?? null,
-        salePrice,
-      })
-    : null
-
-  return computeNetSheetScenario(
-    scenarioName,
+  const closing = resolveClosingCosts({
+    explicitAmount: input.closingCosts,
+    brokerageClosingCostPercent: ctx.brokeragePercent,
+    regionalMidpoint: deriveNetSheetClosingCostSection(salePrice, ctx.state)?.midpoint ?? null,
     salePrice,
-    {
-      closingCosts: resolvedClosing ? resolvedClosing.amount : input.closingCosts,
-      transactionFee: ctx?.transactionFee ?? 0,
-      mortgagePayoffAmount: input.mortgagePayoffAmount,
-      mortgageBalance: input.mortgageBalance,
-      propertyTaxes: input.propertyTaxes,
-      hoaFees: input.hoaFees,
-      repairCredits: input.repairCredits,
-      sellerConcessions: input.sellerConcessions,
-    },
-    // An executed agreement outranks the brokerage's default rates.
-    ctx && !ctx.agreed.isEstimate && !ctx.agreed.isFlatFee
-      ? ctx.agreed.rate
-      : commissionStructure?.agentListingSideRate ?? 0,
-    ctx && !ctx.agreed.isEstimate && !ctx.agreed.isFlatFee
-      ? 0
-      : commissionStructure?.agentBuyerSideRate ?? 0,
-    closingCostPercent,
-    ctx?.agreed.isFlatFee ? ctx.agreed.flatAmount : null,
-  )
+  })
+  const agentKeys = [
+    ...(!ctx.agreed && input.listingCommissionRate != null ? ["listingCommissionPct"] : []),
+    ...(!ctx.agreementConfirmed && input.buyerCommissionRate != null ? ["buyerBrokerCompPct"] : []),
+  ]
+  const s = sellerNetScenario(scenarioName, {
+    salePrice,
+    listingCommissionPct: ctx.agreed ? null : input.listingCommissionRate,
+    buyerBrokerCompPct: ctx.agreementConfirmed ? null : input.buyerCommissionRate,
+    closingCosts: closing.missing ? null : closing.amount,
+    mortgagePayoff: input.mortgagePayoffAmount ?? input.mortgageBalance ?? 0,
+    propertyTaxes: input.propertyTaxes, hoaFees: input.hoaFees, repairCredits: input.repairCredits,
+    sellerConcessions: input.sellerConcessions, transactionFee: ctx.transactionFee || null, creditsToSeller: input.creditsToSeller,
+  }, { audience: "internal", agreedCommission: ctx.agreed, estimateKeys: agentKeys, closingCostsEstimate: closing.isEstimate })
+  // Label each figure the agent did not take from a document: the agent's estimate WITH its date, the closing cost's source.
+  s.assumptions = s.assumptions.map((a) =>
+    agentKeys.includes(a.key) ? { ...a, display: `${a.display} — the agent's estimate as of ${ctx.preparedOn}` }
+    : a.key === "titleEscrowFees" && closing.isEstimate
+      ? { ...a, display: `${a.display} — ${closing.label}${closing.source === "regional_estimate" ? ` (${REGIONAL_CONVENTION_CITATION})` : ""}` }
+      : a)
+  return s
 }
 
 /**

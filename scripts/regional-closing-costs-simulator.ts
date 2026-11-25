@@ -87,10 +87,13 @@ function estimateLayer() {
   check("every regional line carries the sourceLabel 'regional estimate — Texas conventions'",
     est.lines.filter((l) => l.source === "regional_estimate").length >= 3
     && est.lines.filter((l) => l.source === "regional_estimate").every((l) => l.sourceLabel === "regional estimate — Texas conventions"))
-  check("LENDER-FACT PRECEDENCE: prepaid interest + lender fees ride the real record, labeled with its provenance",
+  // RESTATED (wave 156, lane 156H, round 4): lender fees used to be a 0.5%–1%-of-the-loan band LABELED with the lender's name —
+  // a band wearing the record's provenance. They are now PENDING the lender's Loan Estimate; the real rate still prices interest.
+  check("LENDER-FACT PRECEDENCE: prepaid interest rides the real rate on record; lender fees are PENDING the Loan Estimate (no band wears the lender's name)",
     est.lines.find((l) => l.label.startsWith("Prepaid interest"))!.source === "lender_fact"
     && est.lines.find((l) => l.label.startsWith("Prepaid interest"))!.note!.includes("6.5%")
-    && est.lines.find((l) => l.label.startsWith("Lender fees"))!.sourceLabel!.includes("Acme"))
+    && est.lines.find((l) => l.label.startsWith("Lender fees"))!.pending === true
+    && !/Acme/.test(est.lines.find((l) => l.label.startsWith("Lender fees"))!.sourceLabel ?? ""))
   const ownerTitle = est.lines.find((l) => l.label === "Owner's title insurance")!
   check("TX owner's title: customarily SELLER-paid → buyer band 0 with the convention stated (contract controls)",
     ownerTitle.low === 0 && ownerTitle.high === 0 && /SELLER-paid in Texas/.test(ownerTitle.note ?? ""))
@@ -120,15 +123,20 @@ function estimateLayer() {
     && /regional estimate — Florida conventions/.test(pendingTitle.note ?? ""))
   check("pending lines excluded from totals; estimable lines still total (owner's title, transfer, escrow, settlement)",
     pending.totalLow === pending.lines.reduce((s, l) => s + (l.pending ? 0 : l.low), 0) && pending.totalLow > 0)
-  check("regional property-tax band drives the escrow cushion when no county figure is on file",
-    /Florida effective property tax/.test(pending.lines.find((l) => l.label.startsWith("Tax & insurance escrow"))!.note ?? ""))
+  // RESTATED (156H r4): the cushion needs the buyer's insurance quote too — no 0.35%-of-price insurance is assumed.
+  const withIns = estimateBuyerClosingCosts({ purchasePrice: 500_000, loanAmount: null, sellerCredit: 0, state: "FL", annualInsuranceEstimate: 2_400 })
+  check("regional property-tax band drives the escrow cushion when no county figure is on file (with the buyer's insurance quote); without the quote it is PENDING",
+    /Florida effective property tax/.test(withIns.lines.find((l) => l.label.startsWith("Tax & insurance escrow"))!.note ?? "")
+    && pending.lines.find((l) => l.label.startsWith("Tax & insurance escrow"))!.pending === true)
 
   // Unknown state → honest generic fallback, no regional labels anywhere.
   const generic = estimateBuyerClosingCosts({ purchasePrice: 500_000, loanAmount: 400_000, sellerCredit: 5_000 })
-  check("no state → generic industry bands, no regional labels, regionState null (never a guessed state)",
+  // RESTATED (156H r4): no state → nothing is priced from a generic band; every such line is PENDING (asked for).
+  check("no state → no regional labels, regionState null (never a guessed state), and NO generic band: those lines are pending",
     generic.regionState === null && generic.regionLabel === null
     && generic.lines.every((l) => l.source !== "regional_estimate")
-    && generic.lines.length >= 9 && generic.netLow === generic.totalLow - 5000)
+    && generic.lines.length >= 9 && generic.lines.every((l) => l.pending === true || (l.low === 0 && l.high === 0) || l.source === "lender_fact")
+    && generic.netLow === Math.max(0, generic.totalLow - 5000))
   const cash = estimateBuyerClosingCosts({ purchasePrice: 500_000, loanAmount: 0, sellerCredit: 0, state: "CA" })
   check("cash + region: lender lines gone, regional lines remain labeled",
     cash.isCash && cash.lines.every((l) => !l.label.includes("Lender"))

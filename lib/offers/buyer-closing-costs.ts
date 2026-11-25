@@ -45,9 +45,9 @@ export interface BuyerCostInput {
   loanAmount: number | null
   /** the seller credit negotiated on the accepted offer */
   sellerCredit: number
-  /** county annual property tax, when known (else the state's regional band, else ~1.1% of price) */
+  /** county annual property tax, when known (else the state's reviewed regional band, else PENDING) */
   annualTaxEstimate?: number | null
-  /** year-one homeowner's insurance, when known (else ~0.35% of price) */
+  /** year-one homeowner's insurance, when known (else PENDING — no percentage of the price) */
   annualInsuranceEstimate?: number | null
   /** the REAL quoted/locked rate from the lender record (percent, e.g. 6.5), when on file */
   interestRatePct?: number | null
@@ -80,7 +80,7 @@ export interface BuyerClosingEstimate {
   loanKnown: boolean
   /** where the loan figure came from (provenance), when known */
   loanSourceNote: string | null
-  /** the resolved region ("TX") when state conventions applied; null = generic bands */
+  /** the resolved region ("TX") when state conventions applied; null = no state — those lines are pending */
   regionState: string | null
   /** "regional estimate — Texas conventions" when regionState is set */
   regionLabel: string | null
@@ -111,12 +111,14 @@ export function estimateBuyerClosingCosts(i: BuyerCostInput): BuyerClosingEstima
   const financed = !isCash // includes the terms-unknown case — the buyer IS financing
   const conv: RegionalConventions | null = getRegionalConventions(i.state)
   const regLabel = conv ? regionalLabel(conv) : null
-  const annualTax = i.annualTaxEstimate && i.annualTaxEstimate > 0
+  // WAVE 156 (lane 156H, round 4): no invented fallback — the tax comes from the buyer's estimate or the state's reviewed effective
+  // band (REGIONAL_CONVENTION_CITATION); the insurance only from the buyer's own estimate. Unknown → null → the line is PENDING.
+  const annualTax: number | null = i.annualTaxEstimate && i.annualTaxEstimate > 0
     ? i.annualTaxEstimate
     : conv
       ? price * ((conv.propertyTaxLowPct + conv.propertyTaxHighPct) / 2 / 100)
-      : price * 0.011
-  const annualIns = i.annualInsuranceEstimate && i.annualInsuranceEstimate > 0 ? i.annualInsuranceEstimate : price * 0.0035
+      : null
+  const annualIns: number | null = i.annualInsuranceEstimate && i.annualInsuranceEstimate > 0 ? i.annualInsuranceEstimate : null
   const rate = i.interestRatePct && i.interestRatePct > 0 ? i.interestRatePct : null
   const lenderFactLabel = i.loanSourceNote ?? "per the loan terms on file"
 
@@ -129,20 +131,21 @@ export function estimateBuyerClosingCosts(i: BuyerCostInput): BuyerClosingEstima
 
   const lines: BuyerCostLine[] = []
   if (financed && loanKnown) {
-    lines.push({ label: "Lender fees (origination + underwriting)", low: r(loan * 0.005), high: r(loan * 0.01), note: "typically 0.5%–1% of the loan", source: "lender_fact", sourceLabel: lenderFactLabel })
-    lines.push({ label: "Appraisal", low: 500, high: 800, source: "industry_band" })
-    lines.push({ label: "Credit, flood cert & tax service", low: 100, high: 250, source: "industry_band" })
+    // Lender charges come from the lender's Loan Estimate — the "0.5%–1% of the loan", "$500–$800" and "$100–$250" bands were not.
+    lines.push(pendingLine("Lender fees (origination + underwriting)"))
+    lines.push(pendingLine("Appraisal"))
+    lines.push(pendingLine("Credit, flood cert & tax service"))
     if (conv) {
       const lt = lenderTitleConvention(conv)
       lines.push({ label: "Lender's title insurance", low: r(loan * (lt.pctOfLoanLow / 100)), high: r(Math.max(loan * (lt.pctOfLoanHigh / 100), 100)), note: lt.note, source: "regional_estimate", sourceLabel: regLabel! })
     } else {
-      lines.push({ label: "Lender's title insurance", low: r(loan * 0.002), high: r(loan * 0.0035), note: "scales with the loan amount", source: "industry_band" })
+      lines.push(pendingLine("Lender's title insurance"))
     }
     if (rate != null) {
       const daily = (loan * (rate / 100)) / 365
       lines.push({ label: "Prepaid interest (~15 days)", low: r(daily * 15), high: r(daily * 15), note: `at your lender's ${rate}% rate on file`, source: "lender_fact", sourceLabel: lenderFactLabel })
     } else {
-      lines.push({ label: "Prepaid interest (~15 days)", low: r((loan * 0.065 / 365) * 15), high: r((loan * 0.07 / 365) * 15), note: "estimated 6.5%–7% band until your lender's rate is on file", source: "industry_band" })
+      lines.push(pendingLine("Prepaid interest (~15 days)"))
     }
     lines.push(escrowDepositLine(annualTax, annualIns, conv, regLabel))
   } else if (financed && !loanKnown) {
@@ -151,8 +154,8 @@ export function estimateBuyerClosingCosts(i: BuyerCostInput): BuyerClosingEstima
     // the REGION knows the rate convention, the note says so (a labeled
     // convention, not a fabricated dollar figure).
     lines.push(pendingLine("Lender fees (origination + underwriting)"))
-    lines.push({ label: "Appraisal", low: 500, high: 800, source: "industry_band" })
-    lines.push({ label: "Credit, flood cert & tax service", low: 100, high: 250, source: "industry_band" })
+    lines.push(pendingLine("Appraisal"))
+    lines.push(pendingLine("Credit, flood cert & tax service"))
     if (conv) {
       const lt = lenderTitleConvention(conv)
       lines.push(pendingLine("Lender's title insurance", `In ${conv.stateName}: ${lt.note} (~${lt.pctOfLoanLow}%–${lt.pctOfLoanHigh}% of the loan — ${regLabel})`))
@@ -194,11 +197,15 @@ export function estimateBuyerClosingCosts(i: BuyerCostInput): BuyerClosingEstima
       sourceLabel: regLabel!,
     })
   } else {
-    lines.push({ label: "Owner's title insurance", low: r(price * 0.003), high: r(price * 0.005), note: "who pays varies by region and contract", source: "industry_band" })
-    lines.push({ label: "Settlement / escrow fee", low: 500, high: 1200, source: "industry_band" })
-    lines.push({ label: "Recording & transfer charges", low: 150, high: 400, note: "transfer taxes vary widely by state", source: "industry_band" })
+    // No state → no reviewed convention: these are PENDING (the generic 0.3%–0.5% / $500–$1,200 / $150–$400 bands were unsourced).
+    const ask = "pending — enter the property's state (for the reviewed regional convention) or a quote; no generic band is assumed"
+    lines.push({ label: "Owner's title insurance", low: 0, high: 0, pending: true, note: ask })
+    lines.push({ label: "Settlement / escrow fee", low: 0, high: 0, pending: true, note: ask })
+    lines.push({ label: "Recording & transfer charges", low: 0, high: 0, pending: true, note: ask })
   }
-  lines.push({ label: "Homeowner's insurance (year one, paid at closing)", low: r(annualIns * 0.9), high: r(annualIns * 1.1), source: "industry_band" })
+  lines.push(annualIns != null
+    ? { label: "Homeowner's insurance (year one, paid at closing)", low: r(annualIns), high: r(annualIns), note: "your insurance estimate", source: "lender_fact", sourceLabel: "your estimate" }
+    : { label: "Homeowner's insurance (year one, paid at closing)", low: 0, high: 0, pending: true, note: "pending — enter your insurance quote; no percentage of the price is assumed" })
 
   const totalLow = lines.reduce((s, l) => s + (l.pending ? 0 : l.low), 0)
   const totalHigh = lines.reduce((s, l) => s + (l.pending ? 0 : l.high), 0)
@@ -230,12 +237,14 @@ export function estimateBuyerClosingCosts(i: BuyerCostInput): BuyerClosingEstima
 }
 
 function escrowDepositLine(
-  annualTax: number,
-  annualIns: number,
+  annualTax: number | null,
+  annualIns: number | null,
   conv: RegionalConventions | null,
   regLabel: string | null,
 ): BuyerCostLine {
-  if (conv) {
+  // WAVE 156 (lane 156H, round 4): the deposit needs BOTH a tax figure (the buyer's or the reviewed state band) and the buyer's
+  // insurance figure, and a state for the months convention — otherwise it is PENDING, never a generic quarter-of-a-year.
+  if (conv && annualTax != null && annualIns != null) {
     const months = taxEscrowMonths(conv)
     return {
       label: `Tax & insurance escrow deposit (~${months.low}–${months.high} months)`,
@@ -246,13 +255,7 @@ function escrowDepositLine(
       sourceLabel: regLabel!,
     }
   }
-  return {
-    label: "Tax & insurance escrow deposit (~3 months)",
-    low: r((annualTax + annualIns) / 4),
-    high: r((annualTax + annualIns) / 3),
-    note: "the lender's cushion — it stays your money",
-    source: "industry_band",
-  }
+  return { label: "Tax & insurance escrow deposit", low: 0, high: 0, pending: true, note: "pending — needs the property's state, the tax bill and your insurance quote (or your lender's escrow figure)" }
 }
 
 /** PURE: re-derive the totals after the AI-refinement step swapped in adjusted

@@ -563,14 +563,14 @@ export async function createTransactionFromOffer(params: {
   // carries the contract facts we actually have (price, earnest money, credit).
   // UNIQUE(transaction_id) live-verified → upsert is pass-10 safe. Best-effort.
   try {
-    const { computeNetProceeds, defaultSellerCosts } = await import("@/lib/offers/net-sheet-calc")
+    const { defaultSellerCosts } = await import("@/lib/offers/net-sheet-calc")
     const offerPrice = Number((offer as any).offer_price) || 0
     // The seller's closing-cost contribution IS a contract term and is now read
     // (CONTRACT_TERM_COLUMNS). It was hard-zeroed here only because the select
     // did not carry it, which understated the buyer's credit and overstated the
     // seller's net on every offer that negotiated one.
     const buyerCredit = Number((offer as any).closing_cost_contribution) || 0
-    const costs = defaultSellerCosts({ listPrice: offerPrice, commissionRateDecimal: 0.06, hoaDuesMonthly: null })
+    const costs = defaultSellerCosts({ listPrice: offerPrice, commissionRateDecimal: 0, hoaDuesMonthly: null }) // 156H r4: no 6% — the commission is the listing agreement's, recorded as MISSING here
     await sentinelWrite(supabase, supabase.from("transaction_cost_breakdown").upsert({
       transaction_id: transaction.id,
       brokerage_id: params.brokerageId,
@@ -581,15 +581,15 @@ export async function createTransactionFromOffer(params: {
         provenance: "contract",
       },
       seller_costs: {
-        commission_rate: costs.commissionRate,
-        estimated_commission: Math.round(offerPrice * costs.commissionRate),
+        commission_rate: null, missing: ["commission (the listing agreement's term — never assumed)", "county/city taxes", "other prorated fees"],
+        estimated_commission: null,
         county_city_taxes: costs.countyCityTaxes,
         hoa_dues_proration: costs.hoaDuesProration,
         other_prorated_fees: costs.otherProratedFees,
         mortgage_payoff: costs.mortgagePayoff,
         provenance: "default_estimate", // every line an estimate until confirmed
       },
-      net_proceeds: computeNetProceeds({ offerPrice, buyerClosingCredit: buyerCredit }, costs),
+      net_proceeds: null as number | null, // 156H r4: a net is not computed on a missing commission (computeNetProceeds stays the offer comparison's, with real terms)
       updated_at: new Date().toISOString(),
     }, { onConflict: "transaction_id" }), { table: "transaction_cost_breakdown", flow: "offer_bridge_cost_breakdown", brokerageId: params.brokerageId, reason: "estimate seeded at offer→deal bridge; never blocks the bridge (by ruling) — ledgered instead of silent" })
   } catch { /* best-effort — never blocks the offer→deal bridge */ }

@@ -6,7 +6,7 @@
  *                       commission; where the brokerage requires it the agent ASKS FIRST — unapproved = blocked, evidence kept;
  *   never conflated.
  * Through the survivors at 967a4866: lib/offers/net-sheet-calc.ts computeNetProceeds / rankOffersByNet (the canonical seller
- * net sheet — its header "KEEP-ONE"), lib/cma/net-sheet-math.ts computeNetSheetScenario (the listing-presentation net sheet),
+ * net sheet — its header "KEEP-ONE"), lib/calculators/engine.ts sellerNetScenario (the listing-presentation net sheet; it retired lib/cma/net-sheet-math.ts in 156H r4),
  * lib/commission/engine.ts calculateCommission (all eleven stages, in memory) and lib/transactions/closing-compliance-core.ts
  * (the settlement-vs-contract term vocabulary). Nothing is paid, signed or sent.
  *
@@ -32,14 +32,14 @@ export async function run() {
   c.rule("144D", "SELLER CONCESSION → SELLER'S NET ONLY (offer net sheet): a $5,000 seller credit to the buyer lowers the seller's net by exactly $5,000 ($266,105 → $261,105) and leaves the COMMISSION line untouched ($30,000 on both offers — commission is on the price, never on price − credit)", without - withCredit === 5_000 && without === 266_105 && la?.commission === 30_000 && lb?.commission === 30_000, `net ${without} → ${withCredit}; commission ${la?.commission}/${lb?.commission}`)
 
   // ── 2 · the listing-presentation net sheet agrees (one rule wherever a seller's net is computed) ──
-  const { computeNetSheetScenario } = await import("../../lib/cma/net-sheet-math")
-  const cma0 = computeNetSheetScenario("base", 500_000, { closingCosts: 0, mortgagePayoffAmount: 200_000, propertyTaxes: 3_000, hoaFees: 500, transactionFee: 395, sellerConcessions: 0 }, 0.03, 0.03, 0)
-  const cma5 = computeNetSheetScenario("credit", 500_000, { closingCosts: 0, mortgagePayoffAmount: 200_000, propertyTaxes: 3_000, hoaFees: 500, transactionFee: 395, sellerConcessions: 5_000 }, 0.03, 0.03, 0)
-  c.rule("144D", "ONE RULE IN BOTH SELLER-NET ENGINES: the listing-presentation net sheet (lib/cma/net-sheet-math.ts) subtracts the seller concession from the seller's net, keeps both commission lines on the price, and nets the SAME dollars as the offer net sheet on the same facts ($261,105)", cma5.netProceeds === withCredit && cma0.netProceeds === without && cma5.breakdown.listingCommission === cma0.breakdown.listingCommission && cma5.breakdown.buyerCommission === 15_000, `cma ${cma0.netProceeds} → ${cma5.netProceeds}; offer ${without} → ${withCredit}`)
+  const { sellerNetScenario } = await import("../../lib/calculators/engine")
+  const cma0 = sellerNetScenario("base", { salePrice: 500_000, listingCommissionPct: 3, buyerBrokerCompPct: 3, closingCosts: 0, mortgagePayoff: 200_000, propertyTaxes: 3_000, hoaFees: 500, transactionFee: 395, sellerConcessions: 0 }, { audience: "internal" })
+  const cma5 = sellerNetScenario("credit", { salePrice: 500_000, listingCommissionPct: 3, buyerBrokerCompPct: 3, closingCosts: 0, mortgagePayoff: 200_000, propertyTaxes: 3_000, hoaFees: 500, transactionFee: 395, sellerConcessions: 5_000 }, { audience: "internal" })
+  c.rule("144D", "ONE RULE IN BOTH SELLER-NET ENGINES: the listing-presentation net sheet (lib/calculators/engine.ts sellerNetScenario) subtracts the seller concession from the seller's net, keeps both commission lines on the price, and nets the SAME dollars as the offer net sheet on the same facts ($261,105)", cma5.netProceeds === withCredit && cma0.netProceeds === without && cma5.breakdown.listingCommission === cma0.breakdown.listingCommission && cma5.breakdown.buyerCommission === 15_000, `cma ${cma0.netProceeds} → ${cma5.netProceeds}; offer ${without} → ${withCredit}`)
   // The duplicate census (CLAUDE.md §1/§6 — published, never counted as a pass): a THIRD seller-net calculation lives in a
   // "use server" file (a public endpoint) with no transaction-fee line.
   const thirdEngine = /export\s+async\s+function\s+calculateNetSheet\s*\(/.test(strippedRepo("app/actions/seller-offers.ts") ?? "")
-  console.log(`    finding (ruling 6 'reuse the existing net-sheet engine'; outside every wave-144 lane's domain): seller-net arithmetic lives in lib/offers/net-sheet-calc.ts (canonical), lib/cma/net-sheet-math.ts${thirdEngine ? " and app/actions/seller-offers.ts calculateNetSheet (a public server action, no transaction-fee line)" : ""} — they agree on the concession rule; the merge onto the canonical engine is the integrator's to assign`)
+  console.log(`    finding (ruling 6 'reuse the existing net-sheet engine'; outside every wave-144 lane's domain): seller-net arithmetic lives in lib/offers/net-sheet-calc.ts (the offer comparison), lib/calculators/engine.ts (the seller net; lib/cma/net-sheet-math.ts retired onto it)${thirdEngine ? " and app/actions/seller-offers.ts calculateNetSheet (a public server action, no transaction-fee line)" : ""} — they agree on the concession rule; the merge onto the canonical engine is the integrator's to assign`)
 
   // ── 3 · THE ENGINE: a seller concession on the deal is not a commission input ──
   const plain = newDeal()

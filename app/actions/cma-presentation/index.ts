@@ -114,8 +114,9 @@ export async function generateCompletePresentation(params: {
       agentId: params.agentId,
       salePrice: params.salePrice,
       mortgageBalance: params.mortgageBalance,
+      // The workflow's one rate is the LISTING commission percent; the buyer-broker side is never assumed (156H round 4 — the
+      // same rate was charged twice here).
       listingCommissionRate: params.commissionRate,
-      buyerCommissionRate: params.commissionRate
     })
 
     if (netSheetResult.success) {
