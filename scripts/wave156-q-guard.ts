@@ -60,6 +60,7 @@ const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
 const REPLACE: Record<string, string> = {
   "lib/supabase/service.ts": "export function createServiceClient(){ return globalThis.__Q.svc }",
   "lib/agreements/session-actor.ts": "export async function resolveSessionActor(){ const s = globalThis.__Q.seat; return s ? { ok: true, actor: { userId: s.userId, agentId: null, brokerageId: s.brokerageId, userType: s.userType, isTenantPrincipal: true } } : { ok: false, error: 'unauthenticated' } }",
+  "lib/supabase/server.ts": "const c = () => ({ auth: { getUser: async () => ({ data: { user: globalThis.__Q.seat ? { id: globalThis.__Q.seat.userId } : null }, error: null }) }, from: (t) => globalThis.__Q.svc.from(t) }); export async function createClient(){ return c() }; export async function createServerClient(){ return c() }",
   "lib/ai/models.ts": "export async function generateObjectRouted(){ globalThis.__Q.model++; throw new Error('fixture: no model') }; export async function generateTextRouted(){ globalThis.__Q.model++; throw new Error('fixture: no model') }",
 }
 /** Re-export the real module, then override the named seams (a local export shadows the star re-export). */
@@ -280,6 +281,79 @@ async function main() {
   const OWNER_NOUN = /\byour brokerage\b/i
   const ownerLines = files.flatMap((f) => decode(stripComments(read(f))).split("\n").filter((l) => OWNER_NOUN.test(l)).map(() => f))
   console.log(`  · published, not gated: ${ownerLines.length} stripped line(s) in ${new Set(ownerLines).size} file(s) still name the tenant "your brokerage" (an owner noun, not a payer claim) — the follow-up list is in the lane report`)
+
+  // ═══ E — round 2: the owner noun, by who can reach the surface ════════════════════════════════════════════════════
+  console.log("\nE — the owner noun ('your brokerage' / 'across … brokerage' / 'the brokerage's'), split by who can reach it")
+  // E1 the session seat's words, DRIVEN per shape (what every rewired server page resolves once and passes down).
+  const OW: any = await quiet(() => load("lib/kernel/resolve-user-office.ts"))
+  const sessionWords: Record<string, any> = {}
+  for (const s of SHAPES) {
+    G.__Q.svc = world(); G.__Q.seat = SEATS[s]
+    sessionWords[s] = typeof OW?.resolveSessionSeatWords === "function" ? await quiet(() => OW.resolveSessionSeatWords()) : null
+  }
+  G.__Q.seat = null
+  const anon: any = typeof OW?.resolveSessionSeatWords === "function" ? await quiet(() => OW.resolveSessionSeatWords()) : null
+  check("resolveSessionSeatWords (session → users.brokerage_id → resolveSeatPayer → tenantPayerWords): solo 'your account' · team 'your team' · brokerage 'your brokerage' · office seat acts for 'the Downtown office' · unread and no session actor-neutral",
+    sessionWords.solo?.payer === "your account" && sessionWords.solo?.actingFor === "you" && sessionWords.team?.payer === "your team" && sessionWords.brokerage?.payer === "your brokerage"
+      && sessionWords.office?.actingFor === "the Downtown office" && sessionWords.office?.payer === "your brokerage" && sessionWords.unknown?.payer === "your account" && anon?.payer === "your account",
+    JSON.stringify({ solo: sessionWords.solo?.payer, team: sessionWords.team?.payer, office: sessionWords.office?.actingFor, anon: anon?.payer ?? anon }))
+  // E2 the classifier. WHO CAN REACH a line — derived, never listed:
+  //   (d) NEVER RENDERED — the line is a log call or a model prompt (console.* / logger.* / prompt / "You are"), or the file
+  //       is a prompt module (lib/ai/**, *prompt*);
+  //   (c) PLATFORM STAFF — the file sits under a superadmin route, or calls the platform gate (lib/auth/platform-guard.ts:
+  //       requirePlatformStaff / requireSuperadmin / requirePlatformCapability / requireProviders / requireMarketing);
+  //   (b) BROKERAGE STAFF ONLY — the file gates on an OFFICE-CARRYING tier (tierCarriesOffices / a plan_tier test naming
+  //       brokerage or multi_location). A ROLE gate does NOT make a page brokerage-only: the solo / team OWNER is
+  //       provisioned `admin`, which is in TENANT_ADMIN_USER_TYPES (read below from lib/auth/resolve-user-role.ts, the same
+  //       roster test:page-role-gate-roster reads) — so a page gated on the tenant roster is solo-reachable;
+  //   (e) VENDOR / CONTACT PORTALS — app/vendor/**, app/portal/**, app/lender/**, app/title/**, vendor-invite (not a
+  //       solo / team principal; counted separately);
+  //   (a) everything else under app/** and lib/** — reachable by a solo or team principal.
+  const roster = (() => { const src = stripComments(read("lib/auth/resolve-user-role.ts")); const at = src.indexOf("export const TENANT_ADMIN_USER_TYPES = new Set(["); return at < 0 ? [] : [...src.slice(at, src.indexOf("])", at)).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]) })()
+  check("premise, derived: the solo / team owner's seat type `admin` is in the tenant roster, so a roster-gated page is solo-reachable", roster.includes("admin") && roster.length >= 4, roster.join(","))
+  const OWNER = /\byour brokerage\b|\bacross (?:the|your) brokerage\b|\bthe brokerage's\b/i
+  const NEVER_LINE = /console\.(?:log|warn|error|info|debug)\(|\blogger\.|\bprompt\b|systemPrompt|You are |role:\s*["']system["']/i
+  const NEVER_FILE = /^lib\/ai\/|prompt/i
+  const PLATFORM_FILE = /(?:^|\/)superadmin(?:\/|-|\.)|^app\/(?:dashboard\/)?platform\//
+  const PLATFORM_GATE = /\b(?:requirePlatformStaff|requireSuperadmin|requirePlatformCapability|requireProviders|requireMarketing)\(/
+  const OFFICE_TIER_GATE = /\btierCarriesOffices\(|plan_tier\s*(?:===|!==)\s*["'](?:brokerage|multi_location)["']/
+  const PORTAL_FILE = /^app\/(?:vendor|portal|lender|title|vendor-invite)\//
+  type Cat = "a" | "b" | "c" | "d" | "e"
+  const classify = (f: string, stripped: string, line: string): Cat =>
+    NEVER_LINE.test(line) || NEVER_FILE.test(f) ? "d" : PLATFORM_FILE.test(f) || PLATFORM_GATE.test(stripped) ? "c" : OFFICE_TIER_GATE.test(stripped) ? "b" : PORTAL_FILE.test(f) ? "e" : "a"
+  const ownerScan = (f: string, src: string) => { const st = decode(stripComments(src)); return st.split("\n").map((l, i) => ({ f, i: i + 1, l })).filter((x) => OWNER.test(x.l)).map((x) => ({ ...x, cat: classify(f, st, x.l) })) }
+  // Positive controls: one planted specimen per category.
+  const plant = (f: string, src: string) => ownerScan(f, src)[0]?.cat ?? null
+  check("positive control: a planted 'your brokerage' on a solo-reachable settings page is found and classified (a)", plant("app/settings/planted/page.tsx", `export default function P(){ return <p>Agents across your brokerage</p> }\n`) === "a")
+  check("positive controls: superadmin path → (c); platform-gated file → (c); office-tier-gated → (b); a console line → (d); a vendor portal → (e); the same text in a comment → not found",
+    plant("app/dashboard/superadmin/x/page.tsx", `<p>your brokerage</p>\n`) === "c" && plant("app/actions/x.ts", `await requirePlatformStaff()\nreturn "in your brokerage"\n`) === "c"
+      && plant("app/dashboard/x/page.tsx", `if (!tierCarriesOffices(tier)) redirect("/")\nreturn <p>your brokerage</p>\n`) === "b" && plant("app/actions/y.ts", `console.error("refused for your brokerage")\n`) === "d"
+      && plant("app/vendor/x/page.tsx", `<p>Agents in your brokerage</p>\n`) === "e" && plant("app/settings/z/page.tsx", `// your brokerage\n/* across your brokerage */\n`) === null)
+  const ownerHits = files.flatMap((f) => ownerScan(f, read(f)))
+  const byCat = (c: Cat) => ownerHits.filter((h) => h.cat === c)
+  // The surfaces this lane rewired (round 2) — every owner noun on them now follows the seat (or reads actor-neutral).
+  const REWIRED = [
+    "app/settings/commission/page.tsx", "app/components/settings/BenefitOfferingsCard.tsx", "app/settings/users/users-management-client.tsx",
+    "app/settings/developers/page.tsx", "app/settings/developers/developers-client.tsx", "app/settings/providers/page.tsx",
+    "app/components/ai-identity/AIIdentityEditor.tsx", "app/dashboard/agent/referral-network/page.tsx", "app/dashboard/agent/referral-network/referral-network-client.tsx",
+    "app/dashboard/education/page.tsx", "app/dashboard/education/client-learning-panel.tsx", "app/dashboard/vendors/vendor-directory-client.tsx",
+    "app/components/forms/form-selector-step.tsx",
+  ]
+  const rewiredHits = byCat("a").filter((h) => REWIRED.includes(h.f))
+  check(`the ${REWIRED.length} rewired solo-reachable surfaces carry no hard-coded owner noun (${rewiredHits.length} found)`, rewiredHits.length === 0, rewiredHits.map((h) => `${h.f}:${h.i} ${h.l.trim().slice(0, 100)}`).join(" | "))
+  const PASSES_WORDS: Array<[string, RegExp]> = [
+    ["app/settings/developers/page.tsx", /resolveSessionSeatWords\(\)[\s\S]*words=\{words\}/], ["app/settings/users/page.tsx", /words=\{await resolveSessionSeatWords\(\)\}/],
+    ["app/dashboard/agent/referral-network/page.tsx", /resolveSessionSeatWords\(\)[\s\S]*words=\{words\}/], ["app/dashboard/education/page.tsx", /resolveSessionSeatWords\(\)[\s\S]*words=\{words\}/],
+    ["app/dashboard/vendors/page.tsx", /words=\{await resolveSessionSeatWords\(\)\}/], ["app/dashboard/admin/ai-identity/page.tsx", /words=\{await resolveSessionSeatWords\(\)\}/],
+  ]
+  const missingPass = PASSES_WORDS.filter(([f, re]) => !re.test(stripComments(read(f)))).map(([f]) => f)
+  check("each rewired server page resolves the seat's words ONCE and passes them down (stripped source)", missingPass.length === 0, missingPass.join(", "))
+  const clientResolvers = REWIRED.filter((f) => /^\s*["']use client["']/.test(read(f))).filter((f) => /resolveSessionSeatWords|resolveSeatPayer|resolveTenantPayer/.test(stripComments(read(f))))
+  check("no client component calls a resolver itself", clientResolvers.length === 0, clientResolvers.join(", "))
+  const top = (c: Cat) => Object.entries(byCat(c).reduce<Record<string, number>>((m, h) => { m[h.f] = (m[h.f] ?? 0) + 1; return m }, {})).sort((x, y) => y[1] - x[1]).slice(0, 12).map(([f, n]) => `${f}(${n})`).join(", ")
+  console.log(`  · census over ${files.length} files: ${ownerHits.length} owner-noun line(s) — (a) solo/team-reachable ${byCat("a").length} · (b) brokerage-staff-only ${byCat("b").length} · (c) platform staff ${byCat("c").length} · (d) never rendered ${byCat("d").length} · (e) vendor/contact portals ${byCat("e").length}`)
+  console.log(`  · (a) is NOT yet zero — published, not gated (the burn-down list, largest first): ${top("a")}`)
+  console.log(`  · (a) by tree: app/actions ${byCat("a").filter((h) => h.f.startsWith("app/actions/")).length} · app/api ${byCat("a").filter((h) => h.f.startsWith("app/api/")).length} · other app ${byCat("a").filter((h) => h.f.startsWith("app/") && !/^app\/(?:actions|api)\//.test(h.f)).length} · lib ${byCat("a").filter((h) => h.f.startsWith("lib/")).length}`)
 
   console.log(`\nWAVE 156Q — SUBSCRIBER-SHAPE WORDS — RESULT: ${passed} passed, ${failed} failed ${failed === 0 ? "✅ WAVE156_Q_PASS" : "❌ WAVE156_Q_FAIL"}`)
   if (failed > 0) process.exit(1)
