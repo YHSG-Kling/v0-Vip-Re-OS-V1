@@ -202,7 +202,7 @@ async function sectionB() {
   let m = intakeWorld()
   const s1 = await submit("Suspended@alpha.test")
   check("a SUSPENDED member of this brokerage submitting the public page files NO prospect", rowsFor(m, "suspended@alpha.test").length === 0, { r: s1.r, threw: s1.threw })
-  check("…the public answer is the same thanks (no refusal that reveals the seat), and the broker is told", s1.r && (s1.r as any).success === true && !(s1.r as any).recruitId && T(m, "notifications").some((n) => n.user_id === U_BROKER && /SUSPENDED/.test(String(n.body))), s1.r)
+  check("…the public answer is the same thanks (no refusal that reveals the seat), and the broker is told", !!s1.r && (s1.r as any).success === true && !(s1.r as any).recruitId && T(m, "notifications").some((n) => n.user_id === U_BROKER && /SUSPENDED/.test(String(n.body))), s1.r)
   m = intakeWorld()
   await submit("member@alpha.test")
   check("a current member of this brokerage files no prospect", rowsFor(m, "member@alpha.test").length === 0)
