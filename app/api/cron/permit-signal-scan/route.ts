@@ -164,6 +164,8 @@ export async function GET(request: Request) {
       skipped_no_lead_match: 0,
       skipped_outside_window: 0,
       skipped_no_event_date: 0,
+      skipped_superseded: 0, // wave 156 (156I): withdrawn / void / cancelled / revoked / denied / expired permits
+      datasets_skipped_rights_unknown: 0, // wave 156 (156I): never downloaded — no license recorded
       already_recorded: 0,
       signals_written: 0,
       // ── THE TWO BOARDS, TOLD APART ──────────────────────────────────────
@@ -221,6 +223,9 @@ export async function GET(request: Request) {
         totals.skipped_no_lead_match += r.skippedNoLeadMatch
         totals.skipped_outside_window += r.skippedOutsideWindow
         totals.skipped_no_event_date += r.skippedNoEventDate
+        totals.skipped_superseded += r.skippedSuperseded
+        totals.datasets_skipped_rights_unknown += r.datasetsSkippedRightsUnknown
+        for (const reason of r.rightsUnknownReasons) unavailableReasons.add(`rights: ${reason}`)
         totals.already_recorded += r.alreadyRecorded
         totals.signals_written += r.signalsWritten
         totals.leads_matchable += r.leadsMatchable
