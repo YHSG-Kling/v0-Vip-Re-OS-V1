@@ -2,11 +2,11 @@
  "generator": "scripts/os-coverage-ledger.ts --write (wave 155, lane 155B1) — GENERATED, do not edit; per-row ledger: coverage/os-arbitration-coverage.json (on demand)",
  "states": {
   "working": 2892,
-  "owner-held": 72,
+  "owner-held": 73,
   "missing": 59
  },
  "classification": {
-  "OWNER_HELD": 72,
+  "OWNER_HELD": 73,
   "DECLARATIVE_READ_ONLY": 54,
   "SIMULATED_ONLY": 4,
   "UNKNOWN": 1
@@ -43,7 +43,7 @@
    "OWNER_HELD": 14
   },
   "acquisition": {
-   "OWNER_HELD": 2,
+   "OWNER_HELD": 3,
    "DECLARATIVE_READ_ONLY": 16
   }
  },
@@ -91,10 +91,10 @@
    ]
   },
   "OWNER_HELD": {
-   "rows": 72,
+   "rows": 73,
    "byKind": {
     "kernel_event": 38,
-    "server_action": 31,
+    "server_action": 32,
     "orchestrator_event": 2,
     "http": 1
    },
@@ -122,6 +122,7 @@
     "OWNER_HELD entry: owner-held pending owner decision (lane 155R29, Q4; the wave-146 money_legal ruling still holds): WIRE draft → submit besi": 1,
     "OWNER_HELD entry: owner-held pending owner decision (lanes 155R28 / 155R30): WIRE OR RETIRE? The only door that corrects a deal's own detail": 1,
     "OWNER_HELD entry: owner-held pending owner decision (lanes 155R28 / 155R30): WIRE, REPLACE OR RETIRE? The only writer of cost_breakdown_trac": 1,
+    "OWNER_HELD entry: owner-held pending owner decision (wave 156, lanes 156F / integrator): WIRE OR RETIRE WITH ITS READERS? The only writer of": 1,
     "OWNER_HELD entry: owner-held pending owner decision 2 (does a registered manager's deterministic evidence rule count as the decision owner?)": 1,
     "OWNER_HELD entry: owner-held pending owner decision 3 (lane 155R18), the same question as its sibling draftTeamAnnouncementAction: a princip": 1,
     "OWNER_HELD entry: owner-held pending owner decision 3 (lane 155R18): a model draft returned to the composer, writing only api_response_logs ": 1,
