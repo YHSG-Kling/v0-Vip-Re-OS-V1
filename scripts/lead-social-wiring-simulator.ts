@@ -65,9 +65,10 @@ import { recordMatchesTerritory } from "../lib/lead-pipeline/source-intent-map"
 const SOCIAL = "app/actions/social-media-automation.ts"
 const SOCIAL_UI = "app/dashboard/social/social-dashboard-client.tsx"
 const LEAD = "app/actions/lead-intelligence.ts"
+const TRACK_BEHAVIOR = "lib/lead-intelligence/track-behavior.ts"
 const CRM_UI = "app/crm/page.tsx"
 
-const ALL_FILES = [SOCIAL, SOCIAL_UI, LEAD, CRM_UI]
+const ALL_FILES = [SOCIAL, SOCIAL_UI, LEAD, CRM_UI, TRACK_BEHAVIOR]
 
 // ─── SOURCE ACCESS (cached, clearable for the negative-test re-runs) ─────────
 
@@ -682,23 +683,30 @@ function darkCapabilityLayer() {
   check("D6", "...and it really is the Apify lane",
     /apify\.scrapeZillow\(/.test(ext) && !/zenrows\./.test(ext))
 
+  // WAVE 156 (lane 156F, round 2) — RESTATED, not dropped. trackExternalActivity is RETIRED: its only caller attributed
+  // an off-site listing "view" to anonymous visitors by a shared city (a fabricated person-level fact), and a person's
+  // off-site activity is not observable without the visitor identification the owner's decision excludes
+  // (docs/operations/WAVE156-VISITOR-IDENTITY-DECISION.md). The rules D7–D10 protected — provenance never asserted,
+  // tenant-scoped visitor lookups, writes that report errors — now hold as: the door is gone with a tombstone, and no
+  // remaining code in the file writes an off-site "view" onto a caller-named visitor.
+  const leadStripped = code(LEAD)
   const trackExt = fnBody(LEAD, "trackExternalActivity")
-  const trackInserts = writePayloads(trackExt, "external_behavior", "insert")
-  check("D7", "trackExternalActivity states its collection vendor instead of asserting one",
-    trackInserts.length === 1 &&
-    /detected_via_zenrows:\s*data\.detectedViaZenrows\s*===\s*true/.test(trackInserts[0]))
-  // The parameter existed and was dropped on the floor; the column had no writer.
-  check("D8", "...and the searchCriteria argument reaches the column that had no writer",
-    trackInserts.length === 1 && /search_criteria_json:\s*data\.searchCriteria/.test(trackInserts[0]))
-  check("D9", "...its visitor lookup is tenant-scoped on a service client",
-    /from\(\s*["']behavioral_signals["']\s*\)[\s\S]{0,300}?\.eq\(\s*["']visitor_id["']\s*,\s*data\.visitorId\s*\)[\s\S]{0,200}?\.eq\(\s*["']brokerage_id["']\s*,\s*auth\.brokerageId\s*\)/.test(trackExt))
-  check("D10", "...and both of its writes report their errors",
-    /if\s*\(behaviorError\)\s*\{[^}]{0,240}?return\s*\{\s*success:\s*false/.test(trackExt) &&
-    /if\s*\(bumpError\)\s*\{[^}]{0,240}?return\s*\{\s*success:\s*false/.test(trackExt))
+  check("D7", "trackExternalActivity is retired — no function by that name remains in the 'use server' file (wave 156)",
+    /export async function scrapeExternalBehavior\s*\(/.test(leadStripped) && trackExt === "" && !/function\s+trackExternalActivity\s*\(/.test(leadStripped))
+  const leadRaw = (() => { try { return readFileSync(join(process.cwd(), LEAD), "utf8") } catch { return "" } })()
+  check("D8", "...its tombstone names why nothing replaces it (the visitor-identity decision)",
+    /TOMBSTONE \(wave 156, lane 156F\) — `export async function trackExternalActivity`[\s\S]{0,1200}WAVE156-VISITOR-IDENTITY-DECISION\.md/.test(leadRaw))
+  check("D9", "...and no remaining code looks a visitor up by a CALLER-supplied visitor id to write behavior onto it",
+    /export async function scrapeExternalBehavior\s*\(/.test(leadStripped) && !/\.eq\(\s*["']visitor_id["']\s*,\s*data\.visitorId\s*\)/.test(leadStripped))
+  check("D10", "...and the file's only external_behavior writer is the listing scrape (scrapeExternalBehavior), never a visitor door",
+    (leadStripped.match(/from\(\s*["']external_behavior["']\s*\)\s*\.insert\(/g) ?? []).length === writePayloads(fnBody(LEAD, "scrapeExternalBehavior"), "external_behavior", "insert").length
+    && writePayloads(fnBody(LEAD, "scrapeExternalBehavior"), "external_behavior", "insert").length >= 1)
 
   section("[layer 6c · the visitor pixel cannot write an untenanted row]")
 
-  const track = fnBody(LEAD, "trackBehavior")
+  // WAVE 156 (lane 156F): trackBehavior left the "use server" file (a public endpoint taking a tenant id) for
+  // lib/lead-intelligence/track-behavior.ts, reached only by the two public routes. Same rules, read where the code is.
+  const track = fnBody(TRACK_BEHAVIOR, "trackBehavior")
   // behavioral_signals' RLS policy is `brokerage_id IS NULL OR = current…`,
   // so a NULL-stamped row of IP addresses is readable by EVERY brokerage.
   check("D11", "trackBehavior refuses to write without a brokerage",
@@ -812,7 +820,7 @@ function stayDarkLayer() {
     ["N3", "trackBehavior", "no consent artifact recorded at collection — unrelated to the wave-65 ruling, unchanged"],
     ["N4", "analyzeGoogleSearchIntent", "wired into the autonomous cron phase; google_search_intelligence still has no dashboard reader"],
     ["N5", "enrichPropertyIntelligence", "wired into the autonomous territory-intelligence cron phase, never a dashboard control"],
-    ["N6", "trackExternalActivity", "wired into the autonomous cron phase (attaches to EXISTING behavioral_signals rows), never a dashboard control"],
+    ["N6", "trackExternalActivity", "retired in wave 156 (tombstone — D7); unreachable from any dashboard control"],
   ] as const) {
     check(id, `${fn} is still unreachable from a DASHBOARD control (${why})`,
       !new RegExp(`\\b${fn}\\b`).test(leadImports) && !callsFn(surfaces, fn))
@@ -822,13 +830,16 @@ function stayDarkLayer() {
   const socialSrc = code(SOCIAL)
   const leadSrc = code(LEAD)
   const stillExported = [
-    ...["trackBehavior", "scrapeSocialSignalsWithZenRows", "enrichPropertyIntelligence",
+    // trackBehavior still exists — in lib/lead-intelligence/track-behavior.ts since wave 156 (no longer a server action).
+    ["trackBehavior", code(TRACK_BEHAVIOR)] as const,
+    ...["scrapeSocialSignalsWithZenRows", "enrichPropertyIntelligence",
         "analyzeGoogleSearchIntent", "createUnifiedLeadProfile", "scrapeExternalBehavior",
-        "trackExternalActivity"].map((n) => [n, leadSrc] as const),
+        // trackExternalActivity: RETIRED in wave 156 round 2 (tombstoned; D7–D10 hold its rule) — the one named deletion.
+        ].map((n) => [n, leadSrc] as const),
     ...["getSocialQueue", "getSocialEngagement", "getPublishLog", "trackPostPerformance"]
         .map((n) => [n, socialSrc] as const),
   ]
-  check("N7", "all eleven capabilities still exist — nothing was deleted",
+  check("N7", "the other ten capabilities still exist (trackBehavior moved to its lib module; trackExternalActivity retired with a tombstone — D7)",
     stillExported.every(([n, s]) => new RegExp(`export async function ${n}\\s*\\(`).test(s)))
 
   // A "use server" module may only export async functions.
@@ -994,11 +1005,13 @@ const MUTATIONS: Mutation[] = [
     find: `  const territoryResult = await resolveTargetTerritory(brokerageId, location)\n  if (!territoryResult.ok) {\n    return { success: false, error: territoryResult.error, signals: [], count: 0, territoryRefused: true as const }\n  }\n  const territory = territoryResult.territory`,
     replace: `  const territory = { id: "x", city: location.city, state: location.state, zip_codes: null as string[] | null, monthly_budget_usd: null, spend_this_month: null }` },
 
-  { id: "D8", file: LEAD, note: "drop the caller's search criteria on the floor again",
-    find: `      search_criteria_json: data.searchCriteria ?? null,`,
-    replace: `` },
+  // WAVE 156 (156F round 2): trackExternalActivity is retired — D8's negative test now strips the reason from its tombstone.
+  { id: "D8", file: LEAD, note: "retire the off-site visitor door without saying why",
+    find: `anonymous-visitor identification the owner's decision excludes (docs/operations/WAVE156-VISITOR-IDENTITY-DECISION.md),`,
+    replace: `anonymous-visitor identification the owner's decision excludes,` },
 
-  { id: "D14", file: LEAD, note: "let a visitor id collide across tenants",
+  // WAVE 156 (156F round 2): trackBehavior lives in lib/lead-intelligence/track-behavior.ts — same mutation, where the code is.
+  { id: "D14", file: TRACK_BEHAVIOR, note: "let a visitor id collide across tenants",
     find: `      .eq("visitor_id", sessionData.visitor_id)\n      .eq("brokerage_id", brokerageId)`,
     replace: `      .eq("visitor_id", sessionData.visitor_id)` },
 
@@ -1040,7 +1053,7 @@ const MUTATIONS: Mutation[] = [
     find: `        detected_via_zenrows: false,\n        scraped_at: new Date().toISOString(),\n      })\n\n      // Store enriched property intelligence`,
     replace: `        detected_via_zenrows: true,\n        scraped_at: new Date().toISOString(),\n      })\n\n      // Store enriched property intelligence` },
 
-  { id: "D11", file: LEAD, note: "let the visitor pixel write an untenanted PII row again",
+  { id: "D11", file: TRACK_BEHAVIOR, note: "let the visitor pixel write an untenanted PII row again",
     find: `  if (!isValidUUID(sessionData.brokerage_id)) {`,
     replace: `  if (false && !isValidUUID(sessionData.brokerage_id)) {` },
 
@@ -1129,9 +1142,11 @@ const OWNERSHIP: Record<string, string[]> = {
     "L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11",
     "L12", "L13", "L14", "L15", "L16", "L17", "L18", "L19", "L20",
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10",
-    "D11", "D13", "D14", "D15", "D16", "D17", "D18", "D19", "D20", "D21",
+    "D16", "D17", "D18", "D19", "D20", "D21",
     "D22", "D24", "N7", "T4", "T5", "T6",
   ],
+  // Wave 156 (156F round 2): trackBehavior's rules read the module the code moved to.
+  [TRACK_BEHAVIOR]: ["D11", "D13", "D14", "D15", "N7"],
   [CRM_UI]: ["L21", "L22", "L23", "L24", "L26", "L28", "L29", "L30"],
 }
 

@@ -155,19 +155,31 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // ── Step 1: contacts, then Step 2: active leads ─────────────────────────────
   // One `.eq()` per identifier rather than one `.or()` string — see note 2.
+  //
+  // WAVE 156 (lane 156F) — A LOW-CONFIDENCE MATCH IS SUPPRESSED, NEVER GUESSED. This read `.limit(1).maybeSingle()`
+  // and took whichever row came first: a household phone or a shared family inbox held by TWO contacts linked the
+  // session to an arbitrary one of them, and a form that carried one person's email and ANOTHER person's phone (a
+  // "send to a friend" form, a co-buyer field) linked it to whichever identifier was read first. That is a guessed
+  // identity. The rule is now decideVisitorLink (lib/lead-intelligence/visitor-link-decision.ts): every identifier
+  // the visitor typed must resolve to exactly ONE row, and all of them to the SAME row — or nothing is linked. A
+  // refused read is not "no match", it is "cannot decide": nothing is linked (fail closed).
+  const { decideVisitorLink } = await import('@/lib/lead-intelligence/visitor-link-decision')
+  let suppressed = false
   async function matchIn(table: 'contacts' | 'leads'): Promise<string | null> {
+    if (suppressed) return null
+    const found: Array<{ ids: string[]; refused: boolean }> = []
     for (const [column, value] of [['email', email], ['phone', phone]] as const) {
       if (!value) continue
       let q = supabase.from(table).select('id').eq('brokerage_id', brokerageId).eq(column, value)
       if (table === 'leads') q = q.eq('is_active', true)
-      const { data, error } = await q.limit(1).maybeSingle()
-      if (error) {
-        console.error(`[track/identify] ${table}.${column} lookup refused:`, error.message)
-        continue
-      }
-      if (data?.id) return data.id as string
+      const { data, error } = await q.limit(2)
+      if (error) console.error(`[track/identify] ${table}.${column} lookup refused:`, error.message)
+      found.push({ ids: ((data ?? []) as Array<{ id: string }>).map((r) => r.id), refused: !!error })
     }
-    return null
+    const verdict = decideVisitorLink(found)
+    // An uncertain contact match does not fall through to the leads table — that would be a second guess.
+    if (!verdict.link && verdict.reason !== 'no_match') { suppressed = true; console.warn(`[track/identify] ${table} match suppressed:`, verdict.reason) }
+    return verdict.link ? verdict.id : null
   }
 
   const contactId = await matchIn('contacts')

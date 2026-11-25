@@ -577,9 +577,9 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
   // tenant's OWN website/portal who dwelled long enough on a listing/search page to read as real
   // buyer interest (lib/lead-pipeline/site-visitor-sourcer.ts). $0 marginal cost — no vendor call,
   // the data is already collected by the existing pixel/dwell beacons
-  // (app/api/track/pixel, app/api/track/dwell). Anonymous by construction, so identity is always
-  // enrichment-first; a later /api/track/identify hit (the visitor filling a form) is the real
-  // identity resolution path, not this lane.
+  // (app/api/track/pixel, app/api/track/dwell). Anonymous by construction — ANALYTICS ONLY (wave 156,
+  // 156F): the sourcer yields no raw record, nothing is enriched; only a first-party act (/api/track/identify,
+  // a consented capture, a form) ever links a visit to a person, and never by inference.
   site_visitor_intent: {
     intentType:                'buyer',
     leadType:                  'buyer',
@@ -589,7 +589,7 @@ export const SOURCE_MAP: Record<SourceKey, SourceDefinition> = {
     baseScore:                 35,
     boostSignals:              ['long_dwell', 'listing_page_view', 'return_visit', 'campaign_referred'],
     dampSignals:               ['bounce', 'short_dwell'],
-    identityPolicy:            'enrichment_first',
+    identityPolicy:            'analytics_only',
     canPromoteBeforeEnrichment: false,
   },
 

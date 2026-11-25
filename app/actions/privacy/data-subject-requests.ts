@@ -498,6 +498,12 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
       }
     }
   }
+  // WAVE 156 (lane 156F): THE SUBJECT'S WEBSITE VISITOR DATA — the same rows the erasure deletes (captured email, visit
+  // IPs, pages read, searches, identified sessions, identification evidence), through the ONE selector
+  // (lib/privacy/visitor-data-erasure.ts). A refused read aborts the export like every other source.
+  const { collectVisitorDataForSubject } = await import("@/lib/privacy/visitor-data-erasure")
+  const visitorData = await collectVisitorDataForSubject(svc, { brokerageId: req.brokerage_id as string, contactIds: subjectContactIds, email: email as string })
+  if (!visitorData.ok) failedSources.push(`website visitor data: ${visitorData.error}`)
   if (failedSources.length > 0) {
     return {
       ok: false,
@@ -555,10 +561,12 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
     // Wave 147 (147A): every protected / sensitive attribute held about the subject, each with its source, date, basis and the
     // rights it is held under — vendor-MODELED values are labelled as such, never presented as facts about the person.
     protected_attributes: protectedAttributes,
+    // Wave 156 (156F): website visits — sessions, behavioral signals, pages and searches, off-site activity, identification evidence.
+    website_visitor_data: visitorData.ok ? visitorData.data : null,
     ccpa_categories_disclosed: [
       "identifiers (email, phone, name)",
       "commercial information (transactions, offers)",
-      "internet activity (portal logins)",
+      "internet activity (portal logins, website visits and searches on the brokerage's own site)",
       "geolocation (property interest area)",
       "professional info (agent of record)",
     ],
@@ -676,12 +684,24 @@ export async function fulfillDeleteRequestAction(requestId: string): Promise<
     }
   }
 
+  // WAVE 156 (lane 156F): THE ERASURE REACHES THE WEBSITE VISITOR DATA. The subject's captured email, visit IPs, pages
+  // read, searches and identified sessions sat in behavioral_signals / site_activity / external_behavior /
+  // website_visitors after the contact was anonymized. They are deleted here, inside this request's tenant, every
+  // delete counted; a refused statement fails the request CLOSED (not marked fulfilled) — lib/privacy/visitor-data-erasure.ts.
+  const { eraseVisitorDataForSubject } = await import("@/lib/privacy/visitor-data-erasure")
+  const visitorErasure = await eraseVisitorDataForSubject(svc, { brokerageId: req.brokerage_id as string, contactIds: anonymizedRows.map((r) => String(r.id)), email })
+  if (!visitorErasure.ok) {
+    return { ok: false, error: `Contact(s) anonymized but the website visitor data was NOT erased (${visitorErasure.error}). The request was NOT marked fulfilled.` }
+  }
+  const visitorRows = Object.values(visitorErasure.deleted).reduce((a, n) => a + n, 0)
+
   // ZERO ROWS is a legitimate outcome (the subject has no contact row in this
   // brokerage) but it is a different fact from "anonymized", so it is stated as
   // one — never reported as "0 record(s) anonymized" as if a delete had run.
-  const summary = anonymizedRows.length === 0
+  const summary = (anonymizedRows.length === 0
     ? `No contact record matched ${email} in this brokerage — nothing to anonymize. Transaction records retained per state real-estate retention rules.`
-    : `${anonymizedRows.length} contact record(s) anonymized and verified (${piiFields.length} PII fields cleared per record). Transaction records retained per state real-estate retention rules.`
+    : `${anonymizedRows.length} contact record(s) anonymized and verified (${piiFields.length} PII fields cleared per record). Transaction records retained per state real-estate retention rules.`)
+    + ` Website visitor data: ${visitorRows} row(s) deleted.`
 
   const { error: closeErr } = await svc
     .from("data_subject_requests")

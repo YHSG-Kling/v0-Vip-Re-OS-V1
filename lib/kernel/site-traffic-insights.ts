@@ -112,7 +112,7 @@ export async function runSiteTrafficInsights(svc: Svc, now = new Date()): Promis
 
   // ORPHAN DOCTRINE §1.2 (2026-09-04) — `agent_id` joined this select. The
   // tracking pixel stamps WHOSE page a visitor was on
-  // (app/api/track/pixel/route.ts:41) and nothing read it, so this weekly note
+  // (app/api/track/pixel/route.ts:83) and nothing read it, so this weekly note
   // — the only consumer of the table — could tell a brokerage its busiest page
   // and never which agent's pages were pulling the traffic. That is the half a
   // principal acts on.
