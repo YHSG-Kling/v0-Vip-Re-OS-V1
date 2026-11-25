@@ -909,7 +909,7 @@ export function AIIdentityEditor({
               <div>
                 <p className="font-medium text-sm">Enable AI call handling</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  AI will be available to answer and/or place calls on behalf of {scope === "agent" ? "you" : scope === "team" ? "your team" : (words?.payer ?? "your account")}.
+                  AI will be available to answer and/or place calls on behalf of {words?.payer ?? "your account"}.
                 </p>
               </div>
               <Switch
