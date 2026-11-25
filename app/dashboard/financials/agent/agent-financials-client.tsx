@@ -52,13 +52,13 @@ import {
   recalculateCommissionStateAction,
   createCommissionRecordAction,
 } from "@/app/actions/financial-kernel"
-import {
-  TaxReadinessPanel,
-  TaxSetasidePanel,
-  DeductionReadinessPanel,
-  BusinessPlanningPanel,
-  PlanningAiSummaryPanel,
-} from "../components/planning"
+import { TaxReadinessPanel } from "@/app/dashboard/financials/components/planning/tax-readiness-panel"
+import { TaxSetasidePanel } from "@/app/dashboard/financials/components/planning/tax-setaside-panel"
+import { DeductionReadinessPanel } from "@/app/dashboard/financials/components/planning/deduction-readiness-panel"
+import { BusinessPlanningPanel } from "@/app/dashboard/financials/components/planning/business-planning-panel"
+import { PlanningAiSummaryPanel } from "@/app/dashboard/financials/components/planning/planning-ai-summary-panel"
+
+
 import { MyProfitLossPanel } from "../components/my-profit-loss-panel"
 import { MyCommissionsDisputePanel } from "../components/my-commissions-dispute-panel"
 import { BillingSummaryCard } from "./components/billing-summary-card"

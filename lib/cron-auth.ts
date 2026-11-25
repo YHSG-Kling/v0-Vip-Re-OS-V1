@@ -21,7 +21,7 @@
  * app/api route to this (census over stripped source, with positive controls).
  */
 
-import { NextResponse } from "next/server"
+import { NextResponse } from "next/server"; import { enterOriginTrust } from "@/lib/kernel/causation" // 156M: a verified scheduler run states its origin trust once
 
 /**
  * The ONE alternate credential header. A few internal callers (a server action
@@ -44,8 +44,8 @@ export function verifyCronAuth(request: Request, opts: CronAuthOptions = {}): Ne
     return NextResponse.json({ error: "Cron secret not configured" }, { status: 500 })
   }
   const authHeader = request.headers.get("authorization")
-  if (authHeader === `Bearer ${secret}`) return null
-  if (opts.acceptCronSecretHeader && request.headers.get(CRON_SECRET_HEADER) === secret) return null
+  if (authHeader === `Bearer ${secret}`) { enterOriginTrust("tenant_policy", "cron_scheduler"); return null }
+  if (opts.acceptCronSecretHeader && request.headers.get(CRON_SECRET_HEADER) === secret) { enterOriginTrust("tenant_policy", "cron_scheduler"); return null }
   return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 }
 

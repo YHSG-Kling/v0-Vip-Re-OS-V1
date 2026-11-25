@@ -5,13 +5,13 @@
  * Thin action wrappers — core logic lives in lib/buyer-search/search-engine.ts
  */
 
-import {
-  searchPropertiesCore,
-  explainPropertyMatchCore,
-  parseNaturalLanguageQuery,
-  mergeIntentWithContext,
-  inferBuyerPersona,
-} from '@/lib/buyer-search'
+import { searchPropertiesCore, explainPropertyMatchCore } from '@/lib/buyer-search/search-engine'
+import { parseNaturalLanguageQuery, mergeIntentWithContext } from '@/lib/buyer-search/intent-parser'
+import { inferBuyerPersona } from '@/lib/buyer-search/persona-inference'
+
+
+
+
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
 import { createClient } from '@/lib/supabase/server'

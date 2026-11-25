@@ -54,7 +54,7 @@ type StatedDateOutcome = { status: "recorded" | "replayed" | "not_stated" | "ref
 type RecordStatedDate = (svc: Svc, a: {
   brokerageId: string; contactId: string; capturedBy: "person"
   change: { kind: "stated_date"; deadline: { kind: "relocation_start"; at: string }; quote: string; referenceId: string; at: string }
-}) => Promise<{ status: "reassessed" | "recorded_no_decision" | "replayed" | "refused"; reason: string }>
+}) => Promise<{ status: "reassessed" | "recorded_no_decision" | "replayed" | "refused"; reason: string; /** wave 156 (156I r3) */ recordId?: string | null }>
 
 type PersonPlan = Extract<ReturnType<typeof planRelocation>, { ok: true; mode: "person" }>
 
@@ -157,6 +157,8 @@ export async function planPcsMoveForPortalContact(
           at: nowIso,
         },
       })
+      // WAVE 156 (156I r3, m1030): the destination the person TYPED, structured on their own record (the quote stays).
+      if (r.status !== "refused" && r.recordId) notes.push(...await stampStatedDestination(svc, { brokerageId: access.brokerageId, contactId: access.contactId, recordId: r.recordId, label: destination, state, installationName: String(input.installationName ?? "").trim() }))
       statedDate = r.status === "refused" ? { status: "refused", detail: r.reason }
         : r.status === "replayed" ? { status: "replayed", detail: "this report date was already on file — nothing new was recorded" }
         : { status: "recorded", detail: "your report date is on file, so your agent's timing follows it" }
@@ -165,4 +167,31 @@ export async function planPcsMoveForPortalContact(
     }
   }
   return { ok: true, plan, statedDate, notes }
+}
+
+// ═══ WAVE 156 (lane 156I round 3 — directive 156I row 3: a stated relocation plan carries a STRUCTURED destination) ═══════════
+// The door's ONE write (the stated report date, through the canonical movement writer) recorded the destination only inside its
+// free-text quote. m1030 gives the record nullable stated_destination_{label,city,state}; this fills them on THAT row — pinned to
+// the tenant, the contact and the record id, counted — from exactly what the person typed: the label verbatim, the state they
+// chose, and the city only when they named a place (not an installation). Reader: the Campaign Orchestrator's
+// corridor_radar_brief consumer (lib/kernel/manager-signals.ts, foot). A refused write (m1030 not yet applied: PGRST204) is
+// said to the caller's notes, never thrown — the plan and the stated date stand.
+
+/** PURE. The structured destination from what the person typed (null city when they named an installation). */
+export function statedDestinationColumns(a: { label: string; state: string; installationName: string }): { stated_destination_label: string; stated_destination_city: string | null; stated_destination_state: string | null } {
+  const label = a.label.trim().slice(0, 120)
+  const city = a.installationName ? null : (label.split(",")[0]?.trim() || null)
+  return { stated_destination_label: label, stated_destination_city: city, stated_destination_state: /^[A-Z]{2}$/.test(a.state) ? a.state : null }
+}
+
+async function stampStatedDestination(svc: Svc, a: { brokerageId: string; contactId: string; recordId: string; label: string; state: string; installationName: string }): Promise<string[]> {
+  try {
+    const { data, error } = await svc.from("movement_signals").update(statedDestinationColumns(a))
+      .eq("id", a.recordId).eq("brokerage_id", a.brokerageId).eq("contact_id", a.contactId).select("id")
+    if (error) return [`Your destination is in your plan, but it could not be saved for matching local guides (${error.message}).`]
+    if (!Array.isArray(data) || data.length !== 1) return ["Your destination is in your plan, but its record could not be found to save it for matching local guides."]
+    return []
+  } catch (e) {
+    return [`Your destination is in your plan, but it could not be saved (${e instanceof Error ? e.message : String(e)}).`]
+  }
 }

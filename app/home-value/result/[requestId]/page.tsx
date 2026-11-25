@@ -91,6 +91,15 @@ export default async function HomeValueResultPage({ params }: PageProps) {
 
         {/* Section 3: Equity Calculator */}
         <EquityCalculator estimatedValue={estimate.estimatedValueMid} />
+        {/* WAVE 156 (156I r3): the tenant's PUBLISHED seller net-sheet calculator (lane 156H), only when one exists. */}
+        {result.sellerNetCalculator ? (
+          <Card>
+            <CardHeader><CardTitle>Estimate what you would take home</CardTitle></CardHeader>
+            <CardContent>
+              <Link href={`/lm/${result.sellerNetCalculator.slug}`} className="underline">{result.sellerNetCalculator.title}</Link>
+            </CardContent>
+          </Card>
+        ) : null}
 
         {/* Section 4: Comparable Sales Table */}
         <CompsTable comps={estimate.comps} />

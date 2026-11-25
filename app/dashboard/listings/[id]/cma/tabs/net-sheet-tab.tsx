@@ -26,6 +26,8 @@ import type { NetSheetPageData } from "@/app/actions/seller-cma"
 // and the seller portal already use. Title fees and transfer/doc-stamp taxes were
 // simply never mounted here — this sheet fell back to a blind 2% of price.
 import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
+import { REGIONAL_CONVENTION_CITATION } from "@/lib/offers/regional-closing-costs"
+import { sellerNetScenario, scenarioPrice } from "@/lib/calculators/engine"
 
 interface Listing {
   id: string
@@ -60,8 +62,8 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
   const flatAmount = Number(agreement?.commission_flat_amount ?? 0)
 
   // When the agreement records only a TOTAL rate, put it on the listing line and
-  // leave the buyer line at 0 so the two still sum to the agreed total — rather
-  // than falling to 3/3 and quoting the seller 6%.
+  // leave the buyer line at 0 so the two still sum to the agreed total. WAVE 156 (lane 156H, round 4): with no agreement and no
+  // saved sheet the rates start BLANK and are asked for — the 3% / 3% that stood here was nobody's agreed commission.
   const totalOnly =
     agreement?.total_commission_rate != null &&
     agreement?.listing_commission_rate == null &&
@@ -72,7 +74,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
       agreement?.listing_commission_rate ??
         (totalOnly ? agreement!.total_commission_rate : null) ??
         latestNetSheet?.listing_commission_rate ??
-        3
+        ""
     )
   )
   const [buyerRate, setBuyerRate] = useState(
@@ -80,7 +82,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
       agreement?.buyer_commission_rate ??
         (totalOnly ? 0 : null) ??
         latestNetSheet?.buyer_commission_rate ??
-        3
+        ""
     )
   )
   const [closingCosts, setClosingCosts] = useState(
@@ -117,31 +119,50 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
   const [explanationModalOpen, setExplanationModalOpen] = useState(false)
   const [savingDraft, setSavingDraft] = useState(false)
 
-  function scenarioMultiplier() {
-    if (activeScenario === "quick") return 0.95
-    if (activeScenario === "premium") return 1.05
-    return 1
+  // Scenario spread in whole percent of the entered price — a presentation choice, not a market figure.
+  const SCENARIO_OFFSET_PCT = 5
+  function scenarioOffsetPct() {
+    if (activeScenario === "quick") return -SCENARIO_OFFSET_PCT
+    if (activeScenario === "premium") return SCENARIO_OFFSET_PCT
+    return 0
   }
 
-  const price = Number(salePrice) * scenarioMultiplier() || 0
-  // Flat fee is charged as-is; percentage rates only apply when it isn't one.
-  const listComm = isFlatFee ? flatAmount : price * (Number(listingRate) / 100)
-  const buyerComm = isFlatFee ? 0 : price * (Number(buyerRate) / 100)
-  // Regional seller closing costs — itemized title + transfer/doc-stamp lines for
-  // the listing's state, recomputed as the scenario price moves. Falls back to the
-  // old flat 2% only when the state is unknown.
+  const price = scenarioPrice(Number(salePrice) || 0, scenarioOffsetPct())
+  // Regional seller closing costs — itemized title + transfer/doc-stamp lines for the listing's state from the Finance
+  // Manager's reviewed convention, recomputed as the scenario price moves, and marked as an estimate. WAVE 156 (lane 156H,
+  // round 4): with no state and no entered quote the figure is ASKED for — the flat 2% that stood here was nobody's figure.
   const closingSection = deriveNetSheetClosingCostSection(price, listing.state ?? null)
-  const closing = Number(closingCosts) || closingSection?.midpoint || price * 0.02
-  const payoff = Number(mortgagePayoff) || 0
-  const taxes = Number(propertyTaxes) || 0
-  const hoa = Number(hoaFees) || 0
-  const repairs = Number(repairCredits) || 0
-  const concessions = Number(sellerConcessions) || 0
-  // Agreed flat brokerage transaction fee charged to the SELLER (m286). Editable,
-  // pre-filled from the listing agreement. NOT the agent-side transaction fee.
+  const closingEntered = closingCosts.trim() !== "" && Number.isFinite(Number(closingCosts))
+  const closingFigure = closingEntered ? Number(closingCosts) : closingSection?.midpoint ?? null
+  const blankToNull = (v: string) => (v.trim() === "" ? null : Number(v))
+  // ONE ENGINE (lib/calculators/engine.ts sellerNetScenario → runCalculator("seller_net_sheet")) — this tab's own arithmetic
+  // (a third seller net) is retired onto it. Flat fee is charged as-is; percentage rates only apply when it isn't one.
+  const sheet = sellerNetScenario("current", {
+    salePrice: price,
+    listingCommissionPct: isFlatFee ? null : blankToNull(listingRate),
+    listingCommissionAmount: isFlatFee ? flatAmount : null,
+    buyerBrokerCompPct: isFlatFee ? null : blankToNull(buyerRate),
+    closingCosts: closingFigure,
+    mortgagePayoff: Number(mortgagePayoff) || 0,
+    propertyTaxes: Number(propertyTaxes) || 0,
+    hoaFees: Number(hoaFees) || 0,
+    repairCredits: Number(repairCredits) || 0,
+    sellerConcessions: Number(sellerConcessions) || 0,
+    // Agreed flat brokerage transaction fee charged to the SELLER (m286). Editable,
+    // pre-filled from the listing agreement. NOT the agent-side transaction fee.
+    transactionFee: Number(transactionFee) || 0,
+  }, { audience: "internal", closingCostsEstimate: !closingEntered })
+  const listComm = sheet.breakdown.listingCommission
+  const buyerComm = sheet.breakdown.buyerCommission
+  const closing = closingFigure ?? 0
+  const payoff = sheet.breakdown.mortgagePayoff
+  const taxes = sheet.breakdown.propertyTaxes
+  const hoa = sheet.breakdown.hoaFees
+  const repairs = sheet.breakdown.repairCredits
+  const concessions = sheet.breakdown.sellerConcessions
   const txFee = Number(transactionFee) || 0
-  const totalCosts = listComm + buyerComm + closing + payoff + taxes + hoa + repairs + concessions + txFee
-  const netProceeds = price - totalCosts
+  const netProceeds = sheet.netProceeds
+  const ready = netProceeds != null
 
   const isExpired =
     latestNetSheet?.expires_at
@@ -155,7 +176,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
     agentCommission: listComm + buyerComm,
     closingCosts: closing,
     transactionFee: txFee,
-    estimatedNet: netProceeds,
+    estimatedNet: netProceeds ?? 0,
   }
 
   function handleSave() {
@@ -382,7 +403,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
                 <Label className="text-xs text-muted-foreground">Closing Costs</Label>
                 <Input
                   type="number"
-                  placeholder="Default: 2%"
+                  placeholder={closingSection ? `Regional estimate ${fmt(closingSection.midpoint)}` : "Enter the title / settlement quote"}
                   value={closingCosts}
                   onChange={(e) => setClosingCosts(e.target.value)}
                   className="mt-1 h-8 text-sm"
@@ -438,7 +459,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
 
             {/* Action buttons */}
             <div className="flex flex-wrap items-center gap-2 pt-1">
-              <Button size="sm" onClick={handleSave} disabled={isPending}>
+              <Button size="sm" onClick={handleSave} disabled={isPending || !ready}>
                 {isPending ? "Saving..." : "Save Net Sheet"}
               </Button>
 
@@ -446,7 +467,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
                 size="sm"
                 variant="outline"
                 onClick={handleShareToPortal}
-                disabled={sharingToPortal || !listing.seller_contact_id}
+                disabled={sharingToPortal || !listing.seller_contact_id || !ready}
                 title={!listing.seller_contact_id ? "No seller contact linked to this listing" : undefined}
               >
                 {sharingToPortal ? "Sharing..." : "Share to Portal"}
@@ -456,7 +477,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
                 size="sm"
                 variant="outline"
                 onClick={handleGenerateExplanation}
-                disabled={generatingExplanation}
+                disabled={generatingExplanation || !ready}
               >
                 {generatingExplanation ? "Generating..." : "AI Explanation"}
               </Button>
@@ -497,7 +518,7 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
                 <Row label={`Buyer Commission (${buyerRate}%)`} value={`-${fmt(buyerComm)}`} negative />
               </>
             )}
-            <Row label="Closing Costs" value={`-${fmt(closing)}`} negative />
+            <Row label={closingEntered ? "Closing Costs" : "Closing Costs (regional estimate)"} value={closingFigure == null ? "enter a value" : `-${fmt(closing)}`} negative />
             {closingSection && (
               <div className="ml-3 pl-3 border-l border-muted space-y-1">
                 <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -512,8 +533,8 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
                   </div>
                 ))}
                 <p className="text-[11px] leading-snug text-muted-foreground">
-                  Regional estimate — the settlement statement is the authority. Edit Closing
-                  Costs above to override.
+                  Regional estimate from {REGIONAL_CONVENTION_CITATION} — the settlement statement is the
+                  authority. Edit Closing Costs above to override.
                 </p>
               </div>
             )}
@@ -526,10 +547,15 @@ export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Pr
             <Separator />
             <div className="flex justify-between font-semibold text-base pt-1">
               <span>Net Proceeds</span>
-              <span className={netProceeds >= 0 ? "text-green-700" : "text-red-700"}>
-                {fmt(netProceeds)}
+              <span className={netProceeds == null ? "text-muted-foreground" : netProceeds >= 0 ? "text-green-700" : "text-red-700"}>
+                {netProceeds == null ? "—" : fmt(netProceeds)}
               </span>
             </div>
+            {!ready && (
+              <ul className="text-xs text-amber-700 space-y-0.5">
+                {sheet.missing.map((m) => <li key={m}>{m}</li>)}
+              </ul>
+            )}
           </CardContent>
         </Card>
       </div>

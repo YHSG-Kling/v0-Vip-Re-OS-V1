@@ -2,14 +2,14 @@
 
 import { useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
-import {
-  CommunicationsCommandStrip,
-  InboxRadar,
-  ResponsePressurePanel,
-  SentimentUrgencyPanel,
-  SequenceExecutionPanel,
-  AiReplyCoachPanel,
-} from "./components/os"
+import { CommunicationsCommandStrip } from "@/app/dashboard/communications/components/os/communications-command-strip"
+import { InboxRadar } from "@/app/dashboard/communications/components/os/inbox-radar"
+import { ResponsePressurePanel } from "@/app/dashboard/communications/components/os/response-pressure-panel"
+import { SentimentUrgencyPanel } from "@/app/dashboard/communications/components/os/sentiment-urgency-panel"
+import { SequenceExecutionPanel } from "@/app/dashboard/communications/components/os/sequence-execution-panel"
+import { AiReplyCoachPanel } from "@/app/dashboard/communications/components/os/ai-reply-coach-panel"
+
+
 import { ConversationActionPanel } from "./components/os/conversation-action-panel"
 import { CommunicationHealthPanel } from "./components/os/communication-health-panel"
 import { sendMessage, analyzeConversationHealth } from "@/app/actions/ai-communication-hub"

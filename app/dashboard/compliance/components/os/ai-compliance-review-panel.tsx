@@ -18,7 +18,7 @@ import {
   evaluateContentApproval,
   checkApprovalAuthority,
 } from "@/app/actions/content-approval-workflow"
-import { useAuth } from "@/lib/auth/client"
+import { useAuth } from "@/lib/auth/useAuth"
 
 interface Violation {
   rule_id: string

@@ -215,13 +215,14 @@ export function defaultSellerCosts(args: {
   /** Brokerage transaction fee charged to the seller — flat dollars, default 0. */
   transactionFee?: number | null
 }): Omit<SellerCosts, "buyerClosingCredit"> {
-  const price = args.listPrice ?? 0
   return {
     commissionRate: args.commissionRateDecimal,
     mortgagePayoff: 0,
-    countyCityTaxes: Math.round(price * 0.005),
+    // WAVE 156 (lane 156H, round 4): 0 until entered — the 0.5%-of-price taxes and 1%-of-price "other fees" that stood here were
+    // nobody's figures. The interactive net sheet asks for them (lib/kernel/offer-net-sheet.ts / interactive-net-sheet.tsx).
+    countyCityTaxes: 0,
     hoaDuesProration: args.hoaDuesMonthly ? Math.round(args.hoaDuesMonthly) : 0,
-    otherProratedFees: Math.round(price * 0.01),
+    otherProratedFees: 0,
     transactionFee: args.transactionFee != null ? Math.round(Number(args.transactionFee)) : 0,
   }
 }
@@ -416,6 +417,8 @@ export interface AgreedCommission {
   isEstimate: boolean
   /** What happened to the agreement's recorded concession. See the type. */
   adjustmentState: CommissionAdjustmentState
+  /** WAVE 156 (156H round 4): TRUE when no commission term is on file at all — the rate is then 0 and the line must be ASKED for. */
+  missing?: boolean
   /** The rate BEFORE the concession, when one was applied; null otherwise. */
   rateBeforeAdjustment: number | null
   /**
@@ -427,8 +430,9 @@ export interface AgreedCommission {
   adjustmentUnpriced: boolean
 }
 
-/** The house fallback when nothing is on file. Matches defaultSellerCosts. */
-export const FALLBACK_TOTAL_COMMISSION_RATE = 0.06
+// TOMBSTONE (wave 156, lane 156H, round 4) — `FALLBACK_TOTAL_COMMISSION_RATE` (a 6% "house fallback" applied to the seller's net
+// whenever no commission term was on file) stood here. SURVIVOR: resolveAgreedCommission's last branch below returns rate 0 with
+// `missing: true` and a label that asks for the agreed commission — a commission is the seller's contract, never a default.
 
 /**
  * PURE. Apply the agreement's recorded commission concession to a resolved rate,
@@ -575,10 +579,10 @@ export function resolveAgreedCommission(args: {
   }
 
   return {
-    rate: FALLBACK_TOTAL_COMMISSION_RATE,
+    rate: 0,
     isFlatFee: false, flatAmount: null, source: "default",
-    label: "Estimate — no commission terms on file",
-    isEstimate: true,
+    label: "Not on file — enter the commission in your listing agreement (no rate is assumed)",
+    isEstimate: true, missing: true,
     ...unadjusted,
   }
 }
@@ -591,10 +595,16 @@ export interface ResolvedClosingCosts {
   /** Seller-readable provenance — never present an estimate as a fact. */
   label: string
   isEstimate: boolean
+  /** WAVE 156 (156H round 4): TRUE when no figure, no configured brokerage percent and no state convention exists — the amount is
+   *  then 0 and the line must be ASKED for. */
+  missing?: boolean
 }
 
-/** The house fallback when a brokerage has configured nothing and the state is unknown. */
-export const FALLBACK_CLOSING_COST_PERCENT = 0.02
+// TOMBSTONE (wave 156, lane 156H, round 4) — `FALLBACK_CLOSING_COST_PERCENT` (a 2% "house default") stood here. SURVIVOR: the last
+// branch of resolveClosingCosts below asks for the figure (amount 0, `missing: true`). The brokerage tier still refuses a percent
+// equal to the settings layer's own hardcoded default (BROKERAGE_SETTINGS_UNSET_CLOSING_PERCENT), so "unset" cannot pose as policy.
+/** The value lib/brokerage get-brokerage-settings hardcodes when a brokerage never configured closing_cost_percent — "unset", not policy. */
+const BROKERAGE_SETTINGS_UNSET_CLOSING_PERCENT = 2 / 100
 
 /**
  * PURE. Resolve the seller's closing-cost line, with provenance.
@@ -637,7 +647,7 @@ export function resolveClosingCosts(args: {
 
   const pct = Number(args.brokerageClosingCostPercent)
   const brokerageConfigured =
-    Number.isFinite(pct) && pct > 0 && Math.abs(pct - FALLBACK_CLOSING_COST_PERCENT) > 1e-9
+    Number.isFinite(pct) && pct > 0 && Math.abs(pct - BROKERAGE_SETTINGS_UNSET_CLOSING_PERCENT) > 1e-9
   if (brokerageConfigured) {
     return {
       amount: price * pct,
@@ -658,9 +668,9 @@ export function resolveClosingCosts(args: {
   }
 
   return {
-    amount: price * FALLBACK_CLOSING_COST_PERCENT,
+    amount: 0,
     source: "default",
-    label: "Estimated at 2% — no state or brokerage figure on file",
-    isEstimate: true,
+    label: "Not on file — enter the closing costs from a title / settlement quote (no percentage is assumed)",
+    isEstimate: true, missing: true,
   }
 }

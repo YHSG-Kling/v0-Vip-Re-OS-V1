@@ -30,15 +30,15 @@ import { getAgentPointsAndTier } from "@/app/actions/gamification"
 import { getAcademyViewer, getFeaturedModule, getMyLearningProgress } from "@/app/actions/academy-learning"
 import { useRouter } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
-import {
-  AcademyCommandStrip,
-  LearningPathPanel,
-  ReadinessRadar,
-  TrainingProgressPanel,
-  AiTutorPanel,
-  EmbeddedLeaderboardWidget,
-  FOCUS_AREAS,
-} from "./components/os"
+import { AcademyCommandStrip } from "@/app/academy/components/os/academy-command-strip"
+import { LearningPathPanel, FOCUS_AREAS } from "@/app/academy/components/os/learning-path-panel"
+import { ReadinessRadar } from "@/app/academy/components/os/readiness-radar"
+import { TrainingProgressPanel } from "@/app/academy/components/os/training-progress-panel"
+import { AiTutorPanel } from "@/app/academy/components/os/ai-tutor-panel"
+import { EmbeddedLeaderboardWidget } from "@/app/academy/components/os/embedded-leaderboard-widget"
+
+
+
 
 // Turns analyzeAgentPerformance's free-text improvements/critical_gaps into
 // LearningPathPanel's typed focus-area ids — one keyword pass over the SAME

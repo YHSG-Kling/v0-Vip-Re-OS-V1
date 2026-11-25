@@ -7,15 +7,15 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Briefcase, Star, Clock, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
-import { VendorCommandStrip, JobPerformancePanel } from '../components/os'
+import { VendorCommandStrip } from '@/app/vendor/components/os/vendor-command-strip'; import { JobPerformancePanel } from '@/app/vendor/components/os/job-performance-panel'
 import { TodaysFocusCard } from '@/app/components/shell/todays-focus-card'
 import { generateUserTypeBrief } from '@/lib/intelligence/user-type-briefs'
-import {
-  ExternalPartnerCommandStrip,
-  ExternalActiveFilesPanel,
-  ExternalNextActionsPanel,
-  ExternalBillingEarningsPanel,
-} from '../../(external-portal)/components/os'
+import { ExternalPartnerCommandStrip } from '@/app/(external-portal)/components/os/external-partner-command-strip'
+import { ExternalActiveFilesPanel } from '@/app/(external-portal)/components/os/external-active-files-panel'
+import { ExternalNextActionsPanel } from '@/app/(external-portal)/components/os/external-next-actions-panel'
+import { ExternalBillingEarningsPanel } from '@/app/(external-portal)/components/os/external-billing-earnings-panel'
+
+
 import { getVendorJobs } from '@/app/actions/vendor-portal'
 import { getVendorEarningsSummary } from '@/app/actions/vendor-payments'
 

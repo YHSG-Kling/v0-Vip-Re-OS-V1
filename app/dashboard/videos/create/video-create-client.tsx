@@ -41,7 +41,7 @@ import {
   X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useAuth } from "@/lib/auth/client"
+import { useAuth } from "@/lib/auth/useAuth"
 import { createClient } from "@/lib/supabase/client"
 import {
   VideoBusinessPurposePicker,

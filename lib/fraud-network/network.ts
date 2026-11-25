@@ -37,6 +37,7 @@
 import "server-only"
 import { createHash } from "node:crypto"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import { applyTenantScope, platformScope, tenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 // The ONE tenant-lifecycle vocabulary (lib/billing/billing-access.ts — the paywall and the scraper roster read it too).
 import { TENANT_LIFECYCLE_REFUSED } from "@/lib/billing/billing-access"
 
@@ -644,11 +645,36 @@ export async function publishBulletin(svc: Svc, staff: StaffActor, bulletinId: s
     detail: { claim_class: (b as any).claim_class, named_entity: !!(b as any).named_entity, attest_no_person_identified: true, legal_review_confirmed: ctx.legalReviewConfirmed, verification_note: str(ctx.verificationNote, 500) || null, corroboration },
   }, async () => {
     const legal = (b as any).named_entity ? { legal_review_by: staff.userId, legal_review_at: at } : {}
+    // ORDER IS THE AUDIT GUARANTEE (round 3): the revision row, then the source cases, then the published state. A refused
+    // step stops the door BEFORE anything is public, and what was already written is undone and counted — a bulletin is
+    // never reported (or left) published without its audit trail and its case links.
+    const { data: srcs, error: srcErr } = await svc.from("fraud_bulletin_sources").select("case_id, brokerage_id").eq("bulletin_id", bulletinId)
+    if (srcErr) return { ok: false as const, error: "The bulletin's source cases could not be read — nothing was published." }
+    const sources = (srcs ?? []) as Array<{ case_id: string; brokerage_id: string }>
+    const { data: rev, error: revErr } = await svc.from("fraud_bulletin_revisions").insert({ bulletin_id: bulletinId, version: (b as any).version, change_kind: "published", snapshot: { ...(b as any), status: "published", published_at: at, ...legal }, reason: str(ctx.verificationNote, 2000) || "published", actor_user_id: staff.userId, created_at: at }).select("id")
+    if (revErr || !(rev ?? []).length) return { ok: false as const, error: "The publication record could not be written — nothing was published." }
+    const revisionId = (rev as Array<{ id: string }>)[0].id
+    const undo = async (marked: Array<{ case_id: string; brokerage_id: string; prior: string }>): Promise<string[]> => {
+      const problems: string[] = []
+      for (const m of marked) {
+        const { data: r, error: e } = await svc.from("fraud_incident_cases").update({ status: m.prior, updated_at: at }).eq("id", m.case_id).eq("brokerage_id", m.brokerage_id).select("id")
+        if (e || !(r ?? []).length) problems.push(`case ${m.case_id} not restored`)
+      }
+      const { data: d, error: de } = await svc.from("fraud_bulletin_revisions").delete().eq("id", revisionId).select("id")
+      if (de || !(d ?? []).length) problems.push("the unused publication record was not removed")
+      return problems
+    }
+    const marked: Array<{ case_id: string; brokerage_id: string; prior: string }> = []
+    for (const s of sources) {
+      const { data: c, error: cErr } = await svc.from("fraud_incident_cases").select("status").eq("id", s.case_id).eq("brokerage_id", s.brokerage_id).maybeSingle()
+      if (cErr) { const p = await undo(marked); return { ok: false as const, error: `A source case could not be read — nothing was published.${p.length ? ` Also: ${p.join("; ")}.` : ""}` } }
+      if (!c) continue // the case was purged by retention; its link no longer corroborates (the cascade removes it)
+      const { data: m, error: mErr } = await svc.from("fraud_incident_cases").update({ status: "used_for_bulletin", updated_at: at }).eq("id", s.case_id).eq("brokerage_id", s.brokerage_id).select("id")
+      if (mErr || !(m ?? []).length) { const p = await undo(marked); return { ok: false as const, error: `A source case could not be marked as used — nothing was published.${p.length ? ` Also: ${p.join("; ")}.` : ""}` } }
+      marked.push({ ...s, prior: String((c as { status: string }).status) })
+    }
     const { data: up, error: upErr } = await svc.from("fraud_bulletins").update({ status: "published", published_by: staff.userId, published_at: at, updated_at: at, ...legal }).eq("id", bulletinId).eq("status", "draft").select("id")
-    if (upErr || !(up ?? []).length) return { ok: false as const, error: "The bulletin was not published." }
-    await svc.from("fraud_bulletin_revisions").insert({ bulletin_id: bulletinId, version: (b as any).version, change_kind: "published", snapshot: { ...(b as any), status: "published", published_at: at, ...legal }, reason: str(ctx.verificationNote, 2000) || "published", actor_user_id: staff.userId, created_at: at })
-    const { data: srcs } = await svc.from("fraud_bulletin_sources").select("case_id, brokerage_id").eq("bulletin_id", bulletinId)
-    for (const s of (srcs ?? []) as Array<{ case_id: string; brokerage_id: string }>) await svc.from("fraud_incident_cases").update({ status: "used_for_bulletin", updated_at: at }).eq("id", s.case_id).eq("brokerage_id", s.brokerage_id)
+    if (upErr || !(up ?? []).length) { const p = await undo(marked); return { ok: false as const, error: `The bulletin was not published.${p.length ? ` Also: ${p.join("; ")}.` : ""}` } }
     const notified = await notifySubscribers(svc, { id: bulletinId, typology: (b as any).typology, jurisdiction: (b as any).jurisdiction, title: (b as any).title })
     return { ok: true as const, notified }
   }) as any
@@ -708,20 +734,33 @@ export async function takeDownBulletin(svc: Svc, staff: StaffActor, bulletinId: 
   if (!why) return { ok: false, error: "State the reason for the takedown." }
   const { data: b, error } = await svc.from("fraud_bulletins").select(SNAPSHOT_COLS).eq("id", bulletinId).maybeSingle()
   if (error || !b) return { ok: false, error: "Bulletin not found." }
-  if ((b as any).status === "taken_down") return { ok: true, derivedWithdrawn: 0 }
   const tenant = await staffLedgerTenant(svc, staff, bulletinId)
   if (!tenant) return { ok: false, error: "No tenant to record the receipt under — not taken down." }
   const at = new Date().toISOString()
-  return receipt(svc, { brokerageId: tenant, action: "fraud.bulletin.takedown", actorUserId: staff.userId, subject: { type: "fraud_bulletin", id: bulletinId }, reason: why, riskClass: "LEGAL", idempotencyKey: `fraud_bulletin_takedown:${bulletinId}`, detail: { correction_request_id: correctionRequestId ?? null } }, async () => {
-    const { data: up, error: upErr } = await svc.from("fraud_bulletins").update({ status: "taken_down", taken_down_at: at, takedown_reason: why, updated_at: at }).eq("id", bulletinId).select("id")
-    if (upErr || !(up ?? []).length) return { ok: false as const, error: "The bulletin was not taken down." }
-    await svc.from("fraud_bulletin_revisions").insert({ bulletin_id: bulletinId, version: (b as any).version, change_kind: "taken_down", snapshot: b, reason: why, correction_request_id: correctionRequestId ?? null, actor_user_id: staff.userId, created_at: at })
-    let derivedWithdrawn = 0
-    const { data: der } = await svc.from("fraud_bulletin_derivatives").select("brokerage_id, topic_id").eq("bulletin_id", bulletinId)
-    for (const d of (der ?? []) as Array<{ brokerage_id: string; topic_id: string }>) {
-      const { data: t } = await svc.from("content_topic_bank").update({ status: "rejected" }).eq("id", d.topic_id).eq("brokerage_id", d.brokerage_id).select("id")
-      derivedWithdrawn += (t ?? []).length
+  // No idempotency key: a takedown is idempotent by state, and a RETRY must be able to repair a missing record or a
+  // derived copy that was not withdrawn (round 3). Public access is removed FIRST — the protective act — and the door
+  // reports failure (never success) until the record and every derived copy are confirmed.
+  return receipt(svc, { brokerageId: tenant, action: "fraud.bulletin.takedown", actorUserId: staff.userId, subject: { type: "fraud_bulletin", id: bulletinId }, reason: why, riskClass: "LEGAL", detail: { correction_request_id: correctionRequestId ?? null, repair: (b as any).status === "taken_down" } }, async () => {
+    if ((b as any).status !== "taken_down") {
+      const { data: up, error: upErr } = await svc.from("fraud_bulletins").update({ status: "taken_down", taken_down_at: at, takedown_reason: why, updated_at: at }).eq("id", bulletinId).select("id")
+      if (upErr || !(up ?? []).length) return { ok: false as const, error: "The bulletin was not taken down." }
     }
+    const problems: string[] = []
+    const { data: prior, error: priorErr } = await svc.from("fraud_bulletin_revisions").select("id").eq("bulletin_id", bulletinId).eq("change_kind", "taken_down").limit(1)
+    if (priorErr) problems.push("the takedown record could not be checked")
+    else if (!(prior ?? []).length) {
+      const { data: rev, error: revErr } = await svc.from("fraud_bulletin_revisions").insert({ bulletin_id: bulletinId, version: (b as any).version, change_kind: "taken_down", snapshot: b, reason: why, correction_request_id: correctionRequestId ?? null, actor_user_id: staff.userId, created_at: at }).select("id")
+      if (revErr || !(rev ?? []).length) problems.push("the takedown record was not written")
+    }
+    let derivedWithdrawn = 0
+    const { data: der, error: derErr } = await svc.from("fraud_bulletin_derivatives").select("brokerage_id, topic_id").eq("bulletin_id", bulletinId)
+    if (derErr) problems.push("the derived topic copies could not be read")
+    for (const d of (der ?? []) as Array<{ brokerage_id: string; topic_id: string }>) {
+      const { data: t, error: tErr } = await svc.from("content_topic_bank").update({ status: "rejected" }).eq("id", d.topic_id).eq("brokerage_id", d.brokerage_id).select("id")
+      if (tErr) problems.push(`a derived topic copy was not withdrawn (${tErr.message})`)
+      else derivedWithdrawn += (t ?? []).length // 0 rows = the copy is already gone (deleted with its tenant): nothing to withdraw
+    }
+    if (problems.length) return { ok: false as const, error: `The bulletin is no longer public, but ${problems.join("; ")}. Take it down again to finish.`, derivedWithdrawn }
     return { ok: true as const, derivedWithdrawn }
   }) as any
 }
@@ -822,16 +861,20 @@ export async function listBulletins(svc: Svc, actor: FraudActor, filter: { typol
 }
 
 /** Open one bulletin (records the measured read). A taken-down or draft bulletin is not found. */
-export async function openBulletin(svc: Svc, actor: TenantActor, bulletinId: string): Promise<Ok<{ bulletin: any; protectiveAction: string; evidenceChecklist: readonly string[] }> | Refusal> {
+export async function openBulletin(svc: Svc, actor: TenantActor, bulletinId: string): Promise<Ok<{ bulletin: any; protectiveAction: string; evidenceChecklist: readonly string[]; readRecorded: boolean }> | Refusal> {
   if (!isParticipant(actor)) return { ok: false, error: "Your seat cannot use the fraud network." }
   if (!UUID.test(String(bulletinId ?? ""))) return { ok: false, error: "Bulletin not found." }
   const { data, error } = await svc.from("fraud_bulletins").select(PUBLIC_COLS).eq("id", bulletinId).eq("status", "published").maybeSingle()
   if (error) return { ok: false, error: "The bulletin could not be read right now." }
   if (!data) return { ok: false, error: "Bulletin not found." }
-  await svc.from("fraud_bulletin_reads").insert({ brokerage_id: actor.brokerageId, user_id: actor.userId, bulletin_id: bulletinId, first_read_at: new Date().toISOString() })
+  // The measured read (metric "bulletins read"). A repeat read is the unique key refusing (23505) — already counted. Any
+  // other refusal is a counted, REPORTED degradation: the seat still gets the warning (safety first), the metric is short.
+  const { error: readErr } = await svc.from("fraud_bulletin_reads").insert({ brokerage_id: actor.brokerageId, user_id: actor.userId, bulletin_id: bulletinId, first_read_at: new Date().toISOString() })
+  const readRecorded = !readErr || readErr.code === "23505"
+  if (!readRecorded) console.error("[fraud-network] bulletin read not recorded (metric under-counts):", readErr?.message)
   const t = typologyOf((data as any).typology)!
   const credits = await creditsFor(svc, [bulletinId])
-  return { ok: true, bulletin: { ...(data as any), credits: credits.get(bulletinId) ?? [] }, protectiveAction: t.protectiveAction, evidenceChecklist: t.evidenceChecklist }
+  return { ok: true, bulletin: { ...(data as any), credits: credits.get(bulletinId) ?? [] }, protectiveAction: t.protectiveAction, evidenceChecklist: t.evidenceChecklist, readRecorded }
 }
 
 export async function setSubscription(svc: Svc, actor: TenantActor, input: { typology?: string | null; jurisdiction?: string | null; on: boolean }): Promise<Ok<{}> | Refusal> {
@@ -849,7 +892,10 @@ export async function setSubscription(svc: Svc, actor: TenantActor, input: { typ
     const { error: insErr } = await svc.from("fraud_warning_subscriptions").insert({ brokerage_id: actor.brokerageId, user_id: actor.userId, typology, jurisdiction, created_at: new Date().toISOString() })
     return insErr ? { ok: false, error: "The subscription was not saved." } : { ok: true }
   }
-  for (const r of (existing ?? []) as Array<{ id: string }>) await svc.from("fraud_warning_subscriptions").delete().eq("id", r.id).eq("user_id", actor.userId)
+  for (const r of (existing ?? []) as Array<{ id: string }>) {
+    const { error: delErr } = await svc.from("fraud_warning_subscriptions").delete().eq("id", r.id).eq("user_id", actor.userId).select("id")
+    if (delErr) return { ok: false, error: "The subscription was not removed — you may still receive these warnings." }
+  }
   return { ok: true }
 }
 
@@ -878,7 +924,15 @@ export async function addBulletinToTopicPool(svc: Svc, actor: TenantActor, bulle
   }] })
   if (!res.ok || res.refused) return { ok: false, error: res.refused ?? res.errors[0] ?? (res.excluded[0] ? `Not stored: ${res.excluded[0].reason}` : "The topic was not stored.") }
   if (!res.rows.length) return { ok: false, error: res.excluded[0] ? `Not stored: ${res.excluded[0].reason}` : "The topic was not stored." }
-  for (const r of res.rows) await svc.from("fraud_bulletin_derivatives").insert({ brokerage_id: actor.brokerageId, bulletin_id: bulletinId, topic_id: r.id, created_at: now.toISOString() })
+  // The derivative row is what lets a takedown withdraw this copy. If it cannot be written the copy would outlive a
+  // takedown — so the topic is withdrawn again at once and the door FAILS (round 3).
+  for (const r of res.rows) {
+    const { error: dErr } = await svc.from("fraud_bulletin_derivatives").insert({ brokerage_id: actor.brokerageId, bulletin_id: bulletinId, topic_id: r.id, created_at: now.toISOString() })
+    if (dErr && dErr.code !== "23505") {
+      const { data: w, error: wErr } = await svc.from("content_topic_bank").update({ status: "rejected" }).eq("id", r.id).eq("brokerage_id", actor.brokerageId).select("id")
+      return { ok: false, error: wErr || !(w ?? []).length ? "The topic was stored but could not be linked for takedown, and it could not be withdrawn — contact platform support." : "The topic could not be linked for takedown, so it was withdrawn. Try again in a moment." }
+    }
+  }
   return { ok: true, topicIds: res.rows.map((r) => r.id) }
 }
 
@@ -954,8 +1008,9 @@ export interface FraudNetworkMetrics {
 }
 
 export async function fraudNetworkMetrics(svc: Svc, scope: { kind: "platform" } | { kind: "tenant"; brokerageId: string }): Promise<Ok<{ metrics: FraudNetworkMetrics }> | Refusal> {
-  const tenant = scope.kind === "tenant" ? scope.brokerageId : null
-  const pin = (q: any) => (tenant ? q.eq("brokerage_id", tenant) : q)
+  const held = fraudMetricsScope(scope)
+  if (!held) return { ok: false, error: "The network metrics could not be read: no tenant is on this session." }
+  const pin = (q: any) => applyTenantScope(q, held)
   const [bul, reads, tasks, corr] = await Promise.all([
     svc.from("fraud_bulletins").select("id").eq("status", "published").limit(METRIC_ROW_CAP),
     pin(svc.from("fraud_bulletin_reads").select("id")).limit(METRIC_ROW_CAP),
@@ -1199,4 +1254,18 @@ export async function uploadEvidenceFile(svc: Svc, actor: TenantActor, input: { 
     : await svc.from("fraud_case_evidence").insert({ brokerage_id: r.case.brokerage_id, case_id: input.caseId, evidence_kind: input.kind, fingerprint_sha256: fingerprint, label: str(input.label, 200) || null, storage_status: "stored", created_by: actor.userId }).select("id")
   if (write.error || !(write.data ?? []).length) return { ok: false, error: "The file was stored but the case was not updated — contact platform support.", metadataRemoved: clean.removed, fingerprint }
   return { ok: true, fingerprint, metadataRemoved: clean.removed }
+}
+
+/**
+ * The scope the metrics read runs under, through the kernel's ONE discriminator (lib/kernel/tenant-scope.ts). A tenant
+ * scope whose id is blank is REFUSED (null) — it must never decay into every tenant's counts; the platform scope is
+ * something the staff door asked for by name, with its reason written down.
+ */
+function fraudMetricsScope(scope: { kind: "platform" } | { kind: "tenant"; brokerageId: string }): TenantScope | null {
+  try {
+    if (scope.kind === "platform") return platformScope("fraud network metrics — platform safety staff read every tenant's counts")
+    return tenantScope(scope.brokerageId, "fraud network metrics")
+  } catch {
+    return null
+  }
 }

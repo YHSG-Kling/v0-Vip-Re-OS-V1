@@ -3,17 +3,17 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { getAdminDashboardStats } from '@/app/actions/admin/get-admin-stats'
-import {
-  AdminCommandStrip,
-  AdminOperationsRadar,
-  OnboardingOperationsPanel,
-  AssignmentRulesPanel,
-  ProviderIntelligencePanel,
-  SlaMonitorPanel,
-  FormsImportPanel,
-  KnowledgeOpsPanel,
-  FarmIntelligencePanel,
-} from './components/os'
+import { AdminCommandStrip } from '@/app/dashboard/admin/components/os/admin-command-strip'
+import { AdminOperationsRadar } from '@/app/dashboard/admin/components/os/admin-operations-radar'
+import { OnboardingOperationsPanel } from '@/app/dashboard/admin/components/os/onboarding-operations-panel'
+import { AssignmentRulesPanel } from '@/app/dashboard/admin/components/os/assignment-rules-panel'
+import { ProviderIntelligencePanel } from '@/app/dashboard/admin/components/os/provider-intelligence-panel'
+import { SlaMonitorPanel } from '@/app/dashboard/admin/components/os/sla-monitor-panel'
+import { FormsImportPanel } from '@/app/dashboard/admin/components/os/forms-import-panel'
+import { KnowledgeOpsPanel } from '@/app/dashboard/admin/components/os/knowledge-ops-panel'
+import { FarmIntelligencePanel } from '@/app/dashboard/admin/components/os/farm-intelligence-panel'
+
+
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'

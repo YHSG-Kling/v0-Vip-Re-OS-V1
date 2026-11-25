@@ -2,7 +2,7 @@
 
 import React, { useEffect } from 'react';
 import { SettingsSidebar } from '@/app/components/settings/SettingsSidebar';
-import { useAuth } from '@/lib/auth/client';
+import { useAuth } from '@/lib/auth/useAuth';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft, Loader2 } from 'lucide-react';

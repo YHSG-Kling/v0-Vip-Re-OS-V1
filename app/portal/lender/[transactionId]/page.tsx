@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
-import { getLenderTransactionDetail, LENDER_VISIBLE_MILESTONES } from "@/app/actions/lender-portal"
+import { getLenderTransactionDetail } from "@/app/actions/lender-portal-actions"; import { LENDER_VISIBLE_MILESTONES } from "@/lib/lenders/visible-milestones"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"

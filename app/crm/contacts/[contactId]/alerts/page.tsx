@@ -36,7 +36,7 @@ import {
 // the `include_price_reductions` / `price_reduction_min_percent` criteria columns
 // are all unchanged.
 import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
-import { useAuth } from "@/lib/auth/client"
+import { useAuth } from "@/lib/auth/useAuth"
 import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
 
 type Filter = "all" | "new_listings" | "price_reductions" | "not_viewed"

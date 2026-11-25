@@ -14,7 +14,7 @@ import type { NavigationConfig, NavItem } from '@/app/types/navigation'
 import type { UserContext } from '@/app/types/roles'
 import { GlobalSearch } from './global-search'
 import { UserMenu } from './user-menu'
-import { NotificationBell } from './notification-bell'
+import { NotificationBell } from '@/app/components/notifications/notification-bell'
 import { Menu, Inbox, Sparkles, FileText } from 'lucide-react'
 import { useShell } from './shell-context'
 

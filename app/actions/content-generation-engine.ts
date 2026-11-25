@@ -2,21 +2,21 @@
 
 import { isValidUUID } from "@/lib/validations"
 import { handleError, ValidationError } from "@/lib/errors"
-import {
-  generateTextContent,
-  generateAudioScript,
-  generateVideoScript,
-  generateOmnipresentContent,
-  generateContentVariations,
-  gatherContext,
-  enrichPromptWithContext,
-  logContentGeneration,
-  logOmnipresentGeneration,
-  getContentGenerationHistory,
-  getContentGenerationStats,
-  type ContentGenerationParams,
-  type ContentGenerationOutput,
-} from "@/lib/content-generation"
+import { generateTextContent, generateAudioScript, generateVideoScript, generateOmnipresentContent, generateContentVariations, type ContentGenerationParams, type ContentGenerationOutput } from "@/lib/content-generation/content-generator"
+import { gatherContext, enrichPromptWithContext } from "@/lib/content-generation/context-enricher"
+import { logContentGeneration, logOmnipresentGeneration, getContentGenerationHistory, getContentGenerationStats } from "@/lib/content-generation/generation-logger"
+
+
+
+
+
+
+
+
+
+
+
+
 import { v4 as uuidv4 } from "uuid"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { createServiceClient } from "@/lib/supabase/service"

@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { ActionConfirmSheet, TaskNoteCreator } from "@/app/components/action-framework"
+import { ActionConfirmSheet } from "@/app/components/action-framework/action-confirm-sheet"; import { TaskNoteCreator } from "@/app/components/action-framework/task-note-creator"
 import { batchPassComplianceChecks, getTransactionComplianceChecks } from "@/app/actions/transaction-compliance"
 import { exportAuditTrail } from "@/app/actions/compliance-monitoring"
 import {

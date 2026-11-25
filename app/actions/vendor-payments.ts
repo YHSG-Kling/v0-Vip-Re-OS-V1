@@ -327,7 +327,7 @@ export async function submitVendorInvoice(invoiceId: string): Promise<InvoiceRes
 
   if (error) return { success: false, error: error.message }
   if (!submitted || submitted.length === 0) {
-    return { success: false, error: "Nothing was submitted — that invoice is no longer one of your brokerage's invoices." }
+    const { tenantPayerWords, resolveTenantPayer } = await import("@/lib/errors"); return { success: false, error: `Nothing was submitted — that invoice is no longer one of ${tenantPayerWords(await resolveTenantPayer(svc, ctx.brokerageId)).payerPossessive} invoices.` } // wave 156 (156Q → 156N): the owner noun follows the tenant (a solo agent never reads "your brokerage")
   }
   return { success: true, invoiceId }
   })
@@ -774,16 +774,34 @@ async function sendAndSettleStripePayout(
   svc: PayoutDb,
   a: {
     payout: { id: string; amount: number; earningsCount: number; earningIds: string[] }
-    vendorId: string; brokerageId: string; actorUserId: string; requester: string; gates: string[]; destinationAccountId: string
+    vendorId: string; brokerageId: string; actorUserId: string; requester: string; gates: string[]; destinationAccountId: string; resend?: boolean
   },
 ): Promise<{ state: StripePayoutSendState; transferId?: string; error?: string; warning?: string }> {
-  const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
+  const { ledgerToolCall, governanceRecord, decisionRefFromRow } = await import("@/lib/kernel/action-ledger")
   const scope = { side: "tenant" as const, brokerageId: a.brokerageId }
+  // ── THE ONE GATE IN FRONT OF THE ONE SEAM (every provider call of this door — first send and reconcile re-send — is below) ──
+  // The vendor is verified in the caller's tenant, and the money rides a claim: a first send rides the claim its caller just made
+  // with claimAvailableEarnings; a re-send rides the claim its payout row ALREADY holds. confirmClaimedEarnings proves that claim
+  // here (the row is this vendor's, this tenant's, still pending without a transfer, its earnings read paid out in this tenant and
+  // sum to its amount) — so neither path reaches Stripe on a claim it cannot show.
+  if (!(await verifyVendorInCallerBrokerage(a.vendorId, a.brokerageId))) return { state: "unconfirmed", error: "Forbidden: vendor not in your workspace" }
+  const claim = await confirmClaimedEarnings(svc, { payoutId: a.payout.id, vendorId: a.vendorId, brokerageId: a.brokerageId, earningIds: a.payout.earningIds, amount: a.payout.amount })
+  if (!claim.ok) return { state: "unconfirmed", error: claim.error, warning: `Payout ${a.payout.id} was not sent: ${claim.error}` }
+  // A RE-SEND IS THE SAME PAYOUT THE PERSON ALREADY AUTHORIZED: it carries that recorded decision (the first transfer's ledger row,
+  // read by decisionRefFromRow — checked at the sink for tenant and superseded facts), never a new authorization minted by the
+  // later request. A first send has no prior decision: the person's click is the decision.
+  let carried: ReturnType<typeof decisionRefFromRow> = null
+  if (a.resend) {
+    const { data: prior } = await svc.from("agent_action_ledger").select("id, brokerage_id, actor_manager_key, actor_user_id, detail")
+      .eq("brokerage_id", a.brokerageId).eq("action", "vendor.payout.transfer").eq("detail->>payout_id", a.payout.id).order("created_at", { ascending: true }).limit(1)
+    carried = decisionRefFromRow(((prior ?? []) as Array<Record<string, any>>)[0] as never)
+  }
   const transfer = (await ledgerToolCall({
     brokerageId: a.brokerageId, action: "vendor.payout.transfer", channel: "payout_sink", actor: { type: "user", userId: a.actorUserId },
     subject: { type: "vendor", id: a.vendorId }, riskClass: "IRREVERSIBLE", systemSource: "vendor_payout", reasonCode: "HUMAN_REQUESTED",
+    ...(carried ? { sink: { decision: carried, decisionRequired: true } } : {}),
     trustClass: "authorized_human", approvalBasis: "policy_permitted", dependencies: [{ type: "vendor", id: a.vendorId, version: null }, { type: "vendor_payout", id: a.payout.id, version: null }, ...a.payout.earningIds.slice(0, 20).map((id) => ({ type: "vendor_earning", id, version: null }))],
-    detail: { amount: a.payout.amount, earnings: a.payout.earningsCount, requested_by: a.requester, payout_id: a.payout.id, idempotency_key: vendorPayoutIdempotencyKey(a.payout.id), governance: governanceRecord({
+    detail: { amount: a.payout.amount, earnings: a.payout.earningsCount, requested_by: a.requester, payout_id: a.payout.id, idempotency_key: vendorPayoutIdempotencyKey(a.payout.id), authorized_by: carried ? `the decision recorded when this payout was first sent (${carried.id})` : a.resend ? "this request (no recorded first-send decision — a payout from before the ledger)" : "this request", governance: governanceRecord({
       plane: "tool_boundary", verdict: "allow", scope: { brokerageId: a.brokerageId, userId: a.actorUserId }, actor: { type: "user", id: a.actorUserId },
       entity: { type: "vendor", id: a.vendorId, version: null }, objective: "vendor.payout.transfer", policyConstraints: ["sink rule (D 152): irreversible payout — second door", ...a.gates],
       rationale: "a vendor payout from the brokerage's own Stripe account", trustClass: "authorized_human", approvalBasis: "policy_permitted",
@@ -901,12 +919,38 @@ async function reconcileUnconfirmedStripePayouts(
     const ids = row.earnings_ids ?? []
     const resent = await sendAndSettleStripePayout(svc, {
       payout: { id: row.id, amount: Number(row.amount), earningsCount: ids.length, earningIds: ids },
-      vendorId: a.vendorId, brokerageId: a.brokerageId, actorUserId: a.actorUserId, requester: a.requester, gates: [...a.gates, "reconciled before re-send (C26)"], destinationAccountId: connect.accountId,
+      vendorId: a.vendorId, brokerageId: a.brokerageId, actorUserId: a.actorUserId, requester: a.requester, gates: [...a.gates, "reconciled before re-send (C26)"], destinationAccountId: connect.accountId, resend: true,
     })
     if (resent.state === "unconfirmed") unresolved.push(row.id); else if (resent.state === "sent") settled.push(row.id)
     if (resent.warning) warnings.push(resent.warning)
   }
   return { unresolved, settled, warning: warnings.length ? warnings.join(" ") : undefined }
+}
+
+/**
+ * The claim a payout row holds, proven before any provider call: the row is this vendor's and this tenant's, still 'pending' with no
+ * transfer id, and every earning it names reads 'paid_out' for this vendor in this tenant and they sum to the row's amount. A first
+ * send passes because claimAvailableEarnings just made exactly that claim; a re-send passes only while the original claim stands.
+ */
+async function confirmClaimedEarnings(
+  svc: PayoutDb,
+  a: { payoutId: string; vendorId: string; brokerageId: string; earningIds: string[]; amount: number },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data: row, error } = await svc.from("vendor_payouts").select("id, amount, status, stripe_transfer_id")
+    .eq("id", a.payoutId).eq("vendor_id", a.vendorId).eq("brokerage_id", a.brokerageId).maybeSingle()
+  if (error || !row) return { ok: false, error: "the payout record could not be read in this workspace" }
+  const r = row as { amount: number | string; status: string; stripe_transfer_id: string | null }
+  if (r.status !== "pending" || r.stripe_transfer_id) return { ok: false, error: "the payout is no longer waiting to be sent" }
+  if (!a.earningIds.length) return { ok: false, error: "the payout names no earnings" }
+  const { data: held, error: heldErr } = await svc.from("vendor_earnings").select("id, net_amount")
+    .in("id", a.earningIds).eq("vendor_id", a.vendorId).eq("brokerage_id", a.brokerageId).eq("status", "paid_out")
+  if (heldErr) return { ok: false, error: "the payout's earnings could not be read" }
+  const rows = (held ?? []) as Array<{ net_amount: number | string | null }>
+  const cents = rows.reduce((s, e) => s + Math.round(Number(e.net_amount ?? 0) * 100), 0)
+  if (rows.length !== a.earningIds.length || cents !== Math.round(Number(r.amount) * 100) || cents !== Math.round(a.amount * 100)) {
+    return { ok: false, error: "the payout's earnings no longer match its claim" }
+  }
+  return { ok: true }
 }
 
 // ── the binding's two halves (module-private: a "use server" file exports only its actions) ──────────────────────────

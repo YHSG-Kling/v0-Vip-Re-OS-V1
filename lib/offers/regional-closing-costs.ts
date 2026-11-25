@@ -357,3 +357,10 @@ export function applyAiRefinements(
 
   return { lines: out, applied, rejected, figuresIgnored }
 }
+
+/** WAVE 156 (lane 156H, round 4): the SOURCE every regional band from this table carries when a surface presents it. The table is
+ *  the Finance Manager's reviewed convention (lib/managers/regional-convention-review.ts REGIONAL_CONVENTION_REVIEW — re-verified
+ *  yearly against state DOI title filings / promulgated schedules, transfer-tax statutes, settlement-practice guidance and published
+ *  effective property-tax reports; every completion lands on audit_log). A band from here is an ESTIMATE with that source — never a
+ *  quote, and never applied when the state is unknown. */
+export const REGIONAL_CONVENTION_CITATION = "the Finance Manager's reviewed regional closing convention (lib/offers/regional-closing-costs.ts, re-verified yearly per lib/managers/regional-convention-review.ts against state title-rate filings and transfer-tax statutes)"

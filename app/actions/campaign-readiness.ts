@@ -9,22 +9,22 @@ import { isValidUUID } from "@/lib/validations"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { decideClaimedTenant } from "@/lib/platform/acting-context"
-import {
-  evaluateCampaignReadiness,
-  batchEvaluateCampaignReadiness,
-  quickReadinessCheck,
-  checkChannelReadiness,
-  formatReadinessOutput,
-  logReadinessEvaluation,
-  batchLogReadinessEvaluations,
-  getReadinessHistory,
-  getReadinessStatistics,
-  logChannelReadinessCheck,
-  getReadinessTrends,
-} from "@/lib/campaign-readiness"
+import { evaluateCampaignReadiness, batchEvaluateCampaignReadiness, quickReadinessCheck, checkChannelReadiness, formatReadinessOutput } from "@/lib/campaign-readiness/readiness-evaluator"
+import { logReadinessEvaluation, batchLogReadinessEvaluations, getReadinessHistory, getReadinessStatistics, logChannelReadinessCheck, getReadinessTrends } from "@/lib/campaign-readiness/readiness-logger"
+
+
+
+
+
+
+
+
+
+
+
 import type { ReadinessInput, ReadinessOutput, ExecutionChannel } from "@/lib/campaign-readiness"
-import { type ComplianceVerdict } from "@/lib/compliance-rules"
-import { type ApprovalDecision } from "@/lib/approval-workflow"
+import type { ComplianceVerdict } from "@/lib/compliance-rules/compliance-engine"
+import type { ApprovalDecision } from "@/lib/approval-workflow/approval-engine"
 
 /**
  * IDENTITY RESOLUTION FOR READINESS LOGGING.

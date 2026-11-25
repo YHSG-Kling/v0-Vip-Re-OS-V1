@@ -11,18 +11,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  ReferralCommandStrip,
-  AdvocacyRadar,
-  ReferralPipelinePanel,
-  AdvocacyActionStack,
-  ReviewRequestPanel,
-  ReputationRecoveryPanel,
-  ReferralProgramHealthPanel,
-  GratitudeGiftingPanel,
-  ReferralAiDraftingPanel,
-  RepeatBusinessPanel,
-} from "@/app/dashboard/referrals/components/os"
+import { ReferralCommandStrip } from "@/app/dashboard/referrals/components/os/referral-command-strip"
+import { AdvocacyRadar } from "@/app/dashboard/referrals/components/os/advocacy-radar"
+import { ReferralPipelinePanel } from "@/app/dashboard/referrals/components/os/referral-pipeline-panel"
+import { AdvocacyActionStack } from "@/app/dashboard/referrals/components/os/advocacy-action-stack"
+import { ReviewRequestPanel } from "@/app/dashboard/referrals/components/os/review-request-panel"
+import { ReputationRecoveryPanel } from "@/app/dashboard/referrals/components/os/reputation-recovery-panel"
+import { ReferralProgramHealthPanel } from "@/app/dashboard/referrals/components/os/referral-program-health-panel"
+import { GratitudeGiftingPanel } from "@/app/dashboard/referrals/components/os/gratitude-gifting-panel"
+import { ReferralAiDraftingPanel } from "@/app/dashboard/referrals/components/os/referral-ai-drafting-panel"
+import { RepeatBusinessPanel } from "@/app/dashboard/referrals/components/os/repeat-business-panel"
+
+
 import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referrals/referral-actions"
 import type { ReferralStatus } from "@/lib/referrals/referral-status"
 import { ReviewRequestTimingCard, type ReviewRequestTimingInitial } from "./review-request-timing-card"

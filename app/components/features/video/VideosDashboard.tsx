@@ -18,7 +18,7 @@ import {
   AlertCircle,
   AlertTriangle,
 } from "lucide-react"
-import { useAuth } from "@/lib/auth/client"
+import { useAuth } from "@/lib/auth/useAuth"
 import { createClient } from "@/lib/supabase/client"
 import { VIDEO_FINISHED_STATUSES, VIDEO_IN_PROGRESS_STATUSES } from "@/lib/video/video-status"
 

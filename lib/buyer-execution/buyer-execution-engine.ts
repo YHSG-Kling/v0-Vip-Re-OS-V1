@@ -14,13 +14,13 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import {
-  checkFinancialVerification,
-  isSystemGateEnabled,
-  getCurrentBuyerState as getCurrentState,
-  type FinancialVerificationResult,
-  type BuyerState,
-} from '@/lib/buyer-lifecycle'
+import { checkFinancialVerification, type FinancialVerificationResult } from '@/lib/buyer-lifecycle/financial-verification'
+import { isSystemGateEnabled, type BuyerState } from '@/lib/buyer-lifecycle/lifecycle-definitions'
+import { getCurrentBuyerState as getCurrentState } from '@/lib/buyer-lifecycle/lifecycle-logger'
+
+
+
+
 
 export interface BuyerExecutionContext {
   contactId: string

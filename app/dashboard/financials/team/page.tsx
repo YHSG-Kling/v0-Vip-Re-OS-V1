@@ -9,12 +9,12 @@ import { Progress } from "@/components/ui/progress"
 import Link from "next/link"
 import { DollarSign, Users, TrendingUp, Award, Target, AlertTriangle } from "lucide-react"
 import { TeamRevenueChart } from "./team-revenue-chart"
-import {
-  FinancialCommandStrip,
-  FinancialActionStack,
-  type FinancialPriority,
-  type FinancialAction,
-} from "../components/os"
+import { FinancialCommandStrip, type FinancialPriority } from "@/app/dashboard/financials/components/os/financial-command-strip"
+import { FinancialActionStack, type FinancialAction } from "@/app/dashboard/financials/components/os/financial-action-stack"
+
+
+
+
 import { loadBrokerageFinancialSummaryAction } from "@/app/actions/financial-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ACCOUNTING_OFFERINGS, readScopedAccounting, type ScopedAccountingStatus } from "@/lib/connections/accounting-scopes"

@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { CalendarShell } from "@/app/dashboard/calendar/components/os"
+import { CalendarShell } from "@/app/dashboard/calendar/components/os/calendar-shell"
 
 export const metadata = {
   title: "AI ISA Calendar | Dashboard",

@@ -7,11 +7,11 @@ import { Button } from '@/components/ui/button'
 import { Receipt, ArrowLeft, TrendingDown } from 'lucide-react'
 import Link from 'next/link'
 import { ExportCSVButton } from '@/app/components/features/financial/ExportCSVButton'
-import {
-  ExpenseIntelligencePanel,
-  FinancialActionStack,
-  type FinancialAction,
-} from '../components/os'
+import { ExpenseIntelligencePanel } from '@/app/dashboard/financials/components/os/expense-intelligence-panel'
+import { FinancialActionStack, type FinancialAction } from '@/app/dashboard/financials/components/os/financial-action-stack'
+
+
+
 import { AddExpenseDialog } from './components/add-expense-dialog'
 import { DeleteExpenseButton } from './components/delete-expense-button'
 import { ScanReceiptButton } from './components/scan-receipt-button'

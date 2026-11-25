@@ -328,6 +328,8 @@ export async function POST(request: NextRequest) {
         text: renderScript,
         voice_id: elevenlabs_voice_id,
         upload_to_storage: true,
+        // ONE narration per (project, script, voice) — a retried render reuses the audio it already paid for (156S round 4).
+        idempotency_key: `did_generate_video:${video_project_id}:${(await import("node:crypto")).createHash("sha256").update(`${renderScript}|${elevenlabs_voice_id}`).digest("hex").slice(0, 32)}`,
       }),
     })
 
@@ -434,7 +436,9 @@ export async function POST(request: NextRequest) {
       estimatedCostUsd: estimatePlatformVendorCost("did", 1), units: 1,
       subject: { type: "video_project", id: video_project_id, ref: submitPath },
       actor: auth.userId ? { type: "user", userId: auth.userId } : { type: "system" },
-      idempotencyKey: `did_generate_video:${video_project_id}:${createHash("sha256").update(JSON.stringify(didPayload)).digest("hex").slice(0, 32)}`,
+      // The key is the render's INPUTS without the narration file's URL (a re-hosted copy of the same audio gets a new URL),
+      // so a retried identical render replays the job it already bought.
+      idempotencyKey: `did_generate_video:${video_project_id}:${createHash("sha256").update(JSON.stringify({ ...didPayload, script: { ...(didPayload as { script?: Record<string, unknown> }).script, audio_url: undefined } })).digest("hex").slice(0, 32)}`,
       systemSource: "video_generation",
     }, () => didRequest<any>(submitPath, {
       method: "POST",

@@ -582,3 +582,9 @@ export function signalSpec(signalType: string): SignalSpec | undefined {
 export function registeredSignalTypes(): string[] {
   return Object.keys(SIGNAL_REGISTRY)
 }
+
+// WAVE 156 (lane 156I round 3, directive 156I row 3) — added at the foot, line-neutral above. lib/acquisition-plays/moving-corridor.ts
+// publishes corridor_radar_brief (data_steward → campaign_orchestrator) through its CORRIDOR_BRIEF_SIGNAL constant; until now it was
+// published with no catalog row and no consumer. HANDLED: the Campaign Orchestrator proposes the relocation explainer to the tenant's
+// consented Contacts whose OWN stated destination matches (lib/kernel/manager-signals.ts foot, proposeCorridorExplainerToStatedMovers).
+SIGNAL_REGISTRY.corridor_radar_brief = { consumers: ["campaign_orchestrator"], disposition: "handled", kind: "update", what: "a public employer announcement with a dated official source, the territory's coverage and the stored inventory gap — the Campaign Orchestrator proposes (never sends) a local relocation explainer to the tenant's consented Contacts whose OWN stated destination is the market; a person with no stated plan is never matched" }

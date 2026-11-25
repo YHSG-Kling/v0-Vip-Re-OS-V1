@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { canProceedToClosingPrep } from "@/app/actions/transaction-compliance"
-import { NextStepRouter } from "@/app/components/action-framework"
+import { NextStepRouter } from "@/app/components/action-framework/next-step-router"
 import {
   CheckCircle2,
   XCircle,

@@ -20,7 +20,7 @@ import {
   RefreshCw,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useAuth } from "@/lib/auth/client"
+import { useAuth } from "@/lib/auth/useAuth"
 // TOMBSTONE (dead-import tranche): `getVideoPerformanceTracking` was imported
 // here and never called. Survivor for what this page needs:
 // `getVideoPerformanceStats` (app/actions/video-generation.ts:894), which reads

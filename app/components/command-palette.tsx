@@ -11,7 +11,7 @@ import {
   CommandList,
   CommandSeparator,
 } from "@/app/components/ui/command"
-import { useAuth } from "@/lib/auth/client"
+import { useAuth } from "@/lib/auth/useAuth"
 import { visiblePaletteItems } from "@/app/components/command-palette-items"
 import type { LucideIcon } from "lucide-react"
 import {

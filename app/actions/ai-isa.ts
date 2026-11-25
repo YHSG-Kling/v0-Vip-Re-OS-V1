@@ -3,12 +3,12 @@
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { isValidUUID } from "@/lib/validations"
-import {
-  launchAIISACampaignService,
-  queueAIISACallService,
-  retryFailedCallsService,
-  type LaunchAIISACampaignResult,
-} from "@/lib/application"
+import { launchAIISACampaignService, queueAIISACallService, retryFailedCallsService, type LaunchAIISACampaignResult } from "@/lib/application/ai-isa"
+
+
+
+
+
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireCaller } from "@/lib/auth/require-caller"
 import { dispatchEmail, dispatchVideo, dispatchDirectMail } from "@/lib/providers/dispatch"

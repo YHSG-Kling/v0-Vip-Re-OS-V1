@@ -375,13 +375,13 @@ async function insertLedgerRow(
   svc: LedgerClient, raw: ActionContext, status: ActionStatus, key: string | null, extra: Record<string, unknown> = {},
 ): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null; written?: Record<string, unknown> | null }> {
   const scope = currentCausation(); let written: Record<string, unknown> | null = null
-  const ctx = await ledgerActorFor(svc, raw)
+  const ctx = withOriginTrustOf(await ledgerActorFor(svc, raw), scope.originTrust ?? null)
   const reasonCode = resolveReasonCode(ctx)
   // 102D — `policy_key@version` from the ONE version reader; a refused version read records `@unknown`.
   const policyRef = ctx.policyKey
     ? (ctx.policyVersion !== undefined ? formatPolicyRef(ctx.policyKey, ctx.policyVersion) : await resolvePolicyRef(svc, ctx.brokerageId, ctx.policyKey))
     : null
-  const write = async (code: ActionReasonCode, detailNote: string | null, withPolicyColumn = true): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null; written?: Record<string, unknown> | null }> => {
+  const write = async (code: ActionReasonCode, detailNote: string | null, withPolicyColumn = true): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null; written?: Record<string, unknown> | null }> => { const detailIn = withContractFacts(ctx, withBaseGovernance(ctx, status, key, withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef })); written = redactSecretValues(detailIn)
     const { data, error } = await svc.from("agent_action_ledger").insert({
     brokerage_id: ctx.brokerageId,
     action: ctx.action,
@@ -405,7 +405,7 @@ async function insertLedgerRow(
     // ref rides detail.policy_ref — the action stays ledgered, the evidence stays.
     // Audit sink: a secret by name or shape never lands in the ledger detail (wave 139E).
     // WAVE 155 (155B3): the context's decision-contract facts ride detail.governance on this same insert (decisionContractFacts).
-    detail: (written = redactSecretValues(withContractFacts(ctx, withBaseGovernance(ctx, status, key, withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef })))),
+    detail: redactSecretValues(detailIn),
     ...(withPolicyColumn ? { policy_ref: policyRef } : {}),
     ...extra,
     }).select("id").single()
@@ -1480,7 +1480,22 @@ function withBaseGovernance(ctx: ActionContext, status: ActionStatus, key: strin
     expiresAt: ctx.expiresAt ?? (verdict === "wait" ? until : null),
     nextTrigger: ctx.nextTrigger ?? (verdict === "wait" && until ? { kind: "time", at: until } : verdict === "do_nothing" ? { kind: "none" } : null),
   })
-  return { ...detail, governance: { ...governance, written_by: "ledger_door", replay: key ? "at_most_once" : "recorded_only", sink_class: sinkClassOf(ctx) } }
+  const trustSource = ctx.trustClass ? (typeof detail.trust_source === "string" ? detail.trust_source : "stated") : human ? "session_actor" : null
+  return { ...detail, governance: { ...governance, written_by: "ledger_door", replay: key ? "at_most_once" : "recorded_only", sink_class: sinkClassOf(ctx), trust_source: trustSource } }
+}
+
+/**
+ * WAVE 156 (156M, round 2). An AUTONOMOUS row (manager / system / an actor with no id) that states no trust class takes the origin trust
+ * its shared boundary stated (lib/kernel/causation.ts withOriginTrust / enterOriginTrust), with `detail.trust_source` naming that
+ * boundary. A stated class always wins; a person acting is untouched (the door records authorized_human). RECORD ONLY: the sink rule runs
+ * on the context the door passed, before this — an ambient boundary never widens what a model door may do.
+ */
+function withOriginTrustOf(ctx: ActionContext, origin: { trustClass: string; boundary: string } | null): ActionContext {
+  if (!origin || ctx.trustClass) return ctx
+  if (/\.decision\./.test(ctx.action)) return ctx // a decision row records what its decider saw (a sink refusal of an unknown origin stays unknown)
+  const human = (ctx.actor.type === "user" && !!ctx.actor.userId) || (ctx.actor.type === "agent" && !!ctx.actor.agentId)
+  if (human) return ctx
+  return { ...ctx, trustClass: origin.trustClass, detail: { ...(ctx.detail ?? {}), trust_source: `boundary:${origin.boundary}` } }
 }
 
 /** PURE. The decision's read set as persisted (order-free, duplicate-free, at most 20; null = nothing named — not an empty read). */

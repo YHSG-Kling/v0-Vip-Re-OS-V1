@@ -22,17 +22,17 @@ import { FairHousingScanner } from "@/app/components/compliance/FairHousingScann
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
 import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { LearnThisWeekCard } from "@/app/components/learning/learn-this-week-card"
-import {
-  ComplianceCommandStrip,
-  ComplianceRiskRadar,
-  FlaggedFilesPanel,
-  MissingDisclosuresPanel,
-  ExceptionReviewPanelWrapper,
-  AuditFeedPanel,
-  AIComplianceReviewPanel,
-  PolicyReportingPanel,
-  CdaReviewPanel,
-} from "./components/os"
+import { ComplianceCommandStrip } from "@/app/dashboard/compliance/components/os/compliance-command-strip"
+import { ComplianceRiskRadar } from "@/app/dashboard/compliance/components/os/compliance-risk-radar"
+import { FlaggedFilesPanel } from "@/app/dashboard/compliance/components/os/flagged-files-panel"
+import { MissingDisclosuresPanel } from "@/app/dashboard/compliance/components/os/missing-disclosures-panel"
+import { ExceptionReviewPanelWrapper } from "@/app/dashboard/compliance/components/os/exception-review-panel-wrapper"
+import { AuditFeedPanel } from "@/app/dashboard/compliance/components/os/audit-feed-panel"
+import { AIComplianceReviewPanel } from "@/app/dashboard/compliance/components/os/ai-compliance-review-panel"
+import { PolicyReportingPanel } from "@/app/dashboard/compliance/components/os/policy-reporting-panel"
+import { CdaReviewPanel } from "@/app/dashboard/compliance/components/os/cda-review-panel"
+
+
 
 export default async function ComplianceDashboardPage() {
   const supabase = await createClient()

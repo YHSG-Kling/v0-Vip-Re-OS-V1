@@ -10,7 +10,7 @@ import {
   MILESTONE_LESSON_MAP,
 } from "@/lib/portal/resolve-education-context"
 import { generationalCohortFromAge, cohortFraming, ageFromBirthday } from "@/lib/kernel/education"
-import { getPersonaJourneyStages, calculateJourneyProgress } from "@/lib/portal"
+import { getPersonaJourneyStages } from "@/lib/portal/persona-config"; import { calculateJourneyProgress } from "@/lib/portal/journey-utils"
 import { getPersonaJourneyTools } from "@/lib/portal/persona-config"
 import { getTaskCompletions, getStageProgress } from "@/app/actions/journey-tasks"
 import { getClientJourneyPreferences } from "@/app/actions/multi-persona"

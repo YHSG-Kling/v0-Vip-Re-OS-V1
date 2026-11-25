@@ -90,13 +90,13 @@ OS-wide arbitration is these EXISTING deciders, each at its own action boundary 
 | 3 · Contact engagement | Who owns a LIVE conversation turn (person vs AI; no planning call on the fast path)? | `lib/ai-isa/followup-arbiter.ts:1077` `interactiveTurnVerdict` | ⟨1⟩ file(s) | `test:inbound-communication` |
 | 3 · Contact engagement | Is a person already in this conversation (one owner per exchange)? | `lib/ai-isa/followup-arbiter.ts:1021` `loadConversationOwnership` | ⟨3⟩ file(s) | `test:arbiter-timing` |
 | 4 · outbound dispatch | May an autonomous outbound leave under the tenant's autonomy grant? | `lib/providers/dispatch.ts:434` `autonomyGate` (module-private: the gate is the door) | ⟨5⟩ in-file | `test:autonomy-gate` |
-| 4 · outbound dispatch | What has this person consented to, per channel and purpose? | `lib/kernel/compliance/require-contact-consent.ts:432` `consentScopeFor` | ⟨4⟩ file(s) | `test:egress-send-guard` |
+| 4 · outbound dispatch | What has this person consented to, per channel and purpose? | `lib/kernel/compliance/require-contact-consent.ts:432` `consentScopeFor` | ⟨5⟩ file(s) | `test:egress-send-guard` |
 | 4 · outbound dispatch | Is it inside the legal calling / texting window (TCPA quiet hours)? | `lib/communication/call-compliance.ts:88` `checkQuietHours` | ⟨2⟩ file(s) | `test:outbound-call-gates` |
 | 5 · manager delegation | Which manager owns a requested capability (only that owner may be asked)? | `lib/agentic-os/capability-ownership.ts:40` `CAPABILITY_MANAGER` | ⟨10⟩ file(s) | `test:manager-delegation` |
 | 5 · manager delegation | May a delegation move from one status to another? | `lib/kernel/manager-delegation.ts:119` `canDelegationTransition` (module-private: the gate is the door) | ⟨1⟩ in-file | `test:manager-delegation` |
 | 5 · manager delegation | Would this ask close a wait-for cycle between managers (deadlock)? | `lib/kernel/manager-delegation.ts:298` `delegationWaitCycle` (module-private: the gate is the door) | ⟨1⟩ in-file | `test:os-arbitration-canaries` |
 | 5 · manager delegation | What authority rung does a manager hold in this tenant? | `lib/managers/autonomy-gate.ts:298` `resolveAgentAuthorityLevel` | ⟨16⟩ file(s) | `test:autonomy-gate` |
-| 5 · manager delegation | Which manager is accountable for a domain? | `lib/kernel/manager-registry.ts:3525` `resolveMaintenanceManager` | ⟨1⟩ file(s) | `test:manager-ownership` |
+| 5 · manager delegation | Which manager is accountable for a domain? | `lib/kernel/manager-registry.ts:3526` `resolveMaintenanceManager` | ⟨1⟩ file(s) | `test:manager-ownership` |
 | 6 · human approval | Who approves this tenant's asset (owner / team lead / brokerage only by policy)? | `lib/kernel/approval-authority.ts:118` `approverFor` | ⟨10⟩ file(s) | `test:ads-tv-connections` |
 | 6 · human approval | Is a pending approval overdue (SLA → escalation)? | `lib/kernel/approval-sla.ts:17` `evaluateApprovalSla` | ⟨4⟩ file(s) | `test:social-approval` |
 | resource · entitlement | Is this subscription entitled to (and able to afford) a paid lane? | `lib/billing/billing-access.ts:325` `mayUseAndAfford` | ⟨37⟩ file(s) | `test:billing-access` |
@@ -141,7 +141,7 @@ Decision flow between the planes: a trigger (event / human goal / signal / cron)
 | Asset Manager | ⟨105⟩ | ⟨32⟩ | ⟨40⟩ | ⟨29⟩ | ⟨0⟩ | ⟨0⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨32⟩ | ⟨1⟩ | ⟨1⟩ |
 | Ads Manager | ⟨15⟩ | ⟨6⟩ | ⟨5⟩ | ⟨4⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨0⟩ | ⟨7⟩ | ⟨11⟩ | ⟨2⟩ | ⟨2⟩ |
 | AI ISA | ⟨102⟩ | ⟨61⟩ | ⟨17⟩ | ⟨18⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨0⟩ | ⟨0⟩ | ⟨21⟩ | ⟨43⟩ | ⟨0⟩ | ⟨4⟩ |
-| Data Steward | ⟨502⟩ | ⟨201⟩ | ⟨158⟩ | ⟨69⟩ | ⟨0⟩ | ⟨1⟩ | ⟨73⟩ | ⟨0⟩ | ⟨0⟩ | ⟨36⟩ | ⟨262⟩ | ⟨0⟩ | ⟨2⟩ |
+| Data Steward | ⟨503⟩ | ⟨200⟩ | ⟨159⟩ | ⟨70⟩ | ⟨0⟩ | ⟨1⟩ | ⟨73⟩ | ⟨0⟩ | ⟨0⟩ | ⟨36⟩ | ⟨262⟩ | ⟨0⟩ | ⟨2⟩ |
 | Recruiting Manager | ⟨66⟩ | ⟨32⟩ | ⟨21⟩ | ⟨12⟩ | ⟨0⟩ | ⟨0⟩ | ⟨1⟩ | ⟨0⟩ | ⟨0⟩ | ⟨9⟩ | ⟨58⟩ | ⟨0⟩ | ⟨2⟩ |
 | Compliance Officer | ⟨102⟩ | ⟨64⟩ | ⟨16⟩ | ⟨19⟩ | ⟨0⟩ | ⟨0⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨6⟩ | ⟨29⟩ | ⟨0⟩ | ⟨1⟩ |
 | Finance Manager | ⟨97⟩ | ⟨56⟩ | ⟨19⟩ | ⟨19⟩ | ⟨0⟩ | ⟨0⟩ | ⟨3⟩ | ⟨0⟩ | ⟨0⟩ | ⟨14⟩ | ⟨41⟩ | ⟨0⟩ | ⟨4⟩ |

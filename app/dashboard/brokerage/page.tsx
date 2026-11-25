@@ -30,23 +30,23 @@ import AutonomyHaltNotice from "@/app/components/shell/autonomy-halt-notice"
 import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { BrokerageRevenueChart } from "@/app/components/features/dashboard/brokerage/revenue-chart"
 import { BrokerageComplianceOverview } from "@/app/components/features/dashboard/brokerage/compliance-overview"
-import {
-  BrokerCommandStrip,
-  BrokerRiskRadar,
-  BrokerPortfolioPanel,
-  BrokerSelfHealPanel,
-  BrokerExceptionCenter,
-  BrokerFinancialPulse,
-  BrokerDealHealthPanel,
-  BrokerTeamPerformancePanel,
-  BrokerFatiguePanel,
-  BrokerRecruitingROIPanel,
-  BrokerBreakEvenCard,
-  BrokerProviderPressurePanel,
-  BrokerActionStack,
-  type BrokerPriority,
-  type BrokerAction,
-} from "./components/command-center"
+import { BrokerCommandStrip, type BrokerPriority } from "@/app/dashboard/brokerage/components/command-center/broker-command-strip"
+import { BrokerRiskRadar } from "@/app/dashboard/brokerage/components/command-center/broker-risk-radar"
+import { BrokerPortfolioPanel } from "@/app/dashboard/brokerage/components/command-center/broker-portfolio-panel"
+import { BrokerSelfHealPanel } from "@/app/dashboard/brokerage/components/command-center/broker-self-heal-panel"
+import { BrokerExceptionCenter } from "@/app/dashboard/brokerage/components/command-center/broker-exception-center"
+import { BrokerFinancialPulse } from "@/app/dashboard/brokerage/components/command-center/broker-financial-pulse"
+import { BrokerDealHealthPanel } from "@/app/dashboard/brokerage/components/command-center/broker-deal-health-panel"
+import { BrokerTeamPerformancePanel } from "@/app/dashboard/brokerage/components/command-center/broker-team-performance-panel"
+import { BrokerFatiguePanel } from "@/app/dashboard/brokerage/components/command-center/broker-fatigue-panel"
+import { BrokerRecruitingROIPanel } from "@/app/dashboard/brokerage/components/command-center/broker-recruiting-roi-panel"
+import { BrokerBreakEvenCard } from "@/app/dashboard/brokerage/components/command-center/broker-break-even-card"
+import { BrokerProviderPressurePanel } from "@/app/dashboard/brokerage/components/command-center/broker-provider-pressure-panel"
+import { BrokerActionStack, type BrokerAction } from "@/app/dashboard/brokerage/components/command-center/broker-action-stack"
+
+
+
+
 import { BrokerRecruitingActionBar } from "./components/broker-recruiting-action-bar"
 import { BrokerProviderHealthActions } from "./components/broker-provider-health-actions"
 import { BrokerTeamAssignmentBar } from "./components/broker-team-assignment-bar"

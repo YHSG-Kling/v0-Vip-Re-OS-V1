@@ -104,7 +104,7 @@ export const CALCULATOR_SPECS: Readonly<Record<CalculatorKind, CalculatorSpec>> 
       money("sellerConcessions", "Concessions / credits to the buyer", false),
       money("repairCredits", "Repairs or repair credits", false),
       money("proratedPropertyTax", "Prorated property tax owed at closing", false),
-      money("hoaAtClosing", "HOA dues / transfer fees at closing", false),
+      money("hoaAtClosing", "HOA dues / transfer fees at closing", false), money("transactionFee", "Brokerage transaction fee charged to you (flat $, per your listing agreement)", false), money("creditsToSeller", "Credits TO you at closing (e.g. prorated taxes or HOA dues the buyer reimburses)", false),
       money("otherCosts", "Other costs", false),
     ],
   },
@@ -268,7 +268,7 @@ export interface Assumption {
   basis: AssumptionBasis
   source?: { citation: string; url: string; retrievedOn: string; caveats: string }
 }
-export interface ResultLine { key: string; label: string; amount: number }
+export interface ResultLine { key: string; label: string; amount: number; /** wave 156H round 4: a CREDIT adds to the result (the engine refuses negative inputs, so a credit is its own line kind, never a negative cost). */ kind?: "credit" }
 export type OutputValue = number | string | null
 export interface CalculatorResult {
   ok: true
@@ -515,11 +515,11 @@ export function runCalculator(kind: string, inputs: Record<string, unknown>, ctx
         { key: "repairCredits", label: "Repairs / repair credits", amount: num(values, "repairCredits") },
         { key: "proratedPropertyTax", label: "Prorated property tax", amount: num(values, "proratedPropertyTax") },
         { key: "hoaAtClosing", label: "HOA at closing", amount: num(values, "hoaAtClosing") },
-        { key: "otherCosts", label: "Other costs", amount: num(values, "otherCosts") },
+        { key: "otherCosts", label: "Other costs", amount: num(values, "otherCosts") }, { key: "transactionFee", label: "Brokerage transaction fee", amount: num(values, "transactionFee") }, { key: "creditsToSeller", label: "Credits to you at closing", amount: num(values, "creditsToSeller"), kind: "credit" as const },
       ].map((l) => ({ ...l, amount: cents(l.amount) }))
-      const total = cents(lines.reduce((a, l) => a + l.amount, 0))
-      const net = cents(price - total)
-      outputs = { salePrice: cents(price), totalDeductions: total, estimatedNet: net }
+      const total = cents(lines.reduce((a, l) => a + (l.kind === "credit" ? 0 : l.amount), 0)), credits = cents(lines.reduce((a, l) => a + (l.kind === "credit" ? l.amount : 0), 0))
+      const net = cents(price - total + credits)
+      outputs = { salePrice: cents(price), totalDeductions: total, totalCredits: credits, estimatedNet: net }
       if (net < 0) notes.push("The deductions exceed the sale price: at this price you would bring money to closing.")
       headline = { label: "Estimated net to you", value: net, unit: "usd" }
       break
@@ -749,4 +749,102 @@ export function runCalculator(kind: string, inputs: Record<string, unknown>, ctx
 /** PURE. The calculator spec for a kind, or null. */
 export function calculatorSpec(kind: string): CalculatorSpec | null {
   return (CALCULATOR_KINDS as readonly string[]).includes(kind) ? CALCULATOR_SPECS[kind as CalculatorKind] : null
+}
+
+// ── the scenario shape, MERGED from the retired lib/cma/net-sheet-math.ts (wave 156, lane 156H, round 4) ─────────────────────
+// computeNetSheetScenario was a second seller net: it took commission and closing-cost FRACTIONS that its callers filled with
+// the brokerage's agent-split rates and a 2% house percent. What it had that the engine lacked — a named scenario at a price
+// and the breakdown shape the CMA presentation, the listing net-sheet tab and the saved sheet render — now lives here, and the
+// arithmetic is runCalculator("seller_net_sheet") (the case above). Nothing here supplies a figure: a missing commission or
+// closing cost comes back in `missing`, and the net is null.
+
+/** A scenario price `offsetPct` whole percent from `base` (−5 → 95% of it), rounded to the dollar. */
+export function scenarioPrice(base: number, offsetPct: number): number {
+  return Math.round((base * (100 + offsetPct)) / 100)
+}
+
+interface SellerNetScenarioInput {
+  salePrice: number
+  /** The listing commission as a PERCENT of price, or a flat amount — whichever the person or the agreement gave. */
+  listingCommissionPct?: number | null
+  listingCommissionAmount?: number | null
+  buyerBrokerCompPct?: number | null
+  buyerBrokerCompAmount?: number | null
+  /** Title, escrow, settlement and transfer charges in dollars — entered, or a sourced estimate the caller marks. */
+  closingCosts?: number | null
+  mortgagePayoff?: number | null
+  propertyTaxes?: number | null
+  hoaFees?: number | null
+  repairCredits?: number | null
+  sellerConcessions?: number | null
+  transactionFee?: number | null
+  /** Prorations and other amounts the buyer reimburses — a CREDIT line, added to the net. */
+  creditsToSeller?: number | null
+  otherCosts?: number | null
+}
+
+export interface SellerNetScenario {
+  scenarioName: string
+  salePrice: number
+  grossProceeds: number
+  totalCosts: number | null
+  totalCredits: number | null
+  /** null when a figure is missing or refused — never a net computed on a guess. */
+  netProceeds: number | null
+  breakdown: {
+    salePrice: number
+    listingCommission: number
+    buyerCommission: number
+    closingCosts: number
+    mortgagePayoff: number
+    propertyTaxes: number
+    hoaFees: number
+    repairCredits: number
+    sellerConcessions: number
+    transactionFee: number
+    creditsToSeller: number
+    otherCosts: number
+  }
+  /** "Enter a value: …" messages and refusals, in the person's words. Empty when the net was computed. */
+  missing: string[]
+  assumptions: Assumption[]
+  disclaimers: string[]
+}
+
+/** PURE. One named seller-net scenario through the engine. `ctx.closingCostsEstimate` marks a closing figure as an estimate. */
+export function sellerNetScenario(
+  scenarioName: string,
+  input: SellerNetScenarioInput,
+  ctx: CalculatorContext & { closingCostsEstimate?: boolean },
+): SellerNetScenario {
+  const n = (v: number | null | undefined) => (v == null ? undefined : v)
+  const est = new Set(ctx.estimateKeys ?? [])
+  if (ctx.closingCostsEstimate) est.add("titleEscrowFees")
+  const outcome = runCalculator("seller_net_sheet", {
+    salePrice: input.salePrice,
+    mortgagePayoff: input.mortgagePayoff ?? 0,
+    listingCommissionPct: n(input.listingCommissionPct), listingCommissionAmount: n(input.listingCommissionAmount),
+    buyerBrokerCompPct: n(input.buyerBrokerCompPct), buyerBrokerCompAmount: n(input.buyerBrokerCompAmount),
+    titleEscrowFees: n(input.closingCosts), includeTransferTax: "no",
+    proratedPropertyTax: n(input.propertyTaxes), hoaAtClosing: n(input.hoaFees), repairCredits: n(input.repairCredits),
+    sellerConcessions: n(input.sellerConcessions), transactionFee: n(input.transactionFee), creditsToSeller: n(input.creditsToSeller),
+    otherCosts: n(input.otherCosts),
+  }, { ...ctx, estimateKeys: [...est] })
+  const price = Number(input.salePrice) || 0
+  const line = (k: string) => (outcome.ok ? Number(outcome.lines.find((l) => l.key === k)?.amount ?? 0) : 0)
+  return {
+    scenarioName, salePrice: price, grossProceeds: price,
+    totalCosts: outcome.ok ? Number(outcome.outputs.totalDeductions) : null,
+    totalCredits: outcome.ok ? Number(outcome.outputs.totalCredits) : null,
+    netProceeds: outcome.ok ? Number(outcome.outputs.estimatedNet) : null,
+    breakdown: {
+      salePrice: price, listingCommission: line("listingCommission"), buyerCommission: line("buyerBrokerComp"),
+      closingCosts: line("titleEscrowFees"), mortgagePayoff: line("mortgagePayoff"), propertyTaxes: line("proratedPropertyTax"),
+      hoaFees: line("hoaAtClosing"), repairCredits: line("repairCredits"), sellerConcessions: line("sellerConcessions"),
+      transactionFee: line("transactionFee"), creditsToSeller: line("creditsToSeller"), otherCosts: line("otherCosts") + line("otherLiens"),
+    },
+    missing: outcome.ok ? [] : [...outcome.missing.map((m) => m.message), ...outcome.refused.map((r) => `${r.label}: ${r.reason}`)],
+    assumptions: outcome.ok ? outcome.assumptions : [],
+    disclaimers: outcome.ok ? outcome.disclaimers : [DISCLAIMERS.general],
+  }
 }

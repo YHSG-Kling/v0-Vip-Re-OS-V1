@@ -8,4 +8,4 @@
  * Prefer importing directly from "@/lib/events/types".
  */
 export type { EventInput, Event, OrchestratorEvent } from "@/lib/events"
-export { EVENT_TYPES } from "@/lib/events"
+export { EVENT_TYPES } from "@/lib/events/types"

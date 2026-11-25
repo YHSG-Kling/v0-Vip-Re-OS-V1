@@ -43,10 +43,12 @@
  * run; a calculator magnet promises no asset, so it does not apply); the QR minter and the scan door are a fake on the same
  * client; the browser component is source-ruled, not rendered (no DOM here). §E (round 2) scans every fractional literal of the
  * DERIVED calculator scope (the engine family, the retired calculators' files, every app/ lib/ file that statically imports them,
- * and the span of any other function that runs the engine); a fractional rate elsewhere in the tree (e.g. the deal-level offer
- * net sheet family lib/offers/*, app/components/portal/NetSheetCalculator.tsx, which imports none of these) is outside that scope
- * and is named in the lane report, not certified here. The funnel step and the portal page are source-ruled; their pure halves
- * (listPublishedCalculators, portalCalculatorsFor) are driven.
+ * and the span of any other function that runs the engine). §F (round 4) adds every lib/offers/* file and the five deal-level
+ * surfaces (DEAL_SURFACES) to the scan, exempts lib/offers/regional-closing-costs.ts only while the Finance Manager's yearly
+ * review targets it, and drives the engine, the kept offer comparison and both estimators on a proration credit, a zero
+ * commission and a missing title quote. A fractional rate elsewhere in the tree stays outside both scopes and is named in the
+ * lane report, not certified here; the React surfaces are source-ruled (no DOM). The funnel step and the portal page are
+ * source-ruled; their pure halves (listPublishedCalculators, portalCalculatorsFor) are driven.
  */
 import { registerHooks } from "node:module"
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs"
@@ -522,4 +524,97 @@ async function roundTwo() {
   check("CATALOG: 'calculator' is an artifact of the ONE vocabulary and a published calculator row maps to it (status posted, its /lm page)",
     (CC.CATALOG_ARTIFACTS ?? []).includes("calculator") && mapped?.artifact === "calculator" && mapped?.status === "posted" && mapped?.destinationUrls?.[0] === "/lm/net" && src?.artifacts?.includes("calculator"), mapped)
   check("SIGNAL REGISTRY: the lead_magnet_handoff text names the calculator handoff and its next-step rule", /CALCULATOR opt-in[\s\S]{0,300}explain_estimate[\s\S]{0,80}agent_task/.test(raw("lib/kernel/signal-registry.ts")))
+  await roundFour(all)
+}
+
+// ═══ §F · ROUND 4 (integrator) — THE DEAL-LEVEL NET SHEETS: retired onto the engine, or kept with no invented figure ══════════
+/** The deal-level files the round-4 scan covers beyond §E's derived scope (they need not import the engine to be scanned). */
+const DEAL_SURFACES = [
+  "app/components/portal/NetSheetCalculator.tsx",
+  "app/actions/cma-presentation/net-sheet-calculator.ts",
+  "app/dashboard/listings/[id]/cma/tabs/net-sheet-tab.tsx",
+  "app/actions/seller-cma.ts",
+  "lib/transactions/offer-bridge.ts",
+]
+/** The ONE reviewed-source file, exempt like rate-sources.ts — only while the Finance Manager's yearly review names it. */
+const REVIEWED_SOURCE = "lib/offers/regional-closing-costs.ts"
+const NON_RATE_R4: Array<{ file: string; match: RegExp; why: string }> = [
+  { file: "lib/offers/offer-strategy-advisor.ts", match: /expectedValueUsd: Math\.round\(params\.listPrice \* 0\.025 \* 0\.25\)/, why: "model-routing economics (what the reasoning is worth to the router's spend gate) — never shown to a person as a cost" },
+  { file: "lib/offers/outside-agent-record.ts", match: /confidence: 0\.95/, why: "a match-confidence score on a parsed record, not a financial rate" },
+  { file: "lib/offers/outside-offer-loop.ts", match: /ACCEPTANCE_MIN_CONFIDENCE = 0\.7/, why: "a classifier confidence threshold, not a financial rate" },
+]
+
+async function roundFour(all: string[]) {
+  section("§F · round 4 — deal-level net sheets: one engine, a credit line, no default presented as fact")
+  // 1. THE SCAN, extended: every lib/offers/* file + the deal surfaces; the reviewed-source file exempt only with its review.
+  const offers = all.filter((f) => f.startsWith("lib/offers/") && f !== REVIEWED_SOURCE)
+  const scope = [...offers, ...DEAL_SURFACES.filter((f) => existsSync(join(ROOT, f)))]
+  const hits = scope.flatMap((f) => fractionals(code(f)).map((h) => ({ ...h, file: f })))
+  const bad = hits.filter((h) => !NON_RATE_R4.find((e) => e.file === h.file && e.match.test(h.text)))
+  check(`NO FRACTIONAL RATE LITERAL in the deal-level net sheets — ${scope.length} files (${offers.length} under lib/offers/, ${scope.length - offers.length} surfaces), ${NON_RATE_R4.length} named non-rate sites`,
+    offers.length >= 10 && scope.length - offers.length === DEAL_SURFACES.length && bad.length === 0, bad.slice(0, 14).map((h) => `${h.file}:${h.line} ${h.lit}`))
+  const stale = NON_RATE_R4.filter((e) => !hits.some((h) => h.file === e.file && e.match.test(h.text)))
+  check("every round-4 non-rate exemption still matches a site", stale.length === 0, stale.map((e) => e.file))
+  const RV = await load("lib/managers/regional-convention-review.ts"), RC = await load(REVIEWED_SOURCE)
+  check("the regional table is exempt ONLY as a reviewed source: the Finance Manager's yearly review targets it, and the citation it exports names that review",
+    RV.REGIONAL_CONVENTION_REVIEW?.target === REVIEWED_SOURCE && /regional-convention-review\.ts/.test(RC.REGIONAL_CONVENTION_CITATION ?? ""), RC.REGIONAL_CONVENTION_CITATION ?? null)
+  check("POSITIVE CONTROL: the scan sees the 6% / 2% / 5% figures as they stood (0.06, 0.02, 0.95)", fractionals(blankStrings(stripComments(`const c = defaultSellerCosts({ commissionRateDecimal: 0.06 })\nconst cc = price * 0.02; const lo = base * 0.95`))).map((h) => h.lit).join(",") === "0.06,0.02,0.95")
+
+  // 2. RETIRED: lib/cma/net-sheet-math.ts — gone, no caller, the tombstone names the survivor line.
+  // An import path is a string, so this reads stripped (not string-blanked) source for the specifier, blanked source for a call.
+  const callers = [...all, ...walk("scripts")].filter((f) => f !== "scripts/wave156-h-calculators-guard.ts"
+    && (/(from\s+|import\()\s*["'][^"']*\/net-sheet-math["']/.test(stripComments(raw(f))) || /\bcomputeNetSheetScenario\(/.test(code(f))))
+  const engineLines = raw("lib/calculators/engine.ts").split("\n")
+  const cmaRaw = raw("app/actions/cma-presentation/net-sheet-calculator.ts")
+  const cited = [...cmaRaw.matchAll(/lib\/calculators\/engine\.ts:(\d+)/g)].map((m) => Number(m[1]))
+  check("lib/cma/net-sheet-math.ts is DELETED, nothing imports it, and the tombstone names lib/calculators/engine.ts:<line> where sellerNetScenario is defined",
+    !existsSync(join(ROOT, "lib/cma/net-sheet-math.ts")) && callers.length === 0 && cited.length >= 1 && cited.every((n) => /^export function sellerNetScenario\(/.test(engineLines[n - 1] ?? "")), { callers, cited })
+  const surfaces = DEAL_SURFACES.slice(0, 4).map((f) => ({ f, c: stripComments(raw(f)) }))
+  const off = surfaces.filter((s) => !/\b(sellerNetScenario|runCalculator)\(/.test(s.c))
+  check("the four seller net sheets (portal, CMA presentation, CMA tab, saved sheet) compute through the ONE engine", off.length === 0, off.map((s) => s.f))
+  const cmaFn = (() => { const c = stripComments(cmaRaw), i = c.indexOf("function calculateScenario("); return i < 0 ? "" : c.slice(i, c.indexOf("\n}", i)) })()
+  check("the CMA presentation no longer prices the seller's commission at the AGENT's split rate (agentListingSideRate / agentBuyerSideRate) and takes no closing-cost percent fallback",
+    cmaFn.length > 0 && !/agent(Listing|Buyer)SideRate|closingCostPercent/.test(cmaFn) && !/agent(Listing|Buyer)SideRate/.test(stripComments(cmaRaw)))
+
+  // 3. DRIVEN — the engine on the table: a proration credit, a zero commission, a missing title quote.
+  const E = await load("lib/calculators/engine.ts")
+  const run = (extra: Record<string, unknown>, drop: string[] = []) => {
+    const inp: Record<string, unknown> = { ...FIXTURES.seller_net_sheet, ...extra }
+    for (const k of drop) delete inp[k]
+    return E.runCalculator?.("seller_net_sheet", inp, { audience: "public" })
+  }
+  const base = run({}), credit = run({ creditsToSeller: 1250 }), zero = run({ listingCommissionPct: 0 }), noTitle = run({}, ["titleEscrowFees"])
+  check("TABLE · proration CREDIT: a credit to the seller is its own credit line and RAISES the net by exactly its amount (never a negative cost)",
+    credit?.ok && base?.ok && credit.outputs.estimatedNet === base.outputs.estimatedNet + 1250 && credit.outputs.totalCredits === 1250 && credit.lines.some((l: any) => l.key === "creditsToSeller" && l.kind === "credit" && l.amount === 1250), credit?.outputs)
+  check("TABLE · ZERO commission computes (0 is an answer, not a blank) and the line reads $0", zero?.ok === true && zero.lines.find((l: any) => l.key === "listingCommission")?.amount === 0 && zero.outputs.estimatedNet === 500000 - 200000 - 3200, zero?.outputs)
+  check("TABLE · MISSING title quote refuses with 'Enter a value' for the title / settlement line — no percentage stands in", noTitle?.ok === false && noTitle.missing.some((m: any) => m.key === "titleEscrowFees" && /^Enter a value/.test(m.message)), noTitle)
+  const S = E.sellerNetScenario
+  const sc = S?.("Primary", { salePrice: 500000, listingCommissionPct: 3, closingCosts: 4000, mortgagePayoff: 200000, propertyTaxes: 1800, creditsToSeller: 900, transactionFee: 395 }, { audience: "internal" })
+  const scMissing = S?.("Primary", { salePrice: 500000, mortgagePayoff: 0 }, { audience: "internal" })
+  check("sellerNetScenario (the merged CMA shape): the credit adds, the fee and prorated tax deduct; with no commission and no closing figure the net is NULL and both are asked for",
+    sc?.netProceeds === 500000 - 15000 - 4000 - 200000 - 1800 - 395 + 900 && sc?.breakdown?.creditsToSeller === 900 && scMissing?.netProceeds === null && scMissing.missing.some((m: string) => /commission/i.test(m)) && scMissing.missing.some((m: string) => /title, escrow/i.test(m)), { sc: sc?.netProceeds, missing: scMissing?.missing })
+  check("scenario prices are whole-percent offsets of the entered price (−5% / +5%), not multipliers", E.scenarioPrice?.(500000, -5) === 475000 && E.scenarioPrice?.(500000, 5) === 525000)
+
+  // 4. DRIVEN — the KEPT offer comparison and the estimators: no figure the person did not enter.
+  const N = await load("lib/offers/net-sheet-calc.ts")
+  const agreed = N.resolveAgreedCommission?.({ agreement: null, listingCommissionRatePercent: null, referencePrice: 500000 })
+  check("resolveAgreedCommission with NO term on file: rate 0, `missing`, and a label that asks — the 6% house fallback is gone", agreed?.rate === 0 && agreed?.missing === true && /enter the commission/i.test(agreed?.label ?? ""), agreed)
+  const closing = N.resolveClosingCosts?.({ explicitAmount: null, brokerageClosingCostPercent: null, regionalMidpoint: null, salePrice: 500000 })
+  const unsetPct = N.resolveClosingCosts?.({ explicitAmount: null, brokerageClosingCostPercent: 2 / 100, regionalMidpoint: null, salePrice: 500000 })
+  check("resolveClosingCosts with NOTHING on file asks (amount 0, `missing`), and the settings layer's unset 2% is still not taken as brokerage policy", closing?.amount === 0 && closing?.missing === true && unsetPct?.missing === true, { closing, unsetPct })
+  const dsc = N.defaultSellerCosts?.({ listPrice: 500000, commissionRateDecimal: 0, hoaDuesMonthly: null })
+  check("defaultSellerCosts invents no taxes or fees (the 0.5%-of-price taxes and 1%-of-price 'other fees' are 0 until entered)", dsc?.countyCityTaxes === 0 && dsc?.otherProratedFees === 0 && dsc?.commissionRate === 0, dsc)
+  const SC = await load("lib/offers/seller-closing-costs.ts"), BC = await load("lib/offers/buyer-closing-costs.ts")
+  const sNo = SC.estimateSellerClosingCosts?.({ salePrice: 500000, state: null, commission: null, mortgagePayoff: null })
+  const sFl = SC.estimateSellerClosingCosts?.({ salePrice: 500000, state: "FL", commission: null, mortgagePayoff: null })
+  const regional = (sNo?.lines ?? []).filter((l: any) => /transfer|title|settlement|recording/i.test(l.label))
+  check("seller estimator, NO state: transfer / title / settlement / recording are PENDING and add nothing (no generic band); with a state they carry the reviewed regional label",
+    regional.length >= 4 && regional.every((l: any) => l.pending === true && l.low === 0 && l.high === 0) && !(sNo?.lines ?? []).some((l: any) => l.source === "industry_band" && !l.pending)
+    && (sFl?.lines ?? []).some((l: any) => l.source === "regional_estimate" && !l.pending), { no: regional, fl: sFl?.regionLabel })
+  const bNo = BC.estimateBuyerClosingCosts?.({ purchasePrice: 400000, loanAmount: 320000, sellerCredit: 0, state: null })
+  const priced = (bNo?.lines ?? []).filter((l: any) => !l.pending && (l.low > 0 || l.high > 0))
+  check("buyer estimator, NO state and no quotes: lender fees, appraisal, title, insurance, escrow and prepaid interest are PENDING — nothing priced from a band",
+    (bNo?.lines ?? []).length >= 6 && priced.length === 0 && (bNo?.lines ?? []).some((l: any) => /insurance/i.test(l.label) && l.pending), priced.map((l: any) => `${l.label} ${l.low}-${l.high}`))
+  const bridge = stripComments(raw("lib/transactions/offer-bridge.ts"))
+  check("the accepted-offer bridge records the commission as MISSING and computes no net on it (net_proceeds null) — no 6% stands in", /commission_rate: null/.test(bridge) && /net_proceeds: null/.test(bridge) && /commissionRateDecimal: 0\b/.test(bridge))
 }

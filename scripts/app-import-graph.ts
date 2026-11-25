@@ -28,7 +28,7 @@ export function tryFile(p: string): string | null {
 }
 
 /** The first-party import graph of one tree. */
-export function makeWalker(root: string) {
+export function makeWalker(root: string, opts: { stopAt?: (file: string) => boolean } = {}) { // stopAt (wave 156L): a file the walk must not ENTER (e.g. a "use server" module from a client graph); absent = the budget's walk, unchanged
   function resolve(spec: string, from: string): string | null {
     if (spec.startsWith("./") || spec.startsWith("../")) return tryFile(path.resolve(path.dirname(from), spec))
     if (spec.startsWith("@/components/")) return tryFile(path.join(root, "app/components", spec.slice(13))) ?? tryFile(path.join(root, spec.slice(2)))
@@ -63,11 +63,11 @@ export function makeWalker(root: string) {
     const seen = new Set<string>([entry]); const parent = new Map<string, string>(); const q = [entry]
     while (q.length) {
       const f = q.pop()!
-      for (const t of edges(f)) if (!seen.has(t)) { seen.add(t); parent.set(t, f); q.push(t) }
+      for (const t of edges(f)) if (!seen.has(t) && !(opts.stopAt && opts.stopAt(t))) { seen.add(t); parent.set(t, f); q.push(t) }
     }
     return { seen, parent }
   }
-  return { reach, rel: (p: string) => path.relative(root, p) }
+  return { reach, edges, rel: (p: string) => path.relative(root, p) }
 }
 
 /** The special file names Next turns into app/ entries or loader-tree segments. */

@@ -640,9 +640,279 @@ async function main() {
     check("C21 · the same inbound delivered twice at once (webhook retry): ONE decision row, ONE text — the other replays", io.sms.length === 1 && decisionRows(rw).length === 1 && [x.action, y.action].includes("reply_sent"), JSON.stringify({ x: x.action, y: y.action, sms: io.sms.length }))
   }
 
+  await ninePlaneCensus({ world, ledgerRows, gov, resp, respWorld, respDeps, req, resetIo, io, arb })
+
   console.log("\n BLIND SPOTS: SIMULATED throughout — the in-memory PostgREST models tables, filters, unique keys and refusals but not RLS, triggers or real concurrency (the C1 / C11 races interleave at await points, which is where the CAS / unique key decides); C4 injects the closing-compliance re-review (its own proofs, test:closing-compliance / test:closing-readiness, name the responsible issuer); C5 drives 153I's click and drain with the channel send as the module's own dispatchItem seam (the real queue-drain route is 153I's own proof, test:campaign-bundle-follow-on); C13–C21 inject the model, the composer, the channel executors and the agent-task writer (the real autonomy gate, ledger, ownership reader and delegation machine run); the late-result path runs in-process — on a serverless host a late promise may never resolve after the response, so the persisted late_obligation + the completion net (awaiting_human → C24 unattended answer) is the guarantee, not the hook; C21's delegation convergence is sequential (the workflow-run idempotency is read-then-insert — a true race needs a unique key, Outside-lane), the inbound pair is concurrent (the ledger's unique key decides); C6 reads the tenant ceiling gate (advisory by contract: an UNREADABLE spend ledger fails open and is flagged degraded — the pooled acquisition lane's decideSpendBackpressure fails closed, test:spend-backpressure); C12 times the deterministic decision in-process (no network RTT) and checks DIRECT kernel imports of the two live-path modules.")
   console.log(`\n RESULT: ${pass} passed, ${fail} failed${pending ? ` (${pending} pending — not counted)` : ""}`)
   if (fail > 0) { console.log(` failed: ${failures.join(" | ")}`); process.exit(1) }
+}
+
+// ══ C22–C30 — THE NINE-PLANE CENSUS (wave 156, lane 156M; directive 156M lines 339–349 + the proofs at 353) ═════════════════════
+// One business journey per plane through REAL exported product doors (other lanes' doors included), on the in-memory PostgREST,
+// fetch refused (no provider), each with: a positive run · a negative permission control · a second tenant that sees nothing · an
+// owner / dependency conflict · the outcome receipt · the consumer that reads it · bounded recovery. A plane whose journey cannot be
+// driven end to end prints `PLANE <n> PARTIAL — missing link: …` (counted as a FAILURE of nothing, and never as done): the census
+// reports exactly which link is missing instead of a pass.
+async function ninePlaneCensus(h: any): Promise<void> {
+  const { world, ledgerRows, gov } = h
+  const prevFetch = g.fetch
+  g.fetch = async () => { throw new Error("no network in the nine-plane census") }
+  const quiet = async <T,>(fn: () => Promise<T>): Promise<T> => { const o = { e: console.error, w: console.warn, l: console.log }; console.error = console.warn = console.log = () => {}; try { return await fn() } finally { console.error = o.e; console.warn = o.w; console.log = o.l } }
+  /** world() + the `{ count, head }` selects supabase-js gives and the in-memory client does not (the over-touch cap counts touches). */
+  const counted = (seed: Record<string, Row[]>): MemClient => {
+    const w = world(seed)
+    const proxy = new Proxy(w as any, { get(t, p) {
+      if (p !== "from") return t[p]
+      return (table: string) => {
+        const b = t.from(table); let cnt: { head: boolean } | null = null
+        const sel = b.select; b.select = (c?: string, o?: { count?: string; head?: boolean }) => { if (o?.count) cnt = { head: !!o.head }; return sel.call(b, c) }
+        const then = b.then; b.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => then.call(b, (r: { data: unknown; error: unknown }) => res(cnt ? { ...r, count: Array.isArray(r.data) ? r.data.length : 0, data: cnt.head ? null : r.data } : r), rej)
+        return b
+      }
+    } })
+    g.__OSA.svc = () => proxy
+    return w
+  }
+  const planes: string[] = []
+  const plane =(n: number, state: "DRIVEN" | "PARTIAL", note: string) => { planes.push(`PLANE ${n} ${state}${note ? ` — ${note}` : ""}`) }
+  const L = await import("../lib/kernel/action-ledger")
+  const D = await import("../lib/providers/dispatch")
+  const C = "c2200000-0000-4000-8000-000000000156", C2b = "c2200000-0000-4000-8000-000000000256", UAPP = "a2200000-0000-4000-8000-0000000000a1"
+  const contactsSeed = () => [
+    { id: C, brokerage_id: B1, first_name: "Riley", phone: "+15555550156", email: "riley@example.test", tcpa_consent: true, dnc_status: false, state: "FL", agent_id: null },
+    { id: C2b, brokerage_id: B2, first_name: "Avery", phone: "+15555550256", email: "avery@example.test", tcpa_consent: true, dnc_status: false, state: "FL", agent_id: null },
+  ]
+
+  // ── C22 · PLANE 1 — SaaS control plane ──────────────────────────────────────────────────────────────────────────────────
+  section("C22 · PLANE 1 — SaaS control plane: provider key / rights at the credentials sink (no cross-tenant secret read)")
+  {
+    const RS = await import("../lib/connections/resolve-scoped")
+    const w = world({ platform_credentials: [], integration_connections: [], users: [], agents: [], teams: [] })
+    const held = await quiet(() => RS.resolveScopedConnectionForOrigin("quickbooks", { brokerageId: B1 }, { trustClass: "inbound_message", cycle: "p1-held" } as never)) as Row
+    const row = ledgerRows(w).find((r: Row) => r.action === "access.decision.wait")
+    check("C22 · NEGATIVE · a credential read whose privilege an inbound message set is HELD before any credential row is read (one decision row)", held?.status === "unreadable" && !!row && gov(row).decision === "HOLD", JSON.stringify(held))
+    const other = await quiet(() => RS.resolveScopedConnectionForOrigin("quickbooks", { brokerageId: B1 }, { trustClass: "tenant_policy", cycle: "p1-tenant", sink: { decision: { id: "x", brokerageId: B2, decider: UH } } } as never)) as Row
+    check("C22 · SECOND TENANT · a decision carried from another tenant never opens this tenant's credentials (DENY decision_other_tenant)", other?.status === "unreadable" && ledgerRows(w).some((r: Row) => (gov(r).constraints?.policy ?? []).includes("sink rule: decision_other_tenant")))
+    plane(1, "PARTIAL", "driven: provider key / rights at the credentials sink (held, cross-tenant decision refused, receipt). Missing links: subscribe → plan entitlements / seats → tenant / office / users → website auto-provision → usage and billing → seat removal / tenant move are not one driven journey here (pieces: test:billing-access, test:arbitration-sinks credentials canary)")
+  }
+
+  // ── C23 · PLANE 2 — Security and kernel (untrusted inbound → typed proposal → hold → human approval → release) ─────────────
+  section("C23 · PLANE 2 — security and kernel: an inbound-originated send is HELD, a person approves, the release carries the approval")
+  {
+    const w = world({ contacts: contactsSeed(), messages: [{ id: "m-1", brokerage_id: B1, contact_id: C, direction: "inbound", created_at: iso(-60_000) }], email_suppressions: [], deconflict_suppression_log: [], isa_outreach_log: [], users: [{ id: UAPP, brokerage_id: B1, user_type: "broker" }] })
+    const origin = { trustClass: "inbound_message", cycle: "p2-proposal", sink: { modelClaims: { approved: true } } }
+    const r0 = await quiet(() => D.dispatchSms({ brokerageId: B1, to: "+15555550156", message: "Here are the wire instructions you asked for.", contactId: C, systemSource: "ai_isa", origin } as never)) as Row
+    const hold = ledgerRows(w).find((r: Row) => r.action === "comms.decision.wait")
+    check("C23 · NEGATIVE (taint) · the proposal whose privilege an inbound message set is HELD: sink_rule_gate, one hold row that keeps the envelope, no send row",
+      r0?.providerKey === "sink_rule_gate" && !!hold?.detail?.held_send && !ledgerRows(w).some((r: Row) => r.action === "comms.sms.send"), JSON.stringify({ pk: r0?.providerKey, held: !!hold?.detail?.held_send }))
+    const deny2 = await D.approveHeldSend(w as never, { brokerageId: B2, holdId: hold?.id, approverUserId: UH, authority: "other tenant broker" })
+    check("C23 · SECOND TENANT · another tenant cannot approve this hold (not found in its tenant)", !deny2.ok && /hold_not_found/.test((deny2 as Row).error))
+    const ap = await D.approveHeldSend(w as never, { brokerageId: B1, holdId: hold?.id, approverUserId: UAPP, authority: "broker reviewed the held send in the approval queue" })
+    const apRow = ledgerRows(w).find((r: Row) => r.id === (ap as Row).approvalId)
+    check("C23 · the person's approval is ONE ALLOW decision row: tenant, approver, expiry, the thread head it saw (known fact)",
+      ap.ok && gov(apRow).decision === "ALLOW" && gov(apRow).expires_at && (gov(apRow).known_facts ?? []).some((f: Row) => f.type === "thread_head" && f.version === "m-1"), JSON.stringify(gov(apRow)?.known_facts))
+    const again = await D.approveHeldSend(w as never, { brokerageId: B1, holdId: hold?.id, approverUserId: UAPP, authority: "double click" })
+    check("C23 · a second approval of the same hold returns the SAME decision (one per hold)", again.ok && (again as Row).approvalId === (ap as Row).approvalId)
+    const other = await quiet(() => D.releaseApprovedSend(w as never, { brokerageId: B2, approvalId: (ap as Row).approvalId })) as Row
+    check("C23 · SECOND TENANT · another tenant's release of this approval is refused before anything is read (approval_gate)", other?.providerKey === "approval_gate" && /approval_not_found/.test(other.error))
+    const sendsBefore = ledgerRows(w).filter((r: Row) => r.action === "comms.sms.send").length
+    const rel = await quiet(() => D.releaseApprovedSend(w as never, { brokerageId: B1, approvalId: (ap as Row).approvalId })) as Row
+    const sends = ledgerRows(w).filter((r: Row) => r.action === "comms.sms.send")
+    const prop = ledgerRows(w).find((r: Row) => r.action === "comms.sms.propose")
+    check("C23 · POSITIVE · the release CARRIES the approval: the sink ALLOWs it (verified by an authorized human), the dispatcher's own send row follows ONCE",
+      sends.length === sendsBefore + 1 && !!prop && gov(prop).decision === "ALLOW" && rel?.providerKey !== "sink_rule_gate" && rel?.providerKey !== "approval_gate", JSON.stringify({ rel, sends: sends.length }))
+    await quiet(() => D.releaseApprovedSend(w as never, { brokerageId: B1, approvalId: (ap as Row).approvalId }))
+    check("C23 · RECOVERY (at most once) · releasing the same approval again sends nothing new", ledgerRows(w).filter((r: Row) => r.action === "comms.sms.send").length === sends.length)
+    // CONFLICT — a newer message arrives after a second approval: the release is SUPERSEDED at the sink.
+    const origin2 = { trustClass: "inbound_message", cycle: "p2-proposal-2" }
+    await quiet(() => D.dispatchSms({ brokerageId: B1, to: "+15555550156", message: "A second reply.", contactId: C, systemSource: "ai_isa", origin: origin2 } as never))
+    const hold2 = ledgerRows(w).filter((r: Row) => r.action === "comms.decision.wait").find((r: Row) => r.id !== hold?.id)
+    const ap2 = await D.approveHeldSend(w as never, { brokerageId: B1, holdId: hold2?.id, approverUserId: UAPP, authority: "broker approved" }) as Row
+    ;(w.tables.messages as Row[]).push({ id: "m-2", brokerage_id: B1, contact_id: C, direction: "inbound", created_at: iso() })
+    const sup = await quiet(() => D.releaseApprovedSend(w as never, { brokerageId: B1, approvalId: ap2.approvalId })) as Row
+    check("C23 · CONFLICT (dependency) · they wrote again after the approval: the release is DENIED decision_superseded at the sink — nothing sent on a stale approval",
+      sup?.providerKey === "sink_rule_gate" && ledgerRows(w).some((r: Row) => (gov(r).constraints?.policy ?? []).includes("sink rule: decision_superseded")), JSON.stringify(sup))
+    await quiet(() => D.dispatchSms({ brokerageId: B1, to: "+15555550156", message: "A third reply.", contactId: C, systemSource: "ai_isa", origin: { trustClass: "inbound_message", cycle: "p2-proposal-3" } } as never))
+    const hold3 = ledgerRows(w).filter((r: Row) => r.action === "comms.decision.wait").find((r: Row) => r.id !== hold?.id && r.id !== hold2?.id)
+    const ap3 = await D.approveHeldSend(w as never, { brokerageId: B1, holdId: hold3?.id, approverUserId: UAPP, authority: "approved with a lapsed window", ttlMinutes: -1 }) as Row
+    const exp = await quiet(() => D.releaseApprovedSend(w as never, { brokerageId: B1, approvalId: ap3.approvalId })) as Row
+    check("C23 · an EXPIRED approval is refused at the sink (DENY decision_expired) — a lapsed approval never sends",
+      exp?.providerKey === "sink_rule_gate" && ledgerRows(w).some((r: Row) => (gov(r).constraints?.policy ?? []).includes("sink rule: decision_expired")), JSON.stringify(exp))
+    const chain = L.assembleCausalChain([], ledgerRows(w) as never)
+    check("C23 · CONSUMER · the flight recorder reads the chain: the hold is `decided`, the approval is ALLOW, the send row is past `decided`",
+      chain.some((c) => c.name === "comms.decision.wait" && c.phase === "decided") && chain.some((c) => c.name === "comms.decision.send_touch" && c.decision === "ALLOW") && chain.some((c) => c.name === "comms.sms.send" && !!c.status && c.status !== "proposed"),
+      JSON.stringify(chain.filter((c) => /^comms\./.test(c.name)).map((c) => [c.name, c.phase, c.decision, c.status])))
+    plane(2, "DRIVEN", "inbound taint → sink HOLD → person approves → release carries the approval; second tenant, superseded, expired, at-most-once, flight recorder")
+  }
+
+  // ── C24 · PLANE 4 — Engagement and acquisition (a send, its arbiter verdict on the receipt, over-touch arbitration) ─────────────
+  section("C24 · PLANE 4 — engagement: the send's receipt carries the de-confliction verdict; over-touch is arbitrated by one decider")
+  {
+    const w = world({ contacts: contactsSeed(), email_suppressions: [], deconflict_suppression_log: [], isa_outreach_log: [], email_sends: [] })
+    const r1 = await quiet(() => D.dispatchEmail({ brokerageId: B1, to: "riley@example.test", subject: "New homes this week", html: "<p>3 new matches</p>", contactId: C, systemSource: "property_alerts", ledger: { idempotencyKey: "p4-send-1" } } as never)) as Row
+    const send = ledgerRows(w).find((r: Row) => r.idempotency_key === "p4-send-1")
+    check("C24 · POSITIVE · the send passes consent, suppression and de-confliction; its RECEIPT carries the arbiter's verdict (allowed, decider ai_isa) and the next gate's own outcome — never 'sent' without a provider",
+      !!send && send.status !== "executed" && send.status !== "proposed" && gov(send).deconflict?.allowed === true && gov(send).deconflict?.decider === "ai_isa", JSON.stringify({ st: send?.status, pk: r1?.providerKey, dg: gov(send).deconflict }))
+    await quiet(() => D.dispatchEmail({ brokerageId: B1, to: "riley@example.test", subject: "New homes this week", html: "<p>3 new matches</p>", contactId: C, systemSource: "property_alerts", ledger: { idempotencyKey: "p4-send-1" } } as never))
+    check("C24 · RECOVERY (bounded) · a retry of the same intent never writes a second row and never sends twice (the idempotency key decides)", ledgerRows(w).filter((r: Row) => r.idempotency_key === "p4-send-1").length === 1 && !ledgerRows(w).some((r: Row) => r.status === "executed"))
+    ;(w.tables.email_suppressions as Row[]).push({ id: "s-1", brokerage_id: B1, email: "riley@example.test", contact_id: C, reason: "unsubscribe", created_at: iso() })
+    const sup = await quiet(() => D.dispatchEmail({ brokerageId: B1, to: "riley@example.test", subject: "Again", html: "<p>x</p>", contactId: C, systemSource: "property_alerts", ledger: { idempotencyKey: "p4-send-2" } } as never)) as Row
+    check("C24 · NEGATIVE (permission) · an unsubscribed contact is refused at dispatch (a *_gate, nothing sent)", sup?.success === false && /_gate$/.test(String(sup?.providerKey)), JSON.stringify(sup))
+    const w2 = counted({ contacts: contactsSeed(), email_suppressions: [], deconflict_suppression_log: [], isa_outreach_log: Array.from({ length: 12 }, (_, i) => ({ id: `t${i}`, brokerage_id: B1, contact_id: C, channel: "email", sent_at: iso(-i * 60_000) })), email_sends: [] })
+    const over = await quiet(() => D.dispatchEmail({ brokerageId: B1, to: "riley@example.test", subject: "One more", html: "<p>x</p>", contactId: C, systemSource: "sequence", ledger: { idempotencyKey: "p4-over" } } as never)) as Row
+    const orow = ledgerRows(w2).find((r: Row) => r.idempotency_key === "p4-over")
+    check("C24 · CONFLICT (owner) · a campaign touch over the contact's cap loses to the ONE decider (ai_isa): RESCHEDULED with a next trigger on its receipt",
+      over?.providerKey === "deconflict_gate" && gov(orow).arbitration?.decider === "ai_isa" && !!gov(orow).arbitration?.loser?.next_trigger, JSON.stringify(gov(orow).arbitration))
+    const w3 = world({ contacts: contactsSeed(), email_suppressions: [], deconflict_suppression_log: [], isa_outreach_log: [], email_sends: [] })
+    await quiet(() => D.dispatchEmail({ brokerageId: B2, to: "avery@example.test", subject: "Hi", html: "<p>x</p>", contactId: C2b, systemSource: "property_alerts", ledger: { idempotencyKey: "p4-b2" } } as never))
+    check("C24 · SECOND TENANT · tenant B2's send writes only B2's receipt; B1 reads none of it", ledgerRows(w3).every((r: Row) => r.brokerage_id === B2))
+    const chain = L.assembleCausalChain([], ledgerRows(w2) as never)
+    check("C24 · CONSUMER · the flight recorder reads the over-touch receipt as a decided DENY", chain.some((c) => c.name === "comms.email.send" && c.decision === "DENY" && c.phase === "decided"))
+    plane(4, "PARTIAL", "driven: send → receipt with the arbiter's verdict → over-touch arbitration → bounded retry → reader. Missing links: fresh topic / first-party intent → channel and artifact choice → asset approval → the RESPONSE and its follow-on are not one driven journey here (pieces: test:os-planes-canaries, test:campaign-bundle-follow-on)")
+  }
+
+  // ── C25 · PLANE 7 — Transaction and finance (the payout sink) ─────────────────────────────────────────────────────────────
+  section("C25 · PLANE 7 — transaction and finance: a payout through the sink, its receipt, its reader, and the decision it needs")
+  {
+    const F = await import("../lib/kernel/financial")
+    const CM = "c2500000-0000-4000-8000-000000000156", CM2 = "c2500000-0000-4000-8000-000000000256"
+    const seed = () => ({ agent_commissions: [{ id: CM, brokerage_id: B1, status: "approved", deposit_received_at: iso(-86_400_000), transaction_id: null, agent_id: null }, { id: CM2, brokerage_id: B2, status: "approved", deposit_received_at: iso(-86_400_000), transaction_id: null, agent_id: null }], brokerages: [{ id: B1 }, { id: B2 }], activities: [] })
+    const pay = (w: MemClient, over: Row = {}) => quiet(() => F.initiateCommissionPayout({ ctx: { userId: UA, agentId: null, brokerageId: B1, userType: "broker" } as never, commissionId: CM, brokerageId: B1, method: "check", ...over } as never)) as Promise<Row>
+    const w = world(seed())
+    const ok = await pay(w)
+    const row = (w.tables.agent_commissions as Row[]).find((r) => r.id === CM)
+    const rec = ledgerRows(w).find((r: Row) => r.action === "commission.payout.initiate")
+    check("C25 · POSITIVE · the finance admin's payout on an approved, funded commission stamps it once; its receipt is the payout sink row (executed)", ok?.success === true && !!row?.payment_initiated_at && rec?.status === "executed", JSON.stringify(ok))
+    const st = await F.commissionPayoutStanding(w as never, B1, CM)
+    check("C25 · CONSUMER · the payout standing reader sees it initiated", st.ok && (st as Row).initiated === true)
+    const again = await pay(w)
+    check("C25 · RECOVERY · a second click reports alreadyInitiated and stamps nothing new", again?.success === true && again?.data?.alreadyInitiated === true)
+    const w2 = world(seed())
+    const agent = await quiet(() => F.initiateCommissionPayout({ ctx: { userId: UA, agentId: null, brokerageId: B1, userType: "agent" } as never, commissionId: CM, brokerageId: B1, method: "check" } as never)) as Row
+    check("C25 · NEGATIVE (permission) · an agent seat cannot initiate a payout", agent?.success === false && !(w2.tables.agent_commissions as Row[]).find((r) => r.id === CM)?.payment_initiated_at)
+    const cross = await quiet(() => F.initiateCommissionPayout({ ctx: { userId: UA, agentId: null, brokerageId: B1, userType: "broker" } as never, commissionId: CM2, brokerageId: B1, method: "check" } as never)) as Row
+    check("C25 · SECOND TENANT · B1's admin naming B2's commission finds nothing and stamps nothing", cross?.success === false && !(w2.tables.agent_commissions as Row[]).find((r) => r.id === CM2)?.payment_initiated_at)
+    const auto = await pay(w2, { origin: { trustClass: "tenant_policy", cycle: "p7-auto", sink: { verification: { kind: "deterministic", check: "nightly payout sweep" } } } })
+    check("C25 · CONFLICT (decision) · an autonomous payout on tenant policy alone is HELD decision_missing — the release needs one accountable decision", auto?.success === false && ledgerRows(w2).some((r: Row) => (gov(r).constraints?.policy ?? []).includes("sink rule: decision_missing")))
+    plane(7, "PARTIAL", "driven: payout sink (positive, permission, second tenant, decision conflict, receipt, reader, at-most-once). Missing links: settlement / CD / CDA → governing-terms comparison → closing compliance → signed payout terms (lane 156D's closing parties and lane 156N's payout reconcile are driven by test:wave156-d-closing-parties / test:wave156-n, not chained here)")
+  }
+
+  // ── C26 · PLANE 6 — Listings and offers (lane 156B's substantive review) ──────────────────────────────────────────────────
+  section("C26 · PLANE 6 — listings and offers: an executed listing packet is compared, reviewed, recorded and read back")
+  {
+    const RG = await import("../lib/kernel/compliance/representation-gate")
+    const u = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`
+    const LB = u(156001), LST = u(156010), LA = u(156011), DOC = u(156012), S = u(156020), AG = u(156030), AU = u(156031), CO = u(156032)
+    const T0 = "2026-11-20T12:00:00.000Z"
+    const sc = (p: string[]) => ({ signatures: p.map((x) => ({ signer_role: x, signer_name: x === "seller" ? "Sam Seller" : "Alex Agent", signed: true })), initials: p.map((x) => ({ signer_role: x, all_required_initials_present: true })) })
+    const doc = (fields: Row = {}) => ({ id: DOC, brokerage_id: LB, listing_id: LST, classification: "listing_agreement", classification_confidence: "high", scanned_at: T0, scan_error: null, metadata: {}, state_code: "TX", state_form_id: "TXR 1101", created_at: T0, signature_completeness: sc(["agent", "seller"]),
+      extracted_fields: { property_address: "12 Oak St, Austin, TX 78701", zip_code: "78701", state: "TX", list_price: "500,000", list_date: "2026-11-20", expiration_date: "2027-06-30", commission_rate: 6, seller_name: "Sam Seller", legal_description: "Lot 4, Block 2, Oak Hills", ...fields } })
+    const input = (d: Row, approval: Row | null = null) => ({ brokerageId: LB, listing: { id: LST, brokerage_id: LB, address: "12 Oak Street", city: "Austin", state: "TX", zip: "78701", list_price: 500000, expiration_date: "2027-06-30", legal_description: "Lot 4, Block 2, Oak Hills", commission_rate: 6 },
+      agreement: { id: LA, effective_date: "2026-11-20", expiration_date: "2027-06-30", listing_commission_rate: 3, total_commission_rate: 6, agent_signed_at: T0, seller_signed_at: T0 }, agreementDocuments: [d], addenda: [], sellerNames: ["Sam Seller"], gate: { allowed: true, refusals: [] }, approval, checkedAt: T0 })
+    const d0 = RG.decideListingRepresentation(input(doc()) as never)
+    check("C26 · a fully signed, consistent packet is NEEDS_REVIEW — a signature alone is never compliance", d0.verdict === "needs_review")
+    const w = world({ compliance_events: [], users: [{ id: CO, brokerage_id: LB, user_type: "compliance_officer", team_id: null }, { id: AU, brokerage_id: LB, user_type: "agent", team_id: null }], agents: [{ id: AG, user_id: AU, brokerage_id: LB }], user_roles: [], role_grants: [] })
+    check("C26 · NEGATIVE (permission) · the owning agent may not review their own packet; a compliance officer of the tenant may; another tenant's officer may not",
+      !RG.mayReviewRepresentation({ sameTenant: true, userType: "agent", grantedRoles: [], isOwningAgent: true }).ok && RG.mayReviewRepresentation({ sameTenant: true, userType: "compliance_officer", grantedRoles: [], isOwningAgent: false }).ok
+      && !RG.mayReviewRepresentation({ sameTenant: false, userType: "compliance_officer", grantedRoles: [], isOwningAgent: false }).ok)
+    const dPrice = RG.decideListingRepresentation(input(doc({ list_price: "550,000" })) as never)
+    check("C26 · CONFLICT (dependency) · the document's price contradicts the listing record → HOLD naming the document", dPrice.verdict === "hold" && dPrice.blockingReasons.some((r) => r.documentId === DOC))
+    ;(w.tables.compliance_events as Row[]).push({ id: u(156090), brokerage_id: LB, gate_name: RG.REPRESENTATION_REVIEW_GATE, entity_type: "listing_agreement", entity_id: LA, actor_user_id: CO, created_at: T0, allowed: true, details: { kind: "human_review", evidence_hash: d0.evidenceHash, decision: "approve" } })
+    const read = await RG.readRepresentationApproval(w as never, { brokerageId: LB, record: "listing_agreement", subjectId: LA })
+    const d1 = RG.decideListingRepresentation(input(doc(), read.ok ? read.approval as never : null) as never)
+    check("C26 · POSITIVE + CONSUMER · the officer's review of THAT evidence hash, read back through the ledger reader, makes it ALLOW", read.ok && d1.verdict === "allow", JSON.stringify(read))
+    const rec = await RG.recordRepresentationDecision(w as never, d1, CO, LB)
+    check("C26 · RECEIPT · the decision is recorded on the compliance ledger (gate representation_review) with its evidence hash", rec.ok && (w.tables.compliance_events as Row[]).some((e) => e.details?.kind === "decision" && e.details?.evidence_hash === d1.evidenceHash))
+    const other = await RG.readRepresentationApproval(w as never, { brokerageId: B2, record: "listing_agreement", subjectId: LA })
+    check("C26 · SECOND TENANT · another tenant reads no approval for this packet", other.ok && other.approval === null)
+    const changed = RG.decideListingRepresentation(input(doc({ commission_rate: 5 }), read.ok ? read.approval as never : null) as never)
+    check("C26 · RECOVERY · an approval of an OLD evidence hash does not carry over to a changed packet (it is decided again, not allowed)", changed.verdict !== "allow")
+    plane(6, "PARTIAL", "driven: executed packet → substantive comparison → reviewer authority → recorded decision → read back (lane 156B's doors). Missing links: forms / legal doc set (lane 156C) → listing ACTIVATION or purchase-offer TRANSACTION creation → milestones, appraiser, lender, closing agent, addenda are not chained here (test:wave156-b-representation-gate / test:wave156-c-forms-directory drive them)")
+  }
+
+  // ── C27 · PLANE 9 — Support / recovery (lane 156J's wire task, lane 156S's render claim) ──────────────────────────────────────
+  section("C27 · PLANE 9 — support / recovery: a fraud alert becomes ONE verification task for the right manager; a stalled render is claimed once")
+  {
+    const FN = await import("../lib/fraud-network/network")
+    const T = "c2700000-0000-4000-8000-000000000156"
+    const bulletin = { id: "fb-1", status: "published", typology: "wire_diversion_lookalike_domain", title: "Look-alike title domains", indicators: [{ kind: "lookalike_domain", value: "tit1e-co.example" }], claim_class: "verified_pattern" }
+    const w = world({ fraud_bulletins: [bulletin], tasks: [] })
+    const r = await quiet(() => FN.proposeWireVerificationTasks(w as never, { brokerageId: B1, flags: [{ key: "lookalike_domain" }], senderEmail: "closing@tit1e-co.example", transactionId: T, subjectRef: "wire-doc-1" }))
+    const task = (w.tables.tasks as Row[])[0]
+    const rec = ledgerRows(w).find((x: Row) => x.action === "fraud.verification_task.propose")
+    check("C27 · POSITIVE · red flags matching a published bulletin create ONE high-priority verification task; its receipt names the Deal Coordinator",
+      !!r.taskId && r.indicatorMatch && task?.priority === "high" && rec?.status === "executed" && rec?.actor_manager_key === "deal_coordinator", JSON.stringify(r))
+    const r2 = await quiet(() => FN.proposeWireVerificationTasks(w as never, { brokerageId: B1, flags: [{ key: "lookalike_domain" }], senderEmail: "closing@tit1e-co.example", transactionId: T, subjectRef: "wire-doc-1" }))
+    check("C27 · CONFLICT / RECOVERY · the same wire document delivered twice is ONE task (dedupe on the document), never two", r2.taskId === r.taskId && (w.tables.tasks as Row[]).length === 1)
+    const none = await quiet(() => FN.proposeWireVerificationTasks(w as never, { brokerageId: B1, flags: [], subjectRef: "wire-doc-2" }))
+    check("C27 · NEGATIVE · no red flag → no task, no accusation", !none.taskId && (w.tables.tasks as Row[]).length === 1)
+    const m1 = await FN.fraudNetworkMetrics(w as never, { kind: "tenant", brokerageId: B1 })
+    const m2 = await FN.fraudNetworkMetrics(w as never, { kind: "tenant", brokerageId: B2 })
+    check("C27 · CONSUMER + SECOND TENANT · the tenant metrics reader counts this tenant's task; another tenant counts none",
+      (m1 as Row).ok !== false && (m1 as Row).metrics?.verificationTasksProposed === 1 && (m2 as Row).metrics?.verificationTasksProposed === 0, JSON.stringify([(m1 as Row).metrics?.verificationTasksProposed, (m2 as Row).metrics?.verificationTasksProposed]))
+    const RR = await import("../lib/remotion/registry")
+    const rw = world({ remotion_composition_renders: [{ id: "rr-1", brokerage_id: B1, composition_id: "c", render_status: "queued", created_at: iso() }] })
+    const [a, b] = await Promise.all([RR.claimQueuedRender(rw, "rr-1"), RR.claimQueuedRender(rw, "rr-1")])
+    check("C27 · RECOVERY (render) · two ticks racing for one stalled render: exactly ONE claims it, and it runs as the row's OWN tenant", [a, b].filter((x) => x.data).length === 1 && [a, b].find((x) => x.data)?.data?.brokerage_id === B1)
+    plane(9, "PARTIAL", "driven: fraud alert → verification task (Deal Coordinator) → receipt → tenant-scoped reader → dedupe; render claim race. Missing links: provider outage / expired credential / dead webhook / unknown send / missed notification → tenant-friendly status → operator escalation are not chained here (test:wave156-s, test:send-recovery, test:os-planes-canaries drive pieces)")
+  }
+
+  // ── C28 · PLANE 5 — Sales and service (lane 156D's record-backed portal answer) ───────────────────────────────────────────
+  section("C28 · PLANE 5 — sales and service: a client's question is answered from the record, never from a model; a stranger gets nothing")
+  {
+    const Q = await import("../lib/portal/question-answer-decision")
+    const TX = "c2800000-0000-4000-8000-000000000156"
+    const w = world({ contacts: contactsSeed(), transactions: [{ id: TX, brokerage_id: B1, contact_id: C, buyer_contact_id: null, seller_contact_id: null, status: "under_contract", stage: "UNDER_CONTRACT", property_address: "12 Oak St", contract_closing_date: "2026-12-19", contract_closing_terms: "on_or_before", contract_closing_source: "executed_contract", deleted_at: null, updated_at: iso() }],
+      transaction_coordinators: [], transaction_lenders: [], transaction_title_escrow: [], transaction_milestones: [], trid_disclosure_receipts: [], vendor_assignments: [] })
+    let modelCalls = 0
+    const ask = (brokerageId: string, contactId: string | null) => quiet(() => Q.decidePortalAnswer(w as never, { brokerageId, contactId, question: "When is our closing date?", agentName: "Avery", generalAnswer: async () => { modelCalls++; return "You close on January 3." } }, { knowledge: async () => [] }))
+    const a = await ask(B1, C)
+    check("C28 · POSITIVE · the closing date comes from the executed contract on the record, with its source and version — 0 model calls", a.answered === "sourced" && /2026-12-19/.test(a.text) && a.sources.some((s) => s.source.startsWith(`transactions:${TX}`)) && modelCalls === 0, a.text)
+    const conflict = await ask(B1, C)
+    check("C28 · CONFLICT · the model's different date never wins against the record (the model is not even asked for a deal fact)", !/January 3/.test(conflict.text) && modelCalls === 0)
+    const anon = await ask(B1, null)
+    check("C28 · NEGATIVE (permission) · a visitor with no portal sign-in learns nothing about any deal", anon.answered === "unresolved" && !/2026-12-19/.test(anon.text))
+    const other = await ask(B2, C)
+    check("C28 · SECOND TENANT · the same contact id asked under another tenant reads no deal", !/2026-12-19/.test(other.text) && (other.deal?.blindSpots ?? []).some((b) => /not in this tenant/.test(b)))
+    check("C28 · CONSUMER · the answer's plan names who is pinged when it cannot be answered (the ding plan is computed on every answer)", !!a.plan && typeof a.plan === "object")
+    plane(5, "PARTIAL", "driven: record-backed answer with source + version, model never consulted for a deal fact, anonymous / other-tenant see nothing. Missing link: the DURABLE receipt (the ding writer's one task per unresolved question) and the saved-homes / sharing / notification-choice requests are not chained here")
+  }
+
+  // ── C29 · PLANE 3 — Real estate data graph (lane 156G's pre-pull, lane 156I's evidence gates) ──────────────────────────────────
+  section("C29 · PLANE 3 — data graph: buy only the gap, under rights and budget; no fictional person")
+  {
+    const R = await import("../lib/ai-isa/property-lookup-rail")
+    const P = await import("../lib/external/permit-signals")
+    const need = { capability: "owner_contact", materialFields: ["owner_phone", "owner_email"] }
+    const have = R.decidePrePull({ ...need, held: { owner_phone: { verified: true, ageDays: 3 }, owner_email: { verified: true, ageDays: 3 } } } as never)
+    const bought = R.decidePrePull({ ...need, alreadyPurchased: true } as never)
+    check("C29 · CONFLICT (duplicate) · a person our own record holds fresh, or already purchased in its window, is NOT bought again ($0)", have.buy.length === 0 && have.stage === "reuse_own_record" && bought.buy.length === 0 && bought.stage === "already_purchased", JSON.stringify([have.stage, bought.stage]))
+    const noBudget = R.decidePrePull({ ...need, budgetAllowed: false } as never)
+    const weak = R.decidePrePull({ ...need, identitySufficient: false } as never)
+    check("C29 · NEGATIVE · over budget → nothing bought; an identity too weak to assert a person → raw evidence kept, NO person asserted", noBudget.buy.length === 0 && weak.buy.length === 0 && (weak.stage === "keep_raw_evidence" || weak.stage === "held"), JSON.stringify([noBudget.stage, weak.stage]))
+    const unlicensed = P.permitDatasetRightsProblem({ licence: null } as never)
+    check("C29 · NEGATIVE (rights) · a permit dataset with unknown usage rights is never fetched", typeof unlicensed === "string" && unlicensed.length > 0)
+    plane(3, "PARTIAL", "driven: pre-pull refuses duplicates and over-budget buys; unlicensed permit data is never fetched (pure decisions). Missing links: ingestion → raw dedup → identify → promote to Lead → AI ISA → Contact → assigned agent is not one driven journey here, and a pure decision has no second tenant, receipt or consumer (test:wave156-g-provider-economics / test:wave156-i / test:os-planes-canaries C2 drive pieces)")
+  }
+
+  // ── C30 · PLANE 8 — Lifetime and knowledge (lane 156K's server-credited training and recruit intake) ─────────────────────────
+  section("C30 · PLANE 8 — lifetime and knowledge: training credit is the server's own clock; a current member is not a recruit")
+  {
+    const CE = await import("../lib/onboarding/certification-engine")
+    const SR = await import("../lib/recruiting/stale-recruit-policy")
+    const now = new Date()
+    const first = CE.creditWatchProgress({ durationSeconds: 600, claimedPercent: 100, prior: null, now })
+    const later = CE.creditWatchProgress({ durationSeconds: 600, claimedPercent: 100, prior: { percentWatched: 0, lastWriteAt: new Date(now.getTime() - 20_000).toISOString() }, now })
+    check("C30 · NEGATIVE · a browser claiming 100% on its first write is credited 0 — the server's clock credits watch time", first.creditedPercent === 0 && later.creditedPercent > 0 && later.creditedPercent < 100, JSON.stringify([first, later]))
+    const member = SR.recruitIntakeVerdict({ brokerageId: B1, member: { brokerageId: B1, status: "active", userType: "agent" }, recruits: [] })
+    const otherTenant = SR.recruitIntakeVerdict({ brokerageId: B1, member: { brokerageId: B2, status: "active", userType: "agent" }, recruits: [] })
+    check("C30 · SECOND TENANT · this tenant's own agent is not admitted as a recruit; an agent of ANOTHER tenant may be", !member.admit && otherTenant.admit, JSON.stringify([member, otherTenant]))
+    plane(8, "PARTIAL", "driven: server-credited training, recruit intake (pure decisions). Missing links: closing → real review request → education / anniversary / referral → Sphere → evidence-based gamification is not one driven journey here, and these pure decisions have no receipt or consumer of their own here (test:wave156-k, test:os-arbitration-canaries C5 drive pieces)")
+  }
+
+  g.fetch = prevFetch
+  console.log("\n NINE-PLANE CENSUS (each line: DRIVEN end to end, or PARTIAL with the exact missing link):")
+  for (const p of planes.sort()) console.log(`   ${p}`)
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

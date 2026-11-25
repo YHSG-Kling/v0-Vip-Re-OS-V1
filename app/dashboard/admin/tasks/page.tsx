@@ -1,6 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { getAgentContext } from '@/lib/identity'
-import { toCanonicalRoleOrDefault } from '@/lib/security'
+import { toCanonicalRoleOrDefault } from '@/lib/security/types'
 import { redirect } from 'next/navigation'
 import { isAdminOrBroker } from '@/lib/auth/resolve-user-role'
 import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'

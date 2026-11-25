@@ -7,7 +7,7 @@ import { PRE_QUALIFICATION_CONTACT_STATUSES, CONTACT_STATUS_LABELS, type Contact
 // leaf, NOT from @/lib/kernel/communication-compliance — that module's first
 // import is createServiceClient, and this is a "use client" file.
 import { isEligibleForOutbound, getSuppressionReasons } from "@/lib/kernel/compliance/outbound-predicates"
-import { useAuth } from "@/lib/auth/client"
+import { useAuth } from "@/lib/auth/useAuth"
 import { resolveUserTeam } from "@/lib/kernel/resolve-user-team"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById, createContact, addContactNote, archiveContact } from "@/app/actions/contacts"

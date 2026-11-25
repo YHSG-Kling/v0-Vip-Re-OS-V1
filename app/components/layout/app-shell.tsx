@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import useSWR from 'swr'
-import { useAuth } from '@/lib/auth/client'
+import { useAuth } from '@/lib/auth/useAuth'
 import { logUserActivity } from '@/app/actions/workflows'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
