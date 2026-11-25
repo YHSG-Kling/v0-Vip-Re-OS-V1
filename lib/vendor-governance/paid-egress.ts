@@ -108,7 +108,13 @@ export async function runPaidEgress<T>(
   const brokerageId = door.brokerageId
 
   type Ran = { kind: "refused"; budget: VendorBudgetResult } | { kind: "ran"; result: T; j: PaidEgressJudgement; cost: number; booked: boolean }
-  type Out = Ran | { kind: "replay"; claim: { kind: string; entry?: { provider_ref?: string | null } | null; error?: string } }
+  // REFUSAL-AWARE REPLAY (round 5): ONLY a first run the ledger settled `executed` (a SUCCEEDED call) is a replay whose result
+  // may be served again. A claim the ledger REFUSED, an `unknown` (a timeout — the provider may or may not have acted) or a
+  // run still in flight is NOT a success: it comes back `not_replayed` with no provider reference, so no door can serve it as
+  // one. (A `failed` / `skipped` first run — a provider error, a budget refusal — never reaches this hook: the ledger
+  // re-claims it and the call runs again, budget first.)
+  type Claimed = { kind: string; entry?: { provider_ref?: string | null } | null; error?: string }
+  type Out = Ran | { kind: "replay"; claim: Claimed } | { kind: "not_replayed"; claim: Claimed }
   const { withActionLedger } = await import("@/lib/kernel/action-ledger")
   const out = await withActionLedger<Out>(
     {
@@ -133,16 +139,18 @@ export async function runPaidEgress<T>(
         : o.kind === "ran" && o.j.ok
           ? { status: "executed", outcome: "succeeded", provider: door.vendor, providerRef: o.j.providerRef ?? null, costUsd: o.cost }
           : { status: "failed", outcome: "provider_failed", provider: door.vendor, costUsd: 0, error: o.kind === "ran" ? (o.j.error ?? "provider call failed") : null },
-      replay: (claim) => ({ kind: "replay", claim: claim as never }),
+      replay: (claim) => claim.kind === "replay" ? { kind: "replay", claim: claim as Claimed } : { kind: "not_replayed", claim: claim as Claimed },
     },
   )
   if (out.kind === "refused") {
     return { ran: false, reason: "budget_refused", detail: `vendor budget exceeded — ${door.vendor} ${door.usageType} paused ($${out.budget.spent}/$${out.budget.budget})`, budget: out.budget }
   }
   if (out.kind === "replay") {
+    return { ran: false, reason: "replay", detail: `${door.action} already succeeded under ${key}`, providerRef: out.claim.entry?.provider_ref ?? null }
+  }
+  if (out.kind === "not_replayed") {
     const c = out.claim
-    const reason = c.kind === "replay" ? "replay" : c.kind === "refused" ? "ledger_refused" : "in_flight"
-    return { ran: false, reason, detail: c.error ?? `${door.action} already ${c.kind === "replay" ? "ran" : "in flight"} under ${key}`, providerRef: c.entry?.provider_ref ?? null }
+    return { ran: false, reason: c.kind === "refused" ? "ledger_refused" : "in_flight", detail: c.error ?? `${door.action} under ${key} is ${c.kind === "unknown" ? "of unknown outcome (a timeout) — not served as a success" : "still in flight"}`, providerRef: null }
   }
   return { ran: true, result: out.result, ok: out.j.ok, costUsd: out.cost, booked: out.booked }
 }

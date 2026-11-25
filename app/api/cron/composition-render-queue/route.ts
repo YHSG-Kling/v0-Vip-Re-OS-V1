@@ -30,7 +30,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { verifyCronAuth } from "@/lib/cron-auth"
 import { createCronRunContextAction, recordCronSuccessAction, recordCronFailureAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
-import { PICKABLE_RENDER_STATUS } from "@/lib/remotion/render-decision"
+// (wave 156, 156S) the queue pick and its status test live in lib/remotion/registry.ts pickNextQueuedRender.
 import { recoverStalledRenders, requeueFailedRenders, pickNextQueuedRender } from "@/lib/remotion/registry"
 
 export const dynamic = "force-dynamic"

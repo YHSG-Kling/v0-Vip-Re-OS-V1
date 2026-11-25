@@ -430,12 +430,24 @@ async function runTtsDoor<T>(
   providerRef: () => string | null = () => null,
 ) {
   const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
-  const { estimatePlatformVendorCost } = await import("@/lib/vendor-governance/meter-vendor")
+  const { estimatePlatformVendorCost, meterVendorSpend } = await import("@/lib/vendor-governance/meter-vendor")
   const chars = input.text.length
-  return runPaidEgress<T>({
+  // THE SPEND IS BOOKED HERE, in this door's own span (round 5): `book: "caller"` — the composition still asks the budget
+  // first and settles the receipt with the cost, and the characters are booked below only when the call SUCCEEDED, once
+  // per idempotency key. Booking from this span (not the composition's nested meter call) keeps the real
+  // vendor_usage_tracking write on every caller's path, one hop shorter, where the coverage census reads it.
+  const res = await runPaidEgress<T>({
     brokerageId: input.brokerageId ?? null, vendor: "elevenlabs", usageType: "tts", action: "voice.tts.synthesize",
-    estimatedCostUsd: estimatePlatformVendorCost("elevenlabs", chars), units: chars,
+    estimatedCostUsd: estimatePlatformVendorCost("elevenlabs", chars), units: chars, book: "caller",
     subject: { type: "tts_voice", id: null, ref: String(metadata.voice_id ?? "") || null },
     systemSource, metadata: { ...metadata, chars }, idempotencyKey: input.idempotencyKey ?? null,
   }, call, (r) => ({ ok: ok(r), units: chars, providerRef: ok(r) ? providerRef() : null }))
+  if (res.ran && res.ok && res.costUsd > 0) {
+    await meterVendorSpend({
+      vendorName: "elevenlabs", usageType: "tts", cost: res.costUsd, unitCount: chars,
+      brokerageId: input.brokerageId ?? null, platformPaid: !input.brokerageId, idempotencyKey: input.idempotencyKey ?? null,
+      systemSource, metadata: { ...metadata, chars, action: "voice.tts.synthesize" },
+    })
+  }
+  return res
 }

@@ -452,6 +452,27 @@ async function main() {
     check("a tenant-less TTS call is booked as PLATFORM spend (it was booked nowhere)", G.__S.calls.elevenlabs === 1 && platformRows.length === 1, { calls: G.__S.calls.elevenlabs, rows: db.tables.vendor_usage_tracking.length })
   }
   globalThis.fetch = realFetch
+  {
+    // ROUND 5 — REFUSAL-AWARE REPLAY. Only a first run the ledger settled `executed` is served again; a failed / refused /
+    // unknown first run is never handed back as a success.
+    let db = reset(true)
+    const k = "replay-aware:fail-then-ok"
+    const f1 = await drive(() => tts.synthesizeSpeech({ text: "a keyed line that fails first", brokerageId: UNDER, idempotencyKey: k }))
+    G.__S.fail = false
+    for (const r of db.tables.agent_action_ledger) r.attempts ??= 1 // the column's DEFAULT 1 (m687) — the in-memory client applies no defaults
+    const f2 = await drive(() => tts.synthesizeSpeech({ text: "a keyed line that fails first", brokerageId: UNDER, idempotencyKey: k }))
+    check("NEGATIVE: a FAILED first run is not replayed as ok — the retry really calls the provider (2 calls), books once, and is not marked replayed", f1.r?.success === false && f2.r?.success === true && f2.r?.replayed !== true && G.__S.calls.elevenlabs === 2 && spendRows(db, UNDER).length === 1, { f1: f1.r?.success, f2: f2.r, calls: G.__S.calls.elevenlabs })
+    db = reset()
+    const k2 = "replay-aware:unknown"
+    G.__S.blobs["documents/paid-replay/b-under/x.mp3"] = Buffer.from([9, 9, 9])
+    db.tables.agent_action_ledger.push({ id: "led-unknown", brokerage_id: UNDER, action: "voice.tts.synthesize", idempotency_key: k2, status: "unknown", attempts: 1, outcome: "provider_timeout", provider: "elevenlabs", provider_ref: "docref://documents/paid-replay/b-under/x.mp3" })
+    const u = await drive(() => tts.synthesizeSpeech({ text: "an unknown first run", brokerageId: UNDER, idempotencyKey: k2 }))
+    check("NEGATIVE: a first run of UNKNOWN outcome (a timeout) is not served as a success — no audio, no provider call, no charge", u.r?.success === false && !u.r?.audioBuffer && G.__S.calls.elevenlabs === 0 && spendRows(db, UNDER).length === 0, { r: u.r, calls: G.__S.calls.elevenlabs })
+    const k3 = "replay-aware:executed"
+    db.tables.agent_action_ledger.push({ id: "led-exec", brokerage_id: UNDER, action: "voice.tts.synthesize", idempotency_key: k3, status: "executed", attempts: 1, outcome: "succeeded", provider: "elevenlabs", provider_ref: "docref://documents/paid-replay/b-under/x.mp3" })
+    const e = await drive(() => tts.synthesizeSpeech({ text: "an executed first run", brokerageId: UNDER, idempotencyKey: k3 }))
+    check("POSITIVE: a SUCCEEDED (executed) first run replays its stored copy — the same bytes, no provider call, no charge", e.r?.success === true && e.r?.replayed === true && Buffer.from(e.r?.audioBuffer ?? []).equals(Buffer.from([9, 9, 9])) && G.__S.calls.elevenlabs === 0, { r: e.r?.success, replayed: e.r?.replayed, calls: G.__S.calls.elevenlabs })
+  }
 
   const did = await load("lib/did/index.ts")
   {

@@ -47,7 +47,7 @@ import {
   isStillComposition,
   outputContentType,
   outputExtension,
-  PICKABLE_RENDER_STATUS,
+  // (wave 156, 156S) PICKABLE_RENDER_STATUS: the claim's status test lives in lib/remotion/registry.ts claimQueuedRender.
   buildRenderIntent,
   resolveInputProps,
   needsThumbnailPass,

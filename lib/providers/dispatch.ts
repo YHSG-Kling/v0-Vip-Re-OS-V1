@@ -46,7 +46,7 @@ import {
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { VENDOR_PRICING, normalizeVendorCost, DIRECT_MAIL_PIECE_COST_USD } from "@/lib/vendor-governance/cost-normalizer"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { convertSpeech } from "@/lib/providers/elevenlabs/client"
+// TOMBSTONE (wave 156, 156S): the direct ElevenLabs SDK call left this file — dispatchVideoViaDID narrates through lib/voice/elevenlabs-tts.ts synthesizeSpeech (the paid voice door).
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
@@ -76,7 +76,7 @@ import {
   DID_TALK_REALISM_CONFIG,
   DID_NATURAL_DRIVER_URL,
   ELEVENLABS_REALISM_VOICE_SETTINGS,
-  ELEVENLABS_TEXT_NORMALIZATION,
+  // ELEVENLABS_TEXT_NORMALIZATION: applied inside synthesizeSpeech now (wave 156, 156S).
   elevenLabsModelForLane,
   estimateAvatarRenderCostUsd, elevenLabsUsdForChars,
   withNaturalPauses,
