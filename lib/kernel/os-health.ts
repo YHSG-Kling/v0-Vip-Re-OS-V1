@@ -835,7 +835,7 @@ const defaultRetry = async (svc: Svc, i: HealthIncident): Promise<{ ok: boolean;
   }
   if (i.subjectKey === "reconciler:commission_amount_drift") {
     const { reapCommissionAmountDrift } = await import("@/lib/finance/commission-tracking-reaper")
-    const { recordReaperRun } = await import("@/lib/intelligence/reaper-net")
+    const { recordReaperRun } = await import("@/lib/intelligence/reaper-runs-ledger")
     const r = await reapCommissionAmountDrift(i.brokerageId, svc)
     await recordReaperRun({ brokerageId: i.brokerageId, domain: "commission_amount_drift", manager: "finance_manager", ...r, detail: "re-run by the OS health supervisor (missing reconciliation)" }, svc)
     return { ok: true, outcome: `reconciler re-run: ${r.scanned} checked, ${r.escalated} drift(s) escalated` }

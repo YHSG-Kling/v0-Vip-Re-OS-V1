@@ -11,7 +11,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { MANAGERS, type ManagerKey } from '@/lib/kernel/manager-registry'
-import { loadRecentReaperActivity } from '@/lib/intelligence/reaper-net'
+import { loadRecentReaperActivity } from '@/lib/intelligence/reaper-runs-ledger'
 import { summarizeManagerTouches, type ManagerTouchSummary } from '@/lib/intelligence/manager-touch-provenance'
 
 /** RECEIPTS — what a manager actually SENT in the window, from the shared touch
