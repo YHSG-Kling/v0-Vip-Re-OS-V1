@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { verifyStripeWebhook } from "@/lib/billing/stripe-webhook-secrets"
 import { mapStripeEventToStatus, normalizeTier } from "@/lib/kernel/vendor-subscription"
-import { withActionLedger } from "@/lib/kernel/action-ledger"
+import { withActionLedger, doorTrust } from "@/lib/kernel/action-ledger"
 import {
   applyVendorPayoutProviderEvent,
   releaseEarningsOfFailedPayout,
@@ -233,7 +233,7 @@ async function applyVendorSubscriptionEvent(input: {
     {
       brokerageId,
       action: "vendor.subscription.apply_provider_event",
-      actor: { type: "system" },
+      actor: { type: "system" }, ...doorTrust("signature_verified_provider"),
       subject: { type: "vendor_marketplace_profile", id: input.vendorProfileId },
       idempotencyKey: `stripe_vendor:${input.eventId}`,
       reasonCode: "SUBSCRIPTION_LIFECYCLE",

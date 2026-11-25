@@ -767,10 +767,10 @@ export async function handleRSVP(params: { eventId: string; invitationId: string
 
     // LAW 5: ONE receipt for the RSVP — tenant = the one the door PROVED, actor `system` (an anonymous invitee holding a link),
     // subject the invitation. No key: a changed answer ("maybe" → "yes") is a new answer and must run.
-    const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+    const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
     type Rsvp = { success: boolean; error?: string; message?: string }
     return await withActionLedger<Rsvp>({
-      brokerageId: rsvpBrokerageId, action: "marketing.open_house_rsvp.record", actor: { type: "system", userId: null },
+      brokerageId: rsvpBrokerageId, action: "marketing.open_house_rsvp.record", actor: { type: "system", userId: null }, ...doorTrust("anonymous_public_request"),
       subject: { type: "open_house_invitation", id: params.invitationId }, riskClass: "LOW_RISK_WRITE", reasonCode: "CONVERSATION_RESPONSE",
       reasonDetail: "invitee answered an open-house invitation", channel: "web", systemSource: "open_house_rsvp_link",
       detail: { response: params.response, event_id: params.eventId, door: rsvpDoor.basis },

@@ -144,9 +144,9 @@ export async function submitDataSubjectRequestAction(
   }
   }
   if (!brokerageId) return submit()
-  const { withActionLedger } = await import("@/lib/kernel/action-ledger")
+  const { withActionLedger, doorTrust } = await import("@/lib/kernel/action-ledger")
   return withActionLedger<Submitted>({
-    brokerageId, action: "privacy.data_subject_request.submit", actor: { type: "system", userId: null },
+    brokerageId, action: "privacy.data_subject_request.submit", actor: { type: "system", userId: null }, ...doorTrust("anonymous_public_request"),
     subject: { type: "data_subject_request", ref: input.requestType }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED",
     channel: "web_form", systemSource: "privacy_request_form",
     detail: { request_type: input.requestType, matched_user: !!matchUser?.id, matched_contact: !!matchContact?.id, door: door.basis },

@@ -263,7 +263,7 @@ async function originAtSink(params: DispatchActorContext, channel: "email" | "sm
     sink: o?.sink ?? null, detail: { held_send: heldSendEnvelope(params, channel) }, // 156M: a HOLD keeps what a person may later approve (approveHeldSend)
   }, run)
   if ("providerKey" in r) return r
-  return { success: false, providerKey: "governance" in r ? "sink_rule_gate" : "action_ledger_gate", error: r.error ?? "This proposal was already handled — not sent again." }
+  return { success: false, providerKey: "governance" in r ? "sink_rule_gate" : "action_ledger_gate", error: "governance" in r ? `${r.error} [${(r as { governance: { reason: string } }).governance.reason}]` : (r.error ?? "This proposal was already handled — not sent again.") }
 }
 
 // ─── THE PERSISTED SEND INTENT (wave 153, lane 153S — owner ruling B10) ─────────────────────────────────────────────────────
@@ -2177,9 +2177,12 @@ function heldSendEnvelope(params: DispatchActorContext, channel: "email" | "sms"
 }
 
 /** The fact a send approval rests on: the newest message in the contact's thread (tenant-pinned). null = refused / unreadable. */
-async function threadHeadFact(svc: { from: (t: string) => any }, brokerageId: string, contactId: string | null): Promise<{ type: string; id: string | null; version: string } | null> {
+async function threadHeadFact(svc: { from: (t: string) => any }, brokerageId: string, contactId: string | null, asOf?: string | null): Promise<{ type: string; id: string | null; version: string } | null> {
   if (!contactId) return { type: "thread_head", id: null, version: "no_contact" }
-  const { data, error } = await svc.from("messages").select("id, created_at").eq("brokerage_id", brokerageId).eq("contact_id", contactId).order("created_at", { ascending: false }).limit(1)
+  // `asOf` (round 3): the head the HELD proposal was drafted against — a message after it means the thread moved on.
+  let q = svc.from("messages").select("id, created_at").eq("brokerage_id", brokerageId).eq("contact_id", contactId)
+  if (asOf) q = q.lte("created_at", asOf)
+  const { data, error } = await q.order("created_at", { ascending: false }).limit(1)
   if (error) return null
   const top = Array.isArray(data) && data[0] ? (data[0] as { id: string }) : null
   return { type: "thread_head", id: contactId, version: top?.id ?? "empty" }
@@ -2197,15 +2200,17 @@ export async function approveHeldSend(
   a: { brokerageId: string; holdId: string; approverUserId: string; authority: string; ttlMinutes?: number; now?: Date },
 ): Promise<{ ok: true; approvalId: string } | { ok: false; error: string }> {
   if (!a.brokerageId || !a.holdId || !a.approverUserId || !a.authority?.trim()) return { ok: false, error: "approval_incomplete: tenant, hold, approver and authority are required" }
-  const { data: hold, error } = await svc.from("agent_action_ledger").select("id, action, status, subject_type, subject_id, detail").eq("id", a.holdId).eq("brokerage_id", a.brokerageId).maybeSingle()
+  const { data: hold, error } = await svc.from("agent_action_ledger").select("id, action, status, subject_type, subject_id, detail, created_at").eq("id", a.holdId).eq("brokerage_id", a.brokerageId).maybeSingle()
   if (error) return { ok: false, error: `hold_read_refused: ${error.message}` }
-  const h = hold as { id: string; action: string; status: string; subject_type: string; subject_id: string | null; detail: Record<string, any> | null } | null
+  const h = hold as { id: string; action: string; status: string; subject_type: string; subject_id: string | null; detail: Record<string, any> | null; created_at?: string | null } | null
   if (!h) return { ok: false, error: "hold_not_found: no held send with that id in this tenant" }
   if (h.action !== "comms.decision.wait" || h.status !== "skipped" || !/^comms\.(?:sms|email)\.propose$/.test(String(h.detail?.proposed_action ?? ""))) return { ok: false, error: "not_a_held_send: only a held outbound proposal can be approved here" }
   if (!h.detail?.held_send) return { ok: false, error: "no_envelope: the hold kept no send to release (too large, or held before 156M) — the proposal must be made again" }
+  const closed = await heldSendClosure(svc, a.brokerageId, h.id)
+  if (closed) return { ok: false, error: `hold_closed: this held send was already ${closed} — it is not sent` }
   const now = a.now ?? new Date()
   const contactId = h.subject_type === "contact" ? h.subject_id : null
-  const head = await threadHeadFact(svc, a.brokerageId, contactId)
+  const head = await threadHeadFact(svc, a.brokerageId, contactId, h.created_at ?? null)
   if (!head) return { ok: false, error: "thread_unreadable: the conversation could not be read — nothing approved (fail closed)" }
   const expiresAt = new Date(now.getTime() + (a.ttlMinutes ?? HELD_SEND_APPROVAL_TTL_MINUTES) * 60_000).toISOString()
   const verification = { kind: "authorized_human" as const, userId: a.approverUserId, authority: a.authority.trim(), at: now.toISOString() }
@@ -2254,7 +2259,50 @@ export async function releaseApprovedSend(svc: { from: (t: string) => any }, a: 
   }
   const params = { ...env.params, brokerageId: a.brokerageId, origin }
   // The WHY of a released send is the person's approval (HUMAN_REQUESTED); the approval id is the unit of once.
-  return env.kind === "sms"
-    ? dispatchSms({ ...(params as unknown as DispatchSmsParams), ledger: { reasonCode: "HUMAN_REQUESTED", reasonDetail: `released by send approval ${a.approvalId}` } })
-    : dispatchEmail({ ...(params as unknown as DispatchEmailParams), ledger: { reasonCode: "HUMAN_REQUESTED", reasonDetail: `released by send approval ${a.approvalId}` } })
+  const out = env.kind === "sms"
+    ? await dispatchSms({ ...(params as unknown as DispatchSmsParams), ledger: { reasonCode: "HUMAN_REQUESTED", reasonDetail: `released by send approval ${a.approvalId}` } })
+    : await dispatchEmail({ ...(params as unknown as DispatchEmailParams), ledger: { reasonCode: "HUMAN_REQUESTED", reasonDetail: `released by send approval ${a.approvalId}` } })
+  // Round 3: an approval the sink found SUPERSEDED (the thread moved on) or EXPIRED can never send — the hold is CLOSED (a terminal
+  // decision row), so it leaves the approval queue instead of sitting there forever.
+  const stale = out.providerKey === "sink_rule_gate" ? /\[decision_superseded\]/.test(out.error ?? "") ? "superseded" : /\[decision_expired\]/.test(out.error ?? "") ? "expired" : null : null
+  if (stale) await declineHeldSend(svc, { brokerageId: a.brokerageId, holdId, deciderUserId: approver, reason: stale })
+  return stale ? { ...out, error: stale === "superseded" ? "Not sent — the conversation moved on since this was drafted. It is closed; the newest message gets its own answer." : "Not sent — this approval lapsed before it could go out. It is closed; ask for a new draft if it is still needed." } : out
+}
+
+/** Whether a hold has reached a terminal decline (`declined` / `superseded` / `expired`); null = still open. */
+async function heldSendClosure(svc: { from: (t: string) => any }, brokerageId: string, holdId: string): Promise<string | null> {
+  const { data } = await svc.from("agent_action_ledger").select("id, detail").eq("brokerage_id", brokerageId).eq("idempotency_key", `${brokerageId}:held_send_decline:${holdId}`).maybeSingle()
+  const d = data as { detail?: Record<string, unknown> | null } | null
+  return d ? String(d.detail?.decline_reason ?? "declined") : null
+}
+
+/**
+ * A person DECLINES a held send (or the release found it stale): ONE terminal decision row (`comms.decision.do_nothing`, detail
+ * `declines` + `decline_reason`), idempotent per hold. A hold that was already approved and released is refused (it went out).
+ * Tenant-pinned; never sends.
+ */
+export async function declineHeldSend(
+  svc: { from: (t: string) => any },
+  a: { brokerageId: string; holdId: string; deciderUserId: string; reason?: "declined" | "superseded" | "expired" },
+): Promise<{ ok: true; declined: string } | { ok: false; error: string }> {
+  const { data: hold, error } = await svc.from("agent_action_ledger").select("id, action, subject_type, subject_id, detail").eq("id", a.holdId).eq("brokerage_id", a.brokerageId).maybeSingle()
+  if (error) return { ok: false, error: `hold_read_refused: ${error.message}` }
+  const h = hold as { id: string; action: string; subject_type: string; subject_id: string | null; detail: Record<string, any> | null } | null
+  if (!h || h.action !== "comms.decision.wait") return { ok: false, error: "hold_not_found: no held send with that id in this tenant" }
+  const reason = a.reason ?? "declined"
+  if (reason === "declined") {
+    const { data: sent } = await svc.from("agent_action_ledger").select("id").eq("brokerage_id", a.brokerageId).eq("idempotency_key", `${a.brokerageId}:held_send_approval:${h.id}`).maybeSingle()
+    if (sent) return { ok: false, error: "already_approved: this held send was approved — declining it now changes nothing" }
+  }
+  const r = await recordNonAction({
+    brokerageId: a.brokerageId, domain: "comms", decision: "do_nothing", actor: { type: "user", userId: a.deciderUserId }, subject: { type: h.subject_type, id: h.subject_id },
+    reasonCode: "HUMAN_REQUESTED", reasonDetail: `held ${String(h.detail?.proposed_action ?? "send")} closed (${reason})`, idempotencyKey: `${a.brokerageId}:held_send_decline:${h.id}`,
+    detail: { declines: h.id, decline_reason: reason, governance: governanceRecord({
+      plane: "approval", verdict: reason === "declined" ? "rejected" : "expired", scope: { brokerageId: a.brokerageId, userId: a.deciderUserId }, actor: { type: "user", id: a.deciderUserId },
+      entity: { type: h.subject_type, id: h.subject_id, version: null }, objective: String(h.detail?.proposed_action ?? "comms.send"),
+      rationale: reason === "declined" ? "an authorized person declined the held send" : `the held send's approval was ${reason} at release — it can never send`,
+      trustClass: "authorized_human", approvalBasis: "human_approval", nextTrigger: { kind: "none" },
+    }) },
+  }, { client: svc })
+  return r.recorded ? { ok: true, declined: reason } : { ok: false, error: `decline_not_recorded: ${r.error ?? "unknown"}` }
 }

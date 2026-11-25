@@ -124,7 +124,7 @@ export interface ManagerSessionClientMessage {
 
 export interface CommandCenterAction {
   id:         string
-  queue:      "marketing" | "asset" | "ads" | "client_message" | ContentQueue
+  queue:      "marketing" | "asset" | "ads" | "client_message" | "held_send" | ContentQueue
   brokerageId: string
   actionType: string
   rationale:  string | null
@@ -669,7 +669,11 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // stamped with its owning manager (zero orphans) — client_message resolves per-row
   // from agent_kind; every other queue from the static QUEUE_MANAGER map.
   const slaRank: Record<ApprovalSlaLevel, number> = { breached: 0, due: 1, ok: 2 }
+  // WAVE 156 (156M, round 3): THIS tenant's held sends awaiting a person (the sink's comms.decision.wait rows that kept an envelope).
+  // A single tenant's brokerage-wide viewer only — a platform scope never reads another tenant's message.
+  const heldSends: RawAction[] = tenant.kind === "tenant" && brokerageWide ? await loadHeldSendActions(supabase, tenant.brokerageId, limit, now) : []
   const rawActions: RawAction[] = [
+    ...heldSends,
     ...(marketingRes.data ?? []).map(mapAction("marketing")),
     ...(assetRes.data ?? []).map(mapAction("asset")),
     ...(adsRes.data ?? []).map(mapAction("ads")),
@@ -678,7 +682,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   ]
   const pendingActions: CommandCenterAction[] = rawActions
     .map((a): CommandCenterAction => {
-      const mgr = resolveActionManager(a.queue, (a.actionInput?.agent_kind as string | null) ?? null)
+      const mgr = resolveActionManager(a.queue === "held_send" ? "client_message" : a.queue, (a.actionInput?.agent_kind as string | null) ?? null) // 156M: a held send is owned per row (the manager that proposed it)
       // Extend the Compliance Officer pre-flight to ALL outbound copy (client_message already
       // carries its consent-aware verdict); broadcast content is Fair-Housing-advisory only.
       let compliance = a.compliance
@@ -1103,4 +1107,55 @@ export async function loadManagerSessionDetail(params: {
       })),
     },
   }
+}
+
+/**
+ * WAVE 156 (lane 156M, round 3) — THE HELD SENDS A PERSON MAY RELEASE, in the existing approval queue (no second queue).
+ * The sink (lib/kernel/action-ledger.ts sinkRule, via lib/providers/dispatch.ts originAtSink) HELD these outbound proposals because
+ * an untrusted origin (a model, an inbound message) set their privilege; each hold kept its envelope. Read from the ledger ONLY, pinned
+ * to ONE tenant; a hold already approved (`comms.decision.send_touch` with `approves`) or closed (`comms.decision.do_nothing` with
+ * `declines`) is not listed. Who / what / why come from the row itself. Released through app/actions/command-center.ts (queue
+ * `held_send`) → lib/providers/dispatch.ts approveHeldSend + releaseApprovedSend, or closed through declineHeldSend.
+ * @proofSeam driven by scripts/wave156-m-guard.ts §K.
+ */
+export async function loadHeldSendActions(
+  supabase: { from: (t: string) => any }, brokerageId: string, limit: number, now: Date,
+): Promise<Array<Omit<CommandCenterAction, "managerKey" | "managerLabel">>> {
+  if (!brokerageId) return []
+  const since = new Date(now.getTime() - 30 * 86_400_000).toISOString()
+  const { data: holds, error } = await supabase.from("agent_action_ledger")
+    .select("id, brokerage_id, actor_manager_key, actor_user_id, subject_type, subject_id, system_source, reason_detail, detail, created_at")
+    .eq("brokerage_id", brokerageId).eq("action", "comms.decision.wait").gte("created_at", since)
+    .order("created_at", { ascending: true }).limit(limit)
+  if (error) { console.error("[command-center] held-send read refused:", error.message); return [] }
+  const rows = ((holds ?? []) as Array<Record<string, any>>).filter((held) => held.detail?.held_send && /^comms\.(?:sms|email)\.propose$/.test(String(held.detail?.proposed_action ?? "")))
+  if (rows.length === 0) return []
+  // Closed = declined (a terminal decision), or approved AND its release executed (the propose row keyed on that approval went out).
+  // An approved hold whose release did not go out (a later gate refused, the provider failed) stays listed: approve again retries it.
+  const { data: done, error: dErr } = await supabase.from("agent_action_ledger").select("id, action, status, idempotency_key, detail")
+    .eq("brokerage_id", brokerageId).in("action", ["comms.decision.send_touch", "comms.decision.do_nothing", "comms.sms.propose", "comms.email.propose"]).gte("created_at", since).limit(2000)
+  if (dErr) { console.error("[command-center] held-send closure read refused — none listed (fail closed):", dErr.message); return [] }
+  const ledger = (done ?? []) as Array<Record<string, any>>
+  const releasedKeys = ledger.filter((entry) => /\.propose$/.test(String(entry.action)) && entry.status === "executed").map((entry) => String(entry.idempotency_key ?? ""))
+  const closed = new Set<string>()
+  for (const entry of ledger) {
+    if (entry.action === "comms.decision.do_nothing" && entry.detail?.declines) closed.add(String(entry.detail.declines))
+    if (entry.action === "comms.decision.send_touch" && entry.detail?.approves && releasedKeys.some((k) => k.endsWith(`:release:${entry.id}`))) closed.add(String(entry.detail.approves))
+  }
+  return rows.filter((held) => !closed.has(String(held.id))).map((held) => {
+    const env = held.detail.held_send as { kind: "sms" | "email"; params: Record<string, unknown> }
+    const p = env.params ?? {}
+    const sla = evaluateApprovalSla(held.created_at ?? null, now)
+    const why = String(held.detail?.governance?.rationale ?? held.reason_detail ?? "held for a person's verification")
+    return {
+      id: String(held.id), queue: "held_send" as const, brokerageId, actionType: "release_held_send",
+      rationale: `Held by the send gate: ${why}`.slice(0, 600),
+      actionInput: {
+        agent_kind: held.actor_manager_key ?? null, channel: env.kind, to: String(p.to ?? ""), subject: (p.subject as string | undefined) ?? null,
+        body: String(env.kind === "sms" ? (p.message ?? "") : (p.text ?? p.html ?? "")).slice(0, 2000), recipient_contact_id: (p.contactId as string | undefined) ?? null,
+        proposed_by: String(held.detail?.governance?.trust_class ?? "unknown origin"), system_source: held.system_source ?? null,
+      },
+      status: "held", proposedAt: held.created_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
+    }
+  })
 }

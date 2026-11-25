@@ -36,7 +36,7 @@ const QUEUE_BADGE: Record<string, string> = {
   transaction_smart_task: "bg-red-50 text-red-700",
   agent_followup:    "bg-cyan-100 text-cyan-800",
   blog:              "bg-lime-100 text-lime-800",
-  podcast:           "bg-fuchsia-100 text-fuchsia-800",
+  podcast:           "bg-fuchsia-100 text-fuchsia-800", held_send: "bg-yellow-100 text-yellow-900",
 }
 const QUEUE_LABEL: Record<string, string> = {
   marketing:     "Marketing Agent",
@@ -52,7 +52,7 @@ const QUEUE_LABEL: Record<string, string> = {
   transaction_smart_task: "Deal Task",
   agent_followup:    "Follow-up",
   blog:              "Blog Post",
-  podcast:           "Podcast",
+  podcast:           "Podcast", held_send: "Held message",
 }
 // Manager display labels come from the canonical registry (single source of truth) —
 // no hand-kept map to drift from MANAGERS.
@@ -1355,7 +1355,7 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
           {action.queue === "transaction_smart_task" && <SmartTaskPreview input={action.actionInput} />}
           {action.queue === "agent_followup" && <FollowupPreview input={action.actionInput} />}
           {action.queue === "blog" && <BlogPreview input={action.actionInput} />}
-          {action.queue === "podcast" && <PodcastPreview input={action.actionInput} />}
+          {action.queue === "podcast" && <PodcastPreview input={action.actionInput} />}{action.queue === "held_send" && <HeldSendPreview input={action.actionInput} />}
           {isClientMsg && (
             <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
               <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -1420,6 +1420,23 @@ function StandupAudioButton() {
           Generate the audio again
         </Button>
       )}
+    </div>
+  )
+}
+
+// WAVE 156 (lane 156M, round 3) — a send the send gate HELD for a person (lib/kernel/command-center.ts loadHeldSendActions). Approve
+// releases it carrying this approval; if the conversation moved on or the approval lapsed, the door's refusal sentence shows in the row.
+function HeldSendPreview({ input }: { input: Record<string, unknown> }) {
+  return (
+    <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-2">
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <span>Held before sending — approve to send it as written</span>
+        <Badge className="bg-slate-100 text-slate-700">via {String(input.channel ?? "message")}</Badge>
+        {!!input.to && <Badge className="bg-slate-100 text-slate-700">to {String(input.to)}</Badge>}
+      </div>
+      {!!input.subject && <div className="text-sm font-medium">{String(input.subject)}</div>}
+      <p className="text-sm whitespace-pre-wrap">{String(input.body ?? "")}</p>
+      <div className="text-[11px] text-muted-foreground">Proposed by: {String(input.proposed_by ?? "unknown origin").replace(/_/g, " ")}</div>
     </div>
   )
 }
