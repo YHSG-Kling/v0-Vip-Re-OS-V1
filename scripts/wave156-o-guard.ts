@@ -50,7 +50,7 @@ const section = (s: string) => console.log(`\n═══ ${s} ═══`)
 
 // ── module hooks: counted seams (data: modules read their state from globalThis.__W156O) ─────────────────────────────
 const G = globalThis as any
-G.__W156O = { svc: null as any, evidence: [] as any[], user: null as null | { id: string; email?: string }, profile: null as any, calls: { connector: 0, stripe: 0, sendgrid: 0, batchdata: 0, stripeResolve: 0, rpc: 0, storage: 0, audit: 0 }, readiness: [] as any[] }
+G.__W156O = { staff: false, svc: null as any, evidence: [] as any[], user: null as null | { id: string; email?: string }, profile: null as any, calls: { connector: 0, stripe: 0, sendgrid: 0, batchdata: 0, stripeResolve: 0, rpc: 0, storage: 0, audit: 0 }, readiness: [] as any[] }
 const S = "globalThis.__W156O"
 const BY_SPEC: Record<string, string> = {
   "@/lib/supabase/server": `export async function createClient(){const s=${S};return{auth:{getUser:async()=>({data:{user:s.user}})},from:()=>({select:()=>({eq:()=>({maybeSingle:async()=>({data:s.profile,error:null})})})})}}`,
@@ -64,7 +64,7 @@ const BY_SPEC: Record<string, string> = {
   "@/lib/geo/video-landing": `export function seoHintFromNarration(){return ""}`,
   "@/lib/security/public-rate-limit": `export async function publicCallerIp(){return "203.0.113.9"}export async function decidePublicDoor(){return{allowed:true,basis:"stub door"}}`,
   "@/lib/platform/staff-action-gate": `export async function recordPlatformEvidence(e){${S}.evidence.push(e);return{ok:true}}`,
-  "@/lib/auth/platform-guard": `export async function requirePlatformStaff(){return{ok:false,error:"stub"}}`,
+  "@/lib/auth/platform-guard": `export async function requirePlatformStaff(){return ${S}.staff?{ok:true}:{ok:false,error:"Forbidden (stub: not platform staff)"}}`,
   "@/lib/kernel/action-ledger": `export async function ledgerSessionAction(_c,run){return run()}`,
 }
 const dataUrl = (code: string) => `data:text/javascript,${encodeURIComponent(code)}`
@@ -278,11 +278,66 @@ async function sectionF() {
   check("F7 the sheet's step 6 says the hash is recorded once m1066 is applied", /m1066/.test(sheet.split(/^## Step 7/m)[0].split(/^## Step 6/m)[1] ?? ""))
 }
 
+// §G (ROUND 3) — THE READER of content_sha256: the acceptance check (checkCurrentUserTosStatusAction, the banner's rule) and the
+// staff evidence read (listTosAcceptancesAction, the ToS Acceptance Log page). Expected hashes are computed HERE, independently.
+async function sectionG() {
+  section("§G (round 3) the stored hash is READ: the acceptance check and the staff evidence")
+  const { memSupabase } = await import(pathToFileURL(join(WT, "scripts/in-memory-supabase.ts")).href)
+  const { createHash } = await import("node:crypto")
+  const notice = await import(pathToFileURL(join(WT, "lib/branding/platform-rights-notice.ts")).href)
+  const tos = await load("app/actions/public/tos-acceptance.ts").catch(() => ({} as any))
+  if (typeof tos.checkCurrentUserTosStatusAction !== "function") { check("G0 the acceptance check loads", false); return }
+  const year = new Date().getUTCFullYear(), V = "2026-07-01", BRAND = "Acme Realty OS", EMAIL = "agent@example.test"
+  const sha = (version: string, brand: string) => createHash("sha256").update(notice.servedTermsDocument({ tosVersion: version, holder: brand, year }), "utf8").digest("hex")
+  const served = sha(V, BRAND)
+  const status = async (row: Record<string, unknown> | null, opts: any = {}) => {
+    G.__W156O.svc = memSupabase({ platform_settings: [{ id: true, tos_version: V, product_brand: { name: BRAND } }], platform_tos_acceptances: row ? [{ id: "a1", email: EMAIL, tos_version: V, accepted_at: "2026-11-25T10:00:00Z", ...row }] : [] }, opts)
+    G.__W156O.user = { id: "u-1", email: "Agent@Example.test" }
+    return quiet(() => tos.checkCurrentUserTosStatusAction()) as Promise<any>
+  }
+  const r1 = await status({ content_sha256: served })
+  check("G1 a current acceptance whose stored hash equals the hash of the text served now PASSES (fingerprint match)", r1?.ok === true && r1.needsAcceptance === false && r1.fingerprint === "match", r1)
+  const r2 = await status({ content_sha256: null })
+  const r2b = await status({}, { missingColumns: { platform_tos_acceptances: ["content_sha256"] } })
+  check("G2 a pre-m1066 row (hash NULL, or the column absent) keeps today's answer — not asked again — and is LABELED not_fingerprinted (never a match)",
+    r2?.needsAcceptance === false && r2.fingerprint === "not_fingerprinted" && r2b?.needsAcceptance === false && r2b.fingerprint === "not_fingerprinted", { r2, r2b })
+  const r3 = await status({ content_sha256: sha(V, "Old Brand Name") })
+  check("G3 same version, DIFFERENT text (the notice served now differs from the accepted one) → must accept again", r3?.needsAcceptance === true && r3.fingerprint === "different_text", r3)
+  const r4 = await status({ content_sha256: "0".repeat(64) }), r4b = await status({ content_sha256: served.toUpperCase() })
+  check("G4 a tampered stored hash (another value, or the same digits recased) → must accept again", r4?.needsAcceptance === true && r4.fingerprint === "different_text" && r4b?.needsAcceptance === true, { r4, r4b })
+  const r5 = await status({ content_sha256: served }, { refuse: { platform_tos_acceptances: "permission denied" } })
+  const r5b = await status({ content_sha256: served }, { refuse: { platform_settings: "permission denied" } })
+  check("G5 an UNREADABLE acceptance row, or unreadable current terms, REFUSES — the person is asked again, never passed", r5?.ok === true && r5.needsAcceptance === true && r5.fingerprint === "unreadable" && r5b?.needsAcceptance === true && r5b.fingerprint === "unreadable", { r5, r5b })
+  const r6 = await status(null)
+  check("G6 no acceptance at all → asked (fingerprint none)", r6?.needsAcceptance === true && r6.fingerprint === "none", r6)
+
+  G.__W156O.staff = true
+  G.__W156O.svc = memSupabase({ platform_settings: [{ id: true, tos_version: V, product_brand: { name: BRAND } }], platform_tos_acceptances: [
+    { id: "a1", email: "a@x.test", tos_version: V, accepted_at: "2026-11-25T10:00:00Z", content_sha256: served },
+    { id: "a2", email: "b@x.test", tos_version: V, accepted_at: "2026-11-25T09:00:00Z", content_sha256: sha(V, "Old Brand Name") },
+    { id: "a3", email: "c@x.test", tos_version: V, accepted_at: "2026-11-25T08:00:00Z", content_sha256: null },
+    { id: "a4", email: "d@x.test", tos_version: "2026-01-01", accepted_at: "2026-01-02T08:00:00Z", content_sha256: sha("2026-01-01", BRAND) },
+  ] })
+  const log: any = await quiet(() => tos.listTosAcceptancesAction())
+  const by = (id: string) => (log?.rows ?? []).find((r: any) => r.id === id) ?? {}
+  check("G7 the staff evidence read shows version, accepted-at and the stored hash per row, and the fingerprint of the text served now",
+    log?.ok === true && log.servedSha256 === served && by("a1").content_sha256 === served && by("a1").tos_version === V && by("a1").accepted_at === "2026-11-25T10:00:00Z", log)
+  check("G7 each row is classified against the served text: match · different_text · not_fingerprinted · earlier_version",
+    by("a1").fingerprint === "match" && by("a2").fingerprint === "different_text" && by("a3").fingerprint === "not_fingerprinted" && by("a4").fingerprint === "earlier_version")
+  G.__W156O.staff = false
+  const denied: any = await quiet(() => tos.listTosAcceptancesAction())
+  check("G7 POSITIVE CONTROL — a non-staff caller gets no evidence", denied?.ok === false)
+  const page = stripComments(raw("app/dashboard/superadmin/tos-acceptances/page.tsx"))
+  check("G8 the ToS Acceptance Log page renders the hash and the classification (it renders, it never hashes)", /row\.content_sha256/.test(page) && /FINGERPRINT_LABEL\[row\.fingerprint\]/.test(page) && !/createHash|servedTermsDocument/.test(page))
+  G.__W156O.svc = null
+}
+
 ;(async () => {
   console.log(`wave156-o-guard — the release barrier, measured (modules from ${ROOT === WT ? "this tree" : ROOT})`)
   await sectionA()
   await sectionsBtoE()
   await sectionF()
+  await sectionG()
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   if (failed) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }
 })()

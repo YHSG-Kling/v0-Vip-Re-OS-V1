@@ -175,6 +175,10 @@ and no longer prints "GO". Nothing in the product or these documents may announc
   (`servedTermsDocument`, `lib/branding/platform-rights-notice.ts`) and refuse a version that is not the current one. It lands
   on the row: **m1066** (`content_sha256` on `platform_tos_acceptances` and `privacy_acceptances`) was applied on 2026-11-25
   after the read above and read back (both columns present, 0 rows). `privacy_acceptances` still has no writer.
+  The hash is READ (round 3): the re-acceptance check asks again when the stored hash differs from the text served now (a row
+  without a hash is labeled "text not fingerprinted" and not asked again; an unreadable row asks again), and the ToS
+  Acceptance Log (`/dashboard/superadmin/tos-acceptances`) shows each row's version, accepted-at, hash and whether it covers
+  the text served now.
   After m1066: `select count(*) filter (where content_sha256 is null) from public.platform_tos_acceptances where accepted_at > '<apply time>';` — expect 0.
 - **After:** the wave-155 packet's `- LEGAL status: RESOLVED <date> — counsel sign-off <reference>, versions published`;
   `select tos_version …` reads the published version.
