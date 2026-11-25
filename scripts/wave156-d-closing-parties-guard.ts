@@ -485,7 +485,7 @@ async function sectionE(act: any, cp: any) {
   const m1011 = checkArray(sql, "ADD CONSTRAINT vendor_assignments_assignment_type_check", "assignment_type")
   const cache = await load("scripts/check-vocabularies.ts").then((x) => x.CHECK_VOCABULARIES?.vendor_assignments?.assignment_type ?? null).catch(() => null)
   const added = m1011 && cache ? m1011.filter((v) => !cache.includes(v)) : null
-  check("m1011 extends EXACTLY the live CHECK (the generated cache) by one value, 'attorney' — nothing narrowed", !!m1011 && !!cache && cache.every((v: string) => m1011.includes(v)) && added?.join() === "attorney", { m1011, cache })
+  check("m1011 NARROWS NOTHING and adds at most 'attorney' to the live CHECK (the generated cache); the file admits 'attorney' — true before it is applied (one value added) and after (none added, the cache already holds it)", !!m1011 && !!cache && cache.every((v: string) => m1011.includes(v)) && m1011.includes("attorney") && (added ?? ["?"]).every((v) => v === "attorney"), { m1011, cache })
   check("'attorney' is the vendors.category spelling (one vocabulary)", (await load("lib/kernel/vendor-categories.ts")).VENDOR_CATEGORIES?.includes("attorney") === true && cp?.COUNSEL_ASSIGNMENT_TYPE === "attorney")
   const kernelList = constList(stripComments(raw("app/actions/vendors-kernel.ts")), "VENDOR_ASSIGNMENT_TYPES"), uiList = constList(stripComments(raw("app/dashboard/vendors/vendor-directory-client.tsx")), "VENDOR_ASSIGNMENT_TYPES")
   check("the assignment door and the picker both offer exactly the m1011 vocabulary", sameSet(kernelList, m1011) && sameSet(uiList, m1011), { kernelList, uiList })

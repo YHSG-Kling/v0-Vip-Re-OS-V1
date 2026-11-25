@@ -10,8 +10,8 @@
 // (transactions RLS: agent_read_own / team_leader_read_team / transactions_brokerage_staff_read / vendor_scoped_read).
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
-import { NavigationConfig, NavItem } from '@/app/types/navigation'
-import { UserContext } from '@/app/types/roles'
+import type { NavigationConfig, NavItem } from '@/app/types/navigation'
+import type { UserContext } from '@/app/types/roles'
 import { GlobalSearch } from './global-search'
 import { UserMenu } from './user-menu'
 import { NotificationBell } from './notification-bell'

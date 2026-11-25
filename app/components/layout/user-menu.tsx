@@ -9,7 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { UserContext } from '@/app/types/roles'
+import type { UserContext } from '@/app/types/roles'
 import { useRouter } from 'next/navigation'
 import { User } from 'lucide-react'
 import { signOut } from '@/app/actions/auth'

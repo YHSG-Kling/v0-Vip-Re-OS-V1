@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { NavItem } from '@/app/types/navigation'
+import type { NavItem } from '@/app/types/navigation'
 import * as Icons from 'lucide-react'
 
 interface MobileBottomNavProps {
