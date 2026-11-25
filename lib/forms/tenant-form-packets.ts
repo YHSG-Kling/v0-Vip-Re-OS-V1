@@ -453,8 +453,8 @@ function packetOwnerKind(row: Pick<TenantPacketRow, "team_id" | "location_id" | 
 
 /** PURE: the master's fingerprint — sha256 hex of the stored bytes (provenance; a duplicate upload of the same revision is refused). */
 export async function packetChecksum(bytes: Uint8Array): Promise<string> {
-  const { createHash } = await import("node:crypto")
-  return createHash("sha256").update(bytes).digest("hex")
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes as unknown as BufferSource) // Web Crypto, NOT node:crypto: FormWizard's client bundle imports this module's constants, and a `node:` import anywhere in it fails the client compile (CI, next-build-half, 2026-11-25)
+  return Array.from(new Uint8Array(digest), (x) => x.toString(16).padStart(2, "0")).join("")
 }
 
 const isPdf = (b: Uint8Array) => b.length > 5 && b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46 // %PDF
