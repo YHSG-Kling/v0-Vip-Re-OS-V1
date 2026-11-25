@@ -10,7 +10,7 @@ sweep) → OUTCOME evidence (ledger / arbitration record / provider truth). The 
 Planes: A authority / tenant session · E Contact engagement (the follow-up arbiter) · D outbound dispatch · G manager coordination
 (delegation, missions, the signal bus) · P human approval · R resources (entitlement, vendor budget, spend, provider route) · C closing / money gates.
 
-Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 107 · `registry-only` 0 · `proof-unregistered` 0 — of 1462 rows, over 5451 source files.
+Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-unread` 0 · `untriggered` 1 · `guard-only` 108 · `registry-only` 0 · `proof-unregistered` 0 — of 1463 rows, over 5451 source files.
 
 ## Deal Coordinator (`deal_coordinator`) — 111 domains
 
@@ -34,7 +34,7 @@ Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-u
 | `deal_automation` | loop-complete | cron `api/cron/listing-promo-hybrid-composite` (+1) | A | `document-versions.ts` +7 | buyer_move_cases, calendar_events, marketing_assets | 59 reader(s) | ✓ | — | — | `test:deal-automation` |
 | `deal_autopsy_learning` | loop-complete | cron `api/cron/closing-orchestration` (+2) | G | `deal-autopsy.ts` | deal_autopsy_observations | 2 reader(s) | ✓ | — | — | `test:deal-autopsy` |
 | `deal_coordination_extras` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | EG | `manager-signals.ts` +2 | ad_manager_actions, ai_isa_activities, ai_video_projects +13 | 928 reader(s) | ✓ | — | — | `test:deal-coordination-extras` |
-| `deal_room` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEG | `seller-update-reel-producer.ts` +12 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
+| `deal_room` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEGR | `seller-update-reel-producer.ts` +12 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
 | `deal_room_demo` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | EGP | `manager-signals.ts` +4 | ad_manager_actions, ai_isa_activities, ai_video_projects +23 | 1450 reader(s) | ✓ | — | — | `test:deal-room-demo` |
 | `deal_save_huddle` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | EG | `deal-save-huddle.ts` +2 | ad_manager_actions, ai_isa_activities, ai_video_projects +12 | 927 reader(s) | ✓ | — | — | `test:deal-save-huddle` |
 | `deal_shaky_flag` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | DGP | `video-generation.ts` +75 | ad_lead_form_legal_content, agent_client_messages, chat_messages +21 | 1007 reader(s) | ✓ | ✓ | — | `test:doc-kernel` |
@@ -469,12 +469,12 @@ Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-u
 | `anniversary_video_delivery` | loop-complete | cron `api/cron/anniversary-equity` (+1) | G | `welcome-situation.ts` +8 | presentation_sections, remotion_composition_renders | 41 reader(s) | ✓ | — | — | `test:anniversary-video-delivery` |
 | `artifact_production` | loop-complete | cron `api/cron/deal-health-scan` (+1) | E | `asset-manager-actions.ts` +10 | agent_intro_videos, ai_video_projects, asset_manager_actions +9 | 293 reader(s) | ✓ | ✓ | ✓ | `test:artifact-production` |
 | `asset_delivery_loop` | loop-complete | cron `api/cron/ads-manager-sweep` (+1) | G | `ad-outcome-loop.ts` +10 | ai_video_projects, listing_media, marketing_assets +3 | 236 reader(s) | ✓ | — | — | `test:asset-production` |
-| `assistant_wardrobe` | loop-complete | action `actions/avatar-voice-catalog.ts` | AEG | `avatar-voice-catalog.ts` +13 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
+| `assistant_wardrobe` | loop-complete | action `actions/avatar-voice-catalog.ts` | AEGR | `avatar-voice-catalog.ts` +13 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
 | `client_documents` | loop-complete | cron `api/cron/ads-manager-sweep` (+1) | G | `ad-outcome-loop.ts` +11 | ai_video_projects, listing_media, marketing_assets +3 | 236 reader(s) | ✓ | — | — | `test:asset-production` |
 | `custom_video_archetypes` | loop-complete | action `actions/custom-video.ts` | A | `custom-video.ts` +9 | ai_video_projects, asset_manager_actions, asset_persona_renders +3 | 167 reader(s) | — | ✓ | ✓ | `test:custom-video-archetypes` |
 | `did_webhook` | loop-complete | cron `api/cron/poll-did-avatars` (+1) | — | `avatar-completion.ts` +2 | agent_avatar_assets, agent_voice_profiles, notifications | 127 reader(s) | ✓ | — | — | `test:did-webhook` |
 | `dual_portal` | loop-complete | reactor `lib/kernel/event-reactor.ts` (+1) | — | `dual-intent-linker.ts` +1 | contacts, journey_states, portal_access_logs | 591 reader(s) | ✓ | — | — | `test:dual-portal` |
-| `expressive_video_loop` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEG | `seller-update-reel-producer.ts` +12 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
+| `expressive_video_loop` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEGR | `seller-update-reel-producer.ts` +12 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
 | `face_render_seam` | loop-complete | cron `api/cron/health-check` (+1) | — | `SimliFaceSession.tsx` +8 | agent_avatar_assets, api_response_logs, live_agent_sessions | 31 reader(s) | — | ✓ | — | `test:face-render-seam` |
 | `media_intelligence` | loop-complete | cron `api/cron/ad-performance-sync` (+1) | GR | `ad-performance-ingest.ts` +7 | ad_campaigns, ad_performance, ai_tool_usage +4 | 173 reader(s) | ✓ | — | ✓ | `test:media-intelligence` |
 | `mls_ads_cuts` | loop-complete | action `actions/listing-video.ts` | — | `listing-video.ts` +13 | ai_video_projects, blog_posts, listing_media +4 | 254 reader(s) | ✓ | ✓ | — | `test:mls-ads-cuts` |
@@ -490,24 +490,24 @@ Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-u
 | `twin_lifecycle` | loop-complete | cron `api/cron/did-result-url-rehost-sweep` (+1) | — | `result-url-rehost-sweep.ts` | agent_avatar_assets, agent_voice_profiles, ai_video_projects | 140 reader(s) | — | ✓ | — | `test:twin-lifecycle` |
 | `vendor_media_rehost` | loop-complete | action `actions/external-services.ts` | A | `external-services.ts` +5 | agent_avatar_assets, agent_voice_profiles, notifications | 127 reader(s) | ✓ | — | — | `test:public-bucket-egress` |
 | `vercel_blob_retired` | loop-complete | action `actions/documents.ts` | AR | `documents.ts` | activities, client_documents, compliance_checks +2 | 150 reader(s) | ✓ | — | — | `test:vercel-blob-retired` |
-| `video_finish_spec` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEG | `seller-update-reel-producer.ts` +12 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
+| `video_finish_spec` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEGR | `seller-update-reel-producer.ts` +12 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
 | `video_hook_window` | loop-complete | cron `api/cron/composition-render-queue` (+1) | — | `composition-geometry.ts` +6 | notifications, remotion_composition_renders, remotion_compositions | 110 reader(s) | ✓ | — | — | `test:video-hook-window` |
 | `video_pipeline_truth` | loop-complete | cron `api/cron/composition-render-queue` (+1) | DGP | `LandingVideo.tsx` +13 | ad_creative_variations, ai_message_drafts, ai_video_projects +15 | 374 reader(s) | ✓ | ✓ | ✓ | `test:video-pipeline-truth` |
-| `video_plays` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEG | `seller-update-reel-producer.ts` +12 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
+| `video_plays` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEGR | `seller-update-reel-producer.ts` +12 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
 | `video_script` | loop-complete | action `actions/video/generate-script.ts` | — | `generate-script.ts` +1 | video_scripts_library | 13 reader(s) | ✓ | ✓ | — | `test:video-script` |
 | `video_staging` | loop-complete | cron `api/cron/composition-render-queue` (+1) | ADGP | `approval-authority.ts` +9 | ai_video_projects, marketing_assets, notifications +2 | 226 reader(s) | ✓ | ✓ | ✓ | `test:video-pipeline-truth` |
-| `video_voice_identity` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEG | `seller-update-reel-producer.ts` +12 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
+| `video_voice_identity` | loop-complete | cron `api/cron/affiliate-commissions` (+1) | AEGR | `seller-update-reel-producer.ts` +12 | ad_manager_actions, ai_isa_activities, ai_video_projects +15 | 937 reader(s) | ✓ | — | — | `test:partners-meeting-reel` |
 | `visual_plan_before_send` | loop-complete | cron `api/cron/director-reel-render` (+1) | ADR | `contract.ts` +8 | ai_video_projects, leads, presentation_sections +1 | 282 reader(s) | — | ✓ | ✓ | `test:visual-plan-before-send` |
 | `avatar_pipeline_hardening` | read-surface | cron `api/cron/listing-promo-hybrid-composite` (+1) | — | `webhook.ts` +3 | — | — | — | — | — | `test:avatar-pipeline-hardening` |
 | `brand_cascade` | read-surface | action `actions/creative-playbooks.ts` (+1) | — | `resolve-brand-context.ts` | — | — | — | — | — | `test:brand-cascade` |
 | `calculator_artifacts` | read-surface | action `actions/calculator-artifacts.ts` | A | `calculator-artifacts.ts` +3 | — | — | — | — | — | `test:wave156-h-calculators` |
-| `caption_burn_in` | read-surface | cron `api/cron/director-reel-render` (+1) | — | `caption-plan.ts` +1 | — | — | — | — | — | `test:captions` |
+| `caption_burn_in` | read-surface | cron `api/cron/director-reel-render` (+1) | R | `caption-plan.ts` +1 | — | — | — | — | — | `test:captions` |
 | `charts` | read-surface | render `remotion/Root.tsx` (+2) | — | `geometry.ts` | — | — | — | — | — | `test:charts` |
 | `cinema_finish` | read-surface | cron `api/cron/director-reel-render` (+1) | — | `channels.ts` +6 | — | — | — | — | — | `test:cinema-finish` |
 | `did_consent` | read-surface | cron `api/cron/poll-did-avatars` (+1) | — | `consent.ts` +1 | — | — | — | — | — | `test:did-consent` |
 | `did_first` | read-surface | action `actions/direct-mail.ts` (+1) | — | `providers.ts` +1 | — | — | — | — | — | `test:did-first` |
 | `did_integration` | read-surface | cron `api/cron/poll-did-avatars` (+1) | — | `agent-presenter.ts` +1 | — | — | — | — | — | `test:did-integration` |
-| `elevenlabs_egress_gateway` | read-surface | action `actions/ai-identity.ts` (+1) | — | `elevenlabs-tts.ts` | — | — | — | — | — | `test:elevenlabs-egress` |
+| `elevenlabs_egress_gateway` | read-surface | action `actions/ai-identity.ts` (+1) | R | `elevenlabs-tts.ts` | — | — | — | — | — | `test:elevenlabs-egress` |
 | `explainer_anim` | read-surface | route `api/videos/listing-voiceover` (+2) | — | `explainer-diagram.ts` | — | — | — | — | — | `test:explainer-anim` |
 | `guided_video_card` | read-surface | cron `api/cron/director-reel-render` (+1) | — | `composition-geometry.ts` +3 | — | — | — | — | — | `test:guided-video-card` |
 | `isa_voice_clone` | read-surface | cron `api/cron/onboarding-health` (+1) | — | `resolve-user-role.ts` | — | — | — | — | — | `test:isa-voice-record` |
@@ -520,14 +520,14 @@ Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-u
 | `promo_narration_budget` | read-surface | cron `api/cron/director-reel-render` (+1) | — | `composition-geometry.ts` +3 | — | — | — | — | — | `test:promo-narration-budget` |
 | `remotion_deploy_trace` | read-surface | route `api/internal/remotion/render-composition` (+1) | — | `bundle-cache.ts` | — | — | — | — | — | `test:remotion-deploy-trace` |
 | `remotion_setup` | read-surface | cron `api/cron/director-reel-render` (+1) | — | `section-narration.ts` +6 | — | — | — | ✓ | — | `test:remotion-setup` |
-| `render` | read-surface | cron `api/cron/composition-render-queue` (+1) | — | `render-decision.ts` | — | — | — | — | — | `test:render` |
+| `render` | read-surface | route `api/internal/remotion/render-composition` (+1) | — | `render-decision.ts` | — | — | — | — | — | `test:render` |
 | `render_determinism` | read-surface | route `api/internal/remotion/render-composition` (+1) | — | `code-revision.ts` +1 | — | — | — | — | — | `test:render-cache` |
 | `render_queue_fairness_and_paid_doors` | read-surface | route `api/did/create-avatar` (+1) | R | `paid-egress.ts` | — | — | — | — | — | `test:wave156-s` |
 | `repurpose_shorts` | read-surface | cron `api/cron/affiliate-commissions` (+2) | — | `repurpose-planner.ts` | — | — | — | — | — | `test:repurpose-shorts` |
 | `section_narration` | read-surface | page `portal/listing-plan/[id]` (+1) | — | `customer-facing-guard.ts` +1 | — | — | — | ✓ | — | `test:section-narration` |
 | `topic_video_cadence` | read-surface | action `actions/video/topic-video-cadence.ts` | — | `topic-video-cadence.ts` +3 | — | — | — | — | — | `test:topic-video-cadence` |
 | `twin_greeting` | read-surface | cron `api/cron/poll-did-avatars` (+1) | — | `agent-presenter.ts` +1 | — | — | — | — | — | `test:did-integration` |
-| `video_assembly_timeline` | read-surface | cron `api/cron/composition-render-queue` (+1) | — | `composition-geometry.ts` +10 | — | — | — | — | — | `test:video-assembly` |
+| `video_assembly_timeline` | read-surface | cron `api/cron/director-reel-render` (+1) | — | `composition-geometry.ts` +10 | — | — | — | — | — | `test:video-assembly` |
 | `video_broll` | read-surface | route `api/internal/remotion/render-just-listed` (+1) | — | `body-visual-model.ts` +1 | — | — | — | — | — | `test:video-broll` |
 | `video_duration_model` | read-surface | cron `api/cron/director-reel-render` (+1) | — | `composition-geometry.ts` +4 | — | — | — | — | — | `test:video-duration-model` |
 | `video_generation_lane_tenant_gate` | read-surface | action `actions/video.ts` | — | `video.ts` +1 | — | — | — | — | — | `test:video-generation-lane` |
@@ -563,7 +563,7 @@ Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-u
 | `video_lanes_every_engine` | partial (no closure) | cron `api/cron/education-delivery` (+1) | — | `education-delivery-producer.ts` +1 | learning_assignments, platform_content_topics, platform_social_drafts | 28 reader(s) | — | — | — | `test:video-lanes-audit` |
 | `video_project_single_creator` | partial (no closure) | action `actions/video.ts` (+1) | — | `video.ts` +1 | ai_video_projects, social_posts | 137 reader(s) | — | — | — | `test:video-project-consolidation` |
 | `video_repurpose_render_writers` | partial (no closure) | cron `api/cron/geo-reel-autopublish` (+1) | — | `video.ts` +1 | ai_video_projects, social_posts | 137 reader(s) | — | — | — | `test:video-repurpose-wiring` |
-| `video_timeline_integrity` | partial (no closure) | cron `api/cron/composition-render-queue` (+1) | — | `composition-geometry.ts` +15 | ai_video_projects | 96 reader(s) | — | — | — | `test:video-timeline-integrity` |
+| `video_timeline_integrity` | partial (no closure) | cron `api/cron/director-reel-render` (+1) | — | `composition-geometry.ts` +15 | ai_video_projects | 96 reader(s) | — | — | — | `test:video-timeline-integrity` |
 | `video_type_matrix` | partial (no closure) | cron `api/cron/buyer-market-watch` (+1) | — | `buyer-match-reel-producer.ts` +18 | remotion_composition_renders, seller_updates | 37 reader(s) | — | — | — | `test:video-type-matrix` |
 | `voice_studio_session` | partial (no closure) | route `api/agent-assistant/tool-call` (+1) | — | `studio-session.ts` | ai_video_projects, studio_sessions | 96 reader(s) | — | — | — | `test:studio-session` |
 | `welcome_video_assembly` | partial (no closure) | cron `api/cron/director-reel-render` (+1) | — | `content-contract.ts` +2 | presentation_sections, remotion_composition_renders | 41 reader(s) | — | — | — | `test:welcome-video-assembly` |
@@ -699,7 +699,7 @@ Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-u
 | `lead_magnet_flow` | guard-only | — | — | — | — | — | — | — | — | `test:lead-magnet-flow` |
 | `office_chat_and_kb_recall` | guard-only | — | — | — | — | — | — | — | — | `test:knowledge-lead-wiring` |
 
-## Data Steward (`data_steward`) — 503 domains
+## Data Steward (`data_steward`) — 504 domains
 
 | Domain | Class | Trigger | Planes | Survivor | Writes (state) | Readback | Next | Recovery | Outcome | Proof |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -1204,6 +1204,7 @@ Classes: `loop-complete` 715 · `read-surface` 418 · `partial` 221 · `writes-u
 | `wave146_canaries` | guard-only | — | — | — | — | — | — | — | — | `test:wave146-canaries` |
 | `wave147_canaries` | guard-only | — | — | — | — | — | — | — | — | `test:wave147-canaries` |
 | `wave155_ungated_platform` | guard-only | — | — | — | — | — | — | — | — | `test:wave155-ungated-platform` |
+| `wave156_canaries` | guard-only | — | — | — | — | — | — | — | — | `test:wave156-canaries` |
 | `wired_surface_invariant` | guard-only | — | — | — | — | — | — | — | — | `test:wired-surface` |
 | `writerless_reads` | guard-only | — | — | — | — | — | — | — | — | `test:writerless-reads` |
 

@@ -199,13 +199,13 @@ The closure report names each table and its count. For each one, the Data Stewar
 ## Generated classification (do not edit by hand — `tsx --conditions=react-server scripts/transfer-classification-guard.ts --write`)
 
 <!-- BEGIN GENERATED: fk-child-classification (scripts/transfer-classification-guard.ts --write) -->
-Census: 441 FKs from 310 child tables into the 41 moved families (286 tables carry brokerage_id; 24 have no tenant column and follow their parent's tenancy implicitly). 75 further FKs run between families (follows_parent by construction).
+Census: 443 FKs from 311 child tables into the 41 moved families (287 tables carry brokerage_id; 24 have no tenant column and follow their parent's tenancy implicitly). 75 further FKs run between families (follows_parent by construction).
 
 | Class | Tables | FKs |
 |---|---|---|
 | `follows_parent` | 72 | 108 |
 | `shared_remains` | 13 | 19 |
-| `historical_immutable` | 102 | 155 |
+| `historical_immutable` | 103 | 157 |
 | `explicit_transfer` | 12 | 19 |
 | `not_transferable` | 28 | 39 |
 | `derived_readonly` | 83 | 101 |
@@ -432,6 +432,7 @@ Census: 441 FKs from 310 child tables into the 41 moved families (286 tables car
 - `support_tickets` — contact_id → contacts · data_steward
 - `business_card_scans` — contact_id → contacts · data_steward
 - `trid_disclosure_receipts` — transaction_id → transactions · deal_coordinator
+- `fraud_incident_cases` — listing_id → listings, transaction_id → transactions · compliance_officer
 
 **JOBS AND RUNS — renders, enhancement jobs, packet jobs and workflow runs the source executed (and paid for)**
 
