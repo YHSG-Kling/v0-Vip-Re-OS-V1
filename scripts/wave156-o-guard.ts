@@ -50,11 +50,11 @@ const section = (s: string) => console.log(`\n═══ ${s} ═══`)
 
 // ── module hooks: counted seams (data: modules read their state from globalThis.__W156O) ─────────────────────────────
 const G = globalThis as any
-G.__W156O = { user: null as null | { id: string }, profile: null as any, calls: { connector: 0, stripe: 0, sendgrid: 0, batchdata: 0, stripeResolve: 0, rpc: 0, storage: 0, audit: 0 }, readiness: [] as any[] }
+G.__W156O = { svc: null as any, evidence: [] as any[], user: null as null | { id: string; email?: string }, profile: null as any, calls: { connector: 0, stripe: 0, sendgrid: 0, batchdata: 0, stripeResolve: 0, rpc: 0, storage: 0, audit: 0 }, readiness: [] as any[] }
 const S = "globalThis.__W156O"
 const BY_SPEC: Record<string, string> = {
   "@/lib/supabase/server": `export async function createClient(){const s=${S};return{auth:{getUser:async()=>({data:{user:s.user}})},from:()=>({select:()=>({eq:()=>({maybeSingle:async()=>({data:s.profile,error:null})})})})}}`,
-  "@/lib/supabase/service": `export function createServiceClient(){const s=${S};const q={select(){return q},eq(){return q},then(r){return Promise.resolve({data:[],count:0,error:null}).then(r)}};return{from:(t)=>{if(t==="superadmin_audit_log")return{insert:async()=>{s.calls.audit++;return{error:null}}};return q},rpc:async(n)=>{s.calls.rpc++;return{data:s.readiness,error:null}},storage:{from:()=>({list:async()=>{s.calls.storage++;return{data:[],error:null}}})}}}`,
+  "@/lib/supabase/service": `export function createServiceClient(){const s=${S};if(s.svc)return s.svc;const q={select(){return q},eq(){return q},then(r){return Promise.resolve({data:[],count:0,error:null}).then(r)}};return{from:(t)=>{if(t==="superadmin_audit_log")return{insert:async()=>{s.calls.audit++;return{error:null}}};return q},rpc:async(n)=>{s.calls.rpc++;return{data:s.readiness,error:null}},storage:{from:()=>({list:async()=>{s.calls.storage++;return{data:[],error:null}}})}}}`,
   "next/headers": `export async function headers(){return new Map()}`,
   "@/lib/agentic-os/connector-gateway": `export async function callConnector(){${S}.calls.connector++;return{ok:false,status:0,data:null}}`,
   "@/lib/providers/payment": `export async function getStripeBalance(){${S}.calls.stripe++;return{success:false,notConfigured:true,error:"stub: no platform credential"}}`,
@@ -62,6 +62,10 @@ const BY_SPEC: Record<string, string> = {
   "@/lib/billing/resolve-stripe-account": `export async function resolvePlatformStripeAccount(){${S}.calls.stripeResolve++;return null}`,
   "@/lib/external/batchdata-mcp": `export async function callBatchDataMcp(){${S}.calls.batchdata++;return{ok:false}}`,
   "@/lib/geo/video-landing": `export function seoHintFromNarration(){return ""}`,
+  "@/lib/security/public-rate-limit": `export async function publicCallerIp(){return "203.0.113.9"}export async function decidePublicDoor(){return{allowed:true,basis:"stub door"}}`,
+  "@/lib/platform/staff-action-gate": `export async function recordPlatformEvidence(e){${S}.evidence.push(e);return{ok:true}}`,
+  "@/lib/auth/platform-guard": `export async function requirePlatformStaff(){return{ok:false,error:"stub"}}`,
+  "@/lib/kernel/action-ledger": `export async function ledgerSessionAction(_c,run){return run()}`,
 }
 const dataUrl = (code: string) => `data:text/javascript,${encodeURIComponent(code)}`
 function aliasPath(rel: string): string | null {
@@ -209,10 +213,76 @@ async function sectionsBtoE() {
   check(`E4 §R.1 is HELD on the sheet exactly while no code names step_kind (${stepKind} file(s) do)`, (stepKind === 0) === /HELD/.test(alsoE.split("\n")[0]))
 }
 
+// §F (ROUND 2) — VERSION / HASH / TIMESTAMP ACCEPTANCE. The real exported writers of app/actions/public/tos-acceptance.ts run over
+// the in-memory client. The expected hash is computed HERE, independently, from the canonical text (servedTermsDocument of THIS
+// tree's lib — the guard never trusts the writer's own arithmetic) and node:crypto.
+async function sectionF() {
+  section("§F (round 2) acceptance records carry version + time + the sha256 of the served text")
+  const { memSupabase } = await import(pathToFileURL(join(WT, "scripts/in-memory-supabase.ts")).href)
+  const { createHash } = await import("node:crypto")
+  const notice = await import(pathToFileURL(join(WT, "lib/branding/platform-rights-notice.ts")).href)
+  const tos = await load("app/actions/public/tos-acceptance.ts").catch((e) => ({ __err: String(e) } as any))
+  check("F0 the acceptance writers load", typeof tos.recordTosAcceptanceAction === "function" && typeof tos.acceptCurrentTosAsCurrentUserAction === "function", tos.__err)
+  if (typeof tos.recordTosAcceptanceAction !== "function") return
+  const year = new Date().getUTCFullYear()
+  const expected = (version: string, brand: string) => createHash("sha256").update(notice.servedTermsDocument({ tosVersion: version, holder: brand, year }), "utf8").digest("hex")
+  const world = (opts: any = {}, version = "2026-07-01", brand = "Acme Realty OS") => {
+    G.__W156O.evidence = []
+    G.__W156O.svc = memSupabase({ platform_settings: [{ id: true, tos_version: version, product_brand: { name: brand } }], platform_tos_acceptances: [] }, opts)
+    return G.__W156O.svc
+  }
+  const rows = (m: any) => m.tables.platform_tos_acceptances ?? []
+
+  let m = world()
+  const ok1: any = await quiet(() => tos.recordTosAcceptanceAction({ email: "Buyer@Example.test", version: "2026-07-01" }))
+  const r1 = rows(m)[0] ?? {}
+  check("F1 an acceptance of the CURRENT version stores the version and the sha256 of the served text (time is the column's now() default, accepted_at)",
+    ok1?.ok === true && rows(m).length === 1 && r1.tos_version === "2026-07-01" && r1.content_sha256 === expected("2026-07-01", "Acme Realty OS") && /^[0-9a-f]{64}$/.test(r1.content_sha256 ?? ""), { ok1, r1 })
+  check("F1 the public evidence row carries the same hash and says it is on the row", G.__W156O.evidence.length === 1 && G.__W156O.evidence[0]?.details?.content_sha256 === r1.content_sha256 && G.__W156O.evidence[0]?.details?.hash_on_row === true)
+
+  for (const [label, v] of [["a tampered (not current) version", "2026-07-02"], ["an unknown version token", "../../etc"], ["a blank version", ""]] as const) {
+    m = world()
+    const r: any = await quiet(() => tos.recordTosAcceptanceAction({ email: "buyer@example.test", version: v }))
+    check(`F2 ${label} is REFUSED: no row, no evidence`, r?.ok === false && rows(m).length === 0 && G.__W156O.evidence.length === 0, r)
+  }
+  m = world({ refuse: { platform_settings: "permission denied" } })
+  const ref: any = await quiet(() => tos.recordTosAcceptanceAction({ email: "buyer@example.test", version: "2026-07-01" }))
+  check("F2 a REFUSED read of the current terms refuses the acceptance (fail closed — never a guessed version)", ref?.ok === false && rows(m).length === 0, ref)
+
+  m = world({}, "2026-07-01", "Other Brand")
+  await quiet(() => tos.recordTosAcceptanceAction({ email: "buyer@example.test", version: "2026-07-01" }))
+  const brandHash = rows(m)[0]?.content_sha256
+  m = world({}, "2027-01-01", "Acme Realty OS")
+  await quiet(() => tos.recordTosAcceptanceAction({ email: "buyer@example.test", version: "2027-01-01" }))
+  const versionHash = rows(m)[0]?.content_sha256
+  check("F3 POSITIVE CONTROL — the hash changes when the served text changes (another brand name in the notice; another terms version), and each equals the independent computation",
+    !!brandHash && !!versionHash && brandHash !== r1.content_sha256 && versionHash !== r1.content_sha256 && brandHash === expected("2026-07-01", "Other Brand") && versionHash === expected("2027-01-01", "Acme Realty OS"))
+  check("F3 the canonical text resolves nothing for an unresolvable version (the writer's fail-closed input)", notice.servedTermsDocument({ tosVersion: "", holder: "x", year }) === null && notice.servedTermsDocument({ tosVersion: "a b", holder: "x", year }) === null)
+
+  m = world({ missingColumns: { platform_tos_acceptances: ["content_sha256"] } })
+  const pre: any = await quiet(() => tos.recordTosAcceptanceAction({ email: "buyer@example.test", version: "2026-07-01" }))
+  check("F4 BEFORE m1066 (the column absent, the whole write refused 42703): the acceptance still lands without the column, and the hash rides the evidence row (hash_on_row false)",
+    pre?.ok === true && rows(m).length === 1 && !("content_sha256" in rows(m)[0]) && G.__W156O.evidence[0]?.details?.content_sha256 === expected("2026-07-01", "Acme Realty OS") && G.__W156O.evidence[0]?.details?.hash_on_row === false, { pre, rows: rows(m) })
+
+  m = world(); G.__W156O.user = { id: "u-1", email: "Agent@Example.test" }; G.__W156O.profile = { brokerage_id: null }
+  const sess: any = await quiet(() => tos.acceptCurrentTosAsCurrentUserAction())
+  check("F5 the signed-in re-acceptance stores the session email, the current version and the hash", sess?.ok === true && rows(m)[0]?.email === "agent@example.test" && rows(m)[0]?.content_sha256 === expected("2026-07-01", "Acme Realty OS"), { sess, rows: rows(m) })
+  G.__W156O.svc = null
+
+  const mig = raw("supabase/migrations/m1066-acceptance-records-carry-the-content-hash-of-the-accepted-text.sql", WT)
+  const code = mig.split("\n").filter((l) => !/^\s*--/.test(l)).join("\n")
+  check("F6 m1066 is written, not applied, and additive: a nullable content_sha256 on both tables with a 64-lowercase-hex-or-NULL CHECK each, no NOT NULL / DROP COLUMN / policy",
+    /^-- WRITTEN, NOT APPLIED/.test(mig) && ["platform_tos_acceptances", "privacy_acceptances"].every((t) => new RegExp(`ALTER TABLE public\\.${t} ADD COLUMN IF NOT EXISTS content_sha256 text;`).test(code) && new RegExp(`${t}_content_sha256_check\\s+CHECK \\(content_sha256 IS NULL OR content_sha256 ~ '\\^\\[0-9a-f\\]\\{64\\}\\$'\\)`).test(code))
+    && !/NOT NULL|DROP COLUMN|(CREATE|ALTER|DROP) POLICY/i.test(code))
+  const sheet = raw("docs/operations/WAVE156-OWNER-ACTION-SHEET.md", WT)
+  check("F7 the sheet's step 6 says the hash is recorded once m1066 is applied", /m1066/.test(sheet.split(/^## Step 7/m)[0].split(/^## Step 6/m)[1] ?? ""))
+}
+
 ;(async () => {
   console.log(`wave156-o-guard — the release barrier, measured (modules from ${ROOT === WT ? "this tree" : ROOT})`)
   await sectionA()
   await sectionsBtoE()
+  await sectionF()
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   if (failed) { console.log("FAILURES:\n  - " + fails.join("\n  - ")); process.exit(1) }
 })()

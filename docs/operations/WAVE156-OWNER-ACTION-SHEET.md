@@ -169,8 +169,12 @@ and no longer prints "GO". Nothing in the product or these documents may announc
   select count(*) from public.platform_tos_acceptances;                         -- today 0
   ```
 - **Do:** counsel redlines and signs off (LEGAL-REVIEW-PACKET §8); the owner publishes the approved versions and bumps
-  `tos_version`. Engineering item, not owner SQL: the acceptance record needs the content hash of the accepted text (a
-  nullable column + the writer in `app/actions/public/tos-acceptance.ts`) before the first live subscription.
+  `tos_version`. The content hash is now built (wave 156, lane 156O round 2): both writers in
+  `app/actions/public/tos-acceptance.ts` compute the sha256 of the served terms text server-side
+  (`servedTermsDocument`, `lib/branding/platform-rights-notice.ts`) and refuse a version that is not the current one. It lands
+  on the row once **m1066** (`content_sha256` on `platform_tos_acceptances` and `privacy_acceptances`) is applied; until then
+  the row is written without it and the hash rides the platform evidence row. `privacy_acceptances` still has no writer.
+  After m1066: `select count(*) filter (where content_sha256 is null) from public.platform_tos_acceptances where accepted_at > '<apply time>';` — expect 0.
 - **After:** the wave-155 packet's `- LEGAL status: RESOLVED <date> — counsel sign-off <reference>, versions published`;
   `select tos_version …` reads the published version.
 - **Rollback:** restore the previous text and version; never activate live billing on an unreviewed text.

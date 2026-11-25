@@ -38,19 +38,52 @@ export async function recordTosAcceptanceAction(input: { email: string; version:
   })
   if (!door.allowed) return { ok: false, error: "Too many requests from this connection — your acceptance was NOT recorded. Please try again in a few minutes." }
   const svc = createServiceClient()
+  // WAVE 156 (lane 156O) — the version the browser names is a CLAIM: it must be the version the platform serves now, and the hash
+  // is of the text served for it, computed here (never sent by the browser). An unknown, stale or tampered version is refused.
+  const served = await servedTermsHash(svc, version)
+  if (!served.ok) return { ok: false, error: served.error }
   const hdrs = await headers()
-  const { data: accepted, error } = await svc.from("platform_tos_acceptances").upsert({
-    email, tos_version: version,
+  const { data: accepted, error, hashStored } = await upsertTosAcceptance(svc, {
+    email, tos_version: served.version,
     ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
     user_agent: hdrs.get("user-agent"),
-  }, { onConflict: "email,tos_version" }).select("id")
+  }, served.sha256)
   if (error) return { ok: false, error: error.message }
   const { recordPlatformEvidence } = await import("@/lib/platform/staff-action-gate")
   await recordPlatformEvidence({
     actorUserId: null, actorEmail: "public:platform-tos-acceptance", action: "platform_tos.accepted", targetType: "platform_tos_acceptance",
-    targetId: ((accepted ?? []) as Array<{ id: string }>)[0]?.id ?? null, details: { tos_version: version, door: door.basis },
+    targetId: ((accepted ?? []) as Array<{ id: string }>)[0]?.id ?? null, details: { tos_version: served.version, content_sha256: served.sha256, hash_on_row: hashStored, door: door.basis },
   })
   return { ok: true }
+}
+
+/**
+ * WAVE 156 (lane 156O) — THE SHA-256 OF THE TERMS TEXT SERVED FOR A VERSION (directive 156O: version / hash / timestamp).
+ * The current version is platform_settings.tos_version (absent row → the same "2026-07-01" default every reader here uses); a
+ * REFUSED settings read refuses the acceptance (fail closed). `claimed`, when given, must equal the current version. The text is
+ * lib/branding/platform-rights-notice.ts servedTermsDocument — the version plus the /legal notice exactly as /legal renders it
+ * (product brand, current UTC year). Nothing here changes which text is published; it records the hash of what is shown.
+ */
+async function servedTermsHash(svc: any, claimed: string | null): Promise<{ ok: true; version: string; sha256: string } | { ok: false; error: string }> {
+  const { data, error } = await svc.from("platform_settings").select("tos_version, product_brand").limit(1).maybeSingle()
+  if (error) return { ok: false, error: "The current terms could not be read — your acceptance was NOT recorded. Please try again." }
+  const current = String((data as any)?.tos_version ?? "2026-07-01")
+  if (claimed !== null && claimed !== current) return { ok: false, error: "These terms are not the current version — reload the page and accept the current terms. Nothing was recorded." }
+  const [{ servedTermsDocument }, { resolveProductBrand }] = await Promise.all([import("@/lib/branding/platform-rights-notice"), import("@/lib/platform/product-brand")])
+  const text = servedTermsDocument({ tosVersion: current, holder: resolveProductBrand((data as any)?.product_brand).name, year: new Date().getUTCFullYear() })
+  if (text === null) return { ok: false, error: "The text of the current terms version could not be resolved — your acceptance was NOT recorded." }
+  const { createHash } = await import("node:crypto")
+  return { ok: true, version: current, sha256: createHash("sha256").update(text, "utf8").digest("hex") }
+}
+
+/** The acceptance upsert WITH the hash; before m1066 is applied the column is absent and PostgREST refuses the WHOLE write
+ *  (PGRST204 / 42703, CLAUDE.md §3) — then the same row is written without it, so an acceptance is never lost. */
+async function upsertTosAcceptance(svc: any, row: Record<string, unknown>, sha256: string): Promise<{ data: unknown; error: { message: string } | null; hashStored: boolean }> {
+  const first = await svc.from("platform_tos_acceptances").upsert({ ...row, content_sha256: sha256 }, { onConflict: "email,tos_version" }).select("id")
+  const absent = first.error && (first.error.code === "PGRST204" || first.error.code === "42703") && /content_sha256/.test(first.error.message ?? "")
+  if (!absent) return { data: first.data, error: first.error, hashStored: !first.error }
+  const again = await svc.from("platform_tos_acceptances").upsert(row, { onConflict: "email,tos_version" }).select("id")
+  return { data: again.data, error: again.error, hashStored: false }
 }
 
 /**
@@ -97,16 +130,17 @@ export async function acceptCurrentTosAsCurrentUserAction(): Promise<{ ok: boole
   const run = async (user = { email: sessionEmail }): Promise<{ ok: boolean; error?: string }> => {
 
   const svc = createServiceClient()
-  const { data: settings } = await svc.from("platform_settings").select("tos_version").limit(1).maybeSingle()
-  const currentVersion = (settings as any)?.tos_version ?? "2026-07-01"
+  // WAVE 156 (lane 156O): the current version and the sha256 of its served text, server-side; a refused settings read refuses.
+  const served = await servedTermsHash(svc, null)
+  if (!served.ok) return { ok: false, error: served.error }
 
   const hdrs = await headers()
-  const { error } = await svc.from("platform_tos_acceptances").upsert({
+  const { error } = await upsertTosAcceptance(svc, {
     email: user.email.trim().toLowerCase(),
-    tos_version: currentVersion,
+    tos_version: served.version,
     ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"),
     user_agent: hdrs.get("user-agent"),
-  }, { onConflict: "email,tos_version" })
+  }, served.sha256)
   if (error) return { ok: false, error: error.message }
   return { ok: true }
   }
