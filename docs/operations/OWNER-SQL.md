@@ -1601,7 +1601,23 @@ Session-client readers of recruits found: the recruiting-roi page, which is gate
 
 The network (m1035, applied) stores a FINGERPRINT of each evidence file and never the file: no bucket exists, and a bucket plus its `storage.objects`
 policies are owner SQL. Until it exists the evidence door answers "Evidence storage is not enabled yet" and a case keeps its text, fingerprints and
-report numbers. The statements are written with the network's second round (see the action sheet's fraud-network step).
+report numbers (JPEG / PNG uploads are stripped of EXIF, GPS and text metadata before that refusal, so the step exists the day the bucket does).
+
+Required role: `postgres` inserts the bucket row; dropping a stray policy needs `supabase_storage_admin`. Private and service-only, modeled on §H —
+NO `storage.objects` policy is created; the product serves evidence as five-minute signed links after the case gate.
+
+```sql
+-- Before: SELECT id, public FROM storage.buckets WHERE id='fraud-evidence';                                  -- expect 0 rows
+--         SELECT policyname FROM pg_policies WHERE schemaname='storage' AND tablename='objects'
+--           AND (coalesce(qual,'') || coalesce(with_check,'')) LIKE '%fraud-evidence%';                       -- expect 0 rows
+INSERT INTO storage.buckets (id,name,public,file_size_limit,allowed_mime_types)
+VALUES ('fraud-evidence','fraud-evidence',false,10485760,ARRAY['image/jpeg','image/png'])
+ON CONFLICT (id) DO UPDATE SET public=false, file_size_limit=10485760, allowed_mime_types=ARRAY['image/jpeg','image/png'];
+-- After: the row reads private, 10 MB, JPEG / PNG; the policy read still returns 0 rows. Then regenerate lib/storage/bucket-limits.ts
+--        (scripts/generate-bucket-limits.ts — that cache is what opens the upload door) and list the bucket as service-only in
+--        storage_bucket_policy_readiness().
+-- Rollback: DELETE FROM storage.buckets WHERE id='fraud-evidence';   -- only while it holds 0 objects
+```
 
 ### S.5 — §R.6 status
 

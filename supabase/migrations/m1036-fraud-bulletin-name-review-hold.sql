@@ -1,4 +1,4 @@
--- m1036 — FRAUD BULLETIN NAME-REVIEW HOLD (wave 156, lane 156J round 2). WRITTEN, NOT APPLIED. Needs m1035 first.
+-- m1036 — FRAUD BULLETIN NAME-REVIEW HOLD (wave 156, lane 156J round 2). APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt). Needs m1035 first.
 --
 -- INTENT. A bulletin text that carries a capitalized two-word personal-name pattern or a business-entity suffix outside an
 -- `official_public_warning` is HELD for a SECOND platform-safety moderator (lib/fraud-network/network.ts

@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-25
  * source: public.live_schema_json()
- * body-sha256: 1883af72462c7da7f64a61f18e2bd928fc6581d0d08d793185633d361bce4c0d
+ * body-sha256: d6f3f6de16623506c16d1a5ecdcdc326626b7f7cf6546a6878f790b48717a1d9
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -342,7 +342,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   fraud_bulletin_reads: ["brokerage_id", "bulletin_id", "first_read_at", "id", "user_id"],
   fraud_bulletin_revisions: ["actor_user_id", "bulletin_id", "change_kind", "correction_request_id", "created_at", "id", "reason", "snapshot", "version"],
   fraud_bulletin_sources: ["brokerage_id", "bulletin_id", "case_id", "created_at", "evidence_fingerprint", "id", "linked_by"],
-  fraud_bulletins: ["claim_class", "confidence", "created_at", "created_by", "how_to_verify", "id", "indicators", "jurisdiction", "legal_review_at", "legal_review_by", "named_entity", "named_entity_citation_url", "published_at", "published_by", "recency_date", "red_flags", "source_url", "status", "tactic_summary", "takedown_reason", "taken_down_at", "title", "typology", "updated_at", "version"],
+  fraud_bulletins: ["claim_class", "confidence", "created_at", "created_by", "how_to_verify", "id", "indicators", "jurisdiction", "legal_review_at", "legal_review_by", "name_review_clearance", "name_review_hold", "named_entity", "named_entity_citation_url", "published_at", "published_by", "recency_date", "red_flags", "source_url", "status", "tactic_summary", "takedown_reason", "taken_down_at", "title", "typology", "updated_at", "version"],
   fraud_case_evidence: ["brokerage_id", "case_id", "created_at", "created_by", "evidence_kind", "fingerprint_sha256", "id", "label", "storage_status"],
   fraud_correction_requests: ["brokerage_id", "bulletin_id", "channel", "created_at", "id", "recorded_by", "requester_kind", "requester_user_id", "resolution", "resolved_at", "resolved_by", "statement", "status", "support_ticket_id"],
   fraud_incident_cases: ["alleged_indicators", "brokerage_id", "channel", "created_at", "dispute", "event_date", "external_report_ids", "id", "incident_kind", "listing_id", "loss_amount", "loss_occurred", "moderation_notes", "reporter_user_id", "retention_until", "share_consent", "status", "steps_taken", "summary", "transaction_id", "updated_at"],
