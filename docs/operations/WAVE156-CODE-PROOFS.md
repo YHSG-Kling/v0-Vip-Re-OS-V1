@@ -24,6 +24,8 @@ Read these over any contrary sentence below.
   - **156M round 3.** A held send can be approved or declined from the existing Command Center queue by a seat with approval authority; an approval that lapsed, or a conversation that moved on, is refused with the reason shown on the row. Eleven doors state their own trust class.
   - **156O round 3.** The stored fingerprint of the accepted terms is read: the acceptance check asks again when the text served today differs from the text accepted, and the staff acceptance log shows each row's fingerprint.
   - **156S round 6.** Every caller of a paid door that can be refused for budget now shows that reason to the person.
+  - **156L round 3.** After CI's production build failed on a browser bundle that reached `node:crypto`, the guard gained a rule that walks every client component's graph and fails on any reachable `node:` import, Node built-in or `server-only` module. 28 passed, 0 failed on the fixed tree; red on the control tree for that module.
+  - **156C, at integration.** `packetChecksum` in `lib/forms/tenant-form-packets.ts` uses the Web Crypto API instead of `node:crypto` (the module's constants are imported by the form wizard's browser bundle).
 - **Final guard results** on the integrated tree are in the final report, section 3; where they differ from a count below, the final report is the later measurement.
 
 ## 156B — Listing-agreement and offer compliance gates

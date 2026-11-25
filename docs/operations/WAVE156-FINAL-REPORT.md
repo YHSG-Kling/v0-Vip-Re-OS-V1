@@ -12,15 +12,15 @@ In one paragraph: seventeen lanes built or corrected the things the owner named 
 |---|---|
 | Repository / branch | `YHSG-Kling/v0-Vip-Re-OS-V1` · `claude/settings-consolidation-ui-0cd7lo` · pull request #49 |
 | Starting commit | `e79a13b8` — local and remote were the same commit when the wave began |
-| Integration commit this report was written against | `3e556a92` (230 commits after the start; 496 files changed, 32,472 insertions, 4,767 deletions) |
-| Head that carries this report | the commit after it; the pull request records the pushed head and its CI runs |
+| Integration commit this report was written against | `2ad676aa` (234 commits after the start; 499 files changed, 33,423 insertions, 4,771 deletions) |
+| Pushes | first push `4af0af99` (231 commits) after the chain's exit line read 0 on it. CI's production build then failed on that head (see "What CI found"). This revision of the report rides the fix; the pull request records each pushed head and its CI runs |
 | Worktrees | one integration worktree and eighteen lane worktrees, all local to the build container; every lane branch is merged; nothing else holds unmerged work |
-| Unpushed commits | at the time of writing, all of them: the standing rule pushes only after the chain's own exit line reads 0, and then pushes the whole wave at once. Until that push every commit exists only in the container — see "rebuild losses" |
-| Rebuild losses | none: the container was not rebuilt during the wave. The deal-desk commits that preceded the wave are in `e79a13b8`, which was the remote head, with CI green, when the wave began. A rebuild before the push would have lost the whole wave; a work-in-progress branch is an owner decision (section 12) |
-| Guard chain | 1,010 steps before the wave, 1,027 after: 17 new `test:wave156-*` steps. An all-steps run on the integrated tree found 11 red steps of 1,027; each was closed at its source (table below) and re-run. The run that gates the push is the real chain on the head commit |
+| Unpushed commits | only the commits after `4af0af99` (the build fix, the new rule and this revision), pushed by the same rule: after the chain's own exit line reads 0 on the head |
+| Rebuild losses | none: the container was not rebuilt during the wave. The deal-desk commits that preceded the wave are in `e79a13b8`, which was the remote head, with CI green, when the wave began. Until the first push the whole wave existed only in the container; a work-in-progress branch is an owner decision (section 12) |
+| Guard chain | 1,010 steps before the wave, 1,027 after: 17 new `test:wave156-*` steps. An all-steps run on the integrated tree found 11 red steps of 1,027; each was closed at its source (table below) and re-run. The real chain then exited 0 on `4af0af99` (20:40–21:29 UTC, 1,027 steps) and that head was pushed; the chain runs again on every later head before it is pushed |
 | Type-check | both programs, 0 errors (whole project, one program after the other, during integration and again as the first step of the all-steps run; the real chain repeats it on the head) |
 | Import budget | proxy 23 of 40 · heaviest page 1,272 of 1,300 · union 5,250 of 5,300 — ceilings unchanged |
-| CI | recorded on the pull request; not knowable from inside the commit that carries this file |
+| CI | on `4af0af99`: the production build FAILED (fixed, below); the result for the head that carries this file is on the pull request |
 
 ### Migrations
 
@@ -70,6 +70,14 @@ Before the real chain, every one of the 1,027 steps was run on the integrated co
 | manager-cross-cooperation | Three new registry rows listed co-owners their text did not name | The text names them |
 | listing-archive | The fraud case's link to a listing was not in the archive ledger | Added: kept and detached (the case is the reporting tenant's evidence) |
 
+### What CI found on the first push
+
+The local chain does not run the production build (it needs more memory than the build container has), so one class of defect is visible only in CI. On `4af0af99` the chain exited 0 and CI's build then failed: the form wizard's browser bundle reached `node:crypto`. The wizard, a client component, imports two constants from `lib/forms/tenant-form-packets.ts`, and this wave had added a checksum function to that module that loaded `node:crypto`. The browser compiler cannot load it, so the build stopped.
+
+- **Fix.** The checksum uses the Web Crypto API, which exists in both the server and the browser. It was checked against `node:crypto` for an empty input, text, 100 KB and a sub-array view: identical digests.
+- **The class, not the instance.** Webpack names one import path per offending module, so other paths could have been hiding behind it. `test:wave156-l` now walks the graph of every client component (1,294 modules, stopping at server actions) and fails on any reachable `node:` import, Node built-in or `server-only` module. On the pushed head it found exactly this one module, reached from five client entry points; on the fixed tree it finds none; on the control tree it is red.
+- **What this says about the verdict.** A chain that exits 0 is necessary and was not sufficient. The verdict in section 8 holds only for a head whose CI build is also green; the pull request is where that is recorded.
+
 ## 2. Owner corrections report
 
 Each correction the owner gave, what the code did before, what it does now, and the proof. "Driven" means the guard calls the real exported product code against an in-memory database with counted stand-ins for every model, provider, payment and e-sign call. None of it is evidence of a deployment.
@@ -107,7 +115,7 @@ Final results of each lane's guard on the integrated tree:
 | 156I | `test:wave156-i` | 119 passed, 0 failed | 53 / 47 |
 | 156J | `test:wave156-j-fraud-network` | 152 passed, 0 failed | 9 / 143 |
 | 156K | `test:wave156-k` | 72 passed, 0 failed | 35 / 34 |
-| 156L | `test:wave156-l` | 21 passed, 0 failed | 9 / 6 |
+| 156L | `test:wave156-l` | 28 passed, 0 failed | 15 / 7 |
 | 156M | `test:wave156-m` | 79 passed, 0 failed | 29 / 24 |
 | 156N | `test:wave156-n` | 43 passed, 0 failed | 20 / 23 |
 | 156O | `test:wave156-o` | 63 passed, 0 failed | 14 / 22 |
@@ -191,7 +199,7 @@ A count that moved during integration, and why: the census briefly read 74 owner
 
 **ENGINEERING READY — OWNER ACTIONS REMAIN**
 
-Why this one and not the other two. It is not `ENGINEERING BLOCKED`: every defect and missing door the directive named that could be closed without the owner is closed, each proven by a guard that drives the real product code and is red on its control tree; and by the standing rule this commit reaches the remote branch only when the full guard chain's own exit line reads 0 on it. It is not `PREVIEW/PRODUCTION VERIFIED`: nothing was deployed, and no result here was observed on a deployment. What remains in code is listed in section 11. None of it is what stands between this tree and a first preview — the owner's sheet is.
+Why this one and not the other two. It is not `ENGINEERING BLOCKED`: every defect and missing door the directive named that could be closed without the owner is closed, each proven by a guard that drives the real product code and is red on its control tree; and by the standing rule a commit reaches the remote branch only when the full guard chain's own exit line reads 0 on it. The chain is not the whole test: the first pushed head passed it and failed CI's production build (section 1), so this verdict holds for a head only when its CI build is green too — the pull request records that. It is not `PREVIEW/PRODUCTION VERIFIED`: nothing was deployed, and no result here was observed on a deployment. What remains in code is listed in section 11. None of it is what stands between this tree and a first preview — the owner's sheet is.
 
 The five release states, which are distinct and never implied by one another:
 
