@@ -31,6 +31,11 @@
  *     an independent team's lead sees only their own tenant (count and money), and is not handed the books-only production
  *     stage; a refused ledger read shows its stages as unknown, never 0; the funnel reads no personal trait (source rule +
  *     positive control).
+ *     ROUND 2 — WHO MAY READ WHICH FIGURE, driven: broker_owner (every stage and the money, tenant-wide); a team lead who is not
+ *     the tenant principal (their team's stage counts by teams.team_lead_id; production NOT PERMITTED as a typed state; every
+ *     money export refused NOT_PERMITTED in words); the compliance officer (reads the books, may not enter a cost); another
+ *     tenant's broker (own tenant only); an agent, a vendor and a contact (refused); refused reads (UNKNOWN — never 0, never
+ *     "not permitted"); an unreadable team scope refuses the funnel.
  *
  * RED AT BASE: WAVE156_K_ROOT=<a checkout of the starting commit> runs every driven check against that tree's modules.
  *
@@ -65,7 +70,7 @@ const raw = (f: string, root = ROOT): string => { const p = join(root, f); retur
 // ═══ ids ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 const u = (p: string, n: number) => `${p}${String(n).padStart(7, "0")}-0000-4000-8000-000000000156`
 const B1 = u("b", 1), B2 = u("b", 2)
-const U_BROKER = u("a", 1), U_SUSP = u("a", 2), U_MEMBER = u("a", 3), U_CONTACT = u("a", 4), U_OTHER = u("a", 5), U_AGENT = u("a", 6), U_LEAD2 = u("a", 7), U_NEW = u("a", 8)
+const U_BROKER = u("a", 1), U_SUSP = u("a", 2), U_MEMBER = u("a", 3), U_CONTACT = u("a", 4), U_OTHER = u("a", 5), U_AGENT = u("a", 6), U_NEW = u("a", 8)
 const AG = u("e", 6)
 const R_DECL = u("c", 1), R_EXIST = u("c", 2), R_JOINED_NEW = u("c", 3), R_JOINED_SUSP = u("c", 4), R_OFFER = u("c", 5)
 
@@ -458,42 +463,139 @@ async function sectionF() {
   check("SOURCE: the funnel compute and its reader name no personal trait (comment-stripped, whole bodies)", computeSrc.includes("declined:") && actionSrc.includes("computeRecruitingFunnel(") && !TRAITS.test(computeSrc) && !TRAITS.test(actionSrc), { c: computeSrc.length, a: actionSrc.length })
   check("POSITIVE CONTROL: the trait finder recognises a trait column, and not the word agents", TRAITS.test(`select("id, gender, status")`) && TRAITS.test("r.date_of_birth") && !TRAITS.test(`from("agents").select("id, user_id, is_active")`))
 
-  // Driven: two tenants. B2 is an independent TEAM tenant; its lead must see only B2.
+  // ── ROUND 2: WHO MAY READ WHICH FIGURE, driven (app/actions/recruiting-roi.ts). B1 is a brokerage with two teams; U_LEAD1 leads
+  // TM1 (teams.team_lead_id) and is NOT the tenant principal (two live teams), so the books are not theirs. B2 is another tenant.
   let act: any
   try { act = await load("app/actions/recruiting-roi.ts") } catch (e) { check("the recruiting ROI actions load", false, (e as Error).message); return }
-  const twoTenants = (opts: Parameters<typeof memSupabase>[1] = {}) => world({
-    users: [{ id: U_BROKER, brokerage_id: B1, user_type: "broker" }, { id: U_LEAD2, brokerage_id: B2, user_type: "team_lead" }, { id: PU4, brokerage_id: B1, user_type: "agent" }],
+  const U_OWNER = u("a", 30), U_LEAD1 = u("a", 31), U_AGENT1 = u("a", 32), U_VENDOR = u("a", 33), U_CLIENT = u("a", 34), U_CO = u("a", 35), U_BROKER2 = u("a", 36)
+  const TM1 = u("3", 1), TM2 = u("3", 2), AG_T = u("4", 60), PU_T = u("4", 61)
+  const roles = (m: MemClient) => m
+  const tenants = (opts: Parameters<typeof memSupabase>[1] = {}) => roles(world({
+    users: [
+      { id: U_OWNER, brokerage_id: B1, user_type: "broker_owner" }, { id: U_LEAD1, brokerage_id: B1, user_type: "team_lead" },
+      { id: U_AGENT1, brokerage_id: B1, user_type: "agent" }, { id: U_VENDOR, brokerage_id: B1, user_type: "vendor" },
+      { id: U_CLIENT, brokerage_id: B1, user_type: "contact" }, { id: U_CO, brokerage_id: B1, user_type: "compliance_officer" },
+      { id: U_BROKER2, brokerage_id: B2, user_type: "broker" }, { id: PU4, brokerage_id: B1, user_type: "agent" }, { id: PU_T, brokerage_id: B1, user_type: "agent" },
+    ],
     user_role_assignments: [],
+    teams: [{ id: TM1, brokerage_id: B1, team_lead_id: U_LEAD1, deleted_at: null }, { id: TM2, brokerage_id: B1, team_lead_id: U_OWNER, deleted_at: null }],
     recruits: [
-      ...facts.recruits.map((r) => ({ ...r, brokerage_id: B1 })),
-      { id: R(20), brokerage_id: B2, status: "prospect", provisioned: false, provisioned_user_id: null },
-      { id: R(21), brokerage_id: B2, status: "interviewing", provisioned: false, provisioned_user_id: null },
+      ...facts.recruits.map((r) => ({ ...r, brokerage_id: B1, recruiter_agent_id: null })),
+      { id: R(6), brokerage_id: B1, status: "interviewing", provisioned: false, provisioned_user_id: null, recruiter_agent_id: AG_T },
+      { id: R(20), brokerage_id: B2, status: "prospect", provisioned: false, provisioned_user_id: null, recruiter_agent_id: null },
+      { id: R(21), brokerage_id: B2, status: "interviewing", provisioned: false, provisioned_user_id: null, recruiter_agent_id: null },
     ],
     agent_action_ledger: [{ id: R(30), brokerage_id: B1, action: "recruiting.recruit.advance_stage", status: "executed", subject_id: R(3), detail: { from: "contacted", to: "interviewing" } }],
     agent_client_messages: [{ id: R(31), brokerage_id: B1, agent_kind: "recruiting_manager", entity_type: "recruit", entity_id: R(2), status: "approved" }],
-    agents: [{ id: AG4, user_id: PU4, brokerage_id: B1, is_active: true }],
+    agents: [{ id: AG4, user_id: PU4, brokerage_id: B1, is_active: true, team_id: TM2 }, { id: AG_T, user_id: PU_T, brokerage_id: B1, is_active: true, team_id: TM1 }],
     agent_certifications: [{ id: R(32), brokerage_id: B1, agent_id: AG4, certification_name: "Platform Fundamentals" }],
     recruiting_analytics: [{ id: R(33), brokerage_id: B1, recruited_agent_id: AG4, transaction_count: 2, year_number: 1 }],
     recruiting_roi: [
       { id: R(34), brokerage_id: B1, recruited_agent_id: AG4, total_recruiting_cost: 500000, lifetime_brokerage_net: 900000, roi_pct: 80, computed_at: isoAgo(60) },
       { id: R(35), brokerage_id: B2, recruited_agent_id: u("4", 50), total_recruiting_cost: 1000, lifetime_brokerage_net: 2000, roi_pct: 100, computed_at: isoAgo(60) },
     ],
-  }, opts)
-  twoTenants(); G.__K.seat = U_BROKER
-  const fb = await drive(() => act.getRecruitingFunnel())
-  check("the broker's funnel counts this tenant's recruits through every stage, production included", !!fb.r && JSON.stringify(asMap(fb.r)) === JSON.stringify(expected), fb.r ?? fb.threw)
-  twoTenants(); G.__K.seat = U_LEAD2
+    recruiting_costs: [{ id: R(36), brokerage_id: B1, recruited_agent_id: AG4, cost_type: "training", amount: 500000 }],
+  }, opts))
+  const stateOf = (r: any, k: string) => (r?.stages ?? []).find((s: any) => s.key === k)?.state
+  // broker_owner: real figures for the whole tenant (6 recruits — R6 is TM1's), production included, and the money.
+  const ownerExpected = { sourced: 6, contacted: 5, conversation: 4, offer: 2, joined: 1, seat_provisioned: 1, trained: 1, retained: 1, producing: 1 }
+  tenants(); G.__K.seat = U_OWNER
+  const fo = await drive(() => act.getRecruitingFunnel())
+  check("broker_owner: the funnel counts the whole tenant through every stage, production included, every stage 'ok'", !!fo.r && JSON.stringify(asMap(fo.r)) === JSON.stringify(ownerExpected) && (fo.r as any).stages.every((s: any) => s.state === "ok") && (fo.r as any).scope === "tenant", fo.r ?? fo.threw)
+  const so = await drive(() => act.getRecruitingROISummary())
+  check("broker_owner: the money is read, this tenant's only (1 recruit, 500000 invested — not the other tenant's 1000)", (so.r as any)?.activeRecruits === 1 && (so.r as any)?.totalInvested === 500000, so.r ?? so.threw)
+  const ao = await drive(() => act.getRecruitingAccess())
+  check("broker_owner: access says the money is readable and the funnel is tenant-wide", (ao.r as any)?.money?.state === "ok" && (ao.r as any)?.funnelScope === "tenant", ao.r ?? ao.threw)
+  // the finance-less team lead: THEIR team's stage counts; production NOT PERMITTED (never 0, never "unknown"); money refused in words.
+  tenants(); G.__K.seat = U_LEAD1
   const fl = await drive(() => act.getRecruitingFunnel())
-  check("an independent team's lead sees ONLY their own tenant's recruits (2), none of the other tenant's", !!fl.r && asMap(fl.r).sourced === 2 && asMap(fl.r).conversation === 1, fl.r ?? fl.threw)
+  check("team lead (not the principal): the funnel counts ONLY their team's recruits (1, referred by a TM1 agent), scope 'team'", !!fl.r && asMap(fl.r).sourced === 1 && asMap(fl.r).conversation === 1 && (fl.r as any).scope === "team", fl.r ?? fl.threw)
+  check("team lead: production is NOT PERMITTED — a typed state, distinct from unknown and from a real 0", !!fl.r && stateOf(fl.r, "producing") === "not_permitted" && asMap(fl.r).producing === null && stateOf(fl.r, "sourced") === "ok", fl.r)
   const sl = await drive(() => act.getRecruitingROISummary())
-  check("…and their ROI summary carries only their own tenant's money (1 recruit, 1000 invested)", (sl.r as any)?.activeRecruits === 1 && (sl.r as any)?.totalInvested === 1000, sl.r ?? sl.threw)
-  twoTenants({ refuse: { agent_action_ledger: "permission denied (fixture)" } }); G.__K.seat = U_BROKER
+  check("team lead: the ROI money is REFUSED in words (NOT_PERMITTED), never an empty zero-shaped answer", !!sl.threw && /NOT_PERMITTED/.test(sl.threw) && !sl.r, sl)
+  const cl = await drive(() => act.getRecruitingCostBreakdown())
+  const bl = await drive(() => act.getBreakEvenAnalysis())
+  check("team lead: cost breakdown and break-even are refused the same way", /NOT_PERMITTED/.test(cl.threw ?? "") && /NOT_PERMITTED/.test(bl.threw ?? ""), { cl, bl })
+  const al = await drive(() => act.getRecruitingAccess())
+  check("team lead: access says the money is not permitted (with the reason) and the funnel is team-scoped", (al.r as any)?.money?.state === "not_permitted" && /books/.test((al.r as any)?.money?.reason ?? "") && (al.r as any)?.funnelScope === "team", al.r ?? al.threw)
+  // compliance officer: reads the books (m467) — production and money readable — but does not keep them (no cost entry).
+  tenants(); G.__K.seat = U_CO
+  const fc = await drive(() => act.getRecruitingFunnel())
+  const ac = await drive(() => act.addRecruitingCost(AG4, "training", 100))
+  check("compliance officer: reads the books (production 'ok'), but may not enter a cost (keeps no books)", !!fc.r && stateOf(fc.r, "producing") === "ok" && /NOT_PERMITTED/.test(ac.threw ?? "") && T(G.__K.svc, "recruiting_costs").length === 1, { fc: fc.r ?? fc.threw, ac })
+  // another tenant's admin sees only their own tenant.
+  tenants(); G.__K.seat = U_BROKER2
+  const f2 = await drive(() => act.getRecruitingFunnel())
+  check("another tenant's broker sees only their tenant's recruits (2) and none of B1's", !!f2.r && asMap(f2.r).sourced === 2, f2.r ?? f2.threw)
+  // refused seats.
+  for (const [who, seat] of [["an agent", U_AGENT1], ["a vendor", U_VENDOR], ["a contact", U_CLIENT]] as const) {
+    tenants(); G.__K.seat = seat
+    const ff = await drive(() => act.getRecruitingFunnel())
+    const fs = await drive(() => act.getRecruitingROISummary())
+    const fx = await drive(() => act.getRecruitingAccess())
+    check(`${who} is refused the funnel, the money and the access answer (Forbidden), nothing returned`, !!ff.threw && !!fs.threw && !!fx.threw && !ff.r && !fs.r && !fx.r && /Forbidden/.test(ff.threw ?? ""), { ff: ff.threw, fs: fs.threw })
+  }
+  // refused reads: unknown, never 0.
+  tenants({ refuse: { agent_action_ledger: "permission denied (fixture)" } }); G.__K.seat = U_OWNER
   const fr = await drive(() => act.getRecruitingFunnel())
-  check("a refused ledger read shows the interview / offer stages as unknown and names the blind spot", !!fr.r && asMap(fr.r).conversation === null && (fr.r as any).blindSpots.some((b: string) => /stage moves/.test(b)), fr.r ?? fr.threw)
-  world({ users: [{ id: U_AGENT, brokerage_id: B1, user_type: "agent" }], user_role_assignments: [] }); G.__K.seat = U_AGENT
-  const fa = await drive(() => act.getRecruitingFunnel())
-  check("an agent seat is refused the funnel (recruiting analytics are the tenant admin's)", !!fa.threw && !fa.r, fa)
+  check("a refused ledger read: the interview / offer stages are UNKNOWN (not 0, not 'not permitted') and the blind spot is named", !!fr.r && asMap(fr.r).conversation === null && stateOf(fr.r, "conversation") === "unknown" && (fr.r as any).blindSpots.some((b: string) => /stage moves/.test(b)), fr.r ?? fr.threw)
+  tenants({ refuse: { recruiting_analytics: "permission denied (fixture)" } }); G.__K.seat = U_OWNER
+  const fp = await drive(() => act.getRecruitingFunnel())
+  check("a refused production read for a books reader: production UNKNOWN, not 0", !!fp.r && stateOf(fp.r, "producing") === "unknown" && asMap(fp.r).producing === null, fp.r ?? fp.threw)
+  tenants({ refuse: { teams: "permission denied (fixture)" } }); G.__K.seat = U_LEAD1
+  const ft = await drive(() => act.getRecruitingFunnel())
+  check("a team lead whose team cannot be read gets NO counts (refused, fail closed) — never the tenant's or zeros", !!ft.threw && !ft.r, ft)
+  tenants({ refuse: { recruiting_roi: "permission denied (fixture)" } }); G.__K.seat = U_OWNER
+  const fz = await drive(() => act.getRecruitingROISummary())
+  check("a refused money read throws its refusal — the summary never reads as 0", !!fz.threw && !fz.r, fz)
+
+  // ── ROUND 2 ADDENDUM: the OTHER callers of the five money exports (the brokerage dashboard, the acquisition page, the
+  // brokerage action bar, the recruiting page's per-recruit series). Their loaders settle each call through
+  // lib/recruiting/recruiting-roi-compute.ts settleRecruitingFigure; driven here with the real actions for each seat.
+  const settle = compute.settleRecruitingFigure as undefined | (<X>(p: Promise<X>) => Promise<any>)
+  const words = compute.recruitingFigureWords as undefined | ((f: any) => string | null)
+  if (!settle || !words) { check("the loaders' settle helper exists (settleRecruitingFigure / recruitingFigureWords)", false); }
+  else {
+    const p0 = await settle(Promise.resolve({ totalInvested: 0 }))
+    const pn = await settle(Promise.reject(new Error("NOT_PERMITTED: books are not yours")))
+    const pu = await settle(Promise.reject(new Error("permission denied (fixture)")))
+    check("PURE: a real 0 stays a number ('ok'); a NOT_PERMITTED refusal is 'not_permitted' with its reason; any other error is 'unknown'",
+      p0.state === "ok" && p0.value.totalInvested === 0 && pn.state === "not_permitted" && pn.reason === "books are not yours" && pu.state === "unknown" && words(p0) === null && /seat/.test(words(pn) ?? "") && /Unknown/.test(words(pu) ?? ""), { p0, pn, pu })
+    // the brokerage dashboard's three loads and the acquisition page's two, per seat
+    const loads = async () => ({
+      summary: await settle(act.getRecruitingROISummary()), cost: await settle(act.getRecruitingCostBreakdown()),
+      breakEven: await settle(act.getBreakEvenAnalysis()), byRecruit: await settle(act.getRecruitROIByRecruit()),
+    })
+    tenants(); G.__K.seat = U_OWNER
+    const lo = await quiet(loads)
+    check("dashboard / acquisition loaders as broker_owner: every figure 'ok' with the real numbers (500000 invested)",
+      lo.summary.state === "ok" && lo.summary.value.totalInvested === 500000 && lo.cost.state === "ok" && lo.breakEven.state === "ok" && lo.byRecruit.state === "ok", lo)
+    tenants(); G.__K.seat = U_LEAD1
+    const ll = await quiet(loads)
+    check("dashboard / acquisition loaders as a finance-less team lead: every money figure 'not_permitted' with the reason — no 0 anywhere",
+      [ll.summary, ll.cost, ll.breakEven, ll.byRecruit].every((f: any) => f.state === "not_permitted" && /books/.test(f.reason) && !("value" in f)), ll)
+    tenants({ refuse: { recruiting_roi: "permission denied (fixture)", recruiting_costs: "permission denied (fixture)" } }); G.__K.seat = U_OWNER
+    const lr = await quiet(loads)
+    check("dashboard / acquisition loaders on refused reads: 'unknown' (never 0, never 'not permitted')",
+      lr.summary.state === "unknown" && lr.cost.state === "unknown" && lr.breakEven.state === "unknown" && lr.byRecruit.state === "unknown", lr)
+  }
+  // DERIVED RULE (comment-stripped, app/ + lib/): every caller of the five exports, and none chains `.catch(` onto the call
+  // (a caught refusal mapped to a default is how "$0" was drawn); each caller settles through settleRecruitingFigure.
+  const MONEY = ["getRecruitingROISummary", "getRecruitROIByRecruit", "getRecruitingCostBreakdown", "getBreakEvenAnalysis", "getRecruitingAnalyticsByYear"]
+  const CAUGHT = new RegExp(`\\b(?:${MONEY.join("|")})\\s*\\([^()]*\\)\\s*\\.catch\\s*\\(`)
+  const CALLS = new RegExp(`\\b(?:${MONEY.join("|")})\\s*\\(`)
+  const all: string[] = []
+  const walkAll = (d: string) => { for (const f of readdirSync(join(ROOT, d), { withFileTypes: true })) { const p = `${d}/${f.name}`; if (f.isDirectory()) { if (f.name !== "node_modules") walkAll(p) } else if (/\.(ts|tsx)$/.test(f.name)) all.push(p) } }
+  walkAll("app"); walkAll("lib")
+  const callers = all.filter((f) => f !== "app/actions/recruiting-roi.ts" && CALLS.test(stripComments(raw(f)).replace(/import\s*\{[^}]*\}\s*from\s*["'][^"']+["']/g, "")))
+  const caught = callers.filter((f) => CAUGHT.test(stripComments(raw(f))))
+  const unsettled = callers.filter((f) => !/settleRecruitingFigure\s*\(/.test(stripComments(raw(f))))
+  console.log(`  · callers of the five money exports (${callers.length}): ${callers.join(", ")}`)
+  check(`no caller of the five recruiting money exports chains .catch onto the call (${callers.length} callers, derived)`, callers.length >= 4 && caught.length === 0, { caught })
+  check("every caller settles the call through settleRecruitingFigure (a refusal becomes words, never a default)", callers.length >= 4 && unsettled.length === 0, { unsettled })
+  check("POSITIVE CONTROL: the finder recognises a caught call mapped to zeros", CAUGHT.test(`getRecruitingROISummary().catch(() => ({ totalInvested: 0 }))`) && CAUGHT.test(`await getRecruitingAnalyticsByYear(agentId).catch(() => [])`))
 }
+
 
 async function main() {
   console.log(`wave156-k-guard — ROOT=${ROOT}`)

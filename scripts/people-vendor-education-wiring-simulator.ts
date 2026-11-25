@@ -89,7 +89,7 @@ function stripComments(src: string): { stripped: string; masked: string } {
   // 8 real DIVISIONS as regex openers, including
   // `Math.round(((monthlyGCI - lastMonthGCI) / lastMonthGCI) * 100)` in
   // app/actions/agents.ts:1511 and `(pendingCommissions || 0) / 1000` in
-  // app/dashboard/brokerage/page.tsx:335. Each one blanks to the next slash and
+  // app/dashboard/brokerage/page.tsx:435. Each one blanks to the next slash and
   // desynchronises everything after it — the same confidently-wrong failure the
   // canonical scanner exists to end.
   //

@@ -4,7 +4,7 @@ import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { getBrokerageDashboard, forecastBrokerageRevenue, trackLicenseExpirations } from "@/app/actions/multi-persona"
 import { getBrokerageStats } from "@/app/actions/agents"
-import { getRecruitingROISummary, getRecruitingCostBreakdown, getBreakEvenAnalysis } from "@/app/actions/recruiting-roi"
+import { getRecruitingROISummary, getRecruitingCostBreakdown, getBreakEvenAnalysis } from "@/app/actions/recruiting-roi"; import { settleRecruitingFigure, recruitingFigureWords } from "@/lib/recruiting/recruiting-roi-compute"
 import { getHighFatigueBuyers, getBrokerageFatigueAlerts } from "@/app/actions/buyer-fatigue"
 import { getSystemProviderStatus } from "@/app/actions/settings/provider-settings-actions"
 import { createClient } from "@/lib/supabase/server"
@@ -152,9 +152,9 @@ export default async function BrokerageDashboard({
     dashboard,
     forecastData,
     expirations,
-    recruitingROI,
-    costBreakdown,
-    breakEvenAnalysis,
+    recruitingROIFigure,
+    costBreakdownFigure,
+    breakEvenFigure,
     fatigueResult,
     fatigueAlertsResult,
     dealHealthResult,
@@ -168,25 +168,15 @@ export default async function BrokerageDashboard({
     forecastBrokerageRevenue(brokerageId, 3),
     trackLicenseExpirations(brokerageId),
     // Recruiting ROI actions take the tenant from the SESSION (§4) — no id passed.
-    getRecruitingROISummary().catch(() => ({
-      totalInvested: 0,
-      totalGenerated: 0,
-      avgROI: 0,
-      activeRecruits: 0,
-      profitableRecruits: 0,
-    })),
-    getRecruitingCostBreakdown().catch(() => ({
-      training: 0,
-      marketing: 0,
-      technology: 0,
-      bonuses: 0,
-      guarantees: 0,
-      other: 0,
-    })),
-    getBreakEvenAnalysis().catch(() => ({
-      avgBreakEvenMonth: 0,
-      breakEvenMonths: [],
-    })),
+    // WAVE 156 (156K, round 2 addendum): each was `.catch(() => ({ …: 0 }))` — a seat that may not read the books, or a
+    // refused read, drew "$0 invested / 0% ROI / 0 months". They are SETTLED now (lib/recruiting/recruiting-roi-compute.ts
+    // settleRecruitingFigure): ok → the figure; NOT_PERMITTED → "not shown for your seat"; anything else → "unknown".
+    // Below, the three recruiting cards and the action bar are OMITTED for a seat without the figures (one sentence stands in
+    // their place — a chart or a correction action over money the seat cannot see would be an empty frame), and the break-even
+    // insight / action is raised only from a figure that was read.
+    settleRecruitingFigure(getRecruitingROISummary()),
+    settleRecruitingFigure(getRecruitingCostBreakdown()),
+    settleRecruitingFigure(getBreakEvenAnalysis()),
     getHighFatigueBuyers(brokerageId).catch(() => ({ success: false, buyers: [] })),
     getBrokerageFatigueAlerts(brokerageId).catch(() => ({ success: false, alerts: [] })),
     // Fetch deal health scores - separate queries to avoid ambiguous relationship
@@ -237,6 +227,12 @@ export default async function BrokerageDashboard({
     // session inside the action, not from this page's brokerageId.
     getBrokerageStats(),
   ])
+  // The three recruiting money figures, only as READ (round 2 addendum): null when the seat may not read them or they could
+  // not be read — and then the words, never a 0.
+  const recruitingROI = recruitingROIFigure.state === "ok" ? recruitingROIFigure.value : null
+  const costBreakdown = costBreakdownFigure.state === "ok" ? costBreakdownFigure.value : null
+  const breakEvenAnalysis = breakEvenFigure.state === "ok" ? breakEvenFigure.value : null
+  const recruitingMoneyFigure = [recruitingROIFigure, costBreakdownFigure, breakEvenFigure].find((f) => f.state !== "ok") ?? null
 
   const agents = (dashboard as any).agents ?? []
   const activeTransactionsRaw = (dashboard as any).activeTransactions ?? []
@@ -379,7 +375,7 @@ export default async function BrokerageDashboard({
     }
 
     // Break-even concern
-    if (breakEvenAnalysis.avgBreakEvenMonth > 18) {
+    if (breakEvenAnalysis && breakEvenAnalysis.avgBreakEvenMonth > 18) {
       return {
         id: "break-even-long",
         title: "Recruiting Break-Even is Lengthening",
@@ -478,7 +474,7 @@ export default async function BrokerageDashboard({
     })
   }
 
-  if (breakEvenAnalysis.avgBreakEvenMonth > 12) {
+  if (breakEvenAnalysis && breakEvenAnalysis.avgBreakEvenMonth > 12) {
     brokerActions.push({
       id: "review-recruiting",
       title: "Review Recruiting Break-Even",
@@ -611,7 +607,7 @@ export default async function BrokerageDashboard({
           criticalDeals: dealHealthSummary.critical,
           fatigueAlerts: fatigueAlerts.length,
           pendingPayouts: pendingCommissions || 0,
-          recruitingROI: recruitingROI.avgROI,
+          recruitingROI: recruitingROI ? recruitingROI.avgROI : (recruitingFigureWords(recruitingROIFigure) ?? "Unknown — could not be read"),
         }}
       />
 
@@ -922,6 +918,7 @@ export default async function BrokerageDashboard({
 
         {/* Right Column: Recruiting & Actions */}
         <div className="space-y-6">
+          {recruitingROI && costBreakdown && breakEvenAnalysis ? (<>
           <BrokerBreakEvenCard
             avgBreakEvenMonth={breakEvenAnalysis.avgBreakEvenMonth}
             breakEvenMonths={breakEvenAnalysis.breakEvenMonths}
@@ -935,6 +932,12 @@ export default async function BrokerageDashboard({
             breakEvenAnalysis={breakEvenAnalysis as any}
             costBreakdown={costBreakdown}
           />
+          </>) : (
+            <Card>
+              <CardHeader className="pb-2"><CardTitle className="text-sm font-semibold">Recruiting ROI — {recruitingMoneyFigure ? recruitingFigureWords(recruitingMoneyFigure) : "Unknown — could not be read"}</CardTitle></CardHeader>
+              <CardContent className="pt-0"><p className="text-sm text-muted-foreground">{recruitingMoneyFigure && "reason" in recruitingMoneyFigure ? recruitingMoneyFigure.reason : ""}</p></CardContent>
+            </Card>
+          )}
           <BrokerActionStack actions={brokerActions} />
         </div>
       </div>
