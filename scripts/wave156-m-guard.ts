@@ -494,7 +494,8 @@ async function main(): Promise<void> {
       await quiet(() => CC.approveAgentAction({ queue: "held_send", actionId: h1?.id }))
       const sends = w.rows().filter((r) => r.action === "comms.sms.send")
       const prop = w.rows().find((r) => r.action === "comms.sms.propose")
-      const sess = w.rows().filter((r) => r.action === "comms.held_send.approve")
+      const sess = w.rows().filter((r) => r.action === "comms.held_send.approve" && r.brokerage_id === B)
+      check("  the other tenant's refused attempt left ITS OWN receipt, under its own brokerage (failed), never one in this tenant", w.rows().some((r) => r.action === "comms.held_send.approve" && r.brokerage_id === B2 && r.status === "failed"))
       check("POSITIVE · the broker approves (double-clicked): exactly ONE send reaches the dispatcher, the release CARRIES the approval (ALLOW, verified by the approver), one session receipt",
         sends.length === 1 && prop?.detail?.governance?.decision === "ALLOW" && prop?.detail?.governance?.verification?.kind === "authorized_human" && sess.length === 1, JSON.stringify({ sends: sends.length, sess: sess.length }))
       const h2 = await hold("k-2")

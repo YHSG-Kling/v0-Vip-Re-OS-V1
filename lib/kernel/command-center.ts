@@ -1128,7 +1128,7 @@ export async function loadHeldSendActions(
     .eq("brokerage_id", brokerageId).eq("action", "comms.decision.wait").gte("created_at", since)
     .order("created_at", { ascending: true }).limit(limit)
   if (error) { console.error("[command-center] held-send read refused:", error.message); return [] }
-  const rows = ((holds ?? []) as Array<Record<string, any>>).filter((r) => r.detail?.held_send && /^comms\.(?:sms|email)\.propose$/.test(String(r.detail?.proposed_action ?? "")))
+  const rows = ((holds ?? []) as Array<Record<string, any>>).filter((held) => held.detail?.held_send && /^comms\.(?:sms|email)\.propose$/.test(String(held.detail?.proposed_action ?? "")))
   if (rows.length === 0) return []
   // Closed = declined (a terminal decision), or approved AND its release executed (the propose row keyed on that approval went out).
   // An approved hold whose release did not go out (a later gate refused, the provider failed) stays listed: approve again retries it.
@@ -1136,26 +1136,26 @@ export async function loadHeldSendActions(
     .eq("brokerage_id", brokerageId).in("action", ["comms.decision.send_touch", "comms.decision.do_nothing", "comms.sms.propose", "comms.email.propose"]).gte("created_at", since).limit(2000)
   if (dErr) { console.error("[command-center] held-send closure read refused — none listed (fail closed):", dErr.message); return [] }
   const ledger = (done ?? []) as Array<Record<string, any>>
-  const releasedKeys = ledger.filter((d) => /\.propose$/.test(String(d.action)) && d.status === "executed").map((d) => String(d.idempotency_key ?? ""))
+  const releasedKeys = ledger.filter((entry) => /\.propose$/.test(String(entry.action)) && entry.status === "executed").map((entry) => String(entry.idempotency_key ?? ""))
   const closed = new Set<string>()
-  for (const d of ledger) {
-    if (d.action === "comms.decision.do_nothing" && d.detail?.declines) closed.add(String(d.detail.declines))
-    if (d.action === "comms.decision.send_touch" && d.detail?.approves && releasedKeys.some((k) => k.endsWith(`:release:${d.id}`))) closed.add(String(d.detail.approves))
+  for (const entry of ledger) {
+    if (entry.action === "comms.decision.do_nothing" && entry.detail?.declines) closed.add(String(entry.detail.declines))
+    if (entry.action === "comms.decision.send_touch" && entry.detail?.approves && releasedKeys.some((k) => k.endsWith(`:release:${entry.id}`))) closed.add(String(entry.detail.approves))
   }
-  return rows.filter((r) => !closed.has(String(r.id))).map((r) => {
-    const env = r.detail.held_send as { kind: "sms" | "email"; params: Record<string, unknown> }
+  return rows.filter((held) => !closed.has(String(held.id))).map((held) => {
+    const env = held.detail.held_send as { kind: "sms" | "email"; params: Record<string, unknown> }
     const p = env.params ?? {}
-    const sla = evaluateApprovalSla(r.created_at ?? null, now)
-    const why = String(r.detail?.governance?.rationale ?? r.reason_detail ?? "held for a person's verification")
+    const sla = evaluateApprovalSla(held.created_at ?? null, now)
+    const why = String(held.detail?.governance?.rationale ?? held.reason_detail ?? "held for a person's verification")
     return {
-      id: String(r.id), queue: "held_send" as const, brokerageId, actionType: "release_held_send",
+      id: String(held.id), queue: "held_send" as const, brokerageId, actionType: "release_held_send",
       rationale: `Held by the send gate: ${why}`.slice(0, 600),
       actionInput: {
-        agent_kind: r.actor_manager_key ?? null, channel: env.kind, to: String(p.to ?? ""), subject: (p.subject as string | undefined) ?? null,
+        agent_kind: held.actor_manager_key ?? null, channel: env.kind, to: String(p.to ?? ""), subject: (p.subject as string | undefined) ?? null,
         body: String(env.kind === "sms" ? (p.message ?? "") : (p.text ?? p.html ?? "")).slice(0, 2000), recipient_contact_id: (p.contactId as string | undefined) ?? null,
-        proposed_by: String(r.detail?.governance?.trust_class ?? "unknown origin"), system_source: r.system_source ?? null,
+        proposed_by: String(held.detail?.governance?.trust_class ?? "unknown origin"), system_source: held.system_source ?? null,
       },
-      status: "held", proposedAt: r.created_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
+      status: "held", proposedAt: held.created_at ?? null, ageHours: sla.ageHours, slaLevel: sla.level,
     }
   })
 }
