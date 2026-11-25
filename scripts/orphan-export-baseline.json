@@ -510,7 +510,7 @@
     "lib/portal/welcome-video.ts": 3,
     "lib/portal-stream/ai-delegation-reaction.ts": 2,
     "lib/property/rentcast-eligibility.ts": 4,
-    "lib/property/rentcast.ts": 2,
+    "lib/property/rentcast.ts": 1,
     "lib/property/street-view.ts": 1,
     "lib/providers/calendar/graph-event-shape.ts": 1,
     "lib/providers/calendar/personal-calendar.ts": 1,
@@ -620,7 +620,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 13280,
+  "census": 13279,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -4658,7 +4658,7 @@
     "lib/property/rentcast-eligibility.ts": 10,
     "lib/property/rentcast-normalize.ts": 3,
     "lib/property/rentcast-query.ts": 1,
-    "lib/property/rentcast.ts": 14,
+    "lib/property/rentcast.ts": 13,
     "lib/property/resolve-property-facts.ts": 4,
     "lib/property/street-view.ts": 12,
     "lib/property-alerts/alert-cadence.ts": 3,
@@ -24779,8 +24779,7 @@
       "getRentcastAVM",
       "getRentcastMarketStats",
       "getRentcastSoldRecords",
-      "getRentcastAvmAndComps",
-      "getRentcastComps"
+      "getRentcastAvmAndComps"
     ],
     "lib/property/resolve-property-facts.ts": [
       "isUnavailableStatus",
