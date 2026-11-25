@@ -573,6 +573,198 @@ canary({
   },
 })
 
+// ── the closing (156D) world ─────────────────────────────────────────────────────────────────────────────────────────────
+const dB = u("b", 21), dB2 = u("b", 22), dBROKER = u("a", 61), dAGENT = u("a", 62), dVENDOR = u("a", 63), dTC = u("a", 64), dX = u("a", 65), dCONTACT = u("a", 66), dLENDER = u("a", 67), dOFFDEAL = u("a", 68), dCO = u("a", 69)
+const dAG = u("e", 61), dAGX = u("e", 62), dAGB = u("e", 63)
+const dTX_GA = u("d", 61), dTX_NY = u("d", 62), dTX_NC = u("d", 63), dTX_CLOSED = u("d", 64), dTX_NEW = u("d", 65)
+const dV_ATTY = u("f", 61), dV_LENDER = u("f", 63), dC1 = u("c", 61), dCDA = u("c", 62)
+const D_SEAMS: Record<string, string> = {
+  "lib/teams/team-scope.ts": "export async function leadsAgentsTeam(){ return { ok: true, leads: false, ledTeamId: null } }",
+  "lib/transactions/cda-esign.ts": "export async function dispatchCdaSignerEsign(){ globalThis.__P.count('esign'); return { mode: 'in_app', provider: null, reason: 'fixture', dispatched: false } }",
+}
+function dWorld(): MemClient {
+  return memSupabase({
+    brokerages: [{ id: dB, offers_cda: true, non_cda_payout_default: null, plan_tier: "brokerage" }, { id: dB2 }],
+    contacts: [{ id: dC1, brokerage_id: dB, agent_id: dAG, first_name: "Casey" }],
+    users: [
+      { id: dBROKER, brokerage_id: dB, user_type: "broker" }, { id: dAGENT, brokerage_id: dB, user_type: "agent" }, { id: dVENDOR, brokerage_id: dB, user_type: "vendor" }, { id: dTC, brokerage_id: dB, user_type: "tc" },
+      { id: dX, brokerage_id: dB2, user_type: "broker" }, { id: dCONTACT, brokerage_id: dB, user_type: "contact" }, { id: dLENDER, brokerage_id: dB, user_type: "vendor" }, { id: dOFFDEAL, brokerage_id: dB, user_type: "agent" }, { id: dCO, brokerage_id: dB, user_type: "compliance_officer" },
+    ],
+    agents: [{ id: dAG, user_id: dAGENT, brokerage_id: dB }, { id: dAGX, user_id: dX, brokerage_id: dB2 }, { id: dAGB, user_id: dOFFDEAL, brokerage_id: dB }],
+    transactions: [
+      { id: dTX_GA, brokerage_id: dB, agent_id: dAG, contact_id: dC1, deleted_at: null, status: "under_contract", stage: "CLOSING_PREP", property_state: "GA", financing_type: "conventional", deal_type: "buyer", created_at: "2026-09-01T00:00:00Z" },
+      { id: dTX_NY, brokerage_id: dB, agent_id: dAG, status: "under_contract", property_state: "NY", financing_type: "conventional", deal_type: "seller", created_at: "2026-09-01T00:00:00Z" },
+      { id: dTX_NC, brokerage_id: dB, agent_id: dAG, status: "under_contract", property_state: "NC", financing_type: "conventional", deal_type: "buyer", created_at: "2026-09-01T00:00:00Z" },
+      { id: dTX_CLOSED, brokerage_id: dB, agent_id: dAG, status: "closed", stage: "CLOSED", property_state: "NC", financing_type: "conventional", deal_type: "buyer", created_at: "2026-06-01T00:00:00Z" },
+      { id: dTX_NEW, brokerage_id: dB, agent_id: dAG, status: "under_contract", property_state: "NC", financing_type: "cash", deal_type: "buyer", created_at: "2026-11-20T00:00:00Z" },
+    ],
+    vendors: [{ id: dV_ATTY, brokerage_id: dB, category: "attorney", name: "Peach Law LLC" }, { id: dV_LENDER, brokerage_id: dB, category: "lender", name: "First Mortgage" }],
+    vendor_assignments: [
+      { id: u("9", 61), vendor_id: dV_ATTY, transaction_id: dTX_GA, brokerage_id: dB, assignment_type: "other", status: "confirmed" },
+      { id: u("9", 62), vendor_id: dV_LENDER, transaction_id: dTX_GA, brokerage_id: dB, assignment_type: "lender", status: "confirmed" },
+    ],
+    user_role_assignments: [{ id: u("8", 61), user_id: dVENDOR, vendor_id: dV_ATTY }, { id: u("8", 62), user_id: dLENDER, vendor_id: dV_LENDER }],
+    transaction_participants: [], transaction_title_escrow: [{ id: u("c", 63), transaction_id: dTX_GA, brokerage_id: dB, title_company_name: "Peach Title" }],
+    transaction_documents: [], transaction_tasks: [], transaction_timeline: [], agent_action_ledger: [], tenant_policy_versions: [],
+    closing_disclosure_agreement: [{ id: dCDA, transaction_id: dTX_GA, brokerage_id: dB, agent_id: dAG, status: "approved", broker_approved_at: null, revision_number: 1, field_values: {}, generated_pdf_url: null }],
+    documents: [], notifications: [], commission_distributions: [], agent_commissions: [], commission_adjustments: [], trid_disclosure_receipts: [], contract_term_versions: [],
+    offers: [], document_field_extractions: [], transaction_coordinators: [], transaction_milestones: [], contact_memory: [], tasks: [], closing_disclosure_agreement_revisions: [], transaction_vendor_services: [],
+    brokerage_settings: [], trid_timeline: [], transaction_compliance_log: [], teams: [], lifecycle_events: [], policy_decisions: [], transaction_lenders: [], knowledge_articles: [],
+  }, { uuidIds: true })
+}
+const party = (id: string, x: Record<string, unknown>) => ({ id, name: String(x.name ?? id), ...x })
+
+canary({
+  id: "C06", title: "Georgia / North Carolina attorney settlement uses the SOURCED jurisdiction policy reference",
+  failure: "code always requires a generic title-company seat",
+  seams: () => ({ replace: D_SEAMS }),
+  async run() {
+    const cp = await load("lib/transactions/closing-parties.ts")
+    if (!loaded(cp, "lib/transactions/closing-parties.ts", "assessClosingTeam", "closingDocumentOwner")) return
+    const base = (o: Record<string, unknown>) => ({ stateCode: "GA", financingType: "conventional", dealType: "buyer", participants: [], settlement: null, ...o })
+    const gaAtty = cp.assessClosingTeam(base({ participants: [party("a1", { party_role: "settlement_attorney", name: "Peach Law", represents: "neutral_settlement_agent" })], settlement: { kind: "attorney", participantId: "a1", basis: "contract_named" } }))
+    pos("GA: an ATTORNEY settlement agent completes the closing team — no title-company finding, no gap", !gaAtty.findings.some((f: any) => f.key === "state_requires_attorney_closing" || String(f.key).startsWith("state_gap")), gaAtty.findings)
+    neg("GA: nothing demands a title-company SEAT when an attorney conducts the closing", !gaAtty.findings.some((f: any) => /title/.test(String(f.key)) && f.severity !== "info") && !JSON.stringify(gaAtty).includes("title_company_required"), gaAtty.findings.map((f: any) => f.key))
+    const gaTitle = cp.assessClosingTeam(base({ participants: [party("t1", { party_role: "title_company", name: "Peach Title" })], settlement: { kind: "title_company", participantId: "t1", basis: "contract_named" } }))
+    const gaF = gaTitle.findings.find((f: any) => f.key === "state_requires_attorney_closing")
+    pos("GA: a title-company settlement agent is routed to a human with the GEORGIA source cited (gabar.org)", !!gaF && gaF.severity === "needs_human" && /gabar\.org/.test(gaF.source?.url ?? ""), gaF)
+    const nc = cp.assessClosingTeam(base({ stateCode: "NC", participants: [party("t1", { party_role: "title_company" })], settlement: { kind: "title_company", participantId: "t1", basis: "party_confirmed" } }))
+    pos("NC: the same rule reads North Carolina's own source (ncbar.gov opinion)", nc.findings.some((f: any) => f.key === "state_requires_attorney_closing" && /ncbar\.gov/.test(f.source?.url ?? "")))
+    const tx = cp.assessClosingTeam(base({ stateCode: "TX" }))
+    neg("an unsupported state ASKS a human and invents no requirement (no hardcoded 50-state answer)", tx.state?.status === "unsupported" && !tx.findings.some((f: any) => String(f.key).startsWith("state_gap")), tx.state)
+    const states = await load("lib/state-forms/closing-participants.ts")
+    src("the GA / NC answers come FROM the sourced state table (lib/state-forms/closing-participants.ts), not restated", !states.__loadError && /closing-participants/.test(code("lib/transactions/closing-parties.ts")))
+    // The door: recording a title company as settlement agent on a GA deal opens a counsel-review task (driven through the desk).
+    const act = await load("app/actions/transactions.ts")
+    if (loaded(act, "app/actions/transactions.ts", "recordClosingPartyAction", "setSettlementAgentAction")) {
+      G.__P.mem = dWorld(); G.__P.seat = { id: dBROKER }
+      const t: any = await quiet(() => act.recordClosingPartyAction({ transaction_id: dTX_GA, party_role: "title_company", name: "Peach Title" }))
+      const pid = T(G.__P.mem, "transaction_participants").find((p) => p.name === "Peach Title")?.id
+      const s: any = await quiet(() => act.setSettlementAgentAction(dTX_GA, { kind: "title_company", participantId: pid, basis: "contract_named" }))
+      pos("driven: a title-company settlement agent on the GA deal is SAVED and opens a high-priority counsel-review task with the source", t?.success && s?.success && T(G.__P.mem, "transaction_tasks").some((k) => /counsel|attorney/i.test(`${k.title} ${k.description}`) && /gabar|Georgia/i.test(`${k.description}`)), { t, s, tasks: T(G.__P.mem, "transaction_tasks").map((k) => k.title) })
+    }
+  },
+})
+
+canary({
+  id: "C07", title: "Different buyer / seller closing attorneys, and the outside (off-platform) vendor is confirmed by the deal's agent",
+  failure: "one attorney role is assumed to represent every party",
+  seams: () => ({ replace: D_SEAMS }),
+  async run() {
+    const cp = await load("lib/transactions/closing-parties.ts"), act = await load("app/actions/transactions.ts")
+    if (!loaded(cp, "lib/transactions/closing-parties.ts", "assessClosingTeam", "decideClosingPartyDraft", "PARTY_REPRESENTS")) return
+    const base = (o: Record<string, unknown>) => ({ stateCode: "NY", financingType: "conventional", dealType: "buyer", participants: [], settlement: null, ...o })
+    const both = cp.assessClosingTeam(base({ participants: [party("b", { party_role: "buyer_attorney" }), party("s", { party_role: "seller_attorney" })] }))
+    const rep = Object.fromEntries(both.parties.map((p: any) => [p.id, p.represents]))
+    pos("NY: a buyer's attorney and a seller's attorney are two distinct counsel, each representing its own side", rep.b === "buyer" && rep.s === "seller" && !both.findings.some((f: any) => String(f.key).startsWith("state_gap")), rep)
+    const one = cp.assessClosingTeam(base({ participants: [party("a", { party_role: "settlement_attorney" })] }))
+    neg("NY: ONE side-less attorney does not satisfy both sides — both gaps stay open (never everyone's lawyer)", ["buyer_closing_attorney", "seller_closing_attorney"].every((r) => one.findings.some((f: any) => f.key === `state_gap:${r}`)), one.findings.map((f: any) => f.key))
+    neg("no representation value means 'all parties'", Array.isArray(cp.PARTY_REPRESENTS) && !cp.PARTY_REPRESENTS.some((v: string) => /all|both|every/i.test(v)), cp.PARTY_REPRESENTS)
+    neg("a buyer's attorney cannot be recorded as representing the seller", cp.decideClosingPartyDraft({ partyRole: "buyer_attorney", represents: "seller", name: "Jane Counsel" }).ok === false)
+    ctrl("POSITIVE CONTROL: a side-specific role states its own side", (() => { const d = cp.decideClosingPartyDraft({ partyRole: "seller_attorney", represents: null, name: "Sam Counsel" }); return d.ok && d.represents === "seller" })())
+    if (!loaded(act, "app/actions/transactions.ts", "recordClosingPartyAction", "confirmClosingPartyFactAction")) return
+    G.__P.mem = dWorld(); G.__P.seat = { id: dBROKER }
+    const vendorsBefore = T(G.__P.mem, "vendors").length, usersBefore = T(G.__P.mem, "users").length
+    const off: any = await quiet(() => act.recordClosingPartyAction({ transaction_id: dTX_NY, party_role: "seller_attorney", name: "Off Platform Law PC", email: "closings@example.test" }))
+    const row = T(G.__P.mem, "transaction_participants").find((p) => p.name === "Off Platform Law PC")
+    const task = T(G.__P.mem, "transaction_tasks").find((t) => t.category === "closing_party_confirmation")
+    pos("the OUTSIDE attorney is recorded on the deal (session tenant) and a confirmation task goes to the deal's agent", off?.success && row?.brokerage_id === dB && task?.assigned_user_id === dAGENT && task?.responsible_participant_id === row?.id && row?.represents === "seller", { off, task })
+    neg("…NO vendor, user or seat is created for an off-platform party", T(G.__P.mem, "vendors").length === vendorsBefore && T(G.__P.mem, "users").length === usersBefore)
+    pos("…the record leaves a receipt in the action ledger", T(G.__P.mem, "agent_action_ledger").some((r) => r.action === "transaction.closing_party.record"))
+    G.__P.seat = { id: dVENDOR }
+    const v: any = await quiet(() => act.recordClosingPartyAction({ transaction_id: dTX_NY, party_role: "buyer_attorney", name: "Sneaky" }))
+    neg("a VENDOR seat is refused by the deal desk and writes nothing", v?.success === false && !T(G.__P.mem, "transaction_participants").some((p) => p.name === "Sneaky"), v)
+  },
+})
+
+canary({
+  id: "C08", title: "A lender-confirmed TRID receipt and a correctly changed final Closing Disclosure",
+  failure: "an agent-created receipt masquerades as lender confirmation",
+  seams: () => ({ replace: D_SEAMS }),
+  async run() {
+    const trid = await load("lib/compliance/trid-disclosure-clock-evidence.ts")
+    if (!loaded(trid, "lib/compliance/trid-disclosure-clock-evidence.ts", "recordTridReceiptEvidence")) return
+    const receipt = { brokerageId: dB, transactionId: dTX_GA, version: 1, issuerName: "First Mortgage", senderRole: "creditor", deliveryMethod: "email", receivedAt: "2026-11-18T15:00:00Z", receiptTimezone: "America/New_York", receiptEvidence: "lender_statement", lenderContactName: "Loan officer (by phone)", today: "2026-11-20" }
+    G.__P.mem = dWorld()
+    await quiet(() => trid.recordTridReceiptEvidence(G.__P.mem, { ...receipt, actor: { userId: dLENDER, kind: "lender", lenderVendorId: dV_LENDER } }))
+    const l = T(G.__P.mem, "trid_disclosure_receipts")[0]
+    pos("the ASSIGNED lender's receipt is lender-confirmed (source lender_portal)", l?.verification_status === "lender_confirmed" && l?.source === "lender_portal", l)
+    G.__P.mem = dWorld()
+    await quiet(() => trid.recordTridReceiptEvidence(G.__P.mem, { ...receipt, actor: { userId: dAGENT, kind: "agent" } }))
+    const a = T(G.__P.mem, "trid_disclosure_receipts")[0]
+    neg("an AGENT-reported receipt is recorded pending_lender_confirmation — never lender-confirmed", !!a && a.verification_status === "pending_lender_confirmation" && a.source === "agent_reported", a)
+    G.__P.mem = dWorld()
+    const w: any = await quiet(() => trid.recordTridReceiptEvidence(G.__P.mem, { ...receipt, newWaitDetermination: "no_new_wait", actor: { userId: dAGENT, kind: "agent" } }))
+    neg("an agent cannot record the LENDER's waiting-period determination", w?.ok === false && T(G.__P.mem, "trid_disclosure_receipts").length === 0, w)
+    const cp = await load("lib/transactions/closing-parties.ts")
+    if (loaded(cp, "lib/transactions/closing-parties.ts", "closingDisclosureConsequence")) {
+      const c = cp.closingDisclosureConsequence({ changedTerms: ["closing_cost_contribution"], financing: "financed" })
+      pos("a changed closing credit requires a CORRECTED final CD reviewed by a human", c.correctedCdRequired === true && c.reviewBy === "human", c)
+      neg("…the waiting period is NOT restarted automatically — the lender decides (12 CFR 1026.19(f)(2)(ii))", c.restartsWaitAutomatically === false && c.waitRestartDecidedBy === "lender", c)
+      ctrl("POSITIVE CONTROL: a change with no settlement figure needs no corrected disclosure", !cp.closingDisclosureConsequence({ changedTerms: ["possession_terms"], financing: "financed" }).correctedCdRequired)
+      pos("AI may compare and route, never issue or fabricate a Closing Disclosure", cp.CLOSING_STATEMENT_AI_RULE?.mayIssue === false && cp.CLOSING_STATEMENT_AI_RULE?.mayFabricate === false)
+    }
+  },
+})
+
+canary({
+  id: "C09", title: "A no-CDA closing passes the right broker compliance; opting into the CDA applies by EFFECTIVE policy",
+  failure: "an old closed deal is blocked, or a dummy CDA is inserted",
+  seams: () => ({ replace: D_SEAMS }),
+  async run() {
+    const pol = await load("lib/transactions/cda-closing-policy.ts")
+    if (!loaded(pol, "lib/transactions/cda-closing-policy.ts", "loadEffectiveCdaModes", "decideDealCdaSwitch", "noCdaClosingProof", "resolveCdaMode")) return
+    const m = dWorld(); G.__P.mem = m
+    m.tables.tenant_policy_versions.push({ id: u("7", 61), brokerage_id: dB, policy_key: "cda_policy", version: 1, value: { offers_cda: true, non_cda_payout_default: null, effective_at: "2026-11-01T00:00:00Z", scope: "brokerage" }, previous: { offers_cda: false, non_cda_payout_default: "direct_deposit", effective_at: null, scope: "brokerage" }, created_at: "2026-11-01T00:00:00Z" })
+    const cdaBefore = T(m, "closing_disclosure_agreement").length
+    const eff: any = await quiet(() => pol.loadEffectiveCdaModes(m, { brokerageId: dB, transactionIds: [dTX_CLOSED, dTX_NEW] }))
+    pos("opting INTO the CDA is prospective: a deal opened after the opt-in gets the CDA", eff?.ok && eff.deals?.[dTX_NEW]?.mode === "cda" && eff.current?.mode === "cda", eff?.deals)
+    neg("…the deal CLOSED under no-CDA stays no-CDA (never retroactively blocked)", eff?.ok && eff.deals?.[dTX_CLOSED]?.mode === "no_cda", eff?.deals?.[dTX_CLOSED])
+    const sw = pol.decideDealCdaSwitch({ effective: { mode: "no_cda" }, target: "cda", dealStatus: "closed", cdaRow: null, reason: "opted in to CDA this month" })
+    neg("a closed deal accepts no CDA switch", sw.ok === false && sw.error === "deal_completed", sw)
+    neg("no DUMMY CDA row is inserted by reading the policy (writes 0, CDA rows unchanged)", m.writes.length === 0 && T(m, "closing_disclosure_agreement").length === cdaBefore)
+    const proof = pol.noCdaClosingProof({ cdaMode: pol.resolveCdaMode({ offersCda: false }), transaction: { status: "closed", compliance_passed_at: "2026-11-10T00:00:00Z" }, finalSettlement: { documentId: "doc-final", uploadedAt: "2026-11-10T00:00:00Z", uploadedBy: dTC, uploadedByType: "staff" }, commissions: [{ id: "c1", status: "paid", deposit_received_at: "2026-11-11T00:00:00Z", deposit_received_by: dBROKER, paid_at: "2026-11-12T00:00:00Z" }], openBlockingCompliance: 0, lifetimeHoldOpen: false })
+    pos("a valid no-CDA close: final settlement + receipt + compliance are the proof; nothing missing; no CDA required", proof.mode === "no_cda" && proof.missing.length === 0 && proof.blocksClosing === false, proof.missing)
+    const bad = pol.noCdaClosingProof({ cdaMode: pol.resolveCdaMode({ offersCda: false }), transaction: { status: "closed" }, finalSettlement: null, commissions: [], openBlockingCompliance: 1, lifetimeHoldOpen: false })
+    ctrl("POSITIVE CONTROL: a no-CDA close with no settlement and open compliance is NOT a complete proof", bad.missing.length > 0)
+    pos("a CDA never blocks a close in either mode", pol.resolveCdaMode({ offersCda: true }).blocksClosing === false && pol.resolveCdaMode({ offersCda: false }).blocksClosing === false)
+  },
+})
+
+canary({
+  id: "C30", title: "A consumer question gets the correct portal help, or an agent / vendor task, plus education",
+  failure: "an unknown closing attorney / lender fact is fabricated by the model",
+  seams: () => ({ replace: D_SEAMS }),
+  async run() {
+    const qad = await load("lib/portal/question-answer-decision.ts")
+    if (!loaded(qad, "lib/portal/question-answer-decision.ts", "decidePortalAnswer", "classifyPortalQuestion")) return
+    let modelCalls = 0
+    const ask = (question: string, draft = "Your lender is Fabricated Mortgage Company.") => quiet<any>(() => qad.decidePortalAnswer(G.__P.mem, { brokerageId: dB, contactId: dC1, question, agentName: "Avery", generalAnswer: async () => { modelCalls++; return draft } }, { knowledge: async () => [] }))
+    const m = dWorld(); G.__P.mem = m
+    m.tables.vendor_assignments = m.tables.vendor_assignments.filter((x) => x.vendor_id !== dV_LENDER)
+    modelCalls = 0
+    const lender = await ask("Who is our lender?").catch((e: Error) => ({ text: `threw ${e.message}` }))
+    neg("'Who is our lender?' with nothing recorded: the model's invented name NEVER reaches the client", !/Fabricated/.test(lender.text ?? ""), { text: lender.text, modelCalls })
+    neg("…and the model is not asked at all (0 calls) — the fact comes from the record or not at all", modelCalls === 0, modelCalls)
+    pos("…the client is told it is not recorded and that their agent has been asked (a task is planned)", /not recorded/i.test(lender.text ?? "") && /Avery/.test(lender.text ?? "") && lender.plan?.createTask === true, lender)
+    modelCalls = 0
+    const atty = await ask("Who is my closing attorney?", "Your closing attorney is John Fabricated of Fabricated & Co, 555-0100.").catch((e: Error) => ({ text: `threw ${e.message}` }))
+    neg("'Who is my closing attorney?' with nothing recorded: no invented name or phone", !/Fabricated|555-0100/.test(atty.text ?? "") && modelCalls === 0, { text: atty.text, modelCalls })
+    if (typeof qad.fileQuestionDing === "function") {
+      const ding: any = await quiet(() => qad.fileQuestionDing(G.__P.mem, { brokerageId: dB, contactId: dC1, sessionId: null, agentId: dAG, question: "Who is our lender?", decision: lender, surface: "portal_tutor" }))
+      pos("the ding files ONE task for the agent (the promise 'your agent has been asked' is true)", ding?.filed === true && T(G.__P.mem, "tasks").length === 1, ding)
+    }
+    m.tables.transaction_participants.push({ id: u("4", 62), transaction_id: dTX_GA, brokerage_id: dB, name: "Peach Law LLC", party_role: "buyer_attorney", represents: "buyer", fact_source: "party_confirmed", fact_confirmed_at: "2026-11-20T10:00:00Z" })
+    m.tables.vendor_assignments.push({ id: u("9", 69), vendor_id: dV_LENDER, transaction_id: dTX_GA, brokerage_id: dB, assignment_type: "lender", status: "confirmed" })
+    modelCalls = 0
+    const ok = await ask("Who is my closing attorney?"), okL = await ask("Who is our lender?")
+    pos("a CONFIRMED attorney and an on-platform lender are stated FROM THE RECORD (with whom the attorney represents), still 0 model calls", /Peach Law LLC/.test(ok.text ?? "") && /buyer/.test(ok.text ?? "") && /First Mortgage/.test(okL.text ?? "") && modelCalls === 0, { a: ok.text, l: okL.text })
+    ctrl("POSITIVE CONTROL: a general education question is still education (the fact rule is narrow)", qad.classifyPortalQuestion("What does a closing attorney do?").fact == null)
+    // C29 portal cell — the same answer path for a contact of a solo agent's tenant (the record decides, not the shape).
+    cell("brokerage", /Peach Law LLC/.test(ok.text ?? ""))
+  },
+})
+
 // ═══ child / parent ═══════════════════════════════════════════════════════════════════════════════════════════════════════
 async function child(id: string) {
   const c = CANARIES.find((x) => x.id === id)
