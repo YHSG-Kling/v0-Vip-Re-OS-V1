@@ -782,7 +782,7 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
       }
     }
 
-    // Step 8: For purchase agreements — extract terms and auto-populate transaction
+    // Step 8: For purchase agreements — extract terms and PROPOSE them on the deal (a deal-desk seat accepts each; wave 156)
     if (classification.document_type === "purchase_agreement" && classification.key_fields) {
       try {
         // Find an open transaction for this contact (most recent)
@@ -805,7 +805,7 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
             const { applyContractExtraction } = await import("./ai-contract-review")
             const k = classification.key_fields
             await applyContractExtraction({
-              transactionId: tx.id,
+              transactionId: tx.id, documentId, // wave 156 (156E): a PROPOSAL on the deal, sourced to this upload — never a write of the terms
               agentId: docRecord.brokerage_id ?? "",
               extracted: {
                 purchasePrice: typeof k.purchase_price === "number" ? k.purchase_price : null,

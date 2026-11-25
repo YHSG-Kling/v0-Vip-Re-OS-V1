@@ -78,7 +78,7 @@ export async function decideDealDesk(context: RoleContext): Promise<DealDeskDeci
 
   // "deal" tier — own deal first (agents.id via agents.user_id, never users.id).
   const t = transaction as { agent_id: string | null; buyer_agent_id: string | null; seller_agent_id: string | null }
-  const dealAgentIds = [...new Set([t.agent_id, t.buyer_agent_id, t.seller_agent_id].filter((x): x is string => !!x))]
+  const dealAgentIds = agentsOnDeal(t)
   if (dealAgentIds.length === 0) return no("no_assigned_agent", "This transaction has no assigned agent — a broker or coordinator works it")
   const { data: ownAgents, error: agentError } = await supabase
     .from('agents')
@@ -257,4 +257,13 @@ export async function requireDealDesk(
   } catch {
     return { ok: false, code: "no_session", error: "Unauthorized" }
   }
+}
+
+/**
+ * THE AGENTS ON A DEAL — every side (agent_id, buyer_agent_id, seller_agent_id), as agents.id values, deduplicated. ONE definition:
+ * decideDealDesk's "own deal" asks it, and so does lib/auth/deal-work-ownership.ts (the owning-agent fact) — wave 156, lane 156E,
+ * which made the deal-work roster stop admitting only agent_id. Compare against agents.id (via agents.user_id), never users.id.
+ */
+export function agentsOnDeal(t: { agent_id?: string | null; buyer_agent_id?: string | null; seller_agent_id?: string | null }): string[] {
+  return [...new Set([t.agent_id, t.buyer_agent_id, t.seller_agent_id].filter((x): x is string => !!x))]
 }

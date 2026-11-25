@@ -312,8 +312,10 @@ const DRIVERS: Driver[] = [
   { module: A + "ai-document-intelligence.ts", seed: () => ({ brand_voice_profile: [] }), run: (m) => m.aiGenerateDocument({ documentType: "cover_letter", context: { buyer: "Bea" } }),
     fail: { model: true }, expect: { action: "document.draft.generate", subjectType: "ai_tool_usage", subjectId: null, risk: "LOW_RISK_WRITE" }, ran: modelRan },
   { module: A + "ai-contract-review.ts", seed: () => ({ transactions: [{ id: T, brokerage_id: B, purchase_price: null, close_date: null }], transaction_milestones: [] }),
-    run: (m) => m.applyContractExtraction({ transactionId: T, extracted: { purchasePrice: 455000, earnestMoneyAmount: null, inspectionDeadline: null, appraisalDeadline: null, financingDeadline: null, closingDate: null, buyerName: null, sellerName: null, propertyAddress: null } }),
-    fail: { missingColumns: { transactions: ["purchase_price"] } }, expect: { action: "contract.extraction.apply", subjectType: "transaction", subjectId: T, risk: "LEGAL" }, ran: writesTo("transactions") },
+    // wave 156 (156E): the extraction is a PROPOSAL now — it writes only transactions.governing_terms_proposals (the deal's terms
+    // are applied by app/actions/governing-terms.ts confirmGoverningTermsAction); a pasted contract is its source.
+    run: (m) => m.applyContractExtraction({ transactionId: T, sourceText: "Purchase price $455,000.", extracted: { purchasePrice: 455000, earnestMoneyAmount: null, inspectionDeadline: null, appraisalDeadline: null, financingDeadline: null, closingDate: null, buyerName: null, sellerName: null, propertyAddress: null } }),
+    fail: { missingColumns: { transactions: ["governing_terms_proposals"] } }, expect: { action: "contract.extraction.propose", subjectType: "transaction", subjectId: T, risk: "LOW_RISK_WRITE" }, ran: writesTo("transactions") },
   { module: A + "dotloop-integration.ts", seed: () => ({ document_folders: [] }), run: (m) => m.createDocumentFolder({ folderName: "Closing docs", folderType: "transaction" }),
     fail: { refuse: { document_folders: "permission denied (stub)" } }, expect: { action: "document.folder.create", subjectType: "transaction", subjectId: null, risk: "LOW_RISK_WRITE" }, ran: rowsOf("document_folders") },
   { module: A + "offer-intents.ts", seed: () => ({ offer_intents: [{ id: I, brokerage_id: B, agent_id: AG, status: "requested" }, { id: I2, brokerage_id: B, agent_id: AG, status: "requested" }] }),

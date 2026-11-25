@@ -85,6 +85,13 @@
  *         analysis cannot be dropped into the portal of a contact off the deal [privacy leakage]; applying the same extracted
  *         terms twice is idempotent; the copilot tool writes the ADMITTED deal id, never the model's string [prompt-injection:
  *         a model-supplied id]. Red on the tree before the change (DEAL_DESK_ROOT=<that tree>).
+ *     ROUND 2 (integrator): (1) NO MODEL REWRITES A DEAL'S GOVERNING TERMS — applyContractExtraction only PROPOSES
+ *         (lib/documents/governing-terms-proposal.ts; store transactions.governing_terms_proposals, m1003); a desk seat accepts per
+ *         field through app/actions/governing-terms.ts confirmGoverningTermsAction — driven: a desk upload proposes and changes
+ *         nothing, a client's upload never changes the deal, a vendor cannot confirm, confirm writes exactly the accepted fields
+ *         once with a receipt naming who / which fields / which document, a replay changes nothing. (2) ONE DEAL ROSTER — the
+ *         closing concierge (lib/auth/deal-work-ownership.ts loadDealWorkAccess) admits exactly the seats decideDealDesk admits,
+ *         driven for 18 seats (buyer- and seller-side agents now admitted). (3) The three tenant-only marketing doors ask the desk.
  *
  * BLIND SPOTS (published). The in-memory client has no row security, CHECKs or foreign keys — which is exactly why a gate
  * that leaned on row security shows up here. lib/teams/team-scope.ts leadsAgentsTeam is a counted fixture (it calls a
@@ -150,11 +157,14 @@ const U_OWNER = u("a", 13), U_BADMIN = u("a", 14), U_ADMIN = u("a", 15), TX2 = u
 const P1 = u("c", 2), P_OLD = u("c", 3), P_X = u("c", 4), E1 = u("c", 5), E_X = u("c", 6), D1 = u("c", 7), D_X = u("c", 8), R_X = u("c", 9)
 // §H: the deal's client, another client of the tenant (not on the deal), the deal's listing, one contract document on the deal.
 const C1 = u("c", 20), C_OTHER = u("c", 21), L1 = u("c", 22), DOC1 = u("c", 23)
+// §H round 2: uploaded documents on TX1 (by the coordinator, by the deal's client, by the assigned vendor); a deal with an agent
+// on every side (TX3, seller side U_SELL) and its open closing-concierge action.
+const CD_TC = u("c", 40), CD_CONTACT = u("c", 41), CD_VENDOR = u("c", 42), U_SELL = u("a", 16), AG_SELL = u("e", 16), TX3 = u("d", 4), PA1 = u("c", 43)
 /** The team fixture the counted team-scope seam answers from: who LEADS which agents' team. */
 const LEADS: Record<string, string[]> = { [U_LEAD]: [AG_A], [U_LEAD2]: [AG_B] }
 
 function world(): MemClient {
-  return memSupabase({
+  const w = memSupabase({
     brokerages: [{ id: B1 }, { id: B2 }],
     users: [
       { id: U_BROKER, brokerage_id: B1, user_type: "broker" }, { id: U_TC, brokerage_id: B1, user_type: "tc" },
@@ -168,7 +178,7 @@ function world(): MemClient {
       { id: U_ADMIN, brokerage_id: B1, user_type: "admin" },
     ],
     agents: [
-      { id: AG_A, user_id: U_AGENT, brokerage_id: B1 }, { id: AG_B, user_id: U_AGENT2, brokerage_id: B1 }, { id: AG_BUY, user_id: U_BUYSIDE, brokerage_id: B1 },
+      { id: AG_A, user_id: U_AGENT, brokerage_id: B1, team_id: u("7", 1) }, { id: AG_B, user_id: U_AGENT2, brokerage_id: B1, team_id: u("7", 2) }, { id: AG_BUY, user_id: U_BUYSIDE, brokerage_id: B1 },
       { id: AG_LEAD, user_id: U_LEAD, brokerage_id: B1 }, { id: AG_LEAD2, user_id: U_LEAD2, brokerage_id: B1 }, { id: AG_X, user_id: U_X, brokerage_id: B2 },
     ],
     transactions: [
@@ -186,13 +196,28 @@ function world(): MemClient {
     transaction_title_escrow: [{ id: E1, transaction_id: TX1, brokerage_id: B1, title_company_name: "First Title" }, { id: E_X, transaction_id: TX_X, brokerage_id: B2, title_company_name: "Other Title" }],
     transaction_deadlines: [{ id: D1, transaction_id: TX1, brokerage_id: B1, deadline_type: "inspection", status: "pending", notes: "Inspection" }, { id: D_X, transaction_id: TX_X, brokerage_id: B2, deadline_type: "inspection", status: "pending", notes: "Other" }],
     transaction_timeline: [],
-    generated_documents: [], lifecycle_events: [], notifications: [], agent_action_ledger: [], teams: [],
+    generated_documents: [], lifecycle_events: [], notifications: [], agent_action_ledger: [],
+    // The teams the two team leads LEAD (teams.team_lead_id; AG_A is on team 1, AG_B on team 2 — the same pairs as LEADS) — read by
+    // lib/auth/deal-work-ownership.ts; the desk asks the counted LEADS seam. §H round 2 holds the two answers equal.
+    teams: [{ id: u("7", 1), brokerage_id: B1, team_lead_id: U_LEAD }, { id: u("7", 2), brokerage_id: B1, team_lead_id: U_LEAD2 }],
     // §H: the deal's client, its listing and one contract document; the tables the §H writers land in.
     contacts: [{ id: C1, brokerage_id: B1, first_name: "Casey", agent_id: AG_A }, { id: C_OTHER, brokerage_id: B1, first_name: "Other", agent_id: AG_B }],
     listings: [{ id: L1, brokerage_id: B1, address: "1 Fixture Way" }],
     transaction_documents: [{ id: DOC1, transaction_id: TX1, brokerage_id: B1, doc_type: "purchase_agreement", doc_label: "Purchase agreement", storage_url: null, extracted_data: { text: "fixture contract" } }],
     deposits: [], compliance_tasks: [], transaction_milestones: [], client_portal_messages: [], tasks: [], activities: [],
+    client_documents: [
+      { id: CD_TC, brokerage_id: B1, transaction_id: TX1, contact_id: null, uploaded_by: U_TC, document_name: "Purchase agreement (signed).pdf", ai_metadata: {} },
+      { id: CD_CONTACT, brokerage_id: B1, transaction_id: null, contact_id: C1, uploaded_by: U_CONTACT, document_name: "Contract from the client.pdf", ai_metadata: {} },
+      { id: CD_VENDOR, brokerage_id: B1, transaction_id: TX1, contact_id: null, uploaded_by: U_VENDOR, document_name: "Lender copy.pdf", ai_metadata: {} },
+    ],
+    transaction_pending_actions: [{ id: PA1, brokerage_id: B1, transaction_id: TX3, agent_id: AG_A, action_type: "follow_up", headline: "Appraisal not scheduled", detail: "fixture", suggested_recipient: "lender", due_date: null, status: "open" }],
+    transaction_coordinators: [], user_role_assignments: [], transaction_assignments: [], transaction_lenders: [], transaction_inspections: [],
   }, { uuidIds: true })
+  // TX3 — an agent on every side; U_SELL is its seller-side agent.
+  w.tables.users.push({ id: U_SELL, brokerage_id: B1, user_type: "agent" })
+  w.tables.agents.push({ id: AG_SELL, user_id: U_SELL, brokerage_id: B1 })
+  w.tables.transactions.push({ id: TX3, brokerage_id: B1, agent_id: AG_A, buyer_agent_id: AG_BUY, seller_agent_id: AG_SELL, status: "under_contract", stage: "CLOSING_PREP", property_address: "3 Every Side Rd" })
+  return w
 }
 
 // ═══ seams (installed BEFORE any app module loads) ═════════════════════════════════════════════════════════════════════
@@ -229,6 +254,9 @@ const OVERRIDE: Record<string, string> = {
   "lib/video/format-learning.ts": "export async function recommendPreferredAngleForKind(){ return null }",
   "lib/finance/accounting-egress.ts": "const n = () => { globalThis.__DD.calls.other++; return { ok: false, skipped: true } }; export async function pushCommissionToAccounting(){ return n() }; export async function pushExpenseToAccounting(){ return n() }; export async function pushManualAccountingEntry(){ return n() }",
   "app/actions/financial-kernel.ts": "export async function createCommissionRecordAction(){ globalThis.__DD.calls.other++; return { success: false, error: 'fixture: no commission record' } }",
+  // §H round 2: the marketing doors' outbound rails — counted, never sent / syndicated.
+  "lib/communications/index.ts": "export async function sendVendorBookingConfirmation(){ globalThis.__DD.calls.other++; return { success: false } }",
+  "lib/platform-sync.ts": "const n = () => { globalThis.__DD.calls.other++; return { success: false, error: 'fixture: not syndicated' } }; export async function syncToPlatform(){ return n() }; export async function updatePlatformListing(){ return n() }; export async function removePlatformListing(){ return n() }",
 }
 /** Replace the module entirely — counted seams; the real module (and whatever it would reach) never loads. */
 const REPLACE: Record<string, string> = {
@@ -1127,7 +1155,7 @@ const MODEL_REACH = /\b(?:bookedGenerateObject|generateTextRouted|generateObject
 /** The deal desk, by any of its names: the session-bound helper, the decision, and the four older wrappers / the copilot's tool link. */
 const DESK_ASK = /\b(?:requireDealDesk|decideDealDesk|scopeTransaction|dealDeskFor|requireTransactionActor|requireDealRowActor|dealDeskWriteContext|deskDealForTool)\s*\(/
 const DEAL_NAMED = /\btransactionId\b|\btransaction_id\b/
-const WRITE_OR_SEND = /\.(?:insert|update|upsert|delete)\s*\(|\b(?:sendInboxMessage|insertPortalMessage|createCommissionRecordAction|commissionVideoExperiment|commissionListingCuts)\s*\(/
+const WRITE_OR_SEND = /\.(?:insert|update|upsert|delete)\s*\(|\b(?:sendInboxMessage|insertPortalMessage|createCommissionRecordAction|commissionVideoExperiment|commissionListingCuts|applyGoverningTermsDecisions|recordGoverningTermsProposal)\s*\(/
 /** A read of the deal's own records (the deal row or one of its transaction_* tables). */
 const DEAL_READ = /\.from\(\s*["'](?:transactions|transaction_[a-z_]+)["']\s*\)/
 /** The files §B / §E / §F / §G already drive and rule — §H covers every OTHER file. */
@@ -1135,7 +1163,10 @@ const COVERED_ELSEWHERE = new Set([COORD, CLOSING, MILESTONES, DEAL_ACTIONS, "ap
 const CR = "app/actions/ai-contract-review.ts", DI = "app/actions/ai-document-intelligence.ts", FM = "app/actions/ai-financial-management.ts"
 const RA = "app/actions/ai-review-automation.ts", TD = "app/actions/ai-transaction-documents.ts", RC = "app/actions/repair-negotiation-copilot.ts"
 const CP = "app/actions/copilot.ts", CG = "app/actions/content-generation-engine.ts", MP = "app/actions/marketing-package-automation.ts", LV = "app/actions/listing-video.ts"
-const PM = "app/actions/portal-messages.ts", CHAT = "app/api/internal/ai-chat/route.ts"
+const PM = "app/actions/portal-messages.ts", CHAT = "app/api/internal/ai-chat/route.ts", GT = "app/actions/governing-terms.ts"
+/** A proposal pre-seeded on TX1 for the confirm door's generic drive (§H round 2): purchase price and closing date from CD_TC. */
+const PROPOSAL_ID = u("c", 44)
+const seedProposal = (m: MemClient) => { const t = T(m, "transactions").find((r) => r.id === TX1)!; t.governing_terms_proposals = [{ id: PROPOSAL_ID, source: { kind: "client_document", document_id: CD_TC, document_name: "Purchase agreement (signed).pdf" }, proposed_by: U_TC, proposed_at: "2026-11-25T00:00:00.000Z", fields: { purchase_price: 401000, close_date: "2027-01-30", inspection_deadline: "2026-12-05" }, decisions: {} }]; return m }
 const EXTRACTED = { purchasePrice: 401000, earnestMoneyAmount: null, inspectionDeadline: "2026-12-05", appraisalDeadline: null, financingDeadline: null, closingDate: "2027-01-30", buyerName: null, sellerName: null, propertyAddress: null }
 /**
  * The doors §H DRIVES (each must ask the desk — source rule — and is driven for every seat): how each is called, whether an
@@ -1148,7 +1179,12 @@ const H_DOORS: Record<string, { file: string; call: (m: any) => Promise<any>; re
   reviewTransactionDocuments: { file: CR, call: (m) => m.reviewTransactionDocuments({ transactionId: TX1, state: "TX" }), reach: true },
   generateDocumentChecklist: { file: CR, call: (m) => m.generateDocumentChecklist({ transactionId: TX1, transactionType: "purchase", state: "TX" }), reach: true },
   extractContractTerms: { file: CR, call: (m) => m.extractContractTerms({ contractText: "Purchase price $401,000. Closing January 30, 2027.", transactionId: TX1, agentId: AG_A }), reach: true },
-  applyContractExtraction: { file: CR, call: (m) => m.applyContractExtraction({ transactionId: TX1, extracted: EXTRACTED }), landed: (m) => T(m, "transactions").find((r) => r.id === TX1)?.purchase_price === 401000 && T(m, "transaction_milestones").filter((r) => r.transaction_id === TX1).length === 2 },
+  // Round 2: a PROPOSAL door — it lands a proposal on the deal and changes none of the deal's terms. Its first deal read decides
+  // the uploader route (the document's uploader may propose without the desk), so the deal read may precede the refusal.
+  applyContractExtraction: { file: CR, call: (m) => m.applyContractExtraction({ transactionId: TX1, documentId: CD_TC, extracted: EXTRACTED }), resolvesDeal: true,
+    landed: (m) => { const t = T(m, "transactions").find((r) => r.id === TX1); return t?.purchase_price === 400000 && Array.isArray(t?.governing_terms_proposals) && t.governing_terms_proposals.length === 1 && T(m, "transaction_milestones").length === 0 } },
+  confirmGoverningTermsAction: { file: GT, call: async (m) => { seedProposal(G.__DD.mem); return m.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, accept: ["purchase_price"] }) },
+    landed: (m) => T(m, "transactions").find((r) => r.id === TX1)?.purchase_price === 401000 },
   aiGenerateDocument: { file: DI, call: (m) => m.aiGenerateDocument({ transactionId: TX1, documentType: "cover_letter", context: {} }), reach: true },
   aiGenerateDocumentReminders: { file: DI, call: (m) => m.aiGenerateDocumentReminders({ transactionId: TX1 }) },
   aiCalculateCommission: { file: FM, call: (m) => m.aiCalculateCommission({ agentId: AG_A, transactionId: TX1, salePrice: 400000, commissionRate: 3 }) },
@@ -1170,6 +1206,10 @@ const H_DOORS: Record<string, { file: string; call: (m: any) => Promise<any>; re
   // Keyed on a deal DOCUMENT: its first read finds the document (and so the deal); the desk is asked for that deal before the model.
   analyzeDocument: { file: "app/actions/documents.ts", call: (m) => m.analyzeDocument(DOC1), reach: true, resolvesDeal: true },
   enhancedGenerateListingDescription: { file: "app/actions/ai-content-generation.tsx", call: (m) => m.enhancedGenerateListingDescription({ transactionId: TX1 }) },
+  // Round 2: the three tenant-only marketing doors on the deal's listing (activation, vendor booking, syndication).
+  activateMarketingPackage: { file: MP, call: (m) => m.activateMarketingPackage({ transactionId: TX1, packageType: "basic" }) },
+  bookMarketingService: { file: MP, call: (m) => m.bookMarketingService({ packageId: u("c", 30), serviceType: "photography", transactionId: TX1 }) },
+  syncListingToPlatforms: { file: MP, call: (m) => m.syncListingToPlatforms(TX1), pos: false },
 }
 /**
  * Derived doors that are NOT one-deal staff doors of this kind, or that keep a NAMED narrower gate — each with its reason and a
@@ -1182,9 +1222,6 @@ const H_NAMED: Record<string, { why: string; proof: RegExp }> = {
   getDocumentWithAnalysis: { why: "a document VIEW on the caller's row-security client (row security decides who reads — read permission is not work authority); its portal branch is pinned to the contact's own deals", proof: /\bportalDealClient\s*\(/ },
   sendPortalMessage: { why: "keyed on a CONTACT (requireContactAccess; the client may send); its deal TAG must be one of that contact's deals in the contact's tenant", proof: /\.or\(`contact_id\.eq\.\$\{contactId\}/ },
   processVoiceCommand: { why: "the voice assistant: the deal is the SESSION's own active-deal context (context.active_transaction), never an input id", proof: /\bactive_transaction\b/ },
-  activateMarketingPackage: { why: "a marketing-package door on the deal's LISTING — tenant-gated (verifyTransactionInBrokerage); listing activation / syndication writers are lane 156B's file set (reported, not changed here)", proof: /\bverifyTransactionInBrokerage\s*\(/ },
-  bookMarketingService: { why: "books a marketing vendor for the deal's LISTING — tenant-gated (verifyTransactionInBrokerage); reported, not changed here", proof: /\bverifyTransactionInBrokerage\s*\(/ },
-  syncListingToPlatforms: { why: "listing syndication — lane 156B's file set; tenant-gated (verifyTransactionInBrokerage); reported, not changed here", proof: /\bverifyTransactionInBrokerage\s*\(/ },
   getBuyerClosingCosts: { why: "a CONTACT portal door (lib/portal/require-contact-access.ts requireContactAccess): the client reads only their own deal's figures, the deal pinned to the contact's tenant", proof: /\brequireContactAccess\s*\(/ },
   dispatchConciergeActionEmail: { why: "the concierge send — the same NARROWER gate as its draft (gateConciergeAction: tenant + deal-work access)", proof: /\bgateConciergeAction\s*\(/ },
   recordSellerSignedCounter: { why: "an OFFER door (lane 156B's file set); it files a document through uploadDocument", proof: /\buploadDocument\s*\(/ },
@@ -1380,17 +1417,104 @@ async function sectionH() {
     const m = as(U_TC); const x = await drive(() => mods[TD].shareDocumentAnalysisWithClient({ transactionId: TX1, contactId: C_OTHER, brokerageId: B1, agentId: AG_A, documentLabel: "x", analysisText: "y" }))
     check("WRONG CLIENT [privacy leakage]: the coordinator cannot drop a deal's document analysis into the portal of a contact who is not a client on that deal", refused(x) && T(m, "client_portal_messages").length === 0, x.r ?? x.threw)
   }
-  if (mods[CR]?.applyContractExtraction) {
-    const m = as(U_TC)
-    const one = await drive(() => mods[CR].applyContractExtraction({ transactionId: TX1, extracted: EXTRACTED }))
-    const after1 = JSON.stringify([T(m, "transactions").find((r) => r.id === TX1)?.purchase_price, T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.due_date}`).sort()])
-    const two = await drive(() => mods[CR].applyContractExtraction({ transactionId: TX1, extracted: EXTRACTED }))
-    const after2 = JSON.stringify([T(m, "transactions").find((r) => r.id === TX1)?.purchase_price, T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.due_date}`).sort()])
-    check("REPLAY: applying the same extracted terms twice leaves the deal exactly as the first apply did (the price is set, each deadline milestone is upserted on transaction_id + milestone_name, never duplicated)", (one.r as any)?.success === true && (two.r as any)?.success === true && after1 === after2 && T(m, "transaction_milestones").length === 2, { after1, after2 })
-    const m2 = as(U_TC); m2.tables.transactions = T(m2, "transactions").filter((r) => r.id !== TX1)
-    const gone = await drive(() => mods[CR].applyContractExtraction({ transactionId: TX1, extracted: EXTRACTED }))
-    check("…and a deal that is not there is never reported applied (the desk refuses; the deal update is also COUNTED)", refused(gone) && T(m2, "transaction_milestones").length === 0, gone.r ?? gone.threw)
+  await governingTermsScenario(mods[CR])
+  await conciergeRoster()
+}
+
+/** The deal's governing terms as one comparable string: the three columns, every milestone, and the proposals' decisions. */
+const termsOf = (m: MemClient) => { const t = T(m, "transactions").find((r) => r.id === TX1) ?? {}; return JSON.stringify([t.purchase_price, t.close_date ?? null, t.property_address, T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.due_date}`).sort()]) }
+const proposalsOf = (m: MemClient): any[] => { const v = T(m, "transactions").find((r) => r.id === TX1)?.governing_terms_proposals; return Array.isArray(v) ? v : [] }
+
+/** §H round 2 — A MODEL MUST NOT REWRITE A DEAL'S GOVERNING TERMS: extracted terms are a proposal; only the desk accepts them. */
+async function governingTermsScenario(cr: any) {
+  section("§H round 2 · extracted contract terms are a PROPOSAL; a deal-desk seat accepts each field (no model rewrites a deal)")
+  let gt: any = null
+  try { gt = await quiet(() => load(GT)) } catch (e) { check(`${GT} loads (the confirm door exists)`, false, (e as Error)?.message?.slice(0, 200)) }
+  if (!cr?.applyContractExtraction) { check("applyContractExtraction exists", false); return }
+  // (a) a DESK seat's upload proposes and changes nothing
+  let m = as(U_TC); const before = termsOf(m)
+  let x = await drive(() => cr.applyContractExtraction({ transactionId: TX1, documentId: CD_TC, extracted: EXTRACTED }))
+  const p = proposalsOf(m)
+  check("UPLOAD BY A DESK SEAT: the coordinator's extraction lands as ONE proposal (purchase price, closing date, inspection deadline — sourced to the uploaded document) and the deal's terms and milestones are UNCHANGED",
+    (x.r as any)?.success === true && termsOf(m) === before && p.length === 1 && p[0].source?.document_id === CD_TC && JSON.stringify(Object.keys(p[0].fields).sort()) === JSON.stringify(["close_date", "inspection_deadline", "purchase_price"]) && p[0].fields.purchase_price === 401000,
+    { r: x.r ?? x.threw, terms: termsOf(m), p })
+  x = await drive(() => cr.applyContractExtraction({ transactionId: TX1, documentId: CD_TC, extracted: EXTRACTED }))
+  check("…the same document proposed again keeps its ONE proposal (idempotent per source)", (x.r as any)?.success === true && proposalsOf(m).length === 1 && termsOf(m) === before, proposalsOf(m).length)
+  // (b) a CONTACT's upload never changes the deal; the contact cannot confirm
+  m = as(U_CONTACT)
+  x = await drive(() => cr.applyContractExtraction({ transactionId: TX1, documentId: CD_CONTACT, extracted: EXTRACTED }))
+  const cp = proposalsOf(m)
+  const contactConfirm = gt ? await drive(() => gt.confirmGoverningTermsAction({ transactionId: TX1, proposalId: cp[0]?.id ?? "none", accept: ["purchase_price"] })) : { r: undefined, threw: "no door" }
+  check("CONTACT UPLOAD: the deal's client may only PROPOSE from their own upload — the deal is unchanged, and the client's own confirm is refused by the desk",
+    (x.r as any)?.success === true && cp.length === 1 && cp[0].source?.document_id === CD_CONTACT && termsOf(m) === before && refused(contactConfirm) && termsOf(m) === before, { r: x.r ?? x.threw, confirm: contactConfirm.r ?? contactConfirm.threw })
+  // (c) a vendor cannot confirm; a vendor's own upload is a proposal only; a seat that neither works the deal nor uploaded the document cannot even propose
+  m = seedProposal(as(U_VENDOR))
+  const vendorConfirm = gt ? await drive(() => gt.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, accept: ["purchase_price", "close_date"] })) : { r: undefined, threw: "no door" }
+  const vendorUpload = await drive(() => cr.applyContractExtraction({ transactionId: TX1, documentId: CD_VENDOR, extracted: EXTRACTED }))
+  check("VENDOR: an assigned vendor seat cannot confirm a term (refused by the desk, the deal unchanged); its own upload only adds a proposal",
+    refused(vendorConfirm) && (vendorUpload.r as any)?.success === true && termsOf(G.__DD.mem) === before && proposalsOf(G.__DD.mem).length === 2, { vendorConfirm: vendorConfirm.r ?? vendorConfirm.threw, vendorUpload: vendorUpload.r ?? vendorUpload.threw })
+  m = as(U_AGENT2)
+  x = await drive(() => cr.applyContractExtraction({ transactionId: TX1, documentId: CD_TC, extracted: EXTRACTED }))
+  check("NEG an agent off the deal, who did not upload the document, cannot propose on it", refused(x) && proposalsOf(m).length === 0 && termsOf(m) === before, x.r ?? x.threw)
+  m = as(U_TC)
+  const crossDoc = await drive(() => cr.applyContractExtraction({ transactionId: TX2, documentId: CD_TC, extracted: EXTRACTED }))
+  check("…and a document is a source only for ITS deal (the coordinator's own document cannot seed another deal's proposal)", refused(crossDoc), crossDoc.r ?? crossDoc.threw)
+  if (!gt) return
+  // (d) confirm changes exactly the accepted fields, once — with a receipt naming who, which fields, which document
+  m = seedProposal(as(U_TC))
+  const c1 = await drive(() => gt.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, accept: ["purchase_price", "close_date"] }))
+  const t1 = T(m, "transactions").find((r) => r.id === TX1)!
+  const ms1 = T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.due_date}`).sort()
+  const receipt = T(m, "agent_action_ledger").find((r) => JSON.stringify(r).includes("transaction.governing_terms.confirm"))
+  check("CONFIRM: the coordinator accepts price and closing date — EXACTLY those land (the closing-day milestone with it); the inspection deadline was not accepted and is not set",
+    (c1.r as any)?.success === true && t1.purchase_price === 401000 && t1.close_date === "2027-01-30" && JSON.stringify(ms1) === JSON.stringify(["closing_day:2027-01-30"]), { r: c1.r ?? c1.threw, price: t1.purchase_price, close: t1.close_date, ms1 })
+  check("…its RECEIPT names who confirmed (the session user), the accepted fields and the source document", !!receipt && JSON.stringify(receipt).includes(U_TC) && JSON.stringify(receipt).includes(CD_TC) && JSON.stringify(receipt).includes("close_date"), receipt ? Object.keys(receipt) : null)
+  const afterFirst = termsOf(m)
+  const c2 = await drive(() => gt.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, accept: ["purchase_price", "close_date"] }))
+  check("REPLAY: confirming the same fields again changes nothing (both are skipped as already decided)", (c2.r as any)?.success === true && (c2.r as any)?.applied?.length === 0 && (c2.r as any)?.skipped?.length === 2 && termsOf(m) === afterFirst, c2.r ?? c2.threw)
+  const c3 = await drive(() => gt.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, dismiss: ["inspection_deadline"] }))
+  check("DISMISS: a dismissed term is recorded and writes nothing", (c3.r as any)?.success === true && termsOf(m) === afterFirst && proposalsOf(m)[0]?.decisions?.inspection_deadline?.decision === "dismissed", c3.r ?? c3.threw)
+  const c4 = await drive(() => gt.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, accept: ["commission_rate"] }))
+  check("…a field the proposal does not carry is refused (no term can be smuggled in by name)", refused(c4) && termsOf(m) === afterFirst, c4.r ?? c4.threw)
+  m = seedProposal(as(U_X))
+  const foreign = await drive(() => gt.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, accept: ["purchase_price"] }))
+  check("FOREIGN TENANT: another tenant's broker cannot confirm this deal's terms", refused(foreign) && T(m, "transactions").find((r) => r.id === TX1)?.purchase_price === 400000, foreign.r ?? foreign.threw)
+  m = seedProposal(as(U_TC)); m.tables.transactions.find((r) => r.id === TX1)!.governing_terms_proposals[0].fields = { purchase_price: 401000 }
+  const ld = await drive(() => gt.loadProposedGoverningTermsAction(TX1))
+  as(U_VENDOR); const ldV = await drive(() => gt.loadProposedGoverningTermsAction(TX1))
+  check("THE SCREEN'S READ: the coordinator sees each undecided term beside the deal's current value; a vendor seat is refused",
+    (ld.r as any)?.success === true && (ld.r as any).terms?.length === 1 && (ld.r as any).terms[0].current === 400000 && (ld.r as any).terms[0].proposed === 401000 && refused(ldV), { ld: ld.r ?? ld.threw, ldV: ldV.r ?? ldV.threw })
+  // The component is the screen: it is self-contained and calls only these two doors.
+  const card = stripComments(raw("app/components/transactions/governing-terms-proposals-card.tsx"))
+  check("THE COMPONENT: a client component that reads through loadProposedGoverningTermsAction, decides per field through confirmGoverningTermsAction, and shows the refusal text",
+    /^\s*["']use client["']/.test(card) && /loadProposedGoverningTermsAction\(\s*transactionId\s*\)/.test(card) && /confirmGoverningTermsAction\(/.test(card) && /\[how\]:\s*\[t\.field\]/.test(card) && /role="alert"/.test(card) && !/\.from\(/.test(card))
+}
+
+/** §H round 2 — ONE DEAL ROSTER: the closing concierge's access is the deal desk's answer. */
+async function conciergeRoster() {
+  section("§H round 2 · the closing concierge asks the deal desk who works the deal (lib/auth/deal-work-ownership.ts loadDealWorkAccess)")
+  let cc: any = null
+  try { cc = await quiet(() => load("app/dashboard/transactions/closing-concierge/actions.ts")) } catch (e) { check("the concierge actions load", false, (e as Error)?.message?.slice(0, 200)); return }
+  const rg = await load(ROLE_GUARD)
+  const seats: Array<[string, string | null]> = [...Object.entries(PG_SEAT), ["seller_side_agent", U_SELL], ["team_lead_of_another_team", U_LEAD2]]
+  const disagree: string[] = [], spent: string[] = [], admittedBy: string[] = []
+  for (const [label, seat] of seats) {
+    as(seat)
+    const me = T(G.__DD.mem, "users").find((r) => r.id === seat)
+    const desk = seat && me ? await quiet<any>(() => rg.decideDealDesk({ userId: seat, role: me.user_type ?? "", brokerageId: me.brokerage_id, transactionId: TX3 })) : { allowed: false }
+    const res = await drive(() => cc.resolveConciergeAction(PA1, "handled"))
+    const admitted = (res.r as any)?.success === true; if (admitted) admittedBy.push(label)
+    if (admitted !== !!desk.allowed) disagree.push(`${label}: concierge ${admitted ? "admits" : "refuses"} (${JSON.stringify(res.r ?? res.threw)?.slice(0, 80)}), desk ${desk.allowed ? "admits" : "refuses"}`)
+    as(seat)
+    const dr = await drive(() => cc.draftConciergeActionEmail(PA1))
+    if (!desk.allowed && (G.__DD.calls.model !== 0 || !refused(dr))) spent.push(`${label}: model=${G.__DD.calls.model}`)
   }
+  check(`ONE ROSTER: for ${seats.length} seats (the 16 measured seats, the seller-side agent and another team's lead) the concierge admits exactly the seats the deal desk admits — the buyer-side and seller-side agents included`, disagree.length === 0 && ["buyer_side_agent", "seller_side_agent", "tc", "broker"].every((s) => admittedBy.includes(s)) && !admittedBy.includes("vendor"), { disagree, admittedBy })
+  check("…and every seat the desk refuses spends 0 model calls on the concierge's email draft", spent.length === 0, spent)
+  // closingApproval is unchanged: the pure rule is not touched (a buyer-side agent never gains closing approval).
+  const dw = await load("lib/auth/deal-work-ownership.ts")
+  const r = dw.resolveDealWork({ sameTenant: true, userType: "agent", grantedRoles: [], isOwningAgent: true, isAssignedTc: false, isTeamLeadOfDealAgent: false, dealStatus: "under_contract", dealStage: "CLOSING_PREP" })
+  check("…closingApproval is unchanged (an owning agent — any side — still has no closing approval; compliance and tenant admins keep it)", r.capabilities.closingApproval === false && dw.resolveDealWork({ sameTenant: true, userType: "compliance_officer", grantedRoles: [], isOwningAgent: false, isAssignedTc: false, isTeamLeadOfDealAgent: false, dealStatus: "closing", dealStage: "CLOSING_PREP" }).capabilities.closingApproval === true)
 }
 
 // ═══ §D ════════════════════════════════════════════════════════════════════════════════════════════════════════════════

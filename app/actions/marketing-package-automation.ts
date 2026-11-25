@@ -108,7 +108,7 @@ export async function activateMarketingPackage(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const ownsTx = await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId)
-  if (!ownsTx) return { success: false, error: "Forbidden" }
+  if (!ownsTx) return { success: false, error: "Forbidden" }; const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId); if (!desk.ok) return { success: false, error: desk.error } // THE DEAL DESK (wave 156, 156E): the tenant is not the deal
 
   const supabase = await createClient()
 
@@ -185,7 +185,7 @@ export async function bookMarketingService(params: {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const ownsTx = await verifyTransactionInBrokerage(params.transactionId, auth.brokerageId)
-  if (!ownsTx) return { success: false, error: "Forbidden" }
+  if (!ownsTx) return { success: false, error: "Forbidden" }; const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId); if (!desk.ok) return { success: false, error: desk.error } // THE DEAL DESK (wave 156, 156E): the tenant is not the deal
 
   const pkgCheck = await verifyPackageInBrokerage(params.packageId, auth.brokerageId)
   if (!pkgCheck.ok || pkgCheck.transactionId !== params.transactionId) {
@@ -432,7 +432,7 @@ export async function syncListingToPlatforms(transactionId: string) {
   if (!auth.ok) return { success: false, error: auth.error }
 
   const ownsTx = await verifyTransactionInBrokerage(transactionId, auth.brokerageId)
-  if (!ownsTx) return { success: false, error: "Forbidden" }
+  if (!ownsTx) return { success: false, error: "Forbidden" }; const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(transactionId); if (!desk.ok) return { success: false, error: desk.error } // THE DEAL DESK (wave 156, 156E): the tenant is not the deal
 
   const supabase = await createClient()
 
