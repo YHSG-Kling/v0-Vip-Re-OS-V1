@@ -96,6 +96,12 @@ export interface NotifyComplianceFlagInput {
    * acting user would notify the wrong side of an in-house deal.
    */
   alsoNotifyUserIds?: (string | null | undefined)[]
+  /**
+   * WAVE 156 (156B round 2): the coordinator(s) ASSIGNED to this listing / offer / deal (contacts.tc_user_id, the deal's
+   * coordinator). When any is given, THEY are told and the brokerage's TC roster is not — the roster is the fallback for an
+   * unassigned record only. Compliance officers are told either way.
+   */
+  assignedCoordinatorUserIds?: (string | null | undefined)[]
   flag:          ComplianceFlag
 }
 
@@ -306,7 +312,12 @@ export async function notifyComplianceFlag(
     console.error("[notify-helpers] compliance-flag staff lookup failed:", staffError.message)
   }
 
+  // The assigned coordinator replaces the TC roster (round 2, 156B); with none assigned the roster is the fallback.
+  const assignedTcs = (input.assignedCoordinatorUserIds ?? []).filter((x): x is string => !!x)
+  const tcSpellings = new Set<string>(rawRoleVariantsFor(["tc"]))
+  for (const uid of assignedTcs) recipientSet.add(uid)
   for (const u of staff ?? []) {
+    if (assignedTcs.length > 0 && tcSpellings.has(String(u.user_type ?? ""))) continue
     if (u.id) recipientSet.add(u.id as string)
   }
 

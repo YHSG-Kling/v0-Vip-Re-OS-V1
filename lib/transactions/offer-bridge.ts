@@ -371,7 +371,7 @@ export async function createTransactionFromOffer(params: {
   })
   if (!creationGate.allowed) {
     throw new Error(`[offer-bridge] Gate refused transaction creation: ${creationGate.reason}`)
-  }
+  } // wave 156 (156B): the executed-terms review runs INSIDE the creation gate above (its "terms_reviewed" obligation) — see the foot
 
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
@@ -420,7 +420,7 @@ export async function createTransactionFromOffer(params: {
     .select()
     .single()
   
-  if (txnError || !transaction) {
+  const replayed = (txnError as { code?: string } | null)?.code === "23505" ? await readWinningTransaction(supabase, params) : null; if (replayed) return replayed; if (txnError || !transaction) { // wave 156 (156B): m1001 — a racing twin reads back the winner
     throw new Error(`[offer-bridge] Failed to create transaction: ${txnError?.message}`)
   }
 
@@ -733,4 +733,27 @@ export async function createTransactionFromOffer(params: {
     // parties were actually told.
     partiesNotified: partiesNotified?.sent ?? false,
   }
+}
+
+// ─── WAVE 156 (lane 156B) — the two guards the creation call above names on one line each (line-neutral: this file is cited
+// by line across the tree). ────────────────────────────────────────────────────────────────────────────────────────────────
+
+// TOMBSTONE (wave 156 round 2): the bridge-only `assertExecutedTermsNotHeld` moved INTO the creation gate every `transactions`
+// writer runs — lib/transactions/transaction-creation-gate.ts assertTransactionCreationAllowed, obligation "terms_reviewed" — so the
+// manual sheet, the kernel's manual door and the service wrapper meet the same hold check as this bridge (one decision, five doors).
+
+/**
+ * ONE EXECUTED CONTRACT → ONE TRANSACTION, ATOMICALLY (m1001: unique (brokerage_id, offer_id) on live transactions). The gate's
+ * "already became a transaction" read cannot see a racing twin — two deliveries of one e-sign webhook both read "none" — so the
+ * constraint is the arbiter: the loser's INSERT is refused with 23505 and the bridge reports the WINNER's id as a replay instead
+ * of creating, or claiming, a second deal. The winner already seeded milestones and told the parties; the replay does neither.
+ */
+async function readWinningTransaction(
+  supabase: ReturnType<typeof createServiceClient>,
+  params: { brokerageId: string; offerId: string },
+): Promise<{ success: true; transactionId: string; partiesNotified: false; replay: true }> {
+  const { data: winner, error } = await supabase
+    .from("transactions").select("id").eq("brokerage_id", params.brokerageId).eq("offer_id", params.offerId).is("deleted_at", null).maybeSingle()
+  if (error || !winner) throw new Error(`[offer-bridge] Failed to create transaction: a concurrent creation won and could not be read back (${error?.message ?? "no row"})`)
+  return { success: true, transactionId: String((winner as { id: string }).id), partiesNotified: false, replay: true }
 }

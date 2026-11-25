@@ -90,7 +90,7 @@ export interface SubmitToComplianceResult {
    */
   unexecuted_required?: string[]
   /** When refused: which packet fields/signatures/initials are missing. */
-  packet_blockers?:  Array<{ flagType: string; severity: string; title: string }>
+  packet_blockers?:  Array<{ flagType: string; severity: string; title: string }>; /** wave 156 (156B): the substantive review's verdict when it stopped the submit. */ review?: { verdict: string; evidence_hash: string; reasons: Array<{ code: string; message: string; document_id: string | null; field: string | null }> }
 }
 
 export async function submitOfferToCompliance(
@@ -673,6 +673,78 @@ export async function submitOfferToCompliance(
         offerId,
       },
     })
+  }
+
+  // 1.7 — THE SUBSTANTIVE REVIEW (wave 156, lane 156B — owner: "a signature is not compliance").
+  //
+  // Everything above answered presence, execution, signatures and initials. This compares what the EXECUTED contract says (the
+  // head instrument of the governing packet, then each executed addendum in order) against the offer record the transaction
+  // is built from, and asks whether a person holding review authority accepted THIS evidence. An unsigned addendum never
+  // overwrites a signed term. A HOLD names the form and the term and links the real document; needs_review is a short item in
+  // Compliance's queue. Nothing is stamped and no transaction exists until the decision is `allow` — the same decision every
+  // door uses (lib/kernel/compliance/representation-gate.ts), so the webhook, the agent's click and a reviewer's approval agree.
+  {
+    const { loadAndDecideOfferRepresentation, decisionBlockerLines, recordRepresentationDecision, resolveAssignedCoordinators } = await import("@/lib/kernel/compliance/representation-gate")
+    const review = await loadAndDecideOfferRepresentation(supabase as any, {
+      brokerageId: offer.brokerage_id as string, offerId, packet: governingPacket, gate: { allowed: true, refusals: [] },
+    })
+    if (!review.ok) {
+      return { success: false, error: `Cannot submit to compliance — the executed contract's terms could not be read (${review.error}). Nothing was verified, so nothing was submitted.` }
+    }
+    const d = review.decision
+    if (d.verdict !== "allow") {
+      const awaiting = d.verdict === "needs_review"
+      const reviewBlockers = decisionBlockerLines(d)
+      const reviewHash = createHash("sha256").update([...reviewBlockers].sort().join("\n")).digest("hex").slice(0, 16)
+      const priorMeta = ((offer.metadata ?? {}) as Record<string, unknown>)
+      const priorGate = (priorMeta.compliance_gate ?? {}) as { blockers_hash?: string }
+      const changed = priorGate.blockers_hash !== reviewHash
+      if (changed) {
+        const assigned = await resolveAssignedCoordinators(supabase as any, { brokerageId: offer.brokerage_id as string, contactIds: [offer.contact_id as string | null] })
+        if (assigned.error) console.error(`[submit-to-compliance] offer ${offerId}: ${assigned.error}; the TC roster is told instead`)
+        await notifyComplianceFlag(supabase as any, {
+          brokerageId: offer.brokerage_id as string,
+          agentUserId: userId,
+          alsoNotifyUserIds: dealRecipients,
+          assignedCoordinatorUserIds: assigned.userIds,
+          flag: {
+            type:       awaiting ? "compliance.offer_review_ready" : "compliance.offer_terms_hold",
+            severity:   awaiting ? "medium" : "high",
+            title:      awaiting
+              ? "Executed offer ready for compliance review — every compared term agrees"
+              : `Executed offer on hold — ${d.blockingReasons.filter((r) => r.severity !== "review").length} item(s) to fix`,
+            body:       reviewBlockers.join("\n"),
+            entityType: "offer",
+            entityId:   offerId,
+            documentId: d.blockingReasons.find((r) => r.documentId)?.documentId ?? null,
+            offerId,
+          },
+        })
+        const receipt = await recordRepresentationDecision(supabase as any, d, caller.ok ? caller.userId : null, offer.brokerage_id as string)
+        if (!receipt.ok) console.error(`[submit-to-compliance] offer ${offerId}: the review decision receipt was not written (${receipt.error})`)
+      }
+      const { data: reviewRows, error: reviewWriteError } = await supabase
+        .from("offers")
+        .update({
+          metadata: { ...priorMeta, compliance_gate: {
+            state: awaiting ? "awaiting_review" : "blocked", blockers: reviewBlockers, blockers_hash: reviewHash,
+            checked_at: now, notified: changed, verdict: d.verdict, evidence_hash: d.evidenceHash, version: d.version,
+          } },
+          updated_at: now,
+        })
+        .eq("id", offerId)
+        .eq("brokerage_id", offer.brokerage_id as string)
+        .select("id")
+      if (reviewWriteError) console.error(`[submit-to-compliance] review state for offer ${offerId} not recorded: ${reviewWriteError.message}`)
+      else if (!reviewRows || reviewRows.length === 0) console.error(`[submit-to-compliance] review state for offer ${offerId} matched no row (wrong tenant?)`)
+      return {
+        success: false,
+        error: awaiting
+          ? "The executed contract is waiting for a compliance reviewer to accept it. Nothing was stamped and no transaction was created."
+          : `Cannot submit to compliance — ${reviewBlockers.filter((l) => l.startsWith("hold:")).map((l) => l.slice(6)).join(" ")}`,
+        review: { verdict: d.verdict, evidence_hash: d.evidenceHash, reasons: d.blockingReasons.map((r) => ({ code: r.code, message: r.message, document_id: r.documentId, field: r.field })) },
+      }
+    }
   }
 
   // 2. Stamp readiness + compliance pass on the offer.

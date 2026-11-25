@@ -151,7 +151,7 @@ export interface ListingActivationGateParams {
    * later, `fully_executed_at`) when the whole gate passes. Every other door (activateMLS, launchListing,
    * the status map) leaves this false and still requires the recorded `compliance_passed`.
    */
-  complianceReview?: boolean
+  complianceReview?: boolean; /** wave 156 (156B): ONLY the compliance loop sets it, re-reviewing a revoked packet; every door leaves it unset. */ reReview?: boolean
 }
 
 /**
@@ -215,7 +215,7 @@ async function readListingAnchors(
   supabase: SupabaseClient,
   params: { listingId: string; brokerageId: string },
 ): Promise<
-  | { ok: true; sellerContactId: string | null; agentUserId: string | null; teamId: string | null; stateCode: string | null } & ReturnType<typeof offerChecklistDimensions>
+  | { ok: true; sellerContactId: string | null; agentUserId: string | null; teamId: string | null; stateCode: string | null; reviewState: string | null } & ReturnType<typeof offerChecklistDimensions>
   | { ok: false; error: string }
 > {
   const { data: listing, error } = await supabase
@@ -266,7 +266,7 @@ async function readListingAnchors(
     sellerContactId,
     agentUserId,
     teamId,
-    stateCode: ((listing as any).state as string | null) ?? null,
+    stateCode: ((listing as any).state as string | null) ?? null, /* wave 156 (156B): the review state the compliance loop writes on this metadata */ reviewState: ((((listing as any).metadata ?? {}) as { compliance_gate?: { state?: unknown } }).compliance_gate?.state as string | undefined) ?? null,
     // The checklist dimensions the LISTING itself states (wave 144 — lane 144A Outside-lane 3, "callers that know the deal's
     // subtype / representation should pass them"), read through the SAME narrowing the offer-side gates use
     // (transaction-creation-gate.ts offerChecklistDimensions: metadata.contract_subtype / metadata.representation through the
@@ -480,6 +480,14 @@ export async function assertListingActivationAllowed(
     refusals.push({
       requirement: "compliance_good",
       message: `Listing activation refused${door}: ${compliance.why}. A listing goes active only after compliance passes on a fully executed listing agreement.`,
+    })
+  }
+  // WAVE 156 (lane 156B): a later document invalidated the approved packet — downstream readiness is REVOKED until the repair
+  // is re-reviewed (lib/listings/listing-compliance-loop.ts step 4b). The executed original is untouched; only readiness moves.
+  if (anchors.reviewState === "revoked" && !params.complianceReview && !params.reReview) {
+    refusals.push({
+      requirement: "compliance_good",
+      message: `Listing activation refused${door}: a document filed after compliance approved this listing changed or contradicted the agreement, so the approval was revoked. The repair items are on the listing; it re-enters review on upload.`,
     })
   }
 

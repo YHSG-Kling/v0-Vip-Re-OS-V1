@@ -109,6 +109,7 @@ type ListingComplianceTrigger =
   | "document_uploaded"    // a remediation upload — the loop's re-entry
   | "activation_refused"   // a human/autonomous MLS door was refused — tell the roles
   | "mls_live_date_set"    // the planned MLS live date landed (lib/listings/mls-live-date.ts) — the hop that waited on it
+  | "compliance_review_recorded" // a compliance reviewer accepted / held the packet (app/actions/compliance/representation-review.ts)
 
 type ListingComplianceOutcome =
   | "advanced"              // gate passed and the listing moved to COMING_SOON_PREP
@@ -116,6 +117,7 @@ type ListingComplianceOutcome =
   | "blocked"               // gate refused; blockers recorded, audience told if the set changed
   | "outside_window"        // listing is not between agreement-signed and coming-soon; untouched
   | "unknown"               // the gate could not run; nothing changed, nothing claimed
+  | "awaiting_review"       // wave 156 (156B): every compared term agrees; a compliance reviewer has not accepted the packet yet
 
 interface ListingComplianceLoopResult {
   outcome:  ListingComplianceOutcome
@@ -160,7 +162,7 @@ export async function runListingComplianceLoop(
   // ── 1 · The listing, inside the tenant. A refused read is UNKNOWN, not "no listing". ──
   const { data: row, error: rowErr } = await supabase
     .from("listings")
-    .select("id, lifecycle_stage, go_live_date, agent_id, metadata")
+    .select("id, lifecycle_stage, go_live_date, agent_id, metadata, seller_contact_id")
     .eq("id", listingId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
@@ -172,11 +174,16 @@ export async function runListingComplianceLoop(
 
   const stage = (row as { lifecycle_stage?: string | null }).lifecycle_stage ?? null
   const inWindow = stage === WINDOW_START || stage === WINDOW_MID
+  // WAVE 156 (lane 156B) — A LATER DOCUMENT CAN INVALIDATE AN APPROVED PACKET. Past the window, an upload (or a reviewer's
+  // decision) on a listing whose packet was approved — or already revoked — re-enters so the substantive review runs again;
+  // a hold there REVOKES downstream readiness (the activation gate refuses a "revoked" gate state) and opens the repair loop.
+  const priorGateState = (((row as { metadata?: Record<string, unknown> | null }).metadata ?? {}) as { compliance_gate?: { state?: string } }).compliance_gate?.state
+  const reEntersPastWindow = (trigger === "document_uploaded" || trigger === "compliance_review_recorded") && (priorGateState === "passed" || priorGateState === "revoked")
   // An MLS door refused OUTSIDE the window (activateMLS at MLS_READY, launchListing) still
   // owes the three roles the list of what is missing — that refusal used to reach only the
   // caller. So the fail arm runs for that trigger at any stage; the PASS arm never advances
   // from outside the window, because a listing at MLS_READY has already been through here.
-  if (!inWindow && trigger !== "activation_refused") {
+  if (!inWindow && trigger !== "activation_refused" && !reEntersPastWindow) {
     return { outcome: "outside_window", stage, blockers: [], notified: false, reason: `stage ${stage ?? "(none)"} is not between ${WINDOW_START} and ${WINDOW_END}` }
   }
 
@@ -192,7 +199,7 @@ export async function runListingComplianceLoop(
   // inWindow ⇒ THIS RUN IS THE COMPLIANCE REVIEW (wave 143, lane 143A): obligation 1 asks for the provider's
   // all-signed evidence, not for the `compliance_passed` mark this very run writes on a pass (the gate's
   // `complianceReview` doc). Outside the window an `activation_refused` run mirrors the DOOR, so it asks the door's question.
-  const gate = await assertListingActivationAllowed(supabase, { brokerageId, listingId, door: `compliance loop (${trigger})`, complianceReview: inWindow })
+  const gate = await assertListingActivationAllowed(supabase, { brokerageId, listingId, door: `compliance loop (${trigger})`, complianceReview: inWindow, reReview: reEntersPastWindow })
 
   const meta = ((row as { metadata?: Record<string, unknown> | null }).metadata ?? {}) as Record<string, unknown>
   const prior = (meta.compliance_gate ?? {}) as { blockers_hash?: string }
@@ -241,12 +248,71 @@ export async function runListingComplianceLoop(
     }
 
     await writeGateState(supabase, listingId, brokerageId, meta, {
-      state: "blocked", blockers, blockers_hash: hash, checked_at: new Date().toISOString(), trigger,
+      state: inWindow || !reEntersPastWindow ? "blocked" : "revoked", blockers, blockers_hash: hash, checked_at: new Date().toISOString(), trigger,
     })
     // The deficiency list already rang through notifyComplianceFlag above (deduped on the blocker set);
     // the hop is recorded without a second bell (owner: "no duplicates").
     if (inWindow) await stamp("correction_required", { notify: false })
     return { outcome: "blocked", stage, blockers, notified, reason: gate.reason }
+  }
+
+  // ── 4b · THE SUBSTANTIVE REVIEW (wave 156, lane 156B — owner: "a signature is not compliance"). ──
+  // The gate above answered presence, signatures, initials and the state checklist. This compares what the executed agreement
+  // SAYS against the listing, the agreement record and the seller on file, and asks whether an authorized reviewer accepted
+  // THIS evidence (lib/kernel/compliance/representation-gate.ts). Anything short of `allow` stops here: a HOLD names the form and
+  // the term and links the real document; needs_review puts a short item in Compliance's queue. A reader that could not run is
+  // unknown — nothing changes and nobody is paged.
+  const { loadAndDecideListingRepresentation, decisionBlockerLines, recordRepresentationDecision, resolveAssignedCoordinators } = await import("@/lib/kernel/compliance/representation-gate")
+  const review = await loadAndDecideListingRepresentation(supabase, { brokerageId, listingId, gate })
+  if (!review.ok) {
+    console.error(`[listing-compliance-loop] listing ${listingId}: the substantive review could NOT run (${review.error}); nothing changed`)
+    return { outcome: "unknown", stage, blockers: [], notified: false, reason: review.error }
+  }
+  const decision = review.decision
+  if (decision.verdict !== "allow") {
+    const awaiting = decision.verdict === "needs_review"
+    const reviewBlockers = decisionBlockerLines(decision)
+    const reviewHash = blockerHash(reviewBlockers)
+    const reviewChanged = prior.blockers_hash !== reviewHash
+    let reviewNotified = false
+    if (reviewChanged) {
+      const listingAgentUserId = await resolveListingAgentUserId(supabase, (row as { agent_id?: string | null }).agent_id ?? null)
+      const { notifyComplianceFlag } = await import("@/lib/notifications/notify-helpers")
+      const assigned = await resolveAssignedCoordinators(supabase, { brokerageId, contactIds: [(row as { seller_contact_id?: string | null }).seller_contact_id ?? null] })
+      if (assigned.error) console.error(`[listing-compliance-loop] listing ${listingId}: ${assigned.error}; the TC roster is told instead`)
+      const sent = await notifyComplianceFlag(supabase, {
+        brokerageId,
+        agentUserId: params.actorUserId ?? listingAgentUserId,
+        alsoNotifyUserIds: [listingAgentUserId],
+        assignedCoordinatorUserIds: assigned.userIds,
+        flag: {
+          type:       awaiting ? "compliance.listing_review_ready" : "compliance.listing_terms_hold",
+          severity:   awaiting ? "medium" : "high",
+          title:      awaiting
+            ? "Listing agreement ready for compliance review — every compared term agrees"
+            : `Listing agreement on hold — ${decision.blockingReasons.filter((r) => r.severity !== "review").length} item(s) to fix`,
+          body:       reviewBlockers.join("\n"),
+          entityType: "listing",
+          entityId:   listingId,
+          documentId: decision.blockingReasons.find((r) => r.documentId)?.documentId ?? null,
+        },
+      })
+      reviewNotified = sent.notified_count > 0
+      const receipt = await recordRepresentationDecision(supabase, decision, params.actorUserId ?? null, brokerageId)
+      if (!receipt.ok) console.error(`[listing-compliance-loop] listing ${listingId}: the review decision receipt was not written (${receipt.error})`)
+    }
+    await writeGateState(supabase, listingId, brokerageId, meta, {
+      state: !inWindow ? "revoked" : awaiting ? "awaiting_review" : "blocked", blockers: reviewBlockers, blockers_hash: reviewHash,
+      checked_at: new Date().toISOString(), trigger, verdict: decision.verdict, evidence_hash: decision.evidenceHash, version: decision.version,
+    })
+    if (inWindow && !awaiting) await stamp("correction_required", { notify: false })
+    return { outcome: awaiting ? "awaiting_review" : "blocked", stage, blockers: reviewBlockers, notified: reviewNotified, reason: reviewBlockers.join(" ") }
+  }
+  // Approved and consistent. Past the window this RESTORES a revoked listing (the repair landed and was re-approved).
+  if (!inWindow && priorGateState === "revoked") {
+    await writeGateState(supabase, listingId, brokerageId, meta, {
+      state: "passed", blockers: [], blockers_hash: blockerHash([]), checked_at: new Date().toISOString(), trigger, verdict: "allow", evidence_hash: decision.evidenceHash, version: decision.version,
+    })
   }
 
   // ── 5 · PASS arm: walk to COMING_SOON_PREP, one allowed hop at a time. ──

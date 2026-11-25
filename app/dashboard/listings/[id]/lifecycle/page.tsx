@@ -871,6 +871,15 @@ const { data: listingVendorBookings } = await supabase
           <Link href={`/dashboard/listings/${listingId}/deal-team`} className="text-sm font-medium underline underline-offset-4">Open</Link>
         </div>
 
+        {/* WAVE 156 (156B): the executed listing agreement's compliance review — its own page, for the same budget reason. */}
+        <div className="mb-6 rounded-lg border p-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="font-medium">Listing agreement compliance review</p>
+            <p className="text-sm text-muted-foreground">What the signed agreement says beside the listing, what holds it and how each item ends, and the reviewer&apos;s decision.</p>
+          </div>
+          <Link href={`/dashboard/listings/${listingId}/compliance-review`} className="text-sm font-medium underline underline-offset-4">Open</Link>
+        </div>
+
         <div className="mb-6">
           <LaunchReadinessChecklist
             listingId={listingId}

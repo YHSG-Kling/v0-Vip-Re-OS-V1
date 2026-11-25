@@ -745,14 +745,18 @@ async function sectionF(T: any, R: any) {
   const DOC_ORIG = "d1000000-0000-4000-8000-000000000001", DOC_C2 = "d1000000-0000-4000-8000-000000000002", DOC_C1 = "d1000000-0000-4000-8000-000000000003", DOC_ADD = "d1000000-0000-4000-8000-000000000004"
   const both = { signatures: [{ signer_role: "buyer", signed: true }, { signer_role: "seller", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: true }, { signer_role: "seller", all_required_initials_present: true }] }
   const buyerOnly = { signatures: [{ signer_role: "buyer", signed: true }], initials: [{ signer_role: "buyer", all_required_initials_present: true }] }
+  // wave 156 (156B round 2) — RESTATED: the creation gate now also COMPARES the executed instruments' terms to the offer record
+  // (obligation terms_reviewed), so the contract papers reach it READ — a completed, high-confidence scan. The rule under test here
+  // (which instruments ARE the contract) is unchanged; an unread paper holding the deal is proved in wave156-b-representation-gate.
+  const READ = { scanned_at: "2026-02-07T00:00:00Z", scan_error: null, classification_confidence: "high", extracted_fields: { property_address: "Fixture address" } }
   const docs = (origSc: any = both) => [
     // the original offer's contract — filed against the ROOT only (no contact link): invisible to a head-only scan
-    { id: DOC_ORIG, brokerage_id: BRK, contact_id: null, classification: "signed_contract", signature_completeness: origSc, status: "complete", metadata: { linked_offer_id: RO } },
-    { id: DOC_C2, brokerage_id: BRK, contact_id: null, classification: "counter_offer", signature_completeness: both, status: "complete", metadata: { linked_offer_id: C2 } },
+    { id: DOC_ORIG, brokerage_id: BRK, contact_id: null, classification: "signed_contract", signature_completeness: origSc, status: "complete", metadata: { linked_offer_id: RO }, ...READ },
+    { id: DOC_C2, brokerage_id: BRK, contact_id: null, classification: "counter_offer", signature_completeness: both, status: "complete", metadata: { linked_offer_id: C2 }, ...READ },
     // the REJECTED counter's paper — it rides in on the buyer's CONTACT link; it is not the contract
     { id: DOC_C1, brokerage_id: BRK, contact_id: BUYER_C, classification: "counter_offer", signature_completeness: { signatures: [{ signer_role: "seller", signed: true }], initials: [] }, status: "complete", metadata: { linked_offer_id: C1 } },
     // an executed addendum recorded against the contract (contract_term_versions.document_id)
-    { id: DOC_ADD, brokerage_id: BRK, contact_id: null, classification: "addendum", signature_completeness: both, status: "complete", metadata: {} },
+    { id: DOC_ADD, brokerage_id: BRK, contact_id: null, classification: "addendum", signature_completeness: both, status: "complete", metadata: {}, ...READ },
   ]
   const world = (o: { chainOver?: Record<string, any>; origSc?: any; refuse?: Record<string, string>; extraVersions?: any[] } = {}) => memSupabase({
     offers: chain(o.chainOver).map((r) => ({ ...r, financing_type: "conventional", compliance_passed_at: r.id === C2 ? "2026-02-07T00:00:00Z" : null, agent_id: AG })),
