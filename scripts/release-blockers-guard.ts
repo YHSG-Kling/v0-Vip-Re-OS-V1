@@ -40,6 +40,10 @@
  *      is an OBLIGATION until a dated deployment id and an observed share-link 302 are recorded (D5 only proves the name is
  *      read); §P.1 is printed HELD as OPTIONAL, never blocking; the deployment item names a rollback and a database-reaching
  *      health read (ECC production-audit lens).
+ *   H  (wave 156, lane 156O) §R.6 is an obligation (the owner sheet's R6 line; a local measurement never lifts it); the FIVE
+ *      release states come from the one source the go-live board reads (lib/platform/go-live-readiness.ts RELEASE_STATES):
+ *      distinct, each with its own evidence, no live state on simulated / local evidence, SECURITY READBACK GREEN only with a
+ *      dated live read by a named reader; no product surface or operations doc announces a release while one is unmet.
  *
  * Every absence/refusal assertion carries a POSITIVE CONTROL (CLAUDE.md §2). Source scans read STRIPPED source.
  * BLIND SPOTS (published): the CI result of the matrix itself is GitHub's, not this repo's (the first run is the heap
@@ -67,6 +71,7 @@ import {
   readReleaseEvidence, deriveO3, listingMediaPoliciesResolved,
   type Freshness, type GateState, type EvidenceRow,
 } from "./release-rules"
+import { RELEASE_STATES, releaseStateVerdict, releaseStateVerdicts, parseReleaseStateTable, releaseClaimAllowed, configurationNote, r6AppliedLive, packetStatusResolved, OWNER_ACTION_SHEET, P0_PACKET_155, type ReleaseStateKey, type ReleaseStateRow } from "./release-rules"
 
 const ROOT = process.cwd()
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -551,6 +556,69 @@ check(`F5 POSITIVE CONTROL — CI green is never production-live: the pre-deploy
 // still lacks its applied stamp is a contradiction the integrator must resolve (flip the stamp, or correct the ledger).
 check(`F6 storage evidence and the O1 stamps agree (R9 ${states.get("R9")}, O1 ${o1Open ? "OPEN" : "discharged"}) — R9 observed with O1 open is a contradiction`,
   !(states.get("R9") === "OBSERVED" && o1Open))
+
+// ═════════════════════════════════════════════════════════════════════════════
+// H · (wave 156, lane 156O) §R.6 AS AN OBLIGATION, THE FIVE RELEASE STATES, AND NO RELEASE CLAIM WHILE ONE IS UNMET
+// ═════════════════════════════════════════════════════════════════════════════
+// H1 §R.6 joins the obligations, open until the owner's sheet reads APPLIED LIVE with the live project, the ten-row
+// read-back and the two-tenant refusals; a line naming a local / simulated measurement never lifts it. H2–H5 the five
+// states come from the ONE source the go-live board reads (lib/platform/go-live-readiness.ts, re-exported by release-rules):
+// distinct, each with its own evidence, none satisfiable by a simulated or local result, SECURITY READBACK GREEN only with a
+// dated live read by a named reader. H6 nothing in the product or the operations docs announces a release while PUBLIC
+// RELEASE AUTHORIZED is unmet (a sentence that negates the claim is allowed).
+console.log("\n[H · wave 156 — §R.6 obligation, the five release states (one source), no release claim while unmet]")
+const sheet156 = has(OWNER_ACTION_SHEET) ? read(OWNER_ACTION_SHEET) : ""
+const r6Open = !r6AppliedLive(sheet156)
+obligations.push({ id: "R6", kind: "owner-sql", open: r6Open, what: "OWNER-SQL §R.6 — the five deal tables' INSERT-side policies (any seat of a tenant may insert on any deal, another tenant's included, until applied)", where: `${OWNER_ACTION_SHEET} step 2 (R6 status line); packet docs/operations/WAVE156-R6-DEAL-TABLE-POLICY-PACKET.md` })
+check(`H1 §R.6 is an obligation derived from the sheet's R6 status line (now: ${r6Open ? "OPEN" : "discharged"}); the sheet carries the line`, /^- R6 status:/m.test(sheet156) && r6Open === !r6AppliedLive(sheet156))
+check("H1 POSITIVE CONTROL — HELD stays open; APPLIED LIVE on a local PostgreSQL 16 measurement stays open; APPLIED LIVE without the project / read-back / refusals stays open; the live line lifts it",
+  !r6AppliedLive("- R6 status: HELD — not applied") && !r6AppliedLive("- R6 status: APPLIED LIVE 2026-12-01 — local PostgreSQL 16.15: 10 rows, vendor REFUSED")
+  && !r6AppliedLive("- R6 status: APPLIED LIVE 2026-12-01 — 10 rows, REFUSED") && !r6AppliedLive("- R6 status: APPLIED LIVE 2026-12-01 — hrvaqgvukzxfskkcrwbt 10 rows")
+  && r6AppliedLive("- R6 status: APPLIED LIVE 2026-12-01 — hrvaqgvukzxfskkcrwbt AFTER read-back 10 rows; two-tenant script 5 REFUSED then ROLLBACK"))
+const STATE_KEYS = RELEASE_STATES.map((s) => s.key)
+check(`H2 the five release states are distinct in the one source (${STATE_KEYS.join(" · ")})`,
+  STATE_KEYS.length === 5 && new Set(STATE_KEYS).size === 5 && ["CODE GREEN", "SECURITY READBACK GREEN", "LEGAL/LICENSING READY", "PREVIEW LIVE VERIFIED", "PUBLIC RELEASE AUTHORIZED"].every((k) => STATE_KEYS.includes(k as ReleaseStateKey)))
+const rowOfState = (k: ReleaseStateKey, over: Partial<ReleaseStateRow> = {}): ReleaseStateRow => { const s = RELEASE_STATES.find((x) => x.key === k)!; return { state: k, status: "MET", date: "2026-12-01", origin: s.specimen.origin, reader: s.specimen.reader, evidence: s.specimen.evidence, ...over } }
+const stateCtl: string[] = []
+for (const s of RELEASE_STATES) {
+  const ctx = { openBlockers: [] as string[], otherStatesMet: true }
+  if (!releaseStateVerdict(s.key, rowOfState(s.key), ctx).met) stateCtl.push(`${s.key} specimen refused`)
+  if (releaseStateVerdict(s.key, rowOfState(s.key, { date: "today" }), ctx).met) stateCtl.push(`${s.key} undated accepted`)
+  if (releaseStateVerdict(s.key, rowOfState(s.key, { status: "NOT MET" }), ctx).met) stateCtl.push(`${s.key} NOT MET accepted`)
+  if (s.live && releaseStateVerdict(s.key, rowOfState(s.key, { origin: "simulated" }), ctx).met) stateCtl.push(`${s.key} simulated origin accepted`)
+  if (s.live && releaseStateVerdict(s.key, rowOfState(s.key, { origin: "local_db" }), ctx).met) stateCtl.push(`${s.key} local_db origin accepted`)
+  if (s.live && releaseStateVerdict(s.key, rowOfState(s.key, { evidence: `${s.specimen.evidence}; measured on a local PostgreSQL 16 scratch database` }), ctx).met) stateCtl.push(`${s.key} local evidence accepted`)
+  if (s.blockedBy.length && releaseStateVerdict(s.key, rowOfState(s.key), { openBlockers: [s.blockedBy[0]], otherStatesMet: true }).met) stateCtl.push(`${s.key} met with ${s.blockedBy[0]} open`)
+  for (const o of RELEASE_STATES) if (o !== s && releaseStateVerdict(s.key, rowOfState(s.key, { origin: o.specimen.origin, evidence: o.specimen.evidence, reader: o.specimen.reader }), ctx).met) stateCtl.push(`${s.key} accepts ${o.key}'s evidence`)
+}
+check(`H3 each state has its OWN evidence rule: every specimen accepted; undated, NOT MET, blocked, simulated, local and another state's evidence refused (${RELEASE_STATES.length} × 7 controls)`, stateCtl.length === 0, stateCtl.join("; "))
+const sec = (over: Partial<ReleaseStateRow>) => releaseStateVerdict("SECURITY READBACK GREEN", rowOfState("SECURITY READBACK GREEN", over), { openBlockers: [] }).met
+check("H4 SECURITY READBACK GREEN needs a dated live read by a NAMED reader on the live project: no reader, a lane / CI 'reader', no date, or another project are refused; the owner's dated read is accepted (positive control)",
+  sec({}) && !sec({ reader: "" }) && !sec({ reader: "lane 156O" }) && !sec({ reader: "CI" }) && !sec({ date: "" }) && !sec({ evidence: rowOfState("SECURITY READBACK GREEN").evidence.replace("hrvaqgvukzxfskkcrwbt", "abcdefghijklmnopqrst") }))
+check("H4 PUBLIC RELEASE AUTHORIZED needs the other four met (the owner's word alone is refused)",
+  !releaseStateVerdict("PUBLIC RELEASE AUTHORIZED", rowOfState("PUBLIC RELEASE AUTHORIZED"), { openBlockers: [], otherStatesMet: false }).met && releaseStateVerdict("PUBLIC RELEASE AUTHORIZED", rowOfState("PUBLIC RELEASE AUTHORIZED"), { openBlockers: [], otherStatesMet: true }).met)
+const p155 = has(P0_PACKET_155) ? read(P0_PACKET_155) : ""
+const statusOpen = ([["LEGAL", /\b(attorney|counsel)\b/i], ["LICENSES", /\blicense/i], ["LIVE-PROBES", /\bdpl_[A-Za-z0-9]+/]] as const).filter(([id, ev]) => !packetStatusResolved(p155, id, ev)).map(([id]) => id)
+const openBlockers156 = [...obligations.filter((o) => o.open).map((o) => o.id), ...statusOpen]
+const stateRows = parseReleaseStateTable(sheet156)
+const verdicts156 = releaseStateVerdicts(stateRows, openBlockers156)
+for (const v of verdicts156) console.log(`    ${v.met ? "MET    " : "NOT MET"} ${v.key.padEnd(26)} ${v.why}`)
+check(`H5 the sheet's release-state table names all five states and each verdict is the rule's over its row (${verdicts156.filter((v) => v.met).length} of 5 met; derived, never pinned)`,
+  STATE_KEYS.every((k) => stateRows.has(k)) && verdicts156.every((v) => v.met === releaseStateVerdict(v.key, stateRows.get(v.key), { openBlockers: openBlockers156, otherStatesMet: verdicts156.filter((x) => x.key !== "PUBLIC RELEASE AUTHORIZED").every((x) => x.met) }).met),
+  STATE_KEYS.filter((k) => !stateRows.has(k)).join(", "))
+const publicAuthorized = verdicts156.find((v) => v.key === "PUBLIC RELEASE AUTHORIZED")!.met
+const claimHits: string[] = []
+for (const r of ["app", "components", "lib/platform"]) if (has(r)) for (const f of walkTs(join(ROOT, r))) {
+  if (!releaseClaimAllowed(stripComments(readFileSync(f, "utf8")), publicAuthorized)) claimHits.push(f.slice(ROOT.length + 1))
+}
+for (const f of readdirSync(join(ROOT, "docs/operations")).filter((x) => x.endsWith(".md"))) if (!releaseClaimAllowed(read(`docs/operations/${f}`), publicAuthorized)) claimHits.push(`docs/operations/${f}`)
+check(`H6 no product surface (app/, components/, lib/platform/, comment-stripped) and no operations doc announces a release while PUBLIC RELEASE AUTHORIZED is ${publicAuthorized ? "met" : "unmet"}`, claimHits.length === 0, claimHits.slice(0, 6).join(", "))
+check("H6 POSITIVE CONTROL — 'ready to sell' and 'live-ready' are refused; the same words in a negated sentence pass; an authorized release allows them",
+  !releaseClaimAllowed("The OS is ready to sell.", false) && !releaseClaimAllowed("Status: live-ready", false) && releaseClaimAllowed("Never say ready to sell while a blocker is open.", false) && releaseClaimAllowed("The OS is ready to sell.", true))
+const boardNote = configurationNote(9, 9)
+check("H7 the go-live board reads the same source: with every configuration domain ready its note names all five states and prints no GO and no release claim",
+  STATE_KEYS.every((k) => boardNote.includes(k)) && !/\bGO\b/.test(boardNote) && releaseClaimAllowed(boardNote, false)
+  && /configNote/.test(stripComments(read("app/dashboard/superadmin/connectors/go-live-card.tsx"))) && !/—\s*GO\b/.test(stripComments(read("app/dashboard/superadmin/connectors/go-live-card.tsx"))))
 
 // ═════════════════════════════════════════════════════════════════════════════
 console.log("\n[release blockers]")

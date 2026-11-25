@@ -71,7 +71,7 @@ export function GoLiveCard() {
           {r && (
             <span className={r.requiredReady === r.requiredTotal ? "text-green-700 font-medium" : "text-amber-700 font-medium"}>
               {r.requiredReady}/{r.requiredTotal} required domains ready
-              {r.requiredReady === r.requiredTotal ? " — GO" : " — not yet"}
+              {" — "}{r.configNote}
             </span>
           )}
         </div>
@@ -130,7 +130,7 @@ export function LaunchChecklistCard({ checklist }: { checklist: LaunchChecklist 
         <div className="flex flex-wrap items-center gap-3">
           <span className={allBlockingSet ? "text-green-700 font-medium" : "text-red-600 font-medium"}>
             {checklist.blockingConfigured}/{checklist.blockingTotal} launch-blocking configured
-            {allBlockingSet ? " — launch-clean" : " — gaps below"}
+            {allBlockingSet ? " — every launch-blocking name present (presence only, not a release state)" : " — gaps below"}
           </span>
           <span className="text-muted-foreground text-xs">
             {checklist.degradedConfigured}/{checklist.degradedTotal} degraded-tier
