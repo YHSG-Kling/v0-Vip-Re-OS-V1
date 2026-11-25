@@ -155,7 +155,8 @@ and no longer prints "GO". Nothing in the product or these documents may announc
   records version, time and the acceptance text — no hash (0 rows). `contact_consent_events` records `consent_text_hash`
   and `consent_text_version` (0 rows). The six drafts under `docs/legal/` and `docs/operations/LEGAL-REVIEW-PACKET.md`
   (v0.1.0-draft, every file bannered DRAFT, held by `test:legal-packets`) are unreviewed. The Fraud Network posting rules are
-  drafted by lane 156J this wave and are not in this tree at the time of writing.
+  drafted at `docs/legal/PACKET-7-FRAUD-COMMUNITY-POSTING-RULES.md` (DRAFT, not published) and the nine questions on
+  representation consent for counsel at `docs/legal/TCPA-REPRESENTATION-CONSENT-COUNSEL-MEMO-DRAFT.md` (DRAFT).
 - **What counsel must approve (not legal advice — the list counsel works from):** the Platform Subscription and Services
   Agreement and its five schedules (AI autonomy and authority; acquisition, enrichment, data rights and third-party
   integration; privacy notice / DPA / subprocessors; acceptable use and marketing — including the directive's TCPA question
@@ -172,8 +173,8 @@ and no longer prints "GO". Nothing in the product or these documents may announc
   `tos_version`. The content hash is now built (wave 156, lane 156O round 2): both writers in
   `app/actions/public/tos-acceptance.ts` compute the sha256 of the served terms text server-side
   (`servedTermsDocument`, `lib/branding/platform-rights-notice.ts`) and refuse a version that is not the current one. It lands
-  on the row once **m1066** (`content_sha256` on `platform_tos_acceptances` and `privacy_acceptances`) is applied; until then
-  the row is written without it and the hash rides the platform evidence row. `privacy_acceptances` still has no writer.
+  on the row: **m1066** (`content_sha256` on `platform_tos_acceptances` and `privacy_acceptances`) was applied on 2026-11-25
+  after the read above and read back (both columns present, 0 rows). `privacy_acceptances` still has no writer.
   After m1066: `select count(*) filter (where content_sha256 is null) from public.platform_tos_acceptances where accepted_at > '<apply time>';` — expect 0.
 - **After:** the wave-155 packet's `- LEGAL status: RESOLVED <date> — counsel sign-off <reference>, versions published`;
   `select tos_version …` reads the published version.
@@ -317,3 +318,26 @@ and no longer prints "GO". Nothing in the product or these documents may announc
   break the runtime. Source of truth: the step-kind vocabulary;
   the channel is derived per kind. Do nothing until the integrator lands the `step_kind` readers.
 - **Who:** the owner, after the code. **Before / Do / After / Rollback:** §R.1 as written.
+
+### Also F — training progress server-written only; `recruits` limited to the tenant-admin roster (OWNER-SQL §S.3, lane 156K)
+
+- **Live today:** read 2026-11-25 — `video_completion_tracking` carries `vct_insert`, `vct_select`, `vct_update` and an ALL
+  isolation policy; `recruits` carries one ALL policy, `recruits_brokerage_isolation`, which admits every signed-in user of
+  the tenant — a Contact or a vendor seat included. The application already writes watch progress through the server after
+  its gate, so the session INSERT / UPDATE policies have no remaining caller.
+- **Who:** the owner, SQL editor (`postgres`, the table owner).
+- **Before:** `select tablename, policyname, cmd, qual, with_check from pg_policies where tablename in ('video_completion_tracking','recruits') order by 1, 2;`
+- **Do:** OWNER-SQL §S.3 as written (block A, then block B).
+- **After:** the Before query shows `vct_select` plus a SELECT-only isolation policy, and `recruits_tenant_admin` plus `recruits_recruiter_read`.
+- **Rollback:** §S.3's rollback lines (drop the three new policies, recreate the four originals verbatim from the Before read).
+
+### Also G — the Fraud Network's private evidence bucket (OWNER-SQL §S.4, lane 156J)
+
+- **Live today:** read 2026-11-25 — no `fraud-evidence` bucket and no `storage.objects` policy naming it. The network keeps a
+  fingerprint of each evidence file and the evidence door answers "Evidence storage is not enabled yet".
+- **Who:** the owner, SQL editor (`postgres` inserts the bucket row). No `storage.objects` policy is created: the bucket is service-only.
+- **Before:** `select id, public from storage.buckets where id = 'fraud-evidence';` — expect 0 rows.
+- **Do:** OWNER-SQL §S.4 as written; then the integrator regenerates `lib/storage/bucket-limits.ts`, which is what opens the upload door.
+- **After:** the Before query returns one private row (10 MB, JPEG / PNG); `storage_bucket_policy_readiness()` lists it `service_only`.
+- **Rollback:** `DELETE FROM storage.buckets WHERE id = 'fraud-evidence';` — only while it holds 0 objects.
+- **Do not run before counsel signs the posting rules (step 6):** stored evidence about a named person is the part of the network with legal exposure.
