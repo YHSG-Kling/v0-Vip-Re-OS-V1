@@ -566,9 +566,15 @@ console.log("\n[Layer 9 · no BatchData-backed property-lookup tool on any agent
 
   const lpt = stripped("lib/ai-isa/property-lookup-tools.ts")
   const staff = lpt.slice(lpt.indexOf("function buildStaffLookupPropertyFactsTool("))
-  check("the staff copilot's property lookup (lookup_property_facts, staff) rides the ONE RentCast client — value + comparables and the full record — and reaches no BatchData",
-    /getRentcastAvmAndComps\(/.test(staff) && /getRentcastPropertyDetail\(/.test(staff) && /lookupPropertyForConversation\(/.test(staff)
-    && !/@\/lib\/external\/batchdata-|callBatchDataMcp\(|batchDataPreferMcp\(/.test(lpt))
+  // WAVE 156 (156I r4 — LAW 3): value + comparables now come through THE comparables capability (lib/avm/provider-chain.ts
+  // requestPropertyComparables — RentCast's /avm/value under the gate, the platform ceiling and single-flight), never the vendor by
+  // name; the rule (one RentCast source for value + comps and the full record, no BatchData) is unchanged.
+  const staffRule = (src: string, all: string) => /requestPropertyComparables\(/.test(src) && !/getRentcastAvmAndComps\(|getRentcastComps\(/.test(src)
+    && /getRentcastPropertyDetail\(/.test(src) && /lookupPropertyForConversation\(/.test(src) && !/@\/lib\/external\/batchdata-|callBatchDataMcp\(|batchDataPreferMcp\(/.test(all)
+  check("the staff copilot's property lookup (lookup_property_facts, staff) asks the comparables capability for value + comparables, RentCast for the full record — and reaches no BatchData",
+    staffRule(staff, lpt))
+  check("NEGATIVE CONTROL (156I r4): the same rule fails a staff tool that calls the vendor by name again",
+    !staffRule(`const v = await rc.getRentcastAvmAndComps({ address }); await rc.getRentcastPropertyDetail({}); lookupPropertyForConversation({})`, ""))
   check("a CUSTOMER surface never gets the value/record flags (the staff builder is reached only for audience \"staff\")",
     /if \(audience === "staff"\) return buildStaffLookupPropertyFactsTool\(/.test(lpt))
 }
