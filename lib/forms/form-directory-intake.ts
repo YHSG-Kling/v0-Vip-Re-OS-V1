@@ -239,60 +239,11 @@ export function libraryFormStatus(row: Pick<TenantPacketRow, "is_active" | "stor
 
 // ── WAVE 156 (156C, round 2): THE LICENSE / VERSION STANDING OF A FORM REFERENCE — the seam lane 156B's representation gate asks ──
 
-export type FormLicenseStanding =
-  | { standing: "licensed_current"; packetId: string; version: number | null; providerFormVersion: string | null }
-  | { standing: "retired"; packetId: string; replacementPacketId: string | null }
-  | { standing: "license_expired"; packetId: string; expiredOn: string }
-  | { standing: "unknown"; reason: string }
-
-/**
- * For a TENANT (the caller's session brokerage — never a body value), a STATE, a FORM REFERENCE and optionally the VERSION the
- * paperwork carries: is that form licensed and current in the tenant's directory, retired (with its replacement), license-expired,
- * or unknown to the directory? Reads brokerage_form_library only, tenant-pinned; a refused read is an error, never "unknown".
- *   · ref.packetId — the library row; ref.providerName + ref.providerFormId — an adopted provider form; ref.formCode / ref.name —
- *     matched within the STATE only (case-insensitive), never across states.
- *   · version — the row's integer `version` or the provider's `provider_form_version`. A version that is not the current one is
- *     `retired` with the current row as its replacement (the paperwork used a superseded revision).
- */
-export async function formLicenseStanding(
-  svc: Svc,
-  q: { brokerageId: string; state: string; ref: { packetId?: string | null; providerName?: string | null; providerFormId?: string | null; formCode?: string | null; name?: string | null }; version?: string | number | null; now?: Date },
-): Promise<{ ok: true; result: FormLicenseStanding } | { ok: false; error: string }> {
-  const state = (q.state ?? "").trim().toUpperCase()
-  if (!UUID.test(q.brokerageId ?? "")) return { ok: false, error: "no tenant" }
-  const { data, error } = await svc.from("brokerage_form_library")
-    .select("id, state, name, form_code, version, is_active, license_expires_at, replaced_by_id, provider_name, provider_form_id, provider_form_version")
-    .eq("brokerage_id", q.brokerageId)
-  if (error) return { ok: false, error: `the form directory could not be read: ${error.message}` }
-  type Row = Pick<TenantPacketRow, "id" | "state" | "name" | "form_code" | "version" | "is_active" | "license_expires_at" | "replaced_by_id" | "provider_name" | "provider_form_id" | "provider_form_version">
-  const rows = (data ?? []) as Row[]
-  const byId = new Map(rows.map((r) => [r.id, r]))
-  const lc = (s: string | null | undefined) => (s ?? "").trim().toLowerCase()
-  const r = q.ref
-  let hits: Row[]
-  if (r.packetId) hits = rows.filter((x) => x.id === r.packetId)
-  else if (r.providerFormId) hits = rows.filter((x) => x.provider_form_id === r.providerFormId && (!r.providerName || lc(x.provider_name) === lc(r.providerName)))
-  else if (r.formCode) hits = rows.filter((x) => lc(x.form_code) === lc(r.formCode))
-  else if (r.name) hits = rows.filter((x) => lc(x.name) === lc(r.name))
-  else return { ok: true, result: { standing: "unknown", reason: "no form reference given" } }
-  hits = hits.filter((x) => String(x.state).toUpperCase() === state)
-  if (hits.length === 0) return { ok: true, result: { standing: "unknown", reason: `the directory has no such form for ${state || "that state"}` } }
-  const finalOf = (row: Row): Row => { let cur = row; for (let i = 0; i < 10 && !cur.is_active && cur.replaced_by_id && byId.has(cur.replaced_by_id); i++) cur = byId.get(cur.replaced_by_id)!; return cur }
-  const active = hits.find((x) => x.is_active) ?? null
-  const v = q.version == null || q.version === "" ? null : String(q.version)
-  const matchesVersion = (x: Row) => v === null || String(x.version ?? "") === v || (x.provider_form_version ?? "") === v
-  const named = v === null ? (active ?? hits[0]) : (hits.find(matchesVersion) ?? null)
-  if (!named) {
-    return { ok: true, result: active ? { standing: "retired", packetId: hits[0].id, replacementPacketId: active.id } : { standing: "unknown", reason: `version ${v} is not in the directory` } }
-  }
-  if (!named.is_active) {
-    const repl = finalOf(named)
-    return { ok: true, result: { standing: "retired", packetId: named.id, replacementPacketId: repl.is_active && repl.id !== named.id ? repl.id : (active?.id ?? null) } }
-  }
-  const today = (q.now ?? new Date()).toISOString().slice(0, 10)
-  if (named.license_expires_at && named.license_expires_at < today) return { ok: true, result: { standing: "license_expired", packetId: named.id, expiredOn: named.license_expires_at } }
-  return { ok: true, result: { standing: "licensed_current", packetId: named.id, version: named.version ?? null, providerFormVersion: named.provider_form_version ?? null } }
-}
+// MOVED (wave 156, lane 156R) — the type FormLicenseStanding and the function formLicenseStanding now live, unchanged, at the foot
+// of lib/kernel/compliance/representation-gate.ts (their consumer), re-exported here so every caller keeps this import. Why: the
+// decision is reached from app/crm/page.tsx, and this module's own imports (the packet writer, the provider directory, the PDF
+// reader) would have added ~20 modules to that entry.
+export { formLicenseStanding, type FormLicenseStanding } from "@/lib/kernel/compliance/representation-gate"
 
 // ── WAVE 156 (156C, round 2): A LIBRARY FORM ONTO A DEAL — a WORKING COPY; the packet master is never touched ──────────────────────
 

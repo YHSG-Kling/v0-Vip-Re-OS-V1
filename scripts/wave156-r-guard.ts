@@ -5,7 +5,7 @@
  * Four connections, each DRIVEN through the real exported product code on the in-memory client (scripts/in-memory-supabase.ts) with
  * counted seams (the listing loop, the offer submit, the ledger wrapper, the notifier) — never a string scan alone:
  *   §A  FORM LICENSE AND VERSION INTO THE COMPLIANCE DECISION. Lane 156B's decision (lib/kernel/compliance/representation-gate.ts)
- *       now reads lane 156C's directory (lib/forms/form-directory-intake.ts formLicenseStanding) once per executed document, through
+ *       now reads lane 156C's directory (formLicenseStanding — lib/forms/form-license-standing.ts, re-exported by form-directory-intake.ts) once per executed document, through
  *       the loaders: a RETIRED form holds and names its replacement; an EXPIRED license holds and names the date; a form the
  *       directory does not know does NOT hold but the reviewer sees "not in your directory" (and can still approve); a directory
  *       that cannot be read HOLDS with a retry; the standing is in the evidence hash, so an approval given before a form was
@@ -88,7 +88,7 @@ registerHooks({
   },
 })
 const load = async (p: string): Promise<any> => { try { return await import(pathToFileURL(join(ROOT, p)).href) } catch (e) { return { __loadError: (e as Error)?.message?.slice(0, 200) ?? "load failed" } } }
-const quiet = async <T,>(f: () => Promise<T>): Promise<T> => { const e = console.error, w = console.warn; console.error = () => {}; console.warn = () => {}; try { return await f() } finally { console.error = e; console.warn = w } }
+const quiet = async (f: () => Promise<any>): Promise<any> => { const e = console.error, w = console.warn; console.error = () => {}; console.warn = () => {}; try { return await f() } finally { console.error = e; console.warn = w } }
 
 // ═══ fixtures ════════════════════════════════════════════════════════════════════════════════════════════════════════════
 const u = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`
@@ -188,7 +188,10 @@ async function sectionA(rg: any, act: any) {
   const iL = lsrc.indexOf("export async function loadAndDecideListingRepresentation"), iO = lsrc.indexOf("export async function loadAndDecideOfferRepresentation")
   const body = (from: number) => lsrc.slice(from, lsrc.indexOf("\nexport ", from + 10))
   check("BOTH loaders attach the standing once per executed document (listing and offer)", iL > 0 && iO > 0 && /attachFormStandings\(/.test(body(iL)) && /attachFormStandings\(/.test(body(iO)), { iL, iO })
-  check("…and the standing is read through lane 156C's door (formLicenseStanding), never a second directory reader", /formLicenseStanding\(/.test(lsrc) && !/from\(\s*["']brokerage_form_library["']/.test(lsrc))
+  const intake = await load("lib/forms/form-directory-intake.ts")
+  const readers = (lsrc.match(/from\(\s*["']brokerage_form_library["']/g) ?? []).length
+  check("…and the standing is read through lane 156C's ONE reader (formLicenseStanding — the forms intake's export IS the decision's function), never a second directory reader",
+    /formLicenseStanding\(db,/.test(lsrc) && readers === 1 && typeof rg.formLicenseStanding === "function" && intake.formLicenseStanding === rg.formLicenseStanding, { readers, same: intake.formLicenseStanding === rg.formLicenseStanding })
   G.__R.seat = null
 }
 
