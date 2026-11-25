@@ -135,7 +135,7 @@ export async function loadAcquisitionEconomics(svc: Svc, opts: { sinceIso: strin
 // ═════════════════════════════════════════════════════════════════════════════
 
 /** The vendors whose ledger rows are PERSON data (append / trace / people records). RentCast is property data and is excluded. */
-export const PERSON_DATA_VENDORS: readonly string[] = Object.freeze(["versium", "peopledata", "batchdata", "datafiniti", "tracerfy", "datazapp", "propertyradar", "data_axle"])
+const PERSON_DATA_VENDORS: readonly string[] = Object.freeze(["versium", "peopledata", "batchdata", "datafiniti", "tracerfy", "datazapp", "propertyradar", "data_axle"])
 
 /** PURE — person-data spend booked outside the acquisition source (the fold above already counts the acquisition rows). */
 function personEnrichmentSpendUsd(rows: ReadonlyArray<AcquisitionLedgerRow & { vendor_name?: string | null }>): number {

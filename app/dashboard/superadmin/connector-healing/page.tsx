@@ -32,7 +32,7 @@ import { simulateProviderPilot } from "@/lib/providers/provider-pilot"
 // each provider's TENANT-connectability (route B) sit beside the provider stack — one console for what the platform may spend,
 // what it has spent, and what a tenant may bring of its own.
 import { deriveTenantProviderConnectionState } from "@/lib/providers/tenant-provider-connections"
-import { loadAcquisitionEconomics } from "@/lib/vendor-governance/acquisition-economics"
+import { loadAcquisitionEconomics, PROVIDER_COMMITMENT_TERMS, costUnderCommitment } from "@/lib/vendor-governance/acquisition-economics"
 import { getAcquisitionCapsAction } from "@/app/actions/superadmin/platform-controls"
 import { AcquisitionCapsPanel } from "./acquisition-caps-panel"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -515,6 +515,19 @@ export default async function ConnectorHealingPage() {
                 <ul className="list-disc pl-5 text-[11px] text-muted-foreground sm:col-span-3">{economics.cohort.unknowns.map((c) => <li key={c}>{c}</li>)}</ul>
               </div>
             )}
+            {/* Wave 156 (156G): published plans modeled WITH their minimums — indications, never executed quotes (docs/operations/WAVE156-PROVIDER-DECISION-PACKET.md). */}
+            <div className="text-xs">
+              <h4 className="font-medium">Plan minimums, modeled (public indications — not quotes)</h4>
+              <table className="mt-1 w-full text-[11px]">
+                <thead><tr className="text-left text-muted-foreground"><th>Provider / plan</th><th>10,000 units / month</th><th>50,000 units / month</th></tr></thead>
+                <tbody>
+                  {PROVIDER_COMMITMENT_TERMS.map((t) => {
+                    const cell = (u: number) => { const c = costUnderCommitment(t, u); return c.monthlyUsd === null ? "unknown (no published overage)" : `$${c.monthlyUsd.toFixed(2)} ($${(c.effectiveUnitUsd ?? 0).toFixed(4)}/${t.unit})${c.minimumBinding ? " — minimum binds" : ""}` }
+                    return <tr key={`${t.provider}:${t.plan}`}><td>{t.provider} — {t.plan}</td><td>{cell(10_000)}</td><td>{cell(50_000)}</td></tr>
+                  })}
+                </tbody>
+              </table>
+            </div>
             <ul className="list-disc pl-5 text-[11px] text-muted-foreground">{economics.caveats.map((c) => <li key={c}>{c}</li>)}</ul>
           </CardContent>
         </Card>
