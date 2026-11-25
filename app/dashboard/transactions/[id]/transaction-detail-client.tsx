@@ -3058,7 +3058,7 @@ export function TransactionDetailClient({
                               setNewDeadlineLabel("")
                               router.refresh()
                             } else {
-                              toast.error("Failed to add deadline")
+                              toast.error((result as { error?: string } | null)?.error ? `Deadline not added: ${(result as { error?: string }).error}` : "Deadline not added — please try again.")
                             }
                           })
                         }}
@@ -3096,8 +3096,8 @@ export function TransactionDetailClient({
                             onClick={() => {
                               startTransition(async () => {
                                 const { completeDeadline } = await import("@/app/actions/transactions")
-                                await completeDeadline(d.id)
-                                router.refresh()
+                                const done = await completeDeadline(d.id); if (!(done as { success?: boolean } | null)?.success) { toast.error(`Deadline not completed: ${(done as { error?: string } | null)?.error ?? "the server did not confirm it"}`); return } // wave 156 (156D): a refusal is visible, never a silent refresh
+                                toast.success("Deadline completed"); router.refresh()
                               })
                             }}
                           >
@@ -3209,7 +3209,7 @@ export function TransactionDetailClient({
                               setNewParticipantCompany("")
                               router.refresh()
                             } else {
-                              toast.error("Failed to add participant")
+                              toast.error((result as { error?: string } | null)?.error ? `Participant not added: ${(result as { error?: string }).error}` : "Participant not added — please try again.")
                             }
                           })
                         }}
@@ -4691,8 +4691,8 @@ export function TransactionDetailClient({
                                   startTransition(async () => {
                                     const { respondToRepairRequest } = await import("@/app/actions/transactions")
                                     const res = await respondToRepairRequest(r.id, "accepted")
-                                    if (res?.success) toast.success("Repair request accepted")
-                                    router.refresh()
+                                    if (!res?.success) { toast.error(`Repair request not accepted: ${(res as { error?: string } | null)?.error ?? "the server did not confirm it"}`); return } // wave 156 (156D): never looks like success
+                                    toast.success("Repair request accepted"); router.refresh()
                                   })
                                 }}
                               >

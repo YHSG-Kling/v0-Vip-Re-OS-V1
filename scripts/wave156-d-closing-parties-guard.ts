@@ -68,6 +68,7 @@ const MIGRATION = "supabase/migrations/m1010-closing-parties-counsel-roles-and-s
 const u = (p: string, n: number) => `${p}${String(n).padStart(7, "0")}-0000-4000-8000-000000000156`
 const B1 = u("b", 1), B2 = u("b", 2)
 const U_BROKER = u("a", 1), U_AGENT = u("a", 2), U_VENDOR = u("a", 3), U_TC = u("a", 4), U_X = u("a", 5)
+const U_CONTACT = u("a", 6), U_LENDER = u("a", 7), U_OFFDEAL = u("a", 8), U_CO = u("a", 9), AG_B = u("e", 3)
 const AG_A = u("e", 1), AG_X = u("e", 2)
 const TX_GA = u("d", 1), TX_NY = u("d", 2), TX_CASH = u("d", 3), TX_CLOSED = u("d", 4), TX_X = u("d", 9), TX_NEW = u("d", 5)
 const V_ATTY = u("f", 1), V_ATTY_FREE = u("f", 2), V_LENDER = u("f", 3), V_X = u("f", 4)
@@ -81,8 +82,9 @@ function world(): MemClient {
     users: [
       { id: U_BROKER, brokerage_id: B1, user_type: "broker" }, { id: U_AGENT, brokerage_id: B1, user_type: "agent" },
       { id: U_VENDOR, brokerage_id: B1, user_type: "vendor" }, { id: U_TC, brokerage_id: B1, user_type: "tc" }, { id: U_X, brokerage_id: B2, user_type: "broker" },
+      { id: U_CONTACT, brokerage_id: B1, user_type: "contact" }, { id: U_LENDER, brokerage_id: B1, user_type: "vendor" }, { id: U_OFFDEAL, brokerage_id: B1, user_type: "agent" }, { id: U_CO, brokerage_id: B1, user_type: "compliance_officer" },
     ],
-    agents: [{ id: AG_A, user_id: U_AGENT, brokerage_id: B1 }, { id: AG_X, user_id: U_X, brokerage_id: B2 }],
+    agents: [{ id: AG_A, user_id: U_AGENT, brokerage_id: B1 }, { id: AG_X, user_id: U_X, brokerage_id: B2 }, { id: AG_B, user_id: U_OFFDEAL, brokerage_id: B1 }],
     transactions: [
       { id: TX_GA, brokerage_id: B1, agent_id: AG_A, contact_id: C1, deleted_at: null, status: "under_contract", stage: "CLOSING_PREP", property_state: "GA", financing_type: "conventional", deal_type: "buyer", created_at: "2026-09-01T00:00:00Z" },
       { id: TX_NY, brokerage_id: B1, agent_id: AG_A, status: "under_contract", property_state: "NY", financing_type: "conventional", deal_type: "seller", created_at: "2026-09-01T00:00:00Z" },
@@ -100,7 +102,7 @@ function world(): MemClient {
       { id: u("9", 2), vendor_id: V_LENDER, transaction_id: TX_GA, brokerage_id: B1, assignment_type: "lender", status: "confirmed" },
       { id: u("9", 3), vendor_id: V_ATTY, transaction_id: TX_CLOSED, brokerage_id: B1, assignment_type: "other", status: "confirmed" },
     ],
-    user_role_assignments: [{ id: u("8", 1), user_id: U_VENDOR, vendor_id: V_ATTY }],
+    user_role_assignments: [{ id: u("8", 1), user_id: U_VENDOR, vendor_id: V_ATTY }, { id: u("8", 2), user_id: U_LENDER, vendor_id: V_LENDER }],
     transaction_participants: [],
     transaction_title_escrow: [{ id: E_GA, transaction_id: TX_GA, brokerage_id: B1, title_company_name: "Peach Title" }],
     transaction_documents: [
@@ -602,6 +604,55 @@ async function sectionE(act: any, cp: any) {
   check("a general question about attorneys is still education (positive control — the rule is narrow)", qad.classifyPortalQuestion("What does a closing attorney do?").fact === null)
 }
 
+// ═══ §F (round 2) — every CDA door asks the deal desk ═══════════════════════════════════════════════════════════════════
+async function sectionF() {
+  section("§F · app/actions/cda-portal.ts — all exported doors, driven: refused seats reach nothing; desk seats pass the gate")
+  const src = stripComments(raw("app/actions/cda-portal.ts"))
+  const doors = [...src.matchAll(/^export\s+async\s+function\s+(\w+)\s*\(/gm)].map((m) => m[1])
+  check(`the doors are DERIVED from the comment-stripped source (${doors.length} exported actions)`, doors.length >= 20, doors)
+  const cda = await quiet(() => load("app/actions/cda-portal.ts"))
+  const input: any = { cdaId: CDA1, transactionId: TX_GA, reason: "Fixture reason that is long enough to pass", documentId: DOC_GA, fileName: "fixture.pdf", fileUrl: "private/fixture.pdf",
+    note: "fixture note", recipient: "closer@example.test", method: "email", payoutMethod: "check", artifact: "final_cd", storageUrl: "private/fixture.pdf", signedBy: "Broker" }
+  const call = (d: string) => (d === "getCdaForTransactionAction" ? cda[d](TX_GA) : cda[d](input))
+  const REFUSED: Array<[string, string]> = [[U_CONTACT, "a contact seat"], [U_LENDER, "the lender vendor seat assigned to the deal"], [U_VENDOR, "the attorney vendor seat assigned to the deal"], [U_OFFDEAL, "an agent off the deal"], [U_X, "another tenant's broker"]]
+  const realFetch = globalThis.fetch
+  ;(globalThis as any).fetch = async () => { throw new Error("network blocked in the guard") }
+  try {
+    for (const d of doors) {
+      if (typeof cda[d] !== "function") { check(`${d} is exported`, false); continue }
+      const leaked: string[] = []
+      for (const [seat, label] of REFUSED) {
+        const m = as(seat)
+        const x = await drive(() => call(d))
+        const refused = x.r?.success === false || x.r === null || (!!x.threw && m.writes.length === 0)
+        if (!refused || m.writes.length > 0 || G.__W.calls.esign > 0 || G.__W.calls.finalCheck.length > 0) leaked.push(`${label}: ${m.writes.length} write(s), answered ${JSON.stringify(x.r ?? x.threw)?.slice(0, 120)}`)
+      }
+      check(`NEG ${d}: a contact, the lender and the attorney vendor seats, an agent off the deal and another tenant's broker are refused and write nothing`, leaked.length === 0, leaked)
+      const passed: string[] = []
+      for (const [seat, label] of [[U_AGENT, "the deal's agent"], [U_CO, "compliance"]] as Array<[string, string]>) {
+        as(seat); G.__W.finalCheck = "fail"
+        const x = await drive(() => call(d))
+        if (String(x.r?.error ?? "").startsWith("not_on_deal_desk")) passed.push(`${label} was refused by the gate`)
+      }
+      check(`${d}: the deal's agent and compliance pass the desk gate (positive control)`, passed.length === 0, passed)
+    }
+  } finally { (globalThis as any).fetch = realFetch }
+}
+
+// ═══ §G (round 2) — the deal page shows the server's refusal ══════════════════════════════════════════════════════════════
+function sectionG() {
+  section("§G · the deal page shows a refusal as a refusal (source rule — the page is not rendered here)")
+  const c = stripComments(raw("app/dashboard/transactions/[id]/transaction-detail-client.tsx"))
+  const after = (token: string, span = 600) => { const i = c.indexOf(token); return i < 0 ? "" : c.slice(i, i + span) }
+  const surfaced = (win: string) => { const e = win.indexOf("toast.error("); return e >= 0 && /\.error\b/.test(win.slice(e + 12, e + 260)) }
+  const refusedBeforeRefresh = (win: string) => { const e = win.search(/toast\.error\(/), r = win.search(/router\.refresh\(\)/); return e >= 0 && (r < 0 || e < r) && /return\s*\}/.test(win.slice(e, r < 0 ? undefined : r)) }
+  check("adding a deadline shows the server's refusal text (no generic 'Failed to add deadline')", surfaced(after("await addDeadline(", 1400)) && !/Failed to add deadline/.test(c))
+  check("adding a participant shows the server's refusal text (no generic 'Failed to add participant')", surfaced(after("await addParticipant(", 1400)) && !/Failed to add participant/.test(c))
+  check("completing a deadline: a refusal is a visible error and returns BEFORE the refresh (never looks like success)", surfaced(after("await completeDeadline(", 400)) && refusedBeforeRefresh(after("await completeDeadline(", 400)))
+  check("responding to a repair request: a refusal is a visible error and returns BEFORE the refresh", surfaced(after("await respondToRepairRequest(", 400)) && refusedBeforeRefresh(after("await respondToRepairRequest(", 400)))
+  check("POSITIVE CONTROL: the rule sees a silent refresh as wrong", !refusedBeforeRefresh("await completeDeadline(d.id)\n router.refresh()"))
+}
+
 // ═══ run ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 async function main() {
   console.log(`wave156-d-closing-parties-guard — ROOT=${ROOT}`)
@@ -613,6 +664,8 @@ async function main() {
   await sectionC(act)
   await sectionD()
   await sectionE(act, cp)
+  await sectionF()
+  sectionG()
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed) { console.log(`FAILED:\n  - ${fails.join("\n  - ")}`); process.exit(1) }
 }
