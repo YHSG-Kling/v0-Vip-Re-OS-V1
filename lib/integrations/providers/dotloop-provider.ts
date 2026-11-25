@@ -315,7 +315,7 @@ export class DotloopProvider implements ITransactionProvider {
 
       const response = await this.request<{ data?: any[] }>(apiKey, `/profile/${profileId}/form`, { query })
       if (!response.ok) {
-        return { success: false, error: `Dotloop listForms ${response.status}: ${response.error}` }
+        return { success: false, status: response.status, error: `Dotloop listForms ${response.status}: ${response.error}` }
       }
       const data = response.data
       const forms: ProviderForm[] = ((data?.data ?? (Array.isArray(data) ? data : [])) as any[]).map((f: any) => ({

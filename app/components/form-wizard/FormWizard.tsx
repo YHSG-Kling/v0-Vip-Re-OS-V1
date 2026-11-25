@@ -276,7 +276,7 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
   // yet, [] = loaded but empty.
   const [providerForms, setProviderForms] = useState<ProviderFormItem[] | null>(null)
   const [providerFormsLoading, setProviderFormsLoading] = useState(false)
-  const [providerFormsError, setProviderFormsError] = useState<string | null>(null)
+  const [providerFormsError, setProviderFormsError] = useState<string | null>(null); const [providerPage, setProviderPage] = useState<ProviderDirectoryPage | null>(null) // wave 156 (156C): the WHOLE authorized library, chunk by chunk
   const [esignProvider, setEsignProvider] = useState<string | null>(null)
   // ── Packet preload (optional) — only active when documentId prop is set ──
   const [stagedPacket, setStagedPacket] = useState<StagedPacket | null>(null)
@@ -861,26 +861,41 @@ export function FormWizard({ mode: initialMode, contact, brokerageId, agentUserI
               providerForms={providerForms}
               providerFormsLoading={providerFormsLoading}
               providerFormsError={providerFormsError}
-              onLoadProviderForms={async () => {
-                if (providerForms !== null || providerFormsLoading) return
+              providerPage={providerPage}
+              onLoadProviderForms={async (more?: boolean) => {
+                // WAVE 156 (156C): the provider library is WALKED — the first call loads the first chunk, "Load more" continues from
+                // the provider's cursor until it is exhausted; the real total and the loaded count are shown. Never one silent page.
+                if (providerFormsLoading) return
+                if (!more && providerForms !== null) return
+                if (more && !providerPage?.nextCursor) return
                 if (!providerInfo || providerInfo === "loading") return
                 setProviderFormsLoading(true)
                 setProviderFormsError(null)
                 try {
                   const params = new URLSearchParams()
                   if (state.propertyState) params.set("state", state.propertyState)
-                  params.set("category", mode === "offer" ? "offer" : "listing")
+                  if (more && providerPage?.nextCursor) params.set("cursor", providerPage.nextCursor)
                   const res = await fetch(`/api/forms/provider-library?${params.toString()}`)
                   const json = await res.json()
                   if (!res.ok) {
-                    setProviderFormsError(json?.error ?? "Could not load provider forms.")
-                    setProviderForms([])
+                    setProviderFormsError(json?.refusal?.message ?? json?.error ?? "Could not load provider forms.")
+                    if (!more) setProviderForms([])
                   } else {
-                    setProviderForms(json.forms ?? [])
+                    const got: ProviderFormItem[] = json.forms ?? []
+                    setProviderForms(prev => {
+                      const base = more ? (prev ?? []) : []
+                      const seen = new Set(base.map(f => f.formId))
+                      return [...base, ...got.filter(f => !seen.has(f.formId))]
+                    })
+                    const adopted: Record<string, string> = { ...(more ? providerPage?.adopted ?? {} : {}) }
+                    for (const e of (json.entries ?? []) as Array<{ providerFormId: string | null; adoptedFromProvider: boolean; source: string }>) {
+                      if (e.adoptedFromProvider && e.providerFormId) adopted[e.providerFormId] = e.source
+                    }
+                    setProviderPage({ total: json.total ?? null, nextCursor: json.nextCursor ?? null, completeness: json.completeness ?? "complete", adopted, refusal: json.refusal?.message ?? null })
                   }
                 } catch (err: any) {
                   setProviderFormsError(err?.message ?? "Network error loading provider forms.")
-                  setProviderForms([])
+                  if (!more) setProviderForms([])
                 } finally {
                   setProviderFormsLoading(false)
                 }
@@ -1383,7 +1398,7 @@ function Step1Context({ mode, state, update }: { mode: "offer" | "listing"; stat
 
 // ─── Step 2 — Form Selection ─────────────────────────────────────────────────
 
-function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, providerInfo, providerForms, providerFormsLoading, providerFormsError, onLoadProviderForms }: {
+function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, providerInfo, providerForms, providerFormsLoading, providerFormsError, onLoadProviderForms, providerPage }: {
   mode: "offer" | "listing"
   state: WizardState
   update: <K extends keyof WizardState>(k: K, v: WizardState[K]) => void
@@ -1394,7 +1409,8 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
   providerForms: ProviderFormItem[] | null
   providerFormsLoading: boolean
   providerFormsError: string | null
-  onLoadProviderForms: () => void
+  onLoadProviderForms: (more?: boolean) => void
+  providerPage: ProviderDirectoryPage | null
 }) {
   const selected = state.selectedForms
   const [uploading, setUploading] = useState(false)
@@ -1574,7 +1590,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
           )}
         </TabsContent>
 
-        <TabsContent value="provider" className="mt-3" onFocus={onLoadProviderForms} onClick={onLoadProviderForms}>
+        <TabsContent value="provider" className="mt-3" onFocus={() => onLoadProviderForms()} onClick={() => onLoadProviderForms()}>
           {providerInfo === "loading" && (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -1634,9 +1650,12 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium truncate">{f.name}</p>
                           <p className="text-xs text-muted-foreground truncate">
-                            {[f.issuer, f.stateCode, f.category].filter(Boolean).join(" · ")}
+                            {[f.issuer, f.stateCode, f.category, f.version ? `v ${f.version}` : null].filter(Boolean).join(" · ")}
                           </p>
                         </div>
+                        {providerPage?.adopted[f.formId] && (
+                          <Badge variant="secondary" className="text-[10px] shrink-0">In your {providerPage.adopted[f.formId]} library</Badge>
+                        )}
                         {f.previewUrl && (
                           <a href={f.previewUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="text-xs text-muted-foreground hover:text-foreground shrink-0">
                             <ExternalLink className="h-3 w-3" />
@@ -1645,6 +1664,19 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
                       </label>
                     )
                   })}
+                </div>
+              )}
+              {providerForms && providerForms.length > 0 && providerPage && (
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <p className="text-xs text-muted-foreground">
+                    Showing {providerForms.length}{providerPage.total != null ? ` of ${providerPage.total}` : ""} forms
+                    {providerPage.completeness === "unknown_possibly_truncated" ? " — this provider does not report paging, so its library may hold more than it returned. Open the provider's window to search the rest." : providerPage.nextCursor ? "" : " — the whole authorized library."}
+                  </p>
+                  {providerPage.nextCursor && (
+                    <Button type="button" variant="outline" size="sm" disabled={providerFormsLoading} onClick={() => onLoadProviderForms(true)}>
+                      {providerFormsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Load more"}
+                    </Button>
+                  )}
                 </div>
               )}
             </div>
@@ -2595,4 +2627,16 @@ function PacketBanner({
       )}
     </div>
   )
+}
+
+/** WAVE 156 (156C): where the provider-library walk stands — app/api/forms/provider-library/route.ts. */
+interface ProviderDirectoryPage {
+  /** The provider's own total for the query, when it reports one. */
+  total: number | null
+  /** The cursor the next "Load more" continues from; null once the provider is exhausted. */
+  nextCursor: string | null
+  completeness: string
+  /** Provider form id → the tenant library source that already adopted it (shown once, labelled). */
+  adopted: Record<string, string>
+  refusal: string | null
 }

@@ -268,7 +268,7 @@ export const PROVIDER_CAPABILITY_MATRIX: Record<ProviderName, ProviderMatrixRow>
   docusign: {
     credentials:          B(`${TENANT_CRED}; tenant OAuth app/api/integrations/oauth/[provider]/route.ts:77; the DEFAULT with nothing connected rides the platform's JWT account lib/esign/docusign-platform-account.ts (minted per use, default only). BLIND SPOT, published: a tenant's OWN DocuSign OAuth access token has no refresher (lib/social/token-refresh.ts covers social only) — after it lapses the tenant reconnects`),
     settings:             B(SETTINGS),
-    forms:                B("lib/integrations/providers/docusign-provider.ts:311 listForms (GET /templates, documented) via app/api/forms/provider-library/route.ts:57"),
+    forms:                B("lib/integrations/providers/docusign-provider.ts:311 listForms (GET /templates, documented) (paged by start_position) via app/api/forms/provider-library/route.ts:81 → lib/forms/provider-form-directory.ts:171 walkProviderLibrary"),
     transaction_creation: B("lib/integrations/providers/docusign-provider.ts:80 createTransaction (POST /envelopes status created — eSignature REST v2.1)"),
     document_upload:      B("lib/integrations/providers/docusign-provider.ts:104 attachForms / :282 uploadDocument (PUT /envelopes/{id}/documents, base64 — documented)"),
     form_fill:            B(`${IN_APP_FILL}; embedded SENDER view places the tabs (docusign-provider.ts:196 prepareEmbeddedSend)`),

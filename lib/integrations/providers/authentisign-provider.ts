@@ -229,7 +229,7 @@ export class AuthentisignProvider implements ITransactionProvider {
 
       const res = await this.request<{ forms?: any[]; items?: any[] }>("/forms", { query })
       if (!res.ok) {
-        return { success: false, error: `Authentisign listForms ${res.status}: ${res.error}` }
+        return { success: false, status: res.status, error: `Authentisign listForms ${res.status}: ${res.error}` }
       }
       const items: any[] = res.data?.forms ?? res.data?.items ?? (Array.isArray(res.data) ? (res.data as any[]) : [])
       const forms: ProviderForm[] = items.map(f => ({
