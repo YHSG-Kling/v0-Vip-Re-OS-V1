@@ -4,19 +4,22 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * Pure-core simulator for the CMA & Listing Presentation engine
  * (app/actions/cma-presentation). The only genuinely PURE, side-effect-free
- * logic in that engine is the per-scenario net-sheet arithmetic, which was
- * extracted to lib/cma/net-sheet-math.ts (computeNetSheetScenario). The server
- * action `calculateScenario` now delegates to it verbatim.
+ * logic in that engine is the per-scenario net-sheet arithmetic. It was
+ * extracted to lib/cma/net-sheet-math.ts (computeNetSheetScenario); wave 156
+ * (lane 156H, round 4) retired that second seller net onto the ONE engine —
+ * lib/calculators/engine.ts sellerNetScenario → runCalculator("seller_net_sheet")
+ * — which the server action `calculateScenario` now calls.
  *
  * Everything else in the engine is DB/AI I/O (generateCMA → generateAICMA,
  * activities inserts, presentation-assembler, video project creation) and is
  * NOT unit-simulatable without mocks — so this harness asserts ONLY the pure
- * math, with real assertions, no mocks, no DB.
+ * math, with real assertions, no mocks, no DB. Rates are PERCENTS a person
+ * entered; a figure nobody entered is ASKED for, never defaulted.
  *
  * Run:  npx tsx scripts/cma-presentation-simulator.ts
  */
 
-import { computeNetSheetScenario } from "../lib/cma/net-sheet-math"
+import { sellerNetScenario, scenarioPrice } from "../lib/calculators/engine"
 
 let passed = 0
 let failed = 0
@@ -31,118 +34,72 @@ function assert(cond: boolean, label: string) {
   }
 }
 
-function approx(a: number, b: number, eps = 1e-6) {
-  return Math.abs(a - b) < eps
+const near = (a: number | null, b: number) => a != null && Math.abs(a - b) < 0.01
+const internal = { audience: "internal" as const }
+
+console.log("CMA Presentation — net-sheet scenarios through the one engine\n")
+
+console.log("Scenario 1: $500k, 3% listing, 3% buyer-broker, $10,000 closing quote, $200k payoff")
+{
+  const s = sellerNetScenario("Primary", { salePrice: 500_000, listingCommissionPct: 3, buyerBrokerCompPct: 3, closingCosts: 10_000, mortgagePayoff: 200_000 }, internal)
+  assert(near(s.breakdown.listingCommission, 15_000), "listing commission = 3% = $15,000")
+  assert(near(s.breakdown.buyerCommission, 15_000), "buyer-broker compensation = 3% = $15,000")
+  assert(near(s.breakdown.closingCosts, 10_000), "closing costs = the $10,000 quote")
+  assert(near(s.totalCosts, 240_000), "total costs = $240,000")
+  assert(near(s.netProceeds, 260_000), "net proceeds = $260,000")
+  assert(s.grossProceeds === s.salePrice && s.missing.length === 0, "grossProceeds equals salePrice; nothing missing")
 }
 
-console.log("CMA Presentation — pure net-sheet math simulator\n")
-
-// ── Scenario 1: canonical 3% / 3% / 2% on a $500k sale, $200k payoff ─────────
-console.log("Scenario 1: $500k, 3% listing, 3% buyer, 2% closing, $200k payoff")
+console.log("\nScenario 2: MISSING title / settlement quote → asked for, no net")
 {
-  const s = computeNetSheetScenario(
-    "Primary",
-    500_000,
-    { mortgageBalance: 200_000 },
-    0.03,
-    0.03,
-    0.02,
-  )
-  assert(approx(s.breakdown.listingCommission, 15_000), "listing commission = 3% = $15,000")
-  assert(approx(s.breakdown.buyerCommission, 15_000), "buyer commission = 3% = $15,000")
-  assert(approx(s.breakdown.closingCosts, 10_000), "closing costs = 2% = $10,000")
-  assert(approx(s.breakdown.mortgagePayoff, 200_000), "mortgage payoff = $200,000")
-  // total costs = 15k + 15k + 10k + 200k = 240k
-  assert(approx(s.totalCosts, 240_000), "total costs = $240,000")
-  // net = 500k - 240k = 260k
-  assert(approx(s.netProceeds, 260_000), "net proceeds = $260,000")
-  assert(s.grossProceeds === s.salePrice, "grossProceeds equals salePrice")
+  const s = sellerNetScenario("No quote", { salePrice: 400_000, listingCommissionPct: 2.5, mortgagePayoff: 0 }, internal)
+  assert(s.netProceeds === null && s.totalCosts === null, "no closing figure → net is null (no percent of price is assumed)")
+  assert(s.missing.some((m) => /title, escrow/i.test(m)), `the title / settlement figure is asked for (${s.missing.join("; ")})`)
 }
 
-// ── Scenario 2: fixed-dollar closing costs override the percent ──────────────
-console.log("\nScenario 2: fixed closingCosts override the percent")
+console.log("\nScenario 3: ZERO commission and $0 closing are honored, not treated as missing")
 {
-  const s = computeNetSheetScenario(
-    "Fixed closing",
-    400_000,
-    { closingCosts: 5_000 },
-    0.025,
-    0.025,
-    0.02, // would be 8,000 if used — must be ignored
-  )
-  assert(approx(s.breakdown.closingCosts, 5_000), "fixed $5,000 used, percent ignored")
-  assert(approx(s.breakdown.listingCommission, 10_000), "listing commission = 2.5% = $10,000")
-  assert(approx(s.breakdown.buyerCommission, 10_000), "buyer commission = 2.5% = $10,000")
-  // total = 10k + 10k + 5k = 25k ; net = 375k
-  assert(approx(s.totalCosts, 25_000), "total costs = $25,000")
-  assert(approx(s.netProceeds, 375_000), "net proceeds = $375,000")
+  const s = sellerNetScenario("Zero", { salePrice: 300_000, listingCommissionPct: 0, closingCosts: 0, mortgagePayoff: 0 }, internal)
+  assert(near(s.breakdown.listingCommission, 0) && near(s.breakdown.closingCosts, 0), "0% commission and $0 closing honored")
+  assert(near(s.netProceeds, 300_000), "net proceeds = full sale price")
 }
 
-// ── Scenario 3: zero closingCosts ($0) is honored, not treated as missing ────
-console.log("\nScenario 3: explicit $0 closing costs is honored (??, not ||)")
+console.log("\nScenario 4: MISSING commission → asked for (no house rate)")
 {
-  const s = computeNetSheetScenario(
-    "Zero closing",
-    300_000,
-    { closingCosts: 0 },
-    0,
-    0,
-    0.02, // 6,000 if it leaked through
-  )
-  assert(approx(s.breakdown.closingCosts, 0), "explicit $0 closing costs honored (not $6,000)")
-  assert(approx(s.totalCosts, 0), "total costs = $0 with no other costs")
-  assert(approx(s.netProceeds, 300_000), "net proceeds = full sale price")
+  const s = sellerNetScenario("No commission", { salePrice: 300_000, closingCosts: 3_000, mortgagePayoff: 0 }, internal)
+  assert(s.netProceeds === null && s.missing.some((m) => /commission/i.test(m)), `the listing commission is asked for (${s.missing.join("; ")})`)
 }
 
-// ── Scenario 4: mortgagePayoffAmount takes precedence over mortgageBalance ────
-console.log("\nScenario 4: mortgagePayoffAmount precedence over mortgageBalance")
+console.log("\nScenario 5: every cost line is summed; a PRORATION CREDIT adds to the net")
 {
-  const s = computeNetSheetScenario(
-    "Payoff precedence",
-    500_000,
-    { mortgagePayoffAmount: 123_456, mortgageBalance: 999_999 },
-    0,
-    0,
-    0,
-  )
-  assert(approx(s.breakdown.mortgagePayoff, 123_456), "payoffAmount wins over balance")
+  const s = sellerNetScenario("Full", {
+    salePrice: 600_000, listingCommissionPct: 3, buyerBrokerCompPct: 3, closingCosts: 1_000, mortgagePayoff: 100_000,
+    propertyTaxes: 2_000, hoaFees: 500, repairCredits: 3_000, sellerConcessions: 4_000, transactionFee: 395, creditsToSeller: 1_200,
+  }, internal)
+  const expectedTotal = 18_000 + 18_000 + 1_000 + 100_000 + 2_000 + 500 + 3_000 + 4_000 + 395
+  assert(near(s.totalCosts, expectedTotal), `total costs = $${expectedTotal.toLocaleString()}`)
+  assert(near(s.totalCredits, 1_200) && near(s.breakdown.creditsToSeller, 1_200), "the proration credit is its own credit line")
+  assert(near(s.netProceeds, 600_000 - expectedTotal + 1_200), "net = sale − costs + credits")
 }
 
-// ── Scenario 5: all cost lines roll into totalCosts and net ──────────────────
-console.log("\nScenario 5: every cost line is summed")
+console.log("\nScenario 6: conservative (−5%) vs optimistic (+5%) — whole-percent offsets; fixed dollars stay fixed")
 {
-  const s = computeNetSheetScenario(
-    "Full costs",
-    600_000,
-    {
-      closingCosts: 1_000,
-      mortgageBalance: 100_000,
-      propertyTaxes: 2_000,
-      hoaFees: 500,
-      repairCredits: 3_000,
-      sellerConcessions: 4_000,
-    },
-    0.03, // 18,000
-    0.03, // 18,000
-    0.02,
-  )
-  const expectedTotal =
-    18_000 + 18_000 + 1_000 + 100_000 + 2_000 + 500 + 3_000 + 4_000
-  assert(approx(s.totalCosts, expectedTotal), `total costs = $${expectedTotal.toLocaleString()}`)
-  assert(approx(s.netProceeds, 600_000 - expectedTotal), "net proceeds = sale - total costs")
-  assert(s.breakdown.otherCosts === 0, "otherCosts is always 0 (reserved)")
+  const lo = scenarioPrice(500_000, -5), hi = scenarioPrice(500_000, 5)
+  assert(lo === 475_000 && hi === 525_000, "scenario prices 475,000 / 525,000")
+  const c = sellerNetScenario("Cons", { salePrice: lo, listingCommissionPct: 3, buyerBrokerCompPct: 3, closingCosts: 10_000, mortgagePayoff: 0 }, internal)
+  const o = sellerNetScenario("Opt", { salePrice: hi, listingCommissionPct: 3, buyerBrokerCompPct: 3, closingCosts: 10_000, mortgagePayoff: 0 }, internal)
+  assert(near(c.netProceeds, 475_000 - 28_500 - 10_000), "conservative net = 436,500")
+  assert(near(o.netProceeds, 525_000 - 31_500 - 10_000), "optimistic net = 483,500")
 }
 
-// ── Scenario 6: conservative/optimistic price swings (the -5% / +5% the action runs) ─
-console.log("\nScenario 6: conservative (-5%) vs optimistic (+5%) net swing")
+console.log("\nScenario 7: the brokerage's agreed term (internal seat) prices the commission; a public estimate refuses it")
 {
-  const base = 500_000
-  const conservative = computeNetSheetScenario("Cons", base * 0.95, {}, 0.03, 0.03, 0.02)
-  const optimistic = computeNetSheetScenario("Opt", base * 1.05, {}, 0.03, 0.03, 0.02)
-  // net at price p with 8% total cost rate = p * 0.92
-  assert(approx(conservative.netProceeds, base * 0.95 * 0.92), "conservative net = price*0.92")
-  assert(approx(optimistic.netProceeds, base * 1.05 * 0.92), "optimistic net = price*0.92")
-  assert(optimistic.netProceeds > conservative.netProceeds, "higher price yields higher net")
+  const agreed = { listingRatePct: null, flatAmount: 4_995, label: "Flat fee per listing agreement" }
+  const s = sellerNetScenario("Flat", { salePrice: 500_000, closingCosts: 5_000, mortgagePayoff: 0 }, { audience: "internal", agreedCommission: agreed })
+  assert(near(s.breakdown.listingCommission, 4_995) && near(s.netProceeds, 500_000 - 4_995 - 5_000), "flat agreed fee charged as-is")
+  assert(s.assumptions.some((a) => a.basis === "brokerage_agreement"), "labeled as the brokerage agreement")
+  const pub = sellerNetScenario("Flat", { salePrice: 500_000, closingCosts: 5_000, mortgagePayoff: 0 }, { audience: "public", agreedCommission: agreed })
+  assert(pub.netProceeds === null, "internal commission terms never enter a public estimate")
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

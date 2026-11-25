@@ -6,6 +6,7 @@ import { scoreAllComps } from "@/lib/cma/ai-cma-engine"
 import { generatePricePrediction } from "@/lib/pricing/predictive-pricing"
 import { resolveAgreedCommission } from "@/lib/offers/net-sheet-calc"
 import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
+import { sellerNetScenario, scenarioPrice } from "@/lib/calculators/engine"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { isValidUUID } from "@/lib/validations"
@@ -643,60 +644,42 @@ export async function saveNetSheet(params: {
   const isFlatFee = params.commissionIsFlatFee ?? agreed.isFlatFee
   const flatAmount = params.commissionFlatAmount ?? agreed.flatAmount ?? null
 
-  // A flat fee is charged as-is and the buyer side is folded into it — mirrors the
-  // tab exactly (listComm = flatAmount, buyerComm = 0).
-  const listingRate = isFlatFee ? 0 : params.listingCommissionRate ?? agreed.rate * 100
+  // WAVE 156 (lane 156H, round 4) — ONE ENGINE. The totals below were a fourth seller-net calculation with its own fallbacks:
+  // a 2% closing cost when the state was unknown, and an explicit closing figure SCALED by the scenario factor ("a % of price
+  // in practice" — nobody's figure). TOMBSTONE — that arithmetic is removed; SURVIVOR: lib/calculators/engine.ts
+  // sellerNetScenario → runCalculator("seller_net_sheet"), the same engine the tab that shows this sheet now renders. The
+  // commission is the agent's figure, else the agreement / listing record via the resolver, else ASKED for (the resolver
+  // assumes no rate); closing costs are the agent's quote, else the reviewed regional convention for the listing's state,
+  // else ASKED for. An entered closing figure is fixed dollars at every scenario price.
+  const listingRate: number | null = isFlatFee ? 0 : params.listingCommissionRate ?? (agreed.missing ? null : agreed.rate * 100)
   const buyerRate = isFlatFee ? 0 : params.buyerCommissionRate ?? 0
-  const totalCommission = isFlatFee
-    ? Number(flatAmount ?? 0)
-    : params.salePrice * (listingRate / 100) + params.salePrice * (buyerRate / 100)
+  const listingState = (listingRow?.state as string | null) ?? null
+  const sheetAt = (name: string, price: number) => sellerNetScenario(name, {
+    salePrice: price,
+    listingCommissionPct: isFlatFee ? null : listingRate,
+    listingCommissionAmount: isFlatFee ? Number(flatAmount ?? 0) : null,
+    buyerBrokerCompPct: buyerRate || null,
+    closingCosts: params.closingCosts ?? deriveNetSheetClosingCostSection(price, listingState)?.midpoint ?? null,
+    mortgagePayoff: params.mortgagePayoffAmount ?? params.mortgageBalance ?? 0,
+    propertyTaxes: params.propertyTaxes, hoaFees: params.hoaFees, repairCredits: params.repairCredits,
+    sellerConcessions: params.sellerConcessions, transactionFee: params.transactionFee,
+  }, { audience: "internal", closingCostsEstimate: params.closingCosts == null })
 
-  // Closing costs: an explicit override wins; else the county-customary midpoint
-  // for the listing's state; else (state unknown) the legacy 2%.
-  const closingSection = deriveNetSheetClosingCostSection(
-    params.salePrice,
-    (listingRow?.state as string | null) ?? null,
-  )
-  const closingCosts =
-    params.closingCosts ?? closingSection?.midpoint ?? params.salePrice * 0.02
-
-  // Costs that do NOT move with the sale price. A payoff, a tax bill, HOA dues,
-  // agreed repair credits and a flat transaction fee are the same dollars at any
-  // price — only commission (and the percentage-based closing costs) scale.
-  const fixedCosts =
-    (params.mortgagePayoffAmount ?? params.mortgageBalance ?? 0) +
-    (params.propertyTaxes ?? 0) +
-    (params.hoaFees ?? 0) +
-    (params.repairCredits ?? 0) +
-    (params.sellerConcessions ?? 0) +
-    (params.transactionFee ?? 0)
-
-  const totalCosts = totalCommission + closingCosts + fixedCosts
-  const netProceeds = params.salePrice - totalCosts
-
-  /**
-   * Scenario net at a different price. The old version multiplied the ENTIRE cost
-   * stack by the scenario factor, which shrank the mortgage payoff, the tax bill
-   * and the flat transaction fee by 5% on a quick sale — flattering the number by
-   * whatever those happened to total. Only the price-proportional lines move.
-   */
-  function scenarioNet(factor: number): { salePrice: number; netProceeds: number } {
-    const price = Math.round(params.salePrice * factor)
-    const commission = isFlatFee
-      ? Number(flatAmount ?? 0)
-      : price * (listingRate / 100) + price * (buyerRate / 100)
-    const closing =
-      params.closingCosts != null
-        ? params.closingCosts * factor // an explicit override is a % of price in practice
-        : deriveNetSheetClosingCostSection(price, (listingRow?.state as string | null) ?? null)?.midpoint ??
-          price * 0.02
-    return { salePrice: price, netProceeds: Math.round(price - (commission + closing + fixedCosts)) }
+  const primary = sheetAt("Recommended", params.salePrice)
+  if (primary.netProceeds == null || primary.totalCosts == null) {
+    return { success: false, error: primary.missing.join("; ") || "The net sheet is missing a figure." }
   }
-
+  const closingCosts = primary.breakdown.closingCosts
+  const totalCosts = primary.totalCosts
+  const netProceeds = primary.netProceeds
+  const SCENARIO_OFFSET_PCT = 5
   const scenarios = [
     { name: "Recommended", salePrice: params.salePrice, netProceeds },
-    { name: "Quick Sale (-5%)", ...scenarioNet(0.95) },
-    { name: "Premium (+5%)", ...scenarioNet(1.05) },
+    ...([["Quick Sale", -SCENARIO_OFFSET_PCT], ["Premium", SCENARIO_OFFSET_PCT]] as const).map(([label, pct]) => {
+      const price = scenarioPrice(params.salePrice, pct)
+      const sc = sheetAt(label, price)
+      return { name: `${label} (${pct > 0 ? "+" : ""}${pct}%)`, salePrice: price, netProceeds: sc.netProceeds == null ? null : Math.round(sc.netProceeds) }
+    }),
   ]
 
   const expires = new Date()
@@ -712,7 +695,7 @@ export async function saveNetSheet(params: {
       contact_id: params.contactId,
       agent_id: agentId,
       sale_price: params.salePrice,
-      listing_commission_rate: listingRate,
+      listing_commission_rate: listingRate ?? 0,
       buyer_commission_rate: buyerRate,
       commission_is_flat_fee: isFlatFee,
       commission_flat_amount: isFlatFee ? flatAmount : null,

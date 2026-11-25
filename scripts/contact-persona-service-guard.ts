@@ -231,10 +231,10 @@ async function main() {
   check("(2) the feeder's own read is tenant-bound and customer-question sessions only — website widget + portal assistant (unconditional predicates)", /\.eq\(\s*["']chat_sessions\.brokerage_id["'],\s*a\.brokerageId\s*\)/.test(feeder) && /\.in\(\s*["']chat_sessions\.session_type["'],\s*\[\.\.\.CUSTOMER_QUESTION_SESSION_TYPES\]\s*\)/.test(feeder) && /CUSTOMER_QUESTION_SESSION_TYPES\s*=\s*\[\s*["']website_widget["'],\s*["']portal_widget["']\s*\]\s*as const/.test(feeder))
 
   // (3) A current seller asks about closing costs and insurance → a comparison from SUPPLIED facts; title / lender → those vendors.
-  const { computeNetSheetScenario } = await import("../lib/cma/net-sheet-math")
+  const { sellerNetScenario } = await import("../lib/calculators/engine") // 156H r4: lib/cma/net-sheet-math.ts retired onto the engine
   const supplied = { salePrice: 400000, closingCosts: 8000, mortgagePayoffAmount: 200000 }
-  const sA = computeNetSheetScenario("As listed", supplied.salePrice, { closingCosts: supplied.closingCosts, mortgagePayoffAmount: supplied.mortgagePayoffAmount }, 0.025, 0.025, 0)
-  const sB = computeNetSheetScenario("With a 1% concession", supplied.salePrice, { closingCosts: supplied.closingCosts, mortgagePayoffAmount: supplied.mortgagePayoffAmount, sellerConcessions: 4000 }, 0.025, 0.025, 0)
+  const sA = sellerNetScenario("As listed", { salePrice: supplied.salePrice, listingCommissionPct: 2.5, buyerBrokerCompPct: 2.5, closingCosts: supplied.closingCosts, mortgagePayoff: supplied.mortgagePayoffAmount }, { audience: "internal" })
+  const sB = sellerNetScenario("With a 1% concession", { salePrice: supplied.salePrice, listingCommissionPct: 2.5, buyerBrokerCompPct: 2.5, closingCosts: supplied.closingCosts, mortgagePayoff: supplied.mortgagePayoffAmount, sellerConcessions: 4000 }, { audience: "internal" })
   check("SIMULATED (3): the comparison is arithmetic on the facts SUPPLIED (price, payoff, closing costs) — 172,000 vs 168,000, nothing invented", sA.netProceeds === 172000 && sB.netProceeds === 168000 && sA.breakdown.propertyTaxes === 0 && sA.breakdown.hoaFees === 0, JSON.stringify([sA.netProceeds, sB.netProceeds]))
   const { classifyHomeFollowUp, vendorCategoryFor } = await import("../lib/portal/home-assistant")
   const { isVendorCategory } = await import("../lib/kernel/vendor-categories")
