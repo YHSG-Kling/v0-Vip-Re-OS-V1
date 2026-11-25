@@ -296,7 +296,7 @@ interface SupportingComp {
 
 /**
  * Pull 3-5 recent comparable sales that support the CONTRACT price via the
- * brokerage's chosen comps provider (RentCast, through getRentcastComps — the same
+ * brokerage's chosen comps provider (RentCast, through lib/avm/provider-chain.ts requestPropertyComparables — the same
  * engine the CMA/negotiation-copilot use). Prefers comps at/above the contract
  * price (the strongest ROV/ARV backing), then nearest, then most recent. Never
  * throws; returns [] when comps aren't available or the provider isn't configured.
@@ -308,7 +308,7 @@ async function loadSupportingComps(args: {
 }): Promise<SupportingComp[]> {
   if (!args.address) return []
   try {
-    const { requestPropertyComparables } = await import("@/lib/avm/provider-chain") // TOMBSTONE (156I r4, LAW 3): getRentcastComps by name → lib/avm/provider-chain.ts:854
+    const { requestPropertyComparables } = await import("@/lib/avm/provider-chain") // TOMBSTONE (156I r4, LAW 3): getRentcastComps by name → lib/avm/provider-chain.ts:857
     const raw = await requestPropertyComparables({ brokerageId: args.brokerageId, address: args.address, limit: 12 }).then((c) => c.pull.comps).catch(() => null)
     if (!raw || !Array.isArray(raw) || raw.length === 0) return []
 

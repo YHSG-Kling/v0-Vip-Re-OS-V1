@@ -630,6 +630,11 @@ async function sectionN() {
   G.__I.svcMem = null
   const callers = [...vendorCallersIn("app"), ...vendorCallersIn("lib")]
   check("ABSENCE (derived, comment-stripped): no file outside lib/avm/provider-chain.ts and lib/property/rentcast*.ts calls getRentcastAVM / getRentcastAvmAndComps / getRentcastComps", callers.length === 0, callers)
+  // ROUND 6: the thin reader is DELETED, not just uncalled — no module exports it, and the tombstone names the survivor.
+  const rcSrc = stripComments(raw("lib/property/rentcast.ts"))
+  check("ROUND 6: getRentcastComps is not exported by lib/property/rentcast.ts (deleted — its job is requestPropertyComparables)", rcSrc.length > 0 && !/export\s+(?:async\s+)?function\s+getRentcastComps\b|export\s+const\s+getRentcastComps\b/.test(rcSrc))
+  check("ROUND 6 POSITIVE CONTROL: the same export finder still sees a live export (getRentcastAvmAndComps)", /export\s+(?:async\s+)?function\s+getRentcastAvmAndComps\b/.test(rcSrc))
+  check("ROUND 6: the tombstone names lib/avm/provider-chain.ts requestPropertyComparables", /TOMBSTONE[^\n]*`getRentcastComps`[\s\S]{0,600}?lib\/avm\/provider-chain\.ts:\d+ requestPropertyComparables/.test(raw("lib/property/rentcast.ts")))
   const planted = stripComments(`// getRentcastComps( in a comment is not a call\nconst x = await getRentcastAvmAndComps({ address })`)
   check("POSITIVE CONTROL: the finder sees a planted call and ignores the same name in a comment", [...planted.matchAll(VENDOR_FNS)].map((m) => m[1]).join() === "getRentcastAvmAndComps")
 }

@@ -504,7 +504,7 @@ export async function isRentcastConfigured(brokerageId: string): Promise<boolean
  * contract changes shape: `searchRentcastSaleListings` still resolves
  * `{ success: false, listings: [], error }`, `getRentcastAVM` still resolves
  * all-null so lib/avm/provider-chain.ts falls through to the next provider,
- * `getRentcastComps` still resolves `[]`, and the status/market readers still
+ * `getRentcastAvmAndComps` still resolves no comparables, and the status/market readers still
  * resolve null. What changes is only that the `error`/note now NAMES the reason,
  * so "we deliberately did not call" is legible instead of looking like an
  * outage.
@@ -1095,7 +1095,7 @@ export async function searchRentcastRentalListings(
  * `/avm/value` answers two questions in a single billed call: what does
  * RentCast's model think this home is worth (`price`, `priceRangeLow`,
  * `priceRangeHigh`), and which comparables did it look at (`comparables[]`).
- * `getRentcastAVM` reads the first half, `getRentcastComps` reads the second,
+ * `getRentcastAVM` reads the first half (comparables are read through lib/avm/provider-chain.ts requestPropertyComparables),
  * and `getRentcastAvmAndComps` reads both from the SAME response — which is why
  * this parser exists rather than three copies of `data?.price ?? null`.
  *
@@ -1388,21 +1388,12 @@ export async function getRentcastAvmAndComps(
   }
 }
 
-/**
- * Fetch comparable sales for an address via RentCast's AVM endpoint (returns a
- * `comparables[]` array). This is the chosen comps source for CMA generation,
- * replacing the retired HouseCanary integration. Never throws.
- *
- * A THIN READER OVER `getRentcastAvmAndComps` — one HTTP call, one meter entry,
- * one parser. Callers that only want the comparables keep this signature; the
- * CMA lane calls the combined reader because it also shows the AVM baseline.
- * Do not re-implement the pull here: two pulls is two prices for one question.
- */
-export async function getRentcastComps(
-  params: RentcastCaller & { address: string; limit?: number },
-): Promise<RentcastComp[]> {
-  return (await getRentcastAvmAndComps(params)).comps
-}
+// TOMBSTONE (wave 156, lane 156I round 6 — CLAUDE.md §1, the orphan doctrine's third case): `getRentcastComps`, a thin reader
+// returning `(await getRentcastAvmAndComps(params)).comps`, lived here. Since round 4 no product code calls it (the staff tool,
+// the negotiation copilot, the MCP comparable_sales tool and the appraisal-negotiation comps all ask the capability), and nothing
+// in this file called it. Its job lives in lib/avm/provider-chain.ts:857 requestPropertyComparables (the route table, the
+// eligibility gate, the platform ceiling, single-flight and paidRequest) — `.pull.comps` is the same array. A vendor function
+// nobody should call by name is better absent than guarded.
 
 // ═════════════════════════════════════════════════════════════════════════════
 // WAVE 156 (lane 156G) — THE TWO SPEND RULES EVERY REQUEST ABOVE NOW PASSES THROUGH (foot of file, line-neutral above).

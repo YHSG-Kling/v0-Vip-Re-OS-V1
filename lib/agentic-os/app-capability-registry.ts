@@ -133,10 +133,10 @@ export const APP_CAPABILITY_REGISTRY: Record<AppCapability, AppCapabilityDef> = 
   contact_get:          { capability: "contact_get",          verb: "GET",     scope: "contact:read",      domain: "crm",             mutates: false, purpose: "Fetch a single contact record (CRM) with its lead lineage.", inputs: ["contactId"] },
   // GROUNDED: BOTH CMA paths gate on the same RentCast credential —
   // app/actions/ai-cma.ts fetchComparableProperties() and lib/cma/comp-provider.ts
-  // (the sourcing behind runAiCma) call getRentcastComps, which resolves the
+  // (the sourcing behind runAiCma) ask requestPropertyComparables (lib/avm/provider-chain.ts), which resolves the
   // PLATFORM RentCast key. RentCast is platform-gated (owner ruling) — there is no
   // tenant RentCast credential to prefer, so the platform key is the whole gate.
-  // Without it getRentcastComps returns [] and the CMA renders with zero
+  // Without it the capability answers "not available" and the CMA renders with zero
   // comparables, which is not a CMA. A connected IDX Broker feed does NOT satisfy
   // this: IDX can serve the ACTIVE side of the comp mix but cannot serve SOLD
   // comparables at all, and a CMA with no closed sales has no value range — which

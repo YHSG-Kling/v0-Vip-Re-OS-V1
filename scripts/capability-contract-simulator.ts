@@ -27,7 +27,7 @@
  *
  *   1. It checked platform lanes against platform_credentials ROWS. Every
  *      dispatcher in the app gates on an ENV KEY instead — dispatchDirectMail on
- *      LOB_API_KEY, messagingSendEmail on SENDGRID_API_KEY, getRentcastComps on
+ *      LOB_API_KEY, messagingSendEmail on SENDGRID_API_KEY, requestPropertyComparables (formerly getRentcastComps) on
  *      RENTCAST_API_KEY. So a platform with Lob configured and direct mail
  *      sending fine reported direct_mail_send DARK.
  *   2. It filed video_distribute against the D-ID render key. D-ID RENDERS a
