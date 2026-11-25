@@ -91,7 +91,7 @@ export function FraudNetworkClient(p: Props) {
 
   // ── staff ──
   const [queue, setQueue] = useState<Any | null>(null)
-  const [history, setHistory] = useState<Any | null>(null)
+  const [history, setHistory] = useState<Any>({})
   const [edit, setEdit] = useState<Any>({})
   const [pub, setPub] = useState({ attest: false, legal: false, note: "" })
   const [subject, setSubject] = useState({ bulletinId: "", channel: "support_ticket", supportTicketId: "", statement: "" })
@@ -247,7 +247,7 @@ export function FraudNetworkClient(p: Props) {
               {queue.bulletins.map((b: Any) => (
                 <div key={b.id} className="space-y-1 rounded-md border p-2">
                   <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{b.status}</Badge>{b.title} · {human(b.claim_class)} · v{b.version}<Button size="sm" variant="link" onClick={() => setEdit({ id: b.id, status: b.status })}>Edit</Button><Button size="sm" variant="link" onClick={async () => { const r: Any = await getFraudBulletinHistory(b.id); if (r.ok) setHistory(r.history); else setMsg(r.error) }}>History</Button></div>
-                  {history?.bulletin?.id === b.id && (
+                  {history.bulletin?.id === b.id && (
                     <div className="space-y-1 rounded-md bg-muted p-2 text-xs">
                       <div>Published by {history.bulletin.publishedBy ? history.people[history.bulletin.publishedBy] ?? history.bulletin.publishedBy : "—"}{history.bulletin.publishedAt ? ` on ${String(history.bulletin.publishedAt).slice(0, 10)}` : ""}</div>
                       {history.revisions.map((r: Any) => <details key={r.id}><summary>v{r.version} · {human(r.changeKind)} · {String(r.at).slice(0, 16)} · {r.actorUserId ? history.people[r.actorUserId] ?? r.actorUserId : "—"}{r.correctionRequestId ? ` · answers request ${r.correctionRequestId.slice(0, 8)}` : ""} — {r.reason}</summary><pre className="whitespace-pre-wrap">{JSON.stringify(r.snapshot, null, 1)}</pre></details>)}
