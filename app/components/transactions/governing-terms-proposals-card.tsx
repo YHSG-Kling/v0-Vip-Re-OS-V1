@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { confirmGoverningTermsAction, loadProposedGoverningTermsAction, type ProposedTermView } from "@/app/actions/governing-terms"
+import { confirmGoverningTermsAction, loadProposedGoverningTermsAction, loadDealPacketReviewStatusAction, type ProposedTermView, type DealPacketReviewStatus } from "@/app/actions/governing-terms"
 
 const show = (v: string | number | null) => (v === null || v === undefined || v === "" ? "—" : typeof v === "number" ? v.toLocaleString("en-US") : String(v))
 
@@ -68,5 +68,24 @@ export function GoverningTermsProposalsCard({ transactionId }: { transactionId: 
         })}
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * wave 156 (lane 156R) — THE OFFER PACKET'S COMPLIANCE REVIEW, ONE STATUS LINE ON THE DEAL. Reads loadDealPacketReviewStatusAction
+ * (deal desk first): approved / held (with the number of reasons) / under review, linked to the review screen. A seat the desk
+ * refuses (vendor, Contact) and a deal without an offer render nothing. No decision control here — Approve lives on the review screen.
+ */
+const PACKET_STATE_TEXT: Record<DealPacketReviewStatus["state"], string> = { approved: "approved", held: "on hold", under_review: "under review" }
+export function DealPacketReviewStatusLine({ transactionId }: { transactionId: string }) {
+  const [s, setS] = useState<DealPacketReviewStatus | null>(null)
+  useEffect(() => { loadDealPacketReviewStatusAction(transactionId).then((r) => setS(r.success ? r.status : null)).catch(() => setS(null)) }, [transactionId])
+  if (!s) return null
+  return (
+    <p className="text-sm" data-testid="deal-packet-review-status" data-state={s.state}>
+      Offer packet compliance review: <span className={s.state === "approved" ? "font-medium text-green-700" : s.state === "held" ? "font-medium text-red-700" : "font-medium"}>{PACKET_STATE_TEXT[s.state]}</span>
+      {s.state === "held" ? ` — ${s.holdCount} ${s.holdCount === 1 ? "reason" : "reasons"} to repair` : ""}
+      {" · "}<a href={s.href} className="text-blue-600 hover:underline">Open the review</a>
+    </p>
   )
 }

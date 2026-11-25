@@ -101,3 +101,36 @@ export async function confirmGoverningTermsAction(input: {
   }
   return { success: true, applied: out.applied ?? [], dismissed: out.dismissed ?? [], skipped: out.skipped ?? [] }
 }
+
+/** wave 156 (156R): the review status of the executed offer packet that governs a deal, as the deal page shows it. */
+export interface DealPacketReviewStatus { offerId: string; state: "approved" | "held" | "under_review"; holdCount: number; href: string }
+
+/**
+ * THE REVIEW, REACHABLE FROM THE DEAL (wave 156, lane 156R). The executed-packet review (lane 156B, lib/kernel/compliance/
+ * representation-gate.ts) lives at /dashboard/compliance/queue/review/purchase_offer/<offer>; the deal page showed nothing of it.
+ * This read answers, for a seat the DEAL DESK admits (requireDealDesk — a vendor, a Contact, an off-deal agent is refused and the
+ * page renders nothing): the deal's offer packet is approved / held (with the number of reasons) / under review. It RECOMPUTES the
+ * decision from the stored records (never a cached flag), as the packet was reviewed (asReviewed: the deal's own existence is not a
+ * reason). It decides nothing — Approve stays on the review screen, behind its own authority. A deal without an offer has no packet
+ * here (status null).
+ */
+export async function loadDealPacketReviewStatusAction(transactionId: string): Promise<{ success: true; status: DealPacketReviewStatus | null } | { success: false; error: string }> {
+  const { requireDealDesk } = await import("@/lib/transactions/role-guard")
+  const desk = await requireDealDesk(transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data: tx, error } = await svc.from("transactions").select("id, offer_id").eq("id", desk.transactionId).eq("brokerage_id", desk.brokerageId).maybeSingle()
+  if (error) return { success: false, error: `The deal's offer couldn't be read: ${error.message}` }
+  const offerId = (tx as { offer_id?: string | null } | null)?.offer_id ?? null
+  if (!offerId) return { success: true, status: null }
+  const { governingOfferPacket } = await import("@/lib/offers/governing-terms")
+  const gp = await governingOfferPacket(svc as never, desk.brokerageId, offerId)
+  if (!gp.ok) return { success: false, error: `The offer packet couldn't be read: ${gp.reason}` }
+  const { loadAndDecideOfferRepresentation } = await import("@/lib/kernel/compliance/representation-gate")
+  const d = await loadAndDecideOfferRepresentation(svc as never, { brokerageId: desk.brokerageId, offerId, packet: gp.packet, gate: { allowed: true, refusals: [] }, asReviewed: true })
+  if (!d.ok) return { success: false, error: `The packet review couldn't run: ${d.error}` }
+  const holdCount = d.decision.blockingReasons.filter((r) => r.severity !== "review").length
+  const state = holdCount > 0 ? "held" : d.decision.verdict === "allow" ? "approved" : "under_review"
+  return { success: true, status: { offerId, state, holdCount, href: `/dashboard/compliance/queue/review/purchase_offer/${offerId}` } }
+}
