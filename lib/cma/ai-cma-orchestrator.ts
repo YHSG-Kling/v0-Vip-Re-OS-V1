@@ -871,5 +871,26 @@ function buildDisclaimers(
   if (state.toUpperCase() === "FL") {
     base.push("Florida: Hurricane wind mitigation, flood zone, and HOA disclosure obligations may impact final pricing.")
   }
+  const nd = nonDisclosureSaleCaveat(state); if (nd) base.push(nd) // wave 156 (156I, directive row 4)
   return base
+}
+
+// ═══ WAVE 156 (lane 156I — directive 156I row 4: "sold record … sold-date lag, non-disclosure state caveat") ═══════════════════
+// A seller in a NON-DISCLOSURE state reads "comparable sales" as public fact, but there the recorded deed omits the price: the
+// sold prices a provider supplies come from MLS reporting or are modelled (often from mortgage amounts), and a cash or off-MLS
+// sale may be missing or estimated. No CMA said so (measured at b261c474: no "disclosure" caveat beyond CA / FL). The list is
+// the twelve commonly cited states (ATTOM, "Do You Know What Non-Disclosure States Are?", attomdata.com, read 2026-11-25;
+// NTPTS and FastExpert list the same twelve); Missouri is county-dependent and worded so. A publisher's list, not a statute
+// read per state — BLIND SPOT: a state that changes its law is not seen until this list is edited.
+export const NON_DISCLOSURE_STATES: Readonly<Record<string, "statewide" | "county_dependent">> = Object.freeze({
+  AK: "statewide", ID: "statewide", KS: "statewide", LA: "statewide", MS: "statewide", MO: "county_dependent",
+  MT: "statewide", NM: "statewide", ND: "statewide", TX: "statewide", UT: "statewide", WY: "statewide",
+})
+
+/** PURE. The caveat a CMA carries when its state does not put sale prices on the public record (null elsewhere). */
+export function nonDisclosureSaleCaveat(state: string | null | undefined): string | null {
+  const s = String(state ?? "").trim().toUpperCase()
+  const kind = NON_DISCLOSURE_STATES[s]
+  if (!kind) return null
+  return `${s} is a non-disclosure state${kind === "county_dependent" ? " in most counties" : ""}: sale prices are not on the public record there, so the comparable sale prices in this report come from MLS reporting or a data provider's estimate and may be incomplete or modelled — a cash or off-market sale may be missing. Each comparable's sale date is shown; sales close weeks before they are reported, so the most recent market may not be reflected yet.`
 }

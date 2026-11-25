@@ -61,7 +61,7 @@ const raw = (f: string): string => { const p = join(ROOT, f); return existsSync(
 
 // ── module hooks: "@/x" resolves under ROOT; provider / session seams are counted stubs ─────────────────────────────────────
 const G = globalThis as any
-G.__I = { socrata: [] as string[], arcgis: [] as string[], permitRows: [] as any[], proposals: [] as any[] }
+G.__I = { socrata: [] as string[], arcgis: [] as string[], permitRows: [] as any[], proposals: [] as any[], compCalls: [] as string[], compFixture: null as any, model: 0 }
 const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
 const OVERRIDE: Record<string, string> = {
   // The two permit portals — COUNTED; no portal is ever reached.
@@ -69,8 +69,14 @@ const OVERRIDE: Record<string, string> = {
   "lib/external/arcgis-permits.ts": "export async function recentArcgisPermits(a){ globalThis.__I.arcgis.push(a.serviceUrl); return { ok: true, status: 200, data: [], error: null } }",
   "lib/supabase/service.ts": "export function createServiceClient(){ throw new Error('fixture: the guard hands every door its client') }",
   "lib/supabase/server.ts": "export async function createClient(){ throw new Error('fixture: no session client') }",
+  // ROUND 2 §I — the model narrative (counted) and the state rate read (no table here: an empty, honestly-labelled rate set).
+  "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__I.model++; return { text: 'fixture narrative', usage: {} } }; export async function generateObjectRouted(){ globalThis.__I.model++; return { object: {}, usage: {} } }",
+  "lib/cma/state-adjustment-rates.ts": "export async function getStateAdjustmentRates(state, year){ return { state, requestedYear: year, rates: new Map(), vintagesUsed: [], newestVintage: null, oldestVintage: null, readFailed: false, vintageNote: 'fixture: no rate rows', stale: false } }",
 }
 const REPLACE: Record<string, string> = {
+  // ROUND 2 §I — the comp source door, COUNTED (production: lib/cma/comp-provider.ts sourceCompsForCma — RentCast under the 156G
+  // eligibility ceiling + single-flight). No provider is reached; the fixture's sold comps carry their sale dates.
+  "lib/cma/comp-provider.ts": "export const REQUIRED_SOLD_COMPS = 3; export async function sourceCompsForCma(req){ globalThis.__I.compCalls.push(req.address); return globalThis.__I.compFixture }",
   // The proposal rail — counted; it files the row on the client it is handed so the next run's dedup read can see it.
   "lib/agents/agent-client-messages.ts": "export async function proposeClientMessage(input, client){ globalThis.__I.proposals.push(input); const { data, error } = await client.from('agent_client_messages').insert({ brokerage_id: input.brokerageId, agent_kind: input.agentKind, entity_type: input.entityType, entity_id: input.entityId, audience: input.audience, subject: input.subject, body: input.body, rationale: input.rationale, status: 'proposed' }).select('id'); return error ? { ok: false, error: error.message } : { ok: true, id: (data ?? [])[0]?.id } }",
 }
@@ -335,9 +341,114 @@ async function sectionF() {
   check("F POSITIVE CONTROL: observed intent + engagement still rank first", ranked[0]?.contactId === "c-engaged" && ranked[0]?.result.score > 0, ranked.map((r: any) => [r.contactId, r.result.score]))
 }
 
+// ══ ROUND 2 ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+// §G a fraud bulletin reaches the pool only as a generic protective topic (lane 156J's request) — the intake's own floor.
+async function sectionG() {
+  section("§G a protective (fraud bulletin) topic can carry no identifying detail")
+  const ti = await load("lib/content-intel/topic-intake.ts")
+  const db = memSupabase({ content_topic_bank: [], content_topic_sources: [{ id: "src-1", brokerage_id: B1, is_active: true }] })
+  const base = { sourceKind: "fraud_safety_bulletin", observedAt: NOW.toISOString(), evidence: { kind: "unknown" }, rights: "own_content", sourceId: "src-1", angle: "Protective education: verify every payment or identity request through a channel you obtained independently." }
+  const bad = [
+    { ...base, title: "Wire fraud warning about Dale Hughes and his fake title company", dedupKey: "g:name" },
+    { ...base, title: "Fake listing scam at 1420 Willow Creek Drive this month", dedupKey: "g:addr" },
+    { ...base, title: "Do not send money to secure-closing-docs.com for your closing", dedupKey: "g:domain" },
+    { ...base, title: "Watch for wire requests naming routing number 021000021", dedupKey: "g:digits" },
+  ]
+  const good = { ...base, title: "How can a home buyer confirm wire instructions are real before sending a down payment?", dedupKey: "g:generic" }
+  const r = await ti.intakeTopicIdeas(db, { brokerageId: B1, ideas: [...bad, good], now: NOW })
+  const stored = (db.tables.content_topic_bank ?? []).map((x: any) => String(x.topic_title))
+  check("G a bulletin topic naming a person, an address, a domain or an account number is refused — none is stored",
+    bad.every((b) => !stored.includes(b.title)) && (r.excluded ?? []).filter((e: any) => e.reason === "personal_data_in_topic").length === bad.length, { stored, excluded: r.excluded })
+  check("G POSITIVE CONTROL: the generic protective question (lane 156J's catalog wording) is stored", stored.includes(good.title), stored)
+  const pd = ti.protectiveTopicIdentifyingDetail
+  check("G the screen applies only to protective kinds (a community topic with a city pair is not read as a name)", typeof pd === "function" && pd({ sourceKind: "community_post", title: "Moving from San Antonio to Round Rock?", angle: null }) === null)
+}
+
+// §H row 3 — local employer expansion → a locally grounded explainer; only an official, dated source produces anything.
+async function sectionH() {
+  section("§H row 3: employer announcement → cited evidence → brief / guide / draft magnet only on a dated official source; nobody named")
+  const mc = await load("lib/acquisition-plays/moving-corridor.ts")
+  const market = { id: "m-austin", brokerage_id: B1, name: "Austin", city: "Austin", state: "TX", zip_codes: ["78701"], agent_id: "agent-1" }
+  const ex = (city = "Austin") => ({ is_announcement: true, employer: "Acme Robotics", event_type: "expansion", location_city: city, location_state: "TX", headcount_announced: 800, start_date: "2027" })
+  const res = (id: string, url: string, published: string | null) => ({ id, url, title: "Acme Robotics expands in Austin", text: "Acme Robotics announced an expansion of its Austin campus with 800 new jobs.", author: "Staff Writer", publishedDate: published, highlights: null, extracted: ex(), publisher: null })
+  const run = async (results: any[]) => {
+    const calls = { ingest: [] as any[], signal: 0, report: 0, magnet: 0 }
+    const db = memSupabase({ manager_signals: [] })
+    const out = await mc.runMovingCorridorPlay(db, { market, hunt: null, results, now: NOW, activate: true }, {
+      ingest: async (p: any) => { calls.ingest.push(...p.records); return { inserted: p.records.length, replayed: 0, skipped_territory: 0, skipped_stale: 0, skipped_refused: 0 } },
+      twin: async () => null,
+      signal: async () => { calls.signal++; return { ok: true } },
+      report: async () => { calls.report++; return { ok: true, stage: "draft", documentId: "doc-1" } },
+      magnet: async () => { calls.magnet++; return { success: true, magnetId: "mag-1" } },
+    })
+    return { out, calls }
+  }
+  const news = await run([res("n1", "https://www.bizjournals.com/austin/news/2026/11/20/acme-expansion.html", daysAgo(3).toISOString())])
+  check("H a news-only announcement is filed as cited market evidence (job_civic_event)…", news.calls.ingest.length === 1 && news.calls.ingest.every((r: any) => r.envelope?.subjectKind === "job_civic_event"), news.calls.ingest.map((r: any) => r.envelope?.subjectKind))
+  check("H …but produces NO brief, guide or magnet, and the hold names why", news.calls.signal === 0 && news.calls.report === 0 && news.calls.magnet === 0 && (news.out.refused ?? []).some((x: any) => /no dated official source/.test(String(x.why))), { calls: news.calls.signal, refused: news.out.refused })
+  const undated = await run([res("u1", "https://www.austintexas.gov/news/acme-robotics-expansion", null)])
+  check("H an UNDATED official page produces nothing either", undated.calls.signal === 0 && undated.calls.report === 0, undated.calls)
+  const official = await run([res("o1", "https://www.austintexas.gov/news/acme-robotics-expansion", daysAgo(4).toISOString()), res("o2", "https://newsroom.acmerobotics.com/2026/austin", daysAgo(4).toISOString())])
+  check("H POSITIVE CONTROL: a dated municipal + company source → one brief, the local guide and a DRAFT magnet", official.calls.signal === 1 && official.calls.report === 1 && official.calls.magnet === 1, official.calls)
+  check("H nobody is named as a mover: no filed row carries an email, a phone or the article's author as a person", official.calls.ingest.every((r: any) => !r.email && !r.phone && r.envelope?.subjectKind === "job_civic_event"))
+  const p = mc.corridorSourceProblem
+  check("H corridorSourceProblem: the employer's own dated site passes; a look-up-only blog does not", typeof p === "function" && p({ employer: "Acme Robotics", citations: [{ url: "https://newsroom.acmerobotics.com/x", published: daysAgo(1).toISOString() }] }) === null && !!p({ employer: "Acme Robotics", citations: [{ url: "https://some-blog.example/acme", published: daysAgo(1).toISOString() }] }))
+}
+
+// §I row 4 — an owner-requested valuation: provider-sourced sold comps with their dates; the non-disclosure caveat where due.
+async function sectionI() {
+  section("§I row 4: valuation comps from the comp door (never a model), sold dates kept, non-disclosure caveat where sale prices are not public")
+  const cma = await load("lib/cma/ai-cma-orchestrator.ts")
+  const comp = (i: number, price: number, date: string) => ({ address: `${100 + i} Elm St`, status: "closed", salePrice: price, saleDate: date, sqftLiving: 1800, bedrooms: 3, fullBaths: 2, halfBaths: 0, yearBuilt: 2004, similarityScore: 0.9, distanceMiles: 0.4, sourceProvider: "rentcast", priceBasis: "closed_sale", citation: "RentCast comparable (fixture)", pricePerSqft: Math.round(price / 1800) })
+  G.__I.compFixture = {
+    closedComps: [comp(1, 410_000, daysAgo(40).toISOString().slice(0, 10)), comp(2, 425_000, daysAgo(70).toISOString().slice(0, 10)), comp(3, 398_000, daysAgo(95).toISOString().slice(0, 10))],
+    activeComps: [], pendingComps: [],
+    provenance: { soldProvider: "rentcast", activeProvider: "none", pendingProvider: "none", idxConnected: false, tenantOwnsIdx: false, rentcastQueried: true, soldWindowMonths: 6, pendingCompCount: 0, activeCompCount: 0, aiGapFillAttempted: false, aiGapFilledSlots: [], notes: [], citations: [], costCents: 0, avmBaseline: { kind: "provider_automated_estimate", provider: "rentcast", label: "fixture: no provider estimate", available: false, value: null, rangeLow: null, rangeHigh: null } },
+  }
+  const subject = (state: string) => ({ address: "100 Elm St", city: state === "TX" ? "Austin" : "Sacramento", state, zip: "78701", propertyType: "single_family", sqftLiving: 1800, bedrooms: 3, fullBaths: 2, halfBaths: null, yearBuilt: 2005, conditionGrade: 3 })
+  G.__I.compCalls.length = 0
+  const tx = await cma.runAiCma({ mode: "standard", brokerageId: B1, agentUserId: null, contactId: "c-1", subject: subject("TX") })
+  const ca = await cma.runAiCma({ mode: "standard", brokerageId: B1, agentUserId: null, contactId: "c-1", subject: subject("CA") })
+  check("I the comps come through the ONE comp door (counted stub), once per valuation — the model never sources a comp", G.__I.compCalls.length === 2, G.__I.compCalls)
+  check("I every adjusted comp keeps its sale date", (tx.adjustedComps ?? []).length === 3 && tx.adjustedComps.every((a: any) => /^\d{4}-\d{2}-\d{2}/.test(String(a.comp?.saleDate))), (tx.adjustedComps ?? []).map((a: any) => a.comp?.saleDate))
+  check("I the range is derived from those sold comps (not a model's number)", tx.estimatedValueMid > 0 && tx.estimatedValueLow <= tx.estimatedValueMid && tx.estimatedValueMid <= tx.estimatedValueHigh, [tx.estimatedValueLow, tx.estimatedValueMid, tx.estimatedValueHigh])
+  check("I TX (a non-disclosure state): the CMA says sale prices are not public and come from MLS / provider estimates", (tx.disclaimers ?? []).some((d: string) => /non-disclosure state/.test(d) && /sale date/.test(d)), tx.disclaimers)
+  check("I POSITIVE CONTROL: CA (a disclosure state) carries no such caveat", !(ca.disclaimers ?? []).some((d: string) => /non-disclosure state/.test(d)), ca.disclaimers)
+  const cav = cma.nonDisclosureSaleCaveat
+  check("I Missouri is worded county-dependent; an unknown state gets nothing", typeof cav === "function" && /most counties/.test(String(cav("MO"))) && cav("NY") === null && cav(null) === null)
+}
+
+// §J row 9 — a measured shortage against the buyer's own saved criteria → one agent task (never a buyer send).
+async function sectionJ() {
+  section("§J row 9: measured inventory shortage × the buyer's own saved search → one agent task; refusals are not zeros")
+  const inv = await load("lib/property-alerts/inventory-friction.ts")
+  const ts = await load("lib/kernel/tenant-scope.ts")
+  const runs = (n: number, extra: Record<string, unknown> = {}) => Array.from({ length: n }, (_, i) => ({ alert_id: "al-1", brokerage_id: B1, properties_checked: 42, properties_matched: 0, error_message: null, created_at: daysAgo(i * 2 + 1).toISOString(), ...extra }))
+  const seed = (log: any[], results: any[] = []) => ({
+    property_alerts: [{ id: "al-1", brokerage_id: B1, contact_id: "c-buyer", alert_name: "3 bed under 400k", cities: ["Austin"], zip_codes: ["78701"], min_price: null, max_price: 400_000, bedrooms_min: 3, bathrooms_min: 2, is_active: true, created_at: daysAgo(30).toISOString() }],
+    property_alert_delivery_log: log, property_alert_results: results, agent_action_ledger: [], tasks: [],
+    contacts: [{ id: "c-buyer", brokerage_id: B1, agent_id: "agent-1", first_name: "Sam", last_name: "Buyer" }],
+  })
+  const uniq = { unique: { agent_action_ledger: [["idempotency_key"]] } }
+  const db = memSupabase(seed(runs(5)), uniq)
+  const s1 = await inv.detectInventoryFriction(db, ts.tenantScope(B1, "wave156-i guard"), { now: NOW })
+  const task = (db.tables.tasks ?? [])[0]
+  check("J five answered runs with homes in the area and none fitting → ONE task for the buyer's assigned agent", s1.tasksOpened === 1 && task?.assigned_to_agent_id === "agent-1" && task?.brokerage_id === B1, { s1, task })
+  check("J the task carries the buyer's own criteria and the measured supply (the evidence and the next step)", /up to \$400,000/.test(String(task?.description)) && /3\+ bed/.test(String(task?.description)) && /ran 5 times/.test(String(task?.description)), task?.description)
+  const s2 = await inv.detectInventoryFriction(db, ts.tenantScope(B1, "wave156-i guard"), { now: NOW })
+  check("J the next sweep in the window opens nothing new (no duplicate)", s2.tasksOpened === 0 && (db.tables.tasks ?? []).length === 1, s2)
+  const refused = memSupabase(seed([...runs(4), { ...runs(1)[0], error_message: "provider refused (fixture)", created_at: daysAgo(0.5).toISOString() }]), uniq)
+  const s3 = await inv.detectInventoryFriction(refused, ts.tenantScope(B1, "wave156-i guard"), { now: NOW })
+  check("J a refused run is not a zero: no shortage is claimed, no task", s3.tasksOpened === 0 && (refused.tables.tasks ?? []).length === 0, s3)
+  const matched = memSupabase(seed(runs(5), [{ id: "r-1", alert_id: "al-1", brokerage_id: B1, created_at: daysAgo(20).toISOString() }]), uniq)
+  const s4 = await inv.detectInventoryFriction(matched, ts.tenantScope(B1, "wave156-i guard"), { now: NOW })
+  check("J an alert that has matched before is not a shortage", s4.tasksOpened === 0, s4)
+  check("J the play sends the buyer nothing (internal task only — no message table written)", !Object.keys(db.tables).some((t) => /messages|outbound|sends/.test(t) && (db.tables[t] ?? []).length > 0))
+}
+
 async function main() {
   console.log(`wave156-i-guard — grounded market intelligence (modules from ${ROOT === WT ? "this tree" : ROOT})`)
-  for (const s of [sectionA, sectionB, sectionC, sectionD, sectionE, sectionF]) {
+  for (const s of [sectionA, sectionB, sectionC, sectionD, sectionE, sectionF, sectionG, sectionH, sectionI, sectionJ]) {
     try { await s() } catch (e) { check(`${s.name} ran without throwing`, false, e instanceof Error ? `${e.message}\n${e.stack?.split("\n").slice(1, 4).join(" | ")}` : String(e)) }
   }
   console.log(`\n${passed} passed, ${failed} failed`)

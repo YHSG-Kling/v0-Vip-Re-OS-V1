@@ -261,6 +261,10 @@ export async function runMovingCorridorPlay(
   if (a.market.brokerage_id) {
     const brokerageId = a.market.brokerage_id
     for (const brief of briefs) {
+      // WAVE 156 (156I, directive row 3): a brief, a guide and a magnet stand only on a DATED official company or municipal
+      // source. A news-only or undated announcement stays cited evidence (the job_civic_event rows above) and is held, named.
+      const srcProblem = corridorSourceProblem(brief.announcement)
+      if (srcProblem) { refused.push({ what: `brief ${brief.announcement.key}`, why: srcProblem }); continue }
       const { data: open, error: openErr } = await svc.from("manager_signals").select("id")
         .eq("brokerage_id", brokerageId).eq("to_manager", "campaign_orchestrator").eq("signal_type", CORRIDOR_BRIEF_SIGNAL)
         .eq("entity_id", a.market.id).eq("status", "open").eq("payload->>announcement_key", brief.announcement.key).limit(1)
@@ -302,4 +306,32 @@ export async function runMovingCorridorPlay(
   }
 
   return { play: PLAY, status: "acted", evidence: read.evidence, actions, refused, blindSpots: blind, costUsd }
+}
+
+// ═══ WAVE 156 (lane 156I — directive 156I row 3: "official company / municipal source, timestamp") ══════════════════════════
+// MEASURED AT b261c474: any page Exa returned (a news story, a blog, an undated page — freshnessProblem runs with requireDate off)
+// could carry an employer announcement all the way to a brief, a market-report guide and a draft magnet. The directive asks for
+// an OFFICIAL company or municipal source with its date. Rule (PURE): at least one citation must be (a) dated and (b) either an
+// official record page (sourceRightsForUrl(...).officialRecord — .gov / court / statutory notice hosts) or the employer's OWN
+// site (its host carries the employer's first distinctive name token, e.g. "acme" in newsroom.acmerobotics.com). Otherwise the
+// announcement is held: its cited rows are still filed as market evidence, nothing is produced from it.
+// BLIND SPOT: the employer-host test is a name-token match on the host, not a verified domain registry; an employer whose site
+// does not carry its name (or a look-alike domain that does) is mis-read in that direction, never toward naming a person.
+
+const EMPLOYER_STOP = new Set(["the", "inc", "llc", "corp", "corporation", "company", "co", "group", "holdings", "and", "of"])
+
+/** PURE. Why an announcement may not produce a brief (null = it has a dated official company or municipal source). */
+export function corridorSourceProblem(a: { employer: string; citations: ReadonlyArray<{ url: string; published: string | null }> }): string | null {
+  const token = norm(a.employer).split(" ").find((t) => t.length >= 3 && !EMPLOYER_STOP.has(t)) ?? null
+  const dated = a.citations.filter((c) => !!c.published && Number.isFinite(Date.parse(c.published)))
+  if (dated.length === 0) return "no citation carries a publication date — an undated announcement is held as evidence, not briefed"
+  const hostOf = (u: string): string | null => { try { return new URL(u).hostname.toLowerCase().replace(/^www\./, "") } catch { return null } }
+  const official = dated.find((c) => {
+    if (sourceRightsForUrl(c.url).officialRecord) return true
+    const host = hostOf(c.url)
+    return !!token && !!host && host.split(".").some((label) => label.replace(/[^a-z0-9]/g, "").includes(token))
+  })
+  if (official) return null
+  const hosts = [...new Set(dated.map((c) => hostOf(c.url) ?? "an unreadable host"))].join(", ")
+  return `no dated official source — the announcement is reported only by ${hosts}; held as cited evidence until the employer or the municipality publishes it`
 }
