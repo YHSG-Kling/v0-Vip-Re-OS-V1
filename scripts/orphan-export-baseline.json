@@ -19,7 +19,9 @@
     "app/components/shared/ManagerChip.tsx": 2,
     "app/constants/auth.ts": 1,
     "app/dashboard/isa/components/speed-to-lead-panel.tsx": 1,
+    "lib/acquisition-plays/moving-corridor.ts": 1,
     "lib/acquisition-plays/public-request.ts": 2,
+    "lib/acquisition-plays/public-statement.ts": 1,
     "lib/ads/ad-creative-engine.ts": 2,
     "lib/ads/ad-lead-intake.ts": 2,
     "lib/ads/ad-manager.ts": 4,
@@ -100,8 +102,7 @@
     "lib/buyer-search/fair-housing.ts": 2,
     "lib/buyer-search/investor-facing.ts": 1,
     "lib/buyer-search/investor-offmarket-match.ts": 2,
-    "lib/calculators/artifact.ts": 4,
-    "lib/calculators/engine.ts": 4,
+    "lib/calculators/artifact.ts": 2,
     "lib/campaign-sequences/copy-learning-conductor.ts": 1,
     "lib/campaign-sequences/sequence-counters.ts": 2,
     "lib/campaign-sequences/touchpoint-bridge.ts": 2,
@@ -109,6 +110,7 @@
     "lib/charts/cma-reel-data.ts": 1,
     "lib/charts/explainer-diagram.ts": 2,
     "lib/charts/geometry.ts": 3,
+    "lib/cma/ai-cma-orchestrator.ts": 1,
     "lib/cma/customer-facing-guard.ts": 1,
     "lib/commission/cda-discrepancy.ts": 2,
     "lib/commission/ledger-sync.ts": 5,
@@ -129,6 +131,7 @@
     "lib/content-intel/local-intel.ts": 8,
     "lib/content-intel/public-chatter-topics.ts": 3,
     "lib/content-intel/search-demand.ts": 5,
+    "lib/content-intel/topic-intake.ts": 1,
     "lib/content-intel/topic-intelligence.ts": 1,
     "lib/crm/import-pull.ts": 3,
     "lib/crm/sync.ts": 1,
@@ -174,7 +177,7 @@
     "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 3,
     "lib/external/peopledata-client.ts": 4,
-    "lib/external/permit-signals.ts": 11,
+    "lib/external/permit-signals.ts": 13,
     "lib/external/review-extract.ts": 1,
     "lib/external/socrata-client.ts": 1,
     "lib/external/socrata-market-registry.ts": 1,
@@ -191,11 +194,9 @@
     "lib/finance/tax-planning.ts": 2,
     "lib/finance/team-pl-writer.ts": 1,
     "lib/financials/revenue-projection.ts": 2,
-    "lib/forms/form-directory-intake.ts": 4,
-    "lib/forms/form-document-reader.ts": 2,
-    "lib/forms/form-packet-bundles.ts": 1,
-    "lib/forms/provider-form-directory.ts": 5,
-    "lib/forms/tenant-form-packets.ts": 1,
+    "lib/forms/form-directory-intake.ts": 1,
+    "lib/forms/provider-form-directory.ts": 2,
+    "lib/fraud-network/network.ts": 3,
     "lib/gamification/lifecycle-awards.ts": 4,
     "lib/gamification/strain.ts": 2,
     "lib/gamification/work-anniversaries.ts": 2,
@@ -232,7 +233,7 @@
     "lib/intelligence/steer-my-day.ts": 1,
     "lib/intelligence/strategy-learning.ts": 2,
     "lib/intelligence/time-to-value-radar.ts": 1,
-    "lib/kernel/action-ledger.ts": 2,
+    "lib/kernel/action-ledger.ts": 3,
     "lib/kernel/agent-coaching.ts": 1,
     "lib/kernel/agent-onboarding.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 3,
@@ -257,8 +258,9 @@
     "lib/kernel/client-story-drafts.ts": 9,
     "lib/kernel/client-welcome.ts": 1,
     "lib/kernel/closing-war-room.ts": 2,
+    "lib/kernel/command-center.ts": 1,
     "lib/kernel/commission-forecaster.ts": 6,
-    "lib/kernel/compliance/representation-gate.ts": 8,
+    "lib/kernel/compliance/representation-gate.ts": 7,
     "lib/kernel/compliance-ledger.ts": 2,
     "lib/kernel/consent-recovery.ts": 2,
     "lib/kernel/consistency-guardian.ts": 2,
@@ -304,7 +306,7 @@
     "lib/kernel/manager-delegation.ts": 4,
     "lib/kernel/manager-dissent.ts": 2,
     "lib/kernel/manager-registry.ts": 1,
-    "lib/kernel/manager-signals.ts": 2,
+    "lib/kernel/manager-signals.ts": 3,
     "lib/kernel/marketing/public-copy-rewrite.ts": 1,
     "lib/kernel/media-intelligence.ts": 10,
     "lib/kernel/mission-context.ts": 2,
@@ -474,7 +476,7 @@
     "lib/platform/config-snapshots.ts": 2,
     "lib/platform/deal-room-demo.ts": 9,
     "lib/platform/demo-tenant.ts": 1,
-    "lib/platform/go-live-readiness.ts": 1,
+    "lib/platform/go-live-readiness.ts": 6,
     "lib/platform/impersonation.ts": 1,
     "lib/platform/manager-ops.ts": 3,
     "lib/platform/nps.ts": 1,
@@ -508,13 +510,14 @@
     "lib/portal/welcome-video.ts": 3,
     "lib/portal-stream/ai-delegation-reaction.ts": 2,
     "lib/property/rentcast-eligibility.ts": 4,
-    "lib/property/rentcast.ts": 1,
+    "lib/property/rentcast.ts": 2,
     "lib/property/street-view.ts": 1,
     "lib/providers/calendar/graph-event-shape.ts": 1,
     "lib/providers/calendar/personal-calendar.ts": 1,
     "lib/providers/dispatch.ts": 4,
     "lib/providers/messaging/sms-adapters.ts": 2,
     "lib/providers/outbound-sender.ts": 3,
+    "lib/providers/payment/index.ts": 1,
     "lib/providers/scrape-checkpoint.ts": 1,
     "lib/providers/web-push.ts": 1,
     "lib/recruit-pipeline/recruit-sourcer.ts": 1,
@@ -534,6 +537,7 @@
     "lib/recruiting/vendor-recruitment-scout.ts": 2,
     "lib/referrals/partner-agreement-watch.ts": 1,
     "lib/referrals/referral-reciprocity.ts": 1,
+    "lib/relocation/pcs-portal-door.ts": 1,
     "lib/remotion/chromium-executable.ts": 2,
     "lib/remotion/code-revision.ts": 3,
     "lib/remotion/composition-cache.ts": 1,
@@ -556,7 +560,7 @@
     "lib/transactions/cda-esign.ts": 1,
     "lib/transactions/cda-field-classifier.ts": 2,
     "lib/transactions/closing-orchestration.ts": 1,
-    "lib/transactions/closing-parties.ts": 3,
+    "lib/transactions/closing-parties.ts": 1,
     "lib/transactions/contingency-deadlines.ts": 2,
     "lib/transactions/deal-vendor-notify.ts": 1,
     "lib/transactions/final-compliance-check.ts": 1,
@@ -564,6 +568,7 @@
     "lib/usage.ts": 1,
     "lib/vendor/assignment-access.ts": 1,
     "lib/vendor-governance/acquisition-economics.ts": 1,
+    "lib/vendor-governance/paid-egress.ts": 1,
     "lib/vendors/appraiser-independence.ts": 2,
     "lib/vendors/rank.ts": 1,
     "lib/vendors/vendor-money-directions.ts": 1,
@@ -583,7 +588,6 @@
     "lib/video/duration-model.ts": 7,
     "lib/video/format-learning.ts": 6,
     "lib/video/listing-pitch-reel.ts": 1,
-    "lib/video/media-variant-contract.ts": 1,
     "lib/video/multilingual-reel.ts": 1,
     "lib/video/narration-window.ts": 1,
     "lib/video/plan-asset-readiness.ts": 7,
@@ -616,7 +620,7 @@
     "remotion/components/CinemaFinish.tsx": 1,
     "remotion/components/SegmentBackdrop.tsx": 1
   },
-  "census": 13179,
+  "census": 13280,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -818,7 +822,7 @@
     "app/actions/compliance/dashboard.ts": 2,
     "app/actions/compliance/document-access-audit.ts": 1,
     "app/actions/compliance/manage-required-docs.ts": 6,
-    "app/actions/compliance/representation-review.ts": 4,
+    "app/actions/compliance/representation-review.ts": 5,
     "app/actions/compliance/seed-required-docs.ts": 1,
     "app/actions/compliance/vocabulary.ts": 5,
     "app/actions/compliance-bridge-actions.ts": 3,
@@ -900,13 +904,14 @@
     "app/actions/financials.ts": 13,
     "app/actions/flight-recorder.ts": 6,
     "app/actions/forms-kernel.ts": 10,
+    "app/actions/fraud-network.ts": 28,
     "app/actions/gamification.ts": 8,
     "app/actions/generate-marketing-image.ts": 1,
     "app/actions/generate-page-insight.ts": 1,
     "app/actions/generated-documents.ts": 1,
     "app/actions/gift-studio.ts": 2,
     "app/actions/global-search.ts": 1,
-    "app/actions/governing-terms.ts": 2,
+    "app/actions/governing-terms.ts": 3,
     "app/actions/home-value-lead.ts": 1,
     "app/actions/home-value.ts": 10,
     "app/actions/idx-search.ts": 7,
@@ -1059,7 +1064,7 @@
     "app/actions/push-subscriptions.ts": 4,
     "app/actions/qr-management.ts": 5,
     "app/actions/quarterly-review.ts": 1,
-    "app/actions/recruiting-roi.ts": 8,
+    "app/actions/recruiting-roi.ts": 10,
     "app/actions/referrals/agent-referral-actions.ts": 2,
     "app/actions/referrals/referral-actions.ts": 7,
     "app/actions/referrals/referral-appreciation.ts": 3,
@@ -1975,7 +1980,7 @@
     "app/components/transactions/DealShakyToggle.tsx": 1,
     "app/components/transactions/VendorBookingSection.tsx": 1,
     "app/components/transactions/WalkthroughOutcomeButtons.tsx": 1,
-    "app/components/transactions/governing-terms-proposals-card.tsx": 1,
+    "app/components/transactions/governing-terms-proposals-card.tsx": 2,
     "app/components/transactions/pipeline-view.tsx": 1,
     "app/components/transactions/suggested-vendors.tsx": 1,
     "app/components/ui/address-autocomplete.tsx": 1,
@@ -2365,6 +2370,7 @@
     "app/dashboard/financials/reports/reports-client.tsx": 1,
     "app/dashboard/financials/team/team-revenue-chart.tsx": 1,
     "app/dashboard/forms/FormsLibraryClient.tsx": 1,
+    "app/dashboard/fraud-network/fraud-network-client.tsx": 1,
     "app/dashboard/gifts/gift-studio-client.tsx": 1,
     "app/dashboard/goals/goals-client.tsx": 1,
     "app/dashboard/help/help-client.tsx": 1,
@@ -2969,11 +2975,11 @@
     "lib/academy/quiz.ts": 11,
     "lib/acquisition-plays/contact-second-window.ts": 2,
     "lib/acquisition-plays/contract.ts": 4,
-    "lib/acquisition-plays/moving-corridor.ts": 2,
+    "lib/acquisition-plays/moving-corridor.ts": 3,
     "lib/acquisition-plays/negative-evidence.ts": 2,
     "lib/acquisition-plays/property-candidates.ts": 2,
     "lib/acquisition-plays/public-request.ts": 4,
-    "lib/acquisition-plays/public-statement.ts": 1,
+    "lib/acquisition-plays/public-statement.ts": 2,
     "lib/acquisition-plays/runner.ts": 1,
     "lib/activities/activity-tenant.ts": 3,
     "lib/admin/tool-call-metrics.ts": 1,
@@ -3205,7 +3211,7 @@
     "lib/auth/resolve-user-role.ts": 13,
     "lib/auth/role-grants.ts": 10,
     "lib/auth/useAuth.ts": 1,
-    "lib/avm/provider-chain.ts": 8,
+    "lib/avm/provider-chain.ts": 9,
     "lib/behavior-learning/prediction-engine.ts": 2,
     "lib/behavior-learning/preference-updater.ts": 2,
     "lib/behavior-learning/signal-mapping.ts": 7,
@@ -3241,7 +3247,7 @@
     "lib/brand-template-registry/template-classifier.ts": 5,
     "lib/branding/business-registration.ts": 14,
     "lib/branding/formality.ts": 1,
-    "lib/branding/platform-rights-notice.ts": 1,
+    "lib/branding/platform-rights-notice.ts": 2,
     "lib/branding/resolve-brand-context.ts": 1,
     "lib/brokerage/compliance-identity.ts": 1,
     "lib/brokerage/get-brokerage-settings.ts": 17,
@@ -3302,9 +3308,9 @@
     "lib/buyer-search/search-logger.ts": 4,
     "lib/buyer-search/voice-turn.ts": 2,
     "lib/buyer-search/written-criteria-alert.ts": 1,
-    "lib/calculators/artifact.ts": 15,
+    "lib/calculators/artifact.ts": 13,
     "lib/calculators/buyer-payment.ts": 2,
-    "lib/calculators/engine.ts": 5,
+    "lib/calculators/engine.ts": 4,
     "lib/calculators/rate-sources.ts": 2,
     "lib/campaign-readiness/content-type-vocabulary.ts": 2,
     "lib/campaign-readiness/readiness-evaluator.ts": 5,
@@ -3334,13 +3340,12 @@
     "lib/charts/explainer-diagram.ts": 5,
     "lib/charts/geometry.ts": 10,
     "lib/cma/ai-cma-engine.ts": 1,
-    "lib/cma/ai-cma-orchestrator.ts": 2,
+    "lib/cma/ai-cma-orchestrator.ts": 3,
     "lib/cma/ai-cma-report.ts": 1,
     "lib/cma/comp-adjustments.ts": 1,
     "lib/cma/comp-provider.ts": 1,
     "lib/cma/comp-supplement-cache.ts": 4,
     "lib/cma/customer-facing-guard.ts": 6,
-    "lib/cma/net-sheet-math.ts": 1,
     "lib/cma/perplexity-comp-finder.ts": 1,
     "lib/cma/seller-upgrades.ts": 1,
     "lib/cma/state-adjustment-rates.ts": 3,
@@ -3498,7 +3503,7 @@
     "lib/content-intel/search-demand.ts": 10,
     "lib/content-intel/system-topic-source.ts": 1,
     "lib/content-intel/topic-bank.ts": 2,
-    "lib/content-intel/topic-intake.ts": 8,
+    "lib/content-intel/topic-intake.ts": 9,
     "lib/content-intel/topic-intelligence.ts": 4,
     "lib/content-intel/topic-themes.ts": 10,
     "lib/credit/credit-event-handlers.ts": 1,
@@ -3625,7 +3630,7 @@
     "lib/errors/auto-retry.ts": 3,
     "lib/errors/collect-error.ts": 1,
     "lib/errors/error-classifier.ts": 4,
-    "lib/errors/index.ts": 10,
+    "lib/errors/index.ts": 12,
     "lib/esign/addendum-signature-request.ts": 13,
     "lib/esign/addendum-signature-rules.ts": 7,
     "lib/esign/dispatch-packet.ts": 2,
@@ -3664,7 +3669,7 @@
     "lib/external/osint-free.ts": 3,
     "lib/external/osint-neighborhood.ts": 4,
     "lib/external/peopledata-client.ts": 6,
-    "lib/external/permit-signals.ts": 15,
+    "lib/external/permit-signals.ts": 17,
     "lib/external/rentcast-ai-tools.ts": 1,
     "lib/external/rentcast-mcp.ts": 2,
     "lib/external/rentcast-typed.ts": 2,
@@ -3719,9 +3724,9 @@
     "lib/forms/esign-anchor-plan.ts": 1,
     "lib/forms/esign-anchors.ts": 2,
     "lib/forms/esign-execution-loop.ts": 4,
-    "lib/forms/form-directory-intake.ts": 9,
-    "lib/forms/form-document-reader.ts": 3,
-    "lib/forms/form-packet-bundles.ts": 8,
+    "lib/forms/form-directory-intake.ts": 6,
+    "lib/forms/form-document-reader.ts": 1,
+    "lib/forms/form-packet-bundles.ts": 7,
     "lib/forms/form-path-scope.ts": 1,
     "lib/forms/form-read-apply.ts": 2,
     "lib/forms/form-wizard-sequence.ts": 7,
@@ -3731,9 +3736,10 @@
     "lib/forms/pdf-form-fill.ts": 3,
     "lib/forms/platform-form-packets.ts": 7,
     "lib/forms/prefill-property-into-pdf.ts": 1,
-    "lib/forms/provider-form-directory.ts": 9,
+    "lib/forms/provider-form-directory.ts": 6,
     "lib/forms/state-package-match.ts": 1,
-    "lib/forms/tenant-form-packets.ts": 15,
+    "lib/forms/tenant-form-packets.ts": 14,
+    "lib/fraud-network/network.ts": 36,
     "lib/gamification/award-points.ts": 5,
     "lib/gamification/leaderboard-vocabulary.ts": 5,
     "lib/gamification/lifecycle-awards.ts": 7,
@@ -3855,7 +3861,8 @@
     "lib/intelligence/qbr-invitation.ts": 5,
     "lib/intelligence/quarterly-review-loader.ts": 1,
     "lib/intelligence/quarterly-review.ts": 1,
-    "lib/intelligence/reaper-net.ts": 5,
+    "lib/intelligence/reaper-net.ts": 3,
+    "lib/intelligence/reaper-runs-ledger.ts": 2,
     "lib/intelligence/relationship-health.ts": 4,
     "lib/intelligence/renovation-simulator.ts": 1,
     "lib/intelligence/retention-board.ts": 2,
@@ -3892,7 +3899,7 @@
     "lib/journey-conformance/conformance-checker.ts": 1,
     "lib/journey-conformance/conformance-runner.ts": 1,
     "lib/kernel/0.1-feature-access.ts": 5,
-    "lib/kernel/action-ledger.ts": 14,
+    "lib/kernel/action-ledger.ts": 17,
     "lib/kernel/actor-attribution.ts": 2,
     "lib/kernel/actor-context.ts": 1,
     "lib/kernel/adapters/brand-voice.ts": 2,
@@ -3944,24 +3951,24 @@
     "lib/kernel/capability-radar.ts": 1,
     "lib/kernel/capacity-guardian-runner.ts": 1,
     "lib/kernel/capacity-guardian.ts": 8,
-    "lib/kernel/causation.ts": 2,
+    "lib/kernel/causation.ts": 4,
     "lib/kernel/child-safe-delete.ts": 2,
     "lib/kernel/client-framing.ts": 2,
     "lib/kernel/client-pulse.ts": 3,
     "lib/kernel/client-story-drafts.ts": 11,
     "lib/kernel/client-welcome.ts": 4,
     "lib/kernel/closing-war-room.ts": 8,
-    "lib/kernel/command-center.ts": 4,
+    "lib/kernel/command-center.ts": 5,
     "lib/kernel/commission-forecaster.ts": 11,
     "lib/kernel/communication-compliance.ts": 1,
     "lib/kernel/communications/assemble-email.ts": 1,
     "lib/kernel/communications.ts": 3,
     "lib/kernel/completion-tracking.ts": 9,
-    "lib/kernel/compliance/active-representation.ts": 1,
+    "lib/kernel/compliance/active-representation.ts": 2,
     "lib/kernel/compliance/check-suppression.ts": 2,
     "lib/kernel/compliance/consent-component.ts": 5,
     "lib/kernel/compliance/outbound-predicates.ts": 4,
-    "lib/kernel/compliance/representation-gate.ts": 17,
+    "lib/kernel/compliance/representation-gate.ts": 18,
     "lib/kernel/compliance/require-contact-consent.ts": 8,
     "lib/kernel/compliance-ledger.ts": 5,
     "lib/kernel/compliance-redraft.ts": 1,
@@ -4052,7 +4059,7 @@
     "lib/kernel/manager-delegation.ts": 18,
     "lib/kernel/manager-dissent.ts": 6,
     "lib/kernel/manager-registry.ts": 7,
-    "lib/kernel/manager-signals.ts": 8,
+    "lib/kernel/manager-signals.ts": 9,
     "lib/kernel/managing-broker.ts": 3,
     "lib/kernel/marketing/public-copy-rewrite.ts": 4,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 2,
@@ -4115,7 +4122,7 @@
     "lib/kernel/reporting.ts": 11,
     "lib/kernel/reputation.ts": 5,
     "lib/kernel/resolve-event-contacts.ts": 1,
-    "lib/kernel/resolve-user-office.ts": 4,
+    "lib/kernel/resolve-user-office.ts": 6,
     "lib/kernel/resolve-user-team.ts": 4,
     "lib/kernel/resource-allocation.ts": 16,
     "lib/kernel/returning-customer.ts": 8,
@@ -4506,7 +4513,7 @@
     "lib/offers/regional-closing-costs.ts": 8,
     "lib/offers/seller-closing-costs.ts": 4,
     "lib/onboarding/certificate-pdf.ts": 1,
-    "lib/onboarding/certification-engine.ts": 4,
+    "lib/onboarding/certification-engine.ts": 5,
     "lib/onboarding/checkin-cadence.ts": 3,
     "lib/onboarding/critical-setup.ts": 4,
     "lib/onboarding/integration-tester.ts": 1,
@@ -4550,7 +4557,7 @@
     "lib/platform/distribution-engine.ts": 3,
     "lib/platform/engagement-risk.ts": 2,
     "lib/platform/expansion-advisor.ts": 1,
-    "lib/platform/go-live-readiness.ts": 2,
+    "lib/platform/go-live-readiness.ts": 7,
     "lib/platform/growth-funnel.ts": 7,
     "lib/platform/impersonation.ts": 5,
     "lib/platform/launch-checklist.ts": 1,
@@ -4672,7 +4679,7 @@
     "lib/providers/calendar/index.ts": 4,
     "lib/providers/calendar/personal-calendar.ts": 7,
     "lib/providers/content-safety.ts": 1,
-    "lib/providers/dispatch.ts": 11,
+    "lib/providers/dispatch.ts": 14,
     "lib/providers/dormant-adapters.ts": 1,
     "lib/providers/elevenlabs/client.ts": 3,
     "lib/providers/email/personal-email-adapter.ts": 3,
@@ -4691,7 +4698,7 @@
     "lib/providers/meta/client.ts": 2,
     "lib/providers/openai-ads.ts": 4,
     "lib/providers/outbound-sender.ts": 7,
-    "lib/providers/payment/index.ts": 7,
+    "lib/providers/payment/index.ts": 9,
     "lib/providers/peopledata/client.ts": 1,
     "lib/providers/provider-capability-matrix.ts": 2,
     "lib/providers/provider-pilot.ts": 2,
@@ -4709,7 +4716,7 @@
     "lib/providers/webhook-contract.ts": 2,
     "lib/providers/zenrows/client.ts": 1,
     "lib/quality-checker.ts": 1,
-    "lib/recruit-pipeline/recruit-processor.ts": 1,
+    "lib/recruit-pipeline/recruit-processor.ts": 2,
     "lib/recruit-pipeline/recruit-sourcer.ts": 2,
     "lib/recruiting/benefit-offerings.ts": 3,
     "lib/recruiting/career-tier.ts": 7,
@@ -4721,12 +4728,12 @@
     "lib/recruiting/mentor-match.ts": 3,
     "lib/recruiting/mentorship-lifecycle.ts": 5,
     "lib/recruiting/recruiting-pitch-kit.ts": 5,
-    "lib/recruiting/recruiting-roi-compute.ts": 2,
+    "lib/recruiting/recruiting-roi-compute.ts": 5,
     "lib/recruiting/recruiting-roi-writer.ts": 2,
     "lib/recruiting/retention-intervention.ts": 5,
     "lib/recruiting/retention-radar.ts": 5,
     "lib/recruiting/retention-score.ts": 6,
-    "lib/recruiting/stale-recruit-policy.ts": 3,
+    "lib/recruiting/stale-recruit-policy.ts": 4,
     "lib/recruiting/stale-recruit-reaper.ts": 1,
     "lib/recruiting/switch-propensity-scout.ts": 4,
     "lib/recruiting/switch-propensity.ts": 2,
@@ -4740,7 +4747,7 @@
     "lib/referrals/referral-record.ts": 1,
     "lib/referrals/referral-status.ts": 4,
     "lib/relocation/pcs-planner.ts": 1,
-    "lib/relocation/pcs-portal-door.ts": 1,
+    "lib/relocation/pcs-portal-door.ts": 2,
     "lib/remotion/bundle-cache.ts": 1,
     "lib/remotion/chromium-executable.ts": 4,
     "lib/remotion/code-revision.ts": 4,
@@ -4750,10 +4757,10 @@
     "lib/remotion/media-host.ts": 2,
     "lib/remotion/music-filter-graph.ts": 9,
     "lib/remotion/music-mixer.ts": 2,
-    "lib/remotion/registry.ts": 9,
+    "lib/remotion/registry.ts": 11,
     "lib/remotion/render-cache.ts": 6,
     "lib/remotion/render-coordinator.ts": 1,
-    "lib/remotion/render-decision.ts": 13,
+    "lib/remotion/render-decision.ts": 14,
     "lib/remotion/render-escalation.ts": 2,
     "lib/remotion/render-failure-census.ts": 3,
     "lib/remotion/stock-pick.ts": 1,
@@ -4868,7 +4875,7 @@
     "lib/transactions/auto-execute-offer.ts": 1,
     "lib/transactions/buyer-move.ts": 8,
     "lib/transactions/buyer-representation.ts": 1,
-    "lib/transactions/cda-closing-policy.ts": 22,
+    "lib/transactions/cda-closing-policy.ts": 23,
     "lib/transactions/cda-delivery-policy.ts": 1,
     "lib/transactions/cda-delivery-reaper.ts": 2,
     "lib/transactions/cda-esign.ts": 2,
@@ -4883,7 +4890,7 @@
     "lib/transactions/closing-orchestration.ts": 3,
     "lib/transactions/closing-overdue-policy.ts": 2,
     "lib/transactions/closing-overdue-reaper.ts": 1,
-    "lib/transactions/closing-parties.ts": 14,
+    "lib/transactions/closing-parties.ts": 12,
     "lib/transactions/compliance-checks-seeder.ts": 1,
     "lib/transactions/contingency-deadlines.ts": 3,
     "lib/transactions/contract-governance.ts": 2,
@@ -4931,11 +4938,12 @@
     "lib/vendor/assignment-access.ts": 2,
     "lib/vendor-governance/acquisition-economics.ts": 3,
     "lib/vendor-governance/attribution.ts": 2,
-    "lib/vendor-governance/budget-eval.ts": 7,
+    "lib/vendor-governance/budget-eval.ts": 8,
     "lib/vendor-governance/budget-gate.ts": 4,
     "lib/vendor-governance/budget-visibility.ts": 2,
     "lib/vendor-governance/cost-normalizer.ts": 7,
     "lib/vendor-governance/meter-vendor.ts": 2,
+    "lib/vendor-governance/paid-egress.ts": 4,
     "lib/vendor-governance/platform-acquisition-caps.ts": 7,
     "lib/vendor-governance/track-vendor-usage.ts": 1,
     "lib/vendor-governance/usage-logger.ts": 1,
@@ -6483,7 +6491,8 @@
       "listRepresentationReviewQueueAction",
       "getRepresentationReviewAction",
       "recordRepresentationReview",
-      "attestRepresentationTerms"
+      "attestRepresentationTerms",
+      "packetReviewSectionAdmissionAction"
     ],
     "app/actions/compliance/seed-required-docs.ts": [
       "seedRequiredDocsForBrokerage"
@@ -7011,6 +7020,36 @@
       "getFormFieldsAction",
       "loadBuyerPropertiesAction"
     ],
+    "app/actions/fraud-network.ts": [
+      "getFraudNetworkViewer",
+      "submitFraudIncident",
+      "listMyFraudCases",
+      "getFraudCase",
+      "requestFraudEvidenceView",
+      "uploadFraudEvidenceFile",
+      "withdrawFraudCase",
+      "appealFraudCaseDecision",
+      "listFraudBulletins",
+      "openFraudBulletin",
+      "setFraudWarningSubscription",
+      "listMyFraudWarningSubscriptions",
+      "requestFraudBulletinCorrection",
+      "addFraudBulletinToTopicPool",
+      "getFraudNetworkMetrics",
+      "listFraudModerationQueue",
+      "addFraudCaseModerationNote",
+      "draftFraudBulletinFromCase",
+      "linkFraudCaseToBulletin",
+      "updateFraudBulletinDraft",
+      "publishFraudBulletin",
+      "getFraudBulletinHistory",
+      "listMyFraudBulletinReads",
+      "clearFraudNameReview",
+      "correctFraudBulletin",
+      "takeDownFraudBulletin",
+      "recordFraudSubjectCorrection",
+      "resolveFraudCorrectionRequest"
+    ],
     "app/actions/gamification.ts": [
       "getAgentBadges",
       "getAgentPointsAndTier",
@@ -7039,7 +7078,8 @@
     ],
     "app/actions/governing-terms.ts": [
       "loadProposedGoverningTermsAction",
-      "confirmGoverningTermsAction"
+      "confirmGoverningTermsAction",
+      "loadDealPacketReviewStatusAction"
     ],
     "app/actions/home-value-lead.ts": [
       "captureHomeValueLead"
@@ -8070,7 +8110,9 @@
       "getBreakEvenAnalysis",
       "listRecruitableAgents",
       "getRecruitingAnalyticsByYear",
-      "addRecruitingCost"
+      "addRecruitingCost",
+      "getRecruitingAccess",
+      "getRecruitingFunnel"
     ],
     "app/actions/referrals/agent-referral-actions.ts": [
       "getReferralNetwork",
@@ -11592,7 +11634,8 @@
       "WalkthroughOutcomeButtons"
     ],
     "app/components/transactions/governing-terms-proposals-card.tsx": [
-      "GoverningTermsProposalsCard"
+      "GoverningTermsProposalsCard",
+      "DealPacketReviewStatusLine"
     ],
     "app/components/transactions/pipeline-view.tsx": [
       "TransactionPipelineView"
@@ -12767,6 +12810,9 @@
     ],
     "app/dashboard/forms/FormsLibraryClient.tsx": [
       "FormsLibraryClient"
+    ],
+    "app/dashboard/fraud-network/fraud-network-client.tsx": [
+      "FraudNetworkClient"
     ],
     "app/dashboard/gifts/gift-studio-client.tsx": [
       "GiftStudioClient"
@@ -14673,7 +14719,8 @@
     ],
     "lib/acquisition-plays/moving-corridor.ts": [
       "corridorSearches",
-      "runMovingCorridorPlay"
+      "runMovingCorridorPlay",
+      "corridorSourceProblem"
     ],
     "lib/acquisition-plays/negative-evidence.ts": [
       "assessNegativeEvidence",
@@ -14690,7 +14737,8 @@
       "runPublicRequestPlay"
     ],
     "lib/acquisition-plays/public-statement.ts": [
-      "readPublicStatement"
+      "readPublicStatement",
+      "authorStatesMinor"
     ],
     "lib/acquisition-plays/runner.ts": [
       "runEarlyOpportunityPlays"
@@ -16078,7 +16126,8 @@
       "getPropertyRecordWithFallback",
       "getAreaSoldRecords",
       "computeEquityRatio",
-      "parseLengthOfResidence"
+      "parseLengthOfResidence",
+      "requestPropertyComparables"
     ],
     "lib/behavior-learning/prediction-engine.ts": [
       "generateBuyerPredictions",
@@ -16313,7 +16362,8 @@
       "normalizeFormalityLevel"
     ],
     "lib/branding/platform-rights-notice.ts": [
-      "platformRightsNotice"
+      "platformRightsNotice",
+      "servedTermsDocument"
     ],
     "lib/branding/resolve-brand-context.ts": [
       "resolveBrandContext"
@@ -16710,9 +16760,7 @@
     "lib/calculators/artifact.ts": [
       "normalizeCalculatorArtifactConfig",
       "calculatorArtifactOf",
-      "planCalculatorFollowOn",
       "createCalculatorArtifact",
-      "loadPublicCalculatorArtifact",
       "recordCalculatorOpen",
       "computeCalculatorArtifact",
       "optInCalculatorResult",
@@ -16729,11 +16777,10 @@
       "calculatorNeeds"
     ],
     "lib/calculators/engine.ts": [
-      "validateCalculatorInputs",
-      "monthlyPrincipalInterest",
-      "balanceAfter",
       "runCalculator",
-      "calculatorSpec"
+      "calculatorSpec",
+      "scenarioPrice",
+      "sellerNetScenario"
     ],
     "lib/calculators/rate-sources.ts": [
       "citedSourceFor",
@@ -16881,7 +16928,8 @@
     ],
     "lib/cma/ai-cma-orchestrator.ts": [
       "runAiCma",
-      "describeCompProvenance"
+      "describeCompProvenance",
+      "nonDisclosureSaleCaveat"
     ],
     "lib/cma/ai-cma-report.ts": [
       "generateCmaReport"
@@ -16905,9 +16953,6 @@
       "redactPriceAmounts",
       "filterPricingSlides",
       "buildSellerSafeCma"
-    ],
-    "lib/cma/net-sheet-math.ts": [
-      "computeNetSheetScenario"
     ],
     "lib/cma/perplexity-comp-finder.ts": [
       "findCompsViaPerplexity"
@@ -17769,7 +17814,8 @@
       "personalDataProblem",
       "refurbishTriggerKindForTopicSource",
       "intakeTopicIdeas",
-      "reevaluateRemovedTopicSource"
+      "reevaluateRemovedTopicSource",
+      "protectiveTopicIdentifyingDetail"
     ],
     "lib/content-intel/topic-intelligence.ts": [
       "runTopicIntelligencePass",
@@ -18431,7 +18477,9 @@
       "presentTenantMessage",
       "presentTenantError",
       "presentTenantConnection",
-      "tenantProviderAttestation"
+      "tenantProviderAttestation",
+      "tenantPayerWords",
+      "capitalizeWords"
     ],
     "lib/esign/addendum-signature-request.ts": [
       "reviewAddendumSignatures",
@@ -18720,7 +18768,9 @@
       "signalTypeForKind",
       "buildPermitSignalRow",
       "permitDedupeKey",
-      "ingestPermitSignals"
+      "ingestPermitSignals",
+      "permitSupersededReason",
+      "permitDatasetRightsProblem"
     ],
     "lib/external/rentcast-ai-tools.ts": [
       "rentCastMcpTools"
@@ -19015,21 +19065,15 @@
     "lib/forms/form-directory-intake.ts": [
       "sourceKindForAdd",
       "addModesOffered",
-      "validateFormProvenance",
-      "statePackageFormNames",
       "addFormToLibrary",
       "reviseLibraryForm",
       "libraryFormStatus",
-      "formLicenseStanding",
       "stageLibraryFormOnDeal"
     ],
     "lib/forms/form-document-reader.ts": [
-      "signerBoxesFrom",
-      "verifyDocumentReadProposals",
       "readFormDocument"
     ],
     "lib/forms/form-packet-bundles.ts": [
-      "bundleAppliesTo",
       "createPacketBundle",
       "addBundleItem",
       "removeBundleItem",
@@ -19087,9 +19131,6 @@
       "providerRefusal",
       "classifyResolveFailure",
       "classifyProviderCallFailure",
-      "directoryCategory",
-      "providerFormSelectable",
-      "providerFormMatches",
       "walkProviderLibrary",
       "findProviderFormById",
       "mergeFormDirectory"
@@ -19106,13 +19147,50 @@
       "usableTenantPacketPaths",
       "issueTenantPacketUrl",
       "listLibraryForActor",
-      "packetOwnerKind",
       "packetChecksum",
       "registerTenantFormPacket",
       "updateTenantFormPacket",
       "retireTenantFormPacket",
       "registerCopiedPacket",
       "listDirectoryRowsForActor"
+    ],
+    "lib/fraud-network/network.ts": [
+      "independentCorroboration",
+      "submitIncidentCase",
+      "listCases",
+      "readCase",
+      "evidenceFileView",
+      "withdrawCase",
+      "appealCase",
+      "moderationQueue",
+      "addModerationNote",
+      "draftBulletinFromCase",
+      "linkCaseToBulletin",
+      "updateBulletinDraft",
+      "publishBulletin",
+      "correctBulletin",
+      "takeDownBulletin",
+      "tenantCorrectionRequest",
+      "recordSubjectCorrection",
+      "resolveCorrection",
+      "listBulletins",
+      "openBulletin",
+      "setSubscription",
+      "listSubscriptions",
+      "addBulletinToTopicPool",
+      "proposeWireVerificationTasks",
+      "fraudNetworkMetrics",
+      "purgeExpiredFraudCases",
+      "tenantMayParticipate",
+      "sealDepartedTenants",
+      "nameReviewSpans",
+      "clearNameReview",
+      "stripImageMetadata",
+      "uploadEvidenceFile",
+      "bulletinHistory",
+      "myBulletinReads",
+      "isParticipant",
+      "isCaseReviewer"
     ],
     "lib/gamification/award-points.ts": [
       "awardAgentPoints",
@@ -19659,10 +19737,12 @@
       "composeQuarterlyReview"
     ],
     "lib/intelligence/reaper-net.ts": [
-      "recordReaperRun",
       "runReaperNet",
       "managersUnderReaperCoverage",
-      "reaperCoverage",
+      "reaperCoverage"
+    ],
+    "lib/intelligence/reaper-runs-ledger.ts": [
+      "recordReaperRun",
       "loadRecentReaperActivity"
     ],
     "lib/intelligence/relationship-health.ts": [
@@ -19863,7 +19943,10 @@
       "ledgerToolExecutions",
       "governanceRecord",
       "governanceArbitration",
-      "assembleCausalChain"
+      "assembleCausalChain",
+      "sinkClassOf",
+      "decisionRefFromRow",
+      "doorTrust"
     ],
     "lib/kernel/actor-attribution.ts": [
       "resolveActorNames",
@@ -20207,7 +20290,9 @@
     ],
     "lib/kernel/causation.ts": [
       "currentCausation",
-      "withCausationFrom"
+      "withCausationFrom",
+      "withOriginTrust",
+      "enterOriginTrust"
     ],
     "lib/kernel/child-safe-delete.ts": [
       "deleteParentWithChildren",
@@ -20255,7 +20340,8 @@
       "extractProposalCopy",
       "buildAndPersistBrokerageTwin",
       "loadCommandCenter",
-      "loadManagerSessionDetail"
+      "loadManagerSessionDetail",
+      "loadHeldSendActions"
     ],
     "lib/kernel/commission-forecaster.ts": [
       "stageWinProbability",
@@ -20293,7 +20379,8 @@
       "notifyFailedSend"
     ],
     "lib/kernel/compliance/active-representation.ts": [
-      "hasActiveRepresentation"
+      "hasActiveRepresentation",
+      "representationConsentCovers"
     ],
     "lib/kernel/compliance/check-suppression.ts": [
       "checkSuppression",
@@ -20316,20 +20403,21 @@
       "normalizeAddress",
       "toNumber",
       "toDay",
-      "evidenceHashOf",
-      "applyAttestations",
-      "setFormLicenseCheck",
       "formLicenseFinding",
+      "setFormLicenseCheck",
+      "formStandingFinding",
       "decideListingRepresentation",
       "decideOfferRepresentation",
       "mayReviewRepresentation",
       "readRepresentationApproval",
-      "reviewerHoldsAuthority",
       "resolveAssignedCoordinators",
       "loadAndDecideListingRepresentation",
       "loadAndDecideOfferRepresentation",
       "recordRepresentationDecision",
-      "decisionBlockerLines"
+      "decisionBlockerLines",
+      "attachFormStandings",
+      "isSoloTierPrincipal",
+      "formLicenseStanding"
     ],
     "lib/kernel/compliance/require-contact-consent.ts": [
       "canonicalConsentPurposes",
@@ -20976,7 +21064,8 @@
       "nudgeSaversOfListing",
       "answerConsentedIntake",
       "consumeManagerSignals",
-      "loadRecentManagerTalk"
+      "loadRecentManagerTalk",
+      "proposeCorridorExplainerToStatedMovers"
     ],
     "lib/kernel/managing-broker.ts": [
       "readManagingBrokerRoster",
@@ -21455,7 +21544,9 @@
       "pickUserOffice",
       "resolveUserOffice",
       "resolveViewerHierarchy",
-      "loadOfficeDirectory"
+      "loadOfficeDirectory",
+      "resolveSeatPayer",
+      "resolveSessionSeatWords"
     ],
     "lib/kernel/resolve-user-team.ts": [
       "resolveLedTeamId",
@@ -23795,7 +23886,8 @@
       "checkCertificationEligibility",
       "awardCertification",
       "completeOnboarding",
-      "getCertificationStatus"
+      "getCertificationStatus",
+      "creditWatchProgress"
     ],
     "lib/onboarding/checkin-cadence.ts": [
       "checkInWindow",
@@ -24070,7 +24162,12 @@
     ],
     "lib/platform/go-live-readiness.ts": [
       "rollupReadiness",
-      "runGoLiveReadiness"
+      "runGoLiveReadiness",
+      "releaseStateVerdict",
+      "releaseStateVerdicts",
+      "parseReleaseStateTable",
+      "releaseClaimAllowed",
+      "configurationNote"
     ],
     "lib/platform/growth-funnel.ts": [
       "validateProspectInput",
@@ -24790,7 +24887,10 @@
       "dispatchSms",
       "dispatchDirectMail",
       "dispatchVideo",
-      "dispatchWebSearch"
+      "dispatchWebSearch",
+      "approveHeldSend",
+      "releaseApprovedSend",
+      "declineHeldSend"
     ],
     "lib/providers/dormant-adapters.ts": [
       "mapDormantProviderResponse"
@@ -24898,7 +24998,9 @@
       "retrieveCheckoutSession",
       "createConnectedAccount",
       "createAccountLink",
-      "getStripeBalance"
+      "getStripeBalance",
+      "transferFailureOutcome",
+      "findTransferForPayout"
     ],
     "lib/providers/peopledata/client.ts": [
       "enrichPerson"
@@ -25000,7 +25102,8 @@
       "analyzeContentQuality"
     ],
     "lib/recruit-pipeline/recruit-processor.ts": [
-      "processRawRecruit"
+      "processRawRecruit",
+      "readRecruitIntake"
     ],
     "lib/recruit-pipeline/recruit-sourcer.ts": [
       "targetingSearchTerms",
@@ -25064,7 +25167,10 @@
     ],
     "lib/recruiting/recruiting-roi-compute.ts": [
       "computeRecruitingRoi",
-      "brokerageNetFromSplit"
+      "brokerageNetFromSplit",
+      "computeRecruitingFunnel",
+      "settleRecruitingFigure",
+      "recruitingFigureWords"
     ],
     "lib/recruiting/recruiting-roi-writer.ts": [
       "upsertRecruitingRoi",
@@ -25095,7 +25201,8 @@
     "lib/recruiting/stale-recruit-policy.ts": [
       "slaDaysForStage",
       "recruitStageChange",
-      "classifyStaleRecruit"
+      "classifyStaleRecruit",
+      "recruitIntakeVerdict"
     ],
     "lib/recruiting/stale-recruit-reaper.ts": [
       "reapStaleRecruits"
@@ -25155,7 +25262,8 @@
       "planRelocation"
     ],
     "lib/relocation/pcs-portal-door.ts": [
-      "planPcsMoveForPortalContact"
+      "planPcsMoveForPortalContact",
+      "statedDestinationColumns"
     ],
     "lib/remotion/bundle-cache.ts": [
       "getBundle"
@@ -25226,7 +25334,9 @@
       "recordRenderQueued",
       "recordRenderCompleted",
       "recoverStalledRenders",
-      "requeueFailedRenders"
+      "requeueFailedRenders",
+      "pickNextQueuedRender",
+      "claimQueuedRender"
     ],
     "lib/remotion/render-cache.ts": [
       "predictFinishInputs",
@@ -25252,7 +25362,8 @@
       "resolveThumbnailProps",
       "shouldAutoRequeueFailedRender",
       "isStalledRender",
-      "stalledRenderError"
+      "stalledRenderError",
+      "chooseFairRender"
     ],
     "lib/remotion/render-escalation.ts": [
       "presentRenderFailure",
@@ -25839,7 +25950,8 @@
       "deliveryIdempotency",
       "noCdaClosingProof",
       "reconcileSettlement",
-      "settlementReconciliationForViewer"
+      "settlementReconciliationForViewer",
+      "commissionPayoutTimingLabel"
     ],
     "lib/transactions/cda-delivery-policy.ts": [
       "classifyUndeliveredCda"
@@ -25921,7 +26033,6 @@
     "lib/transactions/closing-parties.ts": [
       "vendorCategoryFitsRole",
       "decideClosingPartyDraft",
-      "representationOf",
       "assessClosingTeam",
       "dealTeamChecklist",
       "insuranceItem",
@@ -25929,7 +26040,6 @@
       "closingDisclosureConsequence",
       "isAttorneyRole",
       "isClosingPartyRole",
-      "isPartyRepresents",
       "isSettlementAgentKind",
       "isSettlementAgentBasis",
       "isClosingCheckStatus"
@@ -26154,7 +26264,8 @@
       "vendorBudgetForTier",
       "aggregateBrokerageSpend",
       "aggregateVendorBreakdown",
-      "splitPullCost"
+      "splitPullCost",
+      "paidDoorRefusalMessage"
     ],
     "lib/vendor-governance/budget-gate.ts": [
       "checkVendorBudget",
@@ -26178,6 +26289,12 @@
     "lib/vendor-governance/meter-vendor.ts": [
       "meterVendorSpend",
       "estimatePlatformVendorCost"
+    ],
+    "lib/vendor-governance/paid-egress.ts": [
+      "paidEgressCost",
+      "runPaidEgress",
+      "storeReplayCopy",
+      "loadReplayCopy"
     ],
     "lib/vendor-governance/platform-acquisition-caps.ts": [
       "decidePlatformAcquisitionSpend",
@@ -27480,5 +27597,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 1
+  "trulyDead": 0
 }
