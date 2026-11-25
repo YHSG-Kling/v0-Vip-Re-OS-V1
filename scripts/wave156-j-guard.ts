@@ -97,7 +97,19 @@ function world(): MemClient {
 // ═══ seams (installed BEFORE any app module loads) ═══════════════════════════════════════════════════════════════════
 const G = globalThis as any
 G.__J = { mem: world(), seat: null as string | null, model: 0 }
-const sess = () => Object.assign(G.__J.mem, { auth: { getUser: async () => ({ data: { user: G.__J.seat ? { id: G.__J.seat, user_metadata: {} } : null }, error: null }) } })
+const baseSess = () => Object.assign(G.__J.mem, { auth: { getUser: async () => ({ data: { user: G.__J.seat ? { id: G.__J.seat, user_metadata: {} } : null }, error: null }) } })
+/** §M FAULT SEAM: G.__J.fault = { table, op } makes exactly that write RESOLVE with a refusal (supabase-js never throws —
+ *  CLAUDE.md §3); every other table and operation behaves normally. */
+const refusedChain = (): any => { const refusal = { data: null, error: { message: "permission denied (fixture fault)", code: "42501" } }; const c: any = new Proxy(function () {}, { get: (_t, k) => (k === "then" ? (res: any) => res(refusal) : () => c), apply: () => c }); return c }
+const sess = () => {
+  const c = baseSess(), f = G.__J.fault as { table: string; op: string } | null | undefined
+  if (!f) return c
+  return new Proxy(c, { get: (t: any, k) => (k !== "from" ? t[k] : (table: string) => {
+    const b = t.from(table)
+    if (table !== f.table) return b
+    return new Proxy(b, { get: (bt: any, bk) => (bk === f.op ? () => refusedChain() : typeof bt[bk] === "function" ? bt[bk].bind(bt) : bt[bk]) })
+  }) })
+}
 G.__J.sess = sess
 const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
 const OVERRIDE: Record<string, string> = {
@@ -482,6 +494,37 @@ async function roundTwo(net: any, A: any) {
   await as(U_STAFF, () => A.updateFraudBulletinDraft(ent?.bulletinId, { title: "Vendor invoice substitution", tactic_summary: "Invoices that look like they come from Acme Closing Services LLC carry new bank details.", claim_class: "unverified_report", confidence: "low" }))
   const he = A ? await as(U_STAFF, () => A.publishFraudBulletin(ent?.bulletinId, ctx)) : null
   check("a business-entity suffix outside an official warning is held with its span", he?.held === true && (he.spans ?? []).some((s: string) => /LLC$/.test(s)))
+
+  section("§M a refused write is never reported as recorded (round 3)")
+  G.__J.mem = world(); G.__J.fault = null
+  const fc = A ? await as(U_AGENT, () => A.submitFraudIncident({ ...inc, evidence: [{ kind: "screenshot", fingerprint: FP(60) }] })) : null
+  const fb = A ? await as(U_STAFF, () => A.draftFraudBulletinFromCase(fc?.caseId)) : null
+  await as(U_STAFF, () => A.updateFraudBulletinDraft(fb?.bulletinId, { title: "Fake e-sign request phishing", tactic_summary: "A fake e-sign link asks for the MLS password.", claim_class: "verified_operational_pattern", confidence: "medium" }))
+  const fRow = () => T("fraud_bulletins").find((b) => b.id === fb?.bulletinId)
+  const fCase = () => T("fraud_incident_cases").find((c) => c.id === fc?.caseId)
+  const revs = () => T("fraud_bulletin_revisions").filter((r) => r.bulletin_id === fb?.bulletinId)
+  G.__J.fault = { table: "fraud_bulletin_revisions", op: "insert" }
+  const r1 = A ? await as(U_STAFF, () => A.publishFraudBulletin(fb?.bulletinId, ctx)) : null
+  check("a REFUSED revision insert: publication reports failure, the bulletin stays a draft, no case is marked, no record claimed", r1?.ok === false && /record/.test(String(r1.error)) && fRow()?.status === "draft" && fCase()?.status === "submitted" && revs().length === 0, r1)
+  G.__J.fault = { table: "fraud_incident_cases", op: "update" }
+  const r2 = A ? await as(U_STAFF, () => A.publishFraudBulletin(fb?.bulletinId, ctx)) : null
+  check("a REFUSED case status update: publication reports failure, the bulletin stays a draft, the publication record is removed again", r2?.ok === false && /case/.test(String(r2.error)) && fRow()?.status === "draft" && revs().length === 0 && fCase()?.status === "submitted", r2)
+  G.__J.fault = null
+  const r3 = A ? await as(U_STAFF, () => A.publishFraudBulletin(fb?.bulletinId, ctx)) : null
+  check("positive control: with no fault the same publication succeeds, with its record and its case marked", r3?.ok === true && fRow()?.status === "published" && revs().length === 1 && fCase()?.status === "used_for_bulletin", r3)
+  G.__J.fault = { table: "fraud_bulletin_revisions", op: "insert" }
+  const t1 = A ? await as(U_STAFF, () => A.takeDownFraudBulletin(fb?.bulletinId, "pattern retired")) : null
+  check("a REFUSED takedown record: access is removed (protective) but the door reports failure", t1?.ok === false && fRow()?.status === "taken_down" && !revs().some((r) => r.change_kind === "taken_down"), t1)
+  G.__J.fault = null
+  const t2 = A ? await as(U_STAFF, () => A.takeDownFraudBulletin(fb?.bulletinId, "pattern retired")) : null
+  check("…and a retry repairs the missing record, then reports success", t2?.ok === true && revs().filter((r) => r.change_kind === "taken_down").length === 1, t2)
+  G.__J.fault = { table: "fraud_bulletin_reads", op: "insert" }
+  const pb = A ? await as(U_STAFF, () => A.draftFraudBulletinFromCase(fc?.caseId)) : null
+  await as(U_STAFF, () => A.updateFraudBulletinDraft(pb?.bulletinId, { title: "Fake e-sign request phishing", tactic_summary: "A fake e-sign link asks for the MLS password.", claim_class: "verified_operational_pattern", confidence: "medium" }))
+  await as(U_STAFF, () => A.publishFraudBulletin(pb?.bulletinId, ctx))
+  const ob = A ? await as(U_XAGENT, () => A.openFraudBulletin(pb?.bulletinId)) : null
+  check("a refused READ record is a reported degradation: the warning is still shown, readRecorded=false", ob?.ok === true && ob.readRecorded === false)
+  G.__J.fault = null
 }
 
 // A crash is a failure WITH its count (a base run must still say how many checks were red before it stopped).
