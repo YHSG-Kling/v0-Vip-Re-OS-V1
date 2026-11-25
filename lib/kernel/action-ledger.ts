@@ -381,7 +381,7 @@ async function insertLedgerRow(
   const policyRef = ctx.policyKey
     ? (ctx.policyVersion !== undefined ? formatPolicyRef(ctx.policyKey, ctx.policyVersion) : await resolvePolicyRef(svc, ctx.brokerageId, ctx.policyKey))
     : null
-  const write = async (code: ActionReasonCode, detailNote: string | null, withPolicyColumn = true): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null; written?: Record<string, unknown> | null }> => {
+  const write = async (code: ActionReasonCode, detailNote: string | null, withPolicyColumn = true): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null; written?: Record<string, unknown> | null }> => { const detailIn = withContractFacts(ctx, withBaseGovernance(ctx, status, key, withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef })); written = redactSecretValues(detailIn)
     const { data, error } = await svc.from("agent_action_ledger").insert({
     brokerage_id: ctx.brokerageId,
     action: ctx.action,
@@ -405,7 +405,7 @@ async function insertLedgerRow(
     // ref rides detail.policy_ref — the action stays ledgered, the evidence stays.
     // Audit sink: a secret by name or shape never lands in the ledger detail (wave 139E).
     // WAVE 155 (155B3): the context's decision-contract facts ride detail.governance on this same insert (decisionContractFacts).
-    detail: (written = redactSecretValues(withContractFacts(ctx, withBaseGovernance(ctx, status, key, withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef })))),
+    detail: redactSecretValues(detailIn),
     ...(withPolicyColumn ? { policy_ref: policyRef } : {}),
     ...extra,
     }).select("id").single()
