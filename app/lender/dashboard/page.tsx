@@ -5,15 +5,15 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DollarSign, TrendingUp, Clock, FileCheck } from 'lucide-react'
 import Link from 'next/link'
-import { LenderCommandStrip, LenderPipelinePanel } from '../components/os'
+import { LenderCommandStrip } from '@/app/lender/components/os/lender-command-strip'; import { LenderPipelinePanel } from '@/app/lender/components/os/lender-pipeline-panel'
 import { TodaysFocusCard } from '@/app/components/shell/todays-focus-card'
 import { generateUserTypeBrief } from '@/lib/intelligence/user-type-briefs'
-import {
-  ExternalPartnerCommandStrip,
-  ExternalActiveFilesPanel,
-  ExternalDocStatusPanel,
-  ExternalCommunicationPanel,
-} from '../../(external-portal)/components/os'
+import { ExternalPartnerCommandStrip } from '@/app/(external-portal)/components/os/external-partner-command-strip'
+import { ExternalActiveFilesPanel } from '@/app/(external-portal)/components/os/external-active-files-panel'
+import { ExternalDocStatusPanel } from '@/app/(external-portal)/components/os/external-doc-status-panel'
+import { ExternalCommunicationPanel } from '@/app/(external-portal)/components/os/external-communication-panel'
+
+
 import { getLenderTransactionDetail, sendLenderMessageToAgent } from '@/app/actions/lender-portal-actions'
 
 export const dynamic = 'force-dynamic'

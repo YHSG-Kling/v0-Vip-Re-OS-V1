@@ -20,7 +20,7 @@ import {
   aiGenerateReviewResponse,
 } from "@/app/actions/ai-review-automation"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
-import { ContextualAiAssistBar } from "@/app/components/ai-copilot"
+import { ContextualAiAssistBar } from "@/app/components/ai-copilot/contextual-ai-assist-bar"
 // TOMBSTONE (wave 153, lane 153I): `awardPointsForAction(...)` — a client call into app/lib/gamification/award-on-action.ts, a PUBLIC "use server" door that awarded on a click with no verified outcome and no once-key — is retired. SURVIVOR: lib/gamification/award-points.ts LIFECYCLE_AWARD_RULES via the event reactor (lib/gamification/lifecycle-awards.ts awardLifecycleMilestones).
 import { sendThankYouNoteAction, respondToReviewAction } from "@/app/actions/reputation-kernel"
 import { toast } from "sonner"

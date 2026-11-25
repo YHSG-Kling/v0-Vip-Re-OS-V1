@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { CalendarShell } from "./components/os"
+import { CalendarShell } from "@/app/dashboard/calendar/components/os/calendar-shell"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const metadata = {

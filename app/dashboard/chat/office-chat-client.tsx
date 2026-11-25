@@ -28,7 +28,7 @@ import {
 } from "@/app/actions/ai-chat"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { toast } from "sonner"
-import { InlineAiReplyCoach } from "@/app/components/ai-copilot"
+import { InlineAiReplyCoach } from "@/app/components/ai-copilot/inline-ai-reply-coach"
 
 interface Message {
   id: string

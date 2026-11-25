@@ -35,15 +35,15 @@ import { VendorPlanCataloguePanel } from "./vendor-plan-catalogue-panel"
 import { listVendorAssignmentsForBrokerageAction } from "@/app/actions/vendor-contact-access"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
-import {
-  PartnerCommandStrip,
-  VendorPerformanceRadar,
-  ReferralTrackingPanel,
-  LenderStatusPanel,
-  TitlePipelinePanel,
-  VendorSlaPanel,
-  AiVendorInsightsPanel,
-} from "@/app/dashboard/partners/components/os"
+import { PartnerCommandStrip } from "@/app/dashboard/partners/components/os/partner-command-strip"
+import { VendorPerformanceRadar } from "@/app/dashboard/partners/components/os/vendor-performance-radar"
+import { ReferralTrackingPanel } from "@/app/dashboard/partners/components/os/referral-tracking-panel"
+import { LenderStatusPanel } from "@/app/dashboard/partners/components/os/lender-status-panel"
+import { TitlePipelinePanel } from "@/app/dashboard/partners/components/os/title-pipeline-panel"
+import { VendorSlaPanel } from "@/app/dashboard/partners/components/os/vendor-sla-panel"
+import { AiVendorInsightsPanel } from "@/app/dashboard/partners/components/os/ai-vendor-insights-panel"
+
+
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"

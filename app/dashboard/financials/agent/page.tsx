@@ -18,14 +18,14 @@ import {
 } from "lucide-react"
 import { ExpensesDonutChart } from "./expenses-chart"
 import { EarningsTrendChart } from "./earnings-trend-chart"
-import {
-  FinancialCommandStrip,
-  ProfitabilityRadar,
-  FinancialActionStack,
-  ProfitLossReportPanel,
-  type FinancialPriority,
-  type FinancialAction,
-} from "../components/os"
+import { FinancialCommandStrip, type FinancialPriority } from "@/app/dashboard/financials/components/os/financial-command-strip"
+import { ProfitabilityRadar } from "@/app/dashboard/financials/components/os/profitability-radar"
+import { FinancialActionStack, type FinancialAction } from "@/app/dashboard/financials/components/os/financial-action-stack"
+import { ProfitLossReportPanel } from "@/app/dashboard/financials/components/os/profit-loss-report-panel"
+
+
+
+
 import { getProviderConnectionStatus } from "@/app/actions/accounting-sync"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ACCOUNTING_OFFERINGS, readScopedAccounting } from "@/lib/connections/accounting-scopes"

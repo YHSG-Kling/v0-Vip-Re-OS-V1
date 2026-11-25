@@ -10,19 +10,19 @@ import { getSellerDocuments } from "@/app/actions/portal-seller"
 import { resolvePersonaContext } from "@/lib/agents/persona-context"
 import { buildListingMarketingChannels } from "@/lib/listings/marketing-channels"
 import { FileText, ExternalLink } from "lucide-react"
-import {
-  SellerJourneyMeaningCard,
-  ListingActivityCard,
-  SellerMarketingLiveCard,
-  ShowingFeedbackSummaryCard,
-  OfferPostureCard,
-  NextStepCard,
-  AgentUpdateVideoCard,
-  EquityEstimateCard,
-  SellerWeeklyReportCard,
-  SellerTeamActivityCard,
-  SellerMarketPulseCard,
-} from "../components/seller-mode"
+import { SellerJourneyMeaningCard } from "@/app/portal/[contactId]/components/seller-mode/seller-journey-meaning-card"
+import { ListingActivityCard } from "@/app/portal/[contactId]/components/seller-mode/listing-activity-card"
+import { SellerMarketingLiveCard } from "@/app/portal/[contactId]/components/seller-mode/seller-marketing-live-card"
+import { ShowingFeedbackSummaryCard } from "@/app/portal/[contactId]/components/seller-mode/showing-feedback-summary-card"
+import { OfferPostureCard } from "@/app/portal/[contactId]/components/seller-mode/offer-posture-card"
+import { NextStepCard } from "@/app/portal/[contactId]/components/seller-mode/next-step-card"
+import { AgentUpdateVideoCard } from "@/app/portal/[contactId]/components/seller-mode/agent-update-video-card"
+import { EquityEstimateCard } from "@/app/portal/[contactId]/components/seller-mode/equity-estimate-card"
+import { SellerWeeklyReportCard } from "@/app/portal/[contactId]/components/seller-mode/seller-weekly-report-card"
+import { SellerTeamActivityCard } from "@/app/portal/[contactId]/components/seller-mode/seller-team-activity-card"
+import { SellerMarketPulseCard } from "@/app/portal/[contactId]/components/seller-mode/seller-market-pulse-card"
+
+
 import { composeRenovationScenarios, RENOVATION_DISCLAIMER } from "@/lib/intelligence/renovation-simulator"
 import { buildSellerTeamActivity, narrateSignalsForClient } from "@/lib/listings/seller-team-activity"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"

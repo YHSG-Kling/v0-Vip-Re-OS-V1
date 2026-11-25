@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
-import { toCanonicalRoleOrDefault } from '@/lib/security'
+import { toCanonicalRoleOrDefault } from '@/lib/security/types'
 import FormsManagerClient from './FormsManagerClient'
 import { isAdminOrBroker } from '@/lib/auth/resolve-user-role'
 import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'

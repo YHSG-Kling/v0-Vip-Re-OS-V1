@@ -134,16 +134,16 @@ import dynamic from "next/dynamic"
 const ContentLab = dynamic(() => import("@/app/content-studio/content-studio-client"), { ssr: false })
 const CONTENT_LAB_SECTIONS = ["link-to-video", "ideas", "keywords", "repurpose", "video"] as const
 const ContentCommandCenter = dynamic(() => import("./components/content-command-center"), { ssr: false }); const CalculatorStudio = dynamic(() => import("@/app/components/calculators/CalculatorStudio"), { ssr: false }) // wave 156H: calculator artifacts
-import {
-  CampaignLauncherPanel,
-  CompetitorWatchPanel,
-  RepurposeEnginePanel,
-  CreativeVariationsPanel,
-  PerformanceIntelligencePanel,
-  PrelaunchPredictionPanel,
-  SellerSafeMarketingSummary,
-  ListingCopyPanel,
-} from "./components/ad-os"
+import { CampaignLauncherPanel } from "@/app/dashboard/marketing/studio/components/ad-os/campaign-launcher-panel"
+import { CompetitorWatchPanel } from "@/app/dashboard/marketing/studio/components/ad-os/competitor-watch-panel"
+import { RepurposeEnginePanel } from "@/app/dashboard/marketing/studio/components/ad-os/repurpose-engine-panel"
+import { CreativeVariationsPanel } from "@/app/dashboard/marketing/studio/components/ad-os/creative-variations-panel"
+import { PerformanceIntelligencePanel } from "@/app/dashboard/marketing/studio/components/ad-os/performance-intelligence-panel"
+import { PrelaunchPredictionPanel } from "@/app/dashboard/marketing/studio/components/ad-os/prelaunch-prediction-panel"
+import { SellerSafeMarketingSummary } from "@/app/dashboard/marketing/studio/components/ad-os/seller-safe-marketing-summary"
+import { ListingCopyPanel } from "@/app/dashboard/marketing/studio/components/ad-os/listing-copy-panel"
+
+
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 

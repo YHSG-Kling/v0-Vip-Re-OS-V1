@@ -8,16 +8,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Button } from '@/components/ui/button'
 import { TrendingUp, AlertCircle, Zap, ShieldCheck, CheckCircle2 } from 'lucide-react'
 import { toast } from 'sonner'
-import {
-  OnboardingCommandStrip,
-  AdoptionRadar,
-  SetupBlockersPanel,
-  TrainingProgressPanel,
-  ProviderReadinessPanel,
-  OnboardingActionStack,
-  AdoptionHealthPanel,
-  OnboardingBatchActionsPanel,
-} from './components/os'
+import { OnboardingCommandStrip } from '@/app/dashboard/admin/onboarding/components/os/onboarding-command-strip'
+import { AdoptionRadar } from '@/app/dashboard/admin/onboarding/components/os/adoption-radar'
+import { SetupBlockersPanel } from '@/app/dashboard/admin/onboarding/components/os/setup-blockers-panel'
+import { TrainingProgressPanel } from '@/app/dashboard/admin/onboarding/components/os/training-progress-panel'
+import { ProviderReadinessPanel } from '@/app/dashboard/admin/onboarding/components/os/provider-readiness-panel'
+import { OnboardingActionStack } from '@/app/dashboard/admin/onboarding/components/os/onboarding-action-stack'
+import { AdoptionHealthPanel } from '@/app/dashboard/admin/onboarding/components/os/adoption-health-panel'
+import { OnboardingBatchActionsPanel } from '@/app/dashboard/admin/onboarding/components/os/onboarding-batch-actions-panel'
+
+
 import { getBrokerageAgentLicenseStatuses, reviewLicenseManually, type AgentLicenseStatus } from '@/app/actions/admin/license-tracking'
 import { CdaSetupPanel } from './components/os/cda-setup-panel'
 import type { BrokerageProviderReadiness } from '@/lib/platform/provider-posture'

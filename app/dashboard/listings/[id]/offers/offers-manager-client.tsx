@@ -20,12 +20,12 @@ import { ComplianceBridgePanel } from "./components/compliance-bridge-panel"
 import { CounterOfferSlideOver } from "./components/counter-offer-slide-over"
 import CounterOfferDiffModal from "./components/counter-offer-diff-modal"
 import { AIRecommendationBanner } from "./components/ai-recommendation-banner"
-import {
-  SellerMeaningCard,
-  NegotiationRecommendationCard,
-  TimelineRiskCard,
-  SellerNetSheetCard,
-} from "./components/intelligence"
+import { SellerMeaningCard } from "@/app/dashboard/listings/[id]/offers/components/intelligence/seller-meaning-card"
+import { NegotiationRecommendationCard } from "@/app/dashboard/listings/[id]/offers/components/intelligence/negotiation-recommendation-card"
+import { TimelineRiskCard } from "@/app/dashboard/listings/[id]/offers/components/intelligence/timeline-risk-card"
+import { SellerNetSheetCard } from "@/app/dashboard/listings/[id]/offers/components/intelligence/seller-net-sheet-card"
+
+
 // SellerNetSheetCard is also used in the overview tab per-offer — same import above
 import {
   triggerOfferComparison,

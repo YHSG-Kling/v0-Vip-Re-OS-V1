@@ -26,14 +26,14 @@ import { PLExpenseChart } from "./pl-expense-chart"
 import { PLTrendChart } from "./pl-trend-chart"
 import { ForecastChart } from "./forecast-chart"
 import { AgentPLTable } from "./agent-pl-table"
-import {
-  FinancialCommandStrip,
-  MarginBreakdownPanel,
-  FinancialActionStack,
-  ProfitLossReportPanel,
-  type FinancialPriority,
-  type FinancialAction,
-} from "../components/os"
+import { FinancialCommandStrip, type FinancialPriority } from "@/app/dashboard/financials/components/os/financial-command-strip"
+import { MarginBreakdownPanel } from "@/app/dashboard/financials/components/os/margin-breakdown-panel"
+import { FinancialActionStack, type FinancialAction } from "@/app/dashboard/financials/components/os/financial-action-stack"
+import { ProfitLossReportPanel } from "@/app/dashboard/financials/components/os/profit-loss-report-panel"
+
+
+
+
 import { getAgentPLSummary } from "@/app/actions/pl-truth-engine"
 import { ScopedExpenseEntry } from "./scoped-expense-entry"
 import { OfficeExpenseRollupSection } from "./office-expense-rollup"

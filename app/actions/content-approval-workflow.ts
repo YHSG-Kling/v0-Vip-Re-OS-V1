@@ -1,23 +1,23 @@
 "use server"
 
-import { type ContentGenerationOutput } from "@/lib/content-generation"
-import { type ComplianceVerdict } from "@/lib/compliance-rules"
-import {
-  determineApprovalDecision,
-  determineRequiredApprovers,
-  hasApprovalAuthority,
-  batchDetermineApprovalDecisions,
-  previewApprovalDecision,
-  formatApprovalDecision,
-  logApprovalDecision,
-  logBatchApprovalDecisions,
-  getApprovalDecisionHistory,
-  getApprovalStats,
-  getPendingApprovals,
-  type ApprovalContext,
-  type ApprovalDecision,
-  type ApproverRole,
-} from "@/lib/approval-workflow"
+import type { ContentGenerationOutput } from "@/lib/content-generation/content-generator"
+import type { ComplianceVerdict } from "@/lib/compliance-rules/compliance-engine"
+import { determineApprovalDecision, determineRequiredApprovers, hasApprovalAuthority, batchDetermineApprovalDecisions, previewApprovalDecision, formatApprovalDecision, type ApprovalContext, type ApprovalDecision, type ApproverRole } from "@/lib/approval-workflow/approval-engine"
+import { logApprovalDecision, logBatchApprovalDecisions, getApprovalDecisionHistory, getApprovalStats, getPendingApprovals } from "@/lib/approval-workflow/approval-logger"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import { isValidUUID } from "@/lib/validations"
 import { requireSessionAgentId as getSessionAgentId } from "@/lib/identity/get-agent-context"
 

@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Sparkles, Eye, CheckCircle2, TrendingUp } from 'lucide-react'
 import Link from 'next/link'
 import { getAgentContext } from '@/lib/identity'
-import { toCanonicalRoleOrDefault } from '@/lib/security'
+import { toCanonicalRoleOrDefault } from '@/lib/security/types'
 import { getEntityCausalChain, replayTenantDecisions, getTenantExperimentPolicy, setExperimentKillSwitch } from '@/app/actions/flight-recorder'
 import { revalidatePath } from 'next/cache'
 

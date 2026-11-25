@@ -2,11 +2,11 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { type NextRequest, NextResponse } from "next/server"
 import { rawRoleVariantsFor } from "@/lib/security/types"
 import { createServiceClient } from "@/lib/supabase/service"
-import {
-  trackCertificationExpirationService,
-  monitorTRIDComplianceService,
-  applyDocumentRetentionService,
-} from "@/lib/application"
+import { trackCertificationExpirationService, monitorTRIDComplianceService, applyDocumentRetentionService } from "@/lib/application/compliance-monitoring"
+
+
+
+
 import {
   createCronRunContextAction,
   recordCronStartAction,

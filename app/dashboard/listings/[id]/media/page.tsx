@@ -2,7 +2,7 @@ import { redirect } from "next/navigation"
 import { getListingMedia, getSocialPosts, getVideoProjects, getVideoTemplates, getSocialAccounts } from "@/app/actions/listing-media"
 import { MediaManagerClient } from "./media-manager-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
-import { toCanonicalRoleOrDefault } from "@/lib/security"
+import { toCanonicalRoleOrDefault } from "@/lib/security/types"
 import { createClient } from "@/lib/supabase/server"
 
 interface PageProps {

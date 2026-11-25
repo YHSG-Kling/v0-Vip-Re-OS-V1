@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
-import { sendVendorBookingConfirmation } from "@/lib/communications"
+import { sendVendorBookingConfirmation } from "@/lib/communications/vendor-communications"
 // The full syndication lifecycle, not just the first push: publish, reconcile
 // changes, and WITHDRAW when the home is no longer being marketed.
 import { syncToPlatform, updatePlatformListing, removePlatformListing } from "@/lib/platform-sync"

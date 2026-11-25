@@ -2,22 +2,22 @@ import { getAgentContext } from '@/lib/identity/get-agent-context'
 import { createClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { RoleGateNotice } from '@/app/components/shared/role-gate-notice'
-import {
-  SystemCommandStrip,
-  ProviderHealthPanel,
-  AgentCapabilityPanel,
-  OutcomeProofPanel,
-  RenderCachePanel,
-  LivingVideoPanel,
-  ObservabilityPanel,
-  AIQualityPanel,
-  SyncHealthPanel,
-  SystemAlertsPanel,
-  OperationalImpactPanel,
-  ServiceSLAPanel,
-  SchemaReadinessPanel,
-  DeconflictPanel,
-} from './components/os'
+import { SystemCommandStrip } from '@/app/dashboard/system/components/os/system-command-strip'
+import { ProviderHealthPanel } from '@/app/dashboard/system/components/os/provider-health-panel'
+import { AgentCapabilityPanel } from '@/app/dashboard/system/components/os/agent-capability-panel'
+import { OutcomeProofPanel } from '@/app/dashboard/system/components/os/outcome-proof-panel'
+import { RenderCachePanel } from '@/app/dashboard/system/components/os/render-cache-panel'
+import { LivingVideoPanel } from '@/app/dashboard/system/components/os/living-video-panel'
+import { ObservabilityPanel } from '@/app/dashboard/system/components/os/observability-panel'
+import { AIQualityPanel } from '@/app/dashboard/system/components/os/ai-quality-panel'
+import { SyncHealthPanel } from '@/app/dashboard/system/components/os/sync-health-panel'
+import { SystemAlertsPanel } from '@/app/dashboard/system/components/os/system-alerts-panel'
+import { OperationalImpactPanel } from '@/app/dashboard/system/components/os/operational-impact-panel'
+import { ServiceSLAPanel } from '@/app/dashboard/system/components/os/service-sla-panel'
+import { SchemaReadinessPanel } from '@/app/dashboard/system/components/os/schema-readiness-panel'
+import { DeconflictPanel } from '@/app/dashboard/system/components/os/deconflict-panel'
+
+
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 

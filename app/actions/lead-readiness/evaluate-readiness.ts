@@ -1,11 +1,11 @@
 "use server"
 
-import {
-  evaluateLeadReadiness,
-  generateHandoffContext,
-  logReadinessTransition,
-  logReadinessAnomaly,
-} from "@/lib/lead-readiness"
+import { evaluateLeadReadiness, generateHandoffContext } from "@/lib/lead-readiness/readiness-evaluator"
+import { logReadinessTransition, logReadinessAnomaly } from "@/lib/lead-readiness/readiness-logger"
+
+
+
+
 import type { ReadinessEvaluation } from "@/lib/lead-readiness"
 
 /**

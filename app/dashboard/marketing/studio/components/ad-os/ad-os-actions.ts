@@ -21,8 +21,8 @@ import {
   formatReadinessResult,
   fetchReadinessHistory,
 } from "@/app/actions/campaign-readiness"
-import { evaluateContentCompliance, type ComplianceVerdict } from "@/lib/compliance-rules"
-import { determineApprovalDecision, type ApprovalDecision } from "@/lib/approval-workflow"
+import { evaluateContentCompliance, type ComplianceVerdict } from "@/lib/compliance-rules/compliance-engine"
+import { determineApprovalDecision, type ApprovalDecision } from "@/lib/approval-workflow/approval-engine"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { scheduleSocialPost } from "@/app/actions/social-media-automation"
 import { createCampaign } from "@/app/actions/marketing-studio"
