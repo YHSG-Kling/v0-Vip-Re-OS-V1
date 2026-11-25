@@ -12,6 +12,7 @@ import {
   listRecruitableAgents,
   getRecruitingNeeds,
   getRecruitingFunnel,
+  getRecruitingAccess,
 } from "@/app/actions/recruiting-roi"
 import { YearlyRevenueChart } from "./yearly-revenue-chart"
 import { BreakEvenChart } from "./breakeven-chart"
@@ -53,6 +54,16 @@ export default async function RecruitingROIPage() {
     return <RoleGateNotice surface="Recruiting ROI" audience="your broker, brokerage admins, team leads and the compliance officer" />
   }
 
+  // WAVE 156 (156K, round 2): what THIS seat may read, asked first. A seat that may not read the books (a team lead who is not
+  // the principal of a team-scale tenant) is TOLD so below — the money is never fetched for it and never drawn as zeros.
+  // A role check that could not run is said too, never shown as a figure.
+  const access = await getRecruitingAccess().catch((e) => ({
+    money: { state: "not_permitted" as const, reason: `Your access to the recruiting figures could not be verified: ${e instanceof Error ? e.message : String(e)}` },
+    funnelScope: "team" as const, keepsBooks: false,
+  }))
+  const moneyOk = access.money.state === "ok"
+  const moneyNotice = access.money.state === "ok" ? null : access.money.reason
+
   // Fetch all data in parallel
   const [
     roiSummary,
@@ -62,10 +73,10 @@ export default async function RecruitingROIPage() {
     recruitableAgents,
   ] = await Promise.all([
     // Tenant comes from the SESSION inside each action (§4) — no id is passed.
-    getRecruitingROISummary(),
-    getRecruitROIByRecruit(),
-    getRecruitingCostBreakdown(),
-    getBreakEvenAnalysis(),
+    moneyOk ? getRecruitingROISummary() : Promise.resolve(null),
+    moneyOk ? getRecruitROIByRecruit() : Promise.resolve(null),
+    moneyOk ? getRecruitingCostBreakdown() : Promise.resolve(null),
+    moneyOk ? getBreakEvenAnalysis() : Promise.resolve(null),
     // The cost-entry picker's agent list (agents.id + name). A refused read
     // leaves the picker empty and SAYS so — it does not become a free-text box.
     listRecruitableAgents().catch(() => [] as Awaited<ReturnType<typeof listRecruitableAgents>>),
@@ -161,7 +172,8 @@ export default async function RecruitingROIPage() {
     blindSpots: [`recruiting needs unavailable: ${e instanceof Error ? e.message : String(e)}`],
   }))
   const recruitingFunnel = await getRecruitingFunnel().catch((e) => ({
-    stages: [] as Array<{ key: string; label: string; count: number | null }>, declined: 0,
+    stages: [] as Array<{ key: string; label: string; count: number | null; state: "ok" | "unknown" | "not_permitted" }>, declined: null as number | null,
+    scope: null as "tenant" | "team" | null, teamCount: null as number | null,
     blindSpots: [`the recruiting funnel is unavailable: ${e instanceof Error ? e.message : String(e)}`],
   }))
 
@@ -179,7 +191,7 @@ export default async function RecruitingROIPage() {
             number that will not say when it was computed is the defect; the OLDEST
             stamp is shown too, because a sum is only as current as its stalest row. */}
         <p className="text-xs text-muted-foreground mt-1">
-          {roiSummary?.computedAt
+          {!moneyOk ? "Money figures are not shown for your seat." : roiSummary?.computedAt
             ? `ROI recomputed ${new Date(roiSummary.computedAt).toLocaleString()}${
                 roiSummary.oldestComputedAt && roiSummary.oldestComputedAt !== roiSummary.computedAt
                   ? ` · oldest recruit rollup ${new Date(roiSummary.oldestComputedAt).toLocaleDateString()}`
@@ -189,7 +201,14 @@ export default async function RecruitingROIPage() {
         </p>
       </div>
 
+      {moneyNotice ? (
+        <Card>
+          <CardHeader className="pb-2"><CardTitle className="text-base">Recruiting money is not shown for your seat</CardTitle></CardHeader>
+          <CardContent><p className="text-sm text-muted-foreground">{moneyNotice}</p></CardContent>
+        </Card>
+      ) : null}
       {/* KPI Row */}
+      {moneyOk && (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
         <Card>
           <CardHeader className="pb-2">
@@ -271,8 +290,9 @@ export default async function RecruitingROIPage() {
           </CardContent>
         </Card>
       </div>
+      )}
 
-      <Tabs defaultValue="analysis" className="space-y-6">
+      <Tabs defaultValue={moneyOk ? "analysis" : "pipeline"} className="space-y-6">
         <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="pipeline">Pipeline</TabsTrigger>
           <TabsTrigger value="analysis">Analysis</TabsTrigger>
@@ -336,20 +356,22 @@ export default async function RecruitingROIPage() {
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Recruiting funnel</CardTitle>
-              <CardDescription>Counted from recorded events only. A stage that could not be read shows a dash, never zero.</CardDescription>
+              <CardDescription>
+                Counted from recorded events only{recruitingFunnel.scope === "team" ? " — the recruits of the team you lead" : recruitingFunnel.scope === "tenant" ? " — the whole brokerage" : ""}. A stage that could not be read says so; one your seat may not read says so; neither is ever shown as zero.
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-1 text-sm">
               {recruitingFunnel.stages.map((s) => (
-                <div key={s.key} className="flex justify-between"><span>{s.label}</span><span className="font-medium">{s.count ?? "—"}</span></div>
+                <div key={s.key} className="flex justify-between"><span>{s.label}</span><span className="font-medium">{s.state === "not_permitted" ? "Not shown for your seat" : s.state === "unknown" || s.count === null ? "Unknown — could not be read" : s.count}</span></div>
               ))}
-              <div className="flex justify-between text-muted-foreground"><span>Declined</span><span>{recruitingFunnel.declined}</span></div>
+              <div className="flex justify-between text-muted-foreground"><span>Declined</span><span>{recruitingFunnel.declined ?? "Unknown — could not be read"}</span></div>
               {recruitingFunnel.blindSpots.map((b) => <p key={b} className="text-xs text-muted-foreground">Not shown: {b}</p>)}
             </CardContent>
           </Card>
           <RecruitingPipelineClient recruits={(recruitRows as any[]) ?? []} brokerageId={profile.brokerage_id} />
         </TabsContent>
 
-        <TabsContent value="analysis" className="space-y-4">
+        <TabsContent value="analysis" className="space-y-4">{!moneyOk ? <p className="text-sm text-muted-foreground">{moneyNotice}</p> : (<>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Card>
               <CardHeader>
@@ -374,32 +396,32 @@ export default async function RecruitingROIPage() {
                 <CardDescription>Lifetime value against recruitment investment</CardDescription>
               </CardHeader>
               <CardContent>
-                <LTVScatterChart data={recruitROIs} />
+                <LTVScatterChart data={recruitROIs ?? []} />
               </CardContent>
             </Card>
           </div>
-        </TabsContent>
+        </>)}</TabsContent>
 
         {/* Tab 2: Timeline */}
-        <TabsContent value="timeline" className="space-y-4">
+        <TabsContent value="timeline" className="space-y-4">{!moneyOk ? <p className="text-sm text-muted-foreground">{moneyNotice}</p> : (<>
           <Card>
             <CardHeader>
               <CardTitle>Breakeven Timeline</CardTitle>
               <CardDescription>Average months to reach profitability by hire cohort</CardDescription>
             </CardHeader>
             <CardContent>
-              <BreakEvenChart data={breakEvenAnalysis} />
+              <BreakEvenChart data={breakEvenAnalysis!} />
             </CardContent>
           </Card>
-        </TabsContent>
+        </>)}</TabsContent>
 
         {/* Tab 3: By Recruit */}
-        <TabsContent value="cohorts" className="space-y-4">
+        <TabsContent value="cohorts" className="space-y-4">{!moneyOk ? <p className="text-sm text-muted-foreground">{moneyNotice}</p> : (<>
           <RecruitROITable data={recruitROIs || []} />
-        </TabsContent>
+        </>)}</TabsContent>
 
         {/* Tab 4: Cost Management */}
-        <TabsContent value="costs" className="space-y-4">
+        <TabsContent value="costs" className="space-y-4">{!moneyOk ? <p className="text-sm text-muted-foreground">{moneyNotice}</p> : (<>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2">
               <Card>
@@ -429,7 +451,7 @@ export default async function RecruitingROIPage() {
 
             <CostEntryPanel agents={recruitableAgents} />
           </div>
-        </TabsContent>
+        </>)}</TabsContent>
       </Tabs>
     </div>
   )

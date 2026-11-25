@@ -19,7 +19,23 @@ import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
  * every function here already surfaced a database error; the callers that must
  * degrade already `.catch()`.
  */
-async function requireRecruitingCaller(): Promise<{ client: Awaited<ReturnType<typeof createClient>>; userId: string; brokerageId: string }> {
+/**
+ * WAVE 156 (lane 156K, round 2) — WHO MAY READ WHICH FIGURE, from the existing rules (never a copied list):
+ *   · the surface: the tenant-admin roster (resolveTenantAdmin — TENANT_ADMIN_USER_TYPES or a pinned grant); anyone else
+ *     (agent, vendor, contact, ISA …) is refused;
+ *   · the recruiting MONEY (recruiting_roi / recruiting_costs / recruiting_analytics — the brokerage's books): a seat that may
+ *     read the books, the same seats public.can_read_brokerage_books() admits — the finance tier (resolveBrokerageFinanceAdmin:
+ *     BROKERAGE_FINANCE_ADMIN_USER_TYPES, a pinned grant, or the principal of a team-scale tenant) or the compliance officer,
+ *     who reads the books and never keeps them (m467). Writing a cost needs the finance tier itself;
+ *   · everyone else the roster admits is a team lead, who sees recruiting STAGE counts for THEIR team (teams.team_lead_id)
+ *     and none of the money.
+ * Before this, a non-principal team lead passed the roster, the books came back EMPTY by row security, and the page drew
+ * zeros — "nobody may read this" rendered as "checked and it is zero" (CLAUDE.md §4). A figure this seat may not read is now
+ * reported as not permitted; a figure whose source refused is unknown; only a figure that was read is a number.
+ * A role check that could not run refuses the whole surface (fail closed).
+ */
+type RecruitingBooks = { state: "ok" } | { state: "not_permitted"; reason: string }
+async function requireRecruitingCaller(): Promise<{ client: Awaited<ReturnType<typeof createClient>>; userId: string; brokerageId: string; userType: string; books: RecruitingBooks; keepsBooks: boolean }> {
   const client = await createClient()
   const { data: { user } } = await client.auth.getUser()
   if (!user) throw new Error("Not authenticated")
@@ -33,7 +49,20 @@ async function requireRecruitingCaller(): Promise<{ client: Awaited<ReturnType<t
   const admin = await resolveTenantAdmin(client, user.id, { user_type: u.user_type, brokerage_id: u.brokerage_id })
   if (!admin.ok) throw new Error(`Could not verify your role: ${admin.error}`)
   if (!admin.isTenantAdmin) throw new Error("Forbidden: recruiting ROI is a brokerage admin surface")
-  return { client, userId: user.id, brokerageId: u.brokerage_id as string }
+  const { resolveBrokerageFinanceAdmin } = await import("@/lib/auth/resolve-user-role")
+  const finance = await resolveBrokerageFinanceAdmin(client, user.id, { user_type: u.user_type, brokerage_id: u.brokerage_id })
+  if (!finance.ok) throw new Error(`Could not verify whether your seat reads the brokerage's books: ${finance.error}`)
+  const userType = String(u.user_type ?? "").toLowerCase()
+  // m467: the compliance officer READS the books (public.can_read_brokerage_books admits the seat) and never keeps them.
+  const readsBooks = finance.isFinanceAdmin || userType === "compliance_officer"
+  const books: RecruitingBooks = readsBooks ? { state: "ok" }
+    : { state: "not_permitted", reason: "Recruiting spend, return and production are the brokerage's books, which your seat does not read — your broker or a finance admin does." }
+  return { client, userId: user.id, brokerageId: u.brokerage_id as string, userType, books, keepsBooks: finance.isFinanceAdmin }
+}
+
+/** A money export asked by a seat that may not read the books: refused in words (never an empty, zero-shaped answer). */
+function requireBooks(c: { books: RecruitingBooks }): void {
+  if (c.books.state !== "ok") throw new Error(`NOT_PERMITTED: ${c.books.reason}`)
 }
 
 /**
@@ -77,7 +106,7 @@ export async function getRecruitingNeeds(): Promise<{
 // (lib/kernel/improvement-proposals.ts → appendTenantPolicyVersion → mergeBrokerageSettings).
 
 export async function getRecruitingROISummary() {
-  const { client, brokerageId } = await requireRecruitingCaller()
+  const caller = await requireRecruitingCaller(); requireBooks(caller); const { client, brokerageId } = caller
 
   // `computed_at` IS THE FRESHNESS OF EVERY NUMBER BELOW. lib/recruiting/recruiting-roi-writer.ts:34
   // stamps it on every recompute and nothing read it, so the recruiting-ROI headline could show a
@@ -118,7 +147,7 @@ export async function getRecruitingROISummary() {
 }
 
 export async function getRecruitROIByRecruit() {
-  const { client, brokerageId } = await requireRecruitingCaller()
+  const caller = await requireRecruitingCaller(); requireBooks(caller); const { client, brokerageId } = caller
 
   const { data: rois, error: roiError } = await client
     .from("recruiting_roi")
@@ -139,7 +168,7 @@ export async function getRecruitROIByRecruit() {
 }
 
 export async function getRecruitingCostBreakdown() {
-  const { client, brokerageId } = await requireRecruitingCaller()
+  const caller = await requireRecruitingCaller(); requireBooks(caller); const { client, brokerageId } = caller
 
   const { data: costs, error } = await client
     .from("recruiting_costs")
@@ -170,7 +199,7 @@ export async function getRecruitingCostBreakdown() {
 }
 
 export async function getBreakEvenAnalysis() {
-  const { client, brokerageId } = await requireRecruitingCaller()
+  const caller = await requireRecruitingCaller(); requireBooks(caller); const { client, brokerageId } = caller
 
   const { data: rois, error } = await client
     .from("recruiting_roi")
@@ -232,7 +261,7 @@ export async function listRecruitableAgents(): Promise<Array<{ id: string; name:
 }
 
 export async function getRecruitingAnalyticsByYear(recruitedAgentId: string) {
-  const { client, brokerageId } = await requireRecruitingCaller()
+  const caller = await requireRecruitingCaller(); requireBooks(caller); const { client, brokerageId } = caller
 
   const { data: analytics, error } = await client
     .from("recruiting_analytics")
@@ -257,7 +286,9 @@ export async function addRecruitingCost(
   // `userId` is taken here (and only here) because the kernel event below stamps
   // lifecycle_events.actor_user_id — the "who" the raw insert this replaced never
   // wrote. It comes from the SESSION, resolved by requireRecruitingCaller (§4).
-  const { client, brokerageId, userId } = await requireRecruitingCaller()
+  const caller = await requireRecruitingCaller()
+  if (!caller.keepsBooks) throw new Error("NOT_PERMITTED: a recruiting cost is an entry in the brokerage's books — only its finance admins keep them.")
+  const { client, brokerageId, userId } = caller
 
   // The recruit must be one of THIS tenant's agents: the cost row, the kernel event
   // and the service-client recompute below all key on it, so a foreign agents.id
@@ -342,34 +373,64 @@ export async function addRecruitingCost(
 }
 
 /**
+ * WAVE 156 (lane 156K, round 2) — WHAT THIS SEAT MAY READ on the recruiting surface, so the page can say it in words before it
+ * asks for a figure: the money (the books) is "ok" or "not_permitted" with the reason, and the funnel's scope is the whole
+ * tenant (a seat that reads the books) or the team(s) the caller leads (teams.team_lead_id). Same gate as every sibling.
+ */
+export async function getRecruitingAccess(): Promise<{ money: RecruitingBooks; funnelScope: "tenant" | "team"; keepsBooks: boolean }> {
+  const caller = await requireRecruitingCaller()
+  return { money: caller.books, funnelScope: caller.books.state === "ok" ? "tenant" : "team", keepsBooks: caller.keepsBooks }
+}
+
+/**
  * WAVE 156 (lane 156K) — THE RECRUITING FUNNEL on the recruiting ROI surface, from persisted events only
  * (lib/recruiting/recruiting-roi-compute.ts computeRecruitingFunnel holds the stage rules). Same gate as every sibling
  * (requireRecruitingCaller: tenant from the SESSION, the tenant-admin roster); then the service client, every read pinned to
- * that tenant. The "producing" stage reads recruiting_analytics — the brokerage's books — so it is answered only for a seat
- * that may read the books (BROKERAGE_FINANCE_ADMIN_USER_TYPES or the compliance officer, the same seats the live
- * can_read_brokerage_books() admits inside a brokerage); anyone else gets it as a published blind spot, never a number.
- * A refused read is a blind spot and its stage is null, never 0.
+ * that tenant and every read's error READ.
+ * ROUND 2 — scope and permission per figure: a seat that reads the books sees the whole tenant, production included; any other
+ * seat the roster admits is a team lead and sees the recruits of the team(s) they lead (teams.team_lead_id — a recruit referred
+ * by one of the team's agents, or provisioned onto the team), with production NOT PERMITTED (it is read from the books). A
+ * refused read makes its stages UNKNOWN; a team read that refuses refuses the funnel (the scope could not be established, so no
+ * count may be shown for it).
  */
 export async function getRecruitingFunnel(): Promise<{
-  stages: Array<{ key: string; label: string; count: number | null }>
+  stages: Array<{ key: string; label: string; count: number | null; state: "ok" | "unknown" | "not_permitted" }>
   declined: number
+  scope: "tenant" | "team"
+  teamCount: number | null
   blindSpots: string[]
 }> {
-  const { client, userId, brokerageId } = await requireRecruitingCaller()
+  const caller = await requireRecruitingCaller()
+  const { userId, brokerageId } = caller
   const { createServiceClient } = await import("@/lib/supabase/service")
   const { computeRecruitingFunnel } = await import("@/lib/recruiting/recruiting-roi-compute")
-  const { BROKERAGE_FINANCE_ADMIN_USER_TYPES } = await import("@/lib/auth/resolve-user-role")
   const svc = createServiceClient() as any
   const blindSpots: string[] = []
+  const readsBooks = caller.books.state === "ok"
 
-  const { data: me } = await client.from("users").select("user_type").eq("id", userId).maybeSingle()
-  const myType = String((me as { user_type?: string | null } | null)?.user_type ?? "").toLowerCase()
-  const readsBooks = BROKERAGE_FINANCE_ADMIN_USER_TYPES.has(myType) || myType === "compliance_officer"
+  // The team scope (teams.team_lead_id, this tenant only) for a seat that does not read the books.
+  let team: { agentIds: Set<string>; userIds: Set<string>; teams: number } | null = null
+  if (!readsBooks) {
+    const { data: teams, error: teamErr } = await svc.from("teams").select("id").eq("brokerage_id", brokerageId).eq("team_lead_id", userId).is("deleted_at", null)
+    if (teamErr) throw new Error(`Could not establish the team you lead, so no recruiting figure is shown: ${teamErr.message}`)
+    const teamIds = ((teams ?? []) as Array<{ id: string }>).map((t) => t.id)
+    team = { agentIds: new Set(), userIds: new Set(), teams: teamIds.length }
+    if (teamIds.length > 0) {
+      const { data: members, error: memErr } = await svc.from("agents").select("id, user_id").eq("brokerage_id", brokerageId).in("team_id", teamIds)
+      if (memErr) throw new Error(`Could not read your team's members, so no recruiting figure is shown: ${memErr.message}`)
+      for (const a of (members ?? []) as Array<{ id: string; user_id: string | null }>) { team.agentIds.add(a.id); if (a.user_id) team.userIds.add(a.user_id) }
+    } else {
+      blindSpots.push("you lead no team in this workspace, so there are no team recruits to count")
+    }
+  }
 
   const { data: recruitRows, error: recErr } = await svc.from("recruits")
-    .select("id, status, provisioned, provisioned_user_id").eq("brokerage_id", brokerageId).limit(5000)
+    .select("id, status, provisioned, provisioned_user_id, recruiter_agent_id").eq("brokerage_id", brokerageId).limit(5000)
   if (recErr) throw new Error(`Could not read the recruiting pipeline: ${recErr.message}`)
-  const recruits = (recruitRows ?? []) as Array<{ id: string; status: string | null; provisioned: boolean | null; provisioned_user_id: string | null }>
+  type RecruitRow = { id: string; status: string | null; provisioned: boolean | null; provisioned_user_id: string | null; recruiter_agent_id: string | null }
+  const recruits = ((recruitRows ?? []) as RecruitRow[]).filter((r) => !team
+    || (!!r.recruiter_agent_id && team.agentIds.has(r.recruiter_agent_id))
+    || (!!r.provisioned_user_id && team.userIds.has(r.provisioned_user_id)))
 
   let recordedMoves: Record<string, string[]> | null = {}
   const { data: moves, error: movesErr } = await svc.from("agent_action_ledger")
@@ -406,13 +467,12 @@ export async function getRecruitingFunnel(): Promise<{
           else for (const p of (prod ?? []) as Array<{ recruited_agent_id: string; transaction_count: number | null }>) if (Number(p.transaction_count ?? 0) > 0) producing.add(p.recruited_agent_id)
         }
       }
-      if (!readsBooks) blindSpots.push("production is read from the brokerage's books, which your seat does not read")
       for (const uid of seatUserIds) {
         const a = agents.find((x) => x.user_id === uid)
         seats[uid] = { active: a ? a.is_active !== false : false, certified: certOk ? (a ? certified.has(a.id) : false) : null, producing: prodOk ? (a ? producing.has(a.id) : false) : null }
       }
     }
   }
-  const out = computeRecruitingFunnel({ recruits, recordedMoves, approvedOutreach, seats })
-  return { stages: out.stages, declined: out.declined, blindSpots }
+  const out = computeRecruitingFunnel({ recruits, recordedMoves, approvedOutreach, seats, notPermitted: readsBooks ? [] : ["producing"] })
+  return { stages: out.stages, declined: out.declined, scope: team ? "team" : "tenant", teamCount: team ? team.teams : null, blindSpots }
 }

@@ -95,9 +95,16 @@ export interface RecruitFunnelFacts {
   approvedOutreach: string[] | null
   /** provisioned users.id → the seat's facts; null = unreadable. Each inner fact may itself be null (its own read refused). */
   seats: Record<string, { active: boolean | null; certified: boolean | null; producing: boolean | null }> | null
+  /** ROUND 2: stages this SEAT may not read (decided by the caller from the role rules) — reported as not_permitted, never 0
+   *  and never "unknown". */
+  notPermitted?: readonly RecruitFunnelStageKey[]
 }
 
-export function computeRecruitingFunnel(f: RecruitFunnelFacts): { stages: Array<{ key: RecruitFunnelStageKey; label: string; count: number | null }>; declined: number } {
+/** ROUND 2: three states a figure can be in. "ok" carries a real count (0 included); "unknown" = its source could not be read;
+ *  "not_permitted" = this seat may not read it. */
+export type RecruitFunnelFigureState = "ok" | "unknown" | "not_permitted"
+
+export function computeRecruitingFunnel(f: RecruitFunnelFacts): { stages: Array<{ key: RecruitFunnelStageKey; label: string; count: number | null; state: RecruitFunnelFigureState }>; declined: number } {
   const reached = (r: RecruitFunnelFacts["recruits"][number], rank: number): boolean => {
     if (r.provisioned) return true
     const cur = STAGE_RANK[String(r.status ?? "")]
@@ -127,7 +134,11 @@ export function computeRecruitingFunnel(f: RecruitFunnelFacts): { stages: Array<
     producing: seatCount("producing"),
   }
   return {
-    stages: RECRUIT_FUNNEL_STAGES.map((s) => ({ key: s.key, label: s.label, count: counts[s.key] })),
+    stages: RECRUIT_FUNNEL_STAGES.map((s) => {
+      if (f.notPermitted?.includes(s.key)) return { key: s.key, label: s.label, count: null, state: "not_permitted" as const }
+      const count = counts[s.key]
+      return { key: s.key, label: s.label, count, state: count === null ? "unknown" as const : "ok" as const }
+    }),
     declined: R.filter((r) => r.status === "declined").length,
   }
 }
