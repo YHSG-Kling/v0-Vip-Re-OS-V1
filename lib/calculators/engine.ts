@@ -260,7 +260,7 @@ export const CALCULATOR_SPECS: Readonly<Record<CalculatorKind, CalculatorSpec>> 
 })
 
 // ── result contract ──────────────────────────────────────────────────────────
-export type AssumptionBasis = "you_entered" | "you_entered_estimate" | "cited_source" | "brokerage_agreement" | "not_included"
+export type AssumptionBasis = "you_entered" | "you_entered_estimate" | "cited_source" | "brokerage_agreement" | "not_included" | "property_record"
 export interface Assumption {
   key: string
   label: string
@@ -304,6 +304,11 @@ export interface CalculatorContext {
   agreedCommission?: AgreedCommission | null
   /** Input keys the person marked as estimates. */
   estimateKeys?: readonly string[]
+  /**
+   * Inputs that did NOT come from the person, each with where it came from — never a default. Today only the property's own
+   * public record (its county tax bill, via the ONE property rail: lib/ai-isa/property-lookup-rail.ts lookupPublicPropertyFacts).
+   */
+  inputSources?: Readonly<Record<string, { basis: "property_record"; citation: string; url?: string | null; retrievedOn?: string | null }>>
 }
 
 export const DISCLAIMERS = Object.freeze({
@@ -419,7 +424,9 @@ function assumptionsFor(spec: CalculatorSpec, values: Values, ctx: CalculatorCon
     if (f.key in values) {
       const v = values[f.key]
       const display = typeof v === "string" ? v : f.kind === "money" ? usd(v) : f.kind === "percent" ? `${v}%` : `${v} ${f.kind === "years" ? "years" : f.kind === "months" ? "months" : ""}`.trim()
-      out.push({ key: f.key, label: f.label, display, basis: est.has(f.key) ? "you_entered_estimate" : "you_entered" })
+      const from = ctx.inputSources?.[f.key]
+      if (from) out.push({ key: f.key, label: f.label, display, basis: from.basis, source: { citation: from.citation, url: from.url ?? "", retrievedOn: from.retrievedOn ?? "", caveats: "From the property's public record; taxes can be reassessed after a sale." } })
+      else out.push({ key: f.key, label: f.label, display, basis: est.has(f.key) ? "you_entered_estimate" : "you_entered" })
     } else if (f.required !== true) {
       out.push({ key: f.key, label: f.label, display: "not included", basis: "not_included" })
     }

@@ -12,6 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useToast } from "@/hooks/use-toast"
 import { compareHomes, type ComparisonHomeInput } from "@/lib/buyer-offers/home-comparison"
+// Wave 156 (156H round 2): payments are compared only on the buyer's OWN loan figures (no default rate).
+import { LoanAssumptionsFields, useLoanAssumptions } from "@/app/components/calculators/LoanAssumptionsFields"
 import { requestComparisonReview } from "@/app/actions/buyer-offer-tools"
 
 const money = (n: number) => `$${Math.round(n).toLocaleString()}`
@@ -50,7 +52,8 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
       id: h.id, address: h.property_address ?? "Saved home", price: h.list_price as number,
       bedrooms: h.bedrooms ?? null, bathrooms: h.bathrooms ?? null, sqft: h.sqft ?? null, matchScore: h.ai_match_score ?? null,
     }))
-  const comparison = useMemo(() => compareHomes(inputs), [JSON.stringify(inputs)])
+  const loan = useLoanAssumptions()
+  const comparison = useMemo(() => compareHomes(inputs, loan.values), [JSON.stringify(inputs), loan.values])
 
   function getAgentTake() {
     const addresses = comparison.homes.map((h) => h.address)
@@ -88,6 +91,10 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
           })}
         </div>
         <p className="text-[11px] text-muted-foreground">Pick 2–4 homes to line them up. Estimates only — your agent and lender confirm the real numbers.</p>
+        <LoanAssumptionsFields values={loan.values} set={loan.set} idPrefix="compare" />
+        {comparison.paymentNeeds.length > 0 && comparison.homes.length > 0 && (
+          <p className="text-[11px] text-muted-foreground">To compare monthly payments: {comparison.paymentNeeds.join("; ")}</p>
+        )}
 
         {/* Side-by-side */}
         <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.max(1, comparison.homes.length)}, minmax(0, 1fr))` }}>
@@ -96,7 +103,7 @@ export function CompareHomesCard({ contactId, savedHomes }: { contactId: string;
               <p className="text-sm font-medium truncate" title={h.address}>{h.address}</p>
               <div className="space-y-1 text-xs">
                 <Row label="Price" value={money(h.price)} />
-                <Row label="Est. /mo" value={money(h.monthlyPayment)} />
+                <Row label="Est. /mo" value={h.monthlyPayment != null ? money(h.monthlyPayment) : "—"} />
                 <Row label="$/sq ft" value={h.pricePerSqft != null ? money(h.pricePerSqft) : "—"} />
                 <Row label="Beds / baths" value={`${h.bedrooms ?? "—"} / ${h.bathrooms ?? "—"}`} />
                 <Row label="Sq ft" value={h.sqft ? h.sqft.toLocaleString() : "—"} />

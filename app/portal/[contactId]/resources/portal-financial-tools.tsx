@@ -6,33 +6,12 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Loader2, Truck, Calculator, Clock, ChevronDown, ChevronUp } from "lucide-react"
-import { estimateMovingCosts, saveCalculatorResult } from "@/app/actions/calculators"
+import { saveCalculatorResult } from "@/app/actions/calculators"
+// Wave 156 (156H round 2): the moving budget is the ONE engine's "relocation_budget" over the person's own quotes — the invented
+// per-home-size dollar table (estimateMovingCosts, tombstone in app/actions/calculators.ts) is gone.
+import { CALCULATOR_SPECS, runCalculator, type CalculatorOutcome } from "@/lib/calculators/engine"
 import { useToast } from "@/hooks/use-toast"
-
-type HomeSize = "studio" | "1br" | "2br" | "3br" | "4br+" | "house"
-
-const HOME_SIZE_LABELS: Record<HomeSize, string> = {
-  studio: "Studio",
-  "1br": "1 Bedroom",
-  "2br": "2 Bedrooms",
-  "3br": "3 Bedrooms",
-  "4br+": "4+ Bedrooms",
-  house: "Full House",
-}
-
-const DISTANCE_OPTIONS = [
-  { label: "Local (under 50 miles)", value: 25 },
-  { label: "Regional (50–200 miles)", value: 100 },
-  { label: "Long Distance (200+ miles)", value: 400 },
-]
 
 interface CalculatorHistoryEntry {
   id: string
@@ -50,59 +29,35 @@ interface PortalFinancialToolsProps {
 export function PortalFinancialTools({ contactId, calcHistory }: PortalFinancialToolsProps) {
   const { toast } = useToast()
 
-  // Moving cost estimator state
-  const [movingResult, setMovingResult] = useState<any>(null)
+  // Relocation budget state — the person's own quotes, keyed by the engine's field keys.
+  const RELOCATION = CALCULATOR_SPECS.relocation_budget
+  const [costs, setCosts] = useState<Record<string, string>>({})
+  const [movingResult, setMovingResult] = useState<CalculatorOutcome | null>(null)
   const [movingLoading, setMovingLoading] = useState(false)
-  const [currentCity, setCurrentCity] = useState("")
-  const [currentState, setCurrentState] = useState("")
-  const [newCity, setNewCity] = useState("")
-  const [newState, setNewState] = useState("")
-  const [homeSize, setHomeSize] = useState<HomeSize>("2br")
-  const [distanceMiles, setDistanceMiles] = useState<number>(25)
-  const [moveDate, setMoveDate] = useState("")
 
   // History expand/collapse
   const [historyOpen, setHistoryOpen] = useState(false)
 
   async function handleEstimateMoving() {
-    if (!currentCity || !currentState || !newCity || !newState) {
-      toast({ title: "Please fill in origin and destination", variant: "destructive" })
-      return
-    }
     setMovingLoading(true)
     try {
-      const res = await estimateMovingCosts({
-        currentCity,
-        currentState,
-        newCity,
-        newState,
-        homeSize,
-        distance: distanceMiles,
-        moveDate: moveDate || new Date().toISOString().split("T")[0],
+      const inputs = Object.fromEntries(Object.entries(costs).filter(([, v]) => v.trim() !== ""))
+      const res = runCalculator("relocation_budget", inputs, { audience: "public" })
+      setMovingResult(res)
+      if (!res.ok) return
+      toast({ title: "Moving budget ready" })
+      // The budget above is shown. This SAVE is what the contact expects to find later; contactId → contact_id (lane W3).
+      const saved = await saveCalculatorResult({
+        contactId,
+        calculatorType: "moving_cost",
+        inputs,
+        results: { total_estimated_cost: res.outputs.total, cost_breakdown: Object.fromEntries(res.lines.map((l) => [l.label, l.amount])), assumptions: res.assumptions, period: res.period, engine: res.engineVersion },
       })
-      if (res.success) {
-        setMovingResult(res)
-        toast({ title: "Moving cost estimate ready" })
-        // The estimate above is real and already shown. This SAVE is what the
-        // contact expects to find later, and its failure was silent.
-        //
-        // contactId → contact_id (lane W3 2026-09-01). This used to pass
-        // `leadId: contactId`, which wrote calculator_history.lead_id — an FK to
-        // leads(id), a DISJOINT id space — so every portal save was refused and
-        // the toast below fired on every use. (A prior comment here claimed "the
-        // underlying column accepts any UUID identity"; it does not — it FKs leads.)
-        const saved = await saveCalculatorResult({
-          contactId,
-          calculatorType: "moving_cost",
-          inputs: { currentCity, currentState, newCity, newState, homeSize, distanceMiles, moveDate },
-          results: res,
-        })
-        if (!saved?.success) {
-          toast({ title: "Estimate not saved", description: "The numbers above are correct, but they were not saved to your file.", variant: "destructive" })
-        }
+      if (!saved?.success) {
+        toast({ title: "Budget not saved", description: "The numbers above are correct, but they were not saved to your file.", variant: "destructive" })
       }
     } catch {
-      toast({ title: "Estimate failed — please try again", variant: "destructive" })
+      toast({ title: "Could not save — please try again", variant: "destructive" })
     } finally {
       setMovingLoading(false)
     }
@@ -118,87 +73,18 @@ export function PortalFinancialTools({ contactId, calcHistory }: PortalFinancial
             <CardTitle>Moving Cost Estimator</CardTitle>
           </div>
           <CardDescription>
-            Get a rough estimate of what your move might cost
+            Add up your move from your own quotes
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1">
-              <Label className="text-sm">Current City</Label>
-              <Input
-                placeholder="e.g. Austin"
-                value={currentCity}
-                onChange={(e) => setCurrentCity(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-sm">Current State</Label>
-              <Input
-                placeholder="e.g. TX"
-                maxLength={2}
-                value={currentState}
-                onChange={(e) => setCurrentState(e.target.value.toUpperCase())}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-sm">Destination City</Label>
-              <Input
-                placeholder="e.g. Dallas"
-                value={newCity}
-                onChange={(e) => setNewCity(e.target.value)}
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-sm">Destination State</Label>
-              <Input
-                placeholder="e.g. TX"
-                maxLength={2}
-                value={newState}
-                onChange={(e) => setNewState(e.target.value.toUpperCase())}
-              />
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1">
-              <Label className="text-sm">Home Size</Label>
-              <Select value={homeSize} onValueChange={(v) => setHomeSize(v as HomeSize)}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(HOME_SIZE_LABELS).map(([value, label]) => (
-                    <SelectItem key={value} value={value}>{label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-sm">Distance</Label>
-              <Select
-                value={String(distanceMiles)}
-                onValueChange={(v) => setDistanceMiles(Number(v))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {DISTANCE_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={String(opt.value)}>{opt.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className="space-y-1">
-            <Label className="text-sm">Target Move Date (optional)</Label>
-            <input
-              type="date"
-              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              value={moveDate}
-              onChange={(e) => setMoveDate(e.target.value)}
-            />
+            {RELOCATION.fields.map((f) => (
+              <div key={f.key} className="space-y-1">
+                <Label className="text-sm" htmlFor={`reloc-${f.key}`}>{f.label}</Label>
+                <Input id={`reloc-${f.key}`} inputMode="decimal" placeholder={f.kind === "months" ? "months" : "from your quote"}
+                  value={costs[f.key] ?? ""} onChange={(e) => setCosts({ ...costs, [f.key]: e.target.value })} />
+              </div>
+            ))}
           </div>
 
           <Button onClick={handleEstimateMoving} disabled={movingLoading} className="w-full">
@@ -207,39 +93,31 @@ export function PortalFinancialTools({ contactId, calcHistory }: PortalFinancial
             ) : (
               <Calculator className="h-4 w-4 mr-2" />
             )}
-            Estimate Moving Costs
+            Total my moving budget
           </Button>
 
-          {/* Result */}
-          {movingResult && (
+          {movingResult && !movingResult.ok && (
+            <ul className="list-disc pl-5 text-sm text-muted-foreground">
+              {movingResult.missing.map((m) => <li key={m.key}>{m.message}</li>)}
+              {movingResult.refused.map((r) => <li key={r.key}>{r.label}: {r.reason}</li>)}
+            </ul>
+          )}
+          {movingResult && movingResult.ok && (
             <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 space-y-3">
               <div className="flex items-center justify-between">
-                <span className="font-semibold text-blue-900">Total Estimated Cost</span>
-                <span className="text-xl font-bold text-blue-700">
-                  ${Number(movingResult.total_estimated_cost).toLocaleString()}
-                </span>
+                <span className="font-semibold text-blue-900">Total budget ({movingResult.period})</span>
+                <span className="text-xl font-bold text-blue-700">${Number(movingResult.outputs.total).toLocaleString()}</span>
               </div>
               <div className="space-y-1.5 pt-2 border-t border-blue-200">
-                {Object.entries(movingResult.cost_breakdown as Record<string, number>).map(([key, val]) => (
-                  <div key={key} className="flex items-center justify-between text-sm text-blue-800">
-                    <span className="capitalize">{key.replace(/_/g, " ")}</span>
-                    <span>${Number(val).toLocaleString()}</span>
+                {movingResult.lines.filter((l) => l.amount > 0).map((l) => (
+                  <div key={l.key} className="flex items-center justify-between text-sm text-blue-800">
+                    <span>{l.label}</span>
+                    <span>${l.amount.toLocaleString()}</span>
                   </div>
                 ))}
               </div>
-              {movingResult.moving_timeline && (
-                <div className="pt-2 border-t border-blue-200">
-                  <p className="text-sm font-medium text-blue-900 mb-2">Moving Timeline</p>
-                  <div className="space-y-1">
-                    {Object.entries(movingResult.moving_timeline as Record<string, string[]>).map(([phase, tasks]) => (
-                      <div key={phase} className="text-xs text-blue-800">
-                        <span className="font-medium capitalize">{phase.replace(/_/g, " ")}: </span>
-                        {(tasks as string[]).slice(0, 2).join(", ")}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <p className="text-xs text-blue-800">Built only from the figures you entered — nothing is assumed for a cost you left blank.</p>
+              {movingResult.disclaimers.map((d) => <p key={d} className="text-xs text-blue-800">{d}</p>)}
             </div>
           )}
         </CardContent>

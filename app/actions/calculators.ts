@@ -492,8 +492,13 @@ export async function analyzeInvestmentProperty(data: {
   hoaFees: number
   maintenanceReserve: number // % of rent
   vacancyRate: number // % of year vacant
+  /** Wave 156 (156H round 2): the loan term is the investor's — it was a fixed 30 years. */
+  loanTermYears: number
   address?: string
 }) {
+  const bad = (["purchasePrice", "downPaymentPercent", "interestRate", "estimatedRent", "propertyTaxes", "insurance", "hoaFees", "maintenanceReserve", "vacancyRate", "loanTermYears"] as const)
+    .filter((k) => !(typeof data?.[k] === "number" && Number.isFinite(data[k]) && data[k] >= 0))
+  if (bad.length || !(data.loanTermYears > 0)) return { success: false as const, error: `Enter a value: ${bad.length ? bad.join(", ") : "loanTermYears"} — nothing is assumed for a blank figure.` }
   const actor = await calcSessionActor()
   if (!actor.ok) return { success: false as const, error: actor.error }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
@@ -501,9 +506,10 @@ export async function analyzeInvestmentProperty(data: {
   const downPayment = data.purchasePrice * (data.downPaymentPercent / 100)
   const loanAmount = data.purchasePrice - downPayment
   const monthlyRate = data.interestRate / 100 / 12
-  const numPayments = 30 * 12
-  const monthlyMortgage =
-    (loanAmount * monthlyRate * Math.pow(1 + monthlyRate, numPayments)) / (Math.pow(1 + monthlyRate, numPayments) - 1)
+  const numPayments = Math.round(data.loanTermYears * 12)
+  const monthlyMortgage = monthlyRate === 0
+    ? loanAmount / numPayments
+    : (loanAmount * monthlyRate * Math.pow(1 + monthlyRate, numPayments)) / (Math.pow(1 + monthlyRate, numPayments) - 1)
 
   const monthlyExpenses =
     monthlyMortgage +
@@ -586,60 +592,11 @@ Determine if this is a good investment:
   }).then((r) => ("financial_metrics" in r ? r : { success: false as const, error: ("error" in r && r.error) || "Not recorded" }))
 }
 
-// ============================================
-// MOVING COST ESTIMATOR
-// ============================================
-
-export async function estimateMovingCosts(data: {
-  currentCity: string
-  currentState: string
-  newCity: string
-  newState: string
-  homeSize: "studio" | "1br" | "2br" | "3br" | "4br+" | "house"
-  distance: number // miles
-  moveDate: string
-}) {
-  const baseCosts = {
-    studio: { movers: 800, boxes: 150, truck: 300 },
-    "1br": { movers: 1200, boxes: 200, truck: 400 },
-    "2br": { movers: 1800, boxes: 300, truck: 500 },
-    "3br": { movers: 2500, boxes: 400, truck: 600 },
-    "4br+": { movers: 3500, boxes: 500, truck: 800 },
-    house: { movers: 4000, boxes: 600, truck: 1000 },
-  }
-
-  const costs = baseCosts[data.homeSize]
-  const distanceMultiplier = data.distance > 100 ? 1.5 : 1.0
-
-  const estimates = {
-    professional_movers: Math.round(costs.movers * distanceMultiplier),
-    packing_materials: costs.boxes,
-    truck_rental: costs.truck,
-    storage: 150, // per month if needed
-    utilities_setup: 200,
-    address_changes: 50,
-    cleaning: 300,
-    travel: data.distance > 50 ? 500 : 0,
-    contingency: 500,
-  }
-
-  const totalCost = Object.values(estimates).reduce((a, b) => a + b, 0)
-
-  return {
-    success: true,
-    cost_breakdown: estimates,
-    total_estimated_cost: totalCost,
-    moving_timeline: {
-      "8_weeks_before": ["Research moving companies", "Declutter and donate"],
-      "6_weeks_before": ["Get moving quotes", "Start packing non-essentials"],
-      "4_weeks_before": ["Book movers", "Transfer utilities"],
-      "2_weeks_before": ["Pack everything", "Confirm all arrangements"],
-      "1_week_before": ["Final packing", "Clean current home"],
-      moving_day: ["Supervise movers", "Do final walkthrough"],
-    },
-    downloadable_checklist_url: "/tools/moving-checklist.pdf",
-  }
-}
+// TOMBSTONE (wave 156, lane 156H, round 2) — `estimateMovingCosts` stood here: an invented dollar table per home size (movers
+// $800–$4,000, boxes, truck, $150 storage, $200 utilities, $300 cleaning, $500 contingency) × an invented 1.5 "distance multiplier",
+// shown to a client as their moving costs. SURVIVOR: lib/calculators/engine.ts:705 runCalculator("relocation_budget", …) — the
+// person's own quotes, "Enter a value" when none is given — run in the browser by its one caller,
+// app/portal/[contactId]/resources/portal-financial-tools.tsx, which still saves the result through saveCalculatorResult below.
 
 // UUID shape check — `id` below is interpolated into a PostgREST .or() filter
 // string, so it must be proven to be a bare UUID first (a crafted value could
@@ -1105,7 +1062,7 @@ export async function calculateHomeValue(
         sale_price: Math.round(a.comp.salePrice),
         sale_date: a.comp.saleDate,
         beds: a.comp.bedrooms ?? null,
-        baths: (a.comp.fullBaths ?? 0) + (a.comp.halfBaths ?? 0) * 0.5 || null,
+        baths: (a.comp.fullBaths ?? 0) + (a.comp.halfBaths ?? 0) / 2 || null,
         sqft,
         price_per_sqft:
           a.comp.pricePerSqft != null
@@ -1246,8 +1203,9 @@ export async function getPublicPropertyFacts(input: {
 }
 
 /**
- * Monthly payment for ONE property, with the property's OWN tax bill and HOA dues when the
- * public record carries them (else the labelled rate default, and the result says which).
+ * Monthly payment for ONE property, with the property's OWN county tax bill and HOA dues when the public record carries them
+ * (labelled "property record"), and the visitor's OWN loan figures for everything else. Wave 156 (156H round 2): the 20% / 6.5% /
+ * 1.1% / 0.35% / 0.5% defaults this used are gone — a blank figure answers "Enter a value" (lib/calculators/buyer-payment.ts).
  * Price: the listing's list price when opened from a listing, else the visitor's number.
  */
 export async function calculatePropertyPayment(input: {
@@ -1258,9 +1216,7 @@ export async function calculatePropertyPayment(input: {
   state?: string | null
   zipCode?: string | null
   price?: number
-  downPaymentPercent?: number
-  annualInterestRatePct?: number
-  loanTermYears?: number
+  loan: import("@/lib/calculators/buyer-payment").LoanAssumptionInputs
 }) {
   const factsResult = await getPublicPropertyFacts(input)
   if (!factsResult.success) return factsResult
@@ -1268,234 +1224,61 @@ export async function calculatePropertyPayment(input: {
   const listingPrice = facts?.listPrice ?? null
   const price = input.listingSlug ? listingPrice ?? input.price ?? 0 : input.price ?? listingPrice ?? 0
   if (!(price > 0)) return { success: false as const, error: "Enter a purchase price to estimate the payment." }
-  const { estimateMonthlyPayment } = await import("@/lib/buyer-offers/affordability")
-  const payment = estimateMonthlyPayment({
-    price,
-    downPaymentPercent: input.downPaymentPercent,
-    annualInterestRatePct: input.annualInterestRatePct,
-    loanTermYears: input.loanTermYears,
+  const { buyerPaymentFor } = await import("@/lib/calculators/buyer-payment")
+  const loan = { ...(input.loan ?? {}) }
+  const recordHoa = typeof facts?.hoaMonthly === "number" && facts.hoaMonthly > 0 && (loan.hoaMonthly == null || String(loan.hoaMonthly).trim() === "") ? facts.hoaMonthly : null
+  const outcome = buyerPaymentFor(price, recordHoa !== null ? { ...loan, hoaMonthly: recordHoa } : loan, {
     annualPropertyTax: facts?.annualPropertyTax ?? null,
-    hoaMonthly: facts?.hoaMonthly ?? undefined,
+    taxCitation: `This home's ${facts?.propertyTaxYear ?? "most recent"} county tax bill (public record)`,
+    recordHoaMonthly: recordHoa,
   })
-  const taxNote = payment.taxBasis === "county_tax_bill"
-    ? `Property tax uses this home's ${facts?.propertyTaxYear ?? "most recent"} county tax bill ($${Math.round(facts?.annualPropertyTax ?? 0).toLocaleString()}/yr). Taxes can be reassessed after a sale, so a buyer's bill may differ.`
-    : "No county tax bill was found for this address, so property tax is estimated at a typical rate — ask us for the exact figure."
-  return {
-    success: true as const,
-    price,
-    payment,
-    facts,
-    taxNote,
-    disclaimer: "Estimate only — not a loan offer. Rate, insurance and PMI are adjustable assumptions.",
-  }
+  return { success: true as const, price, outcome, facts }
 }
 
 // ============================================
-// AFFORDABILITY CALCULATOR (Public, No Gate)
+// THE PUBLIC CALCULATOR TOOLS (one engine)
 // ============================================
+//
+// TOMBSTONE (wave 156, lane 156H, round 2) — `calculateAffordability` (a 1.25% tax rate, 28/36 DTI, $150 insurance, 0.5% PMI,
+// 2.5% closing costs, 1% maintenance and $250 utilities nobody entered) and `calculateRentVsBuy` (3% appreciation, 3% rent
+// growth, 1.25% tax, 1% maintenance, $150 insurance, 2.5% closing, a 7% "opportunity" return and a 25% tax bracket, plus the
+// caller-named brokerage's commission split as the selling cost) stood here. SURVIVOR: runCalculatorTool at app/actions/calculators.ts:1256, which runs
+// lib/calculators/engine.ts:549 / :575 runCalculator for "affordability_range" / "buy_vs_rent" (and every other public calculator) on the
+// person's OWN figures and keeps the anonymous usage row + the signed-in receipt these two filed. Callers moved:
+// app/dashboard/calculators/calculators-client.tsx, app/dashboard/ai-tools/ai-tools-client.tsx; the AI tools hub's affordability
+// tool runs the engine directly (app/actions/ai-tools-hub.ts runAffordabilityTool).
 
-export async function calculateAffordability(data: {
-  annualIncome: number
-  monthlyDebts: number
-  downPayment: number
-  interestRate: number
-  propertyTaxRate?: number
-  hoaFees?: number
+/**
+ * Run one public calculator on the engine (audience "public": never an internal commission term) and record its usage exactly as
+ * the retired affordability / rent-vs-buy doors did — an anonymous visitor files an untenanted usage row; a signed-in caller's row
+ * carries the SESSION tenant and one receipt. A refused calculation ("Enter a value…") is returned, never tracked as a run.
+ */
+export async function runCalculatorTool(data: {
+  kind: string
+  inputs: Record<string, unknown>
+  estimateKeys?: string[]
+  jurisdiction?: string | null
   visitorId?: string
 }) {
   const vid = data.visitorId || generateVisitorId()
-
-  const propertyTaxRate = data.propertyTaxRate || 0.0125 // 1.25% default
-  const hoaFees = data.hoaFees || 0
-
-  // Calculate debt-to-income ratios
-  const maxMonthlyPayment = (data.annualIncome / 12) * 0.28 // 28% front-end DTI
-  const maxWithDebts = (data.annualIncome / 12) * 0.36 - data.monthlyDebts // 36% back-end DTI
-
-  const affordableMonthly = Math.min(maxMonthlyPayment, maxWithDebts)
-
-  // Calculate max home price
-  const monthlyRate = data.interestRate / 100 / 12
-  const numPayments = 30 * 12
-
-  const pniFactor = (monthlyRate * Math.pow(1 + monthlyRate, numPayments)) / (Math.pow(1 + monthlyRate, numPayments) - 1)
-
-  // Working backwards: affordableMonthly = P&I + property tax + insurance + HOA
-  const insuranceEstimate = 150 // Average monthly homeowners insurance
-  const availableForPI = affordableMonthly - hoaFees - insuranceEstimate
-
-  // Iterative calculation for max home price
-  let maxHomePrice = 0
-  for (let price = 100000; price <= 10000000; price += 1000) {
-    const loanAmount = price - data.downPayment
-    const pi = loanAmount * pniFactor
-    const propertyTax = (price * propertyTaxRate) / 12
-    const pmi = loanAmount > price * 0.8 ? loanAmount * 0.005 : 0
-
-    if (pi + propertyTax + pmi <= availableForPI) {
-      maxHomePrice = price
+  const { runCalculator, CALCULATOR_KINDS } = await import("@/lib/calculators/engine")
+  if (!(CALCULATOR_KINDS as readonly string[]).includes(String(data.kind))) return { success: false as const, error: "Unknown calculator" }
+  const outcome = runCalculator(String(data.kind), data.inputs ?? {}, {
+    audience: "public",
+    jurisdiction: data.jurisdiction ?? null,
+    estimateKeys: Array.isArray(data.estimateKeys) ? data.estimateKeys.map(String).slice(0, 40) : [],
+  })
+  if (outcome.ok) {
+    const usageSeat = await usageSeatOrNull()
+    const track = () => trackToolUsage({ tool: String(data.kind), visitorId: vid, inputs: data.inputs, brokerageId: usageSeat?.brokerageId ?? null })
+    if (usageSeat) {
+      const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
+      await ledgerSessionAction({ brokerageId: usageSeat.brokerageId, action: `calculator.${String(data.kind)}.run`, actor: { type: "user", userId: usageSeat.userId }, subject: { type: "brokerage", id: usageSeat.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool: String(data.kind) } }, track)
     } else {
-      break
+      await track()
     }
   }
-
-  const loanAmount = maxHomePrice - data.downPayment
-  const monthlyPI = loanAmount * pniFactor
-  const monthlyPropertyTax = (maxHomePrice * propertyTaxRate) / 12
-  const monthlyInsurance = insuranceEstimate
-  const monthlyPMI = loanAmount > maxHomePrice * 0.8 ? (loanAmount * 0.005) / 12 : 0
-
-  const totalMonthlyPayment = monthlyPI + monthlyPropertyTax + monthlyInsurance + monthlyPMI + hoaFees
-
-  // Track usage. Tenant from the SESSION only — this action takes no brokerage
-  // argument and must not acquire one, so a logged-out visitor files an
-  // untenanted (anonymous) row and a signed-in caller files an attributable one.
-  // (wave 155, lane 155R23) …and a signed-in caller's usage row leaves ONE receipt (usageSeatOrNull above; no key — a second
-  // calculation is a second calculation). An anonymous visitor's row is filed exactly as before, unrecorded.
-  const usageSeat = await usageSeatOrNull()
-  const trackAffordability = () => trackToolUsage({ tool: "affordability", visitorId: vid, inputs: data, brokerageId: usageSeat?.brokerageId ?? null })
-  if (usageSeat) {
-    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    await ledgerSessionAction({ brokerageId: usageSeat.brokerageId, action: "calculator.affordability.run", actor: { type: "user", userId: usageSeat.userId }, subject: { type: "brokerage", id: usageSeat.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool: "affordability" } }, trackAffordability)
-  } else {
-    await trackAffordability()
-  }
-
-  return {
-    success: true,
-    maxHomePrice,
-    downPayment: data.downPayment,
-    loanAmount,
-    monthlyBreakdown: {
-      principal_interest: Math.round(monthlyPI),
-      property_tax: Math.round(monthlyPropertyTax),
-      insurance: Math.round(monthlyInsurance),
-      pmi: Math.round(monthlyPMI),
-      hoa: hoaFees,
-      total: Math.round(totalMonthlyPayment),
-    },
-    hiddenCosts: {
-      closing_costs: Math.round(maxHomePrice * 0.025), // Approximate buyer closing costs (non-commission)
-      maintenance_budget: Math.round(maxHomePrice * 0.01) / 12,
-      utilities_estimate: 250,
-    },
-    recommendations: [
-      data.downPayment < maxHomePrice * 0.2
-        ? "Increase down payment to 20% to avoid PMI and save $" + Math.round(monthlyPMI) + "/month"
-        : "Great down payment! No PMI required.",
-      data.monthlyDebts > data.annualIncome / 12 * 0.2 ? "Consider reducing monthly debts to increase buying power" : "Debt levels look healthy",
-      "Budget $" + Math.round((maxHomePrice * 0.01) / 12) + "/month for home maintenance",
-    ],
-    visitorId: vid,
-  }
-}
-
-// ============================================
-// RENT VS BUY CALCULATOR (Public, No Gate)
-// ============================================
-
-export async function calculateRentVsBuy(data: {
-  rentAmount: number
-  homePrice: number
-  downPayment: number
-  interestRate: number
-  yearsToStay: number
-  annualAppreciation?: number
-  city?: string
-  visitorId?: string
-  brokerageId: string
-}) {
-  const vid = data.visitorId || generateVisitorId()
-
-  // Get brokerage commission structure for selling scenario
-  const commissionStructure = await getDefaultCommissionStructure(data.brokerageId)
-  const totalCommissionRate = (commissionStructure.agentBuyerSideRate + commissionStructure.brokerageBuyerSideRate) + (commissionStructure.agentListingSideRate + commissionStructure.brokerageListingSideRate)
-
-  const appreciationRate = data.annualAppreciation || 0.03 // 3% default (market appreciation, not brokerage config)
-  const propertyTaxRate = 0.0125
-  const maintenanceRate = 0.01
-
-  // Buying costs
-  const loanAmount = data.homePrice - data.downPayment
-  const monthlyRate = data.interestRate / 100 / 12
-  const numPayments = 30 * 12
-  const monthlyPI = loanAmount * ((monthlyRate * Math.pow(1 + monthlyRate, numPayments)) / (Math.pow(1 + monthlyRate, numPayments) - 1))
-
-  const monthlyPropertyTax = (data.homePrice * propertyTaxRate) / 12
-  const monthlyInsurance = 150
-  const monthlyMaintenance = (data.homePrice * maintenanceRate) / 12
-
-  const totalMonthlyOwnership = monthlyPI + monthlyPropertyTax + monthlyInsurance + monthlyMaintenance
-
-  // Calculate over time period
-  let totalRentCost = 0
-  let totalOwnershipCost = data.downPayment + data.homePrice * 0.025 // Down payment + buyer closing costs (non-commission)
-  let homeValueAfterYears = data.homePrice
-
-  for (let year = 1; year <= data.yearsToStay; year++) {
-    // Rent increases 3% annually
-    const yearlyRent = data.rentAmount * 12 * Math.pow(1.03, year - 1)
-    totalRentCost += yearlyRent
-
-    // Ownership costs
-    totalOwnershipCost += totalMonthlyOwnership * 12
-
-    // Home appreciates
-    homeValueAfterYears = data.homePrice * Math.pow(1 + appreciationRate, year)
-  }
-
-  // Calculate equity and ROI for buying
-  const equityBuilt = homeValueAfterYears - loanAmount
-  const netProceedsAfterSelling = homeValueAfterYears - loanAmount - homeValueAfterYears * totalCommissionRate // After commission
-
-  const breakEvenPoint = Math.ceil(
-    (data.downPayment + data.homePrice * 0.025) / ((totalMonthlyOwnership - data.rentAmount) * 12 + data.homePrice * appreciationRate),
-  )
-
-  // Track usage. NOT `data.brokerageId` — that parameter is the caller's to name
-  // (this is a `"use server"` export), and stamping from it would let any caller
-  // choose which tenant's analytics they land in. The commission lookup above can
-  // live with a caller-supplied id because it only READS a config; a tenant stamp
-  // cannot. Resolved from the session instead, NULL when there is none.
-  // (wave 155, lane 155R23) …and a signed-in caller's usage row leaves ONE receipt (usageSeatOrNull above; no key). An
-  // anonymous visitor's row is filed exactly as before, unrecorded.
-  const usageSeat = await usageSeatOrNull()
-  const trackRentVsBuy = () => trackToolUsage({ tool: "rent_vs_buy", visitorId: vid, inputs: data, location: data.city, brokerageId: usageSeat?.brokerageId ?? null })
-  if (usageSeat) {
-    const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-    await ledgerSessionAction({ brokerageId: usageSeat.brokerageId, action: "calculator.rent_vs_buy.run", actor: { type: "user", userId: usageSeat.userId }, subject: { type: "brokerage", id: usageSeat.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool: "rent_vs_buy" } }, trackRentVsBuy)
-  } else {
-    await trackRentVsBuy()
-  }
-
-  const recommendation =
-    breakEvenPoint <= data.yearsToStay
-      ? `BUYING is better if you stay ${data.yearsToStay} years. You'll build $${Math.round(equityBuilt).toLocaleString()} in equity.`
-      : `RENTING is better for ${data.yearsToStay} years. You'd need to stay ${breakEvenPoint} years to break even on buying.`
-
-  return {
-    success: true,
-    recommendation,
-    breakEvenYears: breakEvenPoint,
-    rentScenario: {
-      totalCost: Math.round(totalRentCost),
-      monthlyPayment: data.rentAmount,
-      equityBuilt: 0,
-    },
-    buyScenario: {
-      totalCost: Math.round(totalOwnershipCost),
-      monthlyPayment: Math.round(totalMonthlyOwnership),
-      equityBuilt: Math.round(equityBuilt),
-      homeValueAfterYears: Math.round(homeValueAfterYears),
-      netProceedsIfSold: Math.round(netProceedsAfterSelling),
-    },
-    analysis: {
-      opportunityCost: `If you invested the down payment instead, it could grow to $${Math.round(data.downPayment * Math.pow(1.07, data.yearsToStay)).toLocaleString()} at 7% annual return`,
-      taxBenefits: `Estimated $${Math.round((monthlyPI * 0.25) / 12)} monthly tax deduction (25% tax bracket)`,
-      flexibilityFactor: data.yearsToStay < 3 ? "Renting provides more flexibility for short-term plans" : "Buying builds wealth for longer stays",
-    },
-    visitorId: vid,
-  }
+  return { success: true as const, outcome, visitorId: vid }
 }
 
 // ============================================
