@@ -3725,9 +3725,27 @@ export async function getClosingTeam(transactionId: string) {
     ...facts.documents.map((d) => ({ id: d.id as string | null, docType: String(d.doc_type ?? ""), label: String(d.doc_label ?? d.doc_type ?? ""), status: String(d.status ?? ""), responsibleParticipantId: (d.responsible_participant_id as string | null) ?? null, owner: cp.closingDocumentOwner(String(d.doc_type ?? ""), input, assessment) })),
     ...KEY_DOCS.filter((k) => !facts.documents.some((d) => String(d.doc_type ?? "").includes(k))).map((k) => ({ id: null as string | null, docType: k, label: k.replace(/_/g, " "), status: "not_on_file", responsibleParticipantId: null as string | null, owner: cp.closingDocumentOwner(k, input, assessment) })),
   ]
+  // SIGNED CHANGES AFTER THE CLOSING DISCLOSURE: the executed addenda / amendments (contract_term_versions, the one versioned record)
+  // signed after the latest recorded Closing Disclosure receipt. What they mean for the CD is the pure rule's — a corrected disclosure,
+  // and a new wait only on the lender's determination; nothing here restarts or waives one. A refused read is said, never "no change".
+  let cdAfterChange: { changedTerms: string[]; consequence: ReturnType<typeof cp.closingDisclosureConsequence> } | { unreadable: string } | null = null
+  const { data: rcpt, error: rErr } = await gate.db.from("trid_disclosure_receipts").select("received_at, delivered_at").eq("transaction_id", gate.transactionId).eq("brokerage_id", gate.brokerageId).order("disclosure_version", { ascending: false }).limit(1)
+  const lastCd = (((rcpt ?? []) as Array<{ received_at?: string | null; delivered_at?: string | null }>)[0]) ?? null
+  const since = lastCd ? (lastCd.received_at ?? lastCd.delivered_at ?? null) : null
+  if (rErr) cdAfterChange = { unreadable: "The Closing Disclosure receipts could not be read." }
+  else if (since) {
+    const { data: vers, error: vErr } = await gate.db.from("contract_term_versions").select("terms, executed_at, source, status").eq("transaction_id", gate.transactionId).eq("brokerage_id", gate.brokerageId).eq("status", "executed")
+    if (vErr) cdAfterChange = { unreadable: "The signed contract changes could not be read." }
+    else {
+      const changedTerms = [...new Set(((vers ?? []) as Array<{ terms?: Record<string, unknown> | null; executed_at?: string | null; source?: string | null }>)
+        .filter((v) => (v.source === "addendum" || v.source === "amendment") && !!v.executed_at && Date.parse(String(v.executed_at)) > Date.parse(since))
+        .flatMap((v) => Object.keys(v.terms ?? {})))]
+      if (changedTerms.length > 0) cdAfterChange = { changedTerms, consequence: cp.closingDisclosureConsequence({ changedTerms, financing: assessment.financing }) }
+    }
+  }
   // The vocabularies ride the answer so the card never restates them (CLAUDE.md §6) and the browser bundle never loads the rule module.
   const vocab = { partyRoles: cp.CLOSING_PARTY_ROLES.map((r) => ({ value: r, label: cp.PARTY_ROLE_LABEL[r] })), represents: [...cp.PARTY_REPRESENTS], settlementKinds: [...cp.SETTLEMENT_AGENT_KINDS], bases: [...cp.SETTLEMENT_AGENT_BASES], checkStatuses: [...cp.CLOSING_CHECK_STATUSES] }
-  return { success: true as const, schemaPending: facts.schemaPending, assessment, checklist, documents, participants: input.participants, settlement: input.settlement, aiRule: cp.CLOSING_STATEMENT_AI_RULE, vocab }
+  return { success: true as const, schemaPending: facts.schemaPending, assessment, checklist, documents, participants: input.participants, settlement: input.settlement, aiRule: cp.CLOSING_STATEMENT_AI_RULE, vocab, cdAfterChange, waitRestartingChanges: [...cp.WAIT_RESTARTING_CD_CHANGES] }
 }
 
 /**

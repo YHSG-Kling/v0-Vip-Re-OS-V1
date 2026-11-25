@@ -101,7 +101,7 @@ function world(): MemClient {
       { id: DOC_X, transaction_id: TX_X, brokerage_id: B2, doc_type: "title_commitment", doc_label: "Other", status: "uploaded" },
     ],
     transaction_tasks: [], transaction_timeline: [], agent_action_ledger: [], tenant_policy_versions: [], closing_disclosure_agreement: [],
-    documents: [], notifications: [], commission_distributions: [], agent_commissions: [], commission_adjustments: [], trid_disclosure_receipts: [],
+    documents: [], notifications: [], commission_distributions: [], agent_commissions: [], commission_adjustments: [], trid_disclosure_receipts: [], contract_term_versions: [],
     trid_timeline: [], transaction_compliance_log: [], teams: [], lifecycle_events: [], policy_decisions: [], transaction_lenders: [],
   }, { uuidIds: true })
 }
@@ -328,6 +328,19 @@ async function sectionC(act: any) {
   // the card
   const card = await drive(() => act.getClosingTeamAction(TX_GA))
   check("the Closing Team card reads the deal (assessment, checklist, document owners, vocabularies)", card.r?.success === true && Array.isArray(card.r.checklist) && card.r.checklist.length === 9 && Array.isArray(card.r.documents) && card.r.vocab?.partyRoles?.length > 0, card.r?.error)
+
+  // a signed changed closing credit AFTER the Closing Disclosure, read through the card's door
+  m = as(U_BROKER)
+  m.tables.trid_disclosure_receipts.push({ id: u("5", 1), brokerage_id: B1, transaction_id: TX_GA, disclosure_version: 1, received_at: "2026-11-10T15:00:00Z", verification_status: "lender_confirmed" })
+  m.tables.contract_term_versions.push({ id: u("5", 2), brokerage_id: B1, transaction_id: TX_GA, source: "addendum", status: "executed", executed_at: "2026-11-15T15:00:00Z", terms: { closing_cost_contribution: 7500 } })
+  m.tables.contract_term_versions.push({ id: u("5", 3), brokerage_id: B1, transaction_id: TX_GA, source: "addendum", status: "executed", executed_at: "2026-11-01T15:00:00Z", terms: { inspection_period_days: 10 } })
+  const chg = await drive(() => act.getClosingTeamAction(TX_GA))
+  const cdc = chg.r?.cdAfterChange
+  check("changed closing credit signed AFTER the CD: the card names it, requires a corrected CD, and leaves any new wait to the lender (an earlier change is not counted)",
+    chg.r?.success === true && Array.isArray(cdc?.changedTerms) && cdc.changedTerms.join() === "closing_cost_contribution" && cdc.consequence?.correctedCdRequired === true && cdc.consequence?.restartsWaitAutomatically === false, cdc)
+  m = as(U_BROKER)
+  const none = await drive(() => act.getClosingTeamAction(TX_GA))
+  check("no Closing Disclosure on file → no after-CD change is claimed (positive control)", none.r?.success === true && none.r.cdAfterChange === null, none.r?.cdAfterChange)
 
   // responsibility on another deal's document
   m = as(U_BROKER)

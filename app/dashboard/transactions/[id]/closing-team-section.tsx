@@ -165,6 +165,15 @@ export function ClosingTeamSection({ transactionId }: { transactionId: string })
           )}
         </section>
 
+        {team.cdAfterChange && (
+          <section>
+            <h4 className="font-medium">Signed changes after the Closing Disclosure</h4>
+            {"unreadable" in team.cdAfterChange
+              ? <p className="text-amber-800">{team.cdAfterChange.unreadable} Check the signed changes before closing.</p>
+              : <p>{team.cdAfterChange.changedTerms.map(words).join(", ")} changed after the last Closing Disclosure. {team.cdAfterChange.consequence.note} (Only {team.waitRestartingChanges.map(words).join(", ")} restart the wait, as the lender determines.)</p>}
+          </section>
+        )}
+
         <section>
           <h4 className="font-medium">Closing checklist</h4>
           <ul className="space-y-1">
