@@ -211,3 +211,50 @@ export function canViewFinancials(
 // TOMBSTONE (wave 93 integrator): assertUserHasRole — its one caller (TransactionOrchestrator.advanceToStage,
 // a retyped ["admin","broker","tc","agent"] list) moved to canTransitionStage in this file, which derives
 // the tiers from TENANT_ADMIN_USER_TYPES and scopes agents / team leads to their own / led team's deals.
+
+/** What requireDealDesk answers: the session's seat on an ADMITTED deal, or why not (a desk refusal code, or one of the two below). */
+export type DealDeskSession =
+  | { ok: true; userId: string; agentId: string | null; brokerageId: string; userType: string; transactionId: string }
+  | { ok: false; code: DealDeskRefusal | "invalid_transaction" | "no_session"; error: string }
+
+const DEAL_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * THE DEAL DESK FOR THE SESSION (wave 156, lane 156E) — the ONE way a door that names ONE deal asks decideDealDesk above.
+ *
+ * Every AI / assistant door that acts on one deal (a model call over its records, a retrieval of its confidential rows, a paid
+ * tool call, a write) asks this FIRST, before any of those. The seat and the tenant are the SESSION's (getAgentContext, the
+ * effective seat under an impersonation grant) — or, for a door that already resolved the write seam
+ * (lib/platform/acting-context.ts resolveWriteContextForTenant), that seam's seat, handed in as `seat`. Never a body value,
+ * never a model's output: the deal id is only the thing being asked about, and it must be a uuid.
+ *
+ * The answer carries the transaction id the desk ADMITTED — writers pin `transaction_id` to it and `brokerage_id` to the
+ * session tenant it returns. FAILS CLOSED: no session, no tenant, a malformed id, a refused read, an unreadable session (a throw)
+ * are each a refusal. The roster is the desk's (stageTransitionTier); this function carries none.
+ *
+ * The three older wrappers of the same question keep their own names in their files (they are pinned by test:deal-desk §B–§G):
+ * app/actions/ai-transaction-coordinator.ts scopeTransaction, app/actions/transaction-milestones.ts dealDeskFor and
+ * app/actions/transactions.ts requireTransactionActor. Each asks decideDealDesk with the same session seat — one decision.
+ */
+export async function requireDealDesk(
+  transactionId: unknown,
+  seat?: { userId: string | null | undefined; userType: string | null | undefined; brokerageId: string | null | undefined; agentId?: string | null },
+): Promise<DealDeskSession> {
+  const id = typeof transactionId === "string" ? transactionId.trim() : ""
+  if (!DEAL_ID_SHAPE.test(id)) return { ok: false, code: "invalid_transaction", error: "Invalid transaction ID" }
+  try {
+    let s = seat
+    if (!s) {
+      const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+      const ctx = await getAgentContext()
+      if (!ctx.isAuthenticated) return { ok: false, code: "no_session", error: "Unauthorized" }
+      s = { userId: ctx.userId, userType: ctx.userType, brokerageId: ctx.brokerageId, agentId: ctx.agentId }
+    }
+    if (!s.userId || !s.brokerageId) return { ok: false, code: "no_session", error: "Unauthorized" }
+    const desk = await decideDealDesk({ userId: s.userId, role: s.userType ?? "", brokerageId: s.brokerageId, transactionId: id })
+    if (!desk.allowed) return { ok: false, code: desk.code, error: desk.reason }
+    return { ok: true, userId: s.userId, agentId: s.agentId ?? null, brokerageId: s.brokerageId, userType: String(s.userType ?? ""), transactionId: id }
+  } catch {
+    return { ok: false, code: "no_session", error: "Unauthorized" }
+  }
+}

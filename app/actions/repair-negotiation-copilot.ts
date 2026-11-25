@@ -101,6 +101,11 @@ export async function repairNegotiationCoPilot(params: {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
+  // THE DEAL DESK (wave 156, lane 156E — lib/transactions/role-guard.ts requireDealDesk). The reads below run on the caller's
+  // row-security client, whose transactions SELECT policies admit a vendor seat assigned to the deal — "can read it" let a
+  // lender / title / inspector seat run up to three model calls on the deal's repair negotiation. Refused before any of them.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
   return ledgered("session", { action: "transaction.repair_negotiation.advise", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", detail: { side: params.side } }, async () => {
 
   // ─── Load transaction + repairs + inspections in parallel ──────────────
@@ -449,12 +454,18 @@ export async function sendRepairResponseAsDraft(params: SendRepairResponseParams
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthorized" }
+  // THE DEAL DESK (wave 156, lane 156E): a repair response goes to the deal's CLIENT — only a seat that works the deal sends it. The
+  // deal (and so the recipient) is then read on the service client, in the session's tenant, for the ADMITTED deal only.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
 
-  const { data: tx } = await supabase
+  const { data: tx, error: txError } = await (await import("@/lib/supabase/service")).createServiceClient()
     .from("transactions")
     .select("id, contact_id")
-    .eq("id", params.transactionId)
+    .eq("id", desk.transactionId)
+    .eq("brokerage_id", desk.brokerageId)
     .maybeSingle()
+  if (txError) return { success: false, error: `Could not read the transaction: ${txError.message}` }
   if (!tx) return { success: false, error: "Transaction not found" }
 
   const contactId = (tx as { contact_id?: string | null }).contact_id ?? null

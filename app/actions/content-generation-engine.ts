@@ -138,6 +138,9 @@ export async function generateText(params: {
     const auth = await resolveAuthorizedAgentId()
     if (!auth.ok) return { success: false, error: auth.error }
     const agentId = auth.agentId
+    // A deal NAMED for context is read (and handed to the model) only when this seat WORKS it — THE DEAL DESK (wave 156, 156E).
+    const desk = params.transaction_id ? await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transaction_id) : null
+    if (desk && !desk.ok) return { success: false, error: desk.error }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
     return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.text.generate", actor: { type: "user", userId: auth.userId, agentId: agentId }, subject: { type: "content" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.content_type } }, async (): Promise<ContentGenerationResult> => {
 
@@ -210,6 +213,9 @@ export async function generateAudio(params: {
     const auth = await resolveAuthorizedAgentId()
     if (!auth.ok) return { success: false, error: auth.error }
     const agentId = auth.agentId
+    // A deal NAMED for context is read (and handed to the model) only when this seat WORKS it — THE DEAL DESK (wave 156, 156E).
+    const desk = params.transaction_id ? await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transaction_id) : null
+    if (desk && !desk.ok) return { success: false, error: desk.error }
     const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
     return await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "content.audio_script.generate", actor: { type: "user", userId: auth.userId, agentId: agentId }, subject: { type: "content" }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { content_type: params.content_type } }, async (): Promise<ContentGenerationResult> => {
 
@@ -275,6 +281,9 @@ export async function generateVideo(params: {
     const auth = await resolveAuthorizedAgentId()
     if (!auth.ok) return { success: false, error: auth.error }
     const agentId = auth.agentId
+    // A deal NAMED for context is read (and handed to the model) only when this seat WORKS it — THE DEAL DESK (wave 156, 156E).
+    const desk = params.transaction_id ? await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transaction_id) : null
+    if (desk && !desk.ok) return { success: false, error: desk.error }
 
     const context = await gatherContext({
       listing_id: params.listing_id,

@@ -88,6 +88,11 @@ export async function analyzeTransactionDocument(params: {
   // read-only act-as grant, or a foreign claim all refuse before any I/O.
   const wc = await resolveWriteContextForTenant(params.brokerageId)
   if (!wc.ok) return { success: false, error: wc.error }
+  // THE DEAL DESK (wave 156, lane 156E — lib/transactions/role-guard.ts requireDealDesk), asked with the WRITE SEAM's seat: the
+  // seam proves the tenant, never the deal. The seat must WORK this deal before its records are read, a model is reached or
+  // anything is written or sent.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId, wc)
+  if (!desk.ok) return { success: false, error: desk.error }
   const supabase = wc.db
 
   try {
@@ -290,6 +295,11 @@ export async function generateTransactionDocumentReminders(params: {
   // ★ ACT-AS WRITE SEAM ★ — see header. Tenant from the session; the claim is verified.
   const wc = await resolveWriteContextForTenant(params.brokerageId)
   if (!wc.ok) return { success: false, error: wc.error }
+  // THE DEAL DESK (wave 156, lane 156E — lib/transactions/role-guard.ts requireDealDesk), asked with the WRITE SEAM's seat: the
+  // seam proves the tenant, never the deal. The seat must WORK this deal before its records are read, a model is reached or
+  // anything is written or sent.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId, wc)
+  if (!desk.ok) return { success: false, error: desk.error }
   return ledgered({ userId: wc.actorUserId, brokerageId: wc.brokerageId, agentId: wc.agentId }, { action: "transaction.document_reminders.generate", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", detail: { impersonating: wc.isImpersonating } }, async () => {
   const supabase = wc.db
 
@@ -456,6 +466,11 @@ export async function checkTransactionDisclosures(params: {
   // ★ ACT-AS WRITE SEAM ★ — see header. Tenant from the session; the claim is verified.
   const wc = await resolveWriteContextForTenant(params.brokerageId)
   if (!wc.ok) return { success: false, error: wc.error }
+  // THE DEAL DESK (wave 156, lane 156E — lib/transactions/role-guard.ts requireDealDesk), asked with the WRITE SEAM's seat: the
+  // seam proves the tenant, never the deal. The seat must WORK this deal before its records are read, a model is reached or
+  // anything is written or sent.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId, wc)
+  if (!desk.ok) return { success: false, error: desk.error }
   return ledgered({ userId: wc.actorUserId, brokerageId: wc.brokerageId, agentId: wc.agentId }, { action: "transaction.disclosures.check", subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", detail: { impersonating: wc.isImpersonating, state: params.state ?? null } }, async () => {
 
   // The actual check + upsert is ONE implementation (§6), shared with the
@@ -497,19 +512,34 @@ export async function shareDocumentAnalysisWithClient(params: {
   // a human being outside the brokerage), so it gates the same way as the rest.
   const wc = await resolveWriteContextForTenant(params.brokerageId)
   if (!wc.ok) return { success: false, error: wc.error }
+  // THE DEAL DESK (wave 156, lane 156E — lib/transactions/role-guard.ts requireDealDesk), asked with the WRITE SEAM's seat: the
+  // seam proves the tenant, never the deal. The seat must WORK this deal before its records are read, a model is reached or
+  // anything is written or sent.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId, wc)
+  if (!desk.ok) return { success: false, error: desk.error }
   return ledgered({ userId: wc.actorUserId, brokerageId: wc.brokerageId, agentId: wc.agentId }, { action: "transaction.document_analysis.share_with_client", subject: { type: "contact", id: params.contactId }, riskClass: "COMMUNICATION", detail: { transaction_id: params.transactionId, impersonating: wc.isImpersonating } }, async () => {
   const supabase = wc.db
 
+  // The recipient must be a client ON THIS DEAL (wave 156, 156E): the contact id came from the request, and nothing checked it —
+  // a message could be dropped into ANY contact's portal, another tenant's client included. The deal is the desk's admitted one,
+  // read in the session's tenant; the agent on the message is the deal's, not a body value.
+  const svc = (await import("@/lib/supabase/service")).createServiceClient()
+  const { data: deal, error: dealError } = await svc.from("transactions").select("agent_id, contact_id, buyer_contact_id, seller_contact_id").eq("id", desk.transactionId).eq("brokerage_id", desk.brokerageId).maybeSingle()
+  if (dealError) return { success: false, error: `Could not read the deal: ${dealError.message}` }
+  const d = (deal ?? null) as { agent_id: string | null; contact_id: string | null; buyer_contact_id: string | null; seller_contact_id: string | null } | null
+  if (!d || ![d.contact_id, d.buyer_contact_id, d.seller_contact_id].includes(params.contactId)) return { success: false, error: "That contact is not a client on this deal" }
+
   const { error } = await supabase.from("client_portal_messages").insert({
-    transaction_id: params.transactionId,
+    transaction_id: desk.transactionId,
     contact_id: params.contactId,
-    agent_id: params.agentId,
-    brokerage_id: wc.brokerageId,
+    agent_id: d.agent_id ?? wc.agentId ?? params.agentId,
+    brokerage_id: desk.brokerageId,
     direction: "agent_to_client",
     body: `AI Document Review — ${params.documentLabel}\n\n${params.analysisText}`,
     created_at: new Date().toISOString(),
   })
 
+  // An INSERT either lands or is refused with an error (no RETURNING here: the session client may not see the row back).
   if (error) return { success: false, error: error.message }
   return { success: true }
   })

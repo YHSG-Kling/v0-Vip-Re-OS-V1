@@ -393,14 +393,16 @@ export async function generateAIDraft(params: {
 
     // Get transaction stage if available — verify it belongs to brokerage
     let stageContext = ""
-    if (transactionId) {
-      const { data: tx } = await supabase
-        .from("transactions").select("brokerage_id").eq("id", transactionId).maybeSingle()
-      if (tx && tx.brokerage_id === access.brokerageId) {
+    // The deal's record is read only for a deal this seat WORKS (wave 156, lane 156E — lib/transactions/role-guard.ts
+    // requireDealDesk): contact access is not deal access. A deal the desk refuses adds no context — the draft is still the
+    // contact's (this door is keyed on the contact; the deal is optional enrichment), and nothing of that deal reaches the model.
+    const desk = transactionId ? await (await import("@/lib/transactions/role-guard")).requireDealDesk(transactionId) : null
+    if (desk?.ok && desk.brokerageId === access.brokerageId) {
+      {
         const { data: milestones } = await supabase
           .from("transaction_milestones")
           .select("milestone_name, status")
-          .eq("transaction_id", transactionId)
+          .eq("transaction_id", desk.transactionId) // the ADMITTED deal is the pin (an older writer may not have stamped the row)
           .order("created_at", { ascending: false })
           .limit(1)
 

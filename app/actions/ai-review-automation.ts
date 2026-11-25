@@ -138,6 +138,10 @@ export async function aiDetermineReviewTiming(params: {
   if (!isValidUUID(params.transactionId) || !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid IDs" }
   }
+  // THE DEAL DESK (wave 156, lane 156E — lib/transactions/role-guard.ts requireDealDesk). This door had NO gate: it read the deal
+  // on the caller's row-security client (whose SELECT policies admit a vendor seat assigned to the deal) and spent a model call.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
 
   const supabase = await createClient()
 
@@ -275,6 +279,10 @@ export async function aiGenerateReviewRequest(params: {
   const supabase = await createClient()
   const scope = await requireAgentScope(supabase, params.agentId)
   if (!scope.ok) return { success: false, error: scope.error }
+  // THE DEAL DESK (wave 156, lane 156E): the agent scope above says WHOSE draft this is; it never asked about the DEAL. The seat
+  // must work this deal before the drafter (a model call) reads it.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   const lr = await ledgerSessionAction({ brokerageId: scope.brokerageId, action: "reputation.review_request.draft", actor: { type: "user", userId: scope.userId, agentId: scope.agentId }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { platform: params.platform, channel: params.channel } }, async () => {
 

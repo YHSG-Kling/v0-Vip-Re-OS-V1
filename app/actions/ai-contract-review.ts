@@ -81,6 +81,11 @@ export async function reviewContract(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  // THE DEAL DESK (wave 156, lane 156E — lib/transactions/role-guard.ts requireDealDesk): sharing the deal's tenant is not working
+  // it. A vendor / contact / ISA seat of the tenant, or an agent off the deal, is refused HERE — before any deal record is read
+  // and before the model is reached (AI is platform-covered: a call a seat may not make is a wrong invoice).
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
   const brokerageId = ctx.brokerageId
   // NOT `?? ctx.userId` (m360) — contract_reviews.agent_id is agents-class.
   const agentId = ctx.agentId
@@ -275,6 +280,9 @@ export async function reviewTransactionDocuments(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  // THE DEAL DESK (wave 156, lane 156E) — the seat must WORK this deal before its documents are read or reviewed by a model.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
 
   const supabase = createServiceClient()
 
@@ -408,6 +416,9 @@ export async function generateDocumentChecklist(params: {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  // THE DEAL DESK (wave 156, lane 156E) — the seat must WORK this deal before its documents are read or the model is reached.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
 
   const supabase = createServiceClient()
 
@@ -497,14 +508,13 @@ export async function extractContractTerms(params: {
     if (!ctx.isAuthenticated || !ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
-    // If transactionId is provided, verify ownership before AI burn
-    if (params.transactionId && isValidUUID(params.transactionId)) {
-      const svc = createServiceClient()
-      const { data: txOwnership } = await svc
-        .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
-      if (txOwnership && txOwnership.brokerage_id !== ctx.brokerageId) {
-        return { success: false, error: "Forbidden" }
-      }
+    // A deal NAMED here must be one the session's seat WORKS (lib/transactions/role-guard.ts requireDealDesk, wave 156) — before
+    // the model is reached. WAS: a tenant comparison that PASSED when the deal could not be found (`txOwnership && …`) and was
+    // skipped for a malformed id, so a seat spent a model call "for" any deal id. No deal named: the extraction reads only the
+    // text the caller pasted (no deal record is retrieved) and stays a tenant-member tool.
+    if (params.transactionId) {
+      const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+      if (!desk.ok) return { success: false, error: desk.error }
     }
 
     const ContractTermsSchema = z.object({
@@ -562,6 +572,11 @@ export async function applyContractExtraction(params: {
   if (!sessionCtx.isAuthenticated || !sessionCtx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
+  // THE DEAL DESK (wave 156, lane 156E): these are the deal's LEGAL terms (price, close date, address, deadlines). A seat that only
+  // shares the tenant — a vendor, a contact uploading through the portal (app/actions/documents.ts runs this on a classified
+  // purchase agreement), an ISA, an agent off the deal — is refused before the receipt is claimed and before anything is written.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(params.transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
   const ctx = { ...sessionCtx, brokerageId: sessionCtx.brokerageId } // WAVE 155 (155R3): the narrowed tenant, visible inside the receipt closure
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
   return await ledgerSessionAction({ brokerageId: ctx.brokerageId, action: "contract.extraction.apply", actor: { type: "user", userId: ctx.userId, agentId: ctx.agentId ?? null }, subject: { type: "transaction", id: params.transactionId }, riskClass: "LEGAL", reasonCode: "HUMAN_REQUESTED", detail: { fields: Object.entries(params.extracted ?? {}).filter(([, v]) => v != null).map(([k]) => k) } }, async () => {
@@ -599,15 +614,18 @@ export async function applyContractExtraction(params: {
     // Update the transactions row if there is anything to update — scoped
     // by brokerage as a belt-and-suspenders check
     if (Object.keys(transactionUpdates).length > 0) {
-      const { error: txError } = await supabase
+      const { data: txSaved, error: txError } = await supabase
         .from("transactions")
         .update(transactionUpdates)
-        .eq("id", params.transactionId)
+        .eq("id", desk.transactionId)
         .eq("brokerage_id", ctx.brokerageId)
+        .select("id")
 
       if (txError) {
         return { success: false, error: txError.message }
       }
+      // A write that matched nothing resolves without an error (CLAUDE.md §3) — COUNTED, never reported as applied.
+      if ((txSaved ?? []).length !== 1) return { success: false, error: "The transaction was not updated — nothing matched it in your brokerage" }
     }
 
     // Upsert milestone rows for each deadline

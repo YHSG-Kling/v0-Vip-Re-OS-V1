@@ -625,6 +625,10 @@ export async function generateListingOptimizations(transactionId: string) {
 
   const ownsTx = await verifyTransactionInBrokerage(transactionId, auth.brokerageId)
   if (!ownsTx) return { success: false, error: "Forbidden" }
+  // THE DEAL DESK (wave 156, lane 156E — lib/transactions/role-guard.ts requireDealDesk): "the deal is in my tenant" is not "I work
+  // this deal". The seat must work it before the deal is read and the model is reached.
+  const desk = await (await import("@/lib/transactions/role-guard")).requireDealDesk(transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
 
   const supabase = await createClient()
 
