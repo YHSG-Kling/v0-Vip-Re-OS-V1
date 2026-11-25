@@ -3009,7 +3009,7 @@ export async function enhancedGenerateListingDescription(params: {
   if (!params.transactionId && !params.propertyId) {
     return { success: false, error: 'Provide a transaction or a property to describe' }
   }
-
+  const desk = params.transactionId ? await (await import('@/lib/transactions/role-guard')).requireDealDesk(params.transactionId) : null; if (desk && !desk.ok) return { success: false, error: desk.error } // THE DEAL DESK (wave 156, 156E): a NAMED deal is read for the model only if this seat works it
   const supabase = await createClient()
 
   try {

@@ -174,10 +174,10 @@ export async function analyzeDocument(documentId: string) {
 
     if (error || !document) throw error ?? new Error("Document not found")
 
-    // Cross-tenant scope check before burning AI tokens.
-    if (document.brokerage_id !== ctx.brokerageId) {
-      return { success: false, error: "Forbidden" }
-    }
+    // Cross-tenant scope check, then THE DEAL DESK for the document's deal (wave 156, 156E), before burning AI tokens.
+    if (document.brokerage_id !== ctx.brokerageId) return { success: false, error: "Forbidden" }
+    const desk = document.transaction_id ? await (await import("@/lib/transactions/role-guard")).requireDealDesk(document.transaction_id) : null
+    if (desk && !desk.ok) return { success: false, error: desk.error }
 
     // AI document analysis
     const { object: analysis } = await generateObject({

@@ -148,7 +148,7 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
     // service client, so the write goes through the service client too —
     // deliberately, and only after that check.
     const writeClient = isClientSender ? createServiceClient() : supabase
-
+    if (transactionId) { const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i; const { data: tagDeal, error: tagErr } = uuid.test(String(transactionId)) && uuid.test(String(contactId)) ? await createServiceClient().from("transactions").select("id").eq("id", transactionId).eq("brokerage_id", contact.brokerage_id).or(`contact_id.eq.${contactId},buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`).maybeSingle() : { data: null, error: null }; if (tagErr || !tagDeal) return { success: false, error: "That deal is not one of this contact's deals" } } // wave 156 (156E): the deal TAG is a request value — it must be one of THIS contact's deals, in the contact's tenant
     // Insert message — through the ledgered portal egress (wave 98, lib/portal/portal-message-egress.ts).
     // A human sent it: actor is the session user, reason HUMAN_REQUESTED, no cycle (a person may
     // legitimately send the same words twice).

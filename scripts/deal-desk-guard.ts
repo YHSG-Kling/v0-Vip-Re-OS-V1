@@ -67,6 +67,24 @@
  *     provider is ever reached): each seat the desk refuses spends 0 model calls and writes nothing, each seat it admits
  *     reaches the seam. The agent-wide risk scan asks the desk per deal: only admitted deals reach the model, and a deal id
  *     that comes back from the model lands only on an admitted deal. Red on the tree before the change.
+ * §H  EVERY OTHER DOOR THAT ACTS ON ONE DEAL (wave 156, lane 156E). Outside the files §B–§G drive, many doors named one deal and
+ *     checked only the tenant (or nothing; or "the caller's row-security client can read it", which admits an assigned vendor):
+ *     contract review / extraction / applying extracted LEGAL terms, document drafting, commission, deposits, review requests,
+ *     the transaction-document doors, the repair-negotiation copilot and its send, the copilot milestone writer, content and
+ *     listing generation with a named deal, the staff copilot's create_task / log_activity (whose deal id is MODEL OUTPUT).
+ *     Each now asks lib/transactions/role-guard.ts requireDealDesk (the session's seat on decideDealDesk) first. §H:
+ *       · THE CENSUS (derived, comment-stripped) — every exported "use server" / route door that names a deal and reaches a model
+ *         (directly, through a model-reaching lib function — three passes, by NAME — or through a sibling in its own file), and
+ *         every door of the same files that names a deal and writes or sends: each is DRIVEN or NAMED (reason + a proof token
+ *         that must still be in the door), with controls for the finder;
+ *       · the source rule per driven door (desk before any model call, deal read, write or send; refusal returned) with controls;
+ *       · DRIVEN with counted seams (model, pipeline, video, books, commission record, inbox send — never a provider): each seat
+ *         the desk refuses, and another tenant's broker, spends 0 model calls, writes nothing, sends nothing [scope creep /
+ *         unauthorized action]; no seat the desk admits is refused BY the desk; the agent on the deal reaches the model; the
+ *         writers land for the agent and the coordinator in the session's tenant; a foreign-deal deposit is refused; a document
+ *         analysis cannot be dropped into the portal of a contact off the deal [privacy leakage]; applying the same extracted
+ *         terms twice is idempotent; the copilot tool writes the ADMITTED deal id, never the model's string [prompt-injection:
+ *         a model-supplied id]. Red on the tree before the change (DEAL_DESK_ROOT=<that tree>).
  *
  * BLIND SPOTS (published). The in-memory client has no row security, CHECKs or foreign keys — which is exactly why a gate
  * that leaned on row security shows up here. lib/teams/team-scope.ts leadsAgentsTeam is a counted fixture (it calls a
@@ -88,6 +106,13 @@
  * empty object: a door is shown to REACH the model, not to do anything sensible with its answer (that is each door's own
  * proof). The outbound send (sendTransactionCommunication) is driven for refusals only — a send is never performed here.
  * The fake has no row security on public.transactions, which is exactly the "whoever can read the deal" the old gate was.
+ * §H's model reach is NAME-based (a lib function that calls a model, three passes): a model reached through a computed name, a
+ * class method or a default export is not seen, and a shared name can over-include (over-inclusion is named, never passed
+ * silently). The staff copilot route and generateAIDraft are held by SOURCE rules, not driven. The admitted-seat runs show the
+ * desk does not refuse; a door's own later refusal (no agent row, a missing fixture row) is the door's and is not asserted. Cron /
+ * event reactors are system actors (tenant from the row, no session seat) and are outside the desk; the census covers only
+ * "use server" files and route handlers. Doors NAMED as another lane's (156B listing / offer, 156D CDA / title portal) keep
+ * their own gates and are reported, not re-gated here.
  */
 import { registerHooks } from "node:module"
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs"
@@ -123,6 +148,8 @@ const R1 = u("c", 1), VENDOR_ROW = u("f", 1), XVENDOR_ROW = u("f", 2)
 // §E: two more brokerage seats, a second deal of the same agents (it has no title / escrow record yet), and the deal-detail rows.
 const U_OWNER = u("a", 13), U_BADMIN = u("a", 14), U_ADMIN = u("a", 15), TX2 = u("d", 3)
 const P1 = u("c", 2), P_OLD = u("c", 3), P_X = u("c", 4), E1 = u("c", 5), E_X = u("c", 6), D1 = u("c", 7), D_X = u("c", 8), R_X = u("c", 9)
+// §H: the deal's client, another client of the tenant (not on the deal), the deal's listing, one contract document on the deal.
+const C1 = u("c", 20), C_OTHER = u("c", 21), L1 = u("c", 22), DOC1 = u("c", 23)
 /** The team fixture the counted team-scope seam answers from: who LEADS which agents' team. */
 const LEADS: Record<string, string[]> = { [U_LEAD]: [AG_A], [U_LEAD2]: [AG_B] }
 
@@ -145,7 +172,7 @@ function world(): MemClient {
       { id: AG_LEAD, user_id: U_LEAD, brokerage_id: B1 }, { id: AG_LEAD2, user_id: U_LEAD2, brokerage_id: B1 }, { id: AG_X, user_id: U_X, brokerage_id: B2 },
     ],
     transactions: [
-      { id: TX1, brokerage_id: B1, agent_id: AG_A, buyer_agent_id: AG_BUY, seller_agent_id: null, status: "under_contract", purchase_price: 400000 },
+      { id: TX1, brokerage_id: B1, agent_id: AG_A, buyer_agent_id: AG_BUY, seller_agent_id: null, status: "under_contract", purchase_price: 400000, contact_id: C1, listing_id: L1, property_address: "1 Fixture Way" },
       { id: TX_NOAGENT, brokerage_id: B1, agent_id: null, buyer_agent_id: null, seller_agent_id: null, status: "under_contract" },
       { id: TX_X, brokerage_id: B2, agent_id: AG_X, buyer_agent_id: null, seller_agent_id: null, status: "under_contract" },
       { id: TX2, brokerage_id: B1, agent_id: AG_A, buyer_agent_id: AG_BUY, seller_agent_id: null, status: "under_contract" },
@@ -160,6 +187,11 @@ function world(): MemClient {
     transaction_deadlines: [{ id: D1, transaction_id: TX1, brokerage_id: B1, deadline_type: "inspection", status: "pending", notes: "Inspection" }, { id: D_X, transaction_id: TX_X, brokerage_id: B2, deadline_type: "inspection", status: "pending", notes: "Other" }],
     transaction_timeline: [],
     generated_documents: [], lifecycle_events: [], notifications: [], agent_action_ledger: [], teams: [],
+    // §H: the deal's client, its listing and one contract document; the tables the §H writers land in.
+    contacts: [{ id: C1, brokerage_id: B1, first_name: "Casey", agent_id: AG_A }, { id: C_OTHER, brokerage_id: B1, first_name: "Other", agent_id: AG_B }],
+    listings: [{ id: L1, brokerage_id: B1, address: "1 Fixture Way" }],
+    transaction_documents: [{ id: DOC1, transaction_id: TX1, brokerage_id: B1, doc_type: "purchase_agreement", doc_label: "Purchase agreement", storage_url: null, extracted_data: { text: "fixture contract" } }],
+    deposits: [], compliance_tasks: [], transaction_milestones: [], client_portal_messages: [], tasks: [], activities: [],
   }, { uuidIds: true })
 }
 
@@ -167,7 +199,7 @@ function world(): MemClient {
 const G = globalThis as any
 G.__DD = {
   mem: world() as MemClient, seat: null as string | null, refuseTransactions: false, leads: LEADS, rls: false, policy: "live" as "live" | "proposed",
-  calls: { milestones: [] as any[], events: [] as any[], lender: [] as any[], other: 0, model: 0 }, modelObject: null as any,
+  calls: { milestones: [] as any[], events: [] as any[], lender: [] as any[], other: 0, model: 0, sends: [] as any[] }, modelObject: null as any,
   /** The caller's client. §E turns `rls` on: it is then the model of the live policies; the service client never is. */
   sess: () => (G.__DD.rls ? policySession(G.__DD.base(), G.__DD.seat) : G.__DD.base()),
   svc: () => G.__DD.base(),
@@ -188,8 +220,15 @@ const OVERRIDE: Record<string, string> = {
   "lib/supabase/service.ts": "export function createServiceClient(){ return globalThis.__DD.svc() }",
   // §G THE MODEL SEAM — counted; a provider is never reached. The stub answers with globalThis.__DD.modelObject (default {}).
   "lib/ai/generate.ts": "export function bookedGenerateObject(){ return async () => { globalThis.__DD.calls.model++; return { object: globalThis.__DD.modelObject ?? {}, usage: {} } } }",
-  "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__DD.calls.model++; return { text: 'stub', usage: {} } }",
+  "lib/ai/models.ts": "export async function generateTextRouted(){ globalThis.__DD.calls.model++; return { text: 'stub', usage: {} } }; export async function generateObjectRouted(){ globalThis.__DD.calls.model++; return { object: globalThis.__DD.modelObject ?? {}, usage: {} } }; export async function streamTextRouted(){ globalThis.__DD.calls.model++; throw new Error('fixture: no stream') }",
   "lib/ai/resolve-model.ts": "export function resolveModel(x){ return x }",
+  // §H: every other model / provider path the §H doors can reach — COUNTED; no model, video, books or provider is ever reached
+  // (also at a DEAL_DESK_ROOT run of the older tree, where the doors pass their gate and go on).
+  "lib/ai/pipeline.ts": "export async function runPipeline(){ globalThis.__DD.calls.model++; return { content: 'stub', text: 'stub' } }; export async function runPipelineSimple(){ globalThis.__DD.calls.model++; return 'stub' }",
+  "lib/video/video-director.ts": "const n = () => { globalThis.__DD.calls.other++; return { ok: false, error: 'fixture: not commissioned' } }; export async function commissionVideo(){ return n() }; export async function commissionVideoExperiment(){ return n() }; export async function commissionListingCuts(){ return n() }; export async function commissionCustomVideo(){ return n() }",
+  "lib/video/format-learning.ts": "export async function recommendPreferredAngleForKind(){ return null }",
+  "lib/finance/accounting-egress.ts": "const n = () => { globalThis.__DD.calls.other++; return { ok: false, skipped: true } }; export async function pushCommissionToAccounting(){ return n() }; export async function pushExpenseToAccounting(){ return n() }; export async function pushManualAccountingEntry(){ return n() }",
+  "app/actions/financial-kernel.ts": "export async function createCommissionRecordAction(){ globalThis.__DD.calls.other++; return { success: false, error: 'fixture: no commission record' } }",
 }
 /** Replace the module entirely — counted seams; the real module (and whatever it would reach) never loads. */
 const REPLACE: Record<string, string> = {
@@ -200,6 +239,8 @@ const REPLACE: Record<string, string> = {
   "lib/managers/cross-referral.ts": "export async function raiseReferralDeduped(){ globalThis.__DD.calls.other++; return { raised: false } }",
   "lib/kernel/appraiser-packet.ts": "export async function runAppraiserPacketCoaching(){ globalThis.__DD.calls.other++; return { fired: false, reason: 'fixture', pdfUrl: null, taskId: null } }",
   "lib/vendors/appraiser-independence.ts": "export async function sendAppraiserPacket(){ globalThis.__DD.calls.other++; return { ok: false, message: 'fixture: not sent' } }",
+  // §H: the inbox send — counted, never performed. The recipient it is handed is recorded.
+  "app/actions/inbox.ts": "export async function sendInboxMessage(p){ globalThis.__DD.calls.sends.push(p); return { success: true, messageId: 'fixture-message' } }",
   // The team anchor (teams.team_lead_id through a database function) — a counted fixture; its rule is test:team-scope's.
   "lib/teams/team-scope.ts": "export async function leadsAgentsTeam(_svc, userId, agentId){ const led = globalThis.__DD.leads[userId] ?? null; return { ok: true, leads: !!led && led.includes(agentId), ledTeamId: led ? 'team-of-' + userId : null } }",
 }
@@ -235,7 +276,7 @@ registerHooks({
 const load = (p: string) => import(pathToFileURL(join(ROOT, p)).href)
 function as(seat: string | null): MemClient {
   G.__DD.mem = world(); G.__DD.seat = seat; G.__DD.refuseTransactions = false; G.__DD.rls = false; G.__DD.policy = "live"
-  G.__DD.calls = { milestones: [], events: [], lender: [], other: 0, model: 0 }; G.__DD.modelObject = null
+  G.__DD.calls = { milestones: [], events: [], lender: [], other: 0, model: 0, sends: [] }; G.__DD.modelObject = null
   return G.__DD.mem
 }
 const quiet = async <X,>(fn: () => Promise<X>): Promise<X> => {
@@ -1081,6 +1122,267 @@ async function sectionG() {
   }
 }
 
+// ═══ §H — every OTHER door that acts on one deal (wave 156, lane 156E) ════════════════════════════════════════════════
+const MODEL_REACH = /\b(?:bookedGenerateObject|generateTextRouted|generateObjectRouted|streamTextRouted|generateObject|generateText|streamText|streamObject|runPipelineSimple|runPipeline)\s*\(/
+/** The deal desk, by any of its names: the session-bound helper, the decision, and the four older wrappers / the copilot's tool link. */
+const DESK_ASK = /\b(?:requireDealDesk|decideDealDesk|scopeTransaction|dealDeskFor|requireTransactionActor|requireDealRowActor|dealDeskWriteContext|deskDealForTool)\s*\(/
+const DEAL_NAMED = /\btransactionId\b|\btransaction_id\b/
+const WRITE_OR_SEND = /\.(?:insert|update|upsert|delete)\s*\(|\b(?:sendInboxMessage|insertPortalMessage|createCommissionRecordAction|commissionVideoExperiment|commissionListingCuts)\s*\(/
+/** A read of the deal's own records (the deal row or one of its transaction_* tables). */
+const DEAL_READ = /\.from\(\s*["'](?:transactions|transaction_[a-z_]+)["']\s*\)/
+/** The files §B / §E / §F / §G already drive and rule — §H covers every OTHER file. */
+const COVERED_ELSEWHERE = new Set([COORD, CLOSING, MILESTONES, DEAL_ACTIONS, "app/actions/transaction-inspections.ts"])
+const CR = "app/actions/ai-contract-review.ts", DI = "app/actions/ai-document-intelligence.ts", FM = "app/actions/ai-financial-management.ts"
+const RA = "app/actions/ai-review-automation.ts", TD = "app/actions/ai-transaction-documents.ts", RC = "app/actions/repair-negotiation-copilot.ts"
+const CP = "app/actions/copilot.ts", CG = "app/actions/content-generation-engine.ts", MP = "app/actions/marketing-package-automation.ts", LV = "app/actions/listing-video.ts"
+const PM = "app/actions/portal-messages.ts", CHAT = "app/api/internal/ai-chat/route.ts"
+const EXTRACTED = { purchasePrice: 401000, earnestMoneyAmount: null, inspectionDeadline: "2026-12-05", appraisalDeadline: null, financingDeadline: null, closingDate: "2027-01-30", buyerName: null, sellerName: null, propertyAddress: null }
+/**
+ * The doors §H DRIVES (each must ask the desk — source rule — and is driven for every seat): how each is called, whether an
+ * admitted seat is shown reaching the model seam (`reach`, shown for the agent on the deal), what "it landed" means for a writer
+ * (`landed`, shown for the agent on the deal and the coordinator), and `pos: false` where an admitted run would reach a paid
+ * rail this harness does not drive (it is driven for refusals only).
+ */
+const H_DOORS: Record<string, { file: string; call: (m: any) => Promise<any>; reach?: boolean; landed?: (m: MemClient) => boolean; pos?: false; resolvesDeal?: true }> = {
+  reviewContract: { file: CR, call: (m) => m.reviewContract({ documentId: DOC1, transactionId: TX1, documentType: "purchase_agreement", state: "TX" }), reach: true },
+  reviewTransactionDocuments: { file: CR, call: (m) => m.reviewTransactionDocuments({ transactionId: TX1, state: "TX" }), reach: true },
+  generateDocumentChecklist: { file: CR, call: (m) => m.generateDocumentChecklist({ transactionId: TX1, transactionType: "purchase", state: "TX" }), reach: true },
+  extractContractTerms: { file: CR, call: (m) => m.extractContractTerms({ contractText: "Purchase price $401,000. Closing January 30, 2027.", transactionId: TX1, agentId: AG_A }), reach: true },
+  applyContractExtraction: { file: CR, call: (m) => m.applyContractExtraction({ transactionId: TX1, extracted: EXTRACTED }), landed: (m) => T(m, "transactions").find((r) => r.id === TX1)?.purchase_price === 401000 && T(m, "transaction_milestones").filter((r) => r.transaction_id === TX1).length === 2 },
+  aiGenerateDocument: { file: DI, call: (m) => m.aiGenerateDocument({ transactionId: TX1, documentType: "cover_letter", context: {} }), reach: true },
+  aiGenerateDocumentReminders: { file: DI, call: (m) => m.aiGenerateDocumentReminders({ transactionId: TX1 }) },
+  aiCalculateCommission: { file: FM, call: (m) => m.aiCalculateCommission({ agentId: AG_A, transactionId: TX1, salePrice: 400000, commissionRate: 3 }) },
+  trackDeposit: { file: FM, call: (m) => m.trackDeposit({ agentId: AG_A, transactionId: TX1, amount: 5000, depositType: "earnest_money", receivedDate: "2026-12-01" }), landed: (m) => T(m, "deposits").some((r) => r.transaction_id === TX1 && r.brokerage_id === B1 && r.amount === 5000) },
+  aiDetermineReviewTiming: { file: RA, call: (m) => m.aiDetermineReviewTiming({ transactionId: TX1, agentId: AG_A }) },
+  aiGenerateReviewRequest: { file: RA, call: (m) => m.aiGenerateReviewRequest({ transactionId: TX1, agentId: AG_A, platform: "google", channel: "email" }) },
+  analyzeTransactionDocument: { file: TD, call: (m) => m.analyzeTransactionDocument({ documentId: DOC1, transactionId: TX1, brokerageId: B1, agentId: AG_A }) },
+  generateTransactionDocumentReminders: { file: TD, call: (m) => m.generateTransactionDocumentReminders({ transactionId: TX1, brokerageId: B1, agentId: AG_A }) },
+  checkTransactionDisclosures: { file: TD, call: (m) => m.checkTransactionDisclosures({ transactionId: TX1, brokerageId: B1, agentId: AG_A, state: "TX" }) },
+  shareDocumentAnalysisWithClient: { file: TD, call: (m) => m.shareDocumentAnalysisWithClient({ transactionId: TX1, contactId: C1, brokerageId: B1, agentId: AG_A, documentLabel: "Purchase agreement", analysisText: "Reviewed." }), landed: (m) => T(m, "client_portal_messages").some((r) => r.contact_id === C1 && r.transaction_id === TX1 && r.brokerage_id === B1) },
+  repairNegotiationCoPilot: { file: RC, call: (m) => m.repairNegotiationCoPilot({ transactionId: TX1, side: "buyer" }), reach: true },
+  sendRepairResponseAsDraft: { file: RC, call: (m) => m.sendRepairResponseAsDraft({ transactionId: TX1, body: "The seller agrees to repair the roof flashing." }), landed: () => G.__DD.calls.sends.length === 1 && G.__DD.calls.sends[0]?.contactId === C1 },
+  createTransactionMilestone: { file: CP, call: (m) => m.createTransactionMilestone({ listing_id: L1, milestone_type: "inspection", title: "Inspection", due_date: "2026-12-10" }), landed: (m) => T(m, "transaction_milestones").some((r) => r.transaction_id === TX1 && r.brokerage_id === B1), resolvesDeal: true },
+  generateText: { file: CG, call: (m) => m.generateText({ content_type: "social_post", transaction_id: TX1 }) },
+  generateAudio: { file: CG, call: (m) => m.generateAudio({ content_type: "podcast", transaction_id: TX1 }) },
+  generateVideo: { file: CG, call: (m) => m.generateVideo({ content_type: "video_script", transaction_id: TX1 }) },
+  generateListingOptimizations: { file: MP, call: (m) => m.generateListingOptimizations(TX1) },
+  generateListingVideo: { file: LV, call: (m) => m.generateListingVideo({ transactionId: TX1, agentId: AG_A }), pos: false },
+  // Keyed on a deal DOCUMENT: its first read finds the document (and so the deal); the desk is asked for that deal before the model.
+  analyzeDocument: { file: "app/actions/documents.ts", call: (m) => m.analyzeDocument(DOC1), reach: true, resolvesDeal: true },
+  enhancedGenerateListingDescription: { file: "app/actions/ai-content-generation.tsx", call: (m) => m.enhancedGenerateListingDescription({ transactionId: TX1 }) },
+}
+/**
+ * Derived doors that are NOT one-deal staff doors of this kind, or that keep a NAMED narrower gate — each with its reason and a
+ * token that must still be in the door's stripped source (if the token goes, the entry goes red; not an exemption list).
+ */
+const H_NAMED: Record<string, { why: string; proof: RegExp }> = {
+  aiVerifySignatures: { why: "keyed on a client_documents row (scopeDocument: the document's tenant); its transactionId parameter is never read", proof: /\bscopeDocument\s*\(/ },
+  requestVendorReview: { why: "keyed on a vendor_jobs row of the session's tenant (the job, not a deal, is the subject)", proof: /\.from\(\s*"vendor_jobs"\s*\)/ },
+  uploadDocument: { why: "the document upload door — PORTAL-REACHABLE by design (a client uploads); the deal is the attachment, and the legal-terms write its background analysis can trigger (applyContractExtraction) asks the desk itself", proof: /\bprocessDocumentWithAI\s*\(/ },
+  getDocumentWithAnalysis: { why: "a document VIEW on the caller's row-security client (row security decides who reads — read permission is not work authority); its portal branch is pinned to the contact's own deals", proof: /\bportalDealClient\s*\(/ },
+  sendPortalMessage: { why: "keyed on a CONTACT (requireContactAccess; the client may send); its deal TAG must be one of that contact's deals in the contact's tenant", proof: /\.or\(`contact_id\.eq\.\$\{contactId\}/ },
+  processVoiceCommand: { why: "the voice assistant: the deal is the SESSION's own active-deal context (context.active_transaction), never an input id", proof: /\bactive_transaction\b/ },
+  activateMarketingPackage: { why: "a marketing-package door on the deal's LISTING — tenant-gated (verifyTransactionInBrokerage); listing activation / syndication writers are lane 156B's file set (reported, not changed here)", proof: /\bverifyTransactionInBrokerage\s*\(/ },
+  bookMarketingService: { why: "books a marketing vendor for the deal's LISTING — tenant-gated (verifyTransactionInBrokerage); reported, not changed here", proof: /\bverifyTransactionInBrokerage\s*\(/ },
+  syncListingToPlatforms: { why: "listing syndication — lane 156B's file set; tenant-gated (verifyTransactionInBrokerage); reported, not changed here", proof: /\bverifyTransactionInBrokerage\s*\(/ },
+  getBuyerClosingCosts: { why: "a CONTACT portal door (lib/portal/require-contact-access.ts requireContactAccess): the client reads only their own deal's figures, the deal pinned to the contact's tenant", proof: /\brequireContactAccess\s*\(/ },
+  dispatchConciergeActionEmail: { why: "the concierge send — the same NARROWER gate as its draft (gateConciergeAction: tenant + deal-work access)", proof: /\bgateConciergeAction\s*\(/ },
+  recordSellerSignedCounter: { why: "an OFFER door (lane 156B's file set); it files a document through uploadDocument", proof: /\buploadDocument\s*\(/ },
+  markAgreementSigned: { why: "a LISTING-agreement door (lane 156B's file set)", proof: /\bmarkAgreementSigned\b/ },
+  generateSellerUpdateDraft: { why: "keyed on a listing (the seller's update), not a deal", proof: /\.from\(\s*"listings"\s*\)/ },
+  submitIssuerDocumentCorrectionAction: { why: "a VENDOR's own approved door: the session's external-partner identity, its assignment to the deal proven downstream", proof: /\bresolveExternalPartnerIdentity\s*\(/ },
+  recordOffPlatformIssuerDocumentAction: { why: "the account-side counterpart of the issuer correction, decided by lib/documents/vendor-document-correction.ts fileIssuerCorrection", proof: /\bfileIssuerCorrection\s*\(/ },
+  draftConciergeActionEmail: { why: "a NARROWER gate: gateConciergeAction — the session's tenant and lib/auth/deal-work-ownership.ts loadDealWorkAccess (read) before the model", proof: /\bgateConciergeAction\s*\(/ },
+  generateAIDraft: { why: "keyed on a CONTACT (requireContactAccess); a named deal adds context only when the desk admits it (source rule below)", proof: /\brequireContactAccess\s*\(/ },
+}
+/** Whole FILES the derivation reaches that another lane owns and that carry their own gate (named, with the token every door there rests on). */
+const H_FILES: Record<string, { why: string; proof: RegExp }> = {
+  "app/actions/cda-portal.ts": { why: "the CDA / closing-disclosure doors — lane 156D's file set (CDA policy and files); each runs the file's own requireAuth gate. Not re-gated here: reported", proof: /\brequireAuth\s*\(/ },
+  "app/actions/title-portal.ts": { why: "the title VENDOR's own portal doors (requireTitleVendorActor: the session's title vendor, assigned to this deal) — lane 156D's file set", proof: /\brequireTitleVendorActor\s*\(/ },
+}
+/** Route handlers the derivation finds: the BOOK-level chats. Each with its reason and proof token. */
+const H_ROUTES: Record<string, { why: string; proof: RegExp }> = {
+  [CHAT]: { why: "the staff copilot (book-level); its tools that LINK a deal take the id from model output and pass the desk (source rule below)", proof: /\bdeskDealForTool\s*\(/ },
+  "app/api/portal/ai-chat/route.ts": { why: "a CONTACT's own portal chat: its tools are locked to the session's contact", proof: /\bbuildCustomerFreeTools\s*\(/ },
+}
+/** PURE — problems with one §H desk door's stripped source (empty = the rule holds). */
+function hDoorProblems(whole: string, resolvesDeal = false): string[] {
+  const out: string[] = []
+  // The declaration's own name is not a call (a door may be NAMED generateText).
+  const body = whole.replace(/^(?:export\s+)?async\s+function\s+\w+\s*\(/, "async function door(")
+  const deskAt = body.search(DESK_ASK)
+  if (deskAt < 0) return ["does not ask the deal desk"]
+  // `resolvesDeal`: the door is keyed on something else (a listing) and its FIRST deal read is the tenant-pinned lookup of WHICH
+  // deal — the id the desk is then asked about. Every model call and write must still follow the desk.
+  const effects = [body.search(MODEL_REACH), body.search(WRITE_OR_SEND), resolvesDeal ? -1 : body.search(DEAL_READ)].filter((i) => i >= 0)
+  const first = effects.length ? Math.min(...effects) : Infinity
+  if (first < deskAt) out.push("reaches a model, reads the deal or writes BEFORE the desk")
+  const ref = body.search(/if\s*\(\s*(?:desk\s*&&\s*)?!\s*(?:desk|deal)\.ok\s*\)\s*return\b/)
+  if (ref < 0) out.push("the desk's refusal is not returned")
+  else if (ref > first) out.push("the refusal is returned only AFTER a model call, a deal read or a write")
+  return out
+}
+/** Every exported function of a file, from the stripped source (`export async function` / `export function`). */
+const exportedFns = (s: string): string[] => [...s.matchAll(/^export\s+(?:async\s+)?function\s+(\w+)\s*\(/gm)].map((m) => m[1])
+
+async function sectionH() {
+  section("§H · every OTHER door that acts on one deal — the deal desk before a model, a deal read or a write (wave 156)")
+  // ── THE DERIVATION — model-reaching functions of lib/ (two passes, by name), then every server door that names a deal and reaches one ──
+  const all = [...tsFiles("app"), ...tsFiles("lib")].map((f) => [f, stripComments(raw(f))] as const)
+  const reach = new Set<string>()
+  for (let pass = 0; pass < 3; pass++) {
+    const via = reach.size ? new RegExp(`\\b(?:${[...reach].join("|")})\\s*\\(`) : null
+    for (const [f, s] of all) if (f.startsWith("lib/")) for (const n of exportedFns(s)) { const b = fnWhole(s, n); if (MODEL_REACH.test(b) || (via && via.test(b))) reach.add(n) }
+  }
+  for (const generic of ["POST", "GET", "generateText", "generateObject", "run", "execute", "handler", "main"]) reach.delete(generic)
+  const viaReach = new RegExp(`\\b(?:${[...reach].join("|")})\\s*\\(`)
+  const derived: Array<{ file: string; name: string }> = [], routes: string[] = []
+  for (const [f, s] of all) {
+    if (COVERED_ELSEWHERE.has(f)) continue
+    const isRoute = /\/route\.ts$/.test(f)
+    if (!isRoute && !/^\s*["']use server["']/.test(s)) continue
+    // …and the functions of THIS file that reach a model (a door that calls its sibling door, e.g. a review-all over review-one).
+    const local = new Set<string>()
+    const localFns = [...s.matchAll(/^(?:export\s+)?async\s+function\s+(\w+)\s*\(/gm)].map((m) => m[1])
+    for (let pass = 0; pass < 2; pass++) {
+      const viaLocal = local.size ? new RegExp(`\\b(?:${[...local].join("|")})\\s*\\(`) : null
+      for (const n of localFns) { const b = fnWhole(s, n).replace(/^(?:export\s+)?async\s+function\s+\w+\s*\(/, "("); if (MODEL_REACH.test(b) || viaReach.test(b) || (viaLocal && viaLocal.test(b))) local.add(n) }
+    }
+    const viaLocal = local.size ? new RegExp(`\\b(?:${[...local].join("|")})\\s*\\(`) : null
+    for (const n of exportedFns(s)) {
+      const b = fnWhole(s, n)
+      const callBody = b.replace(/^(?:export\s+)?async\s+function\s+\w+\s*\(/, "(")
+      if (!DEAL_NAMED.test(b) || !(MODEL_REACH.test(b) || viaReach.test(b) || (viaLocal && viaLocal.test(callBody)))) continue
+      if (isRoute) routes.push(f); else derived.push({ file: f, name: n })
+    }
+  }
+  // …and the WRITE / SEND doors of the same files (a door that names a deal and writes or sends, with no model of its own).
+  const doorFiles = new Set([...derived.map((d) => d.file), ...Object.values(H_DOORS).map((d) => d.file)])
+  for (const f of doorFiles) { const s = stripComments(raw(f)); for (const n of exportedFns(s)) { const b = fnWhole(s, n); if (DEAL_NAMED.test(b) && WRITE_OR_SEND.test(b) && !derived.some((d) => d.file === f && d.name === n)) derived.push({ file: f, name: n }) } }
+  const unaccounted = derived.filter((d) => !H_DOORS[d.name] && !H_NAMED[d.name] && !H_FILES[d.file]).map((d) => `${d.file} ${d.name}`)
+  const staleDriven = Object.keys(H_DOORS).filter((n) => !derived.some((d) => d.name === n && d.file === H_DOORS[n].file))
+  const staleNamed = Object.keys(H_NAMED).filter((n) => !derived.some((d) => d.name === n)).concat(Object.keys(H_FILES).filter((f) => !derived.some((d) => d.file === f)))
+  if (unaccounted.length) console.log(`    UNACCOUNTED (${unaccounted.length}): ${unaccounted.join(" · ")}`)
+  check(`THE CENSUS — ${derived.length} exported server doors (outside the files §B–§G drive) name a deal and reach a model (directly, or through one of ${reach.size} model-reaching lib functions or a sibling in the same file) — or, in the same files, name a deal and write or send: each is DRIVEN below or NAMED with its reason`,
+    derived.length > 0 && unaccounted.length === 0 && staleDriven.length === 0 && staleNamed.length === 0, { unaccounted, staleDriven, staleNamed })
+  const unRouted = [...new Set(routes)].filter((r) => !H_ROUTES[r])
+  check(`…and the ${new Set(routes).size} route handler(s) it finds are each named (book-level chats, no one-deal door)`, unRouted.length === 0 && Object.keys(H_ROUTES).every((r) => routes.includes(r)), { routes: [...new Set(routes)], unRouted })
+  // A NAMED entry's proof token must still be in its door (its reason still holds).
+  const lostProof = Object.entries(H_NAMED).filter(([n, e]) => { const d = derived.find((x) => x.name === n); return !d || !e.proof.test(fnWhole(stripComments(raw(d.file)), n)) }).map(([n]) => n)
+  const lostRoute = Object.entries({ ...H_ROUTES, ...H_FILES }).filter(([f, e]) => !e.proof.test(stripComments(raw(f)))).map(([f]) => f)
+  check("…every NAMED door still carries the token its reason rests on (a narrower gate removed, or the door re-keyed onto a deal, goes red)", lostProof.length === 0 && lostRoute.length === 0, { lostProof, lostRoute })
+  console.log(`    (published) named, with reasons: ${Object.entries(H_NAMED).map(([n, e]) => `${n} — ${e.why}`).join(" · ")}`)
+
+  // ── THE SOURCE RULE, for every driven door ──
+  for (const [n, d] of Object.entries(H_DOORS)) {
+    const p = hDoorProblems(fnWhole(stripComments(raw(d.file)), n), d.resolvesDeal === true)
+    check(`${d.file} ${n}: asks the deal desk and returns its refusal before any model call, deal read, write or send`, p.length === 0, p)
+  }
+  const good = `export async function planted(params: P) {\n  const desk = await requireDealDesk(params.transactionId)\n  if (!desk.ok) return { success: false, error: desk.error }\n  const { data } = await svc.from("transactions").select("*").eq("id", desk.transactionId)\n  const { object } = await generateObject({ prompt: "x" })\n  await svc.from("deposits").insert({ a: 1 })\n}\n`
+  check("§H CONTROLS — a well-formed door passes; no desk, a model call / a deal read / a write before the desk, an unreturned refusal, and a refusal returned after the model are each caught; a desk named only in a comment is not a desk",
+    hDoorProblems(good).length === 0
+    && hDoorProblems(good.replace(/  const desk[^\n]*\n[^\n]*\n/, "")).some((p) => /does not ask/.test(p))
+    && hDoorProblems(good.replace("  const desk", `  await generateTextRouted({})\n  const desk`)).some((p) => /BEFORE the desk/.test(p))
+    && hDoorProblems(good.replace("  const desk", `  await svc.from("transaction_deadlines").select("*")\n  const desk`)).some((p) => /BEFORE the desk/.test(p))
+    && hDoorProblems(good.replace("  const desk", `  await svc.from("deposits").insert({})\n  const desk`)).some((p) => /BEFORE the desk/.test(p))
+    && hDoorProblems(good.replace(/  if \(!desk\.ok\)[^\n]*\n/, "")).some((p) => /not returned/.test(p))
+    && hDoorProblems(good.replace(/  if \(!desk\.ok\)[^\n]*\n/, "").replace("\n}\n", "\n  if (!desk.ok) return { success: false }\n}\n")).some((p) => /only AFTER/.test(p))
+    && hDoorProblems(stripComments(good.replace(/  const desk[^\n]*\n[^\n]*\n/, "  // const desk = await requireDealDesk(params.transactionId)\n"))).some((p) => /does not ask/.test(p))
+    // a door keyed on a listing / document may look up WHICH deal first — but never reach a model or write before the desk
+    && hDoorProblems(good.replace("  const desk", `  const { data: tx } = await svc.from("transactions").select("id").eq("listing_id", params.listingId)\n  const desk`), true).length === 0
+    && hDoorProblems(good.replace("  const desk", `  const { data: tx } = await svc.from("transactions").select("id").eq("listing_id", params.listingId)\n  const desk`)).some((p) => /BEFORE the desk/.test(p))
+    && hDoorProblems(good.replace("  const desk", `  await generateTextRouted({})\n  const desk`), true).some((p) => /BEFORE the desk/.test(p))
+    // a door NAMED generateText is not a model call by its own declaration
+    && hDoorProblems(good.replace("export async function planted(", "export async function generateText(")).length === 0)
+  // The census's own control: a planted door that names a deal and calls a model is found; one that does neither is not.
+  const plantedHit = (src: string) => exportedFns(src).filter((n) => { const b = fnWhole(src, n); return DEAL_NAMED.test(b) && (MODEL_REACH.test(b) || viaReach.test(b)) })
+  check("CENSUS CONTROL — a planted server door that names a deal and reaches a model (directly or through a model-reaching lib function) is found; a door that names no deal is not; a model call in a comment is not",
+    plantedHit(`export async function a(p: { transactionId: string }) {\n  await generateTextRouted({})\n}\n`).length === 1 && reach.size > 0 && plantedHit(`export async function b(p: { transactionId: string }) {\n  await ${[...reach][0]}({})\n}\n`).length === 1
+    && plantedHit(`export async function c(p: { contactId: string }) {\n  await generateTextRouted({})\n}\n`).length === 0 && plantedHit(stripComments(`export async function d(p: { transactionId: string }) {\n  // await generateTextRouted({})\n}\n`)).length === 0)
+
+  // ── THE TWO DOORS WITH A SHAPE OF THEIR OWN — source rules ──
+  const pm = fnWhole(stripComments(raw(PM)), "generateAIDraft")
+  const pmDesk = pm.search(/\brequireDealDesk\s*\(/), pmRead = pm.indexOf('.from("transaction_milestones")')
+  check("generateAIDraft (contact-keyed): the deal's milestones are read only after the desk ADMITS the named deal, pinned to the admitted id — a refused deal adds nothing to the prompt",
+    pmDesk >= 0 && pmRead > pmDesk && /if\s*\(\s*desk\?\.ok\b/.test(pm) && pm.indexOf("desk?.ok") < pmRead && /\.eq\("transaction_id",\s*desk\.transactionId\)/.test(pm) && !/\.from\("transactions"\)/.test(pm), { pmDesk, pmRead })
+  const chat = stripComments(raw(CHAT))
+  const tools = ["create_task", "log_activity"].map((t) => { const at = chat.indexOf(`    ${t}: tool({`); return at < 0 ? "" : chat.slice(at, chat.indexOf("\n    }),", at)) })
+  const toolBad = tools.map((b, i) => {
+    const execAt = b.indexOf("execute:"), deskAt = b.search(/\bdeskDealForTool\(\s*transaction_id\s*,\s*\{\s*userId:\s*user\.id/), insAt = b.search(/\.insert\s*\(/)
+    return execAt < 0 || deskAt < execAt || insAt < deskAt || !/if\s*\(\s*!\s*deal\.ok\s*\)\s*return/.test(b) || !/transaction_id:\s*deal\.id\b/.test(b) || /transaction_id:\s*transaction_id\b/.test(b) ? ["create_task", "log_activity"][i] : null
+  }).filter(Boolean)
+  const helper = fnWhole(chat, "deskDealForTool")
+  check("the staff copilot's create_task / log_activity: the deal id is MODEL OUTPUT — each passes deskDealForTool with the SESSION's seat before its insert, returns the refusal, and writes the ADMITTED id (never the model's string); the helper asks requireDealDesk and is not exported",
+    toolBad.length === 0 && tools.every((b) => b.length > 0) && /\brequireDealDesk\(\s*transactionId\s*,\s*seat\s*\)/.test(helper) && !/^export\s+async\s+function\s+deskDealForTool\b/m.test(chat), { toolBad })
+  check("…control: the tool rule catches a tool that writes the model's transaction_id", /transaction_id:\s*transaction_id\b/.test(`.insert({ transaction_id: transaction_id ?? undefined })`))
+
+  // ── requireDealDesk itself, DRIVEN ──
+  const rg = await load(ROLE_GUARD)
+  if (typeof rg.requireDealDesk !== "function") check("lib/transactions/role-guard.ts exports requireDealDesk (the session-bound deal desk)", false, Object.keys(rg))
+  else {
+    const ask = async (seat: string | null, tx: unknown, handed?: any) => { as(seat); return quiet<any>(() => rg.requireDealDesk(tx, handed)) }
+    const a = await ask(U_TC, TX1), b = await ask(U_VENDOR, TX1), c = await ask(U_AGENT, "not-a-uuid"), d = await ask(null, TX1), e = await ask(U_BROKER, TX_X)
+    const f = await ask(null, TX1, { userId: U_TC, userType: "tc", brokerageId: B1 }), g = await ask(U_TC, ` ${TX1} `)
+    check("requireDealDesk — the SESSION's coordinator is admitted with the admitted deal id and the session tenant; a vendor seat ASSIGNED to the deal, a malformed id, no session and another tenant's deal are refused (fail closed); a handed write-seam seat is asked the same question",
+      a.ok === true && a.transactionId === TX1 && a.brokerageId === B1 && b.ok === false && b.code === "role_none" && c.ok === false && c.code === "invalid_transaction" && d.ok === false && d.code === "no_session" && e.ok === false && e.code === "deal_not_found" && f.ok === true && g.ok === true && g.transactionId === TX1,
+      { a, b, c, d, e, f: f.ok, g: g.ok })
+  }
+
+  // ── DRIVEN: every seat the desk refuses reaches no model, reads nothing it may not, writes and sends nothing ──
+  const mods: Record<string, any> = {}
+  for (const f of new Set(Object.values(H_DOORS).map((d) => d.file))) { try { mods[f] = await quiet(() => load(f)) } catch (e) { check(`${f} loads in the harness`, false, (e as Error)?.message?.slice(0, 300)) } }
+  const effects = (m: MemClient) => m.writes.filter((w) => w.table !== "agent_action_ledger")
+  const DESK_REFUSAL = /cannot work on transactions|Not your deal|not found in your brokerage|no assigned agent|No session tenant|Could not resolve your agent record|Invalid transaction ID/
+  for (const [door, d] of Object.entries(H_DOORS)) {
+    const mod = mods[d.file]
+    if (!mod || typeof mod[door] !== "function") { check(`${door} exists on ${d.file}`, false); continue }
+    const spent: string[] = []
+    for (const [seat, label] of [...OFF_DESK_SEATS, [U_X, "another tenant's broker"] as [string, string]]) {
+      const m = as(seat)
+      const x = await drive(() => d.call(mod))
+      const touched = effects(m).map((w) => `${w.op} ${w.table}`)
+      if (G.__DD.calls.model !== 0 || touched.length || G.__DD.calls.sends.length || G.__DD.calls.other || !refused(x)) spent.push(`${label}: model=${G.__DD.calls.model} writes=${touched.join(",") || 0} sends=${G.__DD.calls.sends.length} paid=${G.__DD.calls.other} answered ${JSON.stringify(x.r ?? x.threw)?.slice(0, 110)}`)
+    }
+    check(`NEG ${door} [scope creep · unauthorized action]: each of the ${OFF_DESK_SEATS.length} seats the desk refuses (a vendor ASSIGNED to the deal included) is refused with 0 model calls, 0 writes, 0 sends and 0 paid-rail calls`, spent.length === 0, spent)
+    if (d.pos === false) continue
+    const blocked: string[] = []
+    for (const [seat, label] of DESK_SEATS) {
+      as(seat)
+      const x = await drive(() => d.call(mod))
+      const msg = String((x.r as any)?.error ?? x.threw ?? "")
+      if (refused(x) && DESK_REFUSAL.test(msg)) blocked.push(`${label}: ${msg.slice(0, 120)}`)
+    }
+    check(`POS ${door}: none of the ${DESK_SEATS.length} seats the desk admits is refused BY THE DESK (a refusal of its own — no agent profile, a missing row — is the door's)`, blocked.length === 0, blocked)
+    if (d.reach) { as(U_AGENT); const x = await drive(() => d.call(mod)); check(`POS ${door}: the agent on the deal passes the gate and reaches the model seam (counted, never a provider)`, G.__DD.calls.model >= 1, x.r ?? x.threw) }
+    if (d.landed) {
+      const notLanded: string[] = []
+      for (const [seat, label] of [[U_AGENT, "the agent on the deal"], [U_TC, "the coordinator"]] as Array<[string, string]>) { const m = as(seat); const x = await drive(() => d.call(mod)); if ((x.r as any)?.success !== true || !d.landed(m)) notLanded.push(`${label}: ${JSON.stringify(x.r ?? x.threw)?.slice(0, 140)}`) }
+      check(`POS ${door}: the agent on the deal and the coordinator each save it — on the deal, in the session's tenant`, notLanded.length === 0, notLanded)
+    }
+  }
+
+  // ── the foreign deal, the wrong client, the replay ──
+  if (mods[FM]?.trackDeposit) {
+    const m = as(U_BROKER); const x = await drive(() => mods[FM].trackDeposit({ agentId: AG_A, transactionId: TX_X, amount: 1, depositType: "earnest_money", receivedDate: "2026-12-01" }))
+    check("FOREIGN DEAL: a broker of this tenant cannot file a deposit (escrow money) against another tenant's deal — refused, no deposit, no obligation", refused(x) && T(m, "deposits").length === 0 && T(m, "compliance_tasks").length === 0, x.r ?? x.threw)
+  }
+  if (mods[TD]?.shareDocumentAnalysisWithClient) {
+    const m = as(U_TC); const x = await drive(() => mods[TD].shareDocumentAnalysisWithClient({ transactionId: TX1, contactId: C_OTHER, brokerageId: B1, agentId: AG_A, documentLabel: "x", analysisText: "y" }))
+    check("WRONG CLIENT [privacy leakage]: the coordinator cannot drop a deal's document analysis into the portal of a contact who is not a client on that deal", refused(x) && T(m, "client_portal_messages").length === 0, x.r ?? x.threw)
+  }
+  if (mods[CR]?.applyContractExtraction) {
+    const m = as(U_TC)
+    const one = await drive(() => mods[CR].applyContractExtraction({ transactionId: TX1, extracted: EXTRACTED }))
+    const after1 = JSON.stringify([T(m, "transactions").find((r) => r.id === TX1)?.purchase_price, T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.due_date}`).sort()])
+    const two = await drive(() => mods[CR].applyContractExtraction({ transactionId: TX1, extracted: EXTRACTED }))
+    const after2 = JSON.stringify([T(m, "transactions").find((r) => r.id === TX1)?.purchase_price, T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.due_date}`).sort()])
+    check("REPLAY: applying the same extracted terms twice leaves the deal exactly as the first apply did (the price is set, each deadline milestone is upserted on transaction_id + milestone_name, never duplicated)", (one.r as any)?.success === true && (two.r as any)?.success === true && after1 === after2 && T(m, "transaction_milestones").length === 2, { after1, after2 })
+    const m2 = as(U_TC); m2.tables.transactions = T(m2, "transactions").filter((r) => r.id !== TX1)
+    const gone = await drive(() => mods[CR].applyContractExtraction({ transactionId: TX1, extracted: EXTRACTED }))
+    check("…and a deal that is not there is never reported applied (the desk refuses; the deal update is also COUNTED)", refused(gone) && T(m2, "transaction_milestones").length === 0, gone.r ?? gone.threw)
+  }
+}
+
 // ═══ §D ════════════════════════════════════════════════════════════════════════════════════════════════════════════════
 function sectionD() {
   section("§D · registration")
@@ -1097,10 +1399,11 @@ async function main() {
   await sectionE()
   await sectionF()
   await sectionG()
+  await sectionH()
   if (ROOT === WT) sectionD()
   console.log(`\nRESULT: ${passed} passed, ${failed} failed`)
   if (failed) { console.log(`❌ DEAL_DESK_FAIL — ${fails.slice(0, 12).join(" | ")}`); process.exit(1) }
-  console.log("✅ DEAL_DESK_PASS — one decision says who may work a deal; every milestone door and every deal-detail edit asks it; every seat it admits saves the edit, a seat that does not work the deal writes nothing, no write on the five deal tables rides a session client, and no AI deal door reaches a model before the desk")
+  console.log("✅ DEAL_DESK_PASS — one decision says who may work a deal; every milestone door and every deal-detail edit asks it; every seat it admits saves the edit, a seat that does not work the deal writes nothing, no write on the five deal tables rides a session client, no AI deal door reaches a model before the desk, and every other door that acts on one deal asks the desk before a model, a deal read, a write or a send")
   process.exit(0)
 }
 main().catch((e) => { console.error(e); process.exit(1) })
