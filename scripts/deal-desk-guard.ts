@@ -1171,6 +1171,8 @@ const CP = "app/actions/copilot.ts", CG = "app/actions/content-generation-engine
 const PM = "app/actions/portal-messages.ts", CHAT = "app/api/internal/ai-chat/route.ts", GT = "app/actions/governing-terms.ts"
 /** A proposal pre-seeded on TX1 for the confirm door's generic drive (§H round 2): purchase price and closing date from CD_TC. */
 const PROPOSAL_ID = u("c", 44)
+// wave 156 (156R round 2): the store is `{ rev, proposals }` once written (a legacy bare array is still read) — read both shapes.
+function storedProposals(v: any): any[] { return Array.isArray(v) ? v : v && Array.isArray(v.proposals) ? v.proposals : [] }
 const seedProposal = (m: MemClient) => { const t = T(m, "transactions").find((r) => r.id === TX1)!; t.governing_terms_proposals = [{ id: PROPOSAL_ID, source: { kind: "client_document", document_id: CD_TC, document_name: "Purchase agreement (signed).pdf" }, proposed_by: U_TC, proposed_at: "2026-11-25T00:00:00.000Z", fields: { purchase_price: 401000, close_date: "2027-01-30", inspection_deadline: "2026-12-05" }, decisions: {} }]; return m }
 const EXTRACTED = { purchasePrice: 401000, earnestMoneyAmount: null, inspectionDeadline: "2026-12-05", appraisalDeadline: null, financingDeadline: null, closingDate: "2027-01-30", buyerName: null, sellerName: null, propertyAddress: null }
 /**
@@ -1187,7 +1189,7 @@ const H_DOORS: Record<string, { file: string; call: (m: any) => Promise<any>; re
   // Round 2: a PROPOSAL door — it lands a proposal on the deal and changes none of the deal's terms. Its first deal read decides
   // the uploader route (the document's uploader may propose without the desk), so the deal read may precede the refusal.
   applyContractExtraction: { file: CR, call: (m) => m.applyContractExtraction({ transactionId: TX1, documentId: CD_TC, extracted: EXTRACTED }), resolvesDeal: true,
-    landed: (m) => { const t = T(m, "transactions").find((r) => r.id === TX1); return t?.purchase_price === 400000 && Array.isArray(t?.governing_terms_proposals) && t.governing_terms_proposals.length === 1 && T(m, "transaction_milestones").length === 0 } },
+    landed: (m) => { const t = T(m, "transactions").find((r) => r.id === TX1); return t?.purchase_price === 400000 && storedProposals(t?.governing_terms_proposals).length === 1 && T(m, "transaction_milestones").length === 0 } },
   confirmGoverningTermsAction: { file: GT, call: async (m) => { seedProposal(G.__DD.mem); return m.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, accept: ["purchase_price"] }) },
     landed: (m) => T(m, "transactions").find((r) => r.id === TX1)?.purchase_price === 401000 },
   aiGenerateDocument: { file: DI, call: (m) => m.aiGenerateDocument({ transactionId: TX1, documentType: "cover_letter", context: {} }), reach: true },
@@ -1427,8 +1429,8 @@ async function sectionH() {
 }
 
 /** The deal's governing terms as one comparable string: the three columns, every milestone, and the proposals' decisions. */
-const termsOf = (m: MemClient) => { const t = T(m, "transactions").find((r) => r.id === TX1) ?? {}; return JSON.stringify([t.purchase_price, t.close_date ?? null, t.property_address, T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.due_date}`).sort()]) }
-const proposalsOf = (m: MemClient): any[] => { const v = T(m, "transactions").find((r) => r.id === TX1)?.governing_terms_proposals; return Array.isArray(v) ? v : [] }
+const termsOf = (m: MemClient) => { const t = T(m, "transactions").find((r) => r.id === TX1) ?? {}; return JSON.stringify([t.purchase_price, t.close_date ?? null, t.property_address, T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.target_date}`).sort()]) }
+const proposalsOf = (m: MemClient): any[] => storedProposals(T(m, "transactions").find((r) => r.id === TX1)?.governing_terms_proposals)
 
 /** §H round 2 — A MODEL MUST NOT REWRITE A DEAL'S GOVERNING TERMS: extracted terms are a proposal; only the desk accepts them. */
 async function governingTermsScenario(cr: any) {
@@ -1469,7 +1471,7 @@ async function governingTermsScenario(cr: any) {
   m = seedProposal(as(U_TC))
   const c1 = await drive(() => gt.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, accept: ["purchase_price", "close_date"] }))
   const t1 = T(m, "transactions").find((r) => r.id === TX1)!
-  const ms1 = T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.due_date}`).sort()
+  const ms1 = T(m, "transaction_milestones").map((r) => `${r.milestone_name}:${r.target_date}`).sort()
   const receipt = T(m, "agent_action_ledger").find((r) => JSON.stringify(r).includes("transaction.governing_terms.confirm"))
   check("CONFIRM: the coordinator accepts price and closing date — EXACTLY those land (the closing-day milestone with it); the inspection deadline was not accepted and is not set",
     (c1.r as any)?.success === true && t1.purchase_price === 401000 && t1.close_date === "2027-01-30" && JSON.stringify(ms1) === JSON.stringify(["closing_day:2027-01-30"]), { r: c1.r ?? c1.threw, price: t1.purchase_price, close: t1.close_date, ms1 })
@@ -1493,6 +1495,49 @@ async function governingTermsScenario(cr: any) {
   const card = stripComments(raw("app/components/transactions/governing-terms-proposals-card.tsx"))
   check("THE COMPONENT: a client component that reads through loadProposedGoverningTermsAction, decides per field through confirmGoverningTermsAction, and shows the refusal text",
     /^\s*["']use client["']/.test(card) && /loadProposedGoverningTermsAction\(\s*transactionId\s*\)/.test(card) && /confirmGoverningTermsAction\(/.test(card) && /\[how\]:\s*\[t\.field\]/.test(card) && /role="alert"/.test(card) && !/\.from\(/.test(card))
+
+  // ── ROUND 3 · EVERY COLUMN THE PROPOSE / CONFIRM / LOAD PATH NAMES EXISTS (the in-memory client accepts any name; PostgREST
+  // refuses the WHOLE statement — PGRST204 on a write, 42703 on a read — CLAUDE.md §3). Driven: the three doors run for a desk
+  // seat on a recording client; every column named in a select, a filter, an order, an onConflict and a written payload on
+  // `transactions` and `transaction_milestones` is checked against the generated live snapshot (scripts/schema-snapshot.ts).
+  const snapCols = (table: string): Set<string> | null => { const mm = new RegExp(`^  ${table}: \\[([^\\]]*)\\]`, "m").exec(raw("scripts/schema-snapshot.ts")); return mm ? new Set([...mm[1].matchAll(/"([^"]+)"/g)].map((x) => x[1])) : null }
+  const SCHEMA_TABLES = ["transactions", "transaction_milestones"]
+  const absentIn = (log: Record<string, Set<string>>): string[] => SCHEMA_TABLES.flatMap((t) => { const cols = snapCols(t); return [...(log[t] ?? [])].filter((c) => !cols || !cols.has(c)).map((c) => `${t}.${c}`) })
+  const colLog: Record<string, Set<string>> = {}
+  // wave 156 (156R): a JSON-path filter (`governing_terms_proposals->>rev`, the compare-and-set's revision match) names its BASE column —
+  // that column is what PostgREST resolves, so it is the one checked (and the path is recorded so the check is seen to cover it).
+  const jsonPaths: string[] = []
+  const note = (t: string, c: string) => { const raw0 = c.split(":").pop()!.trim().replace(/\(.*$/, ""); const name = raw0.split("->")[0]; if (raw0 !== name) jsonPaths.push(`${t}.${raw0}`); if (name && name !== "*" && !name.includes(".")) (colLog[t] ??= new Set()).add(name) }
+  const recording = (client: any): any => new Proxy(client, { get: (tgt: any, k) => k !== "from" ? tgt[k] : (table: string) => {
+    const real: any = tgt.from(table)
+    const wrap = (b: any): any => new Proxy(b, { get: (bt: any, key) => {
+      const fn = bt[key]
+      if (typeof key !== "string" || typeof fn !== "function" || key === "then") return typeof fn === "function" ? fn.bind(bt) : fn
+      return (...args: any[]) => {
+        if (key === "select" && typeof args[0] === "string") args[0].split(",").forEach((c: string) => note(table, c))
+        if (["eq", "neq", "in", "is", "gt", "gte", "lt", "lte", "order", "not", "like", "ilike"].includes(key) && typeof args[0] === "string") note(table, args[0])
+        if (["insert", "upsert", "update"].includes(key)) for (const row of [args[0]].flat()) Object.keys(row ?? {}).forEach((c) => note(table, c))
+        if (key === "upsert" && typeof args[1]?.onConflict === "string") args[1].onConflict.split(",").forEach((c: string) => note(table, c))
+        const out = fn.apply(bt, args)
+        return out && typeof out === "object" && out !== bt ? wrap(out) : wrap(bt)
+      }
+    } })
+    return wrap(real)
+  } })
+  const prevSvc = G.__DD.svc, prevSess = G.__DD.sess
+  G.__DD.svc = () => recording(G.__DD.base()); G.__DD.sess = () => recording(G.__DD.base())
+  try {
+    as(U_TC); await drive(() => cr.applyContractExtraction({ transactionId: TX1, documentId: CD_TC, extracted: EXTRACTED }))
+    seedProposal(as(U_TC)); await drive(() => gt.confirmGoverningTermsAction({ transactionId: TX1, proposalId: PROPOSAL_ID, accept: ["purchase_price", "close_date", "inspection_deadline"] }))
+    seedProposal(as(U_TC)); await drive(() => gt.loadProposedGoverningTermsAction(TX1))
+  } finally { G.__DD.svc = prevSvc; G.__DD.sess = prevSess }
+  const absent = absentIn(colLog)
+  check(`SCHEMA: every column the propose / confirm / load path names on transactions and transaction_milestones exists in the live snapshot (${SCHEMA_TABLES.map((t) => `${t}: ${[...(colLog[t] ?? [])].sort().join(", ")}`).join(" · ")})`,
+    absent.length === 0 && (colLog.transaction_milestones?.size ?? 0) > 0 && (colLog.transactions?.size ?? 0) > 0, { absent })
+  check("…and it SEES the compare-and-set's JSON-path filter on the proposal store (governing_terms_proposals->>rev), checked as its base column",
+    jsonPaths.some((x) => x === "transactions.governing_terms_proposals->>rev") && (colLog.transactions?.has("governing_terms_proposals") ?? false), { jsonPaths })
+  check("…POSITIVE CONTROL: the column check catches a planted absent column (transaction_milestones.due_date, transactions.no_such_column) and passes a real one (target_date)",
+    JSON.stringify(absentIn({ transaction_milestones: new Set(["due_date", "target_date"]), transactions: new Set(["no_such_column", "close_date"]) }).sort()) === JSON.stringify(["transaction_milestones.due_date", "transactions.no_such_column"]))
 }
 
 /** §H round 2 — ONE DEAL ROSTER: the closing concierge's access is the deal desk's answer. */

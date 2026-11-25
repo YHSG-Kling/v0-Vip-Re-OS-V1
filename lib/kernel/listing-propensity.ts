@@ -129,8 +129,11 @@ export async function runListingPropensity(svc: any, now: Date = new Date()): Pr
       for (const [agentId, rows] of byAgent.entries()) {
         rows.sort((a, x) => x.score - a.score)
         const tag = `[PROPENSITY] [${agentId}] [${isoWeek}]`
-        const { data: dup } = await svc.from("agent_client_messages").select("id")
-          .ilike("rationale", `${tag}%`).limit(1).maybeSingle()
+        // WAVE 156 (156I): the week's dedup read is pinned to the tenant and its refusal READ — a refused read used to come back
+        // as "no brief yet" and file a SECOND brief for the same agent and week on every run (one signal, many campaigns).
+        const { data: dup, error: dupErr } = await svc.from("agent_client_messages").select("id")
+          .eq("brokerage_id", b.id).ilike("rationale", `${tag}%`).limit(1).maybeSingle()
+        if (dupErr) { r.errors += 1; continue }
         if (dup) continue
         const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
         const p = await proposeClientMessage({

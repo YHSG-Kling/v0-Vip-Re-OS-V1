@@ -248,7 +248,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         ],
       },
       { id: 'academy', label: 'Academy', href: '/academy', icon: 'BookOpen' },
-      { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' },
+      { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' }, { id: 'fraud-network', label: 'Fraud & Trust Network', href: '/dashboard/fraud-network', icon: 'ShieldAlert' }, // 156J: same line on purpose (line-cited file)
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare' },
       // Tier-parity: a solo-tier principal signs in as an agent — the Command Center
       // (AI-teammate roster, earned autonomy, trust meter, QBR) is their room too.

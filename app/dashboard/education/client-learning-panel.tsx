@@ -51,10 +51,10 @@ export interface ContactOption {
 
 export function ClientLearningPanel({
   modules,
-  contacts,
+  contacts, words,
 }: {
   modules: LearningModuleOption[]
-  contacts: ContactOption[]
+  contacts: ContactOption[]; /** wave 156Q: the session tenant's noun, resolved once by the server page. */ words?: { payer: string }
 }) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -225,7 +225,7 @@ export function ClientLearningPanel({
           <TabsContent value="assign" className="space-y-3">
             {contacts.length === 0 ? (
               <p className="text-sm text-muted-foreground py-4">
-                No clients in your brokerage yet — add a contact to assign lessons.
+                No clients in {words?.payer ?? "your account"} yet — add a contact to assign lessons.
               </p>
             ) : (
               <>
@@ -276,7 +276,7 @@ export function ClientLearningPanel({
           {/* ── Record a completion ── */}
           <TabsContent value="complete" className="space-y-3">
             {contacts.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-4">No clients in your brokerage yet.</p>
+              <p className="text-sm text-muted-foreground py-4">No clients in {words?.payer ?? "your account"} yet.</p>
             ) : (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -336,7 +336,7 @@ export function ClientLearningPanel({
           {/* ── Bulk assign ── */}
           <TabsContent value="bulk" className="space-y-3">
             {contacts.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-4">No clients in your brokerage yet.</p>
+              <p className="text-sm text-muted-foreground py-4">No clients in {words?.payer ?? "your account"} yet.</p>
             ) : (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

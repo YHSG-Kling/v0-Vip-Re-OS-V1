@@ -593,7 +593,11 @@ async function sectionM() {
   check("the panel shows document-says / record-says side by side, each reason's form, field and repair, and the document link", /Document says/.test(panel) && /Record says/.test(panel) && /Form:/.test(panel) && /Field:/.test(panel) && /How this ends/.test(panel) && /openHref/.test(panel))
   check("…Approve / Hold call the representation-review doors, bound to the evidence hash on screen", /recordRepresentationReview\(\{[^}]*evidenceHash: d\.evidenceHash/.test(panel))
   check("…decision and attestation controls render only for a reviewer (data.mayDecide); others see status", /data\.mayDecide \? \(/.test(panel) && /Compliance decides this packet/.test(panel))
+  const actSrc = code("app/actions/compliance/representation-review.ts")
+  check("the screen's repair text comes FROM REPAIR_PATHS and 'who may approve' FROM REPRESENTATION_REVIEWER_AUTHORITY (one source; read by the door, rendered by the panel)",
+    /REPAIR_PATHS\[code\]/.test(actSrc) && /REPRESENTATION_REVIEWER_AUTHORITY\.roles/.test(actSrc) && /data\.repairs\[r\.code\]/.test(panel) && /data\.whoMayApprove/.test(panel))
   const qc = code("app/dashboard/compliance/queue/representation-review-queue.tsx")
+  check("queue rows and the listing page LINK to the full review page (the census-visible href)", /href=\{`\/dashboard\/compliance\/queue\/review\/\$\{it\.record\}\/\$\{it\.subjectId\}`\}/.test(qc) && /\/dashboard\/compliance\/queue\/review\/listing_agreement\//.test(code("app/dashboard/listings/[id]/compliance-review/page.tsx")))
   check("an empty queue and a failed load read differently", /No executed listing agreements or offers are waiting/.test(qc) && /not an empty queue/.test(code("app/actions/compliance/representation-review.ts")))
   const lp = code("app/dashboard/listings/[id]/compliance-review/page.tsx")
   check("the listing page carries the review (the listing-side affordance), linked from the lifecycle page", /<RepresentationReviewPanel record="listing_agreement"/.test(lp) && /compliance-review/.test(code("app/dashboard/listings/[id]/lifecycle/page.tsx")))

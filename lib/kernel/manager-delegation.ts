@@ -562,7 +562,7 @@ async function transitionDelegation(input: TransitionInput, svc: Client, d: type
     const { governanceArbitration } = await import("@/lib/kernel/action-ledger")
     const arbitration = governanceArbitration({
       // A listing / unanchored ask is a version conflict outside the four named classes: its class reads null (said, never guessed).
-      conflictClass: about?.type === "transaction" ? "same_transaction_terms" : about?.type === "contact" || about?.type === "lead" ? "same_contact" : "entity_version",
+      conflictClass: about?.type === "transaction" ? "same_transaction_terms" : "entity_version", // 156M: a race on a delegation ABOUT a contact is not a touch (same_contact's one decider is the AI ISA)
       decider: row.assigned_manager, survivor: "lib/kernel/manager-delegation.ts transitionDelegation (compare-and-set on the status read)",
       winner: { manager: null, ref: `a concurrent transition moved ${from} first` },
       loser: { manager: actor.type === "manager" ? actor.id ?? null : null, ref: `${from}→${input.to}`, outcome: "HOLD", nextTrigger: { kind: "re_evaluate", detail: "re-read the delegation and decide on its current version" } },

@@ -1,7 +1,9 @@
 /**
  * scripts/canaries/listing-lifecycle.ts — LISTING canary (wave 142, lane 142J):
  *   agent + seller signing → provider completion evidence → compliance catches a missing document / initial →
- *   parties notified → corrections → the pass arm → FULLY EXECUTED only after compliance
+ *   parties notified → corrections → the review (wave 156, owner 2026-11-25: the executed agreement is COMPARED to the listing
+ *   and a person with review authority accepts it — a signature alone is not compliance) → the pass arm → FULLY EXECUTED only after
+ *   that approval
  * through the survivors at HEAD: lib/compliance/signature-completeness.ts (evaluateExecution — absence is NOT
  * consent), lib/forms/esign-execution-loop.ts (evaluateEnvelopeExecution — every tracked form of the envelope
  * signed? partial → a deal_coordinator signal; complete → the ready writes + finalizeVoiceCockpitPacket + the
@@ -23,7 +25,7 @@
  */
 import { pathToFileURL } from "node:url"
 import { join } from "node:path"
-import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSvc, stubModule, uuid } from "./_harness"
+import { CANARY_EMAIL_DOMAIN, CANARY_TAG, LIVE, canary, canaryClient, cleanupCanary, nowIso, setSessionUser, setSvc, stubModule, uuid } from "./_harness"
 import { ROOT, hooksFor, listFiles, readRepo, strippedRepo } from "./_registry"
 
 type Row = Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any -- the in-memory client's row shape
@@ -126,25 +128,37 @@ export async function run() {
   c.step("deduped: an unrelated upload re-enters the loop with the SAME blocker set → still blocked, the live list rewritten, NOBODY paged again", same.outcome === "blocked" && !same.notified && flagBells().length === bellsBefore + flagBells().length - bellsBefore && (same.blockers ?? []).length > 0, JSON.stringify({ outcome: same.outcome, notified: same.notified }))
   // The correction: the executed agreement is uploaded and scanned — seller initials still missing on one page.
   const UPLOAD = uuid()
-  ;(svc.tables.documents ??= []).push({ id: UPLOAD, brokerage_id: B, listing_id: L, contact_id: SELLER, document_type: "listing_agreement", classification: "listing_agreement", status: "uploaded", signature_completeness: noSellerInitials, metadata: {} })
+  // wave 156 (156B): the upload is SCANNED (completed, high confidence, its terms read) — the review compares what it says.
+  ;(svc.tables.documents ??= []).push({ id: UPLOAD, brokerage_id: B, listing_id: L, contact_id: SELLER, document_type: "listing_agreement", classification: "listing_agreement", status: "uploaded", signature_completeness: noSellerInitials, metadata: {},
+    scanned_at: nowIso(), scan_error: null, classification_confidence: "high", extracted_fields: { property_address: "1 Canary Way, Pensacola, FL 32501", zip_code: "32501", state: "FL", seller_name: "Sam Seller" } })
   const toldBefore = flagBells().length
   const initials = await runListingComplianceLoop(svc as never, { brokerageId: B, listingId: L, trigger: "document_uploaded" })
   c.step("correction round 1: the agreement is uploaded but the SELLER INITIALS are blank → still blocked, now naming the initials (a signature block being filled does not make a document complete), the blocker set CHANGED so the roles are told again", initials.outcome === "blocked" && initials.blockers.some((b) => /seller initials/i.test(b) && /not initialed/i.test(b)) && !initials.blockers.some((b) => /missing document/i.test(b)) && initials.notified && flagBells().length > toldBefore, JSON.stringify({ outcome: initials.outcome, blockers: initials.blockers }).slice(0, 300))
   const up = (svc.tables.documents ?? []).find((d) => d.id === UPLOAD)
   if (up) up.signature_completeness = full
   const stillUnreviewed = await runListingComplianceLoop(svc as never, { brokerageId: B, listingId: L, trigger: "document_uploaded" })
-  // THE RULE (owner: "only after compliance approval: FULLY EXECUTED"; lane 142B's ladder; wave 143 lane 143A closes 142K finding 5):
-  // the compliance loop IS the review. Round 2 has every signature and initial and the provider's all-signed evidence, so the
-  // review PASSES here with no human flag: it writes the compliance mark with compliance_approved, then the execution stamp with
-  // fully_executed - and, because no planned MLS live date has been typed, it takes NO stage hop and invents no date
-  // (passed_awaiting_date). Before wave 143 this step expected the gate to refuse until a person hand-set compliance_passed -
-  // a mark nothing in the provider path ever wrote, so every provider-signed agreement was stuck blocked forever.
-  c.step("correction round 2: every signature and initial present → the compliance REVIEW PASSES (the loop is the review): compliance_approved writes the mark, fully_executed writes the execution stamp, the listing stays at LISTING_AGREEMENT_SIGNED with outcome passed_awaiting_date and NO go-live date invented",
-    stillUnreviewed.outcome === "passed_awaiting_date" && gate().state === "passed_awaiting_date" && listing()?.lifecycle_stage === "LISTING_AGREEMENT_SIGNED" && listing()?.go_live_date == null
+  // THE RULE — RESTATED FOR THE OWNER'S WAVE-156 RULING (2026-11-25, lane 156B: "a signature is not compliance"). Until wave 156
+  // the loop WAS the review: every signature and initial present → compliance passed by itself. Now the executed agreement is
+  // COMPARED to the listing (lib/kernel/compliance/representation-gate.ts) and a person with review authority accepts THAT
+  // evidence. So round 2 (signed, initialed, scanned, every compared term agreeing) is REVIEW PENDING: nothing approved, nothing
+  // executed, no stage hop, no transaction. The reviewer's approval, through the real door (recordRepresentationReview, bound to
+  // the evidence hash), then continues the loop exactly as before: compliance_approved writes the mark, fully_executed the stamp,
+  // and with no planned MLS live date the listing waits (passed_awaiting_date) — no date invented.
+  c.step("correction round 2 (wave-156 ruling): every signature and initial present and every compared term agreeing → the REVIEW IS PENDING, not passed — awaiting a person with review authority; nothing approved or executed, no stage hop, no transaction",
+    stillUnreviewed.outcome === "awaiting_review" && gate().state === "awaiting_review" && listing()?.lifecycle_stage === "LISTING_AGREEMENT_SIGNED"
+    && agreement()?.compliance_passed !== true && agreement()?.esign_status !== "fully_executed" && hopEvidence("compliance_approved").length === 0 && (svc.tables.transactions ?? []).filter((t) => t.brokerage_id === B).length === 0,
+    JSON.stringify({ outcome: stillUnreviewed.outcome, gate: gate().state, esign: agreement()?.esign_status, reason: (stillUnreviewed.reason ?? "").slice(0, 160) }).slice(0, 320))
+  setSessionUser(svc as never, CO_U)
+  const reviewDoor = await import("../../app/actions/compliance/representation-review")
+  const opened = await reviewDoor.getRepresentationReviewAction({ record: "listing_agreement", subjectId: L })
+  const approved = await reviewDoor.recordRepresentationReview({ record: "listing_agreement", subjectId: L, decision: "approve", evidenceHash: opened.success ? opened.decision.evidenceHash : "" })
+  setSessionUser(svc as never, null)
+  const awaiting = { outcome: (approved as { continued?: { listing?: string } }).continued?.listing ?? "not_continued", reason: (approved as { error?: string }).error ?? null }
+  c.step("the compliance officer's approval of THAT evidence hash (the real review door) continues the loop: the REVIEW PASSES — compliance_approved writes the mark, fully_executed writes the execution stamp, the listing stays at LISTING_AGREEMENT_SIGNED with outcome passed_awaiting_date and NO go-live date invented",
+    opened.success && opened.mayDecide && approved.success && awaiting.outcome === "passed_awaiting_date" && gate().state === "passed_awaiting_date" && listing()?.lifecycle_stage === "LISTING_AGREEMENT_SIGNED" && listing()?.go_live_date == null
     && agreement()?.esign_status === "fully_executed" && agreement()?.compliance_passed === true && typeof agreement()?.fully_executed_at === "string"
     && trail().indexOf("compliance_approved") > trail().indexOf("compliance_pending") && trail().indexOf("fully_executed") > trail().indexOf("compliance_approved"),
-    JSON.stringify({ outcome: stillUnreviewed.outcome, trail: trail(), stamp: agreement()?.fully_executed_at ?? null, mark: agreement()?.compliance_passed }).slice(0, 320))
-  const awaiting = stillUnreviewed
+    JSON.stringify({ opened: opened.success ? opened.decision.verdict : opened.error, approved: approved.success, outcome: awaiting.outcome, reason: awaiting.reason, trail: trail() }).slice(0, 320))
   c.step("the MLS date waits on a PERSON: no stage hop was taken without a planned date, the listing is not coming_soon, the open-house dates were not invented, and the review's evidence is on the listing (metadata.compliance_gate)",
     awaiting.outcome === "passed_awaiting_date" && listing()?.status !== "coming_soon" && listing()?.open_house_event_date == null && hopEvidence("compliance_approved").length === 1 && hopEvidence("fully_executed").length === 1, `${awaiting.outcome}: ${(awaiting.reason ?? "").slice(0, 200)}`)
   // The planned MLS live date is typed (the lifecycle timeline's save → the ONE planned-date writer): the writer re-runs the loop, which

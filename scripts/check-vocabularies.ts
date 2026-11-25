@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 491 tables, 976 columns.
+ * MEASURED AT GENERATION: 496 tables, 993 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-25
  * source: public.live_check_constraints_json()
- * body-sha256: 4973fbeb87c059be21e0dea4c9d65f72ae6d185874565818edb3c1fc2281f85a
+ * body-sha256: d41885cac2e64fbdce9ae4a5a8206e72947a0728b1c0b60139a3658734e70836
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -841,6 +841,30 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   form_packet_bundles: {
     bundle_kind: ["buyer_representation", "closing", "counter_offer", "custom", "inspection_addendum", "listing", "offer", "outside_offer", "price_change"],
+  },
+  fraud_bulletin_revisions: {
+    change_kind: ["corrected", "published", "taken_down"],
+  },
+  fraud_bulletins: {
+    claim_class: ["official_public_warning", "unverified_report", "verified_operational_pattern"],
+    confidence: ["high", "low", "medium"],
+    status: ["draft", "published", "taken_down"],
+    typology: ["altered_payoff_settlement_documents", "change_of_wire_instructions", "cloned_title_escrow_attorney_identity", "credential_phishing", "deed_ownership_impersonation", "fake_earnest_money_instructions", "fake_lender_insurance_communication", "fake_listing_photo_reuse", "fake_rental_deposit", "forged_power_of_attorney", "professional_recruitment_investment_scam", "vacant_land_seller_impersonation", "vendor_invoice_substitution", "wire_diversion_lookalike_domain"],
+  },
+  fraud_case_evidence: {
+    evidence_kind: ["audio_recording", "document", "email_headers", "listing_capture", "message_export", "other", "payment_record", "screenshot"],
+    storage_status: ["not_stored", "stored"],
+  },
+  fraud_correction_requests: {
+    channel: ["email", "in_app", "phone", "postal_mail", "support_ticket"],
+    requester_kind: ["named_subject", "tenant"],
+    status: ["corrected", "received", "rejected", "taken_down"],
+  },
+  fraud_incident_cases: {
+    channel: ["e_sign_platform", "email", "in_person", "listing_site", "other", "phone_call", "postal_mail", "social_media", "text_message", "video_call"],
+    incident_kind: ["altered_payoff_settlement_documents", "change_of_wire_instructions", "cloned_title_escrow_attorney_identity", "credential_phishing", "deed_ownership_impersonation", "fake_earnest_money_instructions", "fake_lender_insurance_communication", "fake_listing_photo_reuse", "fake_rental_deposit", "forged_power_of_attorney", "professional_recruitment_investment_scam", "vacant_land_seller_impersonation", "vendor_invoice_substitution", "wire_diversion_lookalike_domain"],
+    loss_occurred: ["no", "unknown", "yes"],
+    status: ["closed_no_action", "submitted", "under_review", "used_for_bulletin", "withdrawn"],
   },
   gamification_badges: {
     badge_tier: ["bronze", "diamond", "gold", "platinum", "silver"],
@@ -1819,6 +1843,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["cancelled", "completed", "in_progress", "pending"],
   },
   transaction_title_escrow: {
+    hoa_estoppel_status: ["needed", "not_applicable", "received", "requested", "verified"],
+    payoff_status: ["needed", "not_applicable", "received", "requested", "verified"],
+    recording_status: ["needed", "not_applicable", "received", "requested", "verified"],
     settlement_agent_basis: ["agent_entered", "contract_named", "party_confirmed"],
     settlement_agent_kind: ["attorney", "escrow_company", "other_authorized_entity", "title_company"],
   },

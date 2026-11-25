@@ -7,12 +7,12 @@ import type { AgentDirectoryEntry, OutboundReferral } from "@/lib/referrals/agen
 type Contact = { id: string; name: string }
 
 export function ReferralNetworkClient({
-  agents, outbound, earnedTotal, contacts,
+  agents, outbound, earnedTotal, contacts, words,
 }: {
   agents: AgentDirectoryEntry[]
   outbound: OutboundReferral[]
   earnedTotal: number
-  contacts: Contact[]
+  contacts: Contact[]; /** wave 156Q: the session tenant's words (the directory spans the whole tenant, so its noun is the tenant's, never an office). */ words?: { payer: string }
 }) {
   const [pending, startTransition] = useTransition()
   const [receivingAgentId, setReceivingAgentId] = useState("")
@@ -45,7 +45,7 @@ export function ReferralNetworkClient({
       <div className="flex items-baseline justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Referral network</h1>
-          <p className="text-muted-foreground mt-1">Refer a relocating client to an agent elsewhere in your brokerage — and earn a fee when it closes.</p>
+          <p className="text-muted-foreground mt-1">Refer a relocating client to an agent elsewhere in {words?.payer ?? "your account"} — and earn a fee when it closes.</p>
         </div>
         <div className="rounded-lg border border-green-200 bg-green-50/40 p-3 text-right">
           <div className="text-xs text-muted-foreground">Referral income earned</div>
@@ -79,7 +79,7 @@ export function ReferralNetworkClient({
 
       {/* Directory grouped by location (the map's data view) */}
       <div className="space-y-3">
-        <h2 className="text-lg font-semibold">Agents across your brokerage</h2>
+        <h2 className="text-lg font-semibold">Agents across {words?.payer ?? "your account"}</h2>
         {byState.map(([state, list]) => (
           <div key={state} className="rounded-lg border p-3">
             <div className="text-sm font-semibold text-muted-foreground mb-2">{state}</div>
@@ -96,7 +96,7 @@ export function ReferralNetworkClient({
             </div>
           </div>
         ))}
-        {agents.length === 0 && <p className="text-sm text-muted-foreground">No other agents in your brokerage to refer to yet — this network fills in as your team or brokerage adds agents across locations.</p>}
+        {agents.length === 0 && <p className="text-sm text-muted-foreground">No other agents in {words?.payer ?? "your account"} to refer to yet — this network fills in as {words?.payer ?? "your account"} adds agents.</p>}
       </div>
 
       {/* My outbound referrals */}

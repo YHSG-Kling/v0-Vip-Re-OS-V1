@@ -305,3 +305,64 @@ export function stalledRenderError(row: { claimed_at?: string | null; created_at
   const clock = row.claimed_at ? "claimed" : "created (no claim stamp — claimed before m933)"
   return `render_stalled: ${clock} at ${since} and no terminal status was written by ${now.toISOString()} — the render function was killed (route cap, memory limit or instance recycle); a transient failure for the bounded auto-requeue`
 }
+
+// ─── FAIR CLAIMING ACROSS TENANTS AND THEIR DESKS (wave 156, lane 156S) ─────────────────────────────────────────────────
+//
+// The queue tick used to take the ONE globally oldest `queued` row. One tick renders one row (Chromium + ffmpeg share one
+// function's memory), so a tenant that queued a 200-row batch — a multi-office brokerage's listing week, a living-video
+// refresh — held the head of the queue for 200 ticks while every other tenant's single render waited behind it. Oldest-
+// first is fair between ROWS and unfair between TENANTS.
+//
+// The pick is now LEAST-RECENTLY-SERVED: among the queued rows in the window, the tenant with the FEWEST claims in the
+// recent window goes first (ties → the tenant whose oldest queued row is oldest); inside that tenant, the same rule over
+// its desks (scope_type:scope_id — the agent / team / brokerage scope the render was requested for; a multi-location
+// brokerage's offices run as team scopes, and the render row carries no office column), and then that desk's oldest row.
+// A tenant alone in the queue is served exactly as before (its oldest row). The rule only ORDERS: it never skips a tenant,
+// never reads another tenant's content, and a row is still claimed by its own id with its own brokerage_id.
+
+/** How far back a claim counts as "recently served" when ranking tenants. */
+export const FAIR_PICK_RECENT_MS = 60 * 60_000
+
+export interface FairPickQueued { id: string; brokerage_id: string; scope_type?: string | null; scope_id?: string | null; created_at?: string | null }
+export interface FairPickClaim { brokerage_id: string | null; scope_type?: string | null; scope_id?: string | null }
+
+/** The desk a render was requested for — the second fairness level. */
+export function renderDeskKey(r: { brokerage_id?: string | null; scope_type?: string | null; scope_id?: string | null }): string {
+  return `${r.scope_type ?? "brokerage"}:${r.scope_id ?? r.brokerage_id ?? ""}`
+}
+
+/**
+ * PURE. Choose the next queued render: least-recently-served tenant, then its least-recently-served desk, then that desk's
+ * oldest row. `queued` must be ordered oldest first (the reader asks for it that way); `recentClaims` are the claims inside
+ * FAIR_PICK_RECENT_MS (rendering / succeeded / failed rows with a recent claimed_at). Null when nothing is queued.
+ */
+export function chooseFairRender<Q extends FairPickQueued>(queued: readonly Q[], recentClaims: readonly FairPickClaim[]): Q | null {
+  if (queued.length === 0) return null
+  const tenantLoad = new Map<string, number>()
+  const deskLoad = new Map<string, number>()
+  for (const c of recentClaims) {
+    if (!c.brokerage_id) continue
+    tenantLoad.set(c.brokerage_id, (tenantLoad.get(c.brokerage_id) ?? 0) + 1)
+    const d = `${c.brokerage_id}|${renderDeskKey(c)}`
+    deskLoad.set(d, (deskLoad.get(d) ?? 0) + 1)
+  }
+  const rank = (load: number, idx: number) => load * 1e9 + idx
+  const firstIdxOfTenant = new Map<string, number>()
+  queued.forEach((q, i) => { if (!firstIdxOfTenant.has(q.brokerage_id)) firstIdxOfTenant.set(q.brokerage_id, i) })
+  let tenant: string | null = null
+  let best = Infinity
+  for (const [t, idx] of firstIdxOfTenant) {
+    const r = rank(tenantLoad.get(t) ?? 0, idx)
+    if (r < best) { best = r; tenant = t }
+  }
+  const mine = queued.map((q, i) => ({ q, i })).filter((x) => x.q.brokerage_id === tenant)
+  const firstIdxOfDesk = new Map<string, number>()
+  for (const { q, i } of mine) { const d = renderDeskKey(q); if (!firstIdxOfDesk.has(d)) firstIdxOfDesk.set(d, i) }
+  let desk: string | null = null
+  best = Infinity
+  for (const [d, idx] of firstIdxOfDesk) {
+    const r = rank(deskLoad.get(`${tenant}|${d}`) ?? 0, idx)
+    if (r < best) { best = r; desk = d }
+  }
+  return mine.find((x) => renderDeskKey(x.q) === desk)?.q ?? null
+}

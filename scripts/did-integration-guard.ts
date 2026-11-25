@@ -447,7 +447,7 @@ console.log("\n═══ 12. TWO RENDER LANES, ONE SLOT — the loser is decided
   // The CALL, not the import — `didRequest` appears at the top of the file as an
   // import, which sits before everything and would make this assertion pass
   // vacuously no matter where the claim went.
-  const didAt = route.search(/await\s+didRequest\s*</)
+  const didAt = route.search(/(?:await\s+|=>\s*)didRequest\s*</)
   ok("the claim happens BEFORE the ElevenLabs spend", claimAt !== -1 && ttsAt !== -1 && claimAt < ttsAt)
   ok("the claim happens BEFORE the D-ID spend", claimAt !== -1 && didAt !== -1 && claimAt < didAt)
 

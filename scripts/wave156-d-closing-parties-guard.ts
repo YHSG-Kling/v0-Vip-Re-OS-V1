@@ -216,6 +216,13 @@ async function sectionA(cp: any) {
     ["CLOSING_CHECK_STATUSES", "transaction_title_escrow_closing_check_statuses", "payoff_status", ""],
   ]
   for (const [name, con, col] of pairs) check(`${name} equals the ${con} CHECK`, sameSet(cp?.[name] ?? null, checkArray(sql, con, col)), { code: cp?.[name], sql: checkArray(sql, con, col) })
+  // ROUND 3: m1012 splits m1010's three-column CHECK into one CHECK per column (the vocabulary cache reads single-column CHECKs only).
+  const m1012 = raw("supabase/migrations/m1012-closing-check-statuses-one-check-per-column.sql")
+  for (const col of ["payoff_status", "hoa_estoppel_status", "recording_status"]) {
+    const con = `ADD CONSTRAINT transaction_title_escrow_${col}_check`
+    check(`m1012: ${col} has its OWN CHECK with exactly CLOSING_CHECK_STATUSES`, sameSet(cp?.CLOSING_CHECK_STATUSES ?? null, checkArray(m1012, con, col)), checkArray(m1012, con, col))
+  }
+  check("m1012 drops the combined three-column CHECK (and nothing else)", /DROP CONSTRAINT IF EXISTS transaction_title_escrow_closing_check_statuses;/.test(m1012) && (m1012.match(/DROP CONSTRAINT/g) ?? []).length === 1)
   check("POSITIVE CONTROL: a planted extra value is caught by the same comparison", !sameSet([...(cp?.CLOSING_PARTY_ROLES ?? []), "everyone"], checkArray(sql, "transaction_participants_party_role_check", "party_role")))
   check("no representation value means 'all parties' (one attorney is never everyone's)", Array.isArray(cp?.PARTY_REPRESENTS) && !cp.PARTY_REPRESENTS.some((v: string) => /all|both|every/i.test(v)))
   const noTypeSql = sql.split("\n").map((l) => l.replace(/--.*$/, "")).join("\n")

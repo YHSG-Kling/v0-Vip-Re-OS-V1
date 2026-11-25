@@ -689,7 +689,7 @@ export async function fulfillDeleteRequestAction(requestId: string): Promise<
   // website_visitors after the contact was anonymized. They are deleted here, inside this request's tenant, every
   // delete counted; a refused statement fails the request CLOSED (not marked fulfilled) — lib/privacy/visitor-data-erasure.ts.
   const { eraseVisitorDataForSubject } = await import("@/lib/privacy/visitor-data-erasure")
-  const visitorErasure = await eraseVisitorDataForSubject(svc, { brokerageId: req.brokerage_id as string, contactIds: anonymizedRows.map((r) => String(r.id)), email })
+  const visitorErasure = await eraseVisitorDataForSubject(svc, { brokerageId: req.brokerage_id as string, contactIds: anonymizedRows.map((contactRow) => String(contactRow.id)), email })
   if (!visitorErasure.ok) {
     return { ok: false, error: `Contact(s) anonymized but the website visitor data was NOT erased (${visitorErasure.error}). The request was NOT marked fulfilled.` }
   }

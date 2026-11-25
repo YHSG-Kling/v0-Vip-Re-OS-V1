@@ -683,24 +683,20 @@ function darkCapabilityLayer() {
   check("D6", "...and it really is the Apify lane",
     /apify\.scrapeZillow\(/.test(ext) && !/zenrows\./.test(ext))
 
-  // WAVE 156 (lane 156F, round 2) — RESTATED, not dropped. trackExternalActivity is RETIRED: its only caller attributed
-  // an off-site listing "view" to anonymous visitors by a shared city (a fabricated person-level fact), and a person's
-  // off-site activity is not observable without the visitor identification the owner's decision excludes
-  // (docs/operations/WAVE156-VISITOR-IDENTITY-DECISION.md). The rules D7–D10 protected — provenance never asserted,
-  // tenant-scoped visitor lookups, writes that report errors — now hold as: the door is gone with a tombstone, and no
-  // remaining code in the file writes an off-site "view" onto a caller-named visitor.
-  const leadStripped = code(LEAD)
   const trackExt = fnBody(LEAD, "trackExternalActivity")
-  check("D7", "trackExternalActivity is retired — no function by that name remains in the 'use server' file (wave 156)",
-    /export async function scrapeExternalBehavior\s*\(/.test(leadStripped) && trackExt === "" && !/function\s+trackExternalActivity\s*\(/.test(leadStripped))
-  const leadRaw = (() => { try { return readFileSync(join(process.cwd(), LEAD), "utf8") } catch { return "" } })()
-  check("D8", "...its tombstone names why nothing replaces it (the visitor-identity decision)",
-    /TOMBSTONE \(wave 156, lane 156F\) — `export async function trackExternalActivity`[\s\S]{0,1200}WAVE156-VISITOR-IDENTITY-DECISION\.md/.test(leadRaw))
-  check("D9", "...and no remaining code looks a visitor up by a CALLER-supplied visitor id to write behavior onto it",
-    /export async function scrapeExternalBehavior\s*\(/.test(leadStripped) && !/\.eq\(\s*["']visitor_id["']\s*,\s*data\.visitorId\s*\)/.test(leadStripped))
-  check("D10", "...and the file's only external_behavior writer is the listing scrape (scrapeExternalBehavior), never a visitor door",
-    (leadStripped.match(/from\(\s*["']external_behavior["']\s*\)\s*\.insert\(/g) ?? []).length === writePayloads(fnBody(LEAD, "scrapeExternalBehavior"), "external_behavior", "insert").length
-    && writePayloads(fnBody(LEAD, "scrapeExternalBehavior"), "external_behavior", "insert").length >= 1)
+  const trackInserts = writePayloads(trackExt, "external_behavior", "insert")
+  check("D7", "trackExternalActivity states its collection vendor instead of asserting one",
+    trackInserts.length === 1 &&
+    /detected_via_zenrows:\s*data\.detectedViaZenrows\s*===\s*true/.test(trackInserts[0]))
+  // The parameter existed and was dropped on the floor; the column had no writer.
+  check("D8", "...and the searchCriteria argument reaches the column that had no writer",
+    trackInserts.length === 1 && /search_criteria_json:\s*data\.searchCriteria/.test(trackInserts[0]))
+  check("D9", "...its visitor lookup is tenant-scoped on a service client",
+    /from\(\s*["']behavioral_signals["']\s*\)[\s\S]{0,300}?\.eq\(\s*["']visitor_id["']\s*,\s*data\.visitorId\s*\)[\s\S]{0,200}?\.eq\(\s*["']brokerage_id["']\s*,\s*auth\.brokerageId\s*\)/.test(trackExt))
+  check("D10", "...and both of its writes report their errors",
+    /if\s*\(behaviorError\)\s*\{[^}]{0,240}?return\s*\{\s*success:\s*false/.test(trackExt) &&
+    /if\s*\(bumpError\)\s*\{[^}]{0,240}?return\s*\{\s*success:\s*false/.test(trackExt))
+
 
   section("[layer 6c · the visitor pixel cannot write an untenanted row]")
 
@@ -820,7 +816,7 @@ function stayDarkLayer() {
     ["N3", "trackBehavior", "no consent artifact recorded at collection — unrelated to the wave-65 ruling, unchanged"],
     ["N4", "analyzeGoogleSearchIntent", "wired into the autonomous cron phase; google_search_intelligence still has no dashboard reader"],
     ["N5", "enrichPropertyIntelligence", "wired into the autonomous territory-intelligence cron phase, never a dashboard control"],
-    ["N6", "trackExternalActivity", "retired in wave 156 (tombstone — D7); unreachable from any dashboard control"],
+    ["N6", "trackExternalActivity", "uncalled since wave 156 (156F removed the territory phase's city-match caller — a view nobody observed); gated, never a dashboard control"],
   ] as const) {
     check(id, `${fn} is still unreachable from a DASHBOARD control (${why})`,
       !new RegExp(`\\b${fn}\\b`).test(leadImports) && !callsFn(surfaces, fn))
@@ -834,12 +830,11 @@ function stayDarkLayer() {
     ["trackBehavior", code(TRACK_BEHAVIOR)] as const,
     ...["scrapeSocialSignalsWithZenRows", "enrichPropertyIntelligence",
         "analyzeGoogleSearchIntent", "createUnifiedLeadProfile", "scrapeExternalBehavior",
-        // trackExternalActivity: RETIRED in wave 156 round 2 (tombstoned; D7–D10 hold its rule) — the one named deletion.
-        ].map((n) => [n, leadSrc] as const),
+        "trackExternalActivity"].map((n) => [n, leadSrc] as const),
     ...["getSocialQueue", "getSocialEngagement", "getPublishLog", "trackPostPerformance"]
         .map((n) => [n, socialSrc] as const),
   ]
-  check("N7", "the other ten capabilities still exist (trackBehavior moved to its lib module; trackExternalActivity retired with a tombstone — D7)",
+  check("N7", "all eleven capabilities still exist (trackBehavior in its lib module since wave 156) — nothing was deleted",
     stillExported.every(([n, s]) => new RegExp(`export async function ${n}\\s*\\(`).test(s)))
 
   // A "use server" module may only export async functions.
@@ -1005,10 +1000,9 @@ const MUTATIONS: Mutation[] = [
     find: `  const territoryResult = await resolveTargetTerritory(brokerageId, location)\n  if (!territoryResult.ok) {\n    return { success: false, error: territoryResult.error, signals: [], count: 0, territoryRefused: true as const }\n  }\n  const territory = territoryResult.territory`,
     replace: `  const territory = { id: "x", city: location.city, state: location.state, zip_codes: null as string[] | null, monthly_budget_usd: null, spend_this_month: null }` },
 
-  // WAVE 156 (156F round 2): trackExternalActivity is retired — D8's negative test now strips the reason from its tombstone.
-  { id: "D8", file: LEAD, note: "retire the off-site visitor door without saying why",
-    find: `anonymous-visitor identification the owner's decision excludes (docs/operations/WAVE156-VISITOR-IDENTITY-DECISION.md),`,
-    replace: `anonymous-visitor identification the owner's decision excludes,` },
+  { id: "D8", file: LEAD, note: "drop the caller's search criteria on the floor again",
+    find: `      search_criteria_json: data.searchCriteria ?? null,`,
+    replace: `` },
 
   // WAVE 156 (156F round 2): trackBehavior lives in lib/lead-intelligence/track-behavior.ts — same mutation, where the code is.
   { id: "D14", file: TRACK_BEHAVIOR, note: "let a visitor id collide across tenants",

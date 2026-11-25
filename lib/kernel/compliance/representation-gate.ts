@@ -49,6 +49,7 @@ import { evaluateExecution, LISTING_AGREEMENT_PARTIES } from "@/lib/compliance/s
 import { isSupersededDocument } from "@/lib/compliance/required-documents"
 import { resolveDealWork } from "@/lib/auth/deal-work-ownership"
 import type { GateRefusal } from "@/lib/transactions/transaction-creation-gate"
+import type { TenantPacketRow } from "@/lib/forms/tenant-form-packets"
 
 // ─── Vocabulary ─────────────────────────────────────────────────────────────
 
@@ -82,6 +83,8 @@ export type ReasonCode =
   | "unverified_by_machine"
   | "awaiting_reviewer"
   | "form_license"
+  | "form_not_in_directory"
+  | "form_directory_unread"
 
 /**
  * EVERY HOLD HAS A REPAIR THAT TERMINATES (wave 156 round 2). Typed as a total Record, so a new reason code that forgets its repair
@@ -107,7 +110,9 @@ export const REPAIR_PATHS: Readonly<Record<ReasonCode, { path: string; terminate
   unsigned_addendum:         { path: "have the addendum signed and initialed, or mark it superseded/withdrawn through the document-version door", terminatesWhen: "the addendum is executed or out of the file" },
   unverified_by_machine:     { path: "the reviewer reads it on the executed document and approves (or attests it)", terminatesWhen: "a reviewer approves this evidence" },
   awaiting_reviewer:         { path: "a reviewer with closingApproval authority approves the evidence hash", terminatesWhen: "an approval bound to the current evidence hash exists" },
-  form_license:              { path: "replace the form with a licensed current version (lane 156C's licensed-forms registry)", terminatesWhen: "the registry accepts the form version" },
+  form_license:              { path: "re-execute the packet on the form's current revision (the replacement named in the reason) or renew / replace the expired license in the forms directory (/dashboard/forms#add-forms), then upload the executed copy", terminatesWhen: "the directory reads the executed form as licensed and current" },
+  form_not_in_directory:     { path: "the reviewer confirms the brokerage may use this form, or adds it to the forms directory (/dashboard/forms#add-forms) — informational, never a hold", terminatesWhen: "a reviewer approves this evidence, or the directory knows the form" },
+  form_directory_unread:     { path: "retry: re-open the review (or re-run the scan) once the forms directory can be read — the standing is re-read on every run", terminatesWhen: "the forms directory is read and the form's standing is known" },
 })
 
 /** The terms a reviewer may attest per record — exactly the keys the comparator reads (no free-form fields). */
@@ -169,7 +174,7 @@ export interface RepresentationDecision {
   evidence: {
     documentIds: string[]; compared: ComparedFact[]; gate: string
     /** Each document the decision read: the reference the open door resolves, the form id, and who attested it (if anyone). */
-    documents?: Array<{ id: string; classification: string | null; storageUrl: string | null; stateFormId: string | null; attestedBy: string | null }>
+    documents?: Array<{ id: string; classification: string | null; storageUrl: string | null; stateFormId: string | null; attestedBy: string | null; formStanding?: DocumentFormStanding | null }>
   }
   reviewerAuthority: ReviewerAuthority
   /** Who approved this exact evidence, when they did. */
@@ -239,6 +244,21 @@ export interface EvidenceDocument {
   storage_url?: string | null
   /** Set by applyAttestations: the reviewer's reading replaced the scan for this document. */
   attested?: { userId: string; at: string; signersConfirmed: boolean } | null
+  /** wave 156 (156R): the form's license / version standing in the tenant's forms directory, read ONCE per executed document by the
+   *  loaders (attachFormStandings → formLicenseStanding at the foot of this file, re-exported by lib/forms/form-directory-intake.ts). Absent = not read (pure callers). */
+  form_standing?: DocumentFormStanding | null
+}
+
+/** wave 156 (156R): what the forms directory says about the form an executed document was written on. */
+export interface DocumentFormStanding {
+  standing: "licensed_current" | "retired" | "license_expired" | "unknown" | "read_error"
+  /** The form reference the document carries (library form id, provider form id or the state form number). */
+  ref: string | null
+  packetId?: string | null
+  replacementPacketId?: string | null
+  expiredOn?: string | null
+  /** unknown: why the directory does not know it; read_error: the refused read. */
+  reason?: string | null
 }
 
 /**
@@ -258,13 +278,44 @@ export function applyAttestations(docs: EvidenceDocument[], attestations: Record
 /**
  * THE FORM-LICENSE SEAM (wave 156 round 2) — the ONE function lane 156C's licensed-forms registry plugs into. Given an executed
  * document (its state_form_id / state_code), it returns a HOLD reason when the form is unlicensed or superseded, or null when it
- * has no finding. Until the integrator connects the registry it has no opinion (null) — the form id is recorded as evidence, and
- * the guard asserts every decision passes every executed document through this seam.
+ * has no finding. CONNECTED (wave 156, lane 156R): the default is formStandingFinding below, which reads the standing the loaders
+ * attach (attachFormStandings, at the foot); setFormLicenseCheck remains the override a proof installs.
  */
 export type FormLicenseCheck = (doc: EvidenceDocument) => BlockingReason | null
-let formLicenseCheck: FormLicenseCheck = () => null
+let formLicenseCheck: FormLicenseCheck = (doc) => formStandingFinding(doc)
 export function setFormLicenseCheck(check: FormLicenseCheck): void { formLicenseCheck = check }
 export function formLicenseFinding(doc: EvidenceDocument): BlockingReason | null { return formLicenseCheck(doc) }
+
+/**
+ * wave 156 (lane 156R) — THE SEAM CONNECTED. The default check reads the standing the loaders attached to the document (they ask
+ * lane 156C's directory reader, formLicenseStanding at the foot of this file, once per executed document). PURE:
+ *   licensed_current -> no finding.
+ *   retired          -> HOLD naming the form and its replacement: re-execute on the current revision.
+ *   license_expired  -> HOLD naming the form and the expiry date: renew or replace the license.
+ *   unknown          -> NOT a hold (a tenant with an empty directory must still be able to close) — a REVIEW line the reviewer
+ *                       sees: "this form is not in your directory".
+ *   read_error       -> HOLD with a retry — a directory that could not be read is never a silent pass (CLAUDE.md §4).
+ *   not read (pure callers that attach no standing) -> no opinion, exactly as before.
+ */
+export function formStandingFinding(doc: EvidenceDocument): BlockingReason | null {
+  const st = doc.form_standing
+  if (!st || st.standing === "licensed_current") return null
+  const form = st.ref ? `form "${st.ref}"` : "the form this document was written on"
+  if (st.standing === "retired") {
+    return { code: "form_license", severity: "hold", documentId: doc.id, field: "form_version", documentSays: st.ref, recordSays: st.replacementPacketId ?? null,
+      message: `The executed document is on ${form}, which your forms directory has RETIRED${st.replacementPacketId ? ` — its current revision is library form ${st.replacementPacketId}` : " with no replacement recorded"}. Re-execute the packet on the current revision and upload it; the executed original is kept.` }
+  }
+  if (st.standing === "license_expired") {
+    return { code: "form_license", severity: "hold", documentId: doc.id, field: "form_license", documentSays: st.ref, recordSays: st.expiredOn ?? null,
+      message: `The executed document is on ${form}, whose license in your forms directory EXPIRED on ${st.expiredOn ?? "an unrecorded date"}. Renew the license (or replace the form with one you hold) in the forms directory, then re-run the review.` }
+  }
+  if (st.standing === "read_error") {
+    return { code: "form_directory_unread", severity: "hold", documentId: doc.id, field: "form_license",
+      message: `Whether ${form} is licensed and current could not be checked — ${st.reason ?? "the forms directory could not be read"}. Nothing was assumed; re-open the review to retry.` }
+  }
+  return { code: "form_not_in_directory", severity: "review", documentId: doc.id, field: "form_license", documentSays: st.ref,
+    message: `This form${st.ref ? ` ("${st.ref}")` : ""} is not in your directory${st.reason ? ` (${st.reason})` : ""}. Confirm the brokerage may use it before approving — or add it to your forms directory.` }
+}
 
 export interface ListingRepresentationInput {
   brokerageId: string
@@ -398,7 +449,10 @@ function finish(
   for (const c of compared) c.source = attestedIds.has(c.documentId) ? "attested" : "scan"
   for (const r of reasons) r.repair = REPAIR_PATHS[r.code].path
   // The hash is computed over the facts — never over the approval or the time — so a person approves THESE facts.
-  const evidenceHash = evidenceHashOf({ record, subjectId, version, gate: gateSummary, compared, reasons: reasons.map((r) => [r.code, r.documentId, r.field]) })
+  // wave 156 (156R): the form's directory standing is evidence too — an approval given while a form was licensed and current does
+  // not survive its retirement or expiry. Added only when a loader read it, so a pure caller's hash is what it always was.
+  const forms = docs.filter((d) => d.form_standing).map((d) => [d.id, d.form_standing!.standing, d.form_standing!.ref, d.form_standing!.packetId ?? null, d.form_standing!.replacementPacketId ?? null, d.form_standing!.expiredOn ?? null])
+  const evidenceHash = evidenceHashOf({ record, subjectId, version, gate: gateSummary, compared, reasons: reasons.map((r) => [r.code, r.documentId, r.field]), ...(forms.length ? { forms } : {}) })
   const approvalMatches = !!approval && approval.decision === "approve" && approval.evidenceHash === evidenceHash
   const all = [...reasons]
   if (!approvalMatches && !all.some((r) => r.severity !== "review")) {
@@ -412,7 +466,7 @@ function finish(
     record, subjectId, version, verdict: verdictOf(all, approvalMatches), blockingReasons: all, evidenceHash,
     evidence: {
       documentIds, compared, gate: gateSummary,
-      documents: docs.map((d) => ({ id: d.id, classification: d.classification, storageUrl: d.storage_url ?? null, stateFormId: d.state_form_id ?? null, attestedBy: d.attested?.userId ?? null })),
+      documents: docs.map((d) => ({ id: d.id, classification: d.classification, storageUrl: d.storage_url ?? null, stateFormId: d.state_form_id ?? null, attestedBy: d.attested?.userId ?? null, formStanding: d.form_standing ?? null })),
     },
     reviewerAuthority: REPRESENTATION_REVIEWER_AUTHORITY,
     approval: approvalMatches && approval ? { userId: approval.userId, at: approval.at } : null,
@@ -549,7 +603,12 @@ export function decideOfferRepresentation(input: OfferRepresentationInput): Repr
         ? "The executed contract on file was replaced by a later version that is not on this offer. Upload the current executed contract."
         : "No executed contract document is filed on this offer, so its terms cannot be compared. Upload the fully signed contract (and the accepted counter, if any)." })
   }
+  // WHICH PAPER IS THE HEAD (round 3): on a countered contract the accepted COUNTER states the governing terms; the original
+  // contract's paper legitimately states the original price and is not a contradiction of it. So the head is the newest counter
+  // paper when the sequence carries a counter, and only papers of the head's own kind are compared against each other.
+  if (input.packet.sequence.length > 1) current.sort((a, b) => Number(b.classification === "counter_offer") - Number(a.classification === "counter_offer"))
   const head = current[0]
+  const sameKind = current.slice(1).filter((d) => d.classification === head?.classification)
   const executedAddenda = offerAddenda.filter((d) => input.packet.addendumDocumentIds.includes(d.id) && !isSupersededDocument(d.metadata))
   const unsignedAddenda = offerAddenda.filter((d) => !input.packet.addendumDocumentIds.includes(d.id) && !isSupersededDocument(d.metadata))
 
@@ -558,6 +617,14 @@ export function decideOfferRepresentation(input: OfferRepresentationInput): Repr
     reasons.push(...readabilityReasons(head, label))
     reasons.push(...ambiguousSignatures(head, label, ["buyer", "seller"]))
     for (const ad of executedAddenda) reasons.push(...readabilityReasons(ad, "An executed addendum"))
+    // EVERY INSTRUMENT OF THE CONTRACT IS EXECUTED (round 3): the head (an accepted counter's own paper), the original's paper and
+    // each executed addendum carry both parties' signatures AND initials — the same evaluator the creation gate uses. The review
+    // runs before the stamp, so it must not accept a packet the gate would later refuse.
+    for (const paper of [...current, ...executedAddenda]) {
+      const ex = evaluateExecution(paper.signature_completeness, ["buyer", "seller"])
+      if (!ex.executed) reasons.push({ code: ex.missing.some((m) => m.endsWith("initials")) && !ex.missing.some((m) => m.endsWith("signature")) ? "initials_missing" : "gate_refused", severity: "hold", documentId: paper.id, field: "signatures",
+        message: `${paper.id === head.id ? label : paper.classification === "counter_offer" ? "A counter-offer paper" : paper.classification === "addendum" ? "An executed addendum" : "The original purchase contract"} (${String(paper.classification ?? "document").replace(/_/g, " ")}) is missing the ${ex.missing.join(", ")}. Obtain them and upload the executed paper.` })
+    }
 
     for (const t of CONTRACT_TERMS) {
       // Governing value: the head instrument, then each EXECUTED addendum in order (a later executed amendment governs).
@@ -571,7 +638,7 @@ export function decideOfferRepresentation(input: OfferRepresentationInput): Repr
       }
       if (gov) compareFact(compared, reasons, { field: t.field, documentId: gov.doc, documentSays: gov.v, recordSays: O[t.offerKey] }, t.eq, gov.doc === head.id ? label : "The executed addendum", t.what)
       // Two current contract papers on the head that disagree with each other are a contradiction, not a choice.
-      for (const other of current.slice(1)) {
+      for (const other of sameKind) {
         const ov = firstPresent(objectOf(other.extracted_fields), t.docKeys)
         const hv = firstPresent(objectOf(head.extracted_fields), t.docKeys)
         if (present(ov) && present(hv) && !t.eq(ov, hv)) reasons.push({ code: "contradictory_terms", severity: "hold", documentId: other.id, field: t.field, documentSays: ov, recordSays: hv,
@@ -661,7 +728,11 @@ export async function reviewerHoldsAuthority(db: Db, brokerageId: string, userId
   const principal = await resolveTenantPrincipalTeamLead(db as never, userId, brokerageId)
   if (!principal.ok) return { ok: false, error: `the reviewer's authority could not be read: ${principal.reason}` }
   const userType = (u.data as { user_type?: string | null }).user_type ?? null
-  return { ok: true, holds: mayReviewRepresentation({ sameTenant: true, userType, grantedRoles, isOwningAgent: false, isTenantPrincipal: principal.isPrincipal }).ok }
+  // wave 156 (156R): the solo-tier principal (TIER PARITY) holds the same authority at read time as at the door, so an approval a
+  // solo agent gave their own packet is not discarded when the decision re-reads the ledger.
+  const solo = await isSoloTierPrincipal(db, { brokerageId, userType })
+  if (!solo.ok) return { ok: false, error: `the reviewer's authority could not be read: ${solo.error}` }
+  return { ok: true, holds: mayReviewRepresentation({ sameTenant: true, userType, grantedRoles, isOwningAgent: false, isTenantPrincipal: principal.isPrincipal || solo.isSolo }).ok }
 }
 
 /**
@@ -722,7 +793,7 @@ export async function loadAndDecideListingRepresentation(db: Db, p: { brokerageI
   }
   const ap = await readRepresentationApproval(db, { brokerageId: p.brokerageId, record: "listing_agreement", subjectId: p.listingId })
   if (!ap.ok) return { ok: false, error: ap.error }
-  const rows = (docs ?? []) as EvidenceDocument[]
+  const rows = await attachFormStandings(db, p.brokerageId, (listing as any).state ?? null, (docs ?? []) as EvidenceDocument[])
   return { ok: true, decision: decideListingRepresentation({
     brokerageId: p.brokerageId, listing: listing as any, agreement: ((agreements ?? [])[0] as any) ?? null,
     agreementDocuments: rows.filter((d) => LISTING_AGREEMENT_CLASSES.includes(String(d.classification))),
@@ -735,6 +806,7 @@ export async function loadAndDecideOfferRepresentation(db: Db, p: {
   brokerageId: string; offerId: string
   packet: { sequence: string[]; headOfferId: string; addendumDocumentIds: string[]; transactionIds: string[] }
   gate: { allowed: boolean; refusals: GateRefusal[] }
+  asReviewed?: boolean
 }): Promise<{ ok: true; decision: RepresentationDecision } | { ok: false; error: string }> {
   const { data: offer, error: oErr } = await db.from("offers")
     .select("id, brokerage_id, offer_price, earnest_money, closing_date, property_address, transaction_id")
@@ -755,8 +827,14 @@ export async function loadAndDecideOfferRepresentation(db: Db, p: {
   }
   const ap = await readRepresentationApproval(db, { brokerageId: p.brokerageId, record: "purchase_offer", subjectId: p.offerId })
   if (!ap.ok) return { ok: false, error: ap.error }
+  const withStanding = await attachFormStandings(db, p.brokerageId, null, rows)
+  rows.splice(0, rows.length, ...withStanding)
+  // wave 156 (156R): `asReviewed` — the deal page asks for the packet AS IT WAS REVIEWED (before it became this deal), so the
+  // already-a-transaction refusal does not stand in for the packet's own standing.
+  const offerRow = p.asReviewed ? { ...(offer as any), transaction_id: null } : (offer as any)
+  const packet = p.asReviewed ? { ...p.packet, transactionIds: [] } : p.packet
   return { ok: true, decision: decideOfferRepresentation({
-    brokerageId: p.brokerageId, offer: offer as any, packet: p.packet,
+    brokerageId: p.brokerageId, offer: offerRow, packet,
     contractDocuments: rows.filter((d) => d.classification === "signed_contract" || d.classification === "counter_offer"),
     addenda: rows.filter((d) => d.classification === "addendum" || p.packet.addendumDocumentIds.includes(d.id)),
     gate: p.gate, approval: ap.approval, attestations: ap.attestations,
@@ -785,4 +863,118 @@ export async function recordRepresentationDecision(db: Db, d: RepresentationDeci
 /** PURE. The blocker lines a loop writes back and notifies — every one names its document when there is one. */
 export function decisionBlockerLines(d: RepresentationDecision): string[] {
   return d.blockingReasons.map((r) => `${r.severity === "review" ? "review" : "hold"}: ${r.message}${r.documentId ? ` [document ${r.documentId}]` : ""}${r.repair ? ` — how it ends: ${r.repair}` : ""}`)
+}
+
+// ─── wave 156 (lane 156R) — the seams between lanes 156B and 156C, at the foot ───────────────────────────────────────────────
+
+/** PURE. The form reference an executed document carries, in the order the directory can answer it most precisely. */
+export function formReferenceOf(doc: EvidenceDocument): { ref: { packetId?: string | null; providerName?: string | null; providerFormId?: string | null; formCode?: string | null }; version: string | number | null; label: string | null } | null {
+  const m = objectOf(doc.metadata)
+  const s = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null)
+  // A working copy staged from the library (lib/forms/form-directory-intake.ts stageLibraryFormOnDeal) names its master and version.
+  if (s(m.source_library_form_id)) return { ref: { packetId: s(m.source_library_form_id) }, version: (m.source_library_version as number | string | null) ?? null, label: s(m.source_library_form_id) }
+  if (s(m.provider_form_id)) return { ref: { providerName: s(m.provider_name), providerFormId: s(m.provider_form_id) }, version: s(m.provider_form_version), label: s(m.provider_form_id) }
+  // The state form number the scanner read off the paper (lib/documents/scan-uploaded-document.ts state_form_id).
+  if (s(doc.state_form_id)) return { ref: { formCode: s(doc.state_form_id) }, version: null, label: s(doc.state_form_id) }
+  return null
+}
+
+/**
+ * Read each executed document's form standing ONCE, tenant-pinned, from lane 156C's forms directory (formLicenseStanding) and carry
+ * it on the evidence. A refused directory read becomes `read_error` on that document (a HOLD with a retry), never "unknown"; a
+ * document that names no form is `unknown` without a read. The tenant is the caller's (the loaders take it from the session-gated
+ * caller), never a document value.
+ */
+export async function attachFormStandings(db: Db, brokerageId: string, fallbackState: string | null, docs: EvidenceDocument[]): Promise<EvidenceDocument[]> {
+  const out: EvidenceDocument[] = []
+  for (const d of docs) {
+    const ref = formReferenceOf(d)
+    if (!ref) { out.push({ ...d, form_standing: { standing: "unknown", ref: null, reason: "the document names no form number" } }); continue }
+    const state = String(d.state_code ?? objectOf(d.extracted_fields).state ?? fallbackState ?? "").trim().toUpperCase()
+    const r = await formLicenseStanding(db, { brokerageId, state, ref: ref.ref, version: ref.version })
+    if (!r.ok) { out.push({ ...d, form_standing: { standing: "read_error", ref: ref.label, reason: r.error } }); continue }
+    const x = r.result
+    out.push({ ...d, form_standing:
+      x.standing === "licensed_current" ? { standing: x.standing, ref: ref.label, packetId: x.packetId }
+      : x.standing === "retired" ? { standing: x.standing, ref: ref.label, packetId: x.packetId, replacementPacketId: x.replacementPacketId }
+      : x.standing === "license_expired" ? { standing: x.standing, ref: ref.label, packetId: x.packetId, expiredOn: x.expiredOn }
+      : { standing: "unknown", ref: ref.label, reason: x.reason } })
+  }
+  return out
+}
+
+/**
+ * THE SOLO-TIER PRINCIPAL (wave 156, lane 156R) — the existing TIER PARITY rule (lib/auth/require-caller.ts
+ * requireTenantAdminOrSoloOwner; lane 156C's resolvePacketActor): a subscriber on a STORED `brokerages.plan_tier = 'solo_agent'`
+ * IS their own broker. Here it is narrowed to the producing seat (canonical role `agent`), so a coordinator or a vendor seat on a
+ * solo account gains nothing. A refused tier read is an error (fail closed), never "not solo" and never "solo". No new role.
+ */
+export async function isSoloTierPrincipal(db: Db, p: { brokerageId: string; userType: string | null }): Promise<{ ok: true; isSolo: boolean } | { ok: false; error: string }> {
+  const { toCanonicalRole } = await import("@/lib/security/types")
+  if (toCanonicalRole(p.userType as never) !== "agent") return { ok: true, isSolo: false }
+  const { data, error } = await db.from("brokerages").select("plan_tier").eq("id", p.brokerageId).maybeSingle()
+  if (error) return { ok: false, error: `the account's plan could not be read: ${error.message}` }
+  return { ok: true, isSolo: (data as { plan_tier?: string | null } | null)?.plan_tier === "solo_agent" }
+}
+
+// ── THE LICENSE / VERSION STANDING OF A FORM REFERENCE — lane 156C's reader (wave 156 round 2, written in
+// lib/forms/form-directory-intake.ts), MOVED HERE UNCHANGED by lane 156R and re-exported there, so every caller keeps its import.
+// Why here: this decision is its consumer, and it is reached from app/crm/page.tsx — importing the intake module (its packet writer,
+// provider directory and PDF reader) would have added ~20 modules to that entry, and a module of its own one more. Reads only
+// brokerage_form_library (a TYPE-only import of its row shape). ──
+const FORM_STANDING_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export type FormLicenseStanding =
+  | { standing: "licensed_current"; packetId: string; version: number | null; providerFormVersion: string | null }
+  | { standing: "retired"; packetId: string; replacementPacketId: string | null }
+  | { standing: "license_expired"; packetId: string; expiredOn: string }
+  | { standing: "unknown"; reason: string }
+
+/**
+ * For a TENANT (the caller's session brokerage — never a body value), a STATE, a FORM REFERENCE and optionally the VERSION the
+ * paperwork carries: is that form licensed and current in the tenant's directory, retired (with its replacement), license-expired,
+ * or unknown to the directory? Reads brokerage_form_library only, tenant-pinned; a refused read is an error, never "unknown".
+ *   · ref.packetId — the library row; ref.providerName + ref.providerFormId — an adopted provider form; ref.formCode / ref.name —
+ *     matched within the STATE only (case-insensitive), never across states.
+ *   · version — the row's integer `version` or the provider's `provider_form_version`. A version that is not the current one is
+ *     `retired` with the current row as its replacement (the paperwork used a superseded revision).
+ */
+export async function formLicenseStanding(
+  svc: Db,
+  q: { brokerageId: string; state: string; ref: { packetId?: string | null; providerName?: string | null; providerFormId?: string | null; formCode?: string | null; name?: string | null }; version?: string | number | null; now?: Date },
+): Promise<{ ok: true; result: FormLicenseStanding } | { ok: false; error: string }> {
+  const state = (q.state ?? "").trim().toUpperCase()
+  if (!FORM_STANDING_UUID.test(q.brokerageId ?? "")) return { ok: false, error: "no tenant" }
+  const { data, error } = await svc.from("brokerage_form_library")
+    .select("id, state, name, form_code, version, is_active, license_expires_at, replaced_by_id, provider_name, provider_form_id, provider_form_version")
+    .eq("brokerage_id", q.brokerageId)
+  if (error) return { ok: false, error: `the form directory could not be read: ${error.message}` }
+  type Row = Pick<TenantPacketRow, "id" | "state" | "name" | "form_code" | "version" | "is_active" | "license_expires_at" | "replaced_by_id" | "provider_name" | "provider_form_id" | "provider_form_version">
+  const rows = (data ?? []) as Row[]
+  const byId = new Map(rows.map((r) => [r.id, r]))
+  const lc = (s: string | null | undefined) => (s ?? "").trim().toLowerCase()
+  const r = q.ref
+  let hits: Row[]
+  if (r.packetId) hits = rows.filter((x) => x.id === r.packetId)
+  else if (r.providerFormId) hits = rows.filter((x) => x.provider_form_id === r.providerFormId && (!r.providerName || lc(x.provider_name) === lc(r.providerName)))
+  else if (r.formCode) hits = rows.filter((x) => lc(x.form_code) === lc(r.formCode))
+  else if (r.name) hits = rows.filter((x) => lc(x.name) === lc(r.name))
+  else return { ok: true, result: { standing: "unknown", reason: "no form reference given" } }
+  hits = hits.filter((x) => String(x.state).toUpperCase() === state)
+  if (hits.length === 0) return { ok: true, result: { standing: "unknown", reason: `the directory has no such form for ${state || "that state"}` } }
+  const finalOf = (row: Row): Row => { let cur = row; for (let i = 0; i < 10 && !cur.is_active && cur.replaced_by_id && byId.has(cur.replaced_by_id); i++) cur = byId.get(cur.replaced_by_id)!; return cur }
+  const active = hits.find((x) => x.is_active) ?? null
+  const v = q.version == null || q.version === "" ? null : String(q.version)
+  const matchesVersion = (x: Row) => v === null || String(x.version ?? "") === v || (x.provider_form_version ?? "") === v
+  const named = v === null ? (active ?? hits[0]) : (hits.find(matchesVersion) ?? null)
+  if (!named) {
+    return { ok: true, result: active ? { standing: "retired", packetId: hits[0].id, replacementPacketId: active.id } : { standing: "unknown", reason: `version ${v} is not in the directory` } }
+  }
+  if (!named.is_active) {
+    const repl = finalOf(named)
+    return { ok: true, result: { standing: "retired", packetId: named.id, replacementPacketId: repl.is_active && repl.id !== named.id ? repl.id : (active?.id ?? null) } }
+  }
+  const today = (q.now ?? new Date()).toISOString().slice(0, 10)
+  if (named.license_expires_at && named.license_expires_at < today) return { ok: true, result: { standing: "license_expired", packetId: named.id, expiredOn: named.license_expires_at } }
+  return { ok: true, result: { standing: "licensed_current", packetId: named.id, version: named.version ?? null, providerFormVersion: named.provider_form_version ?? null } }
 }

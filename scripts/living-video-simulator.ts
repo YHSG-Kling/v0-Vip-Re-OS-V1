@@ -517,14 +517,17 @@ console.log("\n═══ 11. Wiring + ownership ═══")
   // this cron and render-decision had three copies of one word), and indexOf
   // returned -1, so `54 < -1` read as "the refresh runs after the drain". The
   // drain is located by its render_status filter however the value is spelled.
-  const drainAt = cron.search(/\.eq\(\s*["']render_status["']\s*,/)
+  // Wave 156 (lane 156S): the drain's pick moved into lib/remotion/registry.ts pickNextQueuedRender (the fair pick); the
+  // cron's drain is located by that call or, on an older tree, by its own render_status filter.
+  const drainAt = (() => { const a = cron.search(/\bpickNextQueuedRender\s*\(/); return a >= 0 ? a : cron.search(/\.eq\(\s*["']render_status["']\s*,/) })()
   const refreshAt = cron.indexOf("refreshLivingVideos")
   ok("the drain query is still there to order against",
     drainAt >= 0 && refreshAt >= 0)
   ok("the refresh runs BEFORE the drain, so a staged replacement is picked up next tick",
     drainAt >= 0 && refreshAt >= 0 && refreshAt < drainAt)
   // POSITIVE CONTROL — the locator still finds a drain written either way.
-  ok("CONTROL the drain locator matches both the literal and the shared token",
+  ok("CONTROL the drain locator matches both the literal and the shared token (and the fair pick's call)",
+    /\bpickNextQueuedRender\s*\(/.test("const pick = await pickNextQueuedRender(svc)") &&
     /\.eq\(\s*["']render_status["']\s*,/.test('.eq("render_status", "queued")') &&
     /\.eq\(\s*["']render_status["']\s*,/.test('.eq("render_status", PICKABLE_RENDER_STATUS)'))
   ok("the domain has a declared owner", MAINTENANCE_DOMAINS.living_video?.manager === "asset_manager")

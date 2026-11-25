@@ -5,7 +5,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { hasActiveRepresentation } from "@/lib/kernel/compliance/active-representation"
+import { hasActiveRepresentation, representationConsentCovers, type RepresentationSendPurpose } from "@/lib/kernel/compliance/active-representation"
 import { RESTRICTED_STATES, type ContactData } from "@/lib/kernel/compliance/outbound-predicates"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ export interface EvaluateOutboundInput {
     actorType: "ai_isa" | "agent" | "system"
     userId?: string
   }
-  overrideValidation?: boolean
+  overrideValidation?: boolean; /** WAVE 156 (156N): why the message is sent; a `campaign` is never covered by representation alone. */ channelPurpose?: RepresentationSendPurpose
 }
 
 export interface ComplianceViolation {
@@ -195,7 +195,7 @@ export async function evaluateOutboundCompliance(
     const consentGiven =
       contact.tcpa_consent === true ||
       (needsConsentCheck
-        ? await hasActiveRepresentation(supabase, contact.id, actorContext.brokerageId)
+        ? representationConsentCovers(input.channelPurpose) && (await hasActiveRepresentation(supabase, contact.id, actorContext.brokerageId))
         : false)
 
     // ─── RULE 6: Restricted State Without Consent ──────────────────────────

@@ -1847,7 +1847,11 @@ export interface PrePullDecision {
   reasons: string[]
 }
 
-/** PURE — the pre-pull waterfall for ONE subject. Deterministic; reads no network and spends nothing. */
+/**
+ * PURE — the pre-pull waterfall for ONE subject. Deterministic; reads no network and spends nothing. Product reader:
+ * runVersiumContactLeg above (its rights step).
+ * @proofSeam kept exported for scripts/wave156-g-provider-economics-guard.ts §E, which drives every stage of the waterfall directly
+ */
 export function decidePrePull(n: PrePullNeed): PrePullDecision {
   const maxAge = n.maxAgeDays ?? 180
   const held = n.held ?? {}

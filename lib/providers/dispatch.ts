@@ -141,7 +141,7 @@ interface DispatchActorContext {
    * dispatchSms): an untrusted origin with no verification is HELD on one `comms.decision.wait` row and no gate, provider or
    * mailbox is reached. Absent = today's behavior exactly (the send's own row carries the decision record).
    */
-  origin?: Pick<ActionContext, "trustClass" | "sink" | "cycle"> | null
+  origin?: Pick<ActionContext, "trustClass" | "sink" | "cycle" | "dependencies"> | null // 156M: `dependencies` = the facts the proposer's boundary read NOW (a carried decision on an older version is superseded)
   /**
    * ACTION LEDGER context (wave 97, lib/kernel/action-ledger.ts). Every send is recorded whether
    * or not this is set; set it to say WHY (reasonCode) and to make the send at-most-once per
@@ -259,7 +259,7 @@ async function originAtSink(params: DispatchActorContext, channel: "email" | "sm
   const r = await ledgerToolCall<DispatchResult>({
     brokerageId: params.brokerageId, action: `comms.${channel}.propose`, channel, actor: params.userId ? { type: "user", userId: params.userId } : { type: "system" },
     subject, riskClass: "COMMUNICATION", systemSource: params.systemSource ?? null, cycle: o.cycle ?? null, trustClass: o.trustClass ?? null,
-    approvalBasis: o.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted", dependencies: [{ type: subject.type, id: subject.id, version: null }],
+    approvalBasis: o.sink?.verification?.kind === "authorized_human" ? "human_approval" : "policy_permitted", dependencies: [{ type: subject.type, id: subject.id, version: null }, ...(o.dependencies ?? [])],
     sink: o?.sink ?? null,
   }, run)
   if ("providerKey" in r) return r
@@ -410,7 +410,7 @@ function dispatchLedgerHooks(costUsd: number | null, params?: object) {
       // 155R8: a refusing gate turns the claim's ALLOW into its own verdict (dispatch plane `gate` → DENY) with the typed reason and
       // next trigger — written on the SAME settle update (the claim's own detail, send intent included, is carried whole).
       const ctx = params ? SEND_LEDGER_CONTEXT.get(params) : undefined
-      if (!ctx || r.success || !/_gate$/.test(r.providerKey)) return s
+      if (!ctx || r.success || !/_gate$/.test(r.providerKey)) return withDeconflictVerdict(s, params)
       const prior = (ctx.detail?.governance ?? {}) as Record<string, unknown>
       const arbitration = DECONFLICT_ARBITRATION.get(r) ?? null
       const refused = governanceRecord({
@@ -421,7 +421,7 @@ function dispatchLedgerHooks(costUsd: number | null, params?: object) {
         trustClass: (prior.trust_class as string | null) ?? ctx.trustClass ?? null, approvalBasis: (prior.approval_basis as string | null) ?? ctx.approvalBasis ?? null,
         dependencies: ctx.dependencies ?? null, nextTrigger: gateNextTrigger(r),
       })
-      return { ...s, detail: { ...(ctx.detail ?? {}), refused_by: r.providerKey, governance: arbitration ? { ...refused, arbitration } : refused } }
+      return { ...s, detail: { ...(ctx.detail ?? {}), refused_by: r.providerKey, governance: { ...(arbitration ? { ...refused, arbitration } : refused), ...deconflictVerdictPatch(params) } } }
     },
     replay: (claim: NonActingClaim): DispatchResult => replayDispatchResult(claim),
   }
@@ -646,12 +646,12 @@ async function deconflictGate(args: {
   leadId?:       string | null
   recipientEmail?: string | null
   recipientPhone?: string | null
-  systemSource?: string
+  systemSource?: string; /** WAVE 156 (156M): the send's params object — its receipt (the ledger row) carries this verdict. */ receipt?: object
 }): Promise<DispatchResult | null> {
   if (!args.contactId && !args.leadId && !args.recipientEmail && !args.recipientPhone) return null
   // 155B3 request 2 (done by 155R8): the requesting manager is named, so the verdict's loser is a manager, not null.
-  const d = await evaluateDeconflict({ ...args, requestingManager: managerForDispatch(null, args.systemSource) })
-  if (d.allowed) return null
+  const { receipt, ...input } = args; const d = await evaluateDeconflict({ ...input, requestingManager: managerForDispatch(null, args.systemSource) })
+  if (receipt) rememberDeconflictVerdict(receipt, d, args.channel, managerForDispatch(null, args.systemSource) ?? null); if (d.allowed) return null
   const refusal: DispatchResult = {
     success:     false,
     providerKey: DECONFLICT_GATE_KEY,
@@ -797,7 +797,7 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
       contactId:      params.contactId ?? null,
       leadId:         params.leadId ?? null,
       recipientEmail: params.to ?? null,
-      systemSource:   params.systemSource,
+      systemSource:   params.systemSource, receipt: params,
     })
     if (deferred) return deferred
   } else if (params.to) {
@@ -1111,7 +1111,7 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
       contactId:      params.contactId ?? null,
       leadId:         params.leadId ?? null,
       recipientPhone: params.to ?? null,
-      systemSource:   params.systemSource,
+      systemSource:   params.systemSource, receipt: params,
     })
     if (deferred) return deferred
   } else if (params.to) {
@@ -1486,7 +1486,7 @@ export async function dispatchDirectMail(
       channel:      "mail",
       contactId:    params.contactId ?? null,
       leadId:       params.leadId ?? null,
-      systemSource: params.systemSource,
+      systemSource: params.systemSource, receipt: params,
     })
     if (deferred) return deferred
   }
@@ -1749,7 +1749,7 @@ export async function dispatchVideo(params: DispatchVideoParams): Promise<Dispat
       channel:      "email",
       contactId:    params.contactId,
       recipientEmail: params.recipientEmail,
-      systemSource: params.systemSource,
+      systemSource: params.systemSource, receipt: params,
     })
     if (deferred) return deferred
   }
@@ -2120,4 +2120,36 @@ export async function dispatchWebSearch(params: DispatchWebSearchParams): Promis
     }).catch(() => false)
   }
   return { ok: true, provider: "exa", results: r.results, costUsd: r.cost, reason: `${r.results.length} result(s) from Exa` }
+}
+
+// ─── WAVE 156 (lane 156M) — THE SEND RECEIPT CARRIES THE ARBITER'S VERDICT ──────────────────────────────────────────────────
+// lib/kernel/manager-registry.ts `arbiter_decision_contract` named this as STILL PARTIAL: "the send dispatcher does not yet copy the
+// deconflict verdict onto its ledger row". The de-confliction engine (lib/kernel/deconflict/index.ts evaluateDeconflict — the ONE decider
+// for a contact's touches, decider ai_isa) runs INSIDE the claimed send; its verdict, allowed OR refused, is remembered against the send's
+// params object and written onto the SAME settle the send already makes (governancePatch on success / a non-gate failure, merged into the
+// refusing gate's record otherwise) — no extra round trip, nothing else the claim wrote is lost. A send the gate never ran for (no
+// recipient key) carries no verdict: absent, never a guessed "allowed".
+
+/** The verdict each in-flight send's de-confliction returned, keyed by its params object (read once by its own settle). */
+const DECONFLICT_VERDICT = new WeakMap<object, Record<string, unknown>>()
+
+/** Remember a de-confliction verdict for the send whose params object is `receipt`. The accountable decider is the engine's own. */
+function rememberDeconflictVerdict(receipt: object, d: Awaited<ReturnType<typeof evaluateDeconflict>>, channel: string, requestingManager: string | null): void {
+  DECONFLICT_VERDICT.set(receipt, {
+    allowed: d.allowed, conflict_class: "same_contact", decider: "ai_isa", survivor: "lib/kernel/deconflict/index.ts evaluateDeconflict",
+    channel, requesting_manager: requestingManager, touches_in_window: d.touchesInWindow, policy_max: d.policyMax, window_days: d.windowDays,
+    fatigue_risk: d.fatigueRisk ?? null, fatigue_steps: d.fatigueSteps ?? 0, reason: d.reason ?? null,
+  })
+}
+
+/** The `{ deconflict }` governance keys for a send's receipt (empty when the gate did not run for it). */
+function deconflictVerdictPatch(params: object | undefined): Record<string, unknown> {
+  const v = params ? DECONFLICT_VERDICT.get(params) : undefined
+  return v ? { deconflict: v } : {}
+}
+
+/** A settle the dispatcher returns unchanged today, with the verdict merged onto the claimed record (lib/kernel/action-ledger.ts withGovernancePatch). */
+function withDeconflictVerdict(s: ReturnType<typeof settleDispatchResult>, params: object | undefined): ReturnType<typeof settleDispatchResult> {
+  const patch = deconflictVerdictPatch(params)
+  return patch.deconflict ? { ...s, governancePatch: patch } : s
 }

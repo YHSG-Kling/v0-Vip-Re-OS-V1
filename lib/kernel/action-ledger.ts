@@ -319,7 +319,7 @@ export interface ActionContext {
     proposedTargetManager?: string | null
     allowedManagers?: readonly string[] | null
     /** The model's own fields (e.g. "approved: true") — recorded for audit, NEVER read by the rule. */
-    modelClaims?: Record<string, unknown> | null
+    modelClaims?: Record<string, unknown> | null; /** WAVE 156 (156M): the TYPED decision this action executes under (decisionRefFromRow) — checked at the sink for tenant / office / expiry / superseded facts. */ decision?: ArbiterDecisionRef | null; /** The action's own office scope (when the door knows it). */ officeId?: string | null; /** The door states that this execution needs a prior decision (a release of something decided earlier). */ decisionRequired?: boolean | null
   } | null
 }
 
@@ -334,7 +334,7 @@ export interface LedgerEntry {
 }
 
 export type ClaimResult =
-  | { kind: "claimed"; id: string; idempotencyKey: string | null }
+  | { kind: "claimed"; id: string; idempotencyKey: string | null; /** WAVE 156 (156M): the detail the claim wrote (a settle's governancePatch merges onto it — no extra read). */ detail?: Record<string, unknown> | null }
   | { kind: "replay"; entry: LedgerEntry }
   | { kind: "unknown"; entry: LedgerEntry }
   | { kind: "in_flight"; entry: LedgerEntry | null }
@@ -350,7 +350,7 @@ export interface Settlement {
   error?: string | null
   /** WAVE 155 (155B3): a settle that learns the verdict (a spend envelope, a gate) may write the row's FULL detail on the SAME update
    *  (no extra round trip). The caller passes the whole detail — it replaces, never merges. Absent = detail untouched. */
-  detail?: Record<string, unknown> | null
+  detail?: Record<string, unknown> | null; /** WAVE 156 (156M): keys merged onto the CLAIMED detail.governance at settle (e.g. the de-confliction verdict on a send receipt) — everything else the claim wrote is kept. Ignored when `detail` is given. */ governancePatch?: Record<string, unknown> | null
 }
 
 const ENTRY_COLS = "id, status, attempts, outcome, provider, provider_ref, idempotency_key"
@@ -373,15 +373,15 @@ function resolveIdempotencyKey(ctx: ActionContext): string | null {
  */
 async function insertLedgerRow(
   svc: LedgerClient, raw: ActionContext, status: ActionStatus, key: string | null, extra: Record<string, unknown> = {},
-): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null }> {
-  const scope = currentCausation()
+): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null; written?: Record<string, unknown> | null }> {
+  const scope = currentCausation(); let written: Record<string, unknown> | null = null
   const ctx = await ledgerActorFor(svc, raw)
   const reasonCode = resolveReasonCode(ctx)
   // 102D — `policy_key@version` from the ONE version reader; a refused version read records `@unknown`.
   const policyRef = ctx.policyKey
     ? (ctx.policyVersion !== undefined ? formatPolicyRef(ctx.policyKey, ctx.policyVersion) : await resolvePolicyRef(svc, ctx.brokerageId, ctx.policyKey))
     : null
-  const write = async (code: ActionReasonCode, detailNote: string | null, withPolicyColumn = true): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null }> => {
+  const write = async (code: ActionReasonCode, detailNote: string | null, withPolicyColumn = true): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null; written?: Record<string, unknown> | null }> => {
     const { data, error } = await svc.from("agent_action_ledger").insert({
     brokerage_id: ctx.brokerageId,
     action: ctx.action,
@@ -405,12 +405,12 @@ async function insertLedgerRow(
     // ref rides detail.policy_ref — the action stays ledgered, the evidence stays.
     // Audit sink: a secret by name or shape never lands in the ledger detail (wave 139E).
     // WAVE 155 (155B3): the context's decision-contract facts ride detail.governance on this same insert (decisionContractFacts).
-    detail: redactSecretValues(withContractFacts(ctx, withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef })),
+    detail: (written = redactSecretValues(withContractFacts(ctx, withBaseGovernance(ctx, status, key, withPolicyColumn || !policyRef ? (ctx.detail ?? {}) : { ...(ctx.detail ?? {}), policy_ref: policyRef })))),
     ...(withPolicyColumn ? { policy_ref: policyRef } : {}),
     ...extra,
     }).select("id").single()
     // Read, not swallowed: the caller (claim / non-action) decides degrade vs fail-closed on it.
-    return { data: (data as { id?: string } | null) ?? null, error: error ?? null }
+    return { data: (data as { id?: string } | null) ?? null, error: error ?? null, written }
   }
   let first = await write(reasonCode, null)
   if (first.error && isSchemaAbsent(first.error) && /policy_ref/.test(first.error.message ?? "")) {
@@ -442,8 +442,8 @@ async function claimAction(ctx: ActionContext, opts?: { client?: LedgerClient })
   }
   try {
     const svc = opts?.client ?? createServiceClient()
-    const { data, error } = await insertLedgerRow(svc, ctx, "proposed", key)
-    if (!error && data?.id) return { kind: "claimed", id: data.id as string, idempotencyKey: key }
+    const { data, error, written } = await insertLedgerRow(svc, ctx, "proposed", key)
+    if (!error && data?.id) return { kind: "claimed", id: data.id as string, idempotencyKey: key, detail: written ?? null }
     if (error && isSchemaAbsent(error)) {
       warnAbsentOnce("claim", error)
       return { kind: "unledgered", reason: `${error.code}: ${error.message}` }
@@ -567,9 +567,9 @@ export async function withActionLedger<T>(
   ctx: ActionContext,
   run: () => Promise<T>,
   hooks: { settle: (result: T) => Settlement; replay: (claim: NonActingClaim) => T },
-  opts?: { client?: LedgerClient },
+  opts?: { client?: LedgerClient; now?: Date },
 ): Promise<T> {
-  const claim = await claimAction(ctx, opts)
+  const carried = carriedDecisionVerdict(ctx, opts?.now); if (carried) return hooks.replay({ kind: "refused", error: await refuseCarriedDecision(ctx, carried, opts) }); const claim = await claimAction(ctx, opts)
   if (claim.kind !== "claimed" && claim.kind !== "unledgered") return hooks.replay(claim)
   const id = claim.kind === "claimed" ? claim.id : null
   let result: T
@@ -583,7 +583,7 @@ export async function withActionLedger<T>(
     }
     throw e
   }
-  if (id) await settleAction(id, hooks.settle(result), opts)
+  if (id) await settleAction(id, withGovernancePatch(hooks.settle(result), claim.kind === "claimed" ? claim.detail ?? null : null), opts)
   return result
 }
 
@@ -716,6 +716,10 @@ function sinkVerdictFor(ctx: ActionContext, now?: Date): SinkVerdict {
     approvalBasis: ctx.approvalBasis ?? null, expiresAt: ctx.expiresAt ?? null, now: now ?? new Date(),
     proposedTargetManager: ctx.sink?.proposedTargetManager ?? null, allowedManagers: ctx.sink?.allowedManagers ?? null,
     modelClaims: ctx.sink?.modelClaims ?? null,
+    // WAVE 156 (156M): the typed decision the action carries, the action's own verified scope, the facts as the door read them NOW,
+    // and the sink class (derived from the door's channel / action — never from the model).
+    decision: ctx.sink?.decision ?? null, scope: { brokerageId: ctx.brokerageId, officeId: ctx.sink?.officeId ?? null },
+    currentDependencies: ctx.dependencies ?? null, sinkClass: sinkClassOf(ctx), decisionRequired: ctx.sink?.decisionRequired === true,
   })
 }
 
@@ -837,7 +841,7 @@ const DEADLINE_SOURCES = ["contractual", "human_requested", "consumer_reply", "p
 export type DeadlineSource = (typeof DEADLINE_SOURCES)[number]
 
 /** The planes whose verdicts the contract reads (the six of the ownership matrix + the resource / money / closing rails). */
-type GovernancePlane = "tool_boundary" | "delegation" | "contact_engagement" | "ledger_decision" | "dispatch" | "approval" | "resource" | "closing"
+type GovernancePlane = "tool_boundary" | "delegation" | "contact_engagement" | "ledger_decision" | "dispatch" | "approval" | "resource" | "closing" | "action_sink"
 
 /** THE ONE MAPPING TABLE: a plane's own verdict spelling → the governance verb. A spelling with no entry reads null. */
 const GOVERNANCE_VERB_MAP: Readonly<Record<GovernancePlane, Readonly<Record<string, GovernanceDecision>>>> = {
@@ -849,6 +853,8 @@ const GOVERNANCE_VERB_MAP: Readonly<Record<GovernancePlane, Readonly<Record<stri
   approval: { pending: "HOLD", approved: "ALLOW", rejected: "DENY", expired: "CANCEL", escalated: "ESCALATE" },
   resource: { allowed: "ALLOW", refused: "DENY", over_budget: "HOLD", rerouted: "REWRITE" },
   closing: { pass: "ALLOW", hold: "HOLD", blocked: "DENY", correction_requested: "ESCALATE" },
+  // WAVE 156 (156M): the shared ledger door's own reading of a row no plane recorded (withBaseGovernance) — a claim is the decision to execute.
+  action_sink: { execute: "ALLOW", hold: "HOLD", deny: "DENY" },
 }
 
 /** PURE. The verb a plane's own verdict reads as (null when the spelling is not mapped — a finding, never a guess). */
@@ -985,7 +991,10 @@ type DecisionVerification =
   | { kind: "authorized_human"; user_id: string; authority: string; at: string | null }
 
 /** The four conflict classes directive §B3 names, each resolved by its EXISTING survivor (the record names the decider). */
-export const CONFLICT_CLASSES = ["same_contact", "same_campaign", "same_transaction_terms", "competing_provider_spend"] as const
+export const CONFLICT_CLASSES = ["same_contact", "same_campaign", "same_transaction_terms", "competing_provider_spend",
+  // WAVE 156 (156M, one accountable decider): two writers on ONE delegation's version about a contact / lead / listing. Not a touch to the
+  // contact (same_contact's decider is the AI ISA over touches); its decider is the delegation's assigned manager.
+  "entity_version"] as const
 export type ConflictClass = (typeof CONFLICT_CLASSES)[number]
 const LOSER_OUTCOMES = ["HOLD", "RESCHEDULE", "DENY"] as const
 export interface ArbitrationInput {
@@ -1079,6 +1088,8 @@ function decisionContractFacts(i: {
   if (arbitration && (!arbitration.conflict_class || (arbitration.loser && !(arbitration.loser as { outcome: unknown }).outcome))) findings.push("arbitration spelling unmapped")
   return {
     trust_class: trust, dependency_fingerprint: dependencyFingerprint(i.dependencies), approval_basis: basis,
+    // WAVE 156 (156M): the facts themselves (type / id / version read), so a later execution can be judged superseded (decisionRefFromRow).
+    known_facts: knownFacts(i.dependencies),
     expires_at: isoOrNull(i.expiresAt ?? null), next_trigger: next, verification: decisionVerification(i.verification), arbitration,
     ...(findings.length ? { contract_findings: findings } : {}),
   }
@@ -1131,7 +1142,9 @@ function governanceContractGaps(governance: unknown, riskClass: string | null | 
 }
 
 /** The typed reasons the sink rule gives (one spelling — the refusal row and the caller's feedback carry it). */
-export const SINK_REASONS = ["non_consequential", "trusted_origin", "verified_deterministic", "verified_by_authorized_human", "decision_expired", "unverified_untrusted_origin", "trust_class_unknown", "target_outside_capability_set", "capability_set_unknown"] as const
+export const SINK_REASONS = ["non_consequential", "trusted_origin", "verified_deterministic", "verified_by_authorized_human", "decision_expired", "unverified_untrusted_origin", "trust_class_unknown", "target_outside_capability_set", "capability_set_unknown",
+  // WAVE 156 (156M): the four refusals of a typed decision at the sink (directive 156M "deterministic enforcement at the action sink").
+  "decision_missing", "decision_other_tenant", "decision_other_office", "decision_superseded"] as const
 export type SinkReason = (typeof SINK_REASONS)[number]
 interface SinkVerdict { decision: "ALLOW" | "DENY" | "HOLD"; reason: SinkReason; detail: string; trustClass: DecisionTrustClass | null; approvalBasis: ApprovalBasis | null; nextTrigger: NextTrigger | null }
 interface SinkRuleInput {
@@ -1147,6 +1160,13 @@ interface SinkRuleInput {
   allowedManagers?: readonly string[] | null
   /** The model's own fields — accepted so the caller can record them; this function NEVER reads them (INJECT-005, SCOPE-003). */
   modelClaims?: Record<string, unknown> | null
+  /** WAVE 156 (156M) — the typed decision carried, the action's verified scope, the facts as read now, the sink class. All optional:
+   *  absent inputs leave the 155B3 rule exactly as it was. */
+  decision?: ArbiterDecisionRef | null
+  scope?: { brokerageId: string; officeId?: string | null } | null
+  currentDependencies?: ReadonlyArray<{ type: string; id?: string | null; version?: string | number | null }> | null
+  sinkClass?: SinkClass | null
+  decisionRequired?: boolean
 }
 
 /**
@@ -1169,13 +1189,23 @@ function sinkRule(i: SinkRuleInput): SinkVerdict {
     const at = Date.parse(i.expiresAt)
     if (!Number.isFinite(at) || at <= i.now.getTime()) return v("DENY", "decision_expired", Number.isFinite(at) ? `the decision expired at ${new Date(at).toISOString()} — it never executes late` : "the decision's expiry cannot be read — it does not execute", null, { kind: "re_evaluate", detail: "a fresh decision on the current facts" })
   }
+  // WAVE 156 (156M): a CARRIED decision must be this tenant's, this office's, unexpired and resting on the facts as they are now.
+  const carried = carriedDecisionCheck(i)
+  if (carried) return v(carried.decision, carried.reason, carried.detail, null, carried.next)
   if (i.proposedTargetManager) {
     if (!i.allowedManagers) return v("DENY", "capability_set_unknown", `a target manager (${i.proposedTargetManager}) was named but the caller's capability set is unknown`, null, { kind: "none" })
     if (!i.allowedManagers.includes(i.proposedTargetManager)) return v("DENY", "target_outside_capability_set", `${i.proposedTargetManager} is outside the caller's capability set — a model cannot pick the target`, null, { kind: "none" })
   }
   if (!isConsequentialRisk(i.riskClass)) return v("ALLOW", "non_consequential", `${i.riskClass} is not a consequential sink`, basisIn ?? "policy_permitted", null)
-  if (trust && TRUSTED_CLASSES.has(trust)) return v("ALLOW", "trusted_origin", `rests on ${trust}`, basisIn ?? "policy_permitted", null)
   const ver = decisionVerification(i.verification)
+  // WAVE 156 (156M): a RELEASE class (an irreversible payout, a CDA release) or a door that states it executes a prior decision needs
+  // ONE accountable decision: a person acting (or a signed first-party event), an authorized person's recorded verification, or the
+  // typed decision it carries. A tenant policy, a named deterministic check or a model's claim alone does not release money.
+  if ((i.decisionRequired || (i.sinkClass && (RELEASE_SINK_CLASSES as readonly string[]).includes(i.sinkClass)))
+    && !i.decision && ver?.kind !== "authorized_human" && !(trust === "authorized_human" || trust === "verified_first_party")) {
+    return v("HOLD", "decision_missing", `a ${i.sinkClass ?? "decision-bound"} action needs the decision that authorized it (a person's approval or the typed decision it executes) — none was carried`, null, { kind: "human", detail: "the accountable decider records the decision; the action then carries it" })
+  }
+  if (trust && TRUSTED_CLASSES.has(trust)) return v("ALLOW", "trusted_origin", `rests on ${trust}`, basisIn ?? "policy_permitted", null)
   if (ver?.kind === "deterministic") return v("ALLOW", "verified_deterministic", `${trust ?? "unknown origin"} cleared by the deterministic check ${ver.check}`, "policy_permitted", null)
   if (ver?.kind === "authorized_human") return v("ALLOW", "verified_by_authorized_human", `${trust ?? "unknown origin"} cleared by an authorized person (${ver.authority})`, "human_approval", null)
   if (!trust) return v("HOLD", "trust_class_unknown", `what this ${i.riskClass ?? "unclassified"} action rests on is unknown — it waits for a person`, null, { kind: "human", detail: "a person with authority verifies the origin" })
@@ -1329,4 +1359,142 @@ export function assembleCausalChain(events: ChainEvent[], actions: ChainAction[]
     })),
   ]
   return links.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : x.kind === y.kind ? 0 : x.kind === "event" ? -1 : 1))
+}
+
+// ─── WAVE 156 (lane 156M) — THE ARBITER AS A LOGICAL CONTRACT OVER THIS LEDGER (directive 156M; no second kernel) ─────────────
+// The owner: "typed decisions, one accountable decider, deterministic enforcement at the action sink, no second kernel". Nothing here
+// runs a loop, picks a manager or calls a model. It adds three things to the EXISTING record and the EXISTING pure sink rule:
+//   1. THE SHARED DOOR WRITES THE RECORD — every row insertLedgerRow writes (withActionLedger · ledgerSessionAction · ledgerToolCall ·
+//      recordNonAction) carries a detail.governance block, built from what the context already holds when the caller wrote none. What
+//      the door cannot know stays null and is a named gap (an autonomous row with no stated trust class reads `trust_class` missing —
+//      never a guessed "trusted").
+//   2. A TYPED DECISION REFERENCE (ArbiterDecisionRef, read from a persisted decision row by decisionRefFromRow) that a later
+//      execution carries; the sink refuses it when it belongs to another tenant / office, has expired, or read a fact whose version has
+//      since changed (superseded) — and a RELEASE class (payout, CDA release) refuses to run with no decision at all.
+//   3. A settle-time governance PATCH (no extra round trip) so a chokepoint can copy a verdict it learns while acting — the send
+//      dispatcher's de-confliction verdict — onto the receipt the claim wrote, keeping everything else the claim wrote.
+// Research taken as rules (sources in docs/architecture/WAVE156-OWNER-HELD-ADJUDICATION.md, "Research"): a policy DECISION point and a
+// policy ENFORCEMENT point are separate (the decider records; the sink enforces deterministically); a decision is scoped and expiring;
+// provenance (taint) is fixed at ingress by the boundary, never by the content; a refusal is typed feedback, not an abort.
+
+/** The nine consequential sink classes the owner listed (directive line 152 / test:arbitration-sinks), and nothing else. */
+export const SINK_CLASSES = ["credentials", "paid_acquisition", "outbound_send", "ad_budget", "financial_ledger", "commission_edit", "legal_document", "cda_release", "payout"] as const
+export type SinkClass = (typeof SINK_CLASSES)[number]
+/** The classes whose execution RELEASES money / authority and so needs one accountable decision (principle 11: IRREVERSIBLE is never
+ *  autonomous). Outbound sends, spend inside an envelope and credential reads stay policy-permitted (routine work never waits). */
+export const RELEASE_SINK_CLASSES = ["payout", "cda_release"] as const satisfies readonly SinkClass[]
+/** THE ONE MAP from a sink door's channel to its class — each sink function names its channel (`<class>_sink`). */
+const SINK_CHANNEL_CLASS: Readonly<Record<string, SinkClass>> = {
+  credential_sink: "credentials", paid_acquisition_sink: "paid_acquisition", ad_budget_sink: "ad_budget", accounting_sink: "financial_ledger",
+  commission_sink: "commission_edit", esign_sink: "legal_document", cda_sink: "cda_release", payout_sink: "payout",
+}
+/** PURE. The sink class of a ledger context: the door's channel, else an outbound send / proposal by its action name; null = not a sink. */
+export function sinkClassOf(ctx: Pick<ActionContext, "channel" | "action">): SinkClass | null {
+  const byChannel = ctx.channel ? SINK_CHANNEL_CLASS[ctx.channel] : undefined
+  if (byChannel) return byChannel
+  return /^comms\.[a-z_]+\.(?:send|propose)$/.test(ctx.action ?? "") ? "outbound_send" : null
+}
+
+/** A decision an execution carries: WHICH decision (the ledger row id), whose (tenant / office), who decided, until when, on which facts. */
+export interface ArbiterDecisionRef {
+  id: string
+  brokerageId: string
+  officeId?: string | null
+  /** The accountable decider (a registered manager key, or the deciding person's user id). */
+  decider: string
+  expiresAt?: string | null
+  /** The facts the decision READ, each with the version it read (persisted as detail.governance.known_facts). */
+  dependencies?: ReadonlyArray<{ type: string; id?: string | null; version?: string | number | null }> | null
+  dependencyFingerprint?: string | null
+}
+
+/**
+ * PURE. A typed decision reference from a PERSISTED decision row (agent_action_ledger), or null when the row cannot authorize anything:
+ * no id, no governance block, or a verb other than ALLOW (a HOLD / DENY / RESCHEDULE is not a permission). The tenant comes from the
+ * row's own column first. Never reads a model's text.
+ */
+export function decisionRefFromRow(row: { id?: string | null; brokerage_id?: string | null; actor_manager_key?: string | null; actor_user_id?: string | null; detail?: Record<string, unknown> | null } | null | undefined): ArbiterDecisionRef | null {
+  const g = (row?.detail?.governance ?? null) as Record<string, any> | null
+  if (!row?.id || !g || g.decision !== "ALLOW") return null
+  const brokerageId = row.brokerage_id ?? g.scope?.brokerage_id ?? null
+  const decider = row.actor_manager_key ?? row.actor_user_id ?? g.actor?.id ?? null
+  if (!brokerageId || !decider) return null
+  const facts = Array.isArray(g.known_facts) ? (g.known_facts as Array<{ type: string; id?: string | null; version?: string | number | null }>) : null
+  return { id: row.id, brokerageId, officeId: g.scope?.office_id ?? null, decider, expiresAt: g.expires_at ?? null, dependencies: facts, dependencyFingerprint: g.dependency_fingerprint ?? null }
+}
+
+/** PURE. The carried-decision checks, in order: malformed → other tenant → other office → expired → superseded. null = nothing carried / all pass. */
+function carriedDecisionCheck(i: Pick<SinkRuleInput, "decision" | "scope" | "currentDependencies" | "now">): { decision: "DENY" | "HOLD"; reason: SinkReason; detail: string; next: NextTriggerInput } | null {
+  const d = i.decision
+  if (!d) return null
+  if (!d.id || !d.decider || !d.brokerageId) return { decision: "HOLD", reason: "decision_missing", detail: "the carried decision does not name itself (id, decider, tenant) — it authorizes nothing", next: { kind: "human", detail: "the accountable decider records the decision" } }
+  if (!i.scope?.brokerageId || d.brokerageId !== i.scope.brokerageId) return { decision: "DENY", reason: "decision_other_tenant", detail: "the carried decision was made for another tenant — it never authorizes an action here", next: { kind: "none" } }
+  if (d.officeId && i.scope.officeId && d.officeId !== i.scope.officeId) return { decision: "DENY", reason: "decision_other_office", detail: "the carried decision was made for another office of this tenant", next: { kind: "re_evaluate", detail: "a decision for this office" } }
+  if (d.expiresAt !== null && d.expiresAt !== undefined) {
+    const at = Date.parse(d.expiresAt)
+    if (!Number.isFinite(at) || at <= i.now.getTime()) return { decision: "DENY", reason: "decision_expired", detail: Number.isFinite(at) ? `the carried decision expired at ${new Date(at).toISOString()}` : "the carried decision's expiry cannot be read", next: { kind: "re_evaluate", detail: "a fresh decision on the current facts" } }
+  }
+  const now = new Map((i.currentDependencies ?? []).filter((f) => f && f.version !== null && f.version !== undefined).map((f) => [`${f.type}:${f.id ?? ""}`, String(f.version)]))
+  for (const f of d.dependencies ?? []) {
+    if (!f || f.version === null || f.version === undefined) continue
+    const cur = now.get(`${f.type}:${f.id ?? ""}`)
+    if (cur !== undefined && cur !== String(f.version)) return { decision: "DENY", reason: "decision_superseded", detail: `the decision read ${f.type} at version ${String(f.version)}; it is now ${cur} — a changed fact supersedes the decision`, next: { kind: "re_evaluate", detail: "a fresh decision on the changed facts" } }
+  }
+  return null
+}
+
+/** The carried-decision verdict at the generic door (withActionLedger) — the same checks the model doors run inside sinkRule. */
+function carriedDecisionVerdict(ctx: ActionContext, now?: Date): SinkVerdict | null {
+  if (!ctx.sink?.decision) return null
+  const c = carriedDecisionCheck({ decision: ctx.sink.decision, scope: { brokerageId: ctx.brokerageId, officeId: ctx.sink.officeId ?? null }, currentDependencies: ctx.dependencies ?? null, now: now ?? new Date() })
+  if (!c) return null
+  return { decision: c.decision, reason: c.reason, detail: c.detail, trustClass: decisionTrustClass(ctx.trustClass), approvalBasis: null, nextTrigger: decisionNextTrigger(c.next) }
+}
+/** A carried decision refused at withActionLedger: the same ONE decision row refuseAtSink writes; the caller's replay hook gets the reason. */
+async function refuseCarriedDecision(ctx: ActionContext, v: SinkVerdict, opts?: { client?: LedgerClient }): Promise<string> {
+  return (await refuseAtSink(ctx, v, opts)).error
+}
+
+/**
+ * PURE. The record the SHARED DOOR writes when the caller wrote none (directive 156M build 2 — "close the gap at the shared doors").
+ * Only facts the context holds: the verb (a `*.decision.<verdict>` row reads its own verdict; a claim is the decision to execute), the
+ * verified tenant, actor, subject, objective, the WHY, the policy key, the dependency set (the subject when nothing else was named).
+ * Trust class: a person acting (a user / agent with an id) is `authorized_human`; an autonomous actor's trust is what the caller STATED,
+ * else null — a named gap, never a default. Marked `written_by: "ledger_door"` so a reader can tell it from a caller's own record.
+ */
+function withBaseGovernance(ctx: ActionContext, status: ActionStatus, key: string | null, detail: Record<string, unknown>): Record<string, unknown> {
+  if (detail.governance && typeof detail.governance === "object") return detail
+  const verdict = /\.decision\.([a-z_]+)$/.exec(ctx.action)?.[1] ?? null
+  const human = (ctx.actor.type === "user" && !!ctx.actor.userId) || (ctx.actor.type === "agent" && !!ctx.actor.agentId)
+  const trust = ctx.trustClass ?? (human ? "authorized_human" : null)
+  const basis = ctx.approvalBasis ?? (human || ctx.policyKey ? "policy_permitted" : null)
+  const until = typeof detail.until === "string" ? detail.until : null
+  const governance = governanceRecord({
+    plane: verdict ? "ledger_decision" : "action_sink", verdict: verdict ?? (status === "skipped" ? "hold" : "execute"),
+    scope: { brokerageId: ctx.brokerageId, officeId: ctx.sink?.officeId ?? null, userId: ctx.actor.userId ?? null },
+    actor: { type: ctx.actor.type, id: ctx.actor.managerKey ?? ctx.actor.userId ?? ctx.actor.agentId ?? null },
+    causationId: ctx.causationId ?? null, correlationId: ctx.correlationId ?? null,
+    entity: { type: ctx.subject.type, id: ctx.subject.id ?? null, version: null }, objective: ctx.action,
+    policyConstraints: ctx.policyKey ? [ctx.policyKey] : [], rationale: ctx.reasonDetail ?? `${resolveReasonCode(ctx)}: ${ctx.action}`,
+    trustClass: trust, approvalBasis: basis, dependencies: ctx.dependencies ?? null,
+    expiresAt: ctx.expiresAt ?? (verdict === "wait" ? until : null),
+    nextTrigger: ctx.nextTrigger ?? (verdict === "wait" && until ? { kind: "time", at: until } : verdict === "do_nothing" ? { kind: "none" } : null),
+  })
+  return { ...detail, governance: { ...governance, written_by: "ledger_door", replay: key ? "at_most_once" : "recorded_only", sink_class: sinkClassOf(ctx) } }
+}
+
+/** PURE. The decision's read set as persisted (order-free, duplicate-free, at most 20; null = nothing named — not an empty read). */
+function knownFacts(deps: ReadonlyArray<{ type: string; id?: string | null; version?: string | number | null }> | null | undefined): Array<{ type: string; id: string | null; version: string | number | null }> | null {
+  const seen = new Map<string, { type: string; id: string | null; version: string | number | null }>()
+  for (const d of deps ?? []) if (d && typeof d.type === "string" && d.type.trim()) seen.set(`${d.type.trim()}:${d.id ?? ""}@${d.version ?? ""}`, { type: d.type.trim().slice(0, 80), id: d.id ? String(d.id).slice(0, 120) : null, version: d.version ?? null })
+  const out = [...seen.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, v]) => v).slice(0, 20)
+  return out.length ? out : null
+}
+
+/** A settlement with a governance patch → the claimed detail with the patch merged onto its governance (no read; the claim's own copy). */
+function withGovernancePatch(s: Settlement, claimed: Record<string, unknown> | null): Settlement {
+  if (!s.governancePatch || s.detail) return s
+  if (!claimed) return s // unledgered / re-claimed: the claim's detail is not in hand — the patch is not guessed onto an unknown base
+  const prior = (claimed.governance && typeof claimed.governance === "object" ? claimed.governance : {}) as Record<string, unknown>
+  return { ...s, detail: { ...claimed, governance: { ...prior, ...s.governancePatch } } }
 }

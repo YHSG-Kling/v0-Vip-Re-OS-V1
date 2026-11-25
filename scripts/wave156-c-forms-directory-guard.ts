@@ -460,10 +460,10 @@ async function main() {
     const pkg = raw("package.json")
     check("the proposed-addendum signature request is an executable door with its own driven proof (test:addendum-signatures) — not 'not implemented'",
       /export async function/.test(code("app/actions/buyer-offer/request-addendum-signatures.ts")) && /"test:addendum-signatures"/.test(pkg) && existsSync(join(ROOT, "scripts/addendum-signatures-guard.ts")))
-    const ui = bare("app/dashboard/offers/outside-offer-threads.tsx")
+    const ui = code("app/dashboard/offers/outside-offer-threads.tsx") // scripts/strip-comments.ts stripComments: comments gone (a tombstone is not UI), UI copy kept
     const placeholder = (s: string) => /not\s+implemented/i.test(s)
     check("POSITIVE CONTROL: the placeholder finder sees 'Not implemented' in UI copy", placeholder(`<p>Not implemented</p>`))
-    check("no 'not implemented' placeholder remains in the offer threads UI (comments/strings blanked — a tombstone is not UI)", !placeholder(ui.replace(/\/\/.*$/gm, "")) && /requestAddendumSignatures|request-addendum-signatures/.test(code("app/dashboard/offers/outside-offer-threads.tsx")))
+    check("no 'not implemented' placeholder remains in the offer threads UI (comments stripped by scripts/strip-comments.ts — a tombstone is not UI; UI copy and strings are read)", !placeholder(ui) && /requestAddendumSignatures|request-addendum-signatures/.test(code("app/dashboard/offers/outside-offer-threads.tsx")))
     const route = bare("app/api/forms/provider-library/route.ts")
     const oneShot = (s: string) => /listForms\s*\(\s*\{[^}]*pageSize\s*:\s*100[^}]*\}\s*\)/.test(s) && !/cursor/.test(s)
     check("POSITIVE CONTROL: the one-page finder sees the base route's shape", oneShot(`await resolved.provider.listForms({ stateCode: x, pageSize:  100, })`))
@@ -688,6 +688,32 @@ async function main() {
     const notice = (await load("app/components/forms/refusal-notice.tsx")).refusalOf
     check("EVERY refusal code renders as a plain sentence WITH its recovery link (the screens' one notice reads refusal.message + refusal.recoverHref)",
       codes.every((c) => { const r = dir.providerRefusal(c); const n = notice({ refusal: r }); return n.message === r.message && !!n.href && /^\//.test(n.href) && /[a-z]\./.test(n.message) }) && /recoverHref/.test(note) && /refusalHref/.test(wiz))
+    G.__156C.user = { id: U_BROKER }
+  })
+
+  // ═══ K · ROUND 3 — ONE VOCABULARY: the code constants ARE the live CHECKs (the generated cache), and the screens read them ═════════
+  section("K · source kinds / rights / purposes / bundle kinds / requirement sources equal the live CHECKs; the add doors come FROM the source kinds")
+  await attempt("K", async () => {
+    const intake = await load("lib/forms/form-directory-intake.ts"), bun = await load("lib/forms/form-packet-bundles.ts")
+    const cachePath = join(ROOT, "scripts/check-vocabularies.ts")
+    const live: Record<string, Record<string, string[]>> = existsSync(cachePath) ? (await import(cachePath)).CHECK_VOCABULARIES : {}
+    const same = (a: readonly string[], b: string[] | undefined) => !!b && a.length === b.length && a.every((x) => b.includes(x))
+    check("FORM_LIBRARY_SOURCE_KINDS = the LIVE brokerage_form_library.source_kind CHECK (scripts/check-vocabularies.ts, generated)", same(intake.FORM_LIBRARY_SOURCE_KINDS, live.brokerage_form_library?.source_kind), JSON.stringify(live.brokerage_form_library?.source_kind))
+    check("FORM_RIGHTS_BASES and FORM_PURPOSES = the live rights_basis / purpose CHECKs", same(intake.FORM_RIGHTS_BASES, live.brokerage_form_library?.rights_basis) && same(intake.FORM_PURPOSES, live.brokerage_form_library?.purpose))
+    check("PACKET_BUNDLE_KINDS and BUNDLE_REQUIREMENT_SOURCES = the live form_packet_bundles / _items CHECKs", same(bun.PACKET_BUNDLE_KINDS, live.form_packet_bundles?.bundle_kind) && same(bun.BUNDLE_REQUIREMENT_SOURCES, live.form_packet_bundle_items?.requirement_source))
+    check("POSITIVE CONTROL: the comparison refuses a list that differs by one value", !same([...intake.FORM_LIBRARY_SOURCE_KINDS, "made_up"], live.brokerage_form_library?.source_kind))
+    check("the add doors come FROM the source kinds: upload / state package / provider id; a vocabulary without connected_provider offers no provider door",
+      intake.addModesOffered().join() === "upload,state_preconfigured,provider_form" && intake.addModesOffered(intake.FORM_LIBRARY_SOURCE_KINDS.filter((k: string) => k !== "connected_provider")).join() === "upload,state_preconfigured"
+      && intake.sourceKindForAdd("upload", true) === "agent_upload" && intake.sourceKindForAdd("upload", false) === "brokerage_upload" && intake.sourceKindForAdd("catalogue", false) === null)
+    const db = world(); const tp = await load("lib/forms/tenant-form-packets.ts")
+    const broker = (await quiet(() => tp.resolvePacketActor(db, U_BROKER))).actor
+    const bad = await intake.addFormToLibrary(db, broker, { mode: "catalogue", owner: {}, name: "X form", state: "TX", packetType: "listing", rightsBasis: "own_form", purpose: "listing", effectiveOn: "2026-01-01", checklistKeys: ["a.b"], signerRoles: [] })
+    check("the intake refuses an add door outside the vocabulary (nothing written)", !bad.ok && /not a way to add a form/.test(bad.error) && db.tables.brokerage_form_library.length === 0)
+    G.__156C.db = db; G.__156C.user = { id: U_AG_N }
+    const route = await load("app/api/forms/directory/route.ts")
+    const v = await callRoute(route, "GET", "http://x/api/forms/directory?view=manage")
+    check("the screen's 'How' choices are the route's vocab.addModes, derived from vocab.sourceKinds (= FORM_LIBRARY_SOURCE_KINDS)",
+      v.status === 200 && same(intake.FORM_LIBRARY_SOURCE_KINDS, v.json.vocab.sourceKinds) && v.json.vocab.addModes.join() === "upload,state_preconfigured,provider_form" && /view\.vocab\.addModes\.map/.test(code("app/components/forms/add-form-or-packet.tsx")))
     G.__156C.user = { id: U_BROKER }
   })
 

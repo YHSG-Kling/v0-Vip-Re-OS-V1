@@ -195,7 +195,7 @@ interface Deliverable {
   } | null
 }
 
-interface VendorDirectoryClientProps {
+interface VendorDirectoryClientProps { /** wave 156Q: the session tenant's noun (the directory is tenant-wide), resolved once by the server page. */ words?: { payer: string; payerPossessive: string }
   initialVendors: Vendor[]
   recentBookings: Booking[]
   pendingRatings: Booking[]
@@ -220,7 +220,7 @@ export function VendorDirectoryClient({
   brokerageId,
   userRole,
   deliverables = [],
-  initialVendorId = null,
+  initialVendorId = null, words,
 }: VendorDirectoryClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -243,7 +243,7 @@ export function VendorDirectoryClient({
     vendorDeepLinkRef.current = true
     const target = initialVendors.find((v) => v.id === initialVendorId) ?? null
     if (!target) {
-      setDeepLinkNotice("The vendor this link names is not in your brokerage's directory listing.")
+      setDeepLinkNotice(`The vendor this link names is not in ${words?.payerPossessive ?? "your"} directory listing.`)
       return
     }
     setFocusedVendorId(target.id)
@@ -1223,7 +1223,7 @@ export function VendorDirectoryClient({
 
                   {vendor.vendor_rating && (
                     <div className="text-xs text-muted-foreground">
-                      {vendor.vendor_rating.total_bookings} booking(s) in your brokerage
+                      {vendor.vendor_rating.total_bookings} booking(s) in {words?.payer ?? "your account"}
                     </div>
                   )}
 
@@ -1471,7 +1471,7 @@ export function VendorDirectoryClient({
                 <TrendingUp className="h-5 w-5" />
                 Cost Comparison by Service Type
               </CardTitle>
-              <CardDescription>Compare vendor costs based on past bookings in your brokerage</CardDescription>
+              <CardDescription>Compare vendor costs based on past bookings in {words?.payer ?? "your account"}</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1713,7 +1713,7 @@ export function VendorDirectoryClient({
                 rows={3}
               />
               <p className="text-xs text-muted-foreground">
-                Reviews are only visible to agents in your brokerage.
+                Reviews are only visible to agents in {words?.payer ?? "your account"}.
               </p>
             </div>
           </div>
@@ -1735,7 +1735,7 @@ export function VendorDirectoryClient({
           <DialogHeader>
             <DialogTitle>Cost Comparison: {costComparisonType}</DialogTitle>
             <DialogDescription>
-              Based on past bookings in your brokerage
+              Based on past bookings in {words?.payer ?? "your account"}
             </DialogDescription>
           </DialogHeader>
 
@@ -1808,7 +1808,7 @@ export function VendorDirectoryClient({
           <div className="py-4 max-h-72 overflow-y-auto">
             {vendorReviews.length === 0 ? (
               <p className="text-muted-foreground text-center py-8">
-                No reviews yet for this vendor in your brokerage.
+                No reviews yet for this vendor in {words?.payer ?? "your account"}.
               </p>
             ) : (
               <div className="space-y-4">
@@ -1934,7 +1934,7 @@ export function VendorDirectoryClient({
           <DialogHeader>
             <DialogTitle>Add New Vendor</DialogTitle>
             <DialogDescription>
-              Create a new vendor record in your brokerage marketplace directory.
+              Create a new vendor record in {words?.payerPossessive ?? "your"} marketplace directory.
             </DialogDescription>
           </DialogHeader>
 

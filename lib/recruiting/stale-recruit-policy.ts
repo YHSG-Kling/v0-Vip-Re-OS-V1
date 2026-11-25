@@ -66,3 +66,39 @@ export function classifyStaleRecruit(input: StaleRecruitInput): StaleRecruitActi
   const ageDays = (input.now.getTime() - moved) / (24 * 60 * 60 * 1000)
   return ageDays >= sla ? "escalate" : "keep"
 }
+
+/**
+ * WAVE 156 (lane 156K) — WHO MAY BECOME A RECRUITING PROSPECT. Pure.
+ *
+ * Three doors file a `recruits` row: the public recruiting page (app/recruiting/[brokerageSlug]/actions.ts), the scraped-signal
+ * promotion (lib/recruit-pipeline/recruit-processor.ts) and the business-card scan (which already refuses a colleague). The
+ * public page and the promotion filed a NEW prospect for anyone: a person this brokerage SUSPENDED came back as a fresh
+ * prospect (and the weekly recruit-outreach sweep then drafted outreach to them); a recruit who DECLINED — the pipeline's one
+ * "stop" — came back as a new prospect; a current member was "recruited" into their own brokerage; and the public page filed a
+ * second row for someone already in the pipeline. Ending or restoring a seat is the user's own reactivation
+ * (app/actions/admin/update-user.ts, seat-gated), never a recruiting stage. A person at ANOTHER brokerage is a legitimate recruit.
+ */
+export type RecruitIntakeReason = "suspended_member" | "current_member" | "declined_recruit" | "existing_recruit"
+export type RecruitIntakeVerdict = { admit: true } | { admit: false; reason: RecruitIntakeReason; recruitId: string | null }
+
+export interface RecruitIntakeFacts {
+  brokerageId: string
+  /** The users row holding this email, if any (users.email is unique platform-wide). */
+  member: { brokerageId: string | null; status: string | null; userType: string | null } | null
+  /** This tenant's recruits rows for the same person (by email, or by full name when no email is known). */
+  recruits: Array<{ id: string; status: string | null }>
+}
+
+/** A portal CONTACT or a VENDOR seat of this tenant is a client / a vendor, not a member — the same line the business-card
+ *  scan draws (app/actions/business-card/business-card-actions.ts isExistingTenantMember). */
+export const RECRUIT_INTAKE_NON_MEMBER_SEATS: readonly string[] = ["contact", "vendor"]
+
+export function recruitIntakeVerdict(f: RecruitIntakeFacts): RecruitIntakeVerdict {
+  if (f.member && f.member.brokerageId === f.brokerageId && !RECRUIT_INTAKE_NON_MEMBER_SEATS.includes(String(f.member.userType ?? "").toLowerCase())) {
+    return { admit: false, reason: String(f.member.status ?? "").toLowerCase() === "suspended" ? "suspended_member" : "current_member", recruitId: null }
+  }
+  const declined = f.recruits.find((r) => r.status === "declined")
+  if (declined) return { admit: false, reason: "declined_recruit", recruitId: declined.id }
+  if (f.recruits.length > 0) return { admit: false, reason: "existing_recruit", recruitId: f.recruits[0].id }
+  return { admit: true }
+}

@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
   if (view === "manage") {
     const { listDirectoryRowsForActor } = await import("@/lib/forms/tenant-form-packets")
     const { ownerOptionsFor, listManagedBundles } = await import("@/lib/forms/form-packet-bundles")
-    const { FORM_RIGHTS_BASES, FORM_PURPOSES, FORM_SIGNER_ROLES } = await import("@/lib/forms/form-directory-intake")
+    const { FORM_RIGHTS_BASES, FORM_PURPOSES, FORM_SIGNER_ROLES, FORM_LIBRARY_SOURCE_KINDS, addModesOffered } = await import("@/lib/forms/form-directory-intake")
     const { PACKET_BUNDLE_KINDS, BUNDLE_REQUIREMENT_SOURCES } = await import("@/lib/forms/form-packet-bundles")
     const { FORM_PACKET_TYPES } = await import("@/lib/forms/tenant-form-packets")
     const [owners, rows, bundles] = await Promise.all([ownerOptionsFor(g.svc as never, g.actor), listDirectoryRowsForActor(g.svc as never, g.actor, {}), listManagedBundles(g.svc as never, g.actor)])
@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
     if (!bundles.ok) return NextResponse.json({ error: bundles.error }, { status: 503 })
     return NextResponse.json({
       owners, library: rows.rows, bundles: bundles.bundles,
-      vocab: { rightsBases: FORM_RIGHTS_BASES, purposes: FORM_PURPOSES, signerRoles: FORM_SIGNER_ROLES, packetTypes: FORM_PACKET_TYPES, bundleKinds: PACKET_BUNDLE_KINDS, requirementSources: BUNDLE_REQUIREMENT_SOURCES },
+      vocab: { sourceKinds: FORM_LIBRARY_SOURCE_KINDS, addModes: addModesOffered(FORM_LIBRARY_SOURCE_KINDS), rightsBases: FORM_RIGHTS_BASES, purposes: FORM_PURPOSES, signerRoles: FORM_SIGNER_ROLES, packetTypes: FORM_PACKET_TYPES, bundleKinds: PACKET_BUNDLE_KINDS, requirementSources: BUNDLE_REQUIREMENT_SOURCES },
     })
   }
   const { PACKET_BUNDLE_KINDS, resolveDealPacket } = await import("@/lib/forms/form-packet-bundles")

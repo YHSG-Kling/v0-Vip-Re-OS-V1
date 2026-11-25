@@ -94,7 +94,7 @@ export function HelpCenterClient({
           <div className="h-8 w-px bg-border" />
           <div>
             <h1 className="text-2xl font-bold">Help & Support</h1>
-            <p className="text-sm text-muted-foreground">Search help articles or raise a support ticket</p>
+            <p className="text-sm text-muted-foreground">Search help articles or raise a support ticket · <Link href="/dashboard/fraud-network" className="underline">Fraud &amp; Trust Network</Link> (report a scam privately, read shared warnings)</p>
           </div>
         </div>
       </div>

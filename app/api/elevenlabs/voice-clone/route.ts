@@ -126,7 +126,19 @@ export async function POST(request: NextRequest) {
     // and creates a durable asset, so it belongs in the same place as every
     // other one — self-healing on a field rename, credential resolution, and
     // connector-health attribution.
-    const elRes = await callConnector<{ voice_id?: string; detail?: { message?: string } }>({
+    // THE PAID DOOR (wave 156, lane 156S) — lib/vendor-governance/paid-egress.ts runPaidEgress: the SESSION tenant's
+    // vendor budget before ElevenLabs is reached (an over-budget tenant mints no new paid asset), a receipt, the clone
+    // booked once on success (its price is plan-included, so it books as a unit at price_state 'unknown', never a guess),
+    // and ONE clone per training job — a retried job replays the voice it already created.
+    const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
+    type CloneRes = import("@/lib/agentic-os/connector-gateway").GatewayResponse<{ voice_id?: string; detail?: { message?: string } }>
+    const paid = await runPaidEgress<CloneRes>({
+      brokerageId: auth.brokerageId, vendor: "elevenlabs", usageType: "voice_clone", action: "voice.clone.create",
+      estimatedCostUsd: 0, units: 1, priceUnknown: true,
+      subject: { type: "voice_clone", id: null, ref: training_id ? String(training_id) : null },
+      actor: { type: "user", userId: auth.userId },
+      idempotencyKey: training_id ? `voice_clone:${training_id}` : null, systemSource: "voice_clone",
+    }, () => callConnector<{ voice_id?: string; detail?: { message?: string } }>({
       connector: "elevenlabs",
       baseUrl: EL_API_BASE,
       path: "/voices/add",
@@ -134,7 +146,12 @@ export async function POST(request: NextRequest) {
       auth: { style: "header", name: "xi-api-key", value: apiKey },
       bodyType: "multipart",
       body: formData,
-    })
+    }), (r) => ({ ok: r.ok && !!r.data?.voice_id, providerRef: r.data?.voice_id ?? null, error: r.ok ? null : (r.error ?? null) }))
+    if (!paid.ran && paid.reason === "budget_refused") {
+      await failJob("Vendor budget exceeded — voice clone paused")
+      return NextResponse.json({ error: "Your plan's monthly vendor budget is used up — the voice was not cloned.", budgetExceeded: true }, { status: 402 })
+    }
+    const elRes: CloneRes = paid.ran ? paid.result : { ok: !!paid.providerRef, status: 200, data: { voice_id: paid.providerRef ?? undefined }, headers: {}, drift: null, error: paid.providerRef ? null : paid.detail }
 
     const elData = elRes.data ?? {}
 

@@ -181,6 +181,9 @@ export interface TranscribeOptions {
   language?: string | null
   /** Ledger attribution (vendor_usage_tracking.request_metadata.system_source). */
   systemSource?: string
+  /** Wave 156 (156S): ONE charge per key — a retried transcription of the same unit replays its receipt (no second
+   *  vendor call) and books nothing twice. Callers with a stable unit (a recording, a repurpose source) pass it. */
+  idempotencyKey?: string | null
 }
 
 interface ScribeWord { text?: string; start?: number; end?: number; type?: string }
@@ -251,6 +254,7 @@ export async function transcribeMediaUrl(
     // ── VENDOR BUDGET GATE ────────────────────────────────────────────────────
     const ceilingSeconds = audioBytes / MIN_AUDIO_BYTES_PER_SECOND
     const estimatedCost = round4(STT_USD_PER_SECOND[provider] * ceilingSeconds)
+    let preflight: import("@/lib/vendor-governance/budget-gate").VendorBudgetResult | undefined
     if (options.brokerageId) {
       const { checkVendorBudget } = await import("@/lib/vendor-governance/budget-gate")
       const budget = await checkVendorBudget({ brokerageId: options.brokerageId, addCost: estimatedCost })
@@ -264,12 +268,32 @@ export async function transcribeMediaUrl(
           message: "Vendor budget exceeded — transcription paused for this brokerage",
         }
       }
+      preflight = budget
     }
 
-    const spoken =
-      provider === "elevenlabs_scribe"
-        ? await transcribeWithScribe(res.data, contentType, elevenLabsKey as string, options.language ?? null)
-        : await transcribeWithGatewayWhisper(res.data, contentType, gatewayKey as string)
+    // THE PAID DOOR (wave 156, lane 156S): the vendor dispatch runs inside lib/vendor-governance/paid-egress.ts
+    // runPaidEgress — the receipt (tenant, cost, outcome) and ONE charge per idempotency key (a replay never reaches the
+    // vendor again). The budget verdict is the one asked just above (`preflight` — the ledger is not read twice); the
+    // spend stays on the meter below (`book: "caller"`), booked only once the vendor heard speech.
+    const audio = res.data
+    const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
+    const paid = await runPaidEgress<Awaited<ReturnType<typeof transcribeWithScribe>>>({
+      brokerageId: options.brokerageId ?? null, vendor: provider === "elevenlabs_scribe" ? "elevenlabs" : "openai",
+      usageType: "stt", action: "voice.stt.transcribe", estimatedCostUsd: estimatedCost, book: "caller", preflight,
+      subject: { type: "transcription", id: null, ref: options.systemSource ?? "transcription" },
+      idempotencyKey: options.idempotencyKey ?? null, systemSource: options.systemSource ?? "transcription",
+    }, () => provider === "elevenlabs_scribe"
+      ? transcribeWithScribe(audio, contentType, elevenLabsKey as string, options.language ?? null)
+      : transcribeWithGatewayWhisper(audio, contentType, gatewayKey as string),
+    (r) => r.ok
+      ? { ok: !!(r.text ?? "").trim(), costUsd: round4(STT_USD_PER_SECOND[provider] * (r.durationSeconds ?? ceilingSeconds)) }
+      : { ok: false, error: r.message })
+    if (!paid.ran) {
+      return paid.reason === "budget_refused"
+        ? { success: false, reason: "budget_exceeded", message: "Vendor budget exceeded — transcription paused for this brokerage" }
+        : { success: false, reason: "error", message: `Transcription not repeated: ${paid.detail}` }
+    }
+    const spoken = paid.result
     if (!spoken.ok) {
       return { success: false, reason: "error", message: spoken.message }
     }
@@ -296,6 +320,7 @@ export async function transcribeMediaUrl(
         unitCount: Math.max(1, Math.ceil(billedSeconds)),
         brokerageId: options.brokerageId,
         systemSource: options.systemSource ?? "transcription",
+        idempotencyKey: options.idempotencyKey ?? null,
         metadata: {
           provider,
           audio_bytes: audioBytes,

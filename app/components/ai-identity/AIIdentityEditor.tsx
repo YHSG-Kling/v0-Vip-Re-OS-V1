@@ -54,7 +54,7 @@ interface ObjectionItem {
   category: string
 }
 
-export interface AIIdentityEditorProps {
+export interface AIIdentityEditorProps { /** wave 156Q: the session tenant's noun for the brokerage-scope editor, resolved once by the server page. */ words?: { payer: string }
   scope: Scope
   scopeId: string
   brokerageId: string
@@ -132,7 +132,7 @@ export function AIIdentityEditor({
   brokerageName,
   teamName,
   initialProfile,
-  parentProfile,
+  parentProfile, words,
 }: AIIdentityEditorProps) {
   // ── Identity section state
   const [assistantName, setAssistantName] = useState(
@@ -909,7 +909,7 @@ export function AIIdentityEditor({
               <div>
                 <p className="font-medium text-sm">Enable AI call handling</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  AI will be available to answer and/or place calls on behalf of your brokerage.
+                  AI will be available to answer and/or place calls on behalf of {words?.payer ?? "your account"}.
                 </p>
               </div>
               <Switch

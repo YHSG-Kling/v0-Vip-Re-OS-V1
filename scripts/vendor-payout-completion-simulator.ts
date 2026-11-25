@@ -223,8 +223,13 @@ function layer3() {
   const payoutFn = payments.slice(payments.indexOf("export async function initiateVendorPayout"), payments.indexOf("async function claimAvailableEarnings"))
   check("the writer opens the payout row 'pending' before the transfer, with the earnings it covers",
     /\.from\("vendor_payouts"\)\s*\.insert\(\{[\s\S]{0,1600}?status:\s*"pending",\s*earnings_ids:\s*bound\.ids/.test(payoutFn) && payoutFn.indexOf('.insert({') < payoutFn.indexOf("createTransfer("))
+  // Wave 156 (156N, C26): two writers move a row to 'processing' now — the send (the id Stripe answered with) and the reconcile
+  // (the id Stripe's lookup found after a lost answer). The RULE is the same for both: every 'processing' write carries the id.
+  const processingWrites = [...payoutFn.matchAll(/\.update\(\{([^}]*status:\s*"processing"[^}]*)\}\)/g)].map((m) => m[1])
   check("…moves it to 'processing' only WITH the transfer id (the provider event closes it)",
-    /\.update\(\{\s*stripe_transfer_id:\s*transfer\.transferId,\s*status:\s*"processing"\s*\}\)/.test(payoutFn))
+    processingWrites.length >= 1 && processingWrites.every((w) => /stripe_transfer_id:\s*[\w.]+/.test(w)), JSON.stringify(processingWrites))
+  check("POSITIVE CONTROL: the finder sees a 'processing' write that carries no transfer id",
+    [...`.update({ status: "processing" })`.matchAll(/\.update\(\{([^}]*status:\s*"processing"[^}]*)\}\)/g)].some((m) => !/stripe_transfer_id:/.test(m[1])))
   check("…and never marks a payout paid itself", !/status:\s*"paid"/.test(payoutFn))
   check("POSITIVE CONTROL: the finder sees a writer that marks its own payout paid", /status:\s*"paid"/.test(`await svc.from("vendor_payouts").update({ status: "paid" }).eq("id", id)`))
   check("a failed transfer and a reversed payout release earnings through ONE rule (releaseEarningsOfFailedPayout): the writer and the webhook route both call it",

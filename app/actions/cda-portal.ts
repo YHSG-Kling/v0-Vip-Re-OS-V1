@@ -355,7 +355,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
 }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { transactionId: input?.transactionId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { transactionId: input?.transactionId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   const { data: txn } = await supabase
     .from("transactions")
@@ -406,7 +406,7 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
   if (existing) {
     const priorValues = ((existing as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
     const review = reviewOnNewStatementVersion(preliminaryReviewOf(priorValues), { version: statementVersion, documentId: input.documentId, at: receivedAt })
-    const { error: prelimCdErr } = await supabase
+    const { data: prelimCdErrRows, error: prelimCdErr } = await supabase
       .from("closing_disclosure_agreement")
       .update({
         preliminary_cd_uploaded_at: receivedAt,
@@ -415,8 +415,8 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
         field_values: { ...priorValues, preliminary_statement: review },
         // Don't downgrade status if the agent already started drafting.
       })
-      .eq("id", existing.id)
-    if (prelimCdErr) return { success: false as const, error: `Could not record the preliminary CD upload: ${prelimCdErr.message}` }
+      .eq("id", existing.id).eq("brokerage_id", auth.brokerageId).eq("transaction_id", cdaDesk.transactionId).select("id")
+    if (prelimCdErr || (prelimCdErrRows ?? []).length !== 1) return { success: false as const, error: `Could not record the preliminary CD upload: ${prelimCdErr?.message ?? "no CDA row of this deal matched"}` }
     cdaId = existing.id
   } else {
     const review = reviewOnNewStatementVersion(null, { version: statementVersion, documentId: input.documentId, at: receivedAt })
@@ -563,7 +563,7 @@ export async function draftOrUpdateCdaAction(input: {
 }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { transactionId: input?.transactionId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { transactionId: input?.transactionId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   const { data: txn } = await supabase
     .from("transactions")
@@ -617,8 +617,8 @@ export async function draftOrUpdateCdaAction(input: {
   if (existing) {
     cdaId = existing.id
     revision = existing.revision_number
-    const { error: cdaSaveErr } = await supabase.from("closing_disclosure_agreement").update(payload).eq("id", cdaId)
-    if (cdaSaveErr) return { success: false as const, error: `Could not save the CDA: ${cdaSaveErr.message}` }
+    const { data: cdaSaveErrRows, error: cdaSaveErr } = await supabase.from("closing_disclosure_agreement").update(payload).eq("id", cdaId).eq("brokerage_id", auth.brokerageId).eq("transaction_id", cdaDesk.transactionId).select("id")
+    if (cdaSaveErr || (cdaSaveErrRows ?? []).length !== 1) return { success: false as const, error: `Could not save the CDA: ${cdaSaveErr?.message ?? "no CDA row of this deal matched"}` }
   } else {
     const { data: created, error } = await supabase
       .from("closing_disclosure_agreement")
@@ -657,7 +657,7 @@ export async function draftOrUpdateCdaAction(input: {
 export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
@@ -807,7 +807,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   })
 
   const submitPriorFieldValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
-  const { error: cdaSubmitErr } = await supabase
+  const { data: cdaSubmitErrRows, error: cdaSubmitErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       status: "submitted",
@@ -818,8 +818,8 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
       field_values: { ...submitPriorFieldValues, agent_esign: { mode: agentEsign.mode, provider: agentEsign.provider, envelope_id: agentEsign.envelopeId ?? null, status: agentEsign.status ?? null, handoff_url: agentEsign.handoffUrl ?? null, dispatched: agentEsign.dispatched, reason: agentEsign.reason, at: now }, disposition: disposition.route, ...(submitAudit ? { submit_audit: submitAudit } : {}) },
       updated_at: now,
     })
-    .eq("id", cda.id)
-  if (cdaSubmitErr) return { success: false as const, error: `Could not submit the CDA: ${cdaSubmitErr.message}` }
+    .eq("id", cda.id).eq("brokerage_id", auth.brokerageId).eq("transaction_id", cdaDesk.transactionId).select("id")
+  if (cdaSubmitErr || (cdaSubmitErrRows ?? []).length !== 1) return { success: false as const, error: `Could not submit the CDA: ${cdaSubmitErr?.message ?? "no CDA row of this deal matched"}` }
 
   await recordRevision({
     cdaId: cda.id,
@@ -929,7 +929,7 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
 export async function approveCdaAction(input: { cdaId: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
@@ -992,7 +992,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
   // Compliance APPROVES — it does NOT apply the broker's signature. broker_approved_at
   // / broker_id are set later by brokerSignCdaAction (a separate, explicit step), and
   // the cda_delivered milestone completes only when the signed CDA is sent to title.
-  const { error: cdaApproveErr } = await supabase
+  const { data: cdaApproveErrRows, error: cdaApproveErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       status: "approved",
@@ -1000,8 +1000,8 @@ export async function approveCdaAction(input: { cdaId: string }) {
       compliance_approved_by: auth.userId,
       updated_at: now,
     })
-    .eq("id", cda.id)
-  if (cdaApproveErr) return { success: false as const, error: `Could not record compliance approval: ${cdaApproveErr.message}` }
+    .eq("id", cda.id).eq("brokerage_id", auth.brokerageId).eq("transaction_id", cdaDesk.transactionId).select("id")
+  if (cdaApproveErr || (cdaApproveErrRows ?? []).length !== 1) return { success: false as const, error: `Could not record compliance approval: ${cdaApproveErr?.message ?? "no CDA row of this deal matched"}` }
 
   await recordRevision({
     cdaId: cda.id,
@@ -1097,7 +1097,7 @@ export async function approveCdaAction(input: { cdaId: string }) {
 export async function brokerSignCdaAction(input: { cdaId: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   const { data: cda } = await supabase
     .from("closing_disclosure_agreement")
@@ -1144,7 +1144,7 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
   })
 
   const priorFieldValues = ((cda as { field_values?: Record<string, unknown> | null }).field_values ?? {}) as Record<string, unknown>
-  const { error: cdaBrokerSignErr } = await supabase
+  const { data: cdaBrokerSignErrRows, error: cdaBrokerSignErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       broker_approved_at: now,
@@ -1152,8 +1152,8 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
       field_values: { ...priorFieldValues, broker_esign: { mode: esign.mode, provider: esign.provider, envelope_id: esign.envelopeId ?? null, status: esign.status ?? null, handoff_url: esign.handoffUrl ?? null, dispatched: esign.dispatched, reason: esign.reason, at: now } },
       updated_at: now,
     })
-    .eq("id", cda.id)
-  if (cdaBrokerSignErr) return { success: false as const, error: `Could not record the broker signature: ${cdaBrokerSignErr.message}` }
+    .eq("id", cda.id).eq("brokerage_id", auth.brokerageId).eq("transaction_id", cdaDesk.transactionId).select("id")
+  if (cdaBrokerSignErr || (cdaBrokerSignErrRows ?? []).length !== 1) return { success: false as const, error: `Could not record the broker signature: ${cdaBrokerSignErr?.message ?? "no CDA row of this deal matched"}` }
 
   // AUTONOMOUS COMMISSION APPROVAL — the broker signing the CDA IS the broker approving the
   // commission (in the manual flow the broker calls markCommissionApproved). Advance the related
@@ -1211,7 +1211,7 @@ export async function brokerSignCdaAction(input: { cdaId: string }) {
 export async function requestCdaChangesAction(input: { cdaId: string; reason: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!COMPLIANCE_ROLES.has(auth.userType)) {
     return { success: false as const, error: "forbidden" }
@@ -1232,7 +1232,7 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
 
   const now = new Date().toISOString()
   const nextRevision = cda.revision_number + 1
-  const { error: cdaChangesErr } = await supabase
+  const { data: cdaChangesErrRows, error: cdaChangesErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       status: "changes_requested",
@@ -1245,8 +1245,8 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
       revision_number: nextRevision,
       updated_at: now,
     })
-    .eq("id", cda.id)
-  if (cdaChangesErr) return { success: false as const, error: `Could not record the change request: ${cdaChangesErr.message}` }
+    .eq("id", cda.id).eq("brokerage_id", auth.brokerageId).eq("transaction_id", cdaDesk.transactionId).select("id")
+  if (cdaChangesErr || (cdaChangesErrRows ?? []).length !== 1) return { success: false as const, error: `Could not record the change request: ${cdaChangesErr?.message ?? "no CDA row of this deal matched"}` }
 
   await recordRevision({
     cdaId: cda.id,
@@ -1296,7 +1296,7 @@ export async function requestCdaChangesAction(input: { cdaId: string; reason: st
 export async function requestCdaCorrectionAction(input: { transactionId: string; reason: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { transactionId: input?.transactionId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { transactionId: input?.transactionId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
   if (!COMPLIANCE_ROLES.has(auth.userType)) return { success: false as const, error: "forbidden" }
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(input?.transactionId ?? ""))) return { success: false as const, error: "invalid_transaction" }
   const { createServiceClient } = await import("@/lib/supabase/service")
@@ -1327,7 +1327,7 @@ export async function requestCdaCorrectionAction(input: { transactionId: string;
 export async function getCdaForTransactionAction(transactionId: string) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { transactionId: transactionId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { transactionId: transactionId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   const { data: cda, error } = await supabase
     .from("closing_disclosure_agreement")
@@ -1383,7 +1383,7 @@ export async function uploadPreliminaryCdAction(input: {
 }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { transactionId: input?.transactionId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { transactionId: input?.transactionId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   const { data: txn } = await supabase
     .from("transactions")
@@ -1437,7 +1437,7 @@ interface MissingDoc { document_type: string; reason: string }
 export async function runSignatureCheckForCdaAction(input: { cdaId: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   const { data: cda } = await supabase
@@ -1493,18 +1493,18 @@ export async function runSignatureCheckForCdaAction(input: { cdaId: string }) {
   }
 
   const passed = missing.length === 0
-  const { error: scanErr } = await supabase
+  const { data: scanErrRows, error: scanErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       signature_check_passed: passed,
       missing_docs:           missing.length > 0 ? missing : null,
       updated_at:             new Date().toISOString(),
     })
-    .eq("id", cda.id)
+    .eq("id", cda.id).eq("brokerage_id", auth.brokerageId).eq("transaction_id", cdaDesk.transactionId).select("id")
   // The approval gate reads signature_check_passed. A silently-dropped write here
   // leaves it NULL, which approveCdaAction treats as grandfathered — i.e. a failed
   // scan would have opened the gate instead of closing it.
-  if (scanErr) return { success: false as const, error: scanErr.message }
+  if (scanErr || (scanErrRows ?? []).length !== 1) return { success: false as const, error: scanErr?.message ?? "no CDA row of this deal matched" }
 
   return { success: true as const, passed, missing }
   }; return (await ledgerSessionAction({ brokerageId: auth.brokerageId, action: "finance.cda.signature_check", actor: { type: "user", userId: auth.userId }, subject: { type: "closing_disclosure_agreement", id: input.cdaId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED" }, act)) as Awaited<ReturnType<typeof act>> | { success: false; error: string }
@@ -1515,7 +1515,7 @@ export async function runSignatureCheckForCdaAction(input: { cdaId: string }) {
 export async function manualOverrideCdaAction(input: { cdaId: string; reason: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!COMPLIANCE_ROLES.has(auth.userType)) {
     return { success: false as const, error: "forbidden" }
@@ -1535,7 +1535,7 @@ export async function manualOverrideCdaAction(input: { cdaId: string; reason: st
   }
 
   const now = new Date().toISOString()
-  const { error: cdaOverrideErr } = await supabase
+  const { data: cdaOverrideErrRows, error: cdaOverrideErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       manual_override_by:     auth.userId,
@@ -1543,8 +1543,8 @@ export async function manualOverrideCdaAction(input: { cdaId: string; reason: st
       manual_override_reason: reason,
       updated_at:             now,
     })
-    .eq("id", cda.id)
-  if (cdaOverrideErr) return { success: false as const, error: `Could not record the manual override: ${cdaOverrideErr.message}` }
+    .eq("id", cda.id).eq("brokerage_id", auth.brokerageId).eq("transaction_id", cdaDesk.transactionId).select("id")
+  if (cdaOverrideErr || (cdaOverrideErrRows ?? []).length !== 1) return { success: false as const, error: `Could not record the manual override: ${cdaOverrideErr?.message ?? "no CDA row of this deal matched"}` }
 
   await recordRevision({
     cdaId:                cda.id,
@@ -1576,7 +1576,7 @@ export async function sendCdaToTitleAction(input: {
 }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   // THE MONEY COLUMNS RIDE ALONG (wave 26). This SELECT used to stop at the
   // status columns, so the send below had nothing to say and said nothing —
@@ -1831,7 +1831,7 @@ export async function sendCdaToTitleAction(input: {
   // compliance queue buckets delivery off sent_to_title_at — which stayed NULL, so the
   // signed CDA sat in "awaiting delivery" forever and could be re-sent without limit.
   // Delivery now lives in the sent_to_title_* columns and the status stays "approved".
-  const { error: sendErr } = await supabase
+  const { data: sendErrRows, error: sendErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({
       sent_to_title_at:        sentNow,
@@ -1842,9 +1842,9 @@ export async function sendCdaToTitleAction(input: {
       field_values:            { ...priorSendValues, title_delivery: { ...deliveryEvidence, recipient, at: sentNow } },
       updated_at:              sentNow,
     })
-    .eq("id", cda.id)
-  if (sendErr) {
-    return { success: false as const, error: `delivery_not_recorded:${sendErr.message}` }
+    .eq("id", cda.id).eq("brokerage_id", auth.brokerageId).eq("transaction_id", cdaDesk.transactionId).select("id")
+  if (sendErr || (sendErrRows ?? []).length !== 1) {
+    return { success: false as const, error: `delivery_not_recorded:${sendErr?.message ?? "no CDA row of this deal matched"}` }
   }
 
   // The cda_delivered milestone completes on actual DELIVERY to title — not at
@@ -1852,7 +1852,7 @@ export async function sendCdaToTitleAction(input: {
   const { error: milestoneErr } = await supabase
     .from("transaction_milestones")
     .update({ status: "completed", completed_at: sentNow })
-    .eq("transaction_id", cda.transaction_id)
+    .eq("transaction_id", cdaDesk.transactionId).eq("brokerage_id", auth.brokerageId)
     .or("milestone_type.eq.cda_delivered,milestone_name.eq.cda_delivered")
   if (milestoneErr) {
     // The delivery record above is the authoritative one; a milestone that didn't
@@ -1914,7 +1914,7 @@ export async function recordNonCdaPayoutPreferenceAction(input: {
 }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { transactionId: input?.transactionId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { transactionId: input?.transactionId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   // WAVE 152 (152H): the payout PREFERENCE belongs to the no-CDA path only. On a deal whose CDA policy is CDA (opened after the
@@ -1973,7 +1973,7 @@ export async function recordNonCdaPayoutPreferenceAction(input: {
       non_cda_payout_details:  input.details ?? null,
       updated_at:              new Date().toISOString(),
     })
-    .eq("id", cdaId)
+    .eq("id", cdaId).eq("brokerage_id", auth.brokerageId).eq("transaction_id", cdaDesk.transactionId)
     .select("id, non_cda_payout_method, transaction_id")
     .maybeSingle()
   if (prefErr) return { success: false as const, error: prefErr.message }
@@ -2007,7 +2007,7 @@ export async function recordCdaClosingArtifactAction(input: {
 }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   const { data: cda, error: cdaErr } = await supabase
     .from("closing_disclosure_agreement")
@@ -2048,7 +2048,7 @@ export async function uploadFinalCdAction(input: {
 }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   const { data: cdaRow, error: finalErr } = await supabase
     .from("closing_disclosure_agreement")
@@ -2058,7 +2058,7 @@ export async function uploadFinalCdAction(input: {
       final_cd_uploaded_at:  new Date().toISOString(),
       updated_at:            new Date().toISOString(),
     })
-    .eq("id", input.cdaId)
+    .eq("id", input.cdaId).eq("transaction_id", cdaDesk.transactionId)
     .eq("brokerage_id", auth.brokerageId)
     .select("transaction_id")
     .maybeSingle()
@@ -2092,7 +2092,7 @@ export async function uploadCdaCheckCopyAction(input: {
 }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   // GATE (wave 155, lane 155B2 — CLAUDE.md §4; wave 154 gap row 20). REACHABLE, not an orphan: app/dashboard/transactions/[id]/
@@ -2127,7 +2127,7 @@ export async function uploadCdaCheckCopyAction(input: {
       check_copy_uploaded_at:  new Date().toISOString(),
       updated_at:              new Date().toISOString(),
     })
-    .eq("id", input.cdaId)
+    .eq("id", input.cdaId).eq("transaction_id", cdaDesk.transactionId)
     .eq("brokerage_id", auth.brokerageId)
     .select("id, transaction_id")
     .maybeSingle()
@@ -2148,7 +2148,7 @@ export async function uploadCdaCheckCopyAction(input: {
 export async function closeCdaAction(input: { cdaId: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!COMPLIANCE_ROLES.has(auth.userType)) {
     return { success: false as const, error: "forbidden" }
@@ -2161,7 +2161,7 @@ export async function closeCdaAction(input: { cdaId: string }) {
       closed_at:  now,
       updated_at: now,
     })
-    .eq("id", input.cdaId)
+    .eq("id", input.cdaId).eq("transaction_id", cdaDesk.transactionId)
     .eq("brokerage_id", auth.brokerageId)
     .select("id, transaction_id, revision_number, status")
     .maybeSingle()
@@ -2267,7 +2267,7 @@ export async function requestPreliminaryCdCorrectionAction(input: {
 }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
 
   const { data: cda, error: cdaErr } = await supabase
     .from("closing_disclosure_agreement")
@@ -2372,7 +2372,7 @@ export async function requestPreliminaryCdCorrectionAction(input: {
   const { data: saved, error: saveErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({ field_values: { ...priorValues, preliminary_statement: nextReview }, updated_at: now })
-    .eq("id", cda.id)
+    .eq("id", cda.id).eq("transaction_id", cdaDesk.transactionId)
     .eq("brokerage_id", auth.brokerageId)
     .select("id")
   if (saveErr) return { success: false as const, error: `correction_not_recorded:${saveErr.message}` }
@@ -2423,7 +2423,7 @@ export async function requestPreliminaryCdCorrectionAction(input: {
 export async function confirmPreliminaryCdReviewAction(input: { cdaId: string; note?: string }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
 
   const { data: cda, error: cdaErr } = await supabase
@@ -2462,7 +2462,7 @@ export async function confirmPreliminaryCdReviewAction(input: { cdaId: string; n
   const { data: saved, error: saveErr } = await supabase
     .from("closing_disclosure_agreement")
     .update({ field_values: { ...priorValues, preliminary_statement: nextReview }, updated_at: now })
-    .eq("id", cda.id)
+    .eq("id", cda.id).eq("transaction_id", cdaDesk.transactionId)
     .eq("brokerage_id", auth.brokerageId)
     .select("id")
   if (saveErr) return { success: false as const, error: `review_not_recorded:${saveErr.message}` }
@@ -2500,7 +2500,7 @@ export async function confirmPreliminaryCdReviewAction(input: { cdaId: string; n
 export async function returnExternallySignedCdaAction(input: { cdaId: string; fileName: string; fileUrl: string; signedBy?: string | null }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
-  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; if (!(await cdaDeskGate(auth, { cdaId: input?.cdaId })).ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
+  if (!auth.ok) return { success: false as const, error: "unauthenticated" }; const cdaDesk = await cdaDeskGate(auth, { cdaId: input?.cdaId }); if (!cdaDesk.ok) return { success: false as const, error: "not_on_deal_desk: only the deal's team, its coordinator, compliance and the broker can act on this CDA" } // wave 156 (156D): the deal desk for THIS deal, fail closed
   const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger"); const act = async () => {
   if (!input.fileUrl?.trim() || !input.fileName?.trim()) return { success: false as const, error: "signed_document_required" }
 
@@ -2546,7 +2546,7 @@ export async function returnExternallySignedCdaAction(input: { cdaId: string; fi
       field_values: { ...priorValues, broker_esign: { mode: "external_signed", provider: null, envelope_id: null, document_id: doc.id, signed_by: input.signedBy ?? null, returned_by: auth.userId, at: now } },
       updated_at: now,
     })
-    .eq("id", cda.id)
+    .eq("id", cda.id).eq("transaction_id", cdaDesk.transactionId)
     .eq("brokerage_id", auth.brokerageId)
     .select("id")
   if (saveErr) return { success: false as const, error: `signed_return_not_recorded:${saveErr.message}` }
@@ -2579,8 +2579,8 @@ export async function returnExternallySignedCdaAction(input: { cdaId: string; fi
 // the agent on the deal, its coordinator, the broker tier, compliance and the deal agent's team lead pass; a contact, a lender / title /
 // attorney vendor seat (they reach CDA facts only through their own portal gates in lib/kernel/portal-auth.ts), an agent off the deal and
 // another tenant's seat reach nothing. The doors' OWN approval rosters (CDA_APPROVE_ROLES, canBrokerSignCda) still apply on top.
-// Fail closed: an unreadable CDA / deal or a desk that cannot run refuses. Not exported. (Lane 156E's shared requireDealDesk is on its own
-// branch; this calls decideDealDesk directly — the integrator aligns the two.)
+// Fail closed: an unreadable CDA / deal or a desk that cannot run refuses. Not exported. (Wave 156, lane 156N: it now asks the shared
+// requireDealDesk, and every door keeps the admitted deal as `cdaDesk.transactionId` and pins its CDA writes to it and to the tenant.)
 async function cdaDeskGate(auth: { userId: string; userType: string; brokerageId: string }, ref: { cdaId?: unknown; transactionId?: unknown }): Promise<{ ok: true; transactionId: string } | { ok: false }> {
   try {
     if (!auth.brokerageId || !auth.userId) return { ok: false }
@@ -2597,9 +2597,11 @@ async function cdaDeskGate(auth: { userId: string; userType: string; brokerageId
       transactionId = String((data as { id: string }).id)
     }
     if (!transactionId) return { ok: false }
-    const { decideDealDesk } = await import("@/lib/transactions/role-guard")
-    const desk = await decideDealDesk({ userId: auth.userId, role: auth.userType as never, brokerageId: auth.brokerageId, transactionId })
-    return desk.allowed ? { ok: true, transactionId } : { ok: false }
+    // WAVE 156 (156N): ONE helper — the shared requireDealDesk (lib/transactions/role-guard.ts), handed the seat requireAuth already
+    // resolved, rather than a second call shape of decideDealDesk. The admitted deal id it returns is the one every write below pins.
+    const { requireDealDesk } = await import("@/lib/transactions/role-guard")
+    const desk = await requireDealDesk(transactionId, { userId: auth.userId, userType: auth.userType, brokerageId: auth.brokerageId })
+    return desk.ok ? { ok: true, transactionId: desk.transactionId } : { ok: false }
   } catch {
     return { ok: false }
   }

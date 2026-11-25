@@ -238,10 +238,16 @@ async function main() {
   const exaFake = async () => ({ results: [{ title: "t", url: "https://y.test", text: "s" }], cost: 0.007, costBasis: "final" as const })
   const noneFake = async () => ({ answer: null, results: [], images: [], cost: 0 })
   const noExa = async () => ({ results: [], cost: 0 })
-  const t1 = (await webSearch({ query: "q", mode: "research", spend: { brokerageId: A, systemSource: "ai_search_citation_monitor" } }, { tavily: tavilyFake as never, exa: exaFake as never, meter: wsMeter })).booked
-  const t0 = (await webSearch({ query: "q", mode: "research", spend: { brokerageId: A, systemSource: "x" } }, { tavily: noneFake as never, exa: noExa as never, meter: wsMeter })).booked
+  // Wave 156 (lane 156S): a TENANT-attributed search now asks the paid-egress door (budget → receipt; driven by
+  // test:wave156-s). This proof is about BOOKING, so the door is a counted pass-through here (the budget module is
+  // server-only and this guard runs under plain tsx); the count proves both tenant searches still ask it.
+  let doorAsked = 0
+  const passDoor = (async (_d: unknown, call: () => Promise<any>, judge: (r: any) => { ok: boolean }) => { doorAsked++; const result = await call(); return { ran: true, result, ok: judge(result).ok, costUsd: 0, booked: false } }) as never
+  const t1 = (await webSearch({ query: "q", mode: "research", spend: { brokerageId: A, systemSource: "ai_search_citation_monitor" } }, { tavily: tavilyFake as never, exa: exaFake as never, meter: wsMeter, egress: passDoor })).booked
+  const t0 = (await webSearch({ query: "q", mode: "research", spend: { brokerageId: A, systemSource: "x" } }, { tavily: noneFake as never, exa: noExa as never, meter: wsMeter, egress: passDoor })).booked
   const e1 = (await webSearch({ query: "q", mode: "intent", spend: { brokerageId: null, platformPaid: true, systemSource: "capability_radar" } }, { tavily: tavilyFake as never, exa: exaFake as never, meter: wsMeter })).booked
   const unattributedSearch = (await webSearch({ query: "q", mode: "research" }, { tavily: tavilyFake as never, exa: exaFake as never, meter: wsMeter })).booked
+  ok(doorAsked === 2, `both tenant-attributed searches asked the paid-egress door, the platform / unattributed ones did not (asked ${doorAsked})`)
   ok(t1 === true && t0 === false && e1 === true && unattributedSearch === undefined && ev().filter((r) => r.vendor_name === "tavily").length === 1 && ev().some((r) => r.vendor_name === "tavily" && r.total_cost === tavCost) && ev().some((r) => r.vendor_name === "exa" && r.request_metadata.cost_basis === "final" && r.brokerage_id === null),
     `tavily: an advanced search books 2 credits × $${TAVILY_CREDIT_USD}; exa's SDK-reported cost books FINAL; a 'none' result books nothing`)
   const keyedUrl = "https://maps.googleapis.com/maps/api/streetview?size=800x600&location=1+Main+St&key=SECRET_KEY_139C"

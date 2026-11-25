@@ -37,7 +37,7 @@ async function affordAI(brokerageId: string | null | undefined, estTokens: numbe
     allowed: false,
     message: v.message ?? (v.reason === "ai_budget_exhausted"
       ? "AI fair-use limit reached for this billing period."
-      : `AI is unavailable: the brokerage's subscription does not currently cover it (${v.reason}).`),
+      : `AI is unavailable: your subscription does not currently cover it (${v.reason}).`),
   }
 }
 

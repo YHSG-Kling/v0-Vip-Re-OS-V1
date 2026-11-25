@@ -37,7 +37,7 @@ interface Props {
   inboundEventsError: string | null
   tokenState: DeveloperTokenState | null
   tokenStateError: string | null
-  docs: DevelopersDocsData
+  docs: DevelopersDocsData; /** wave 156Q: the session seat's words, resolved once by the server page. */ words?: { actingFor: string }
 }
 
 function fmt(ts: string | null): string {
@@ -194,7 +194,7 @@ export function DevelopersClient(props: Props) {
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Developers</h1>
         <p className="text-gray-600 mt-2">
-          Outbound webhooks and scoped API tokens for your brokerage. Webhooks fire from the OS&apos;s
+          Outbound webhooks and scoped API tokens for {props.words?.actingFor ?? "your account"}. Webhooks fire from the OS&apos;s
           canonical event ledger — signed, retried with backoff, and honestly logged below.
         </p>
       </div>

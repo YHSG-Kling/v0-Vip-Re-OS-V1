@@ -10,7 +10,7 @@
 
 import type { StatedNeedKind } from "./public-request"
 
-export interface PublicStatement { firstPerson: boolean; thirdParty: boolean; requestsAgentContact: boolean; statesHousingNeed: boolean; needKinds: StatedNeedKind[]; isQuestion: boolean; relocating: boolean; quote: string | null }
+export interface PublicStatement { firstPerson: boolean; thirdParty: boolean; requestsAgentContact: boolean; statesHousingNeed: boolean; needKinds: StatedNeedKind[]; isQuestion: boolean; relocating: boolean; quote: string | null; /** wave 156 (156I) — the author says they are under 18 (authorStatesMinor, foot) */ minorAuthor: boolean }
 
 const REQUEST_RE = /\b(looking for|need|seeking|searching for|hire|find|recommend(?:ation)?s?\s+(?:for|of)?|who should (?:I|we) (?:use|call|talk to))\b[^.?!]{0,60}\b(real ?estate agent|realtor|buyer'?s agent|listing agent|agent)\b|\bcan anyone recommend\b[^.?!]{0,60}\b(agent|realtor)\b/i
 const FIRST_PERSON_RE = /\b(I|I'm|I am|I've|we|we're|we are|we've|my|our|me|us)\b/
@@ -56,6 +56,24 @@ export function readPublicStatement(text: string): PublicStatement {
     isQuestion: !!questionSentence || /\?/.test(text),
     relocating: RELOCATING_RE.test(text) || needKinds.includes("military_move"),
     quote: quoteSrc ? quoteSrc.slice(0, 200) : null,
+    minorAuthor: authorStatesMinor(text),
   }
+}
+
+// ── WAVE 156 (lane 156I — directive 156I row 5: "identity & AGE check → Raw Lead Gate") ─────────────────────────────────
+// The person path checked the statement's age (the 90-day window, a required date) and the author's identity (a contact point
+// they published), but nothing read the AUTHOR's age: a teenager's "I'm 16 and want to buy my first house, email me at …" on a
+// permitted page passed every gate and was filed as a Raw Lead. A minor cannot be held to a real-estate contract and is never
+// an outreach target. The reader records only what the author SAYS about themselves (an age under 18, "I'm a minor / a teen",
+// "I'm in high school"); nothing is inferred from style, and a statement that says nothing about age is not assumed adult or
+// minor — it stays with the existing gates. Consumer: lib/acquisition-plays/contract.ts personCandidateProblem.
+
+const MINOR_AGE_RE = /\b(?:I'?m|I am|im)\s+(?:only\s+|just\s+)?(?:1[0-7]|[5-9])(?:\s*(?:years?|yrs?)(?:\s*old)?|\s*y\/?o)?(?![\d.,a-z])(?!\s*(?:months?|weeks?|days?|%|k\b|percent|minutes?|mins?|hours?|hrs?|miles?|blocks?|houses?|homes?|times?|stars?|o'?clock|am\b|pm\b))(?!\s+(?:into|in|of|at|with|since|away|from|years?)\b)/i
+const MINOR_SELF_RE = /\b(?:I'?m|I am|im)\s+(?:a\s+)?(?:minor|teen(?:ager)?|high[- ]?school(?:er| student| senior| junior| sophomore| freshman)?|in high school|still in high school|underage)\b|\bI(?:'m| am) not 18\b|\bI(?:'ll| will) be 18\b/i
+
+/** PURE — does the author say, in their own words, that they are under 18? */
+export function authorStatesMinor(text: string): boolean {
+  const t = String(text ?? "").replace(/\s+/g, " ")
+  return MINOR_AGE_RE.test(t) || MINOR_SELF_RE.test(t)
 }
 
