@@ -222,7 +222,7 @@ function stableJson(v: unknown): string {
 }
 
 /** PURE. sha256 over the canonical JSON of the decision's inputs. */
-export function evidenceHashOf(input: unknown): string {
+function evidenceHashOf(input: unknown): string {
   return createHash("sha256").update(stableJson(input)).digest("hex")
 }
 
@@ -267,7 +267,7 @@ export interface DocumentFormStanding {
  * neither does the ambiguous-signature hold. Everything else (a contradiction with the record, missing initials, an unsigned
  * addendum) is still decided on the attested terms. The scan blob itself is never rewritten.
  */
-export function applyAttestations(docs: EvidenceDocument[], attestations: Record<string, TermAttestation> | undefined): EvidenceDocument[] {
+function applyAttestations(docs: EvidenceDocument[], attestations: Record<string, TermAttestation> | undefined): EvidenceDocument[] {
   if (!attestations) return docs
   return docs.map((d) => {
     const a = attestations[d.id]
@@ -283,8 +283,9 @@ export function applyAttestations(docs: EvidenceDocument[], attestations: Record
  */
 export type FormLicenseCheck = (doc: EvidenceDocument) => BlockingReason | null
 let formLicenseCheck: FormLicenseCheck = (doc) => formStandingFinding(doc)
-export function setFormLicenseCheck(check: FormLicenseCheck): void { formLicenseCheck = check }
 export function formLicenseFinding(doc: EvidenceDocument): BlockingReason | null { return formLicenseCheck(doc) }
+/** @proofSeam the one injector over the module-private formLicenseCheck: a proof installs a stub to drive the decision without the forms directory; no product code calls it. */
+export function setFormLicenseCheck(check: FormLicenseCheck): void { formLicenseCheck = check }
 
 /**
  * wave 156 (lane 156R) — THE SEAM CONNECTED. The default check reads the standing the loaders attached to the document (they ask
@@ -716,7 +717,7 @@ export async function readRepresentationApproval(db: Db, p: { brokerageId: strin
 }
 
 /** Does this user hold review authority in this tenant NOW? Same rule as the door (mayReviewRepresentation); fail closed. */
-export async function reviewerHoldsAuthority(db: Db, brokerageId: string, userId: string): Promise<{ ok: true; holds: boolean } | { ok: false; error: string }> {
+async function reviewerHoldsAuthority(db: Db, brokerageId: string, userId: string): Promise<{ ok: true; holds: boolean } | { ok: false; error: string }> {
   const [u, g] = await Promise.all([
     db.from("users").select("id, brokerage_id, user_type").eq("id", userId).eq("brokerage_id", brokerageId).maybeSingle(),
     db.from("user_role_assignments").select("role, brokerage_id").eq("user_id", userId),
@@ -868,7 +869,7 @@ export function decisionBlockerLines(d: RepresentationDecision): string[] {
 // ─── wave 156 (lane 156R) — the seams between lanes 156B and 156C, at the foot ───────────────────────────────────────────────
 
 /** PURE. The form reference an executed document carries, in the order the directory can answer it most precisely. */
-export function formReferenceOf(doc: EvidenceDocument): { ref: { packetId?: string | null; providerName?: string | null; providerFormId?: string | null; formCode?: string | null }; version: string | number | null; label: string | null } | null {
+function formReferenceOf(doc: EvidenceDocument): { ref: { packetId?: string | null; providerName?: string | null; providerFormId?: string | null; formCode?: string | null }; version: string | number | null; label: string | null } | null {
   const m = objectOf(doc.metadata)
   const s = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null)
   // A working copy staged from the library (lib/forms/form-directory-intake.ts stageLibraryFormOnDeal) names its master and version.

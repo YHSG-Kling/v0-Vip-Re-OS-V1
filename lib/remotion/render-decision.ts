@@ -327,7 +327,7 @@ export interface FairPickQueued { id: string; brokerage_id: string; scope_type?:
 export interface FairPickClaim { brokerage_id: string | null; scope_type?: string | null; scope_id?: string | null }
 
 /** The desk a render was requested for — the second fairness level. */
-export function renderDeskKey(r: { brokerage_id?: string | null; scope_type?: string | null; scope_id?: string | null }): string {
+function renderDeskKey(r: { brokerage_id?: string | null; scope_type?: string | null; scope_id?: string | null }): string {
   return `${r.scope_type ?? "brokerage"}:${r.scope_id ?? r.brokerage_id ?? ""}`
 }
 

@@ -115,7 +115,7 @@ export function classifyProviderCallFailure(error: string | null | undefined, st
 }
 
 /** PURE: a provider category word → the directory vocabulary (compliance is recognised; unknown is `other`). */
-export function directoryCategory(form: Pick<ProviderForm, "category" | "name">): FormDirectoryCategory {
+function directoryCategory(form: Pick<ProviderForm, "category" | "name">): FormDirectoryCategory {
   const c = String(form.category ?? "").toLowerCase()
   if ((FORM_DIRECTORY_CATEGORIES as readonly string[]).includes(c) && c !== "other") return c as FormDirectoryCategory
   if (/compliance|checklist|broker review/i.test(form.name)) return "compliance"
@@ -123,14 +123,14 @@ export function directoryCategory(form: Pick<ProviderForm, "category" | "name">)
 }
 
 /** PURE: is this provider form selectable at all (authorized for the account and not retired)? */
-export function providerFormSelectable(f: ProviderForm): { selectable: boolean; reason: ProviderRefusalCode | "retired" | null } {
+function providerFormSelectable(f: ProviderForm): { selectable: boolean; reason: ProviderRefusalCode | "retired" | null } {
   if (f.licensed === false) return { selectable: false, reason: "license_missing" }
   if (f.retired === true) return { selectable: false, reason: "retired" }
   return { selectable: true, reason: null }
 }
 
 /** PURE: does the form pass the directory filter? (Unlicensed forms never pass — they are not part of the authorized library.) */
-export function providerFormMatches(f: ProviderForm, q: DirectoryFilter): boolean {
+function providerFormMatches(f: ProviderForm, q: DirectoryFilter): boolean {
   if (f.licensed === false) return false
   const status = q.status ?? "active"
   if (status === "active" && f.retired === true) return false

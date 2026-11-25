@@ -57,7 +57,7 @@ const bundleOwner = (b: Pick<BundleRow, "team_id" | "location_id">) => ({ teamId
 
 /** PURE: does this bundle APPLY to this actor (their office / team, or brokerage-wide)? Oversight does not widen applicability — a
  *  deal uses the bundle of the seat working it. */
-export function bundleAppliesTo(b: Pick<BundleRow, "brokerage_id" | "team_id" | "location_id" | "is_active">, actor: PacketActor): boolean {
+function bundleAppliesTo(b: Pick<BundleRow, "brokerage_id" | "team_id" | "location_id" | "is_active">, actor: PacketActor): boolean {
   if (b.brokerage_id !== actor.brokerageId || !b.is_active) return false
   if (b.team_id && b.team_id !== actor.teamId) return false
   if (b.location_id && b.location_id !== (actor.locationId ?? null)) return false

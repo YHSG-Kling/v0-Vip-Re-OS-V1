@@ -447,7 +447,7 @@ export interface PacketProvenance {
 }
 
 /** PURE (wave 156, 156C): the owner kind of a row. */
-export function packetOwnerKind(row: Pick<TenantPacketRow, "team_id" | "location_id" | "scope_user_id">): "brokerage" | "office" | "team" | "agent" {
+function packetOwnerKind(row: Pick<TenantPacketRow, "team_id" | "location_id" | "scope_user_id">): "brokerage" | "office" | "team" | "agent" {
   return row.scope_user_id ? "agent" : row.team_id ? "team" : row.location_id ? "office" : "brokerage"
 }
 

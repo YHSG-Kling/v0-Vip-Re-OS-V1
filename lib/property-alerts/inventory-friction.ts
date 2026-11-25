@@ -196,7 +196,7 @@ const OWNER_LINKS_MAX = 10
 const OWNER_SCAN_MAX = 200
 
 /** The tenant's consented owners in a shortage area that the task's agent may see. Never throws. */
-export async function shortageAreaOwners(
+async function shortageAreaOwners(
   db: Db,
   a: { brokerageId: string; agentId: string; alert: Pick<AlertRow, "contact_id" | "cities" | "zip_codes" | "bedrooms_min"> },
 ): Promise<{ ids: string[]; names: string[]; error: string | null }> {

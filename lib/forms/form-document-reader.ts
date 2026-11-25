@@ -50,12 +50,12 @@ export interface DocumentReadResult {
 const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim()
 
 /** PURE: signature / initials boxes among the PDF's field names. */
-export function signerBoxesFrom(fields: readonly string[]): string[] {
+function signerBoxesFrom(fields: readonly string[]): string[] {
   return fields.filter((f) => /(^|[^a-z])(sig|sign|signature|initial|initials)([^a-z]|$)/i.test(f.replace(/([a-z])([A-Z])/g, "$1 $2")))
 }
 
 /** PURE: the verifier. Only what the document itself states survives, and nothing is applied. */
-export function verifyDocumentReadProposals(text: string, fields: readonly string[], proposals: DocumentReadProposal[]): { kept: DocumentReadProposal[]; dropped: Array<{ proposal: DocumentReadProposal; why: string }> } {
+function verifyDocumentReadProposals(text: string, fields: readonly string[], proposals: DocumentReadProposal[]): { kept: DocumentReadProposal[]; dropped: Array<{ proposal: DocumentReadProposal; why: string }> } {
   const hay = norm(text)
   const fieldSet = new Set(fields)
   const kept: DocumentReadProposal[] = []

@@ -69,7 +69,7 @@ const ATTORNEY_ROLES: ReadonlySet<ClosingPartyRole> = new Set(["buyer_attorney",
 export const isAttorneyRole = (r: unknown): boolean => typeof r === "string" && ATTORNEY_ROLES.has(r as ClosingPartyRole)
 const inVocab = <T extends string>(set: readonly T[], v: unknown): v is T => typeof v === "string" && (set as readonly string[]).includes(v)
 export const isClosingPartyRole = (v: unknown): v is ClosingPartyRole => inVocab(CLOSING_PARTY_ROLES, v)
-export const isPartyRepresents = (v: unknown): v is PartyRepresents => inVocab(PARTY_REPRESENTS, v)
+const isPartyRepresents = (v: unknown): v is PartyRepresents => inVocab(PARTY_REPRESENTS, v)
 export const isSettlementAgentKind = (v: unknown): v is SettlementAgentKind => inVocab(SETTLEMENT_AGENT_KINDS, v)
 export const isSettlementAgentBasis = (v: unknown): v is SettlementAgentBasis => inVocab(SETTLEMENT_AGENT_BASES, v)
 export const isClosingCheckStatus = (v: unknown): v is ClosingCheckStatus => inVocab(CLOSING_CHECK_STATUSES, v)
@@ -182,7 +182,7 @@ export interface ClosingTeamAssessment {
 
 const partyRoleOf = (p: ClosingTeamParticipant): ClosingPartyRole | null => (isClosingPartyRole(p.party_role) ? p.party_role : null)
 
-export function representationOf(p: ClosingTeamParticipant): PartyRepresents | "unknown" {
+function representationOf(p: ClosingTeamParticipant): PartyRepresents | "unknown" {
   if (isPartyRepresents(p.represents)) return p.represents
   const r = partyRoleOf(p)
   const side = r ? ROLE_SIDE[r] : null

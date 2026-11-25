@@ -93,7 +93,7 @@ export interface AddFormInput {
 }
 
 /** PURE: the provenance rules. Returns the refusal sentence, or null. */
-export function validateFormProvenance(input: AddFormInput, now: Date = new Date()): string | null {
+function validateFormProvenance(input: AddFormInput, now: Date = new Date()): string | null {
   if (!(FORM_RIGHTS_BASES as readonly string[]).includes(input.rightsBasis)) return `Say under what right the brokerage may use this form (${FORM_RIGHTS_BASES.join(", ")}).`
   if (input.mode === "upload" && input.rightsBasis === "platform_catalogue_license") return "A platform-catalogue form is added from the catalogue, not uploaded."
   if (input.mode === "provider_form" && input.rightsBasis !== "provider_license") return "A provider-library form is used under the provider license."
@@ -120,7 +120,7 @@ export function validateFormProvenance(input: AddFormInput, now: Date = new Date
 }
 
 /** PURE: the required-form names a state's package defines for a purpose — from the state registry, never a universal list. */
-export async function statePackageFormNames(state: string, kind: "offer" | "listing"): Promise<string[] | null> {
+async function statePackageFormNames(state: string, kind: "offer" | "listing"): Promise<string[] | null> {
   const { STATE_FORMS } = await import("@/lib/state-forms/registry")
   const set = STATE_FORMS[state.trim().toUpperCase() as keyof typeof STATE_FORMS]
   if (!set) return null

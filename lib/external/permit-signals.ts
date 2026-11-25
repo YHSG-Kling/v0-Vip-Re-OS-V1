@@ -1282,7 +1282,7 @@ const PERMIT_STATUS_KEYS = [
 ]
 
 /** PURE. The permit's own published disposition, or null when the row publishes none. */
-export function readPermitStatus(row: Record<string, unknown>): string | null {
+function readPermitStatus(row: Record<string, unknown>): string | null {
   return pick(row, PERMIT_STATUS_KEYS)
 }
 
@@ -1312,7 +1312,7 @@ export const PERMIT_SIGNAL_CONSUMERS = Object.freeze([
 ] as const)
 
 /** PURE. The field-level evidence a permit / violation signal carries in signal_details.evidence. */
-export function permitSignalEvidence(match: PermitMatch, dataset: SocrataDatasetSpec): Record<string, unknown> {
+function permitSignalEvidence(match: PermitMatch, dataset: SocrataDatasetSpec): Record<string, unknown> {
   return {
     source: { provider: providerOf(dataset), dataset: `${dataset.host}/${dataset.datasetId}`, record_id: match.permitId, label: dataset.label },
     source_event_date: match.eventDate,

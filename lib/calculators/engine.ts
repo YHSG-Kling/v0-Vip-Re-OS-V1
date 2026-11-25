@@ -346,7 +346,7 @@ function readDate(raw: unknown): string | "blank" | "bad" {
 }
 
 /** PURE. Validate every input against its spec. Missing required → "Enter a value"; negative / non-numeric / out of range → refused. */
-export function validateCalculatorInputs(spec: CalculatorSpec, inputs: Record<string, unknown>, skipRequired: ReadonlySet<string> = new Set()): { values: Values; missing: CalculatorRefusal["missing"]; refused: CalculatorRefusal["refused"] } {
+function validateCalculatorInputs(spec: CalculatorSpec, inputs: Record<string, unknown>, skipRequired: ReadonlySet<string> = new Set()): { values: Values; missing: CalculatorRefusal["missing"]; refused: CalculatorRefusal["refused"] } {
   const values: Values = {}
   const missing: CalculatorRefusal["missing"] = []
   const refused: CalculatorRefusal["refused"] = []
@@ -392,14 +392,14 @@ const cents = (n: number) => Math.round(n * 100) / 100
 const usd = (n: number) => `$${cents(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 /** Monthly principal + interest. A 0% rate amortizes linearly. Stable at very long terms (no (1+r)^n overflow path). */
-export function monthlyPrincipalInterest(loan: number, ratePct: number, months: number): number {
+function monthlyPrincipalInterest(loan: number, ratePct: number, months: number): number {
   if (!(loan > 0) || !(months > 0)) return 0
   const r = ratePct / 100 / 12
   if (r === 0) return loan / months
   return (loan * r) / (1 - Math.pow(1 + r, -months))
 }
 /** Balance after k payments of the level payment above. */
-export function balanceAfter(loan: number, ratePct: number, months: number, k: number): number {
+function balanceAfter(loan: number, ratePct: number, months: number, k: number): number {
   if (!(loan > 0) || !(months > 0)) return 0
   const paid = Math.min(Math.max(0, k), months)
   if (paid >= months) return 0

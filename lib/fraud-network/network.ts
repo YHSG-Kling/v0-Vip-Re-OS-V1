@@ -191,7 +191,7 @@ const STREET_RE = /\b\d{1,6}\s+(?:[A-Z][a-z]+\s+){1,4}(?:St|Street|Ave|Avenue|Rd
 const SENSITIVE_NUMBER_RE = /\d(?:[\s-]?\d){8,}/
 
 /** Why a PUBLIC (bulletin) text is refused, or null. Patterns only — names are attested by the moderator (header). */
-export function screenPublicText(text: string): string | null {
+function screenPublicText(text: string): string | null {
   if (!text) return null
   if (EMAIL_RE.test(text)) return "contains an email address"
   if (PHONE_RE.test(text)) return "contains a phone number"
@@ -202,7 +202,7 @@ export function screenPublicText(text: string): string | null {
 }
 
 /** DETERMINISTIC redaction draft (no model): the moderator starts from this and edits; it is never published as-is. */
-export function redactForDraft(text: string): string {
+function redactForDraft(text: string): string {
   return String(text ?? "")
     .replace(new RegExp(EMAIL_RE.source, "gi"), "[email removed]")
     .replace(new RegExp(LINK_RE.source, "gi"), "[link removed]")
@@ -212,7 +212,7 @@ export function redactForDraft(text: string): string {
 }
 
 /** An authoritative citation: https on a government host (federal .gov / .mil, a state .us domain). */
-export function isAuthoritativeCitation(url: string | null | undefined): boolean {
+function isAuthoritativeCitation(url: string | null | undefined): boolean {
   try {
     const u = new URL(String(url ?? ""))
     if (u.protocol !== "https:") return false
@@ -301,7 +301,7 @@ export interface IncidentInput {
 export type DealDeskAsk = (transactionId: string) => Promise<{ ok: boolean; error?: string }>
 
 /** PURE validation of a report. Returns the cleaned record or the first refusal. */
-export function validateIncident(input: IncidentInput, now = new Date()): { ok: true; value: Required<Pick<IncidentInput, "incidentKind" | "channel" | "summary">> & IncidentInput } | Refusal {
+function validateIncident(input: IncidentInput, now = new Date()): { ok: true; value: Required<Pick<IncidentInput, "incidentKind" | "channel" | "summary">> & IncidentInput } | Refusal {
   if (!typologyOf(input?.incidentKind)) return { ok: false, error: "Choose an incident type from the list." }
   if (!inList(FRAUD_CHANNELS, input.channel)) return { ok: false, error: "Choose how the contact arrived." }
   const summary = str(input.summary, 4000)
@@ -414,7 +414,7 @@ export async function submitIncidentCase(svc: Svc, actor: TenantActor, input: In
 const CASE_COLS = "id, brokerage_id, reporter_user_id, transaction_id, listing_id, incident_kind, event_date, channel, summary, alleged_indicators, loss_occurred, loss_amount, steps_taken, external_report_ids, status, moderation_notes, dispute, share_consent, retention_until, created_at, updated_at"
 
 /** May this actor read this case? Reporter, a case reviewer of the SAME tenant, or platform safety staff. Fail closed. */
-export function mayReadCase(actor: FraudActor, row: { brokerage_id: string; reporter_user_id: string } | null): boolean {
+function mayReadCase(actor: FraudActor, row: { brokerage_id: string; reporter_user_id: string } | null): boolean {
   if (!row) return false
   if (actor.kind === "staff") return true
   if (row.brokerage_id !== actor.brokerageId) return false
@@ -522,7 +522,7 @@ const BULLETIN_EDITABLE = ["title", "tactic_summary", "indicators", "red_flags",
 type BulletinFields = Partial<Record<(typeof BULLETIN_EDITABLE)[number], unknown>>
 
 /** PURE — clean the editable fields; the claim class is a value a HUMAN sets here, never a model. */
-export function cleanBulletinFields(f: BulletinFields): { ok: true; value: Record<string, unknown> } | Refusal {
+function cleanBulletinFields(f: BulletinFields): { ok: true; value: Record<string, unknown> } | Refusal {
   const out: Record<string, unknown> = {}
   if (f.title !== undefined) out.title = str(f.title, 200)
   if (f.tactic_summary !== undefined) out.tactic_summary = str(f.tactic_summary, 4000)
@@ -549,7 +549,7 @@ export function cleanBulletinFields(f: BulletinFields): { ok: true; value: Recor
 }
 
 /** PURE — the publication rules. Returns the first refusal or null. Held by the guard, mirrored by m1035's CHECK. */
-export function publicationRefusal(b: Record<string, any>, ctx: { attestNoPersonIdentified: boolean; legalReviewConfirmed: boolean; verificationNote: string; independentTenants: number }): string | null {
+function publicationRefusal(b: Record<string, any>, ctx: { attestNoPersonIdentified: boolean; legalReviewConfirmed: boolean; verificationNote: string; independentTenants: number }): string | null {
   if (b.status !== "draft") return "Only a draft can be published; correct a published bulletin instead."
   if (!ctx.attestNoPersonIdentified) return "Confirm that the bulletin identifies no private person, client, account or home address."
   if (!typologyOf(b.typology)) return "Unknown typology."
@@ -1049,7 +1049,7 @@ export const FRAUD_DEPARTED_TENANT_STATUSES: ReadonlySet<string> = new Set([...T
 export type TenantStanding = "active" | "paused" | "departed"
 
 /** Standing per tenant id. null = the read was refused (callers fail closed). A missing row reads as departed. */
-export async function tenantStandings(svc: Svc, ids: ReadonlyArray<string | null | undefined>): Promise<Map<string, TenantStanding> | null> {
+async function tenantStandings(svc: Svc, ids: ReadonlyArray<string | null | undefined>): Promise<Map<string, TenantStanding> | null> {
   const uniq = [...new Set(ids.filter((x): x is string => !!x))]
   const out = new Map<string, TenantStanding>()
   if (!uniq.length) return out
@@ -1171,7 +1171,7 @@ export interface EvidenceStoreDeps {
   upload?: (path: string, bytes: Uint8Array, contentType: string) => Promise<{ ok: boolean; error?: string }>
   sign?: (path: string) => Promise<{ url: string | null }>
 }
-export const evidenceObjectPath = (brokerageId: string, caseId: string, fingerprint: string): string => `${brokerageId}/${caseId}/${fingerprint}`
+const evidenceObjectPath = (brokerageId: string, caseId: string, fingerprint: string): string => `${brokerageId}/${caseId}/${fingerprint}`
 
 async function evidenceBucketEnabled(): Promise<boolean> {
   try {

@@ -108,7 +108,7 @@ export interface FollowOnPlan { toManager: "listing_concierge" | "shopping_agent
 
 /** PURE. Who picks up an opt-in and what they do first. A saved result earns an explanation of the estimate; only an explicit
  *  request to talk earns an agent task (CLAUDE.md §5 — a lead reaches an agent once it shows positive intent). */
-export function planCalculatorFollowOn(kind: CalculatorKind, intent: "save_results" | "talk_to_agent"): FollowOnPlan {
+function planCalculatorFollowOn(kind: CalculatorKind, intent: "save_results" | "talk_to_agent"): FollowOnPlan {
   const side = CALCULATOR_SPECS[kind].side
   const toManager = side === "seller" ? "listing_concierge" : side === "buyer" || side === "investor" || side === "relocation" ? "shopping_agent" : side === "owner" ? "sphere_of_influence" : null
   if (intent === "talk_to_agent") return { toManager, nextStep: "agent_task", why: "the person asked to talk with an agent about their numbers" }
@@ -184,7 +184,7 @@ export async function createCalculatorArtifact(input: CreateCalculatorArtifactIn
 export interface PublicCalculatorArtifact { formId: string; brokerageId: string; agentId: string | null; slug: string; name: string; config: CalculatorArtifactConfig }
 
 /** The ACTIVE calculator artifact behind a form id (the tenant is the row's). A draft, another magnet, a refused read → null. */
-export async function loadPublicCalculatorArtifact(client: Db, formId: string): Promise<PublicCalculatorArtifact | null> {
+async function loadPublicCalculatorArtifact(client: Db, formId: string): Promise<PublicCalculatorArtifact | null> {
   if (!/^[0-9a-f-]{36}$/i.test(String(formId ?? ""))) return null
   const { data, error } = await client.from("lead_capture_forms").select("id, brokerage_id, agent_id, slug, name, is_active, settings").eq("id", formId).maybeSingle()
   if (error || !data || data.is_active !== true || !data.brokerage_id) return null
