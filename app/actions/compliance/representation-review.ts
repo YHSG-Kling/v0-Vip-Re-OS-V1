@@ -47,10 +47,13 @@ async function sessionSeat() {
   if (mine.error || grants.error) return { ok: false as const, error: "Your role couldn't be read just now. Try again shortly." }
   const grantedRoles = ((grants.data ?? []) as Array<{ role: string | null; brokerage_id: string | null }>).filter((g) => g.brokerage_id === B && g.role).map((g) => String(g.role))
   const myAgentId = ((mine.data ?? null) as { id?: string } | null)?.id ?? null
-  const { mayReviewRepresentation } = await import("@/lib/kernel/compliance/representation-gate")
-  const authority = mayReviewRepresentation({ sameTenant: true, userType: s.actor.userType ?? null, grantedRoles, isOwningAgent: false, isTenantPrincipal: s.actor.isTenantPrincipal === true })
+  const { mayReviewRepresentation, isSoloTierPrincipal } = await import("@/lib/kernel/compliance/representation-gate")
+  // wave 156 (156R): the solo-tier principal (TIER PARITY — a solo subscriber IS their own broker) reviews their own packets. Fail closed.
+  const solo = await isSoloTierPrincipal(svc, { brokerageId: B, userType: s.actor.userType ?? null })
+  if (!solo.ok) return { ok: false as const, error: "Your account's plan couldn't be read just now. Try again shortly." }
+  const authority = mayReviewRepresentation({ sameTenant: true, userType: s.actor.userType ?? null, grantedRoles, isOwningAgent: false, isTenantPrincipal: s.actor.isTenantPrincipal === true || solo.isSolo })
   const isTc = String(s.actor.userType ?? "").toLowerCase() === "tc" || grantedRoles.includes("tc")
-  return { ok: true as const, svc, actor: s.actor, myAgentId, mayDecide: authority.ok, roles: authority.roles, isTc }
+  return { ok: true as const, svc, actor: s.actor, myAgentId, mayDecide: authority.ok, roles: authority.roles, isTc, isSolo: solo.isSolo }
 }
 
 /** Module-private: the session actor admitted to THIS subject (reviewer, its agent, its assigned / a tenant coordinator). */
@@ -236,4 +239,16 @@ export async function attestRepresentationTerms(input: Subject & { documentId: s
     if (!cur.ok) return { success: true, decision: null, error: `Recorded; the review could not re-run: ${cur.error}` }
     return { success: true, decision: cur.decision }
   })
+}
+
+/**
+ * wave 156 (lane 156R) — MAY THIS SEAT OPEN THE "EXECUTED PACKETS TO REVIEW" SECTION when the compliance dashboard's own role gate
+ * (app/actions/compliance/dashboard.ts ACCESS_ROLES) refuses it? Exactly one case: the SOLO-TIER PRINCIPAL (isSoloTierPrincipal — a
+ * seat whose canonical role is `agent` on a stored plan_tier = 'solo_agent' account). It opens the packet-review section only, never
+ * the rest of the compliance dashboard, and it is no new role. A plain agent in a brokerage is refused; a refused read refuses.
+ */
+export async function packetReviewSectionAdmissionAction(): Promise<{ admitted: boolean; error?: string }> {
+  const seat = await sessionSeat()
+  if (!seat.ok) return { admitted: false, error: seat.error }
+  return { admitted: seat.isSolo === true && seat.mayDecide }
 }
