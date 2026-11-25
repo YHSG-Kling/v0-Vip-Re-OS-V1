@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1970 of 2053 pairs) — storing them would be
+ * overwhelming majority (1994 of 2079 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,9 +75,9 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 3 columns are in that state.
  *
- * MEASURED AT GENERATION: 2160 edges across 761 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 2053 unordered
- * table pairs carry at least one FK; 83
+ * MEASURED AT GENERATION: 2190 edges across 770 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 2079 unordered
+ * table pairs carry at least one FK; 85
  * carry more than one and are listed below. 23 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-25
  * source: public.live_foreign_keys_json()
- * body-sha256: 22b0c7d86088ff313cfdfd9519ae71e477699ad1ca8ba04d95d7f1822b45c1b3
+ * body-sha256: 49ada2a0d5c72baabac8df6e71200549a13d129d4a9b5e4d2d9fa84b25a74c1c
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -411,6 +411,15 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "form_packet_bundle_items": { "added_by": "users", "brokerage_id": "brokerages", "bundle_id": "form_packet_bundles", "library_form_id": "brokerage_form_library" },
   "form_packet_bundles": { "brokerage_id": "brokerages", "created_by": "users", "location_id": "locations", "team_id": "teams" },
   "form_submissions": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "form_id": "lead_capture_forms" },
+  "fraud_bulletin_derivatives": { "brokerage_id": "brokerages", "bulletin_id": "fraud_bulletins", "topic_id": "content_topic_bank" },
+  "fraud_bulletin_reads": { "brokerage_id": "brokerages", "bulletin_id": "fraud_bulletins", "user_id": "users" },
+  "fraud_bulletin_revisions": { "actor_user_id": "users", "bulletin_id": "fraud_bulletins" },
+  "fraud_bulletin_sources": { "brokerage_id": "brokerages", "bulletin_id": "fraud_bulletins", "case_id": "fraud_incident_cases", "linked_by": "users" },
+  "fraud_bulletins": { "created_by": "users", "legal_review_by": "users", "published_by": "users" },
+  "fraud_case_evidence": { "brokerage_id": "brokerages", "case_id": "fraud_incident_cases", "created_by": "users" },
+  "fraud_correction_requests": { "brokerage_id": "brokerages", "bulletin_id": "fraud_bulletins", "recorded_by": "users", "requester_user_id": "users", "resolved_by": "users", "support_ticket_id": "support_tickets" },
+  "fraud_incident_cases": { "brokerage_id": "brokerages", "listing_id": "listings", "reporter_user_id": "users", "transaction_id": "transactions" },
+  "fraud_warning_subscriptions": { "brokerage_id": "brokerages", "user_id": "users" },
   "gamification_badges": { "brokerage_id": "brokerages" },
   "generated_content": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "generated_documents": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions" },
@@ -931,6 +940,8 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "distribution_finals|users": 3,
   "fatigue_alerts|users": 2,
   "feature_access_overrides|users": 2,
+  "fraud_bulletins|users": 3,
+  "fraud_correction_requests|users": 3,
   "learning_assignments|users": 2,
   "learning_modules|users": 3,
   "listing_media|users": 3,

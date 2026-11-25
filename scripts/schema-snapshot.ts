@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 754 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 763 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-25
  * source: public.live_schema_json()
- * body-sha256: b3833c31ec1871025586413fa72cff7cdfafaaac77829787e412b30b86e49356
+ * body-sha256: 1883af72462c7da7f64a61f18e2bd928fc6581d0d08d793185633d361bce4c0d
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -338,6 +338,15 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   form_packet_bundle_items: ["added_by", "brokerage_id", "bundle_id", "county", "created_at", "id", "is_required", "library_form_id", "position", "provider_form_id", "provider_name", "removed_at", "required_name", "requirement_source"],
   form_packet_bundles: ["brokerage_id", "bundle_kind", "county", "created_at", "created_by", "id", "is_active", "location_id", "name", "state", "team_id", "updated_at"],
   form_submissions: ["agent_id", "brokerage_id", "contact_id", "context_id", "context_type", "created_at", "form_id", "form_name", "id", "ip_address", "source", "status", "submission_data", "submitted_at", "tcpa_consent_given", "updated_at", "user_agent"],
+  fraud_bulletin_derivatives: ["brokerage_id", "bulletin_id", "created_at", "id", "topic_id"],
+  fraud_bulletin_reads: ["brokerage_id", "bulletin_id", "first_read_at", "id", "user_id"],
+  fraud_bulletin_revisions: ["actor_user_id", "bulletin_id", "change_kind", "correction_request_id", "created_at", "id", "reason", "snapshot", "version"],
+  fraud_bulletin_sources: ["brokerage_id", "bulletin_id", "case_id", "created_at", "evidence_fingerprint", "id", "linked_by"],
+  fraud_bulletins: ["claim_class", "confidence", "created_at", "created_by", "how_to_verify", "id", "indicators", "jurisdiction", "legal_review_at", "legal_review_by", "named_entity", "named_entity_citation_url", "published_at", "published_by", "recency_date", "red_flags", "source_url", "status", "tactic_summary", "takedown_reason", "taken_down_at", "title", "typology", "updated_at", "version"],
+  fraud_case_evidence: ["brokerage_id", "case_id", "created_at", "created_by", "evidence_kind", "fingerprint_sha256", "id", "label", "storage_status"],
+  fraud_correction_requests: ["brokerage_id", "bulletin_id", "channel", "created_at", "id", "recorded_by", "requester_kind", "requester_user_id", "resolution", "resolved_at", "resolved_by", "statement", "status", "support_ticket_id"],
+  fraud_incident_cases: ["alleged_indicators", "brokerage_id", "channel", "created_at", "dispute", "event_date", "external_report_ids", "id", "incident_kind", "listing_id", "loss_amount", "loss_occurred", "moderation_notes", "reporter_user_id", "retention_until", "share_consent", "status", "steps_taken", "summary", "transaction_id", "updated_at"],
+  fraud_warning_subscriptions: ["brokerage_id", "created_at", "id", "jurisdiction", "typology", "user_id"],
   gamification_badges: ["badge_category", "badge_description", "badge_icon", "badge_name", "badge_tier", "brokerage_id", "created_at", "id", "is_active", "required_points", "trigger_event"],
   generated_documents: ["agent_id", "blob_id", "blob_url", "brokerage_id", "contact_id", "created_at", "document_type", "file_name", "file_size", "id", "listing_id", "metadata", "transaction_id"],
   gift_vendors: ["agent_id", "brokerage_id", "category", "contact_name", "created_at", "email", "id", "is_active", "name", "notes", "phone", "updated_at", "website"],
@@ -540,7 +549,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   platform_social_drafts: ["angle", "channel", "content", "created_at", "created_by", "format", "hashtags", "id", "media_type", "permalink", "scheduled_for", "script", "status", "updated_at", "video_url"],
   platform_staff_profiles: ["agreement_acknowledged_at", "created_at", "created_by", "employment_agreement_text", "notes", "start_date", "title", "updated_at", "user_id"],
   platform_suppression_list: ["added_by_user_id", "created_at", "email", "id", "notes", "phone_digits", "reason", "source_brokerage_id", "source_contact_id", "source_lead_id"],
-  platform_tos_acceptances: ["accepted_at", "email", "id", "ip_address", "tos_version", "user_agent"],
+  platform_tos_acceptances: ["accepted_at", "content_sha256", "email", "id", "ip_address", "tos_version", "user_agent"],
   podcast_analytics_events: ["brokerage_id", "created_at", "duration_listened_seconds", "episode_id", "event_type", "id", "listener_contact_id", "platform", "timestamp_seconds"],
   podcast_auto_runs: ["agent_id", "brokerage_id", "completed_at", "created_at", "duration_seconds", "error_message", "id", "iso_week", "podcast_episode_id", "script_word_count", "status"],
   podcast_distribution_channels: ["agent_user_id", "brokerage_id", "channel_name", "created_at", "distribution_config", "external_show_id", "id", "is_enabled", "team_id", "updated_at"],

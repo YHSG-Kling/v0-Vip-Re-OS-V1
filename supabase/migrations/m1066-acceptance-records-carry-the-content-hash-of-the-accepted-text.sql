@@ -1,4 +1,4 @@
--- WRITTEN, NOT APPLIED (wave 156, lane 156O) — the integrator applies (additive: one nullable column + a shape CHECK on each of two tables).
+-- APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) (wave 156, lane 156O) — applied by the integrator (additive: one nullable column + a shape CHECK on each of two tables).
 --
 -- m1066 — AN ACCEPTANCE RECORD CARRIES THE SHA-256 OF THE TEXT THAT WAS ACCEPTED (directive 156O blocker 7: "Version/hash/
 -- timestamp acceptance when active"). Before this, platform_tos_acceptances and privacy_acceptances stored a version and a time
