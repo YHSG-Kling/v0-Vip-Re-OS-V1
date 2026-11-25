@@ -1,4 +1,4 @@
--- m1012 — THE THREE CLOSING-CHECK STATUSES GET ONE CHECK EACH (wave 156, lane 156D round 3 — WRITTEN, NOT APPLIED; the integrator applies it).
+-- m1012 — THE THREE CLOSING-CHECK STATUSES GET ONE CHECK EACH (wave 156, lane 156D round 3 — APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt); applied by the integrator).
 --
 -- m1010 declared ONE CHECK over three columns (transaction_title_escrow_closing_check_statuses: payoff_status, hoa_estoppel_status,
 -- recording_status). The generated vocabulary cache (scripts/check-vocabularies.ts) holds single-column CHECKs only, so those three
