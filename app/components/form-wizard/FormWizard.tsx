@@ -1545,6 +1545,8 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
         {showRecommendationNote && <p className="text-[11px] text-muted-foreground">Required forms and the agency disclosure come from the state&apos;s verified package; an addendum is recommended only when a term you answered calls for it (financing, inspection, appraisal, escalation, a sale contingency, a pre-1978 home, an association). The coach never adds a form nobody has.</p>}
       </div>
 
+      {stateCode.length === 2 && <DealPacketPanel kind={mode} stateCode={stateCode} />}
+
       <Tabs defaultValue="my-forms">
         <TabsList className="w-full">
           <TabsTrigger value="my-forms" className="flex-1">My Forms</TabsTrigger>
@@ -2625,6 +2627,42 @@ function PacketBanner({
           </ul>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * WAVE 156 (156C): THE BROKERAGE'S PACKET FOR THIS DEAL — the ONE bundle (team › office › brokerage) for the state and kind, from
+ * app/api/forms/directory (lib/forms/form-packet-bundles.ts resolveDealPacket). Each item shows its status; a required form the
+ * brokerage holds no licensed file for says so, with where to fix it — it never pretends the form exists. Read-only here.
+ */
+function DealPacketPanel({ kind, stateCode }: { kind: "offer" | "listing"; stateCode: string }) {
+  const [packet, setPacket] = useState<{ bundle: { name: string } | null; items: Array<{ itemId: string; name: string; required: boolean; status: string; recoverHref: string | null; source: string }>; missingRequired: number } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    fetch(`/api/forms/directory?kind=${kind}&state=${encodeURIComponent(stateCode)}`)
+      .then(async (r) => { const j = await r.json(); if (!live) return; if (!r.ok) { setError(j?.error ?? "Your brokerage's packet could not be read."); return } setPacket(j) })
+      .catch((e) => { if (live) setError(e instanceof Error ? e.message : "Network error") })
+    return () => { live = false }
+  }, [kind, stateCode])
+  if (error) return <p className="text-xs text-destructive">{error}</p>
+  if (!packet?.bundle) return null
+  const label: Record<string, string> = { ready: "ready", replaced: "current revision", retired: "retired", license_expired: "license expired", not_configured: "not configured" }
+  return (
+    <div className="rounded-lg border p-3 space-y-2">
+      <p className="text-sm font-medium">{packet.bundle.name}{packet.missingRequired > 0 ? ` — ${packet.missingRequired} required form(s) not available yet` : ""}</p>
+      <ul className="space-y-1">
+        {packet.items.map((i) => (
+          <li key={i.itemId} className="flex items-center justify-between gap-2 text-xs">
+            <span className="truncate">{i.name}{i.required ? "" : " (optional)"}</span>
+            <span className="flex items-center gap-2 shrink-0">
+              <Badge variant={i.status === "ready" || i.status === "replaced" ? "secondary" : "destructive"} className="text-[10px]">{label[i.status] ?? i.status}</Badge>
+              {i.recoverHref && <a href={i.recoverHref} className="underline text-muted-foreground">Request access / add licensed file</a>}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

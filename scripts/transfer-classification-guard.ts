@@ -460,13 +460,13 @@ const DOORS: Array<{ file: string; fn: string; ops: Record<string, number>; gate
   { file: "lib/esign/dispatch-packet.ts", fn: "incompletePacketReason", ops: { download: 1 }, gate: /storagePath/, why: "same" },
   { file: "lib/forms/tenant-form-packets.ts", fn: "listFormPacketsForActor", ops: { list: 1 }, gate: /packetVisibleTo\(/, why: "the actor's own brokerage / team prefixes after the visibility rule" },
   { file: "lib/forms/tenant-form-packets.ts", fn: "issueTenantPacketUrl", ops: { createSignedUrl: 1 }, gate: /packetVisibleTo\(|mayManagePacketScope\(/, why: "THE minting door — use = visibility, manage = scope authority" },
-  { file: "lib/forms/tenant-form-packets.ts", fn: "registerTenantFormPacket", ops: { upload: 1, remove: 1 }, gate: /mayManagePacketScope\(/, why: "the registry writer, after the sharing authority" },
+  { file: "lib/forms/tenant-form-packets.ts", fn: "registerTenantFormPacket", ops: { upload: 1, remove: 1 }, gate: /mayManagePacketOwner\(/, why: "the registry writer, after the sharing authority (wave 156, 156C: mayManagePacketOwner = mayManagePacketScope + the office / own-supplemental owners)" },
   { file: "lib/forms/tenant-form-packets.ts", fn: "registerCopiedPacket", ops: { copy: 1, remove: 1 }, gate: /mayManagePacketScope\(/, why: "catalogue copy, after the sharing authority" },
   { file: "lib/forms/platform-form-packets.ts", fn: "registerPlatformPacket", ops: { upload: 1, remove: 1 }, gate: /parsePlatformPacketPath|platform/, why: "superadmin catalogue writer — the caller gates requireSuperadmin (asserted below)" },
   { file: "app/api/admin/transaction-forms/route.ts", fn: "GET", ops: { createSignedUrl: 1 }, gate: /authAdmin\(\)[\s\S]*parsePlatformPacketPath\(/, why: "catalogue preview for a tenant admin, a well-formed platform path only" },
   { file: "app/api/form-wizard/form-packets/route.ts", fn: "GET", ops: { createSignedUrl: 1 }, gate: /resolvePacketActor\([\s\S]*listFormPacketsForActor\(/, why: "the seat-resolved actor's visible packets only" },
   { file: "app/actions/buyer-offer/prefill-storage-form.ts", fn: "prefillStorageFormAction", ops: { download: 1, upload: 1, createSignedUrl: 1 }, gate: /checkFormPathsInScope\(/, why: "fill action — source path AND the filled/{offerId} write destination scope-checked (wave 145, lane 145Z)" },
-  { file: "app/actions/buyer-offer/esign-anchor-plan.ts", fn: "buildEsignAnchorPlanAction", ops: { download: 1 }, gate: /checkFormPathsInScope\(/, why: "anchor plan read, scope-checked" },
+  { file: "app/actions/buyer-offer/esign-anchor-plan.ts", fn: "buildEsignAnchorPlanAction", ops: { download: 1 }, gate: /checkFormPathsInScope\(/, why: "anchor plan read, scope-checked" }, { file: "app/api/forms/document-read/route.ts", fn: "POST", ops: { download: 1 }, gate: /resolvePacketActor\([\s\S]*usableTenantPacketPaths\(/, why: "wave 156 (156C): the AI form reader — the seat-resolved actor's USABLE master only (active, in license, own scope)" },
 ]
 {
   const files = [...walk("app"), ...walk("lib")].filter((f) => { const s = raw(f); return /brokerage-forms|FORM_PACKET_BUCKET|PLATFORM_PACKET_BUCKET|FORMS_BUCKET|FILLED_BUCKET/.test(s) })
