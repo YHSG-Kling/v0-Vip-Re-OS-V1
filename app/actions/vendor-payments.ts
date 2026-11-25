@@ -327,7 +327,7 @@ export async function submitVendorInvoice(invoiceId: string): Promise<InvoiceRes
 
   if (error) return { success: false, error: error.message }
   if (!submitted || submitted.length === 0) {
-    return { success: false, error: "Nothing was submitted — that invoice is no longer one of your brokerage's invoices." }
+    const { tenantPayerWords, resolveTenantPayer } = await import("@/lib/errors"); return { success: false, error: `Nothing was submitted — that invoice is no longer one of ${tenantPayerWords(await resolveTenantPayer(svc, ctx.brokerageId)).payerPossessive} invoices.` } // wave 156 (156Q → 156N): the owner noun follows the tenant (a solo agent never reads "your brokerage")
   }
   return { success: true, invoiceId }
   })
