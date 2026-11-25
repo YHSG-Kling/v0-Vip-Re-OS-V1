@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED (wave 156, lane 156C) — the integrator applies this additive migration ──
+-- ── APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) (wave 156, lane 156C) — applied by the integrator; additive ──
 --
 -- m1005 — EVERY FORM IN THE LIBRARY CARRIES ITS PROVENANCE, ITS FULL OWNER, ITS JURISDICTION, ITS REVISION AND ITS REPLACEMENT;
 --         A CONNECTED-PROVIDER FORM IS A REFERENCE, NEVER A COPY OF THE PROVIDER'S BYTES.

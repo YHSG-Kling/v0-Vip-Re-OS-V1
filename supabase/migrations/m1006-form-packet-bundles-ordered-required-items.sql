@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED (wave 156, lane 156C) — the integrator applies this additive migration ──
+-- ── APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) (wave 156, lane 156C) — applied by the integrator; additive ──
 --
 -- m1006 — PACKET BUNDLES: an ordered list of forms with required / optional markers, owned by the brokerage, one office or one team,
 --         for ONE state (and optionally one county), with the source of every requirement recorded.

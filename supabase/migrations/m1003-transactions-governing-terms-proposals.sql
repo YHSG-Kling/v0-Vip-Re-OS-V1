@@ -1,4 +1,4 @@
--- m1003 (wave 156, lane 156E) — WRITTEN, NOT APPLIED. Additive and idempotent: one NULLABLE jsonb column, no default, no
+-- m1003 (wave 156, lane 156E) — APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt). Additive and idempotent: one NULLABLE jsonb column, no default, no
 -- backfill, no index, no trigger, no policy change.
 --
 -- INTENT. A model may not rewrite a deal's governing terms (directive "Prohibited shortcuts"). Extracted contract terms become a

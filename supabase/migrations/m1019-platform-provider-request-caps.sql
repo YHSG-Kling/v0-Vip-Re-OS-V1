@@ -1,4 +1,4 @@
--- ── WRITTEN, NOT APPLIED — wave 156, lane 156G. The integrator applies it (additive: one nullable column + a shape CHECK). ──
+-- ── APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — wave 156, lane 156G. Applied by the integrator (additive: one nullable column + a shape CHECK). ──
 --
 -- m1019 — THE PLATFORM'S OWN PROVIDER REQUEST CEILINGS (directive 156G: "RentCast explicitly states it does not supply a
 -- built-in hard overage cap: VIPAgents must enforce its own").

@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1956 of 2038 pairs) — storing them would be
+ * overwhelming majority (1970 of 2053 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,18 +75,18 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 3 columns are in that state.
  *
- * MEASURED AT GENERATION: 2145 edges across 759 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 2038 unordered
- * table pairs carry at least one FK; 82
- * carry more than one and are listed below. 22 of the constraints are self-referential.
+ * MEASURED AT GENERATION: 2160 edges across 761 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 2053 unordered
+ * table pairs carry at least one FK; 83
+ * carry more than one and are listed below. 23 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-20
+ * generated: 2026-11-25
  * source: public.live_foreign_keys_json()
- * body-sha256: a10dfe7eea0832b4f2258f971e10c212ad16d1e440533e55f44cebde5bf3199e
+ * body-sha256: 22b0c7d86088ff313cfdfd9519ae71e477699ad1ca8ba04d95d7f1822b45c1b3
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -226,7 +226,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "brokerage_cda_templates": { "brokerage_id": "brokerages", "uploaded_by": "users" },
   "brokerage_earnings": { "brokerage_id": "brokerages" },
   "brokerage_fee_types": { "brokerage_id": "brokerages" },
-  "brokerage_form_library": { "brokerage_id": "brokerages", "source_platform_packet_id": "platform_form_packets", "team_id": "teams", "uploaded_by": "users" },
+  "brokerage_form_library": { "brokerage_id": "brokerages", "location_id": "locations", "replaced_by_id": "brokerage_form_library", "scope_user_id": "users", "source_platform_packet_id": "platform_form_packets", "team_id": "teams", "uploaded_by": "users" },
   "brokerage_forms": { "brokerage_id": "brokerages", "created_by": "users" },
   "brokerage_integrations": { "brokerage_id": "brokerages" },
   "brokerage_intelligence_insights": { "brokerage_id": "brokerages", "dismissed_by": "users" },
@@ -329,7 +329,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "contact_segments": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "contact_suppression_list": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "contact_vendors": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "transaction_id": "transactions", "vendor_id": "vendors" },
-  "contacts": { "agent_id": "agents", "brokerage_id": "brokerages", "campaign_attribution_id": "marketing_campaigns", "compliance_officer_id": "users", "contact_user_id": "users", "embed_widget_id": "embed_widgets", "isa_reengage_marked_by": "users", "location_id": "locations", "source_agent_id": "users", "tc_user_id": "users", "tcpa_marked_by": "users", "team_id": "teams", "user_id": "users", "vendor_id": "vendors" },
+  "contacts": { "agent_id": "agents", "brokerage_id": "brokerages", "campaign_attribution_id": "marketing_campaigns", "compliance_officer_id": "users", "embed_widget_id": "embed_widgets", "isa_reengage_marked_by": "users", "location_id": "locations", "source_agent_id": "users", "tc_user_id": "users", "tcpa_marked_by": "users", "team_id": "teams", "user_id": "users", "vendor_id": "vendors" },
   "content_ab_tests": { "agent_id": "agents", "brokerage_id": "brokerages", "variant_a_id": "ai_generated_content", "variant_b_id": "ai_generated_content", "winner_id": "ai_generated_content" },
   "content_asset_persona_performance": { "topic_id": "content_topic_bank" },
   "content_calendar": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -408,6 +408,8 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "feature_access_overrides": { "brokerage_id": "brokerages", "created_by": "users", "feature_key": "feature_flags", "team_id": "teams", "user_id": "users" },
   "feature_usage_tracking": { "brokerage_id": "brokerages", "feature_key": "feature_flags", "team_id": "teams", "user_id": "users" },
   "financial_reports": { "agent_id": "agents", "brokerage_id": "brokerages" },
+  "form_packet_bundle_items": { "added_by": "users", "brokerage_id": "brokerages", "bundle_id": "form_packet_bundles", "library_form_id": "brokerage_form_library" },
+  "form_packet_bundles": { "brokerage_id": "brokerages", "created_by": "users", "location_id": "locations", "team_id": "teams" },
   "form_submissions": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "form_id": "lead_capture_forms" },
   "gamification_badges": { "brokerage_id": "brokerages" },
   "generated_content": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
@@ -779,18 +781,18 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "transaction_coordinators": { "brokerage_id": "brokerages", "user_id": "users" },
   "transaction_cost_breakdown": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "transaction_deadlines": { "brokerage_id": "brokerages", "completed_by": "users", "source_document_id": "documents", "transaction_id": "transactions" },
-  "transaction_documents": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions" },
+  "transaction_documents": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "responsible_participant_id": "transaction_participants", "transaction_id": "transactions" },
   "transaction_health_factors": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "transaction_inspections": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "transaction_lenders": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "transaction_milestone_templates": { "brokerage_id": "brokerages" },
   "transaction_milestones": { "brokerage_id": "brokerages", "completed_by": "users", "override_by": "users", "transaction_id": "transactions" },
-  "transaction_participants": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
+  "transaction_participants": { "brokerage_id": "brokerages", "fact_confirmed_by": "users", "transaction_id": "transactions", "vendor_id": "vendors" },
   "transaction_pending_actions": { "agent_id": "agents", "brokerage_id": "brokerages", "resolved_by": "users", "transaction_id": "transactions" },
   "transaction_repair_negotiations": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
-  "transaction_tasks": { "brokerage_id": "brokerages", "completed_by": "users", "transaction_id": "transactions" },
+  "transaction_tasks": { "brokerage_id": "brokerages", "completed_by": "users", "responsible_participant_id": "transaction_participants", "transaction_id": "transactions" },
   "transaction_timeline": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
-  "transaction_title_escrow": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
+  "transaction_title_escrow": { "brokerage_id": "brokerages", "settlement_agent_participant_id": "transaction_participants", "transaction_id": "transactions" },
   "transaction_vendor_services": { "brokerage_id": "brokerages", "transaction_id": "transactions", "vendor_id": "vendors" },
   "transactions": { "agent_id": "agents", "brokerage_id": "brokerages", "buyer_agent_id": "agents", "buyer_contact_id": "contacts", "contact_id": "contacts", "coordinator_id": "transaction_coordinators", "listing_id": "listings", "offer_id": "offers", "seller_agent_id": "agents", "seller_contact_id": "contacts" },
   "transparency_updates": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions" },
@@ -903,6 +905,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "ai_video_projects|users": 2,
   "automation_errors|users": 4,
   "blog_posts|users": 2,
+  "brokerage_form_library|users": 2,
   "brokerage_required_documents|users": 2,
   "brokerage_transfer_requests|brokerages": 3,
   "brokerage_transfer_requests|users": 2,
@@ -920,7 +923,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "contacts|listings": 2,
   "contacts|referrals": 2,
   "contacts|transactions": 3,
-  "contacts|users": 7,
+  "contacts|users": 6,
   "contract_term_versions|offers": 2,
   "data_subject_requests|users": 3,
   "direct_mail_campaigns|users": 2,

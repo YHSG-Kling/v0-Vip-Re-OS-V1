@@ -1,5 +1,5 @@
 -- m1010 — WHO ACTUALLY CLOSES THE DEAL, WHOM EACH LAWYER REPRESENTS, AND WHO OWNS EACH CLOSING DOCUMENT AND TASK
--- (wave 156, lane 156D — WRITTEN, NOT APPLIED; the integrator applies it).
+-- (wave 156, lane 156D — APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt); applied by the integrator).
 --
 -- Owner (2026-11-25, verbatim): "in many states, it is a closing attorney not title."
 -- The closing may be run by a closing attorney, a title company, an escrow company or another authorized entity,

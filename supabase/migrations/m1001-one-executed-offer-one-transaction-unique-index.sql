@@ -1,4 +1,4 @@
--- m1001 — ONE EXECUTED CONTRACT BECOMES ONE TRANSACTION, ATOMICALLY (wave 156, lane 156B). WRITTEN, NOT APPLIED — the
+-- m1001 — ONE EXECUTED CONTRACT BECOMES ONE TRANSACTION, ATOMICALLY (wave 156, lane 156B). APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt) — the
 -- integrator applies additive migrations.
 --
 -- INTENT. The offer → transaction bridge (lib/transactions/offer-bridge.ts createTransactionFromOffer) refused a second

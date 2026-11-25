@@ -1,4 +1,4 @@
--- m1011 — A CLOSING ATTORNEY JOINS A DEAL AS AN ATTORNEY, NOT AS "OTHER" (wave 156, lane 156D round 2 — WRITTEN, NOT APPLIED).
+-- m1011 — A CLOSING ATTORNEY JOINS A DEAL AS AN ATTORNEY, NOT AS "OTHER" (wave 156, lane 156D round 2 — APPLIED LIVE 2026-11-25 via Supabase MCP (project hrvaqgvukzxfskkcrwbt)).
 --
 -- CLAUDE.md §6, one vocabulary per function. vendors.category has admitted 'attorney' since m304, but
 -- vendor_assignments.assignment_type (the deal-ledger subset) never did, so an attorney vendor assigned to a deal had to be

@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 487 tables, 966 columns.
+ * MEASURED AT GENERATION: 491 tables, 976 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-11-20
+ * generated: 2026-11-25
  * source: public.live_check_constraints_json()
- * body-sha256: f35da837f3513228dfce04a5dabf40ff1adcdeed96504a6d130b58d2359191e0
+ * body-sha256: 4973fbeb87c059be21e0dea4c9d65f72ae6d185874565818edb3c1fc2281f85a
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -347,6 +347,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   brokerage_form_library: {
     packet_type: ["custom", "disclosure", "listing", "offer", "transaction"],
+    purpose: ["addendum", "agency", "buyer_representation", "closing", "compliance", "counter_offer", "disclosure", "inspection", "listing", "offer", "other", "price_change"],
+    rights_basis: ["association_membership", "own_form", "platform_catalogue_license", "provider_license", "state_mandated_public"],
+    source_kind: ["agent_upload", "brokerage_upload", "connected_provider", "platform_catalogue", "state_preconfigured"],
   },
   brokerage_integrations: {
     status: ["connected", "error", "not_configured"],
@@ -832,6 +835,12 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   feature_access_overrides: {
     override_type: ["disable", "grant_trial"],
+  },
+  form_packet_bundle_items: {
+    requirement_source: ["brokerage", "county_policy", "office", "state_policy", "team", "user_supplemental"],
+  },
+  form_packet_bundles: {
+    bundle_kind: ["buyer_representation", "closing", "counter_offer", "custom", "inspection_addendum", "listing", "offer", "outside_offer", "price_change"],
   },
   gamification_badges: {
     badge_tier: ["bronze", "diamond", "gold", "platinum", "silver"],
@@ -1789,6 +1798,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   transaction_milestones: {
     status: ["cancelled", "completed", "overdue", "pending"],
   },
+  transaction_participants: {
+    fact_source: ["agent_entered", "party_confirmed", "vendor_seat"],
+    party_role: ["buyer_attorney", "escrow_company", "lender", "lender_attorney", "other_settlement_entity", "seller_attorney", "settlement_attorney", "title_company"],
+    represents: ["buyer", "lender", "neutral_settlement_agent", "seller"],
+  },
   transaction_pending_actions: {
     action_type: ["appraisal_not_ordered", "cda_missing", "clear_to_close_late", "contract_followup_check", "em_not_received", "financing_deadline_close", "hazard_insurance_unbound", "inspection_overdue", "inspection_window_closing", "lender_condition_stale", "title_commitment_late", "walkthrough_unscheduled", "wire_instructions_missing"],
     severity: ["high", "low", "medium", "urgent"],
@@ -1803,6 +1817,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   transaction_tasks: {
     priority: ["critical", "high", "low", "medium"],
     status: ["cancelled", "completed", "in_progress", "pending"],
+  },
+  transaction_title_escrow: {
+    settlement_agent_basis: ["agent_entered", "contract_named", "party_confirmed"],
+    settlement_agent_kind: ["attorney", "escrow_company", "other_authorized_entity", "title_company"],
   },
   transaction_vendor_services: {
     status: ["approved", "bound", "cancelled", "completed", "in_progress", "ordered", "pending_approval", "quote_requested", "scheduled"],
@@ -1854,7 +1872,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     condition: ["excellent", "fair", "good", "poor"],
   },
   vendor_assignments: {
-    assignment_type: ["cleaner", "contractor", "inspector", "insurance", "lender", "mover", "other", "photographer", "stager", "title"],
+    assignment_type: ["attorney", "cleaner", "contractor", "inspector", "insurance", "lender", "mover", "other", "photographer", "stager", "title"],
     status: ["cancelled", "completed", "confirmed", "in_progress", "pending"],
   },
   vendor_booking_quotes: {
