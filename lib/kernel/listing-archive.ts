@@ -261,7 +261,7 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "transaction_documents", column: "listing_id", disposition: "detach", why: "a synced pre-contract packet is a retention record owned by brokerage / contact; the listing pointer is how it is found later" },
   { table: "video_scripts_library", column: "listing_id", disposition: "detach", why: "a marketing asset owned by the brokerage / agent" },
   { table: "vendor_invoices", column: "listing_id", disposition: "detach", why: "owned by a vendor; a bill outlives the listing" },
-  { table: "vendor_bookings", column: "listing_id", disposition: "detach", why: "owned by a vendor" },
+  { table: "vendor_bookings", column: "listing_id", disposition: "detach", why: "owned by a vendor" }, { table: "fraud_incident_cases", column: "listing_id", disposition: "detach", why: "wave 156 (m1035): the reporting tenant's private fraud case is evidence with its own retention timer; the listing pointer only says which listing the incident touched" },
   { table: "appointments", column: "listing_id", disposition: "detach", why: "owned by agent / contact" },
   // TOMBSTONE — `{ table: "open_houses", column: "listing_id" }` stood here and is
   // GONE, because the TABLE is gone. m543 established `open_house_events` as the
