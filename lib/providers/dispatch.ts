@@ -533,7 +533,7 @@ async function vendorBudgetPreflight(args: {
       outcome: "escalated",
       detail: {
         flow: "egress_subscription_blocked", channel: args.channel, connector: args.vendorKey,
-        reason: `The brokerage's subscription does not currently cover ${channelLabel} sends — update billing to resume`,
+        reason: `Your subscription does not currently cover ${channelLabel} sends — update billing to resume`,
         access_reason: verdict.reason,
         system_source: args.systemSource ?? "dispatch",
       },
@@ -1061,7 +1061,7 @@ export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchRe
       const complianceResult = await evaluateOutboundCompliance({
         contact: recipient,
         channel: "sms",
-        content: params.message,
+        content: params.message, channelPurpose: channelPurposeFor(params), // 156N via 156M: a campaign text never rides a representation as consent
         actorContext: {
           brokerageId: params.brokerageId,
           // ONE ISA predicate (lib/kernel/action-ledger.ts isAiIsaSystemSource — ghost_recovery and

@@ -261,8 +261,6 @@ async function main() {
     { file: /^lib\/kernel\/manager-registry\.ts$/, line: /./, why: "the manager registry's internal ownership prose (integrator-owned; rendered only into platform-staff architecture docs)" },
     { file: /^lib\/billing\/stripe-account-scope\.ts$/, line: /says: "/, why: "the platform's Stripe money-path roster — read by the payment seam and its guard, never rendered to a tenant" },
     { file: /^lib\/agents\/asset-manager\.ts$/, line: /Compositions reachable at this brokerage's subscription tier/, why: "a manager MODEL PROMPT line (the Asset Manager's snapshot) — never rendered to a person" },
-    { file: /^lib\/providers\/dispatch\.ts$/, line: /brokerage's subscription does not currently cover/, why: "OTHER LANE (156M owns lib/providers/dispatch.ts) — the rewording is an INTEGRATOR REQUEST" },
-    { file: /^lib\/ai-isa\/followup-arbiter\.ts$/, line: /brokerage's subscription does not currently cover/, why: "OTHER LANE (156M owns lib/ai-isa/followup-arbiter.ts) — an internal refusal reason; rewording is an INTEGRATOR REQUEST" },
   ]
   const walk = (d: string): string[] => existsSync(join(ROOT, d)) ? readdirSync(join(ROOT, d)).flatMap((n) => { const p = `${d}/${n}`; const st = statSync(join(ROOT, p)); return st.isDirectory() ? (n === "node_modules" ? [] : walk(p)) : /\.tsx?$/.test(n) ? [p] : [] }) : []
   const files = [...walk("app"), ...walk("lib")]
