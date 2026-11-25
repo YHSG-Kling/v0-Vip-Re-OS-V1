@@ -1,7 +1,7 @@
 {
  "generator": "scripts/os-coverage-ledger.ts --write (wave 155, lane 155B1) — GENERATED, do not edit; per-row ledger: coverage/os-arbitration-coverage.json (on demand)",
  "states": {
-  "working": 2919,
+  "working": 2921,
   "owner-held": 73,
   "missing": 59
  },

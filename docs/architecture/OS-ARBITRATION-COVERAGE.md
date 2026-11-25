@@ -5,7 +5,7 @@
 
 ## 1. Totals (numerator / denominator)
 
-Rows: **3051** — working **2919** · partial **0** · missing **59** · owner-held **73**. Consequential rows: 2686.
+Rows: **3053** — working **2921** · partial **0** · missing **59** · owner-held **73**. Consequential rows: 2688.
 
 | population | rows / scanned |
 |---|---|
@@ -18,11 +18,11 @@ Rows: **3051** — working **2919** · partial **0** · missing **59** · owner-
 | provider_egress | 6 |
 | http | 125 |
 | webhook | 28 |
-| server_action | 1905 |
-| server_action (read-only, not rows) | 1172 |
+| server_action | 1907 |
+| server_action (read-only, not rows) | 1173 |
 | capability (catalog-only, not callable — not rows) | 48 |
 | use-server modules scanned | 670 |
-| runtime files scanned | 5471 |
+| runtime files scanned | 5470 |
 
 | trigger kind | rows | working | partial | missing |
 |---|---|---|---|---|
@@ -34,7 +34,7 @@ Rows: **3051** — working **2919** · partial **0** · missing **59** · owner-
 | manager_signal | 327 | 327 | 0 | 0 |
 | orchestrator_event | 10 | 8 | 0 | 0 |
 | provider_egress | 6 | 6 | 0 | 0 |
-| server_action | 1905 | 1873 | 0 | 0 |
+| server_action | 1907 | 1875 | 0 | 0 |
 | webhook | 28 | 28 | 0 | 0 |
 
 Missing links across all rows: worker 82 · owner 24 · trigger 16 · evidence 2.
@@ -44,8 +44,8 @@ Missing links across all rows: worker 82 · owner 24 · trigger 16 · evidence 2
 | contract step (A1) | existing component (live code) |
 |---|---|
 | OBSERVE (triggers) | `dispatchDueCrons` @ lib/kernel/cron-dispatch.ts:429 · `emitKernelEvent` @ lib/kernel/emit.ts:155 · `publishManagerSignal` @ lib/kernel/manager-signals.ts:71 · `runIngressReconciliation` @ lib/kernel/ingress-reconciliation.ts:288 |
-| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3536 · `authorityAllows` @ lib/voice/tool-registry.ts:928 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:64 |
-| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3521 · `requestDelegation` @ lib/kernel/manager-delegation.ts:408 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
+| IDENTIFY ACTOR / TENANT | `resolveTableManager` @ lib/kernel/manager-registry.ts:3537 · `authorityAllows` @ lib/voice/tool-registry.ts:928 · `requireLenderVendorActor` @ lib/kernel/portal-auth.ts:64 |
+| BUILD TYPED ACTION · SELECT MANAGER | `resolveCronManager` @ lib/kernel/manager-registry.ts:3522 · `requestDelegation` @ lib/kernel/manager-delegation.ts:408 · `capabilityOwner` @ lib/agentic-os/capability-ownership.ts:117 |
 | CHECK AUTHORITY / POLICY / BUDGET | `isToolAllowedAtAuthority` @ lib/ai-isa/persona-tool-policy.ts:616 · `autonomyDecision` @ lib/managers/autonomy-gate.ts:91 · `approverFor` @ lib/kernel/approval-authority.ts:118 |
 | COORDINATE OR HOLD | `arbitratePlannedTouch` @ lib/ai-isa/followup-arbiter.ts:1878 · `evaluateApprovalSla` @ lib/kernel/approval-sla.ts:17 |
 | EXECUTE THROUGH ONE WRITER / EGRESS | `dispatchEmail` @ lib/providers/dispatch.ts:394 · `dispatchSms` @ lib/providers/dispatch.ts:395 · `callConnector` @ lib/agentic-os/connector-gateway.ts:246 |
@@ -56,16 +56,16 @@ Missing links across all rows: worker 82 · owner 24 · trigger 16 · evidence 2
 
 | plane | rows | working | partial | missing |
 |---|---|---|---|---|
-| P1 platform · billing · metering | 759 | 742 | 0 | 4 |
+| P1 platform · billing · metering | 762 | 745 | 0 | 4 |
 | P2 tenant provisioning · seats · offices · websites | 334 | 323 | 0 | 3 |
-| P3 command center · NL / voice · tasks · approvals | 697 | 679 | 0 | 14 |
-| P4 raw acquisition · RawData · Raw Lead · Lead | 512 | 491 | 0 | 17 |
+| P3 command center · NL / voice · tasks · approvals | 699 | 681 | 0 | 14 |
+| P4 raw acquisition · RawData · Raw Lead · Lead | 513 | 492 | 0 | 17 |
 | P5 prospects · contacts · portal · conversation | 896 | 874 | 0 | 7 |
-| P6 marketing · content · channels · ads | 980 | 965 | 0 | 2 |
-| P7 listings · shopping agent · MLS / IDX | 550 | 544 | 0 | 2 |
+| P6 marketing · content · channels · ads | 982 | 967 | 0 | 2 |
+| P7 listings · shopping agent · MLS / IDX | 549 | 543 | 0 | 2 |
 | P8 offers · transactions · documents · closing | 937 | 921 | 0 | 1 |
 | P9 commission · settlement · brokerage finance | 447 | 437 | 0 | 6 |
-| P10 recruiting · gamification · support · ops | 999 | 967 | 0 | 8 |
+| P10 recruiting · gamification · support · ops | 1001 | 969 | 0 | 8 |
 
 Unclassified rows (no plane matcher): 227.
 
@@ -73,10 +73,10 @@ Unclassified rows (no plane matcher): 227.
 
 | surface | rows | working | partial | missing | example working row / exact missing link |
 |---|---|---|---|---|---|
-| SaaS subscriber lifecycle | 347 | 341 | 0 | 3 | `kernel_event:subscription_downgraded` @ lib/kernel/event-reactor.ts:1098 |
+| SaaS subscriber lifecycle | 349 | 343 | 0 | 3 | `kernel_event:subscription_downgraded` @ lib/kernel/event-reactor.ts:1098 |
 | Organization and membership | 112 | 104 | 0 | 6 | `server_action:app/actions/admin/invitations.ts#revokeInvitationAction` @ app/actions/admin/invitations.ts:138 |
 | Tenant website / landing / IDX | 244 | 234 | 0 | 4 | `http:/api/form-wizard/intake-notes` @ app/api/form-wizard/intake-notes/route.ts:20 |
-| Platform provider fabric | 232 | 224 | 0 | 3 | `server_action:app/actions/ai-calendar-management.ts#syncCalendar` @ app/actions/ai-calendar-management.ts:731 |
+| Platform provider fabric | 234 | 226 | 0 | 3 | `server_action:app/actions/ai-calendar-management.ts#syncCalendar` @ app/actions/ai-calendar-management.ts:731 |
 | Platform security | 335 | 322 | 0 | 0 | `http:/api/seed/users` @ app/api/seed/users/route.ts:8 |
 | Kernel supervisor / mission board | 157 | 148 | 0 | 8 | `manager_signal:mission_escalated` @ lib/kernel/signal-registry.ts:34 |
 | Manager-to-manager bus | 894 | 882 | 0 | 4 | `kernel_event:agent_escalated_to_human` @ lib/kernel/event-reactor.ts:2416 |
@@ -86,15 +86,15 @@ Unclassified rows (no plane matcher): 227.
 | RawData and identity | 84 | 81 | 0 | 2 | `capability:vendor:lead_skip_trace` @ vendor manifest (buildFullActionManifest) |
 | Raw Lead to Lead | 94 | 94 | 0 | 0 | `server_action:app/actions/leads.ts#qualifyLead` @ app/actions/leads.ts:230 |
 | Lead to Contact | 201 | 200 | 0 | 0 | `capability:app:agent_coaching_assign` @ lib/agentic-os/app-capability-registry.ts:229 |
-| Existing Contact / Customer 360 | 518 | 508 | 0 | 7 | `kernel_event:contact_channel_opt_out` @ lib/kernel/event-reactor.ts:1232 |
+| Existing Contact / Customer 360 | 519 | 509 | 0 | 7 | `kernel_event:contact_channel_opt_out` @ lib/kernel/event-reactor.ts:1232 |
 | Conversation / AI ISA | 176 | 175 | 0 | 1 | `server_action:app/actions/ai-communication-hub.ts#markConversationRead` @ app/actions/ai-communication-hub.ts:388 |
 | Consumer portals / stage education, collaboration | 317 | 316 | 0 | 1 | `orchestrator_event:journey.all_tasks_done` @ lib/orchestrator/internal.ts:299 |
 | Shopping Agent / property search | 28 | 27 | 0 | 0 | `kernel_event:buyer_search_configured` @ lib/kernel/event-reactor.ts:260 |
 | Market Twin / intelligence graph | 52 | 49 | 0 | 0 | `server_action:app/actions/admin/brokerage-intelligence-doors.ts#seedFarmTerritoriesFromServiceAreaAction` @ app/actions/admin/brokerage-intelligence-doors.ts:39 |
-| Content-topic pool | 102 | 102 | 0 | 0 | `server_action:app/actions/content-intel/sources.ts#createContentSource` @ app/actions/content-intel/sources.ts:62 |
+| Content-topic pool | 104 | 104 | 0 | 0 | `server_action:app/actions/content-intel/sources.ts#createContentSource` @ app/actions/content-intel/sources.ts:62 |
 | Brand / asset studio | 294 | 291 | 0 | 0 | `http:/api/did/agents/session/heartbeat` @ app/api/did/agents/session/heartbeat/route.ts:24 |
 | Paid advertising | 167 | 165 | 0 | 2 | `capability:app:ad_campaign_launch` @ lib/agentic-os/app-capability-registry.ts:222 |
-| Outbound channels | 1108 | 1080 | 0 | 4 | `http:/api/admin/qr-codes` @ app/api/admin/qr-codes/route.ts:41 |
+| Outbound channels | 1110 | 1082 | 0 | 4 | `http:/api/admin/qr-codes` @ app/api/admin/qr-codes/route.ts:41 |
 | Campaign bundles / Refurbish / Omnipresence | 70 | 70 | 0 | 0 | `server_action:app/actions/ai-lead-nurturing.ts#aiGenerateDripCampaign` @ app/actions/ai-lead-nurturing.ts:123 |
 | Events and community intelligence | 67 | 65 | 0 | 1 | `server_action:app/actions/open-house-automation.ts#monitorCompetingEvents` @ app/actions/open-house-automation.ts:1634 |
 | Circle learning and top producers | 10 | 10 | 0 | 0 | `server_action:app/actions/events-and-circles.ts#revokeCircleTacticAction` @ app/actions/events-and-circles.ts:153 |
@@ -111,7 +111,7 @@ Unclassified rows (no plane matcher): 227.
 | Recruitment / onboarding | 81 | 78 | 0 | 0 | `capability:app:recruit_outreach` @ lib/agentic-os/app-capability-registry.ts:216 |
 | Sphere / lifetime / reviews | 125 | 120 | 0 | 0 | `kernel_event:anniversary_triggered` @ lib/kernel/event-fanout.ts:661 |
 | Support / education | 21 | 21 | 0 | 0 | `server_action:app/actions/knowledge/search.ts#backfillAllEmbeddings` @ app/actions/knowledge/search.ts:799 |
-| Operations and incidents | 630 | 620 | 0 | 3 | `http:/api/blog/track-share` @ app/api/blog/track-share/route.ts:26 |
+| Operations and incidents | 632 | 622 | 0 | 3 | `http:/api/blog/track-share` @ app/api/blog/track-share/route.ts:26 |
 | Audit / security / production | 24 | 24 | 0 | 0 | `server_action:app/actions/campaign-readiness.ts#batchEvaluateContentReadiness` @ app/actions/campaign-readiness.ts:133 |
 
 ## 5. Human-versus-autonomy decision matrix (driven through the real deciders, SIMULATED inputs)
@@ -153,7 +153,7 @@ Approval SLA (lib/kernel/approval-sla.ts evaluateApprovalSla, default windows): 
 
 Deterministic outbound chain (never an LLM): `autonomyGate` @ lib/providers/dispatch.ts:434 → `deconflictGate` @ lib/providers/dispatch.ts:642 → `checkSuppression` @ lib/providers/dispatch.ts:745 → `evaluateOutboundCompliance` @ lib/providers/dispatch.ts:768 → `contentSafetyBackstop` @ lib/providers/dispatch.ts:863 → `channelRefusalForRecipient` @ lib/providers/dispatch.ts:1023 → `requireConsentForVideoAvatarSource` @ lib/providers/dispatch.ts:1858.
 
-Per row: 945 rows start without a person (cron / event / signal / webhook), of which 121 carry no decision gate on their path; 62 rows hold for a human approver on the path; 1991 rows are decided by the signed-in person.
+Per row: 945 rows start without a person (cron / event / signal / webhook), of which 121 carry no decision gate on their path; 62 rows hold for a human approver on the path; 1993 rows are decided by the signed-in person.
 
 ## 6. Gap list (ranked by consequence; top 60 — the full set is the JSON)
 
