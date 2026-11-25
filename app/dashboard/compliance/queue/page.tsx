@@ -29,6 +29,19 @@ export default async function ComplianceQueuePage() {
   const data = await getComplianceDashboard()
   if (data.error === "Unauthorized") redirect("/login")
   if (data.error === "Not authorized for compliance dashboard") {
+    // wave 156 (156R): a solo-tier principal typed `agent` reviews their OWN executed packets here — that section only, never the rest.
+    const { packetReviewSectionAdmissionAction } = await import("@/app/actions/compliance/representation-review")
+    if ((await packetReviewSectionAdmissionAction()).admitted) {
+      return (
+        <div className="p-6 max-w-6xl mx-auto space-y-6">
+          <h1 className="text-2xl font-semibold inline-flex items-center gap-2"><ShieldCheck className="h-6 w-6 text-emerald-700" />Executed packets to review</h1>
+          <Card>
+            <CardHeader><CardTitle>Executed packets to review</CardTitle></CardHeader>
+            <CardContent><RepresentationReviewQueue /></CardContent>
+          </Card>
+        </div>
+      )
+    }
     return (
       <div className="p-6 max-w-3xl mx-auto">
         <Card>

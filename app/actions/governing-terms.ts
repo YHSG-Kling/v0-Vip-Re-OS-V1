@@ -101,3 +101,51 @@ export async function confirmGoverningTermsAction(input: {
   }
   return { success: true, applied: out.applied ?? [], dismissed: out.dismissed ?? [], skipped: out.skipped ?? [] }
 }
+
+/** wave 156 (156R): the review status of the executed offer packet that governs a deal, as the deal page shows it. */
+export interface DealPacketReviewStatus { offerId: string; state: "approved" | "held" | "under_review"; holdCount: number; href: string }
+
+/**
+ * THE REVIEW, REACHABLE FROM THE DEAL (wave 156, lane 156R). The executed-packet review (lane 156B, lib/kernel/compliance/
+ * representation-gate.ts) lives at /dashboard/compliance/queue/review/purchase_offer/<offer>; the deal page showed nothing of it.
+ * This read answers, for a seat the DEAL DESK admits (requireDealDesk — a vendor, a Contact, an off-deal agent is refused and the
+ * page renders nothing): the deal's offer packet is approved / held (with the number of reasons) / under review. It RECOMPUTES the
+ * decision from the stored records (never a cached flag), as the packet was reviewed (asReviewed: the deal's own existence is not a
+ * reason). It decides nothing — Approve stays on the review screen, behind its own authority. A deal without an offer has no packet
+ * here (status null).
+ */
+export async function loadDealPacketReviewStatusAction(transactionId: string): Promise<{ success: true; status: DealPacketReviewStatus | null } | { success: false; error: string }> {
+  const { requireDealDesk } = await import("@/lib/transactions/role-guard")
+  const desk = await requireDealDesk(transactionId)
+  if (!desk.ok) return { success: false, error: desk.error }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data: tx, error } = await svc.from("transactions").select("id, offer_id").eq("id", desk.transactionId).eq("brokerage_id", desk.brokerageId).maybeSingle()
+  if (error) return { success: false, error: `The deal's offer couldn't be read: ${error.message}` }
+  const offerId = (tx as { offer_id?: string | null } | null)?.offer_id ?? null
+  if (!offerId) return { success: true, status: null }
+  // THE CONTRACT IS THE ACCEPTED SEQUENCE'S HEAD — resolved by the SAME rule lane 156B's creation gate uses (governingOfferPacket →
+  // acceptedOfferSequence). When the deal's offer is an earlier instrument that a later executed counter superseded, the rule refuses
+  // with `later_execution` and NAMES that one instrument: the packet is read from it (no second resolver).
+  const { governingOfferPacket } = await import("@/lib/offers/governing-terms")
+  let gp = await governingOfferPacket(svc as never, desk.brokerageId, offerId)
+  if (!gp.ok && gp.kind === "refused" && gp.code === "later_execution" && gp.offerIds.length === 1) gp = await governingOfferPacket(svc as never, desk.brokerageId, gp.offerIds[0])
+  if (!gp.ok) return { success: false, error: `The offer packet couldn't be read: ${gp.reason}` }
+  const packet = gp.packet
+  const { loadAndDecideOfferRepresentation } = await import("@/lib/kernel/compliance/representation-gate")
+  // An approval is recorded under the offer id the reviewer opened (the evidence hash names it). Any id of the SAME accepted
+  // sequence may carry it, so each is asked — the head first; the head's decision is the one whose holds the line shows.
+  const subjects = [...new Set([packet.headOfferId, offerId, ...packet.sequence])]
+  let head: { blockingReasons: Array<{ severity: string }>; verdict: string } | null = null
+  let approved = false
+  for (const subject of subjects) {
+    const d = await loadAndDecideOfferRepresentation(svc as never, { brokerageId: desk.brokerageId, offerId: subject, packet, gate: { allowed: true, refusals: [] }, asReviewed: true })
+    if (!d.ok) return { success: false, error: `The packet review couldn't run: ${d.error}` }
+    if (subject === packet.headOfferId) head = d.decision
+    if (d.decision.verdict === "allow") approved = true
+  }
+  const holdCount = (head?.blockingReasons ?? []).filter((r) => r.severity !== "review").length
+  const state = holdCount > 0 ? "held" : approved ? "approved" : "under_review"
+  const reviewId = packet.headOfferId
+  return { success: true, status: { offerId: reviewId, state, holdCount, href: `/dashboard/compliance/queue/review/purchase_offer/${reviewId}` } }
+}
