@@ -36,8 +36,11 @@ export function makeWalker(root: string, opts: { stopAt?: (file: string) => bool
     return null
   }
   const cache = new Map<string, string[]>()
-  function edges(file: string): string[] {
-    const hit = cache.get(file); if (hit) return hit
+  const specCache = new Map<string, string[]>()
+  /** Every VALUE import specifier of a file, resolving or not (packages, `node:` builtins) — the same two regexes and the
+   *  same type erasure as the walk (wave 156L §E: a client graph must not reach a module the browser cannot compile). */
+  function specifiers(file: string): string[] {
+    const hit = specCache.get(file); if (hit) return hit
     const src = file.endsWith(".json") ? "" : blankComments(fs.readFileSync(file, "utf8"))
     const out: string[] = []
     const reStatic = /(?:^|[;\n}])\s*(import|export)\s+(type\s+)?([^'"`;]*?\bfrom\s*)?["']([^"']+)["']/g
@@ -52,10 +55,17 @@ export function makeWalker(root: string, opts: { stopAt?: (file: string) => bool
         const parts = inner.split(",").map((s) => s.trim()).filter(Boolean)
         if (parts.length && parts.every((p) => p.startsWith("type "))) continue
       }
-      const r = resolve(m[4], file); if (r) out.push(r)
+      out.push(m[4])
     }
     const reDyn = /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g
-    while ((m = reDyn.exec(src))) { const r = resolve(m[1], file); if (r) out.push(r) }
+    while ((m = reDyn.exec(src))) out.push(m[1])
+    specCache.set(file, out)
+    return out
+  }
+  function edges(file: string): string[] {
+    const hit = cache.get(file); if (hit) return hit
+    const out: string[] = []
+    for (const spec of specifiers(file)) { const r = resolve(spec, file); if (r) out.push(r) }
     cache.set(file, out)
     return out
   }
@@ -67,7 +77,7 @@ export function makeWalker(root: string, opts: { stopAt?: (file: string) => bool
     }
     return { seen, parent }
   }
-  return { reach, edges, rel: (p: string) => path.relative(root, p) }
+  return { reach, edges, specifiers, rel: (p: string) => path.relative(root, p) }
 }
 
 /** The special file names Next turns into app/ entries or loader-tree segments. */

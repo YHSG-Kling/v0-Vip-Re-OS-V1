@@ -30,6 +30,17 @@
  *    read) may be reachable. Positive controls: a synthetic client → lib → secret reader is found; the same chain through a
  *    "use server" module is not.
  *
+ * §E NO CLIENT COMPONENT REACHES A MODULE THE BROWSER BUNDLE CANNOT COMPILE (round 3: CI's next build failed with
+ *    UnhandledSchemeError "node:crypto" ← lib/forms/tenant-form-packets.ts ← FormWizard, and webpack prints ONE trace per
+ *    offending module, so this lists them all). From every "use client" module, the SAME walk as §D (static + dynamic edges,
+ *    stopping at "use server"), every reachable first-party module's VALUE specifiers — read by the walker's own regexes
+ *    (scripts/app-import-graph.ts `specifiers`, comment-blanked) — are judged: a `node:` specifier, "server-only", or a Node
+ *    builtin (node:module builtinModules, never retyped) fails. A bare builtin that the INSTALLED next maps to a browser
+ *    polyfill (the keys read from next/dist/build/webpack-config.js) is reported as its own check (it compiles, but it is not
+ *    the Node module the code was written for). TYPE-ONLY imports: `import type …` and an all-`type` brace list are erased by
+ *    the compiler (SWC/tsc), so they are not followed — the walker's existing rule, controlled here. A value-syntax import of
+ *    a name that is only a type IS followed (SWC may erase it; over-reports, never under-reports).
+ *
  * RED AT BASE (WAVE156L_ROOT=<the tree before this lane>): §A both budget rules, §B the moved-symbol checks (no ledger
  * module), §C (no ledger module to load), §D (the tech-stack client reached lib/supabase/service.ts).
  *
@@ -37,12 +48,15 @@
  * @/components/*; a first-party LOWER bound, not webpack's count). §B reads `export` statements by pattern: `export =`,
  * namespace merging and declaration-merged names are not modelled (a name it cannot resolve is reported, never assumed).
  * §D's secret test is a NAME test on process.env reads: a secret read through a computed key, a config object or a
- * package is invisible; NEXT_PUBLIC_* names are public by definition. Without WAVE156L_BASE the before/after comparison is
+ * package is invisible; NEXT_PUBLIC_* names are public by definition. §E: a computed specifier (`import(x)`) is invisible;
+ * `next/dynamic(() => import(…), { ssr: false })` is followed like any dynamic import (webpack bundles it for the client
+ * either way); packages in node_modules that themselves need Node are not walked (first-party modules only) — CI's next
+ * build remains the final word for those. Without WAVE156L_BASE the before/after comparison is
  * printed as not run — the absolute budget rules still run.
  *
  * Run: npx tsx scripts/wave156-l-guard.ts   (WAVE156L_ROOT=<tree> to judge another checkout; WAVE156L_BASE=<tree> to compare)
  */
-import { registerHooks } from "node:module"
+import { registerHooks, builtinModules } from "node:module"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -162,6 +176,47 @@ function clientSecretPaths(root: string, clients: string[]): string[] {
       const chain: string[] = []; let cur: string | undefined = m
       while (cur) { chain.push(rel(root, cur)); cur = parent.get(cur) }
       out.push(`${chain.reverse().join(" → ")} [reads ${r.join(", ")}]`)
+    }
+  }
+  return out
+}
+
+// ── §E machinery: modules the browser bundle cannot compile ─────────────────
+// Node's own builtin list (never retyped) and Next's client fallback list, READ from the installed next's webpack config
+// (the keys of the `fallbackNodePolyfills === false ? { … }` object): a bare builtin on that list compiles in the browser to
+// a polyfill (it does not break the build, but it is not the Node module the code was written for); any other bare builtin
+// has no client resolution, and a `node:` specifier is an UnhandledSchemeError in every case.
+const BUILTINS = new Set(builtinModules.filter((n) => !n.startsWith("_")))
+function nextClientPolyfills(root: string): Set<string> {
+  const p = path.join(root, "node_modules/next/dist/build/webpack-config.js")
+  const src = fs.existsSync(p) ? fs.readFileSync(p, "utf8") : ""
+  const m = /fallbackNodePolyfills\s*===\s*false\s*\?\s*\{([^}]*)\}/.exec(src)
+  return new Set(m ? [...m[1].matchAll(/([A-Za-z_]+)\s*:/g)].map((x) => x[1]) : [])
+}
+type Bad = { spec: string; kind: "node-scheme" | "server-only" | "builtin-unresolvable" | "builtin-polyfilled" }
+function browserBlockers(spec: string, polyfilled: Set<string>): Bad | null {
+  if (spec.startsWith("node:")) return { spec, kind: "node-scheme" }
+  if (spec === "server-only") return { spec, kind: "server-only" }
+  const base = spec.split("/")[0]
+  if (BUILTINS.has(spec) || BUILTINS.has(base)) return { spec, kind: polyfilled.has(base) && spec === base ? "builtin-polyfilled" : "builtin-unresolvable" }
+  return null
+}
+function clientBrowserBlockers(root: string, clients: string[], polyfilled: Set<string>): Map<string, { bads: Bad[]; chains: string[] }> {
+  const w = makeWalker(root, { stopAt: (f) => directive(f, "use server") })
+  const badCache = new Map<string, Bad[]>()
+  const out = new Map<string, { bads: Bad[]; chains: string[] }>()
+  for (const c of clients) {
+    const { seen, parent } = w.reach(c)
+    for (const m of seen) {
+      let b = badCache.get(m)
+      if (!b) { b = w.specifiers(m).map((s) => browserBlockers(s, polyfilled)).filter((x): x is Bad => !!x); badCache.set(m, b) }
+      if (!b.length) continue
+      const chain: string[] = []; let cur: string | undefined = m
+      while (cur) { chain.push(rel(root, cur)); cur = parent.get(cur) }
+      const key = rel(root, m)
+      const e = out.get(key) ?? { bads: b, chains: [] }
+      e.chains.push(chain.reverse().join(" → "))
+      out.set(key, e)
     }
   }
   return out
@@ -307,6 +362,40 @@ async function main() {
   const leaks = clientSecretPaths(ROOT, clients)
   console.log(`  · ${clients.length} "use client" modules walked (stopping at "use server"); ${leaks.length} path(s) to a secret reader`)
   check("no client component's graph reaches a module that reads a server secret", leaks.length === 0, leaks.slice(0, 5))
+
+  section("§E · no client component reaches a module the browser bundle cannot compile")
+  const polyfilled = nextClientPolyfills(ROOT)
+  check("Next's client polyfill list is read from the installed next (webpack-config.js), never retyped", polyfilled.has("buffer") && polyfilled.size > 5, [...polyfilled])
+  check("Node's builtin list comes from node:module builtinModules (fs, crypto, child_process are on it)", BUILTINS.has("fs") && BUILTINS.has("crypto") && BUILTINS.has("child_process"))
+  {
+    const dir = fixture({
+      "app/c/page.tsx": `"use client"\nimport { x } from "../../lib/plain"\nimport type { T } from "../../lib/typed-fs"\nimport { type U } from "../../lib/typed-fs2"\nexport default function P() { return x }\n`,
+      "app/s/page.tsx": `"use client"\nimport { act } from "../../lib/act"\nexport default function P() { return act }\n`,
+      "lib/plain.ts": `// await import("node:fs") in a comment is prose\nexport const x = "await import(\\"node:os\\")"\nexport async function sum() { const { createHash } = await import("node:crypto"); return createHash("sha256") }\n`,
+      "lib/act.ts": `"use server"\nimport { readFileSync } from "node:fs"\nexport async function act() { return String(readFileSync) }\n`,
+      "lib/typed-fs.ts": `import { readFileSync } from "node:fs"\nexport type T = typeof readFileSync\n`,
+      "lib/typed-fs2.ts": `import * as fs from "fs"\nexport type U = typeof fs\n`,
+    })
+    try {
+      const found = clientBrowserBlockers(dir, [path.join(dir, "app/c/page.tsx"), path.join(dir, "app/s/page.tsx")], polyfilled)
+      const hit = found.get("lib/plain.ts")
+      check("POSITIVE CONTROL: client → lib → `await import(\"node:crypto\")` is found (and a `node:` inside a comment or a string is not)",
+        !!hit && hit.bads.length === 1 && hit.bads[0].spec === "node:crypto" && hit.chains[0] === "app/c/page.tsx → lib/plain.ts", [...found.entries()])
+      check("CONTROL: the same import behind a \"use server\" module is not a client edge", !found.has("lib/act.ts"), [...found.keys()])
+      check("CONTROL: a TYPE-ONLY import (`import type` / an all-`type` brace list — erased by the compiler) of a module that uses node:fs / fs is not followed",
+        !found.has("lib/typed-fs.ts") && !found.has("lib/typed-fs2.ts"), [...found.keys()])
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  }
+  const blockers = clientBrowserBlockers(ROOT, clients, polyfilled)
+  const breaking = [...blockers.entries()].filter(([, v]) => v.bads.some((b) => b.kind !== "builtin-polyfilled"))
+  const polyHits = [...blockers.entries()].filter(([, v]) => v.bads.every((b) => b.kind === "builtin-polyfilled"))
+  console.log(`  · ${clients.length} "use client" modules walked (static + dynamic, stopping at "use server"); ${blockers.size} offending module(s) reachable`)
+  for (const [mod, v] of blockers) {
+    console.log(`    ${mod} :: ${v.bads.map((b) => `${b.spec} [${b.kind}]`).join(", ")} — reached from ${v.chains.length} client module(s):`)
+    for (const c of v.chains) console.log(`        ${c}`)
+  }
+  check("no client graph reaches a `node:` import, \"server-only\", or a builtin with no client resolution (each is a next build failure)", breaking.length === 0, breaking.map(([m, v]) => `${m} :: ${v.bads.map((b) => b.spec).join(",")}`))
+  check("no client graph reaches a bare builtin that Next silently replaces with a browser polyfill", polyHits.length === 0, polyHits.map(([m, v]) => `${m} :: ${v.bads.map((b) => b.spec).join(",")}`))
 
   console.log(`\n RESULT: ${passed} passed, ${failed} failed`)
   if (failed) { for (const f of fails) console.log(`   ✗ ${f}`); process.exit(1) }
