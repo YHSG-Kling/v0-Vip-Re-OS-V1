@@ -9,7 +9,7 @@ import Link from "next/link"
 import { VoiceSessionButton } from "./voice-session-button"
 import { VoiceSettingsCard } from "./voice-settings-card"
 import { QuickDialSearch } from "./quick-dial-search"
-import { MobileCommandStrip, QuickContactPanel } from "../components/os"
+import { MobileCommandStrip } from "@/app/mobile/components/os/mobile-command-strip"; import { QuickContactPanel } from "@/app/mobile/components/os/quick-contact-panel"
 
 export const dynamic = "force-dynamic"
 

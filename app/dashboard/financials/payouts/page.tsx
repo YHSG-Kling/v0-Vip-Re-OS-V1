@@ -6,11 +6,11 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Users, ArrowLeft, DollarSign, CheckCircle2, Clock } from 'lucide-react'
 import Link from 'next/link'
-import {
-  PayoutReadinessPanel,
-  FinancialActionStack,
-  type FinancialAction,
-} from '../components/os'
+import { PayoutReadinessPanel } from '@/app/dashboard/financials/components/os/payout-readiness-panel'
+import { FinancialActionStack, type FinancialAction } from '@/app/dashboard/financials/components/os/financial-action-stack'
+
+
+
 import { loadCommissionQueueAction } from '@/app/actions/financial-kernel'
 import { CommissionDisputeQueue } from '../components/commission-dispute-queue'
 import { PayoutPolicyCard } from './payout-policy-card'

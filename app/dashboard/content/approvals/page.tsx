@@ -13,7 +13,7 @@ import {
   getApprovalStatistics,
   decideContentApproval,
 } from "@/app/actions/content-approval-workflow"
-import { useAuth } from "@/lib/auth/client"
+import { useAuth } from "@/lib/auth/useAuth"
 import type { ApproverRole } from "@/lib/approval-workflow/approval-engine"
 import { ApprovalToolsPanel } from "./approval-tools-panel"
 import { FinalVersionsPanel } from "./final-versions-panel"

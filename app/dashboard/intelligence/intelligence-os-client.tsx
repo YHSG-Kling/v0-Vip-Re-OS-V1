@@ -2,17 +2,17 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import {
-  IntelligenceCommandStrip,
-  PatternRadar,
-  TeamHeatmapPanel,
-  LeaderboardPanel,
-  AIQualityPanel,
-  BehaviorPatternsPanel,
-  OperationalInsightsPanel,
-  ExceptionPatternsPanel,
-  MotivationRail,
-} from "./components/os"
+import { IntelligenceCommandStrip } from "@/app/dashboard/intelligence/components/os/intelligence-command-strip"
+import { PatternRadar } from "@/app/dashboard/intelligence/components/os/pattern-radar"
+import { TeamHeatmapPanel } from "@/app/dashboard/intelligence/components/os/team-heatmap-panel"
+import { LeaderboardPanel } from "@/app/dashboard/intelligence/components/os/leaderboard-panel"
+import { AIQualityPanel } from "@/app/dashboard/intelligence/components/os/ai-quality-panel"
+import { BehaviorPatternsPanel } from "@/app/dashboard/intelligence/components/os/behavior-patterns-panel"
+import { OperationalInsightsPanel } from "@/app/dashboard/intelligence/components/os/operational-insights-panel"
+import { ExceptionPatternsPanel } from "@/app/dashboard/intelligence/components/os/exception-patterns-panel"
+import { MotivationRail } from "@/app/dashboard/intelligence/components/os/motivation-rail"
+
+
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 interface Pattern {

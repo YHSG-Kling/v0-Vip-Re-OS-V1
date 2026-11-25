@@ -17,7 +17,7 @@ import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { generateTextRouted as generateText } from '@/lib/ai/models'
 import { createServiceClient } from '@/lib/supabase/service'
 import { shouldStopAutoResponding, haltEngagementForNegativeReply } from '@/lib/ai-isa/conversation-handler'
-import { evaluateLeadQualification, persistQualificationSignals } from '@/lib/ai-isa'
+import { evaluateLeadQualification, persistQualificationSignals } from '@/lib/ai-isa/qualification-evaluator'
 import { dispatchEmail } from '@/lib/providers/dispatch'
 import { evaluateOutbound } from '@/lib/kernel'
 import { checkMaxTouches } from '@/lib/ai-isa/isa-outreach-logger'

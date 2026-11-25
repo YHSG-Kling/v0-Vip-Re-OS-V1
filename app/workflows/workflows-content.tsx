@@ -15,14 +15,14 @@ import {
 import { getRunDetail, approveChainStep } from "@/app/actions/workflow-orchestrator"
 import { CheckCircle2, XCircle, Loader2, Clock, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
-import {
-  WorkflowCommandStrip,
-  WorkflowHealthRadar,
-  FailedRunsPanel,
-  WorkflowAiExplainerPanel,
-  ApprovalBottlenecksPanel,
-  AutomationSavingsPanel,
-} from "./components/os"
+import { WorkflowCommandStrip } from "@/app/workflows/components/os/workflow-command-strip"
+import { WorkflowHealthRadar } from "@/app/workflows/components/os/workflow-health-radar"
+import { FailedRunsPanel } from "@/app/workflows/components/os/failed-runs-panel"
+import { WorkflowAiExplainerPanel } from "@/app/workflows/components/os/workflow-ai-explainer-panel"
+import { ApprovalBottlenecksPanel } from "@/app/workflows/components/os/approval-bottlenecks-panel"
+import { AutomationSavingsPanel } from "@/app/workflows/components/os/automation-savings-panel"
+
+
 
 export function WorkflowsContent() {
   const [executions, setExecutions] = useState<any[]>([])

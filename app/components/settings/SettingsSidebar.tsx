@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useAuth } from '@/lib/auth/client';
+import { useAuth } from '@/lib/auth/useAuth';
 import { isResolvedPlatformSuperadmin } from '@/lib/platform/platform-staff-roster';
 import { isTenantAdminGrantRole } from '@/lib/auth/resolve-user-role';
 

@@ -13,9 +13,9 @@
  */
 
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
-import { registerEventDispatcher } from "@/lib/events"
+import { registerEventDispatcher } from "@/lib/events/dispatcher-registry"
 import type { Event, EventInput } from "@/lib/orchestrator/event-types"
-import { EVENT_TYPES } from "@/lib/orchestrator/event-types" // the module, not the barrel (proxy-graph budget)
+import { EVENT_TYPES } from "@/lib/events/types" // the module, not the barrel (proxy-graph budget)
 import { KernelEvent } from "@/lib/kernel/events"
 
 // THE SERVICE CLIENT, NOT THE COOKIE ONE (lane 86F). This module is dispatched

@@ -47,7 +47,7 @@ import {
   updateTRIDMilestone,
   type TridMilestone,
 } from "@/app/actions/compliance-monitoring"
-import { ActionConfirmSheet } from "@/app/components/action-framework"
+import { ActionConfirmSheet } from "@/app/components/action-framework/action-confirm-sheet"
 import {
   CheckCircle2,
   XCircle,

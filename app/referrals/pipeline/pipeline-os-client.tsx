@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { ReferralPipelinePanel } from "@/app/dashboard/referrals/components/os"
+import { ReferralPipelinePanel } from "@/app/dashboard/referrals/components/os/referral-pipeline-panel"
 import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referrals/referral-actions"
 import type { ReferralStatus } from "@/lib/referrals/referral-status"
 

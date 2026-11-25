@@ -1,7 +1,7 @@
 // OSINT (Open Source Intelligence) Client
 // Searches public records, court records, social profiles, property records
 
-import { ZenrowsClient } from "./zenrows-client"
+import { ZenrowsClient } from "@/lib/external/zenrows-client"
 import * as cheerio from "cheerio"
 
 /** A single distressed-seller court/public-records filing discovered by territory. */

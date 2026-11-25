@@ -1,5 +1,5 @@
 import { notFound, redirect } from 'next/navigation'
-import { toCanonicalRoleOrDefault } from '@/lib/security'
+import { toCanonicalRoleOrDefault } from '@/lib/security/types'
 import { ensureAgentContextInPlace } from '@/lib/identity/ensure-agent-context'
 import { loadQrCodesForCaller } from '@/app/actions/qr-management'
 // The live qr_codes.purpose CHECK vocabulary, passed down rather than re-typed

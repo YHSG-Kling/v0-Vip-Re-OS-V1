@@ -13,7 +13,7 @@
 // one registry, one runner, one ledger — instead of five copies hand-wired into
 // two crons. The crons now call runReaperNet() by lane.
 
-import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+// (sentinelWrite moved with recordReaperRun to lib/intelligence/reaper-runs-ledger.ts — wave 156, lane 156L)
 import { createServiceClient } from "@/lib/supabase/service"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 
@@ -268,22 +268,22 @@ export const REAPER_NET: ReaperEntry[] = [
   },
 ]
 
-/** Persist one reaper's sweep to the accountability ledger (best-effort). */
-export async function recordReaperRun(
-  row: { brokerageId: string; domain: string; manager: ManagerKey; scanned: number; escalated: number; reaped: number; detail?: string | null },
-  client?: Svc,
-): Promise<void> {
-  const svc = client ?? createServiceClient()
-  await sentinelWrite(svc, svc.from("reaper_runs").insert({
-    brokerage_id: row.brokerageId,
-    domain: row.domain,
-    manager: row.manager,
-    scanned: row.scanned,
-    escalated: row.escalated,
-    reaped: row.reaped,
-    detail: row.detail ?? null,
-  }), { table: "reaper_runs", flow: "reaper_runs_write", reason: "analytics/cache/annotation row: its loss does not change what the caller reports — logged, never silent" })
-}
+// TOMBSTONE (orphan doctrine §1; wave 156, lane 156L) — recordReaperRun stood here. It moved VERBATIM to
+// lib/intelligence/reaper-runs-ledger.ts:19, the reaper_runs ledger's one writer, together with its one reader
+// loadRecentReaperActivity (reaper-runs-ledger.ts:47, formerly at the foot of this file). Both are re-exported
+// here, so runReaperNet below, the proofs and every existing import keep working unchanged. WHY: the two
+// callers that touch only the LEDGER (lib/kernel/os-health.ts records its own sweep, lib/intelligence/
+// manager-standup.ts reads the activity) imported this REGISTRY for it — and the registry lazily imports
+// about 25 reapers across every manager domain, so each of those reapers sat in the import graph of every
+// app page that can reach the health supervisor or the stand-up. They now import the ledger module.
+import { recordReaperRun } from "./reaper-runs-ledger"
+export { recordReaperRun }
+export { loadRecentReaperActivity, type ManagerReaperActivity } from "./reaper-runs-ledger"
+
+
+
+
+
 
 export interface ReaperNetReport {
   results: ReaperResult[]
@@ -386,39 +386,5 @@ export function reaperCoverage(): ReaperCoverage {
   }
 }
 
-// ── STANDUP FEED — per-manager reaper activity over a window ──────────────────
-export interface ManagerReaperActivity {
-  scanned: number
-  escalated: number
-  reaped: number
-  domains: string[]
-}
-
-/**
- * Aggregate the reaper_runs ledger over the last `sinceHours` into a per-manager
- * map, for the daily standup. Returns {} when the ledger is empty (honest).
- */
-export async function loadRecentReaperActivity(
-  brokerageId: string,
-  sinceHours = 24,
-  client?: Svc,
-): Promise<Record<string, ManagerReaperActivity>> {
-  const svc = client ?? createServiceClient()
-  const since = new Date(Date.now() - sinceHours * 60 * 60 * 1000).toISOString()
-  const { data } = await svc
-    .from("reaper_runs")
-    .select("manager, domain, scanned, escalated, reaped")
-    .eq("brokerage_id", brokerageId)
-    .gte("ran_at", since)
-    .limit(2000)
-
-  const out: Record<string, ManagerReaperActivity> = {}
-  for (const row of (data ?? []) as Array<{ manager: string; domain: string; scanned: number; escalated: number; reaped: number }>) {
-    const m = (out[row.manager] ??= { scanned: 0, escalated: 0, reaped: 0, domains: [] })
-    m.scanned += row.scanned ?? 0
-    m.escalated += row.escalated ?? 0
-    m.reaped += row.reaped ?? 0
-    if (!m.domains.includes(row.domain)) m.domains.push(row.domain)
-  }
-  return out
-}
+// ── STANDUP FEED — moved (wave 156, lane 156L): ManagerReaperActivity and loadRecentReaperActivity live in
+// lib/intelligence/reaper-runs-ledger.ts (see the tombstone at line 271 of this file); both are re-exported there.

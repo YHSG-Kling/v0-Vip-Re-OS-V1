@@ -8,11 +8,11 @@ import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import {
-  sendOpenHouseInvitation,
-  sendWeatherAlertToAgent,
-  sendFeedbackRequest,
-} from "@/lib/communications"
+import { sendOpenHouseInvitation, sendWeatherAlertToAgent, sendFeedbackRequest } from "@/lib/communications/send-invitation"
+
+
+
+
 import { completeOpenHouseCheckInAction } from "@/app/actions/open-house-kernel"
 import { parseAIJsonResponse } from "@/lib/ai/parse-json-response"
 

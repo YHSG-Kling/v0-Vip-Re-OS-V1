@@ -13,7 +13,7 @@ import {
   saveSellerUpdateDraft,
   loadSellerUpdateDraft,
 } from "@/app/actions/seller-updates"
-import { ContextualAiAssistBar } from "@/app/components/ai-copilot"
+import { ContextualAiAssistBar } from "@/app/components/ai-copilot/contextual-ai-assist-bar"
 
 interface SellerUpdateComposerProps {
   listingId: string

@@ -6,13 +6,13 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Clock, Calendar, Package, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
-import { TitleCommandStrip, TitleOperationsPanel } from '../components/os'
-import {
-  ExternalPartnerCommandStrip,
-  ExternalActiveFilesPanel,
-  ExternalDocStatusPanel,
-  ExternalBatchActionsPanel,
-} from '../../(external-portal)/components/os'
+import { TitleCommandStrip } from '@/app/title/components/os/title-command-strip'; import { TitleOperationsPanel } from '@/app/title/components/os/title-operations-panel'
+import { ExternalPartnerCommandStrip } from '@/app/(external-portal)/components/os/external-partner-command-strip'
+import { ExternalActiveFilesPanel } from '@/app/(external-portal)/components/os/external-active-files-panel'
+import { ExternalDocStatusPanel } from '@/app/(external-portal)/components/os/external-doc-status-panel'
+import { ExternalBatchActionsPanel } from '@/app/(external-portal)/components/os/external-batch-actions-panel'
+
+
 import { VENDOR_CATEGORY_TITLE } from "@/lib/kernel/vendor-categories"
 import {
   getTitleTransactionDetail,

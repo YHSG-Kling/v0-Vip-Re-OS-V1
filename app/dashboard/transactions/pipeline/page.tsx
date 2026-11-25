@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation"
 import { TransactionPipelineView } from "@/components/transactions/pipeline-view"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
-import { toCanonicalRoleOrDefault } from "@/lib/security"
+import { toCanonicalRoleOrDefault } from "@/lib/security/types"
 import { createClient } from "@/lib/supabase/server"
 import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
 

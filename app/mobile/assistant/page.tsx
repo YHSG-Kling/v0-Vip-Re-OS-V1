@@ -12,14 +12,14 @@ import { Badge } from "@/components/ui/badge"
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
 import { Home, Search } from "lucide-react"
 import Link from "next/link"
-import {
-  MobileCommandStrip,
-  FieldQuickActions,
-  ShowingDayPanel,
-  OpenHousePanel,
-  TourDayPanel,
-  MobileFollowupPanel,
-} from "../components/os"
+import { MobileCommandStrip } from "@/app/mobile/components/os/mobile-command-strip"
+import { FieldQuickActions } from "@/app/mobile/components/os/field-quick-actions"
+import { ShowingDayPanel } from "@/app/mobile/components/os/showing-day-panel"
+import { OpenHousePanel } from "@/app/mobile/components/os/open-house-panel"
+import { TourDayPanel } from "@/app/mobile/components/os/tour-day-panel"
+import { MobileFollowupPanel } from "@/app/mobile/components/os/mobile-followup-panel"
+
+
 
 export const dynamic = "force-dynamic"
 

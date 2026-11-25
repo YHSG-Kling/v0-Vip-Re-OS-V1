@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import PersonaPropertiesDashboard from "@/app/components/portal/PersonaPropertiesDashboard"
-import { getPersonaConfig } from "@/lib/portal"
+import { getPersonaConfig } from "@/lib/portal/persona-config"
 import { resolvePortalLayouts, portalShowsLayout } from "@/lib/kernel/portal"
 import { getRecommendedProperties } from "@/app/actions/ai-client-portal"
 import { getBuyerPortalMatches } from "@/app/actions/buyer-portal-matches"

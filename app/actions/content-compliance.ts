@@ -1,19 +1,19 @@
 "use server"
 
 import { isValidUUID } from "@/lib/validations"
-import {
-  type ComplianceContentInput,
-  type ComplianceVerdict,
-  evaluateContentCompliance,
-  evaluateSpecificCategory,
-  quickComplianceCheck,
-  batchEvaluateCompliance,
-  formatComplianceVerdict,
-  logComplianceEvaluation,
-  logBatchComplianceEvaluations,
-  getComplianceEvaluationHistory,
-  getComplianceStats,
-} from "@/lib/compliance-rules"
+import type { ComplianceContentInput } from "@/lib/compliance-rules/rule-evaluators"
+import { type ComplianceVerdict, evaluateContentCompliance, evaluateSpecificCategory, quickComplianceCheck, batchEvaluateCompliance, formatComplianceVerdict } from "@/lib/compliance-rules/compliance-engine"
+import { logComplianceEvaluation, logBatchComplianceEvaluations, getComplianceEvaluationHistory, getComplianceStats } from "@/lib/compliance-rules/compliance-logger"
+
+
+
+
+
+
+
+
+
+
 import { requireSessionAgentId as getSessionAgentId } from "@/lib/identity/get-agent-context"
 
 // TOMBSTONE: local getSessionAgentId merged onto

@@ -13,11 +13,11 @@ import { DepositReceivedButton } from '@/app/components/features/financial/Depos
 import { ExportCSVButton } from '@/app/components/features/financial/ExportCSVButton'
 import { CommissionPaymentStateCell } from '@/app/components/features/financial/CommissionPaymentStateCell'
 import { COMMISSION_PAYMENT_STATE_LABELS } from '@/lib/commission/ledger-sync'
-import {
-  CommissionIntelligencePanel,
-  FinancialActionStack,
-  type FinancialAction,
-} from '../components/os'
+import { CommissionIntelligencePanel } from '@/app/dashboard/financials/components/os/commission-intelligence-panel'
+import { FinancialActionStack, type FinancialAction } from '@/app/dashboard/financials/components/os/financial-action-stack'
+
+
+
 
 export const dynamic = 'force-dynamic'
 

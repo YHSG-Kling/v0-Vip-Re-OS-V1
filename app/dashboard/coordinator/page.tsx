@@ -6,7 +6,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
-import { toCanonicalRoleOrDefault } from "@/lib/security"
+import { toCanonicalRoleOrDefault } from "@/lib/security/types"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { CoordinatorTransactionList } from "@/components/coordinator/transaction-list"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
@@ -14,17 +14,17 @@ import { generateUserTypeBrief } from "@/lib/intelligence/user-type-briefs"
 import { DeadlineTracking } from "@/components/coordinator/deadline-tracking"
 import { MilestoneQueue } from "@/components/coordinator/milestone-queue"
 import { HealthOverview } from "@/components/coordinator/health-overview"
-import {
-  CoordinatorCommandStrip,
-  DealPipelineRadar,
-  DeadlineIntelligencePanel,
-  DocumentTrackingPanel,
-  ComplianceMonitorPanel,
-  MilestoneOperationsPanel,
-  TaskQueuePanel,
-  ClosingPrepPanel,
-  ExtractedFactsPanel,
-} from "./components/os"
+import { CoordinatorCommandStrip } from "@/app/dashboard/coordinator/components/os/coordinator-command-strip"
+import { DealPipelineRadar } from "@/app/dashboard/coordinator/components/os/deal-pipeline-radar"
+import { DeadlineIntelligencePanel } from "@/app/dashboard/coordinator/components/os/deadline-intelligence-panel"
+import { DocumentTrackingPanel } from "@/app/dashboard/coordinator/components/os/document-tracking-panel"
+import { ComplianceMonitorPanel } from "@/app/dashboard/coordinator/components/os/compliance-monitor-panel"
+import { MilestoneOperationsPanel } from "@/app/dashboard/coordinator/components/os/milestone-operations-panel"
+import { TaskQueuePanel } from "@/app/dashboard/coordinator/components/os/task-queue-panel"
+import { ClosingPrepPanel } from "@/app/dashboard/coordinator/components/os/closing-prep-panel"
+import { ExtractedFactsPanel } from "@/app/dashboard/coordinator/components/os/extracted-facts-panel"
+
+
 import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar } from "lucide-react"
 import Link from "next/link"
 import { TcFastActionPanel } from "./components/tc-fast-action-panel"

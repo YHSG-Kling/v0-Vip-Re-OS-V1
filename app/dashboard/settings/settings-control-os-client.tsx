@@ -1,16 +1,16 @@
 "use client"
 
-import {
-  SettingsCommandStrip,
-  ProviderHealthRadar,
-  SetupCompletenessPanel,
-  BrandingOutputPanel,
-  AccountingCommissionPanel,
-  UserAccessPanel,
-  NotificationDefaultsPanel,
-  ProviderActionPanel,
-  SettingsBatchMaintenancePanel,
-} from "./components/os"
+import { SettingsCommandStrip } from "@/app/dashboard/settings/components/os/settings-command-strip"
+import { ProviderHealthRadar } from "@/app/dashboard/settings/components/os/provider-health-radar"
+import { SetupCompletenessPanel } from "@/app/dashboard/settings/components/os/setup-completeness-panel"
+import { BrandingOutputPanel } from "@/app/dashboard/settings/components/os/branding-output-panel"
+import { AccountingCommissionPanel } from "@/app/dashboard/settings/components/os/accounting-commission-panel"
+import { UserAccessPanel } from "@/app/dashboard/settings/components/os/user-access-panel"
+import { NotificationDefaultsPanel } from "@/app/dashboard/settings/components/os/notification-defaults-panel"
+import { ProviderActionPanel } from "@/app/dashboard/settings/components/os/provider-action-panel"
+import { SettingsBatchMaintenancePanel } from "@/app/dashboard/settings/components/os/settings-batch-maintenance-panel"
+
+
 import { IsaAutoRespondSettings } from "@/app/components/isa/IsaAutoRespondSettings"
 import { VoiceAccessSettings } from "@/app/components/settings/VoiceAccessSettings"
 import { LeadRoutingPanel } from "./components/lead-routing-panel"
