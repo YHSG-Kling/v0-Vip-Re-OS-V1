@@ -123,7 +123,7 @@ import {
   loadAvailableFormsAction,
 } from "@/app/actions/forms-kernel"
 import { detectTransactionIssues, detectTransactionDelays, setMilestoneClientVisibility, setDocumentClientVisibility } from "@/app/actions/transactions"
-import { isClientHiddenDealDocType } from "@/lib/kernel/deal-document-visibility"
+import { isClientHiddenDealDocType } from "@/lib/kernel/deal-document-visibility"; import { GoverningTermsProposalsCard } from "@/app/components/transactions/governing-terms-proposals-card"
 import {
   TransactionFormEsignFlow,
   type FormTemplate,
@@ -4107,7 +4107,7 @@ export function TransactionDetailClient({
             </TabsContent>
 
             {/* Documents Tab */}
-            <TabsContent value="documents" className="mt-4 space-y-3">
+            <TabsContent value="documents" className="mt-4 space-y-3"><GoverningTermsProposalsCard transactionId={transaction.id} />
               {/* Transaction-level AI actions */}
               <div className="flex flex-wrap gap-2">
                 <Button
