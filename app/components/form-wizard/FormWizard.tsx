@@ -63,7 +63,7 @@ import { getContacts } from "@/app/actions/contacts"
 import { FORM_PACKET_PREVIEW_TTL_SECONDS as FORM_URL_TTL_SECONDS, FORM_PACKET_BUCKET } from "@/lib/forms/tenant-form-packets"
 import { createOffer } from "@/app/actions/buyer-offers"
 import { createListingWithSellerContact, resolveListingIdByMlsAction, sendListingAgreementForSignatureAction } from "@/app/actions/listings-kernel"
-import { CommissionDisclosureDialog } from "@/app/components/offer/commission-disclosure-dialog"
+import { CommissionDisclosureDialog } from "@/app/components/offer/commission-disclosure-dialog"; import { AddFormOrPacket } from "@/app/components/forms/add-form-or-packet"
 import { getStateForms } from "@/lib/state-forms/registry"
 import { matchStatePackage } from "@/lib/forms/state-package-match"
 import { getCatalogEntry } from "@/lib/integrations/providers/catalog"
@@ -1556,9 +1556,9 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
         </TabsList>
 
         <TabsContent value="my-forms" className="mt-3 space-y-3">
-          {/* WAVE 156 (156C): "Add a form or packet" lives on the Forms page (app/dashboard/forms — app/components/forms/add-form-or-packet.tsx);
-              linked, not mounted, because this wizard is in app/crm/page.tsx's graph, which sits AT the 1,300-module budget (test:proxy-graph-budget). */}
-          <a href={`/dashboard/forms?add=1${state.propertyState ? `&state=${encodeURIComponent(state.propertyState)}` : ""}#add-forms`} target="_blank" rel="noopener noreferrer" className="text-xs underline">Add a form or packet</a>
+          {/* WAVE 156 (156C, re-hosted by 156L): "Add a form or packet" is mounted here again and stays on the Forms page (app/dashboard/forms);
+              lane 156L brought app/crm/page.tsx back under its import budget (test:proxy-graph-budget). A form added here is listed when this step is next entered. */}
+          <AddFormOrPacket defaultState={state.propertyState} onAdded={() => setFormsLoaded(false)} />
           <StatePackagePanel mode={mode} stateCode={state.propertyState} myForms={myForms} selected={selected} onSelect={(forms) => {
             const add = forms.filter(f => !selected.find(s => s.source === "my_forms" && s.formRef === f.path))
             if (add.length) update("selectedForms", [...selected, ...add.map(f => ({ source: "my_forms" as const, formRef: f.path, name: f.name, scope: f.scope }))])
