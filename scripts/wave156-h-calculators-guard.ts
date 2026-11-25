@@ -41,13 +41,15 @@
  * RED AT BASE: CALC_GUARD_ROOT=<the pre-wave tree> loads that tree's modules (the "@/" alias is resolved under the root).
  * BLIND SPOTS (published): the in-memory client has no row security, CHECKs or triggers (m898's ready-deliverable trigger is not
  * run; a calculator magnet promises no asset, so it does not apply); the QR minter and the scan door are a fake on the same
- * client; the browser component is source-ruled, not rendered (no DOM here); the legacy public calculators calculateAffordability
- * / calculateRentVsBuy / estimateMovingCosts and lib/buyer-offers/affordability.ts AFFORDABILITY_DEFAULTS still carry labelled
- * default rates — they are COUNTED and printed in §B (a finding for the integrator), not asserted, because this lane did not move
- * their callers.
+ * client; the browser component is source-ruled, not rendered (no DOM here). §E (round 2) scans every fractional literal of the
+ * DERIVED calculator scope (the engine family, the retired calculators' files, every app/ lib/ file that statically imports them,
+ * and the span of any other function that runs the engine); a fractional rate elsewhere in the tree (e.g. the deal-level offer
+ * net sheet family lib/offers/*, app/components/portal/NetSheetCalculator.tsx, which imports none of these) is outside that scope
+ * and is named in the lane report, not certified here. The funnel step and the portal page are source-ruled; their pure halves
+ * (listPublishedCalculators, portalCalculatorsFor) are driven.
  */
 import { registerHooks } from "node:module"
-import { readFileSync, existsSync, statSync } from "node:fs"
+import { readFileSync, existsSync, statSync, readdirSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 import { join } from "node:path"
 import { memSupabase, type MemClient } from "./in-memory-supabase"
@@ -217,7 +219,7 @@ async function main() {
   const engBad = [...new Set(engLits.filter((n) => !ENGINE_ALLOWED.has(n)))]
   check("SOURCE RULE: the engine carries no rate literal — every numeric literal is a bound, a unit or a count (allowed set)", engLits.length > 0 && engBad.length === 0, engBad)
   check("CONTROL: the literal finder catches a planted rate (homeValue * 0.015) and a planted default (|| 0.0125)", literals(blankStrings(stripComments("const a = homeValue * 0.015; const b = x || 0.0125 // 7% in a comment"))).filter((n) => !ENGINE_ALLOWED.has(n)).length === 2)
-  const ART_ALLOWED = new Set([0, 1, 6, 10, 12, 36, 40, 60, 80, 100, 120, 140, 200, 4000, 5000, 10_000]) // 6 / 36: hex-colour and uuid lengths; 4000: the inputs cap; 5000: the funnel read cap
+  const ART_ALLOWED = new Set([0, 1, 6, 10, 12, 36, 40, 50, 60, 80, 100, 120, 140, 200, 4000, 5000, 10_000]) // 6 / 36: hex-colour and uuid lengths; 4000: the inputs cap; 5000: the funnel read cap
   const artBad = [...new Set(literals(code("lib/calculators/artifact.ts")).filter((n) => !ART_ALLOWED.has(n)))]
   check("SOURCE RULE: the artifact module carries no rate literal either", raw("lib/calculators/artifact.ts").length > 0 && artBad.length === 0, artBad)
   const calc = stripComments(raw("app/actions/calculators.ts"))
@@ -225,11 +227,6 @@ async function main() {
   const snRates = [...new Set(literals(blankStrings(sellerNet)).filter((n) => n > 0 && n < 1))]
   check("the signed-in seller net sheet multiplies no literal rate (base: 0.007 title, 0.015 escrow, 0.02 repairs) and no longer asks a model for appreciation", sellerNet.length > 0 && snRates.length === 0 && !/generateAIJSON\(/.test(sellerNet) && /computeInternalSellerNet\(/.test(sellerNet), { snRates, model: /generateAIJSON\(/.test(sellerNet) })
   check("the invented transfer-tax fallback (`|| homeValue * 0.001` — Texas's 0 fell through to it) is gone from the file", !/\|\|\s*homeValue\s*\*\s*0\.001/.test(calc) && calc.length > 0)
-  // Published finding — counted, not asserted (blind spot in the header).
-  const legacy = ["calculateAffordability", "calculateRentVsBuy", "estimateMovingCosts"].map((fn) => { const i = calc.indexOf(`export async function ${fn}(`); const j = calc.indexOf("\nexport ", i + 10); const body = i < 0 ? "" : blankStrings(calc.slice(i, j < 0 ? undefined : j)); return `${fn}: ${literals(body).filter((n) => n > 0 && n < 1).length} fractional literal(s)` })
-  const affDefaults = /AFFORDABILITY_DEFAULTS\s*=/.test(stripComments(raw("lib/buyer-offers/affordability.ts")))
-  console.log(`  · FINDING (not asserted — this lane did not move their callers): ${legacy.join("; ")}; lib/buyer-offers/affordability.ts AFFORDABILITY_DEFAULTS ${affDefaults ? "present" : "absent"}`)
-
   // ═══ §C ═══
   section("§C · the artifact on the real kernel — anonymous use, one opt-in, the event chain, tenancy, brand, commission")
   const K = await load("lib/kernel/lead-magnets.ts")
@@ -369,7 +366,151 @@ async function main() {
   check("AUTHORING lives in the existing Command Center (the Command tab of the Marketing Studio) and publishes through the existing publish door",
     /<TabsContent value="command"[\s\S]{0,300}<CalculatorStudio \/>/.test(studio) && /publishLeadMagnetAction\(c\.id, channels\)/.test(stripComments(raw("app/components/calculators/CalculatorStudio.tsx"))))
 
+  await roundTwo()
+
   console.log(`\n${passed} passed, ${failed} failed`)
   if (failed) { console.log("FAILED:\n  - " + fails.join("\n  - ")); process.exit(1) }
 }
 main().catch((e) => { console.error(e); process.exit(1) })
+
+// ═══ §E · ROUND 2 (integrator) — ONE ENGINE, NO FRACTIONAL RATE ANYWHERE IN CALCULATOR CODE, PLACEMENTS, CATALOG, C29 ══════
+const walk = (dir: string): string[] => {
+  const out: string[] = []
+  const abs = join(ROOT, dir)
+  if (!existsSync(abs)) return out
+  for (const e of readdirSync(abs, { withFileTypes: true })) {
+    const rel = `${dir}/${e.name}`
+    if (e.isDirectory()) { if (e.name !== "node_modules" && !e.name.startsWith(".")) out.push(...walk(rel)) }
+    else if (/\.(ts|tsx)$/.test(e.name)) out.push(rel)
+  }
+  return out
+}
+/** PURE — fractional numeric literals (a decimal point) of comment-stripped, string-blanked code, with their line. */
+const fractionals = (code: string): Array<{ line: number; lit: string; text: string }> => {
+  const out: Array<{ line: number; lit: string; text: string }> = []
+  code.split("\n").forEach((l, i) => { for (const m of l.matchAll(/(?<![\w.$])(\d+\.\d+)(?![\w])/g)) out.push({ line: i + 1, lit: m[1], text: l.trim() }) })
+  return out
+}
+/** Fractional literals that are NOT rates, named with the reason (each must still match a site — a stale exemption is a hole). */
+const NON_RATE: Array<{ file: string; match: RegExp; why: string }> = [
+  { file: "app/actions/ai-tools-hub.ts", match: /temperature:\s*0\.\d+/, why: "a model sampling temperature, not a rate shown to anyone" },
+  { file: "app/components/portal/PersonaPropertiesDashboard.tsx", match: /confidence_score \?\? 0\) > 0\.4/, why: "a display threshold on a model's confidence score, not a financial rate" },
+]
+const RETIRED_STATIC = /from\s+"@\/(lib\/calculators\/|app\/actions\/calculators"|lib\/buyer-offers\/affordability"|lib\/buyer-offers\/home-comparison")/
+
+async function roundTwo() {
+  section("§E · round 2 — one engine; no fractional rate literal anywhere in calculator code; placements; catalog; C29")
+  // 1. THE SCOPE, DERIVED: the engine family + the retired calculators' files + every app/ lib/ file that statically imports them
+  //    + the span of any other function that runs the engine.
+  const all = [...walk("app"), ...walk("lib")]
+  const core = ["lib/buyer-offers/affordability.ts", "lib/buyer-offers/home-comparison.ts", "app/actions/calculators.ts", "app/actions/calculator-artifacts.ts", ...all.filter((f) => f.startsWith("lib/calculators/") && !f.endsWith("rate-sources.ts"))]
+  const importers = all.filter((f) => !core.includes(f) && f !== "lib/calculators/rate-sources.ts" && RETIRED_STATIC.test(stripComments(raw(f))))
+  const spans: Array<{ file: string; code: string; src?: string }> = []
+  for (const f of all.filter((f) => !core.includes(f) && !importers.includes(f))) {
+    const c = stripComments(raw(f))
+    if (!/runCalculator\(/.test(c)) continue
+    for (const m of c.matchAll(/(?:async\s+)?function\s+\w+\s*\(/g)) {
+      const end = c.indexOf("\n}", m.index!)
+      const body = c.slice(m.index!, end < 0 ? undefined : end)
+      if (/runCalculator\(/.test(body)) spans.push({ file: f, code: blankStrings(body), src: body })
+    }
+  }
+  const scope = [...core.map((f) => ({ file: f, code: code(f) })), ...importers.map((f) => ({ file: f, code: code(f) })), ...spans]
+  const hits = scope.flatMap((s) => fractionals(s.code).map((h) => ({ ...h, file: s.file })))
+  const exempt = (h: { file: string; text: string }) => NON_RATE.find((e) => e.file === h.file && e.match.test(h.text))
+  const bad = hits.filter((h) => !exempt(h))
+  check(`NO FRACTIONAL RATE LITERAL in calculator code outside lib/calculators/rate-sources.ts — ${scope.length} files/spans scanned (derived: ${core.length} core, ${importers.length} importers, ${spans.length} engine-calling spans)`,
+    scope.length >= 10 && importers.length >= 8 && bad.length === 0, bad.slice(0, 12).map((h) => `${h.file}:${h.line} ${h.lit}`))
+  check("POSITIVE CONTROL: the scan finds a planted 0.0125 (and a 1.03 growth factor), and not one inside a comment or a string", fractionals(blankStrings(stripComments(`const tax = price * 0.0125 // 0.5% in a comment\nconst g = Math.pow(1.03, y); const label = "rate 6.5"`))).map((h) => h.lit).join(",") === "0.0125,1.03")
+  const stale = NON_RATE.filter((e) => !scope.some((s) => s.file === e.file && fractionals(s.code).some((h) => e.match.test(h.text))))
+  check("every named non-rate exemption still matches a site (a stale exemption is a hole)", stale.length === 0, stale.map((e) => e.file))
+  check("the ai-tools hub's engine-calling affordability span IS in the scope (the span finder works)", spans.some((s) => s.file === "app/actions/ai-tools-hub.ts" && /affordability_range/.test(s.src ?? "")), spans.map((s) => s.file))
+
+  // 2. RETIRED, WITH TOMBSTONES THAT NAME A REAL SURVIVOR LINE.
+  const calc = stripComments(raw("app/actions/calculators.ts")), calcRaw = raw("app/actions/calculators.ts"), aff = stripComments(raw("lib/buyer-offers/affordability.ts")), affRaw = raw("lib/buyer-offers/affordability.ts")
+  const retired = ["calculateAffordability", "calculateRentVsBuy", "estimateMovingCosts"].filter((n) => new RegExp(`export\\s+async\\s+function\\s+${n}\\b`).test(calc))
+  check("calculateAffordability, calculateRentVsBuy and estimateMovingCosts are no longer exported; AFFORDABILITY_DEFAULTS / estimateMonthlyPayment are gone", calc.length > 0 && retired.length === 0 && !/export\s+(const\s+AFFORDABILITY_DEFAULTS|function\s+estimateMonthlyPayment)\b/.test(aff), retired)
+  const engineLines = raw("lib/calculators/engine.ts").split("\n")
+  const cited = [...`${calcRaw}\n${affRaw}`.matchAll(/lib\/calculators\/engine\.ts:(\d+)/g)].map((m) => Number(m[1]))
+  check("each tombstone names its survivor at file:line and that line is the engine case it names (buyer_payment / affordability_range / relocation_budget)",
+    cited.length >= 3 && cited.every((n) => /case "(buyer_payment|affordability_range|buy_vs_rent|relocation_budget)"/.test(engineLines[n - 1] ?? "")), cited.map((n) => `${n}: ${(engineLines[n - 1] ?? "").trim()}`))
+  const callers = all.filter((f) => /\b(calculateAffordability|calculateRentVsBuy|estimateMovingCosts|estimateMonthlyPayment|AFFORDABILITY_DEFAULTS)\b/.test(blankStrings(stripComments(raw(f)))))
+  check("no caller in app/ or lib/ still reaches a retired name", callers.length === 0, callers)
+
+  // 3. DRIVEN — the moved callers.
+  const BP = await load("lib/calculators/buyer-payment.ts")
+  const HC = await load("lib/buyer-offers/home-comparison.ts")
+  const AF = await load("lib/buyer-offers/affordability.ts")
+  const full = { downPaymentPct: 20, ratePct: 6, termYears: 30, propertyTaxRatePct: 1, annualInsurance: 1800 }
+  const missingRate = BP.buyerPaymentFor?.(400000, { ...full, ratePct: "" })
+  check("buyerPaymentFor: a blank rate refuses with 'Enter a value' (the 6.5% default is gone)", missingRate?.ok === false && missingRate.missing.some((m: any) => m.key === "ratePct" && /^Enter a value/.test(m.message)), missingRate)
+  const allDown = BP.buyerPaymentFor?.(400000, { ...full, downPaymentPct: 100, ratePct: 0 })
+  check("EXTREMES: 100% down at a 0% rate → no loan, P&I $0, every figure finite", allDown?.ok === true && allDown.outputs.loanAmount === 0 && allDown.lines.find((l: any) => l.key === "principalInterest")?.amount === 0 && Object.values(allDown.outputs).every((v: any) => typeof v !== "number" || Number.isFinite(v)), allDown?.outputs)
+  const overDown = BP.buyerPaymentFor?.(400000, { ...full, downPaymentPct: 120 })
+  check("a down payment over 100% is refused, never coerced", overDown?.ok === false, overDown)
+  const billed = BP.buyerPaymentFor?.(425000, { ...full, propertyTaxRatePct: "" }, { annualPropertyTax: 6120, taxCitation: "This home's 2025 county tax bill (public record)" })
+  check("a county tax bill is used and labelled as the PROPERTY'S RECORD (not as something the visitor typed); no rate needed", billed?.ok === true && billed.assumptions.some((a: any) => a.key === "annualPropertyTax" && a.basis === "property_record" && /county tax bill/.test(a.source?.citation ?? "")) && billed.lines.find((l: any) => l.key === "propertyTax")?.amount === 510, billed?.assumptions)
+  const homes = [{ id: "h1", address: "1 A St", price: 400000, sqft: 2000 }, { id: "h2", address: "2 B St", price: 450000, sqft: 2100 }]
+  const blankCmp = HC.compareHomes?.(homes, {}), fullCmp = HC.compareHomes?.(homes, full)
+  check("compareHomes: with no buyer figures there is NO payment and NO 'Lowest payment' badge, and it says what to enter; with them, payments are compared",
+    blankCmp?.homes?.every((h: any) => h.monthlyPayment === null && !h.highlights.includes("Lowest payment")) && blankCmp.paymentNeeds.length > 0
+    && fullCmp?.homes?.every((h: any) => typeof h.monthlyPayment === "number" && h.monthlyPayment > 0) && fullCmp.homes[0].highlights.includes("Lowest payment"), { blankCmp, fullCmp })
+  const noBand = AF.affordabilityRead?.({ price: 480000, monthlyTotal: 3200, preApprovalAmount: 500000, maxMonthlyBudget: 3000 })
+  const ownBand = AF.affordabilityRead?.({ price: 480000, monthlyTotal: 3200, preApprovalAmount: 500000, maxMonthlyBudget: 3000, stretchMonthlyBudget: 3300 })
+  check("'stretch' is read only against the buyer's OWN stretch figure (the invented 10% band is gone)", noBand?.verdict === "over_budget" && ownBand?.verdict === "stretch", { noBand, ownBand })
+  const hub = stripComments(raw("app/actions/ai-tools-hub.ts"))
+  const hubFn = (() => { const i = hub.indexOf("async function runAffordabilityTool("); const j = hub.indexOf("\n}", i); return i < 0 ? "" : hub.slice(i, j) })()
+  check("the AI tools hub's affordability tool runs the ENGINE on the agent's own limits and refuses (no model call) when one is blank",
+    /runCalculator\("affordability_range"/.test(hubFn) && /housingRatioPct == null/.test(hubFn) && /totalDebtRatioPct == null/.test(hubFn) && hubFn.indexOf("return refuse(") < hubFn.indexOf("generateText(") && !/calculateAffordability/.test(hubFn))
+  const tool = (() => { const i = calc.indexOf("export async function runCalculatorTool("); const j = calc.indexOf("\nexport ", i + 10); return i < 0 ? "" : calc.slice(i, j) })()
+  check("runCalculatorTool (the dashboard's door) runs the engine with audience PUBLIC and files usage only for a computed result", /audience: "public"/.test(tool) && /if \(outcome\.ok\)[\s\S]*trackToolUsage/.test(tool))
+
+  // 4. PLACEMENTS + CATALOG + SIGNAL TEXT.
+  const A2 = await load("lib/calculators/artifact.ts")
+  const B1 = "b1000000-0000-4000-8000-000000000156", B2 = "b2000000-0000-4000-8000-000000000156", B3 = "b3000000-0000-4000-8000-000000000156", B4 = "b4000000-0000-4000-8000-000000000156"
+  const cfg = (kind: string, brand: Record<string, unknown> = {}) => ({ calculator: { kind, brand, cta: { mode: "save_results" } } })
+  const db = memSupabase({
+    brokerages: [
+      { id: B1, name: "Solo Sam Realty", logo_url: "https://cdn.solo.test/l.png", primary_color: "#111111" },
+      { id: B2, name: "Team Tara Group", logo_url: null, primary_color: "#222222" },
+      { id: B3, name: "Bravo Brokerage", logo_url: "https://cdn.bravo.test/l.png", primary_color: "#333333" },
+      { id: B4, name: "Two Office Realty", logo_url: null, primary_color: "#444444" },
+    ],
+    lead_capture_forms: [
+      { id: "f1", brokerage_id: B1, agent_id: "ag-solo", slug: "solo-net", name: "Solo net sheet", magnet_type: "calculator", is_active: true, settings: cfg("seller_net_sheet") },
+      { id: "f2", brokerage_id: B2, agent_id: "ag-team", slug: "team-pay", name: "Team payment", magnet_type: "calculator", is_active: true, settings: cfg("buyer_payment", { displayName: "The Tara Team", primaryColor: "#2A2A2A" }) },
+      { id: "f3", brokerage_id: B3, agent_id: "ag-bravo", slug: "bravo-pay", name: "Bravo payment", magnet_type: "calculator", is_active: true, settings: cfg("buyer_payment") },
+      { id: "f3d", brokerage_id: B3, agent_id: "ag-bravo", slug: "bravo-draft", name: "Bravo draft", magnet_type: "calculator", is_active: false, settings: cfg("seller_net_sheet") },
+      { id: "f4a", brokerage_id: B4, agent_id: "ag-north", slug: "north-pay", name: "North office payment", magnet_type: "calculator", is_active: true, settings: cfg("buyer_payment", { displayName: "Two Office Realty — North", primaryColor: "#0000AA" }) },
+      { id: "f4b", brokerage_id: B4, agent_id: "ag-south", slug: "south-net", name: "South office net", magnet_type: "calculator", is_active: true, settings: cfg("seller_net_sheet", { displayName: "Two Office Realty — South", primaryColor: "#AA0000" }) },
+      { id: "f4g", brokerage_id: B4, agent_id: "ag-south", slug: "south-guide", name: "A guide", magnet_type: "seller_guide", is_active: true, settings: {} },
+    ],
+  })
+  const lists: Record<string, any[]> = {}
+  for (const b of [B1, B2, B3, B4]) lists[b] = A2.listPublishedCalculators ? await A2.listPublishedCalculators(db, b) : []
+  const ids = (b: string) => lists[b].map((x) => x.formId).sort().join(",")
+  check("C29 NO CROSS-TENANT DATA: solo agent, team, brokerage and two-office brokerage each list ONLY their own published calculators (no draft, no guide, no other tenant's)",
+    ids(B1) === "f1" && ids(B2) === "f2" && ids(B3) === "f3" && ids(B4) === "f4a,f4b", { B1: ids(B1), B2: ids(B2), B3: ids(B3), B4: ids(B4) })
+  const brandOf = (b: string, id: string) => lists[b].find((x) => x.formId === id)?.brand
+  check("C29 OWN BRAND FROM THE FIRST RENDER: the solo agent and the brokerage get their tenant record; the team its own name; each office of the two-office brokerage its own — never another's",
+    brandOf(B1, "f1")?.displayName === "Solo Sam Realty" && brandOf(B1, "f1")?.primaryColor === "#111111"
+    && brandOf(B2, "f2")?.displayName === "The Tara Team" && brandOf(B2, "f2")?.primaryColor === "#2A2A2A"
+    && brandOf(B3, "f3")?.displayName === "Bravo Brokerage" && brandOf(B3, "f3")?.logoUrl === "https://cdn.bravo.test/l.png"
+    && brandOf(B4, "f4a")?.displayName === "Two Office Realty — North" && brandOf(B4, "f4b")?.displayName === "Two Office Realty — South" && brandOf(B4, "f4a")?.primaryColor !== brandOf(B4, "f4b")?.primaryColor,
+    Object.fromEntries(Object.entries(lists).map(([b, l]) => [b, l.map((x) => x.brand)])))
+  const pf = A2.portalCalculatorsFor ?? (() => [])
+  const buyerSees = pf(lists[B4], { buyer: true, seller: false }).map((x: any) => x.formId), sellerSees = pf(lists[B4], { buyer: false, seller: true }).map((x: any) => x.formId), dual = pf(lists[B4], { buyer: true, seller: true }).map((x: any) => x.formId)
+  check("PORTAL PLACEMENT: a buyer's portal shows the payment calculator, a seller's the net-sheet ESTIMATE, a dual client both", buyerSees.join() === "f4a" && sellerSees.join() === "f4b" && dual.length === 2, { buyerSees, sellerSees, dual })
+  const portal = stripComments(raw("app/portal/[contactId]/calculators/page.tsx"))
+  check("…the portal page pins the tenant to the SESSION-read contact (never the URL), renders the one public component, and never reaches the internal net sheet",
+    /resolvePortalLayouts\(supabase/.test(portal) && /from\("contacts"\)\.select\("id, brokerage_id/.test(portal) && /listPublishedCalculators\(createServiceClient\(\), contact\.brokerage_id/.test(portal) && /<CalculatorArtifact/.test(portal) && !/computeInternalSellerNet|agreedCommission|getDefaultCommissionStructure/.test(portal))
+  const funnel = stripComments(raw("lib/lead-magnets/magnet-funnel.ts"))
+  check("FUNNEL STEP: the funnel's 'calculator' item is ARRANGED only on a published calculator (its page /lm/<slug>) and PLANNED, never promised, when the tenant has none; the context reads the published list; the follow-through delivers it on the portal card",
+    /case "calculator":[\s\S]{0,200}ctx\.calculators/.test(funnel) && /no published calculator for this tenant/.test(funnel) && /mechanism: "published_calculator"/.test(funnel) && /listPublishedCalculators\(svc/.test(funnel) && !/portal_financial_tools/.test(funnel.slice(funnel.indexOf('case "calculator":'), funnel.indexOf('case "webinar":'))) && /a\.mechanism === "published_calculator"/.test(funnel))
+  const CC = await load("lib/marketing/content-catalog.ts")
+  const src = (CC.CONTENT_CATALOG_SOURCES ?? []).find((x: any) => x.table === "lead_capture_forms")
+  const mapped = src?.map?.({ id: "f9", agent_id: "ag", name: "Net sheet", slug: "net", magnet_type: "calculator", is_active: true, settings: { calculator: { kind: "seller_net_sheet" } }, submission_count: 3, created_at: "2026-11-25" })
+  check("CATALOG: 'calculator' is an artifact of the ONE vocabulary and a published calculator row maps to it (status posted, its /lm page)",
+    (CC.CATALOG_ARTIFACTS ?? []).includes("calculator") && mapped?.artifact === "calculator" && mapped?.status === "posted" && mapped?.destinationUrls?.[0] === "/lm/net" && src?.artifacts?.includes("calculator"), mapped)
+  check("SIGNAL REGISTRY: the lead_magnet_handoff text names the calculator handoff and its next-step rule", /CALCULATOR opt-in[\s\S]{0,300}explain_estimate[\s\S]{0,80}agent_task/.test(raw("lib/kernel/signal-registry.ts")))
+}

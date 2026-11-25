@@ -360,3 +360,30 @@ export async function loadCalculatorBrand(client: Db, brokerageId: string, cfg: 
   if (error) console.warn("[calculators] tenant brand not read — the author's brand only:", error.message)
   return resolveCalculatorBrand(cfg, (data as { name?: string | null; logo_url?: string | null; primary_color?: string | null } | null) ?? null)
 }
+
+// ── placements: the consumer portal and the lead-magnet funnel (round 2) ─────────────────────────────────────────────────
+/** A published calculator of one tenant, with its brand resolved for the first render. */
+export interface PublishedCalculator { formId: string; slug: string; title: string; kind: CalculatorKind; side: string; config: CalculatorArtifactConfig; brand: CalculatorBrand }
+
+/** The tenant's PUBLISHED calculators (active, readable configuration), tenant-pinned. A refused read → [] and a note (said). */
+export async function listPublishedCalculators(client: Db, brokerageId: string, notes?: string[]): Promise<PublishedCalculator[]> {
+  if (!brokerageId) return []
+  const { data, error } = await client.from("lead_capture_forms").select("id, slug, name, settings").eq("brokerage_id", brokerageId).eq("magnet_type", "calculator").eq("is_active", true).limit(50)
+  if (error) { notes?.push(`published calculators not read: ${error.message ?? "unknown"} — no calculator is promised`); return [] }
+  const { data: b, error: bErr } = await client.from("brokerages").select("name, logo_url, primary_color").eq("id", brokerageId).maybeSingle()
+  if (bErr) notes?.push(`tenant brand not read: ${bErr.message ?? "unknown"} — the author's brand only`)
+  const out: PublishedCalculator[] = []
+  for (const r of (data ?? []) as Array<{ id: string; slug: string; name: string; settings: unknown }>) {
+    const config = calculatorArtifactOf(r.settings)
+    if (!config) continue
+    out.push({ formId: r.id, slug: r.slug, title: r.name, kind: config.kind, side: CALCULATOR_SPECS[config.kind].side, config, brand: resolveCalculatorBrand(config, (b as never) ?? null) })
+  }
+  return out
+}
+
+/** PURE. Which published calculators fit a portal: a buyer sees the buyer-side ones (payment, affordability, buy-vs-rent,
+ *  closing costs), a seller the seller-side ones (net sheet estimate, equity), a dual client both. Public math only — the
+ *  portal renders the same public component; the brokerage's internal commission terms never reach it. */
+export function portalCalculatorsFor(all: PublishedCalculator[], layouts: { buyer: boolean; seller: boolean }): PublishedCalculator[] {
+  return all.filter((c) => (layouts.buyer && c.side === "buyer") || (layouts.seller && c.side === "seller"))
+}

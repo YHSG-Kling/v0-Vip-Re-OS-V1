@@ -31,7 +31,10 @@ export function buyerPaymentFor(
   opts: { annualPropertyTax?: number | null; taxCitation?: string; recordHoaMonthly?: number | null; audience?: "public" | "internal"; estimateKeys?: string[] } = {},
 ): CalculatorOutcome {
   const pct = blank(a.downPaymentPct) ? null : Number(String(a.downPaymentPct).replace(/[%\s,]/g, ""))
-  const downPayment = pct === null ? undefined : Number.isFinite(pct) && pct >= 0 && pct <= 100 ? (price * pct) / 100 : String(a.downPaymentPct)
+  if (pct !== null && !(Number.isFinite(pct) && pct >= 0 && pct <= 100)) {
+    return { ok: false, kind: "buyer_payment", missing: [], refused: [{ key: "downPaymentPct", label: "Down payment (%)", reason: "must be a percent from 0 to 100" }] }
+  }
+  const downPayment = pct === null ? undefined : (price * pct) / 100
   const bill = typeof opts.annualPropertyTax === "number" && opts.annualPropertyTax > 0 ? opts.annualPropertyTax : null
   return runCalculator("buyer_payment", {
     price, downPayment, ratePct: a.ratePct, termYears: a.termYears,

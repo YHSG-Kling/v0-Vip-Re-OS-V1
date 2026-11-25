@@ -630,7 +630,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
                 <FileText className="h-4 w-4 mr-2" />
                 View Documents
               </Link>
-            </Button>
+            </Button>{" "}<Button variant="outline" asChild><Link href={`/portal/${contactId}/calculators`}>Estimate my net</Link></Button>
           </div>
         </CardContent>
       </Card>

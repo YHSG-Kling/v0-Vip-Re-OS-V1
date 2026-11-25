@@ -54,7 +54,7 @@ const ROWS: Record<string, string[]> = {
   "app/actions/vendor-premium-placement.ts": ["markPlacementPaidAction", "offerPremiumPlacementAction"],
   "app/actions/vendors/vendor-plan-subscriptions.ts": ["endVendorPackageEnrolmentAction", "enrolVendorInPackageAction"],
   "app/actions/vendor-verification.ts": ["approveVendor", "recordVendorInsuranceAction", "rejectVendor", "requestVendorInfo", "setVendorComplianceCredential", "submitVendorForVerification"],
-  "app/actions/calculators.ts": ["calculateAffordability", "calculateHomeValue", "calculateRentVsBuy", "saveCalculation"],
+  "app/actions/calculators.ts": ["calculateHomeValue", "runCalculatorTool", "saveCalculation"], // 156H: runCalculatorTool is the survivor of calculateAffordability / calculateRentVsBuy
   "app/actions/team-branding.ts": ["saveTeamBranding", "saveTeamRevenueGoal", "saveTeamSignature", "saveTeamSplits"],
   "app/actions/credit-copilot.ts": ["createCreditAccount", "referToCreditPartner", "updateContactCreditStatus"],
   "app/actions/user-profile.ts": ["saveAgentEmailSignature", "updateMyAgentIdentity", "updateMyProfile"],
@@ -154,7 +154,7 @@ function staticSection(): void {
       if (f.length) check(`${file}: receipt context well-formed`, false, f.join("; ") + ` — ${ctx.slice(0, 140)}`)
     }
   }
-  check(`row list complete: ${rows} rows = ${wrapped} wrapped + ${open} open`, rows === 102 && wrapped + open === rows)
+  check(`row list complete: ${rows} rows = ${wrapped} wrapped + ${open} open`, rows === 101 && wrapped + open === rows) // 156H: calculateAffordability + calculateRentVsBuy (2 rows) retired onto ONE survivor, runCalculatorTool
   check(`${contexts} receipt contexts scanned, all well-formed`, contexts >= wrapped && failures.every((x) => !x.includes("receipt context")))
   // POSITIVE CONTROLS — each planted defect must be caught by the very functions above.
   const specimen = [

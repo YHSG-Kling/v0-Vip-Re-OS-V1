@@ -368,7 +368,8 @@ const NO_TENANT_CTX = {
 const EDUCATION_TOOLS: Array<{ tool: string; params: any; lane: string }> = [
   { tool: "explain_this", lane: "explainTerm", params: { concept: "What is a 1031 exchange?" } },
   { tool: "property_comparison", lane: "compareProperties", params: { property1: "123 Main St", property2: "456 Oak Ave", buyerCriteria: "3 bed" } },
-  { tool: "affordability_calculator", lane: "runAffordabilityTool", params: { income: "$120,000", debt: "$500", downPayment: "$50,000", rate: "6.5%" } },
+  // Wave 156 (156H round 2): the engine needs every figure the agent used to leave to defaults (term, tax, insurance, the two income limits).
+  { tool: "affordability_calculator", lane: "runAffordabilityTool", params: { income: "$120,000", debt: "$500", downPayment: "$50,000", rate: "6.5%", termYears: "30", propertyTax: "$4,800", insurance: "$1,800", housingRatio: "28%", debtRatio: "36%" } },
   { tool: "neighborhood_research", lane: "researchNeighborhood", params: { neighborhood: "Capitol Hill", city: "Denver", state: "CO" } },
 ]
 

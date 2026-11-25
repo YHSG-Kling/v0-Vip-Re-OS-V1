@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateAIJSON } from "@/lib/ai"
-import { getDefaultCommissionStructure } from "@/lib/brokerage"
+// (wave 156H) getDefaultCommissionStructure is no longer imported here — the seller net sheet reaches it through lib/calculators/artifact.ts computeInternalSellerNet.
 import { checkPublicRateLimit, publicCallerIp } from "@/lib/security/public-rate-limit"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1273,7 +1273,8 @@ export async function runCalculatorTool(data: {
     const track = () => trackToolUsage({ tool: String(data.kind), visitorId: vid, inputs: data.inputs, brokerageId: usageSeat?.brokerageId ?? null })
     if (usageSeat) {
       const { ledgerSessionAction } = await import("@/lib/kernel/action-ledger")
-      await ledgerSessionAction({ brokerageId: usageSeat.brokerageId, action: `calculator.${String(data.kind)}.run`, actor: { type: "user", userId: usageSeat.userId }, subject: { type: "brokerage", id: usageSeat.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool: String(data.kind) } }, track)
+      const action = String(data.kind) === "affordability_range" ? "calculator.affordability.run" : String(data.kind) === "buy_vs_rent" ? "calculator.rent_vs_buy.run" : "calculator.public_tool.run"
+      await ledgerSessionAction({ brokerageId: usageSeat.brokerageId, action, actor: { type: "user", userId: usageSeat.userId }, subject: { type: "brokerage", id: usageSeat.brokerageId }, riskClass: "LOW_RISK_WRITE", reasonCode: "HUMAN_REQUESTED", detail: { tool: String(data.kind) } }, track)
     } else {
       await track()
     }

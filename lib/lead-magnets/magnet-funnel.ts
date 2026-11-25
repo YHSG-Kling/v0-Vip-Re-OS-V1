@@ -436,7 +436,7 @@ interface FunnelContext {
   marketDataForTerritory: boolean
   notes: string[]
   /** WAVE 151 (151I): the sender's rendered voice brief (THE brand-voice reader) — null when unreadable (said in notes). */
-  voiceBrief: string | null
+  voiceBrief: string | null; /** WAVE 156 (156H): the tenant's PUBLISHED calculators (lib/calculators/artifact.ts listPublishedCalculators). */ calculators?: Array<{ formId: string; slug: string; title: string; kind: string }>
 }
 
 function buildMagnetFunnelPlannerPrompt(brief: MagnetFunnelBrief, ctx: FunnelContext): string {
@@ -656,7 +656,7 @@ function composeFunnelPlan(brief: MagnetFunnelBrief, ctx: FunnelContext, draft: 
 
 // ── PURE: arrangements (truthful, enforceable — or not promised) ─────────────
 
-export interface Arrangement { mechanism: string; enforcement: string; due_within_hours?: number; event_at?: string; join_url?: string; sequence_id?: string; lessons?: number; owner_user_id?: string | null }
+export interface Arrangement { mechanism: string; enforcement: string; due_within_hours?: number; event_at?: string; join_url?: string; sequence_id?: string; lessons?: number; owner_user_id?: string | null; calculator_form_id?: string }
 type ArrangementVerdict = { status: "arranged"; promiseLine: string; arrangement: Arrangement } | { status: "planned"; reason: string }
 
 /** PURE. Can this kind be ARRANGED truthfully for this tenant right now? The promise line is the arrangement's own sentence. */
@@ -673,7 +673,7 @@ function assessArrangement(kind: FunnelItemKind, ctx: FunnelContext, now: Date):
       if (!ctx.agentUserId) return { status: "planned", reason: "an agent-prepared value needs an assigned agent with a user seat" }
       return { status: "arranged", promiseLine: `${who} prepares your home's value personally and sends it within one business day`, arrangement: { mechanism: "agent_prepared_value", enforcement: "the C4 promise awaiting_human (24h due) + an agent task; attestPromiseDelivered closes it with the document", due_within_hours: 24, owner_user_id: ctx.agentUserId } }
     case "calculator":
-      return { status: "arranged", promiseLine: "A payment calculator waiting in your private client portal", arrangement: { mechanism: "portal_financial_tools", enforcement: "the portal's financial tools (app/portal/[contactId]/resources) + the portal invite the one door sends + a portal card at capture" } }
+      { const calc = (ctx.calculators ?? [])[0]; if (!calc) return { status: "planned", reason: "no published calculator for this tenant — publish one in the Command Center (Calculators) first; a calculator is never promised that does not exist" }; return { status: "arranged", promiseLine: `${calc.title} — work through your own numbers any time, no sign-up needed`, arrangement: { mechanism: "published_calculator", enforcement: `the published calculator page /lm/${calc.slug} (lib/calculators/artifact.ts; the same component the portal's /portal/<contact>/calculators renders) — a calculation never creates a record`, calculator_form_id: calc.formId } } }
     case "webinar": {
       const at = ctx.webinar ? Date.parse(ctx.webinar.at) : NaN
       if (!ctx.webinar || !Number.isFinite(at)) return { status: "planned", reason: "no live session is scheduled — schedule it first (the event producer, lane 148H C22); a webinar is never promised without a date" }
@@ -1000,7 +1000,7 @@ async function readFunnelContext(svc: Db, brief: MagnetFunnelBrief): Promise<Fun
     brandName: brokerage?.name ?? "the brokerage", brokerageSlug: brokerage?.slug ?? null,
     agentUserId, agentFirstName,
     calendarConnected, sequences, webinar: at && join ? { at, joinUrl: join } : null, marketDataForTerritory, notes,
-    voiceBrief,
+    voiceBrief, calculators: (await (await import("@/lib/calculators/artifact")).listPublishedCalculators(svc as never, brief.brokerageId, notes)).map((c) => ({ formId: c.formId, slug: c.slug, title: c.title, kind: c.kind })),
   }
 }
 
@@ -1398,7 +1398,7 @@ export async function followThroughMagnetFunnel(svc: Db, input: { brokerageId: s
           const enroll = deps.enroll ?? (async (x) => (await import("@/lib/campaign-sequences/enrollment-engine")).enrollContact({ sequenceId: x.sequenceId, contactId: x.contactId, brokerageId: x.brokerageId, enrolledBy: x.enrolledBy ?? undefined, journey: "hold" }))
           const r = await enroll({ brokerageId: input.brokerageId, sequenceId: a.sequence_id, contactId: input.contactId, enrolledBy: (form as { agent_id?: string | null }).agent_id ?? null })
           steps.push(r.success || r.alreadyEnrolled ? { key: it.item_key, kind: it.kind, status: "done", ref: r.enrollmentId ? `sequence_enrollments:${r.enrollmentId}` : "already_enrolled", reason: null } : { key: it.item_key, kind: it.kind, status: "failed", ref: null, reason: r.error ?? "enrolment refused" })
-        } else if (a.mechanism === "portal_financial_tools" || a.mechanism === "portal_card") {
+        } else if (a.mechanism === "published_calculator" || a.mechanism === "portal_financial_tools" || a.mechanism === "portal_card") { // 156H: a published calculator rides the portal card (older rows keep portal_financial_tools)
           portalLines.push({ key: it.item_key, kind: it.kind, line: it.kind === "portal_task" ? (it.title ?? "Your next step") : (it.promise_line ?? it.title ?? it.kind) })
         } else if (a.mechanism === "personal_reel_staged" && a.owner_user_id) {
           const commission = deps.commissionPersonalVideo ?? (async (x) => {

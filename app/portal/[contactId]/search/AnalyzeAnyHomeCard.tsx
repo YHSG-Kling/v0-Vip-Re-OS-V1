@@ -138,6 +138,7 @@ export function AnalyzeAnyHomeCard({
           </div>
         )}
         <p className="text-[11px] text-muted-foreground">Estimates from public data — your agent confirms the real value, the right offer, and connects you with a trusted lender.</p>
+        <p className="text-xs"><Link className="underline" href={`/portal/${contactId}/calculators`}>Open your payment and affordability calculators</Link></p>
       </CardContent>
     </Card>
   )

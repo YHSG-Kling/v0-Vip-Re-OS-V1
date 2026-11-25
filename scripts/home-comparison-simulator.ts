@@ -19,11 +19,14 @@ const homes = [
 ]
 
 function main() {
-  const cmp = compareHomes(homes, { downPaymentPercent: 20, annualInterestRatePct: 6.5 })
+  // Wave 156 (156H round 2): the shared assumptions are the BUYER's own figures (the engine refuses a blank one — no default rate).
+  const cmp = compareHomes(homes, { downPaymentPct: 20, ratePct: 6.5, termYears: 30, propertyTaxRatePct: 1.1, annualInsurance: 1800 })
 
   console.log("\n[Computes the per-home numbers]")
   check("compares all three homes", cmp.count === 3 && cmp.homes.length === 3)
-  check("monthly payment computed per home (>0)", cmp.homes.every((h) => h.monthlyPayment > 0))
+  check("monthly payment computed per home (>0)", cmp.homes.every((h) => (h.monthlyPayment ?? 0) > 0))
+  const noFigures = compareHomes(homes, {})
+  check("no buyer figures → no payment, no 'Lowest payment' badge, and the comparison says what to enter (never a default rate)", noFigures.homes.every((h) => h.monthlyPayment === null && !h.highlights.includes("Lowest payment")) && noFigures.paymentNeeds.some((n) => /^Enter a value/.test(n)))
   check("$/sqft computed (480k/2000 = $240)", cmp.homes.find((h) => h.id === "a")?.pricePerSqft === 240)
   check("caps at 4 homes", compareHomes([...homes, ...homes], {}).count === 4)
 
@@ -37,7 +40,7 @@ function main() {
 
   console.log("\n[Honest edges]")
   check("a TIE crowns no winner (don't pick arbitrarily)", (() => {
-    const tied = compareHomes([{ id: "x", address: "X", price: 500000, sqft: 2000 }, { id: "y", address: "Y", price: 500000, sqft: 2000 }], {})
+    const tied = compareHomes([{ id: "x", address: "X", price: 500000, sqft: 2000 }, { id: "y", address: "Y", price: 500000, sqft: 2000 }], { downPaymentPct: 20, ratePct: 6.5, termYears: 30, propertyTaxRatePct: 1.1, annualInsurance: 1800 })
     return tied.homes.every((h) => !h.highlights.includes("Lowest payment"))
   })())
   check("missing sqft → null $/sqft (no fabrication)", compareHomes([{ id: "z", address: "Z", price: 500000 }, { id: "w", address: "W", price: 400000 }], {}).homes[0].pricePerSqft === null)

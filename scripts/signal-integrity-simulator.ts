@@ -106,6 +106,11 @@ const HANDOFF_ANNOUNCEMENTS = new Set<string>([
   // happened, synchronously, in the emitting code below; the bus signal is the record on
   // the feed, not a second action to perform.
   "lead_ready_for_assignment", // lib/kernel/lead-acquisition-handlers.ts's own assignment engine runs off this same event
+  // Wave 156 (156H): a lead-magnet / calculator opt-in's ACTIONABLE hand-off is the capture path's own contact_consented_intake
+  // signal (handled — ai_isa, lib/kernel/manager-signals.ts answerConsentedIntake), raised by the same captureFormSubmission
+  // call; the assignment to the magnet's agent also happens inline there. lead_magnet_handoff records the side's manager and,
+  // for a calculator, the next legitimate step (explain_estimate / agent_task) on the feed for that manager's human.
+  "lead_magnet_handoff",
   // TOMBSTONE (wave 49, 2026-09-10): "lead_claimed" removed — the signal itself was retired
   // (owner ruling: no kernel event for agent claiming a lead; see lib/kernel/events.ts).
   // TOMBSTONE (wave 49, 2026-09-10): "ai_isa_handoff_to_agent" removed — it now has REAL
