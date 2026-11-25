@@ -381,7 +381,7 @@ async function insertLedgerRow(
   const policyRef = ctx.policyKey
     ? (ctx.policyVersion !== undefined ? formatPolicyRef(ctx.policyKey, ctx.policyVersion) : await resolvePolicyRef(svc, ctx.brokerageId, ctx.policyKey))
     : null
-  const write = async (code: ActionReasonCode, detailNote: string | null, withPolicyColumn = true): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null }> => {
+  const write = async (code: ActionReasonCode, detailNote: string | null, withPolicyColumn = true): Promise<{ data: { id?: string } | null; error: { code?: string; message?: string } | null; written?: Record<string, unknown> | null }> => {
     const { data, error } = await svc.from("agent_action_ledger").insert({
     brokerage_id: ctx.brokerageId,
     action: ctx.action,
