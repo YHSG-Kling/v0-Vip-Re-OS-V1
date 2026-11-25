@@ -935,7 +935,7 @@ export default async function BrokerageDashboard({
           </>) : (
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm font-semibold">Recruiting ROI — {recruitingMoneyFigure ? recruitingFigureWords(recruitingMoneyFigure) : "Unknown — could not be read"}</CardTitle></CardHeader>
-              <CardContent className="pt-0"><p className="text-sm text-muted-foreground">{recruitingMoneyFigure && recruitingMoneyFigure.state !== "ok" ? recruitingMoneyFigure.reason : ""}</p></CardContent>
+              <CardContent className="pt-0"><p className="text-sm text-muted-foreground">{recruitingMoneyFigure && "reason" in recruitingMoneyFigure ? recruitingMoneyFigure.reason : ""}</p></CardContent>
             </Card>
           )}
           <BrokerActionStack actions={brokerActions} />
