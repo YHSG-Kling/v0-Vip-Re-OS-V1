@@ -1585,6 +1585,7 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
                         catalogue
                       </Badge>
                     )}
+                    {packetRowIdOf(f.path) && <FormReadButton packetId={packetRowIdOf(f.path) as string} />}
                   </label>
                 )
               })}
@@ -2664,6 +2665,47 @@ function DealPacketPanel({ kind, stateCode }: { kind: "offer" | "listing"; state
         ))}
       </ul>
     </div>
+  )
+}
+
+/** WAVE 156 (156C): the library row id of a REGISTERED packet path (`brokerage|teams/{owner}/packets/{rowId}/{file}.pdf`), else null. */
+function packetRowIdOf(path: string): string | null {
+  const m = /^(?:brokerage|teams)\/[0-9a-f-]{36}\/packets\/([0-9a-f-]{36})\/[^/]+\.pdf$/i.exec(path)
+  return m ? m[1] : null
+}
+
+/**
+ * WAVE 156 (156C): THE AI FORM READER, REVIEWABLE — app/api/forms/document-read (lib/forms/form-document-reader.ts). Shows what the
+ * reader found in THIS form — fields, signature boxes, the legal description, governing clauses, requirements — each with the quote
+ * it rests on. Nothing is applied: the agent reviews and fills (the CDA is refused by the reader — the agent fills the CDA).
+ */
+function FormReadButton({ packetId }: { packetId: string }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [res, setRes] = useState<{ refused?: string; error?: string; suggestions?: Array<{ kind: string; target: string; value?: string | null; evidence: { quote: string } }>; notes?: string[] } | null>(null)
+  async function read(e: React.MouseEvent) {
+    e.preventDefault(); e.stopPropagation()
+    setOpen(true)
+    if (res || busy) return
+    setBusy(true)
+    try {
+      const r = await fetch("/api/forms/document-read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ packet_id: packetId }) })
+      setRes(await r.json())
+    } catch (err) { setRes({ error: err instanceof Error ? err.message : "Network error" }) } finally { setBusy(false) }
+  }
+  return (
+    <span className="shrink-0" onClick={(e) => e.stopPropagation()}>
+      <button type="button" className="text-[11px] underline text-muted-foreground" onClick={read}>{busy ? "Reading…" : "AI read (review)"}</button>
+      {open && res && (
+        <span className="block max-w-xs text-[11px] text-muted-foreground mt-1">
+          {res.refused ?? res.error ?? null}
+          {(res.suggestions ?? []).slice(0, 12).map((s, i) => (
+            <span key={i} className="block">{s.kind}: {s.target}{s.value ? ` = ${s.value}` : ""} — “{s.evidence.quote.slice(0, 120)}” (to review)</span>
+          ))}
+          {(res.notes ?? []).map((n, i) => <span key={`n${i}`} className="block italic">{n}</span>)}
+        </span>
+      )}
+    </span>
   )
 }
 
