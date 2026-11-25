@@ -498,6 +498,12 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
       }
     }
   }
+  // WAVE 156 (lane 156F): THE SUBJECT'S WEBSITE VISITOR DATA — the same rows the erasure deletes (captured email, visit
+  // IPs, pages read, searches, identified sessions, identification evidence), through the ONE selector
+  // (lib/privacy/visitor-data-erasure.ts). A refused read aborts the export like every other source.
+  const { collectVisitorDataForSubject } = await import("@/lib/privacy/visitor-data-erasure")
+  const visitorData = await collectVisitorDataForSubject(svc, { brokerageId: req.brokerage_id as string, contactIds: subjectContactIds, email: email as string })
+  if (!visitorData.ok) failedSources.push(`website visitor data: ${visitorData.error}`)
   if (failedSources.length > 0) {
     return {
       ok: false,
@@ -555,10 +561,12 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
     // Wave 147 (147A): every protected / sensitive attribute held about the subject, each with its source, date, basis and the
     // rights it is held under — vendor-MODELED values are labelled as such, never presented as facts about the person.
     protected_attributes: protectedAttributes,
+    // Wave 156 (156F): website visits — sessions, behavioral signals, pages and searches, off-site activity, identification evidence.
+    website_visitor_data: visitorData.ok ? visitorData.data : null,
     ccpa_categories_disclosed: [
       "identifiers (email, phone, name)",
       "commercial information (transactions, offers)",
-      "internet activity (portal logins)",
+      "internet activity (portal logins, website visits and searches on the brokerage's own site)",
       "geolocation (property interest area)",
       "professional info (agent of record)",
     ],

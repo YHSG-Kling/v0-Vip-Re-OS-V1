@@ -33,17 +33,29 @@
  *     an "anonymized" request). The identified-visitor reaction's newsletter enrollment honors email_opt_out and an
  *     earlier unsubscribe.
  *
+ * ROUND 2 (integrator):
+ *     §F also DRIVES the right-to-know export (fulfillExportRequestAction: the subject's visitor rows and evidence are in
+ *     the bundle, nobody else's; a refused read aborts it) and the right-to-delete door itself (fulfillDeleteRequestAction:
+ *     closes only after every delete — contact, visitor rows, identification evidence, a person row that existed only
+ *     through it — and stays OPEN when one is refused), with the session seat as a fixture and the real role gate.
+ * §G  A PUBLIC HIT IS BOUND TO THE TENANT'S OWN SITE. The pixel records a hit only when its Referer is a host the named
+ *     tenant registered (active verified custom domain or declared website, via loadQrTenantHosts); the widget visit
+ *     route only when a browser Origin is present and the Referer is that tenant's own widget page. trackBehavior is no
+ *     longer a "use server" export (a public endpoint taking a tenant id); only the two tenant-deciding routes import it.
+ *
  * ROOT override: VISITOR_TRUTH_ROOT=<tree> runs every drive against that tree's modules (red-at-base control).
  *
  * BLIND SPOTS (published). The in-memory client has no row security, no UNIQUE constraint on website_visitors.session_id
- * (the pixel's own read-then-write is what is proven) and no foreign keys. fulfillDeleteRequestAction is not DRIVEN (its
- * session gate and audit writes need a real session) — its ordering is a source rule; the erasure module it calls is
- * driven. app/actions/lead-intelligence.ts trackBehavior is not driven here (it reaches a model); it writes analytics on
- * an anonymous signal and links a person only through visitor-email-capture.ts, which IS driven. The snippet is checked
- * as text (it runs in a stranger's browser), not executed. The vendor census matches a fixed list of known visitor-ID
- * hosts and endpoint names (VISITOR_ID_VENDOR_MARKERS): a vendor not on the list is not seen — §C's fetch counter is the
- * behavioral half. person_identities evidence rows written at identification are not part of the erasure (lib/kernel/
- * person-identity.ts owns them).
+ * (the pixel's own read-then-write is what is proven) and no foreign keys. The DSAR doors are driven with the session
+ * seat as a fixture (the session client is the in-memory client answering auth.getUser) and the ledger wrapper as a
+ * pass-through; `update(…, { count: "exact" })` is answered by this guard's own client wrapper from the fake's write log
+ * (the shared fake is unchanged). trackBehavior is driven only through the widget visit route; its model wrapper is a
+ * counted stub (in production it refuses without a session). The Referer / Origin binding stops a BROWSER on another
+ * site; a server-side caller can forge both headers — it can then write only into a tenant whose registered host or
+ * widget page it names, and the per-IP throttle still applies; a shared secret per site would be the next step (not
+ * built). The snippet is checked as text (it runs in a stranger's browser), not executed. The vendor census matches a
+ * fixed list of known visitor-ID hosts and endpoint names (VISITOR_ID_VENDOR_MARKERS): a vendor not on the list is not
+ * seen — §C's fetch counter is the behavioral half.
  */
 import { registerHooks } from "node:module"
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs"
@@ -65,14 +77,20 @@ const code = (f: string, root = ROOT): string => stripComments(raw(f, root))
 
 // ═══ fixture world ════════════════════════════════════════════════════════════════════════════════════════════════════
 const u = (p: string, n: number) => `${p}${String(n).padStart(7, "0")}-0000-4000-8000-000000000156`
-const B1 = u("b", 1), B2 = u("b", 2)
+const B1 = u("b", 1), B2 = u("b", 2), B3 = u("b", 3)
+const U_BROKER = u("a", 1)
 const C_ANN = u("c", 1), C_HOUSE1 = u("c", 2), C_HOUSE2 = u("c", 3), C_BOB = u("c", 4), C_X = u("c", 9)
 const L_LEE = u("d", 1)
 const ANN = "ann@example.test", HOUSE = "family@example.test", BOB_PHONE = "5551230000", LEE = "lee@example.test"
 
 function world(extra: Record<string, Row[]> = {}, opts: Record<string, unknown> = {}): MemClient {
   return memSupabase({
-    brokerages: [{ id: B1 }, { id: B2 }],
+    // ROUND 2: each tenant's REGISTERED site (the declared brand website) and public widget slug.
+    brokerages: [{ id: B1, slug: "alpha", name: "Alpha", widget_enabled: true, status: "active", deleted_at: null, website: null }, { id: B2, slug: "beta", name: "Beta", widget_enabled: true, status: "active", deleted_at: null, website: null }, { id: B3, slug: "gamma", name: "Gamma", widget_enabled: true, status: "active", deleted_at: null, website: null }],
+    brokerage_brand_settings: [{ id: "bbs-1", brokerage_id: B1, website_url: "https://tenant.example" }, { id: "bbs-2", brokerage_id: B2, website_url: "other.example" }],
+    tenant_custom_domains: [{ id: "tcd-1", brokerage_id: B2, domain: "homes.beta.test", status: "active" }, { id: "tcd-2", brokerage_id: B2, domain: "pending.beta.test", status: "pending_dns" }],
+    users: [{ id: U_BROKER, brokerage_id: B1, user_type: "broker", email: "broker@alpha.test" }],
+    person_identities: [], person_identity_evidence: [], data_subject_requests: [], audit_log: [],
     contacts: [
       { id: C_ANN, brokerage_id: B1, email: ANN, phone: null, first_name: "Ann", last_name: "A", email_opt_out: false },
       { id: C_HOUSE1, brokerage_id: B1, email: HOUSE, phone: null, first_name: "P1", last_name: "H" },
@@ -89,14 +107,38 @@ function world(extra: Record<string, Row[]> = {}, opts: Record<string, unknown> 
 
 // ═══ seams (installed BEFORE any app module loads) ════════════════════════════════════════════════════════════════════
 const G = globalThis as any
-G.__VT = { mem: world() as MemClient, calls: { fetch: 0, kernelEvents: 0, trackExternal: 0, consentWrites: 0, ledger: 0 } }
+G.__VT = { mem: world() as MemClient, seat: null as string | null, calls: { fetch: 0, kernelEvents: 0, trackExternal: 0, consentWrites: 0, ledger: 0, model: 0, trackStub: 0 } }
+/**
+ * The service client the product sees: the in-memory client, plus supabase-js's `update(patch, { count: "exact" })`
+ * answer (the matched-row count the DSAR doors close on), added HERE rather than in the shared fake so no other proof's
+ * behavior moves. The count is the update's own matched rows (the fake's write log), never assumed.
+ */
+G.__VT.svc = () => {
+  const m = G.__VT.mem as MemClient
+  return new Proxy(m, { get(t: any, k) {
+    if (k === "auth") return { getUser: async () => ({ data: { user: G.__VT.seat ? { id: G.__VT.seat, email: "seat@example.test" } : null }, error: null }) }
+    if (k !== "from") return t[k]
+    return (table: string) => {
+      const inner = t.from(table)
+      let counted = false
+      const wrap: any = new Proxy(inner, { get(bt: any, bk) {
+        if (bk === "update") return (p: any, o?: { count?: string }) => { counted = o?.count === "exact"; bt.update(p); return wrap }
+        if (bk === "then") return (res: any, rej: any) => bt.then((r: any) => res(counted && r && !r.error ? { ...r, count: m.writes[m.writes.length - 1]?.matched ?? 0 } : r), rej)
+        const v = bt[bk]
+        return typeof v === "function" ? (...a: unknown[]) => { const out = v.apply(bt, a); return out === bt ? wrap : out } : v
+      } })
+      return wrap
+    }
+  } })
+}
 const realFetch = globalThis.fetch
 globalThis.fetch = (async (...a: unknown[]) => { G.__VT.calls.fetch++; throw new Error(`network refused in proof: ${String(a[0]).slice(0, 80)}`) }) as typeof fetch
 void realFetch
 
 const realUrl = (p: string) => pathToFileURL(join(ROOT, p)).href
 const OVERRIDE: Record<string, string> = {
-  "lib/supabase/service.ts": "export function createServiceClient(){ return globalThis.__VT.mem }",
+  "lib/supabase/service.ts": "export function createServiceClient(){ return globalThis.__VT.svc() }",
+  "lib/supabase/server.ts": "export async function createClient(){ return globalThis.__VT.svc() }; export async function createServerClient(){ return globalThis.__VT.svc() }",
 }
 const REPLACE: Record<string, string> = {
   "lib/kernel/index.ts": "export async function processKernelEvent(){ globalThis.__VT.calls.kernelEvents++; return { ok: true } }",
@@ -104,8 +146,11 @@ const REPLACE: Record<string, string> = {
   "lib/kernel/compliance/require-contact-consent.ts": "export async function persistContactConsent(p){ globalThis.__VT.calls.consentWrites++; const id = 'consent-' + globalThis.__VT.calls.consentWrites; globalThis.__VT.mem.tables.contact_consent_events.push({ id, brokerage_id: p.brokerageId, consented: p.consented, consent_text: p.consentText }); return { consentEventId: id } }",
   "lib/kernel/person-identity.ts": "export async function resolvePerson(){ return { ok: false, reason: 'no_identity_anchor' } }; export async function linkPersonEvidence(){ return { ok: true } }",
   "lib/errors/collect-error.ts": "export async function collectError(){ return null }",
+  // The model wrapper refuses without a session in production; here it is a COUNTED stub (no provider is reached).
+  "app/actions/ai-generate.ts": "export async function generateAIJSON(){ globalThis.__VT.calls.model++; return { data: null, error: 'fixture' } }",
+  "lib/enrichment/protected-research-store.ts": "export async function readProtectedAttributes(){ return { ok: true, attributes: [] } }",
   "lib/lead-pipeline/scrape-territories.ts": `export async function resolveActiveScrapeTerritories(){ return { noOp: false, territories: [{ id: 'terr-1', brokerage_id: ${JSON.stringify(B1)}, city: 'Pace', state: 'FL', zip_codes: ['32571'] }] } }`,
-  "app/actions/lead-intelligence.ts": "const c = () => globalThis.__VT.calls; export async function scrapeSocialSignalsWithZenRows(){ return { rawIngested: 0 } }; export async function scrapeExternalBehavior(){ return { rawIngested: 0, discoveredAddresses: ['12 Oak St, Pace, FL'] } }; export async function analyzeGoogleSearchIntent(){ return { success: false } }; export async function enrichPropertyIntelligence(){ return { success: false } }; export async function trackExternalActivity(d){ c().trackExternal++; globalThis.__VT.mem.tables.external_behavior.push({ id: 'eb-' + c().trackExternal, brokerage_id: " + JSON.stringify(B1) + ", activity_type: d.behaviorType, property_addresses_viewed: [d.propertyAddress] }); return { success: true } }",
+  "app/actions/lead-intelligence.ts": "const c = () => globalThis.__VT.calls; export async function scrapeSocialSignalsWithZenRows(){ return { rawIngested: 0 } }; export async function scrapeExternalBehavior(){ return { rawIngested: 0, discoveredAddresses: ['12 Oak St, Pace, FL'] } }; export async function analyzeGoogleSearchIntent(){ return { success: false } }; export async function enrichPropertyIntelligence(){ return { success: false } }; export async function trackBehavior(d){ c().trackStub++; globalThis.__VT.mem.tables.behavioral_signals.push({ id: 'bs-stub-' + c().trackStub, brokerage_id: d.brokerage_id, visitor_id: d.visitor_id }); return { success: true } }; export async function trackExternalActivity(d){ c().trackExternal++; globalThis.__VT.mem.tables.external_behavior.push({ id: 'eb-' + c().trackExternal, brokerage_id: " + JSON.stringify(B1) + ", activity_type: d.behaviorType, property_addresses_viewed: [d.propertyAddress] }); return { success: true } }",
 }
 const BY_SPEC: Record<string, string> = {
   "server-only": "export {}",
@@ -148,6 +193,16 @@ const quiet = async <X,>(fn: () => Promise<X>): Promise<X> => {
 async function drive<X>(fn: () => Promise<X>): Promise<{ r: X | undefined; threw: string | null }> {
   try { return { r: await quiet(fn), threw: null } } catch (e) { return { r: undefined, threw: (e as Error)?.message ?? String(e) } }
 }
+function walk(dir: string, out: string[] = []): string[] {
+  const p = join(ROOT, dir)
+  if (!existsSync(p)) return out
+  for (const e of readdirSync(p, { withFileTypes: true })) {
+    const rel = `${dir}/${e.name}`
+    if (e.isDirectory()) { if (e.name !== "node_modules" && !e.name.startsWith(".")) walk(rel, out) }
+    else if (/\.(ts|tsx|js|mjs)$/.test(e.name)) out.push(rel)
+  }
+  return out
+}
 let ipN = 0
 const nextIp = () => `203.0.113.${(++ipN % 250) + 1}`
 
@@ -163,8 +218,8 @@ async function main() {
   const newsletter = await load("lib/content/newsletter-enrollment.ts")
   const intentCampaign = await load("lib/kernel/intent-campaign.ts")
 
-  const firePixel = (b: string, s: string, page = "https://tenant.example/listings/12-oak") =>
-    pixel.GET(new NextRequest(`https://app.test/api/track/pixel?b=${b}&s=${s}&p=${encodeURIComponent(page)}`, { headers: { "x-forwarded-for": nextIp() } }))
+  const firePixel = (b: string, s: string, page = "https://tenant.example/listings/12-oak", referer?: string | null) =>
+    pixel.GET(new NextRequest(`https://app.test/api/track/pixel?b=${b}&s=${s}&p=${encodeURIComponent(page)}`, { headers: { "x-forwarded-for": nextIp(), ...(referer === null ? {} : { referer: referer ?? page }) } }))
   const postIdentify = (body: Record<string, unknown>) =>
     identify.POST(new NextRequest("https://app.test/api/track/identify", { method: "POST", body: JSON.stringify(body), headers: { "x-forwarded-for": nextIp() } }))
   const visitorRow = (s: string) => G.__VT.mem.tables.website_visitors.find((r: Row) => r.session_id === s)
@@ -277,7 +332,7 @@ async function main() {
   // ═══ §E ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
   section("§E  no cross-tenant identifier linking")
   fresh({ website_visitors: [{ id: "wv-8", brokerage_id: B1, session_id: "sess-b1", page_url: "https://tenant.example/", contact_id: C_ANN, lead_id: null, identified_at: "2026-11-24T00:00:00Z", first_seen_at: "2026-11-24T00:00:00Z" }] })
-  await drive(() => firePixel(B2, "sess-b1", "https://attacker.example/"))
+  await drive(() => firePixel(B2, "sess-b1", "https://other.example/"))
   const moved = visitorRow("sess-b1")
   check("E1 a session id fired under ANOTHER tenant's id stays in its own tenant (RED at base: the upsert moved it, contact link and all)", moved?.brokerage_id === B1 && moved?.contact_id === C_ANN, moved)
   check("E2 …and the other tenant's page is not written onto it; first_seen_at is untouched", moved?.page_url === "https://tenant.example/" && moved?.first_seen_at === "2026-11-24T00:00:00Z", moved)
@@ -347,20 +402,128 @@ async function main() {
   const reaction = code("lib/kernel/manager-signals.ts")
   check("F10 the identified-visitor reaction reaches exactly that opt-out-honoring enrollment", /"campaign_orchestrator:website_visitor_identified"[\s\S]{0,900}enrollContactInNewsletter/.test(reaction))
 
+  // ── ROUND 2 — identification evidence, the right-to-know export, and the DSAR delete DRIVEN ───────────────────────
+  const P_VISIT = "pi-visitor-only", P_SHARED = "pi-shared"
+  const dsarWorld = (opts: Record<string, unknown> = {}) => {
+    subjectWorld()
+    const t0 = G.__VT.mem.tables
+    t0.person_identities.push({ id: P_VISIT, brokerage_id: B1, email_normalized: ANN }, { id: P_SHARED, brokerage_id: B1, email_normalized: "bob@example.test" })
+    t0.person_identity_evidence.push(
+      { id: "pe-sig", brokerage_id: B1, person_id: P_VISIT, entity_type: "behavioral_signal", entity_id: "bs-a", source: "visitor_identify" },
+      { id: "pe-con", brokerage_id: B1, person_id: P_VISIT, entity_type: "contact", entity_id: C_ANN, source: "visitor_identify" },
+      { id: "pe-cap", brokerage_id: B1, person_id: P_VISIT, entity_type: "contact", entity_id: C_ANN, source: "contact_capture" },
+      { id: "pe-bob", brokerage_id: B1, person_id: P_SHARED, entity_type: "behavioral_signal", entity_id: "bs-o", source: "visitor_identify" },
+      { id: "pe-bob2", brokerage_id: B1, person_id: P_SHARED, entity_type: "contact", entity_id: C_BOB, source: "contact_capture" },
+    )
+    t0.data_subject_requests.push(
+      { id: "dsr-del", brokerage_id: B1, subject_email: ANN, identity_verified: true, request_type: "delete", status: "in_progress" },
+      { id: "dsr-acc", brokerage_id: B1, subject_email: ANN, identity_verified: true, request_type: "access", status: "in_progress" },
+    )
+    if (Object.keys(opts).length > 0) G.__VT.mem = world(t0, opts)
+    G.__VT.seat = U_BROKER
+  }
+  dsarWorld()
+  // Without the contact-capture evidence the person exists ONLY through the visitor identification.
+  G.__VT.mem.tables.person_identity_evidence = G.__VT.mem.tables.person_identity_evidence.filter((r: Row) => r.id !== "pe-cap")
+  const ev = await drive(() => erasure.eraseVisitorDataForSubject(G.__VT.mem, { brokerageId: B1, contactIds: [C_ANN], email: ANN }))
+  const tv = G.__VT.mem.tables
+  check("F11 the erasure removes the identification EVIDENCE the visitor-identify loop wrote for the subject (signal + contact rows), counted (RED at base: kept)",
+    (ev.r as any)?.ok === true && !tv.person_identity_evidence.some((r: Row) => r.id === "pe-sig" || r.id === "pe-con") && (ev.r as any)?.deleted?.person_identity_evidence === 2, ev.r ?? erasure.__loadError)
+  check("F12 …and the person row that existed ONLY because of it; another person's evidence and person row survive",
+    !tv.person_identities.some((r: Row) => r.id === P_VISIT) && tv.person_identities.some((r: Row) => r.id === P_SHARED) && tv.person_identity_evidence.some((r: Row) => r.id === "pe-bob2"), tv.person_identities)
+  dsarWorld()
+  const ev2 = await drive(() => erasure.eraseVisitorDataForSubject(G.__VT.mem, { brokerageId: B1, contactIds: [C_ANN], email: ANN }))
+  check("F13 POSITIVE CONTROL — a person other evidence still names (a contact capture) is KEPT; only the visitor evidence goes",
+    (ev2.r as any)?.ok === true && G.__VT.mem.tables.person_identities.some((r: Row) => r.id === P_VISIT) && G.__VT.mem.tables.person_identity_evidence.some((r: Row) => r.id === "pe-cap"), ev2.r)
+  dsarWorld({ refuse: { person_identity_evidence: "permission denied (fixture)" } })
+  const ev3 = await drive(() => erasure.eraseVisitorDataForSubject(G.__VT.mem, { brokerageId: B1, contactIds: [C_ANN], email: ANN }))
+  check("F14 a refused evidence read/delete fails the erasure closed — and nothing was deleted before it", (ev3.r as any)?.ok === false && G.__VT.mem.tables.behavioral_signals.some((r: Row) => r.id === "bs-a"), ev3.r ?? erasure.__loadError)
+
+  const dsarMod = await load("app/actions/privacy/data-subject-requests.ts")
+  dsarWorld()
+  const ex = await drive(() => dsarMod.fulfillExportRequestAction("dsr-acc"))
+  const bundle = (ex.r as any)?.bundle
+  const wvd = bundle?.website_visitor_data
+  const idsIn = (k: string) => ((wvd?.[k] ?? []) as Row[]).map((r) => r.id).sort()
+  check("F15 the right-to-know export (driven) carries the subject's website visitor data — sessions, signals (incl. the captured email), pages, off-site rows, evidence (RED at base: absent)",
+    (ex.r as any)?.ok === true && JSON.stringify(idsIn("website_visitors")) === JSON.stringify(["wv-a", "wv-l"]) && JSON.stringify(idsIn("behavioral_signals")) === JSON.stringify(["bs-a", "bs-e"])
+    && idsIn("site_activity").includes("sa-a") && idsIn("external_behavior").includes("eb-a") && idsIn("person_identity_evidence").includes("pe-sig"), ex.threw ?? (ex.r as any)?.error ?? Object.keys(bundle ?? {}))
+  check("F16 …and NOTHING of anyone else's: another person's sessions / signals / evidence and another tenant's capture are absent",
+    !idsIn("website_visitors").includes("wv-other") && !idsIn("behavioral_signals").includes("bs-o") && !idsIn("behavioral_signals").includes("bs-x") && !idsIn("person_identity_evidence").includes("pe-bob"))
+  dsarWorld({ refuse: { site_activity: "permission denied (fixture)" } })
+  const exr = await drive(() => dsarMod.fulfillExportRequestAction("dsr-acc"))
+  check("F17 a refused visitor-data read ABORTS the export (never a silently short bundle) and the request stays open",
+    (exr.r as any)?.ok === false && /website visitor data/.test((exr.r as any)?.error ?? "") && G.__VT.mem.tables.data_subject_requests.find((r: Row) => r.id === "dsr-acc")?.status === "in_progress", exr.r ?? exr.threw)
+
+  dsarWorld()
+  const fd = await drive(() => dsarMod.fulfillDeleteRequestAction("dsr-del"))
+  const reqDel = G.__VT.mem.tables.data_subject_requests.find((r: Row) => r.id === "dsr-del")
+  check("F18 fulfillDeleteRequestAction (DRIVEN) anonymizes the contact, deletes the subject's visitor rows and evidence, and ONLY THEN closes the request (RED at base: closed with the visitor rows still on file)",
+    (fd.r as any)?.ok === true && reqDel?.status === "fulfilled" && !G.__VT.mem.tables.website_visitors.some((r: Row) => r.id === "wv-a") && !G.__VT.mem.tables.behavioral_signals.some((r: Row) => r.id === "bs-e") && !G.__VT.mem.tables.person_identity_evidence.some((r: Row) => r.id === "pe-sig")
+    && G.__VT.mem.tables.contacts.find((r: Row) => r.id === C_ANN)?.last_name === "[deleted]", fd.threw ?? fd.r ?? dsarMod.__loadError)
+  check("F19 …another person's visitor rows are untouched by that request", G.__VT.mem.tables.website_visitors.some((r: Row) => r.id === "wv-other") && G.__VT.mem.tables.behavioral_signals.some((r: Row) => r.id === "bs-o"))
+  dsarWorld({ refuse: { site_activity: "permission denied (fixture)" } })
+  const fdr = await drive(() => dsarMod.fulfillDeleteRequestAction("dsr-del"))
+  const reqOpen = G.__VT.mem.tables.data_subject_requests.find((r: Row) => r.id === "dsr-del")
+  check("F20 a FAILING visitor delete leaves the request OPEN (not fulfilled) and says why (RED at base: marked fulfilled)",
+    (fdr.r as any)?.ok === false && reqOpen?.status === "in_progress" && /visitor data was NOT erased/.test((fdr.r as any)?.error ?? ""), fdr.r ?? fdr.threw)
+  G.__VT.seat = null
+  dsarWorld(); G.__VT.seat = null
+  const anon = await drive(() => dsarMod.fulfillDeleteRequestAction("dsr-del"))
+  check("F21 POSITIVE CONTROL — with no session the DSAR door refuses and deletes nothing (the drive reaches the real gate)",
+    (anon.r as any)?.ok === false && G.__VT.mem.tables.website_visitors.some((r: Row) => r.id === "wv-a"), anon.r ?? anon.threw)
+
+  // ═══ §G ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
+  section("§G  ROUND 2 — a public hit is bound to the tenant's OWN site; the visit writer is no public endpoint")
+  fresh()
+  await drive(() => firePixel(B1, "sess-g1", "https://tenant.example/listings/1"))
+  check("G1 a pixel hit from tenant A's registered website, naming tenant A, is recorded (positive)", visitorRow("sess-g1")?.brokerage_id === B1, visitorRow("sess-g1"))
+  await drive(() => firePixel(B2, "sess-g2", "https://tenant.example/listings/1"))
+  check("G2 a hit from tenant A's site naming tenant B writes NOTHING into B (RED at base: any page could write into any tenant by its id)", !visitorRow("sess-g2") && !G.__VT.mem.tables.website_visitors.some((r: Row) => r.brokerage_id === B2), visitorRow("sess-g2"))
+  await drive(() => firePixel(B1, "sess-g3", "https://tenant.example/", null))
+  check("G3 a hit with NO Referer (nothing says which site fired it) records nothing — fail closed", !visitorRow("sess-g3"))
+  await drive(() => firePixel(B1, "sess-g4", "https://www.tenant.example/a"))
+  await drive(() => firePixel(B2, "sess-g5", "https://homes.beta.test/a"))
+  check("G4 the registered host's www twin and an ACTIVE verified custom domain are the tenant's site (positive)", visitorRow("sess-g4")?.brokerage_id === B1 && visitorRow("sess-g5")?.brokerage_id === B2)
+  await drive(() => firePixel(B2, "sess-g6", "https://pending.beta.test/a"))
+  await drive(() => firePixel(B2, "sess-g7", "https://evil-other.example/a"))
+  check("G5 a custom domain that is NOT active, and a look-alike host, are not the tenant's site", !visitorRow("sess-g6") && !visitorRow("sess-g7"))
+  await drive(() => firePixel(B3, "sess-g8", "https://tenant.example/"))
+  check("G6 a tenant that registered no website records nothing (fail closed)", !visitorRow("sess-g8"))
+
+  const visitorRoute = await load("app/api/track/visitor/route.ts")
+  const postVisit = (slug: string, headers: Record<string, string>) => visitorRoute.POST(new NextRequest("https://app.test/api/track/visitor", {
+    method: "POST", body: JSON.stringify({ brokerage_slug: slug, visitor_id: `v-${slug}-${ipN}`, page_visited: "https://tenant.example/", time_spent: 3 }),
+    headers: { "x-forwarded-for": nextIp(), host: "app.test", "content-type": "application/json", ...headers },
+  }))
+  const prevApp = process.env.NEXT_PUBLIC_APP_URL
+  process.env.NEXT_PUBLIC_APP_URL = "https://app.test"
+  fresh(); G.__VT.calls.trackStub = 0
+  const vOk = await drive(() => postVisit("beta", { origin: "https://app.test", referer: "https://app.test/widget/beta" }))
+  check("G7 a visit from tenant B's own widget page, naming B, is recorded in B (positive)", (vOk.r as any)?.status === 200 && G.__VT.mem.tables.behavioral_signals.some((r: Row) => r.brokerage_id === B2), vOk.threw ?? (vOk.r as any)?.status)
+  fresh(); G.__VT.calls.trackStub = 0
+  const vX = await drive(() => postVisit("beta", { origin: "https://app.test", referer: "https://app.test/widget/alpha" }))
+  check("G8 a visit from tenant A's widget page naming tenant B is REFUSED and writes nothing into B (RED at base: the slug alone decided)",
+    (vX.r as any)?.status === 403 && !G.__VT.mem.tables.behavioral_signals.some((r: Row) => r.brokerage_id === B2) && G.__VT.calls.trackStub === 0, (vX.r as any)?.status)
+  fresh(); G.__VT.calls.trackStub = 0
+  const vNo = await drive(() => postVisit("beta", {}))
+  check("G9 a visit with no browser Origin / Referer (a script naming a slug) is refused, nothing written (RED at base: no Origin passed)",
+    (vNo.r as any)?.status === 403 && G.__VT.mem.tables.behavioral_signals.length === 0 && G.__VT.calls.trackStub === 0, (vNo.r as any)?.status)
+  process.env.NEXT_PUBLIC_APP_URL = prevApp
+
+  const leadActions = code("app/actions/lead-intelligence.ts")
+  check("G10 the 'use server' lead-intelligence file no longer EXPORTS trackBehavior (a public endpoint taking a tenant id) (RED at base)", leadActions.length > 0 && !/export\s+async\s+function\s+trackBehavior\s*\(/.test(leadActions))
+  check("G11 POSITIVE CONTROL — the export finder DOES see the shape", /export\s+async\s+function\s+trackBehavior\s*\(/.test("export async function trackBehavior(sessionData: {"))
+  const tbLib = code("lib/lead-intelligence/track-behavior.ts")
+  check("G12 the writer survives as a plain module (not 'use server') — nothing deleted", /export\s+async\s+function\s+trackBehavior\s*\(/.test(tbLib) && !/^\s*["']use server["']/.test(tbLib))
+  const importers = [...walk("app"), ...walk("lib")].filter((f) => /lead-intelligence\/track-behavior["']/.test(code(f))).sort()
+  check("G13 ONLY the two public routes that decide the tenant themselves reach it", JSON.stringify(importers) === JSON.stringify(["app/api/track/visitor/route.ts", "app/api/widget/capture-lead/route.ts"]), importers)
+  check("G14 0 network calls across every ROUND 2 drive (no provider reached)", G.__VT.calls.fetch === 0)
+
   // ═══ §C ═══════════════════════════════════════════════════════════════════════════════════════════════════════════
   section("§C  an unapproved match never calls a vendor")
   check("C1 across every drive above: 0 network calls (the counted fetch seam)", G.__VT.calls.fetch === 0, G.__VT.calls.fetch)
   const VISITOR_ID_VENDOR_MARKERS = [/\brb2b\.com/i, /\bretention\.com/i, /\bopensend\.com/i, /\bcustomers\.ai/i, /\bleadfeeder\b/i, /\bdealfront\b/i, /reveal\.clearbit/i, /\bwarmly\.ai/i, /\bvector\.co\b/i, /\bidentitymatrix\b/i, /\bunghost\b/i, /\bgetuntitled\.ai/i, /\bidentified\.ai/i, /\/v2\/ip2domain/i, /hemToBusinessDomain/i, /\bip2location\b/i, /\bipinfo\.io/i, /\bmaxmind\b/i]
-  const walk = (dir: string, out: string[] = []): string[] => {
-    const p = join(ROOT, dir)
-    if (!existsSync(p)) return out
-    for (const e of readdirSync(p, { withFileTypes: true })) {
-      const rel = `${dir}/${e.name}`
-      if (e.isDirectory()) { if (e.name !== "node_modules" && !e.name.startsWith(".")) walk(rel, out) }
-      else if (/\.(ts|tsx|js|mjs)$/.test(e.name)) out.push(rel)
-    }
-    return out
-  }
   const hits: string[] = []
   for (const f of [...walk("app"), ...walk("lib")]) {
     const s = code(f)

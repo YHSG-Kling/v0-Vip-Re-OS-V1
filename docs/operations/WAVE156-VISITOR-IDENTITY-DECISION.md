@@ -24,7 +24,7 @@ This is not legal advice. Any future change needs review by counsel.
 
 | Surface | What it really does | Can an anonymous visit become a person? |
 |---|---|---|
-| `app/api/track/pixel/route.ts` | Records a session: the page, the referrer, the campaign and the brokerage's agent id. The session id is a random value kept in the visitor's browser storage for that one site. | No. Since wave 156, a session id can no longer be moved to another tenant (see the defects below). |
+| `app/api/track/pixel/route.ts` | Records a session: the page, the referrer, the campaign and the brokerage's agent id. The session id is a random value kept in the visitor's browser storage for that one site. | No. Since wave 156, a session id can no longer be moved to another tenant (see the defects below). Since round 2, a hit is recorded only when it comes from a site the tenant registered: an active verified custom domain, or the website it declared. |
 | `app/api/track/dwell/route.ts` | Records seconds on page for a session that the tenant's own pixel created. | No. |
 | `app/api/track/identify/route.ts` + the installer snippet | When a visitor submits a form on the tenant's site, the snippet sends back the email or phone they typed. The route links the session to a Contact or an active Lead the tenant **already** holds. It never creates anyone. | Only by a first-party act (the visitor typed their own contact point). Since wave 156, the route links only a certain match. |
 | `lib/lead-intelligence/visitor-email-capture.ts` (through `/api/track/visitor` and the widget) | Stores an email only together with a consent record, then links it to the one Contact holding it. | Only with consent. Since wave 156, the route links only a certain match. |
@@ -45,6 +45,13 @@ The product has no reverse-IP lookup, no device fingerprinting, no IP-geolocatio
 4. **Wrong-person match.** Both link doors read `.limit(1)` and took the first row. That linked a shared household email, or an email and a phone belonging to two different people, to an arbitrary contact. Now an ambiguous or conflicting match links nobody, and an uncertain contact match does not fall through to the Leads table. The rule lives in `lib/lead-intelligence/visitor-link-decision.ts`.
 5. **Erasure missed visitor data.** A right-to-delete request was closed as "anonymized" while the subject's captured email, visit IP addresses, pages read and identified sessions remained. Now those rows are deleted in the request's tenant, every delete is counted, and the request fails closed if any delete is refused. The code is in `lib/privacy/visitor-data-erasure.ts`, wired into `fulfillDeleteRequestAction`.
 6. **Snippet read password and hidden fields.** The snippet could pick up a password or hidden field that contained "@". It now skips both.
+7. **Round 2: any page could write into any tenant.**
+   - The pixel accepted a raw tenant id from the query string. A hit is now bound to the tenant's registered site.
+   - `/api/track/visitor` accepted a public slug even with no browser Origin. A hit is now bound to that tenant's own widget page.
+   - `trackBehavior` was a server action, which made it a public endpoint that took a tenant id. It now lives in `lib/lead-intelligence/track-behavior.ts` and is called only by the two routes that decide the tenant themselves.
+8. **Round 2: the subject's other visitor data.**
+   - A right-to-know export now includes the subject's visitor data.
+   - Erasure also removes the identification evidence and any person row that existed only through that evidence.
 
 ## Research: is there a provider that would qualify?
 
