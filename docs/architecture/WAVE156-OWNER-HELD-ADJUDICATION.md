@@ -77,7 +77,7 @@ readback → next event or terminal outcome → recovery`. Where each fact lives
 Found and fixed: `same_contact` had TWO deciders at the starting commit (the AI ISA over touches, and a delegation's assignee when two
 managers raced on a delegation ABOUT a contact). A delegation race is not a touch; it is now `entity_version`.
 
-## The owner-held rows (74 — one per census owner-held row; recommendations: observation-only 25 · human/platform authority 18 · existing manager 11 · deterministic rule owner 10 · retire onto survivor 6 · wire-to-product 4)
+## The owner-held rows (73 — one per census owner-held row; recommendations: observation-only 25 · human/platform authority 17 · existing manager 11 · deterministic rule owner 10 · retire onto survivor 6 · wire-to-product 4)
 
 | row | recommendation | evidence | owner question |
 |---|---|---|---|
@@ -125,7 +125,6 @@ managers raced on a delegation ABOUT a contact). A delegation race is not a touc
 | `server_action:app/actions/admin/create-subscriber.ts#retrySubscriberInvite` | **human/platform authority** | app/actions/admin/create-subscriber.ts:221 — a platform-role gate on its own path; recorded in the staff audit log | Should this platform-staff act stay a human platform act recorded in the staff audit log, with no AI manager performing it? |
 | `server_action:app/actions/admin/manager-evals.ts#completeRegionalConventionReview` | **existing manager** | app/actions/admin/manager-evals.ts:892 — typed as finance_manager's at lib/managers/regional-convention-review.ts:51 | Is the yearly regional closing-cost convention review the Finance Manager's act, as the code already types it? |
 | `server_action:app/actions/admin/manager-evals.ts#overrideDeliberationWinner` | **human/platform authority** | app/actions/admin/manager-evals.ts:764 — recordPrincipalOverride writes the principal's call on the referral's manager_signals payload | Is a broker's override of a cross-manager deliberation a human authority act that no manager owns? |
-| `server_action:app/actions/brief-audio.ts#generateBriefAudio` | **human/platform authority** | app/actions/brief-audio.ts:34 — a platform-role gate on its own path; recorded in the staff audit log | Should this platform-staff act stay a human platform act recorded in the staff audit log, with no AI manager performing it? |
 | `server_action:app/actions/buyer-lifecycle-core.ts#executeBuyerStateTransition` | **existing manager** | app/actions/buyer-lifecycle-core.ts:98 — the Shopping Agent owns the buyer side | Is every buyer lifecycle transition the Shopping Agent's act, whatever state it lands in? |
 | `server_action:app/actions/buyer-offers.ts#startOfferDraft` | **existing manager** | app/actions/buyer-offers.ts:120 — the Shopping Agent owns the buyer side of an offer | Is opening the offer wizard for a buyer the Shopping Agent's act? |
 | `server_action:app/actions/communications.ts#addContactNote` | **retire onto survivor** | app/actions/communications.ts:391 — the live note door is app/actions/contacts.ts addContactNote; merge the external-CRM sync onto it first (orphan doctrine case 1) | Should contact notes still sync to the external CRM (merge that onto the live note door), so this unused namesake can be retired? |
