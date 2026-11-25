@@ -254,7 +254,7 @@ const TARGET_FILES = [
 ]
 /** The REAL doors — never stubbed: the ledger, the public-door decision and the platform evidence door are what is under proof. */
 // round 7 (lane 155R27): + the older-persons store — its counted, tenant-pinned delete is what the withdrawal receipt wraps.
-const REAL = new Set(["@/lib/kernel/action-ledger", "@/lib/security/public-rate-limit", "@/lib/platform/staff-action-gate", "@/lib/compliance/fair-housing-older-persons-store"])
+const REAL = new Set(["@/lib/kernel/action-ledger", "@/lib/security/public-rate-limit", "@/lib/platform/staff-action-gate", "@/lib/compliance/fair-housing-older-persons-store", "@/lib/branding/platform-rights-notice"]) // wave 156 (156O round 2): the PURE canonical terms text whose sha256 the ToS writer records — real, never a stand-in
 function importsOf(file: string): Map<string, Set<string>> {
   const src = blankComments(read(file))
   const out = new Map<string, Set<string>>()

@@ -55,3 +55,22 @@ export function platformRightsNotice(input: { holder: string; product?: string |
     footerLine: `${copyrightLine} Copying, scraping, reverse engineering or reselling any part of this platform without written permission is prohibited — see ${path}.`,
   }
 }
+
+/**
+ * WAVE 156 (lane 156O) — THE TERMS DOCUMENT SERVED AT AN ACCEPTANCE, as one canonical string, so the acceptance record can carry
+ * the sha256 of WHAT was accepted (directive 156O: "Version/hash/timestamp acceptance when active"). The signup checkbox and the
+ * re-acceptance banner point at /legal, which renders platformRightsNotice above for the product brand and the current UTC year;
+ * the terms version is platform_settings.tos_version. This function serializes exactly that: the version and the notice as
+ * /legal renders it. It changes NOTHING about which text is published or active — it only names what is already shown.
+ * PURE; null when the version cannot be resolved (blank or not a plain version token) — the writer then refuses (fail closed).
+ */
+export const TERMS_DOCUMENT_FORMAT = "terms-acceptance-v1"
+export function servedTermsDocument(input: { tosVersion: string; holder: string; year: number }): string | null {
+  const version = (input.tosVersion ?? "").trim()
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(version) || !Number.isInteger(input.year)) return null
+  const n = platformRightsNotice({ holder: input.holder, product: input.holder, year: input.year })
+  return JSON.stringify({
+    format: TERMS_DOCUMENT_FORMAT, tosVersion: version, servedAt: "/legal",
+    notice: { version: n.version, title: n.title, copyrightLine: n.copyrightLine, intro: n.intro, prohibited: n.prohibited, closing: n.closing },
+  })
+}

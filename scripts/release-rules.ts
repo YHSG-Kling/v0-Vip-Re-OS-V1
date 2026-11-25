@@ -300,3 +300,38 @@ export function censusBlockingGaps(json: string): number | null {
   }
   return total
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WAVE 156 (lane 156O) — THE FIVE RELEASE STATES AND THE §R.6 OBLIGATION. The states, their evidence rules and the claim
+// rule live ONCE, in the product module the platform-staff go-live board reads (lib/platform/go-live-readiness.ts); this
+// module re-exports them so test:release-blockers §H and the board can never disagree. The owner's ordered action sheet
+// (WAVE156-OWNER-ACTION-SHEET.md) carries the release-state table and the §R.6 status line.
+// ═════════════════════════════════════════════════════════════════════════════
+export {
+  RELEASE_STATES, NOT_LIVE_MARKERS, RELEASE_CLAIM, releaseStateVerdict, releaseStateVerdicts, parseReleaseStateTable, releaseClaimAllowed, configurationNote,
+  type ReleaseStateKey, type ReleaseStateRow, type ReleaseStateVerdict, type EvidenceOrigin,
+} from "../lib/platform/go-live-readiness"
+import { NOT_LIVE_MARKERS as NOT_LIVE } from "../lib/platform/go-live-readiness"
+
+export const OWNER_ACTION_SHEET = "docs/operations/WAVE156-OWNER-ACTION-SHEET.md"
+export const P0_PACKET_155 = "docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md"
+
+/** PURE — a packet / sheet status line `- <ID> status: RESOLVED <YYYY-MM-DD> — <read-back>`; HELD / OPEN / undated / no
+ *  read-back stay open. The ONE rule (test:production-readiness L reads it as statusResolved155; test:release-blockers §H). */
+export const packetStatusResolved = (doc: string, id: string, evidence: RegExp): boolean => {
+  const m = new RegExp(`^- ${id} status:\\s*RESOLVED\\b([^\\n]*)$`, "m").exec(doc)
+  return !!m && /\d{4}-\d{2}-\d{2}/.test(m[1]) && evidence.test(m[1])
+}
+
+/**
+ * PURE — §R.6 (the five deal tables' INSERT-side policies) is applied ONLY when the sheet's status line reads
+ * `- R6 status: APPLIED LIVE <YYYY-MM-DD> — hrvaqgvukzxfskkcrwbt … 10 rows … REFUSED …` — the live project named, the AFTER
+ * read-back's ten rows and the two-tenant script's refusals. A line that names a local / simulated / PostgreSQL-16
+ * measurement is refused even if it says APPLIED: a local measurement is never proof that production is fixed.
+ */
+export function r6AppliedLive(sheet: string): boolean {
+  const m = /^- R6 status:\s*APPLIED LIVE\b([^\n]*)$/m.exec(sheet)
+  if (!m) return false
+  const line = m[1]
+  return /\d{4}-\d{2}-\d{2}/.test(line) && /\bhrvaqgvukzxfskkcrwbt\b/.test(line) && /\b10 rows\b/.test(line) && /\bREFUSED\b/.test(line) && !NOT_LIVE.test(line)
+}
