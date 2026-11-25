@@ -541,7 +541,7 @@ export async function distributeVideoProject(
       // account that is connected — a lie the agent cannot act on.
       const { data: account, error: accountError } = await supabase
         .from("social_media_accounts")
-        .select("*")
+        .select("id") // wave 156 (156N): only the account id is used — the sealed access / refresh tokens are not read here
         .eq("platform", channel)
         .eq("agent_id", project.agent_id)
         .maybeSingle()
