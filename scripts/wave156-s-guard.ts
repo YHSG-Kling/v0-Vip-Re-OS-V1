@@ -72,12 +72,12 @@ G.__S = {
 const OVERRIDE: Record<string, string> = {
   "lib/supabase/service.ts": "export function createServiceClient(){ return globalThis.__S.mem }",
   // EVERY provider seam is COUNTED; a provider is never reached.
-  "lib/agentic-os/connector-gateway.ts": `export async function callConnector(req){ const S = globalThis.__S; const down = { ok: false, status: 500, data: null, headers: {}, drift: null, error: 'fixture: provider down' }
+  "lib/agentic-os/connector-gateway.ts": `export async function callConnector(req){ const S = globalThis.__S; const failing = S.fail === true || S.fail === req.connector; const down = { ok: false, status: 500, data: null, headers: {}, drift: null, error: 'fixture: provider down' }
     const ok = (data, headers) => ({ ok: true, status: 200, data, headers: headers ?? {}, drift: null, error: null })
-    if (req.connector === 'did') { if ((req.method ?? 'GET') === 'GET') return ok({ status: 'done', result_url: 'https://d-id.example.test/result.mp4' }); S.calls.did++; return S.fail ? down : { ...ok({ id: 'tlk_' + S.calls.did }), status: 201 } }
-    if (req.connector === 'openai' || req.connector === 'vercel-ai-gateway') { S.calls.image++; if (/transcription/.test(String(req.path))) { S.calls.stt++; return S.fail ? down : ok({ text: 'hello there', durationInSeconds: 3 }) } return S.fail ? down : ok({ data: [{ url: 'https://img.example.test/x.png' }] }) }
-    if (req.connector === 'elevenlabs') { if (/speech-to-text/.test(String(req.path))) { S.calls.stt++; return S.fail ? down : ok({ text: 'hello there', words: [] }) } S.calls.elevenlabs++; return S.fail ? down : ok({ voice_id: 'voice_' + S.calls.elevenlabs }) }
-    if (req.connector === 'simli') { S.calls.simli++; if (S.fail) return down; return /token/.test(String(req.path)) ? ok({ session_token: 'tok_' + S.calls.simli }) : ok({ face_id: 'face_' + S.calls.simli }) }
+    if (req.connector === 'did') { if ((req.method ?? 'GET') === 'GET') return ok({ status: 'done', result_url: 'https://d-id.example.test/result.mp4' }); S.calls.did++; return failing ? down : { ...ok({ id: 'tlk_' + S.calls.did }), status: 201 } }
+    if (req.connector === 'openai' || req.connector === 'vercel-ai-gateway') { S.calls.image++; if (/transcription/.test(String(req.path))) { S.calls.stt++; return failing ? down : ok({ text: 'hello there', durationInSeconds: 3 }) } return failing ? down : ok({ data: [{ url: 'https://img.example.test/x.png' }] }) }
+    if (req.connector === 'elevenlabs') { if (/speech-to-text/.test(String(req.path))) { S.calls.stt++; return failing ? down : ok({ text: 'hello there', words: [] }) } S.calls.elevenlabs++; return failing ? down : ok({ voice_id: 'voice_' + S.calls.elevenlabs }) }
+    if (req.connector === 'simli') { S.calls.simli++; if (failing) return down; return /token/.test(String(req.path)) ? ok({ session_token: 'tok_' + S.calls.simli }) : ok({ face_id: 'face_' + S.calls.simli }) }
     if (req.connector === 'asset-download') { return /\\.mp4/.test(String(req.url)) ? ok(Buffer.from('mp4-bytes'), { 'content-type': 'video/mp4' }) : ok(Buffer.alloc(64000, 1), { 'content-type': 'audio/mpeg' }) }
     S.calls.other = (S.calls.other ?? 0) + 1; return { ok: false, status: 599, data: null, headers: {}, drift: null, error: 'fixture: unmodelled connector ' + req.connector } }`,
   "lib/ai/cost-tracking.ts": "export async function logAIImageUsage(){ globalThis.__S.calls.imageBooked++; return { booked: true, duplicate: false } }",
@@ -86,9 +86,14 @@ const OVERRIDE: Record<string, string> = {
   "lib/remotion/media-host.ts": "export async function hostRenderedMedia(_svc, path, _b, _ct, bucket = 'video-assets'){ globalThis.__S.hosted.push({ bucket, path }); return bucket === 'personal-videos' ? 'docref://personal-videos/' + path : 'https://public.example.test/' + bucket + '/' + path }",
   "lib/supabase/server.ts": "export async function createClient(){ return globalThis.__S.mem }; export async function createServerClient(){ return globalThis.__S.mem }",
   "lib/did/consent.ts": "export async function resolveConsentIdForAvatar(){ return 'consent-fixture' }; export async function findVerifiedConsent(){ return { id: 'consent-fixture' } }",
+  "lib/kernel/providers.ts": "export async function resolveProvider(){ return { providerKey: 'did' } }",
+  // generateStandupAudio's non-paid collaborators (the session's write context, the standup lines, the broker's voice).
+  "lib/platform/acting-context.ts": "export async function resolveWriteContextForTenant(){ const a = globalThis.__S.auth; return a ? { ok: true, userId: a.userId, actorUserId: a.userId, brokerageId: a.brokerageId } : { ok: false } }",
+  "lib/intelligence/manager-standup.ts": "export async function generateManagerStandup(){ return [{ managerKey: 'asset_manager', label: 'Asset Manager', did: ['rendered two reels'], needs: [], touches: { count: 2 } }] }",
+  "lib/voice/voice-resolver.ts": "export async function resolveSelfVoice(){ return { voiceId: 'v-broker', source: 'agent_clone' } }",
 }
 const REPLACE: Record<string, string> = {
-  "lib/providers/elevenlabs/client.ts": `const n = () => { const S = globalThis.__S; S.calls.elevenlabs++; return S.fail ? { ok: false, status: 500, data: null, error: 'fixture: provider down' } : null }
+  "lib/providers/elevenlabs/client.ts": `const n = () => { const S = globalThis.__S; S.calls.elevenlabs++; return (S.fail === true || S.fail === 'elevenlabs') ? { ok: false, status: 500, data: null, error: 'fixture: provider down' } : null }
     export async function convertSpeech(){ return n() ?? { ok: true, status: 200, data: new Uint8Array([1,2,3]) } }
     export async function convertSpeechWithTimestamps(){ return n() ?? { ok: true, status: 200, data: { audioBase64: 'AQID', alignment: null } } }
     export async function listVoices(){ return { ok: true, status: 200, data: [] } }`,
@@ -101,7 +106,7 @@ const REPLACE: Record<string, string> = {
   "lib/usage/check-cap.ts": "export async function checkUsageCap(){ return { allowed: true } }",
   "lib/usage/log-media-usage.ts": "export async function logMediaUsage(){ return {} }",
   "lib/video/video-identity.ts": "export async function resolveVideoIdentity(){ return { voiceId: 'voice-fixture', avatarPhotoUrl: 'https://bucket.example.test/agent.jpg', speakerName: 'Agent Fixture' } }",
-  "lib/providers/dispatch.ts": "export async function dispatchVideo(){ globalThis.__S.calls.sends++; return { success: true, providerKey: 'fixture' } }",
+  // (wave 156 round 3) the REAL lib/providers/dispatch.ts is driven now; only its provider resolution is a fixture.
 }
 const BY_SPEC: Record<string, string> = {
   "server-only": "export {}",
@@ -375,7 +380,6 @@ async function main() {
   })
   // NAMED — billable doors that do not reach the composition yet, each with the reason it was not converted in this lane.
   const NAMED: Record<string, string> = {
-    "lib/providers/dispatch.ts#dispatchVideoViaDID": "lane 156M owns lib/providers/dispatch.ts — the change for the integrator: wrap its convertSpeech leg in lib/voice/elevenlabs-tts.ts synthesizeSpeech (or runTtsDoor) with the send's brokerageId, and its callConnector D-ID submit in lib/vendor-governance/paid-egress.ts runPaidEgress (vendor did, usageType video_render, action video.did.render, estimatePlatformVendorCost('did', 1), idempotencyKey from the send's ledger cycle) — exactly as lib/did/index.ts generateVideo does",
     "lib/external/tavily-client.ts#tavilySearch": "a TRANSPORT inside a door, not a door: lib/ai/web-search.ts webSearch is the tenant door (driven in §D) and injects it by reference; platform-paid research has no tenant ceiling (owner-held cap)",
     "lib/ai/image-generation.ts#callGptImage1Gateway": "a TRANSPORT inside a door: generateImage is the door (driven in §D)",
     "lib/ai/image-generation.ts#generateImageBehindTheDoor": "a TRANSPORT inside a door: generateImage is the door (driven in §D)",
@@ -412,7 +416,7 @@ async function main() {
       agent_action_ledger: [], users: [], agents: [], ai_tool_usage: [], automation_errors: [],
     }, { unique: { agent_action_ledger: [["idempotency_key"]] }, uuidIds: true, stampCreatedAt: true })
   }
-  const reset = (fail = false) => { const db = spendWorld(); G.__S.mem = db; G.__S.calls = { elevenlabs: 0, did: 0, image: 0, fetch: 0, search: 0, imageBooked: 0, stt: 0, simli: 0, sends: 0 }; G.__S.hosted = []; G.__S.fail = fail; return db }
+  const reset = (fail: boolean | string = false) => { const db = spendWorld(); G.__S.mem = db; G.__S.calls = { elevenlabs: 0, did: 0, image: 0, fetch: 0, search: 0, imageBooked: 0, stt: 0, simli: 0, sends: 0 }; G.__S.hosted = []; G.__S.fail = fail; return db }
   const spendRows = (db: MemClient, b: string) => db.tables.vendor_usage_tracking.filter((r) => r.brokerage_id === b && r.id !== "spent-1")
   const receipts = (db: MemClient, b: string) => (db.tables.agent_action_ledger ?? []).filter((r) => r.brokerage_id === b)
   check("the ONE paid-egress composition exists (paid-egress.ts runPaidEgress)", typeof gate.runPaidEgress === "function")
@@ -506,21 +510,26 @@ async function main() {
     return new Response(new Uint8Array([1, 2, 3, 4]), { status: 200, headers: { "content-type": "image/jpeg" } })
   }) as typeof fetch
   const post = (body: Record<string, unknown>) => new Request("https://app.example.test/api/x", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
-  type DoorSpec = { name: string; call: (b: string, db: MemClient) => Promise<any>; count: () => number; books: "vendor" | "unknown_unit"; replay?: (db: MemClient) => void; inlineGate?: string }
-  const spendFor = (db: MemClient, b: string) => spendRows(db, b)
+  type DoorSpec = { name: string; call: (b: string, db: MemClient) => Promise<any>; count: () => number; books: "vendor" | "unknown_unit"; replay?: (db: MemClient) => void; inlineGate?: string; spendVendor?: string }
+  // The spend rows the door under test booked (a door that also crosses another paid door — dispatch's TTS leg — is judged
+  // on its OWN vendor's rows; the other door books its own, proven in §D).
+  let spendVendorUnderTest: string | null = null
+  const spendFor = (db: MemClient, b: string) => spendRows(db, b).filter((r) => !spendVendorUnderTest || r.vendor_name === spendVendorUnderTest)
   async function proveDoor(d: DoorSpec) {
+    spendVendorUnderTest = d.spendVendor ?? null
+    const rc = (db: MemClient, b: string) => receipts(db, b).filter((r) => !d.spendVendor || r.provider === d.spendVendor)
     let db = reset(); seedCommon(db, OVER)
     const over = await drive(() => d.call(OVER, db))
     // A door whose budget gate is its OWN inline gate (pinned by its own guard, named in inlineGate) refuses BEFORE the
     // composition — the refusal is its response, not a ledger row; every other door leaves a budget_refused receipt.
-    check(`${d.name}: over budget → 0 provider calls, 0 spend, ${d.inlineGate ? `refused by its inline gate (${d.inlineGate})` : "a budget_refused receipt"}`, d.count() === 0 && spendFor(db, OVER).length === 0 && (d.inlineGate ? receipts(db, OVER).length === 0 : receipts(db, OVER)[0]?.outcome === "budget_refused"), { threw: over.threw, calls: d.count(), receipts: receipts(db, OVER).map((x) => [x.status, x.outcome]) })
+    check(`${d.name}: over budget → 0 provider calls, 0 spend, ${d.inlineGate ? `refused by its inline gate (${d.inlineGate})` : "a budget_refused receipt"}`, d.count() === 0 && spendFor(db, OVER).length === 0 && (d.inlineGate ? receipts(db, OVER).length === 0 : receipts(db, OVER).some((r) => r.outcome === "budget_refused")), { threw: over.threw, calls: d.count(), receipts: receipts(db, OVER).map((x) => [x.status, x.outcome]) })
     db = reset(); seedCommon(db, UNDER)
     const ok = await drive(() => d.call(UNDER, db))
     const rows = spendFor(db, UNDER)
-    check(`${d.name}: success → 1 provider call, booked ONCE (${d.books === "vendor" ? "priced" : "a unit at price_state unknown"}), an executed receipt`, d.count() === 1 && rows.length === 1 && (d.books === "vendor" ? Number(rows[0].total_cost) > 0 : rows[0].request_metadata?.price_state === "unknown") && receipts(db, UNDER)[0]?.status === "executed", { threw: ok.threw, calls: d.count(), rows: rows.map((r) => [r.total_cost, r.request_metadata?.price_state]), receipts: receipts(db, UNDER).map((x) => [x.status, x.outcome]) })
-    db = reset(true); seedCommon(db, UNDER)
+    check(`${d.name}: success → 1 provider call, booked ONCE (${d.books === "vendor" ? "priced" : "a unit at price_state unknown"}), an executed receipt`, d.count() === 1 && rows.length === 1 && (d.books === "vendor" ? Number(rows[0].total_cost) > 0 : rows[0].request_metadata?.price_state === "unknown") && rc(db, UNDER)[0]?.status === "executed", { threw: ok.threw, calls: d.count(), rows: rows.map((r) => [r.total_cost, r.request_metadata?.price_state]), receipts: receipts(db, UNDER).map((x) => [x.status, x.outcome]) })
+    db = reset(d.spendVendor ?? true); seedCommon(db, UNDER)
     const bad = await drive(() => d.call(UNDER, db))
-    check(`${d.name}: a failed provider call books NOTHING and leaves a failed receipt`, spendFor(db, UNDER).length === 0 && receipts(db, UNDER)[0]?.status === "failed", { threw: bad.threw, receipts: receipts(db, UNDER).map((x) => [x.status, x.outcome]) })
+    check(`${d.name}: a failed provider call books NOTHING and leaves a failed receipt`, spendFor(db, UNDER).length === 0 && rc(db, UNDER)[0]?.status === "failed", { threw: bad.threw, receipts: receipts(db, UNDER).map((x) => [x.status, x.outcome]) })
     if (d.replay) {
       db = reset(); seedCommon(db, UNDER)
       await drive(() => d.call(UNDER, db))
@@ -528,6 +537,7 @@ async function main() {
       await drive(() => d.call(UNDER, db))
       check(`${d.name}: a replay under the same key → still 1 provider call, still 1 charge`, d.count() === 1 && spendFor(db, UNDER).length === 1, { calls: d.count(), spend: spendFor(db, UNDER).length })
     }
+    spendVendorUnderTest = null
   }
   const genRoute = await load("app/api/did/generate-video/route.ts")
   await proveDoor({
@@ -569,6 +579,41 @@ async function main() {
     name: "Simli session token", count: () => G.__S.calls.simli, books: "unknown_unit",
     call: async (b) => simli.mintSimliSessionToken({ faceId: "face-1", maxSessionLength: 1800, maxIdleTime: 180, brokerageId: b }),
   })
+  {
+    // ROUND 3 — app/actions/standup-audio.ts generateStandupAudio (found by lane 156L: it paid for speech with no receipt of
+    // its own): its own session receipt + THE paid voice door, keyed per (broker, day, exact script).
+    const standup = await load("app/actions/standup-audio.ts")
+    await proveDoor({
+      name: "standup audio (generateStandupAudio)", count: () => G.__S.calls.elevenlabs, books: "vendor", spendVendor: "elevenlabs",
+      call: async () => standup.generateStandupAudio?.(), replay: () => {},
+    })
+    {
+      const db = reset(); seedCommon(db, UNDER)
+      await drive(() => standup.generateStandupAudio?.())
+      check("standup audio leaves a receipt of its OWN (standup.audio.generate) beside the voice door's", receipts(db, UNDER).some((r) => r.action === "standup.audio.generate") && receipts(db, UNDER).some((r) => r.action === "voice.tts.synthesize"), receipts(db, UNDER).map((r) => r.action))
+    }
+    // ROUND 3 — lib/providers/dispatch.ts dispatchVideoViaDID (the outreach avatar video), through the REAL dispatchVideo:
+    // its narration leg is the paid voice door (synthesizeSpeech), its D-ID submit runPaidEgress under the send's key.
+    const dispatch = await load("lib/providers/dispatch.ts")
+    const seedVoice = (db: MemClient) => {
+      db.tables.agent_voice_profiles = [{ agent_id: AGENT, elevenlabs_voice_id: "v-1", did_photo_url: "https://bucket.example.test/agent.jpg", did_video_url: null, did_avatar_id: null, default_expression: "happy", expression_intensity: 0.7 }]
+      ;(db as any).storage = { from: () => ({ upload: async () => ({ error: null }), getPublicUrl: (p: string) => ({ data: { publicUrl: `https://public.example.test/media/${p}` } }) }) }
+    }
+    const sendVideo = (b: string, db: MemClient) => { seedVoice(db); return dispatch.dispatchVideo?.({ brokerageId: b, agentId: AGENT, userId: USER, humanApproved: true, systemSource: "manual", templateId: "Hello {{name}}, here is a quick note.", scriptVars: { name: "Casey" }, recipientEmail: "casey@example.test", ledger: { idempotencyKey: "send-1" } }) }
+    await proveDoor({
+      name: "dispatch avatar video (dispatchVideoViaDID)", count: () => G.__S.calls.did, books: "vendor", spendVendor: "did",
+      call: async (b, db) => sendVideo(b, db), replay: () => {},
+    })
+    {
+      const db = reset(); seedCommon(db, OVER)
+      await drive(() => sendVideo(OVER, db))
+      check("dispatch avatar video: over budget the NARRATION is refused too — 0 ElevenLabs and 0 D-ID calls", G.__S.calls.elevenlabs === 0 && G.__S.calls.did === 0, G.__S.calls)
+      const db2 = reset(); seedCommon(db2, UNDER)
+      await drive(() => sendVideo(UNDER, db2))
+      const tts = spendRows(db2, UNDER).filter((r) => r.vendor_name === "elevenlabs"), didRows = spendRows(db2, UNDER).filter((r) => r.vendor_name === "did")
+      check("dispatch avatar video: the narration books its characters ONCE and the D-ID submit books its own row (two vendors, two rows — the voice is no longer folded into the D-ID estimate)", tts.length === 1 && didRows.length === 1 && Number(didRows[0].total_cost) > 0 && Number(tts[0].total_cost) > 0, { tts: tts.map((r) => r.total_cost), did: didRows.map((r) => r.total_cost) })
+    }
+  }
   {
     const pod = code("app/actions/podcast-generation.ts")
     check("podcast narration no longer calls the vendor SDK — it goes through synthesizeSpeech (the driven TTS door) with the session tenant", !/\bconvertSpeech\s*\(/.test(pod) && /synthesizeSpeech\(\{[\s\S]{0,200}brokerageId,?\s*\}/.test(pod))

@@ -123,7 +123,7 @@ console.log("\n── §doors · the gate runs before every provider spend, by s
     /stageBodyVisualPlan\(\{ compositionId: args\.request\.target_composition_id/.test(submit) && /if \(!planned\.ok\)/.test(submit) && /if \(!visualGate\.ok\)/.test(submit)
     && /args\.request\.input_props = \{ \.\.\.args\.request\.input_props, bodyVisualPlan: planned\.plan \}/.test(submit) && /transparentBackground: keyedWanted/.test(submit) && /keyedWanted = planWantsKeyedPresenter\(planned\.plan\)/.test(submit))
   const dispatch = readStripped("lib/providers/dispatch.ts")
-  order(dispatch, /gateVisualPlanForDispatch\(visualPlan/, /await convertSpeech\(/, "dispatch.ts (the outreach avatar video: before the ElevenLabs TTS)")
+  order(dispatch, /gateVisualPlanForDispatch\(visualPlan/, /await convertSpeech\(|\.synthesizeSpeech\(\{/, "dispatch.ts (the outreach avatar video: before the ElevenLabs TTS — the paid voice door since wave 156)")
   order(dispatch, /gateVisualPlanForDispatch\(visualPlan/, /connector: "did",/, "dispatch.ts (…and before the D-ID connector call)")
   check("dispatch.ts plans a bare talking head when no plan is handed in and refuses on !visualGate.ok", /params\.bodyVisualPlan \?\? bareTalkingHeadPlan\(renderedScript\)/.test(dispatch) && /if \(!visualGate\.ok\)/.test(dispatch))
   const memory = readStripped("lib/video/memory-video-render.ts")

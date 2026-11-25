@@ -137,6 +137,9 @@ export interface SynthesizeSpeechInput {
    * accept this — no caller of it needs raw PCM.
    */
   outputFormat?: "pcm_16000"
+  /** Wave 156 (156S): ONE charge per key — a repeat of the same synthesis replays its receipt and is not billed again
+   *  (the replay returns no audio: the caller already holds the first result). Omit for an unkeyed call. */
+  idempotencyKey?: string | null
 }
 
 export interface SynthesizeSpeechResult {
@@ -414,6 +417,6 @@ async function runTtsDoor<T>(
     brokerageId: input.brokerageId ?? null, vendor: "elevenlabs", usageType: "tts", action: "voice.tts.synthesize",
     estimatedCostUsd: estimatePlatformVendorCost("elevenlabs", chars), units: chars,
     subject: { type: "tts_voice", id: null, ref: String(metadata.voice_id ?? "") || null },
-    systemSource, metadata: { ...metadata, chars },
+    systemSource, metadata: { ...metadata, chars }, idempotencyKey: input.idempotencyKey ?? null,
   }, call, (r) => ({ ok: ok(r), units: chars }))
 }
