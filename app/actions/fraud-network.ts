@@ -23,9 +23,12 @@ async function tenantSeat(): Promise<{ ok: true; actor: TenantActor } | Refusal>
   const id = await resolveCallerIdentity()
   if (!id.ok) return { ok: false, error: "Sign in to use the fraud network." }
   if (!id.brokerageId) return { ok: false, error: "Your account is not linked to a business." }
-  const { isParticipant } = await net()
+  const { isParticipant, tenantMayParticipate } = await net()
   if (!isParticipant({ userType: id.userType })) return { ok: false, error: "Your seat cannot use the fraud network." }
   const svc = createServiceClient()
+  // A paused (suspended) or departed tenant's seats do not take part — the tenant-lifecycle vocabulary decides.
+  const standing = await tenantMayParticipate(svc, id.brokerageId)
+  if (!standing.ok) return standing
   const { data: a, error } = await svc.from("agents").select("id").eq("user_id", id.userId).maybeSingle()
   if (error) return { ok: false, error: "Your seat could not be checked right now." }
   return { ok: true, actor: { kind: "tenant", userId: id.userId, brokerageId: id.brokerageId, userType: String(id.userType ?? "").toLowerCase(), agentId: (a as { id?: string } | null)?.id ?? null } }
@@ -81,6 +84,15 @@ export async function requestFraudEvidenceView(caseId: string) {
   const actor = await caseReader()
   if (!actor) return { ok: false as const, error: "Case not found." }
   return (await net()).evidenceFileView(createServiceClient(), actor, caseId)
+}
+
+/** Add an evidence FILE to a case: metadata is stripped first; until the private bucket exists the door refuses with the
+ *  honest state and says what it removed. The bytes arrive base64-encoded (a server action body). */
+export async function uploadFraudEvidenceFile(caseId: string, kind: string, label: string, base64: string) {
+  const s = await tenantSeat()
+  if (!s.ok) return s
+  const bytes = new Uint8Array(Buffer.from(String(base64 ?? ""), "base64"))
+  return (await net()).uploadEvidenceFile(createServiceClient(), s.actor, { caseId, kind, label, bytes })
 }
 
 export async function withdrawFraudCase(caseId: string) {
@@ -177,6 +189,13 @@ export async function publishFraudBulletin(bulletinId: string, ctx: { attestNoPe
   const s = await staffSeat(true)
   if (!s.ok) return s
   return (await net()).publishBulletin(createServiceClient(), s.actor, bulletinId, ctx)
+}
+
+/** The SECOND moderator's review of a name-review hold (the moderator who triggered it cannot clear it). */
+export async function clearFraudNameReview(bulletinId: string, note: string) {
+  const s = await staffSeat(true)
+  if (!s.ok) return s
+  return (await net()).clearNameReview(createServiceClient(), s.actor, bulletinId, note)
 }
 
 export async function correctFraudBulletin(bulletinId: string, fields: Record<string, unknown>, reason: string) {

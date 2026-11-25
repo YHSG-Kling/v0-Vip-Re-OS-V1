@@ -55,7 +55,7 @@ const TRANSACTION_ITEMS: readonly NavItem[] = [
 const COMPLIANCE_ITEMS_FOR_COORDINATION: readonly NavItem[] = [
   { id: 'compliance-queue', label: 'Compliance Queue', href: '/dashboard/compliance/queue', icon: 'ListChecks' },
   { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle', badgeKey: 'compliance_violations' },
-] as const
+] as const; /** 156J: ONE definition of the Fraud & Trust Network entry, spread into every participating staff seat's sidebar and the platform-staff menu (written on this line: the file is line-cited). */ const FRAUD_NETWORK_ITEM: NavItem = { id: 'fraud-network', label: 'Fraud & Trust Network', href: '/dashboard/fraud-network', icon: 'ShieldAlert' }
 
 /**
  * The marketing group, verbatim from the broker/admin `content` group.
@@ -248,7 +248,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         ],
       },
       { id: 'academy', label: 'Academy', href: '/academy', icon: 'BookOpen' },
-      { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' }, { id: 'fraud-network', label: 'Fraud & Trust Network', href: '/dashboard/fraud-network', icon: 'ShieldAlert' }, // 156J: same line on purpose (line-cited file)
+      { id: 'help-support', label: 'Help & Support', href: '/dashboard/help', icon: 'LifeBuoy' }, FRAUD_NETWORK_ITEM, // 156J: same line on purpose (line-cited file)
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare' },
       // Tier-parity: a solo-tier principal signs in as an agent — the Command Center
       // (AI-teammate roster, earned autonomy, trust meter, QBR) is their room too.
@@ -402,7 +402,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // only from QBR email deep-links. It is the principal's room; link it.
       { id: 'command-center', label: 'AI Command Center', href: '/dashboard/admin/command-center', icon: 'Bot' },
       { id: 'voice-command', label: 'Voice Assistant', href: '/dashboard/voice', icon: 'Mic' },
-      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' }, FRAUD_NETWORK_ITEM,
       { id: 'divider1', divider: true },
       {
         id: 'intel',
@@ -581,7 +581,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence', icon: 'Brain' },
       { id: 'movement-signals', label: 'Movement Signals', href: '/dashboard/intelligence/movement-signals', icon: 'Activity' },
       // Notification-rail parity: every tenant user type gets the /notifications home.
-      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' }, FRAUD_NETWORK_ITEM,
       { id: 'divider1', divider: true },
       {
         id: 'video-tools',
@@ -658,7 +658,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // Tenant-parity: the Command Center had no nav entry for any role (see broker block).
       { id: 'command-center', label: 'AI Command Center', href: '/dashboard/admin/command-center', icon: 'Bot' },
       { id: 'voice-command', label: 'Voice Assistant', href: '/dashboard/voice', icon: 'Mic' },
-      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' }, FRAUD_NETWORK_ITEM,
       { id: 'divider1', divider: true },
       {
         id: 'intelligence',
@@ -919,7 +919,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       ...TRANSACTION_ITEMS,
       MARKETING_GROUP,
       // Notification-rail parity: every tenant user type gets the /notifications home.
-      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' }, FRAUD_NETWORK_ITEM,
       { id: 'settings', label: 'Settings', href: '/compliance/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -956,7 +956,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       ...COMPLIANCE_ITEMS_FOR_COORDINATION,
       MARKETING_GROUP,
       // Notification-rail parity: every tenant user type gets the /notifications home.
-      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' }, FRAUD_NETWORK_ITEM,
       { id: 'settings', label: 'Settings', href: '/transaction/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -1038,7 +1038,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   superadmin: {
     sidebarItems: [
       { id: 'platform', label: 'Platform Admin', href: '/dashboard/superadmin/platform', icon: 'ShieldAlert' },
-      { id: 'platform-overview', label: 'Platform Overview', href: '/dashboard/superadmin/platform', icon: 'TrendingUp' },
+      { id: 'platform-overview', label: 'Platform Overview', href: '/dashboard/superadmin/platform', icon: 'TrendingUp' }, FRAUD_NETWORK_ITEM,
       // Wave 150 (lane 150DAC — 150AC "one command center for platform / office / team / solo"): the command center
       // already serves platform staff platform-wide (isPlatformSuperadminIdentity → loadCommandCenter({ platform })),
       // but the platform menu never linked it — the platform tier's door was unreachable. Same href every other
@@ -1134,7 +1134,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // too (both pages already admit team leads via isTenancyPrincipal).
       { id: 'command-center', label: 'AI Command Center', href: '/dashboard/admin/command-center', icon: 'Bot' },
       { id: 'intelligence-report', label: 'Monthly Intelligence Report', href: '/dashboard/intelligence-report', icon: 'Sparkles' },
-      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
+      { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' }, FRAUD_NETWORK_ITEM,
       { id: 'market-insights', label: 'Market Insights', href: '/dashboard/market-insights', icon: 'TrendingUp' },
       { id: 'divider1', divider: true },
       {

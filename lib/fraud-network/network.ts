@@ -35,7 +35,10 @@
 // Metrics read at most METRIC_ROW_CAP rows per table and say so.
 
 import "server-only"
+import { createHash } from "node:crypto"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+// The ONE tenant-lifecycle vocabulary (lib/billing/billing-access.ts — the paywall and the scraper roster read it too).
+import { TENANT_LIFECYCLE_REFUSED } from "@/lib/billing/billing-access"
 
 // ═══ 1. VOCABULARIES (one per function — CLAUDE.md §6; m1035 CHECKs carry the same values) ═══════════════════════════
 
@@ -430,6 +433,10 @@ export async function readCase(svc: Svc, actor: FraudActor, caseId: string): Pro
   const { data, error } = await svc.from("fraud_incident_cases").select(CASE_COLS).eq("id", caseId).maybeSingle()
   if (error) return { ok: false, error: "The case could not be read right now." }
   if (!mayReadCase(actor, data as any)) return { ok: false, error: "Case not found." }
+  // DEPARTURE: a tenant that has left (cancelled / archived / deleted) has no readable private case — staff included.
+  const standing = await tenantStandings(svc, [(data as any).brokerage_id])
+  if (!standing) return { ok: false, error: "The case could not be read right now." }
+  if (standing.get((data as any).brokerage_id) === "departed") return { ok: false, error: "Case not found." }
   const { data: ev, error: evErr } = await svc.from("fraud_case_evidence").select("id, evidence_kind, fingerprint_sha256, label, storage_status, created_at").eq("case_id", caseId).eq("brokerage_id", (data as any).brokerage_id)
   if (evErr) return { ok: false, error: "The case evidence could not be read right now." }
   return { ok: true, case: data, evidence: (ev ?? []) as any[], evidenceStorage: "not_enabled" }
@@ -437,10 +444,19 @@ export async function readCase(svc: Svc, actor: FraudActor, caseId: string): Pro
 
 /** The signed evidence view. FAILS CLOSED until the owner creates the private bucket (report §7) — after authorization,
  *  so an unauthorized seat learns nothing, and an authorized one is told the honest state. */
-export async function evidenceFileView(svc: Svc, actor: FraudActor, caseId: string): Promise<Refusal> {
+export async function evidenceFileView(svc: Svc, actor: FraudActor, caseId: string, deps: EvidenceStoreDeps = {}): Promise<Refusal | Ok<{ urls: Array<{ evidenceId: string; url: string }> }>> {
   const r = await readCase(svc, actor, caseId)
   if (!r.ok) return r
-  return { ok: false, error: EVIDENCE_STORAGE_NOT_ENABLED }
+  if (!(deps.bucketEnabled ?? (await evidenceBucketEnabled()))) return { ok: false, error: EVIDENCE_STORAGE_NOT_ENABLED }
+  // Once the bucket exists: a SHORT-LIVED signed URL per stored object, minted only after the case gate above.
+  const urls: Array<{ evidenceId: string; url: string }> = []
+  for (const e of r.evidence.filter((x: any) => x.storage_status === "stored")) {
+    const path = evidenceObjectPath(r.case.brokerage_id, caseId, e.fingerprint_sha256)
+    const signed = deps.sign ? await deps.sign(path) : await (svc as any).storage?.from(FRAUD_EVIDENCE_BUCKET).createSignedUrl(path, EVIDENCE_URL_SECONDS)
+    const url = (signed as any)?.data?.signedUrl ?? (signed as any)?.url ?? null
+    if (url) urls.push({ evidenceId: e.id, url })
+  }
+  return { ok: true, urls }
 }
 
 export async function withdrawCase(svc: Svc, actor: TenantActor, caseId: string): Promise<Ok<{}> | Refusal> {
@@ -480,7 +496,10 @@ export async function moderationQueue(svc: Svc, staff: StaffActor): Promise<Ok<{
     svc.from("fraud_correction_requests").select("id, bulletin_id, requester_kind, channel, status, statement, created_at").eq("status", "received").order("created_at", { ascending: true }).limit(200),
   ])
   if (cases.error || bulletins.error || corrections.error) return { ok: false, error: "The moderation queue could not be read." }
-  return { ok: true, cases: cases.data ?? [], bulletins: bulletins.data ?? [], corrections: corrections.data ?? [] }
+  const caseRows = (cases.data ?? []) as Array<{ brokerage_id: string }>
+  const standing = await tenantStandings(svc, caseRows.map((c) => c.brokerage_id))
+  if (!standing) return { ok: false, error: "The moderation queue could not be read." }
+  return { ok: true, cases: caseRows.filter((c) => standing.get(c.brokerage_id) !== "departed"), bulletins: bulletins.data ?? [], corrections: corrections.data ?? [] }
 }
 
 export async function addModerationNote(svc: Svc, staff: StaffActor, caseId: string, note: string, status?: string | null): Promise<Ok<{}> | Refusal> {
@@ -587,7 +606,11 @@ export async function linkCaseToBulletin(svc: Svc, staff: StaffActor, bulletinId
 
 async function corroborationOf(svc: Svc, bulletinId: string): Promise<ReturnType<typeof independentCorroboration>> {
   const { data } = await svc.from("fraud_bulletin_sources").select("brokerage_id, evidence_fingerprint, created_at").eq("bulletin_id", bulletinId).limit(500)
-  return independentCorroboration((data ?? []) as any[])
+  const rows = (data ?? []) as Array<{ brokerage_id: string; evidence_fingerprint: string | null }>
+  // A departed tenant's evidence no longer corroborates anything (its links are sealed by sealDepartedTenants).
+  const standing = await tenantStandings(svc, rows.map((r) => r.brokerage_id))
+  if (!standing) return { independentTenants: 0, evidencedSources: 0, rawSources: rows.length } // unreadable → nothing corroborates (fail closed)
+  return independentCorroboration(rows.filter((r) => standing.get(r.brokerage_id) !== "departed") as any[])
 }
 
 export async function updateBulletinDraft(svc: Svc, staff: StaffActor, bulletinId: string, fields: BulletinFields): Promise<Ok<{}> | Refusal> {
@@ -600,7 +623,7 @@ export async function updateBulletinDraft(svc: Svc, staff: StaffActor, bulletinI
   return { ok: true }
 }
 
-const SNAPSHOT_COLS = "id, typology, title, tactic_summary, indicators, red_flags, how_to_verify, source_url, jurisdiction, recency_date, confidence, claim_class, named_entity, named_entity_citation_url, legal_review_by, legal_review_at, status, version, published_at, taken_down_at, takedown_reason"
+const SNAPSHOT_COLS = "id, typology, title, tactic_summary, indicators, red_flags, how_to_verify, source_url, jurisdiction, recency_date, confidence, claim_class, named_entity, named_entity_citation_url, legal_review_by, legal_review_at, status, version, published_at, taken_down_at, takedown_reason, name_review_hold, name_review_clearance"
 
 /** THE ONE PUBLICATION DOOR — a human platform-safety act, gated, receipted, versioned. */
 export async function publishBulletin(svc: Svc, staff: StaffActor, bulletinId: string, ctx: { attestNoPersonIdentified: boolean; legalReviewConfirmed: boolean; verificationNote: string }): Promise<Ok<{ notified: number }> | Refusal> {
@@ -610,6 +633,8 @@ export async function publishBulletin(svc: Svc, staff: StaffActor, bulletinId: s
   const corroboration = await corroborationOf(svc, bulletinId)
   const why = publicationRefusal(b as any, { ...ctx, independentTenants: corroboration.independentTenants })
   if (why) return { ok: false, error: why }
+  const held = await holdForNameReview(svc, staff, bulletinId, b as any)
+  if (held) return held
   const tenant = await staffLedgerTenant(svc, staff, bulletinId)
   if (!tenant) return { ok: false, error: "No tenant to record the receipt under — not published." }
   const at = new Date().toISOString()
@@ -662,6 +687,8 @@ export async function correctBulletin(svc: Svc, staff: StaffActor, bulletinId: s
   // The corrected text must pass the SAME rules as a first publication (a correction cannot smuggle a name in).
   const refusal = publicationRefusal(next, { attestNoPersonIdentified: true, legalReviewConfirmed: !!(b as any).legal_review_by && next.named_entity === (b as any).named_entity, verificationNote: why, independentTenants: (await corroborationOf(svc, bulletinId)).independentTenants })
   if (refusal) return { ok: false, error: refusal }
+  const held = await holdForNameReview(svc, staff, bulletinId, next)
+  if (held) return held
   const tenant = await staffLedgerTenant(svc, staff, bulletinId)
   if (!tenant) return { ok: false, error: "No tenant to record the receipt under — not corrected." }
   const version = Number((b as any).version) + 1
@@ -768,7 +795,8 @@ async function creditsFor(svc: Svc, ids: string[]): Promise<Map<string, string[]
   if (!rows.length) return out
   const { data: cases } = await svc.from("fraud_incident_cases").select("id, share_consent").in("id", rows.map((r) => r.case_id))
   const consent = new Set(((cases ?? []) as Array<{ id: string; share_consent: boolean }>).filter((c) => c.share_consent === true).map((c) => c.id))
-  const tenants = [...new Set(rows.filter((r) => consent.has(r.case_id)).map((r) => r.brokerage_id))]
+  const standing = (await tenantStandings(svc, rows.map((r) => r.brokerage_id))) ?? new Map<string, TenantStanding>()
+  const tenants = [...new Set(rows.filter((r) => consent.has(r.case_id) && standing.get(r.brokerage_id) === "active").map((r) => r.brokerage_id))]
   if (!tenants.length) return out
   const { data: names } = await svc.from("brokerages").select("id, name").in("id", tenants)
   const nameOf = new Map(((names ?? []) as Array<{ id: string; name: string | null }>).map((n) => [n.id, n.name ?? ""]))
@@ -954,4 +982,221 @@ export async function purgeExpiredFraudCases(svc: Svc, now = new Date()): Promis
   const { data, error } = await svc.from("fraud_incident_cases").delete().lte("retention_until", now.toISOString()).select("id")
   if (error) return { purged: 0, error: error.message }
   return { purged: (data ?? []).length, error: null }
+}
+
+// ═══ 12. TENANT DEPARTURE (round 2) — read the tenant's status the way the rest of the product does ══════════════════
+
+/** A tenant has LEFT when brokerages.status is a lifecycle-refused value other than the resumable `suspended` (named
+ *  subtraction from lib/billing/billing-access.ts TENANT_LIFECYCLE_REFUSED — never restated), or its row is soft-deleted
+ *  (brokerages.deleted_at), or the row is gone. A suspended tenant is PAUSED: its seats cannot take part, its data stays. */
+export const FRAUD_DEPARTED_TENANT_STATUSES: ReadonlySet<string> = new Set([...TENANT_LIFECYCLE_REFUSED].filter((s) => s !== "suspended"))
+export type TenantStanding = "active" | "paused" | "departed"
+
+/** Standing per tenant id. null = the read was refused (callers fail closed). A missing row reads as departed. */
+export async function tenantStandings(svc: Svc, ids: ReadonlyArray<string | null | undefined>): Promise<Map<string, TenantStanding> | null> {
+  const uniq = [...new Set(ids.filter((x): x is string => !!x))]
+  const out = new Map<string, TenantStanding>()
+  if (!uniq.length) return out
+  const { data, error } = await svc.from("brokerages").select("id, status, deleted_at").in("id", uniq)
+  if (error) return null
+  for (const id of uniq) out.set(id, "departed")
+  for (const b of (data ?? []) as Array<{ id: string; status: string | null; deleted_at: string | null }>) {
+    const st = String(b.status ?? "active")
+    out.set(b.id, b.deleted_at || FRAUD_DEPARTED_TENANT_STATUSES.has(st) ? "departed" : TENANT_LIFECYCLE_REFUSED.has(st) ? "paused" : "active")
+  }
+  return out
+}
+
+/** The seat's own tenant must be ACTIVE to take part (the session door asks this before anything else). */
+export async function tenantMayParticipate(svc: Svc, brokerageId: string): Promise<{ ok: true } | Refusal> {
+  const s = await tenantStandings(svc, [brokerageId])
+  if (!s) return { ok: false, error: "Your account could not be checked right now." }
+  return s.get(brokerageId) === "active" ? { ok: true } : { ok: false, error: "Your business's account is not active, so the fraud network is unavailable." }
+}
+
+/**
+ * SEAL a departed tenant: its bulletin source links and its warning subscriptions are DELETED (counted), so no retained
+ * bulletin leads back to its private cases and nothing is sent to it. Its cases stay unreadable (readCase) until the
+ * retention purge deletes them. Runs on the sentinel cron beside the purge.
+ */
+export async function sealDepartedTenants(svc: Svc): Promise<{ sourcesRemoved: number; subscriptionsRemoved: number; error: string | null }> {
+  const out = { sourcesRemoved: 0, subscriptionsRemoved: 0, error: null as string | null }
+  const [src, subs] = await Promise.all([
+    svc.from("fraud_bulletin_sources").select("brokerage_id").limit(METRIC_ROW_CAP),
+    svc.from("fraud_warning_subscriptions").select("brokerage_id").limit(METRIC_ROW_CAP),
+  ])
+  if (src.error || subs.error) { out.error = `read refused: ${(src.error ?? subs.error).message}`; return out }
+  const ids = [...((src.data ?? []) as Array<{ brokerage_id: string }>), ...((subs.data ?? []) as Array<{ brokerage_id: string }>)].map((r) => r.brokerage_id)
+  const standing = await tenantStandings(svc, ids)
+  if (!standing) { out.error = "tenant status read refused — nothing sealed"; return out }
+  for (const [id, st] of standing) {
+    if (st !== "departed") continue
+    const a = await svc.from("fraud_bulletin_sources").delete().eq("brokerage_id", id).select("id")
+    const b = await svc.from("fraud_warning_subscriptions").delete().eq("brokerage_id", id).select("id")
+    if (a.error || b.error) { out.error = `seal refused for a tenant: ${(a.error ?? b.error).message}`; continue }
+    out.sourcesRemoved += (a.data ?? []).length
+    out.subscriptionsRemoved += (b.data ?? []).length
+  }
+  return out
+}
+
+// ═══ 13. NAME-REVIEW HOLD (round 2) — a second moderator reviews any personal-name or business-entity pattern ═════════
+
+/** Capitalized words that open ordinary sentences or name places / institutions — never treated as a personal name. */
+const NAME_STOP = new Set([
+  "A", "An", "The", "This", "That", "These", "Those", "If", "When", "Do", "Call", "Contact", "Verify", "Never", "Always", "Stop", "Treat",
+  "Tell", "Hold", "Report", "Confirm", "Pause", "Deliver", "Have", "Get", "Check", "Use", "Look", "Wire", "Title", "Escrow", "Bank", "Federal",
+  "State", "County", "City", "United", "States", "Internal", "Revenue", "Service", "Real", "Estate", "New", "North", "South", "East", "West",
+  "Island", "York", "Jersey", "Mexico", "Carolina", "Dakota", "Hampshire", "Virginia", "Sign", "Multiple", "Listing", "Closing", "Disclosure",
+  "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December",
+  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "Reported", "Official", "Warning",
+])
+const PERSON_RE = /\b([A-Z][a-z]{1,20})(?:\s+[A-Z]\.)?\s+([A-Z][a-z]{1,24})\b/g
+const ENTITY_RE = /\b(?:[A-Z][\w&'-]*\s+){1,4}(?:LLC|L\.L\.C\.|Inc\.?|Incorporated|Corp\.?|Corporation|Ltd\.?|LLP|PLLC|P\.C\.|Co\.|Company|Holdings)(?=[\s.,;:!?)]|$)/g
+
+/** PURE — the spans that hold publication for a second moderator. An official public warning is exempt (its named
+ *  entity has its own citation + legal-review rule). Returns the matched text, never a judgment about it. */
+export function nameReviewSpans(b: Record<string, any>): string[] {
+  if (b.claim_class === "official_public_warning") return []
+  const texts = [b.title, b.tactic_summary, b.how_to_verify, ...((b.red_flags ?? []) as string[]), ...((b.indicators ?? []) as Array<{ kind: string; value: string }>).filter((i) => i.kind !== "lookalike_domain").map((i) => i.value)]
+  const spans = new Set<string>()
+  for (const t of texts.map((x) => String(x ?? ""))) {
+    for (const m of t.matchAll(ENTITY_RE)) spans.add(m[0].trim())
+    for (const m of t.matchAll(PERSON_RE)) if (!NAME_STOP.has(m[1]) && !NAME_STOP.has(m[2])) spans.add(m[0].trim())
+  }
+  return [...spans].sort()
+}
+const spansFingerprint = (spans: string[]): string => createHash("sha256").update(spans.join("\u0000")).digest("hex")
+
+/** Hold unless a DIFFERENT moderator cleared exactly these spans. Writes the hold (the first requester is kept). */
+async function holdForNameReview(svc: Svc, staff: StaffActor, bulletinId: string, b: Record<string, any>): Promise<(Refusal & { held: true; spans: string[] }) | null> {
+  const spans = nameReviewSpans(b)
+  if (!spans.length) return null
+  const fp = spansFingerprint(spans)
+  const hold = b.name_review_hold as { spans_fingerprint?: string; requested_by?: string } | null
+  const clr = b.name_review_clearance as { spans_fingerprint?: string; cleared_by?: string } | null
+  if (clr && clr.spans_fingerprint === fp && hold?.spans_fingerprint === fp && clr.cleared_by && clr.cleared_by !== hold.requested_by) return null
+  if (hold?.spans_fingerprint !== fp) {
+    const { error } = await svc.from("fraud_bulletins").update({ name_review_hold: { spans, spans_fingerprint: fp, requested_by: staff.userId, at: new Date().toISOString() }, name_review_clearance: null }).eq("id", bulletinId)
+    if (error) return { ok: false, held: true, spans, error: "The text needs a second moderator's review, and the hold could not be recorded — nothing was published." }
+  }
+  return { ok: false, held: true, spans, error: `Held for a second moderator: the text contains ${spans.map((x) => `“${x}”`).join(", ")}, which may identify a person or business. A different moderator must review it (remove it, or confirm it is not an identification) before this is published.` }
+}
+
+/** The SECOND moderator's review of a held text. The requester cannot clear their own hold; the text must be unchanged. */
+export async function clearNameReview(svc: Svc, staff: StaffActor, bulletinId: string, note: string): Promise<Ok<{}> | Refusal> {
+  if (staff.kind !== "staff" || !staff.canWrite) return { ok: false, error: "Platform safety staff with write access only." }
+  const why = str(note, 1000)
+  if (!why) return { ok: false, error: "Record why the matched text does not identify anyone (or remove it instead)." }
+  const { data: b, error } = await svc.from("fraud_bulletins").select(SNAPSHOT_COLS).eq("id", bulletinId).maybeSingle()
+  if (error || !b) return { ok: false, error: "Bulletin not found." }
+  const hold = (b as any).name_review_hold as { spans_fingerprint?: string; requested_by?: string } | null
+  if (!hold?.spans_fingerprint) return { ok: false, error: "This bulletin has no name-review hold." }
+  if (hold.requested_by === staff.userId) return { ok: false, error: "A different moderator must review this hold." }
+  const fp = spansFingerprint(nameReviewSpans(b as any))
+  if (fp !== hold.spans_fingerprint) return { ok: false, error: "The text changed since the hold — publish again so the new text is held and reviewed." }
+  const tenant = await staffLedgerTenant(svc, staff, bulletinId)
+  if (!tenant) return { ok: false, error: "No tenant to record the receipt under — not cleared." }
+  return receipt(svc, { brokerageId: tenant, action: "fraud.bulletin.clear_name_review", actorUserId: staff.userId, subject: { type: "fraud_bulletin", id: bulletinId }, reason: why, riskClass: "LEGAL", detail: { spans_fingerprint: fp, requested_by: hold.requested_by } }, async () => {
+    const { data: up, error: upErr } = await svc.from("fraud_bulletins").update({ name_review_clearance: { spans_fingerprint: fp, cleared_by: staff.userId, at: new Date().toISOString(), note: why } }).eq("id", bulletinId).select("id")
+    return upErr || !(up ?? []).length ? { ok: false as const, error: "The review was not recorded." } : { ok: true as const }
+  }) as any
+}
+
+// ═══ 14. EVIDENCE FILES (round 2) — metadata is stripped BEFORE the storage check, so it is never forgotten ══════════
+
+/** The private, SERVICE-ONLY bucket the owner creates (report: OWNER SQL). Its presence is read from the generated live
+ *  bucket map (lib/storage/bucket-limits.ts), never assumed. */
+export const FRAUD_EVIDENCE_BUCKET = "fraud-evidence"
+const EVIDENCE_URL_SECONDS = 300
+const EVIDENCE_MAX_BYTES = 10 * 1024 * 1024
+export interface EvidenceStoreDeps {
+  bucketEnabled?: boolean
+  upload?: (path: string, bytes: Uint8Array, contentType: string) => Promise<{ ok: boolean; error?: string }>
+  sign?: (path: string) => Promise<{ url: string | null }>
+}
+export const evidenceObjectPath = (brokerageId: string, caseId: string, fingerprint: string): string => `${brokerageId}/${caseId}/${fingerprint}`
+
+async function evidenceBucketEnabled(): Promise<boolean> {
+  try {
+    const { LIVE_BUCKET_CONFIG } = await import("@/lib/storage/bucket-limits")
+    return LIVE_BUCKET_CONFIG[FRAUD_EVIDENCE_BUCKET]?.isPublic === false
+  } catch { return false }
+}
+
+/**
+ * PURE — remove metadata from a JPEG or PNG. JPEG: every APP1–APP15 segment (EXIF incl. GPS / camera serial, XMP, ICC,
+ * IPTC / Photoshop) and every COM comment segment are dropped; APP0 (JFIF) and the image data are kept. PNG: tEXt, zTXt,
+ * iTXt, eXIf and tIME chunks are dropped. Any other type is REFUSED (it cannot be cleaned reliably here — keep the
+ * original). A truncated or malformed file is refused rather than passed through.
+ */
+export function stripImageMetadata(input: Uint8Array): { ok: true; bytes: Uint8Array; type: "image/jpeg" | "image/png"; removed: string[] } | Refusal {
+  const b = input
+  const removed: string[] = []
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8) {
+    const out: number[] = [0xff, 0xd8]
+    let i = 2
+    while (i < b.length) {
+      if (b[i] !== 0xff) return { ok: false, error: "The image is malformed (a JPEG segment did not start where expected)." }
+      const m = b[i + 1]
+      if (m === 0xda || m === 0xd9) { for (let k = i; k < b.length; k++) out.push(b[k]); break } // SOS (image data) / EOI: copy the rest
+      if (m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { out.push(0xff, m); i += 2; continue }
+      if (i + 3 >= b.length) return { ok: false, error: "The image is truncated." }
+      const len = (b[i + 2] << 8) | b[i + 3]
+      if (len < 2 || i + 2 + len > b.length) return { ok: false, error: "The image is truncated." }
+      if ((m >= 0xe1 && m <= 0xef) || m === 0xfe) removed.push(m === 0xe1 ? "APP1 (EXIF / XMP)" : m === 0xfe ? "COM (comment)" : m === 0xed ? "APP13 (IPTC)" : m === 0xe2 ? "APP2 (ICC)" : `APP${m - 0xe0}`)
+      else for (let k = i; k < i + 2 + len; k++) out.push(b[k])
+      i += 2 + len
+    }
+    return { ok: true, bytes: Uint8Array.from(out), type: "image/jpeg", removed }
+  }
+  const SIG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  if (b.length >= 8 && SIG.every((v, k) => b[k] === v)) {
+    const out: number[] = [...SIG]
+    let i = 8
+    while (i < b.length) {
+      if (i + 8 > b.length) return { ok: false, error: "The image is truncated." }
+      const len = ((b[i] << 24) >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3]
+      const type = String.fromCharCode(b[i + 4], b[i + 5], b[i + 6], b[i + 7])
+      const end = i + 12 + len
+      if (end > b.length) return { ok: false, error: "The image is truncated." }
+      if (["tEXt", "zTXt", "iTXt", "eXIf", "tIME"].includes(type)) removed.push(`${type} chunk`)
+      else for (let k = i; k < end; k++) out.push(b[k])
+      i = end
+      if (type === "IEND") break
+    }
+    return { ok: true, bytes: Uint8Array.from(out), type: "image/png", removed }
+  }
+  return { ok: false, error: "Only JPEG and PNG images can be cleaned of hidden metadata today. Keep the original file safely; its fingerprint is already on the case." }
+}
+
+/**
+ * THE EVIDENCE UPLOAD DOOR. Gate (the reporter or the tenant's case reviewer) → type and size → metadata STRIPPED →
+ * only then the storage check. Until the private bucket exists it refuses with the honest state AND reports what it
+ * removed, so the cleaning step runs today. With the bucket: the CLEANED bytes are stored at
+ * <tenant>/<case>/<original fingerprint> through the service client, and the evidence row is marked stored.
+ */
+export async function uploadEvidenceFile(svc: Svc, actor: TenantActor, input: { caseId: string; kind: string; label?: string | null; bytes: Uint8Array }, deps: EvidenceStoreDeps = {}): Promise<Ok<{ fingerprint: string; metadataRemoved: string[] }> | (Refusal & { metadataRemoved?: string[]; fingerprint?: string })> {
+  const r = await readCase(svc, actor, input.caseId)
+  if (!r.ok) return r
+  if (actor.kind !== "tenant" || (r.case.reporter_user_id !== actor.userId && !isCaseReviewer(actor))) return { ok: false, error: "Only the reporter or your business's case reviewer adds evidence." }
+  if (!inList(FRAUD_EVIDENCE_KINDS, input.kind)) return { ok: false, error: "Unknown evidence type." }
+  if (!(input.bytes instanceof Uint8Array) || input.bytes.length === 0) return { ok: false, error: "Choose a file." }
+  if (input.bytes.length > EVIDENCE_MAX_BYTES) return { ok: false, error: "The file is larger than 10 MB." }
+  const fingerprint = createHash("sha256").update(input.bytes).digest("hex")
+  const clean = stripImageMetadata(input.bytes)
+  if (!clean.ok) return { ...clean, fingerprint }
+  if (!(deps.bucketEnabled ?? (await evidenceBucketEnabled()))) return { ok: false, error: EVIDENCE_STORAGE_NOT_ENABLED, metadataRemoved: clean.removed, fingerprint }
+  const path = evidenceObjectPath(r.case.brokerage_id, input.caseId, fingerprint)
+  const up = deps.upload ? await deps.upload(path, clean.bytes, clean.type) : await (async () => {
+    const res = await (svc as any).storage?.from(FRAUD_EVIDENCE_BUCKET).upload(path, clean.bytes, { contentType: clean.type, upsert: false })
+    return { ok: !!res && !res.error, error: res?.error?.message as string | undefined }
+  })()
+  if (!up.ok) return { ok: false, error: "The file was not stored. Try again in a moment.", metadataRemoved: clean.removed, fingerprint }
+  const existing = r.evidence.find((e: any) => e.fingerprint_sha256 === fingerprint)
+  const write = existing
+    ? await svc.from("fraud_case_evidence").update({ storage_status: "stored" }).eq("id", existing.id).eq("brokerage_id", r.case.brokerage_id).select("id")
+    : await svc.from("fraud_case_evidence").insert({ brokerage_id: r.case.brokerage_id, case_id: input.caseId, evidence_kind: input.kind, fingerprint_sha256: fingerprint, label: str(input.label, 200) || null, storage_status: "stored", created_by: actor.userId }).select("id")
+  if (write.error || !(write.data ?? []).length) return { ok: false, error: "The file was stored but the case was not updated — contact platform support.", metadataRemoved: clean.removed, fingerprint }
+  return { ok: true, fingerprint, metadataRemoved: clean.removed }
 }
