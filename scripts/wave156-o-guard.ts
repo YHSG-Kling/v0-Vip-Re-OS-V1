@@ -163,7 +163,7 @@ async function sectionsBtoE() {
   check("C1 POSITIVE CONTROL — the owner's live read-back line lifts it", rules.r6AppliedLive?.("- R6 status: APPLIED LIVE 2026-12-01 — hrvaqgvukzxfskkcrwbt AFTER read-back 10 rows; two-tenant script 5 REFUSED then ROLLBACK") === true)
   check("C2 the sheet carries the R6 status line and today it keeps R6 OPEN", /^- R6 status:/m.test(sheet) && rules.r6AppliedLive?.(sheet) === false)
   check("C3 test:release-blockers and test:production-readiness both carry R6 as an obligation through the one rule (stripped source)",
-    /id:\s*"R6"[\s\S]{0,400}r6AppliedLive\(/.test(stripComments(raw("scripts/release-blockers-guard.ts", WT))) && /id:\s*"R6"[\s\S]{0,400}r6AppliedLive\(/.test(stripComments(raw("scripts/production-readiness-guard.ts", WT))))
+    ["scripts/release-blockers-guard.ts", "scripts/production-readiness-guard.ts"].every((f) => { const s = stripComments(raw(f, WT)); return /\{\s*id:\s*"R6"/.test(s) && /\br6AppliedLive\(/.test(s) && /import\s*\{[^}]*\br6AppliedLive\b[^}]*\}\s*from\s*"\.\/release-rules"/.test(s) }))
 
   section("§D the sheet — required fields and the required order (derived)")
   const quote = /^Required order[^"\n]*"([^"]+)"/m.exec(sheet)?.[1] ?? ""

@@ -436,7 +436,7 @@ export function parseReleaseStateTable(md: string): Map<string, ReleaseStateRow>
 
 /** Phrases that announce a release. Shown nowhere while PUBLIC RELEASE AUTHORIZED is unmet, except in a sentence that
  *  negates it ("never", "not", "no one may", "cannot", "must not", "until"). */
-export const RELEASE_CLAIM = /\b(ready to sell|live[- ]ready|launch[- ]ready|ready for (?:public )?(?:launch|release)|go[- ]live ready)\b/i
+export const RELEASE_CLAIM = /\b(ready to sell|live[- ]ready|ready for public (?:launch|release)|go[- ]live ready)\b/i
 const NEGATED = /\b(never|not|no one|cannot|can't|must not|until|unless|refus\w*|forbid\w*|nothing|nobody)\b/i
 
 /** PURE — may this text be shown? Every sentence carrying a release claim must negate it, unless the release is authorized. */

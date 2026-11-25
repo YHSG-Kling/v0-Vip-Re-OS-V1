@@ -608,8 +608,10 @@ check(`H5 the sheet's release-state table names all five states and each verdict
   STATE_KEYS.filter((k) => !stateRows.has(k)).join(", "))
 const publicAuthorized = verdicts156.find((v) => v.key === "PUBLIC RELEASE AUTHORIZED")!.met
 const claimHits: string[] = []
+// The defining module spells the claim phrases inside RELEASE_CLAIM itself; its only printed text, the board note, is H7's.
+const CLAIM_SOURCE = join(ROOT, "lib/platform/go-live-readiness.ts")
 for (const r of ["app", "components", "lib/platform"]) if (has(r)) for (const f of walkTs(join(ROOT, r))) {
-  if (!releaseClaimAllowed(stripComments(readFileSync(f, "utf8")), publicAuthorized)) claimHits.push(f.slice(ROOT.length + 1))
+  if (f !== CLAIM_SOURCE && !releaseClaimAllowed(stripComments(readFileSync(f, "utf8")), publicAuthorized)) claimHits.push(f.slice(ROOT.length + 1))
 }
 for (const f of readdirSync(join(ROOT, "docs/operations")).filter((x) => x.endsWith(".md"))) if (!releaseClaimAllowed(read(`docs/operations/${f}`), publicAuthorized)) claimHits.push(`docs/operations/${f}`)
 check(`H6 no product surface (app/, components/, lib/platform/, comment-stripped) and no operations doc announces a release while PUBLIC RELEASE AUTHORIZED is ${publicAuthorized ? "met" : "unmet"}`, claimHits.length === 0, claimHits.slice(0, 6).join(", "))
