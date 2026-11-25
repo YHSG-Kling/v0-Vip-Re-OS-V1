@@ -652,8 +652,14 @@ console.log("\n═══ C9 · the two repointed sites resolve the TENANT from t
   const pay = code(F.vendorPayments)
 
   // Both money paths call the scope-carrying survivors, not the platform seam.
+  // Wave 156 (156N, C26): the transfer moved into the module-private send helper shared by the first send and the reconcile
+  // re-send, which receives the brokerage as `a.brokerageId` — so the rule is restated in two halves: the call names the tenant
+  // side with the helper's brokerage, AND every call of the helper hands it the SESSION's tenant (ctx.brokerageId) or the one it
+  // was itself handed (the reconcile, called only with ctx.brokerageId).
   check("initiateVendorPayout pays through createTransfer on the TENANT's account",
-    /createTransfer\(\s*\{[\s\S]{0,600}?\},\s*\{\s*side:\s*"tenant",\s*brokerageId:\s*ctx\.brokerageId\s*\}/.test(pay))
+    /createTransfer\(\s*\{[\s\S]{0,600}?\},\s*\{\s*side:\s*"tenant",\s*brokerageId:\s*(?:ctx|a)\.brokerageId\s*\}/.test(pay)
+      && [...pay.matchAll(/(?:sendAndSettleStripePayout|reconcileUnconfirmedStripePayouts)\(svc,\s*\{[\s\S]{0,400}?brokerageId:\s*([\w.]+)/g)].every((m) => m[1] === "ctx.brokerageId" || m[1] === "a.brokerageId")
+      && /reconcileUnconfirmedStripePayouts\(svc,\s*\{[\s\S]{0,200}?brokerageId:\s*ctx\.brokerageId/.test(pay))
   check("startVendorInvoiceCheckout collects through createCheckoutSession on the TENANT's account",
     /createCheckoutSession\(\s*\{[\s\S]{0,1400}?\},\s*\{\s*side:\s*"tenant",\s*brokerageId:\s*sessionBrokerageId\s*\}/.test(pay))
   check("confirmVendorInvoiceCheckout reads the session back on the SAME account it was created on",
@@ -715,7 +721,10 @@ console.log("\n═══ C9 · the two repointed sites resolve the TENANT from t
   // and a claim needs an owning record while the money is in flight). What must hold when the transfer is refused: the
   // resolver's sentence comes back as `error`, the row is marked 'failed' (never left reading pending or processing), its
   // earnings are released, and nothing falls through to another account.
-  const refusedTransfer = /if \(!transfer\.success \|\| !transfer\.transferId\) \{([\s\S]{0,2600}?)return \{ success: false, error: transfer\.error/.exec(pay)?.[1] ?? null
+  // Wave 156 (156N, C26): only a PROVABLE refusal takes this branch now (an unknown answer is looked up on Stripe first), and it
+  // lives in the send helper, which reports `state: "failed"` to its caller.
+  const refusedTransfer = /if \(!transfer\.success \|\| !transfer\.transferId\) \{([\s\S]{0,2600}?)return \{ success: false, error: transfer\.error/.exec(pay)?.[1]
+    ?? /if \(provablyRefused\) \{([\s\S]{0,2600}?)return \{ state: "failed", error: transfer\.error/.exec(pay)?.[1] ?? null
   check("a refused payout returns the resolver's sentence, marks its payout row 'failed' and releases the earnings it claimed",
     refusedTransfer !== null && /\.update\(\{\s*status:\s*"failed"\s*\}\)/.test(refusedTransfer) && /releaseEarningsOfFailedPayout\(/.test(refusedTransfer) && !/createTransfer\(|transfers\.create/.test(refusedTransfer))
   check("POSITIVE CONTROL: a refusal branch that leaves the payout row untouched is not accepted",
@@ -755,7 +764,7 @@ console.log("\n═══ C9 · the two repointed sites resolve the TENANT from t
     direct.ok === false && direct.reason.includes("brokerage b") && direct.reason.includes("acct_v"))
   check("the rule is applied at the money calls, not just exported",
     /destinationRefusal\(resolved\.account, params\.destinationAccountId\)/.test(payment)
-      && (payment.match(/if \(unreachable\) return \{ success: false, error: unreachable \}/g) ?? []).length >= 2)
+      && (payment.match(/if \(unreachable\) return \{ success: false, error: unreachable(?:, outcome: "refused")? \}/g) ?? []).length >= 2)
 
   // THE PREMISE that rule stands on: every acct_… in this product is minted under
   // the PLATFORM's Connect platform, so a direct-mode tenant is provably foreign to
@@ -880,8 +889,8 @@ if (RUN_NEGATIVE) {
     "SITE 1 — the vendor payout falls back to stripe.transfers.create() on the platform key",
     F.vendorPayments,
     // The transfer now runs INSIDE the payout sink's decision record (wave 155, lane 155R8: `ledgerToolCall(…, () => createTransfer(`),
-    // so the mutation is planted on that call — the control had lost its anchor and said so.
-    `    }, () => createTransfer(`,
+    // so the mutation is planted on that call — the control had lost its anchor and said so. Wave 156 (156N): that call sits in the module-private send helper (two-space indent), shared with the reconcile re-send.
+    `  }, () => createTransfer(`,
     `    }, async () => await stripe.transfers.create({ amount: 1 } as never) ?? createTransfer(`,
     () => seesResidualIn(F.vendorPayments, "transfers.create"),
   )
@@ -900,12 +909,12 @@ if (RUN_NEGATIVE) {
   mutate(
     'SITE 1 — createTransfer is handed { side: "platform" } instead of the session\'s tenant',
     F.vendorPayments,
-    `      { side: "tenant", brokerageId: ctx.brokerageId },`,
+    `    { side: "tenant", brokerageId: a.brokerageId },`,
     `      { side: "platform" },`,
     () => {
       const pay = code(F.vendorPayments)
       return /side:\s*"platform"/.test(pay)
-        && !/createTransfer\(\s*\{[\s\S]{0,600}?\},\s*\{\s*side:\s*"tenant",\s*brokerageId:\s*ctx\.brokerageId\s*\}/.test(pay)
+        && !/createTransfer\(\s*\{[\s\S]{0,600}?\},\s*\{\s*side:\s*"tenant",\s*brokerageId:\s*(?:ctx|a)\.brokerageId\s*\}/.test(pay)
     },
   )
 

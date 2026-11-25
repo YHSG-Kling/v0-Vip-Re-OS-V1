@@ -27,10 +27,13 @@ export interface ManageView {
   owners: Owners
   library: LibRow[]
   bundles: unknown[]
-  vocab: { rightsBases: string[]; purposes: string[]; signerRoles: string[]; packetTypes: string[]; bundleKinds: string[]; requirementSources: string[] }
+  /** sourceKinds = lib/forms/form-directory-intake.ts FORM_LIBRARY_SOURCE_KINDS; addModes = the add doors derived FROM it (addModesOffered). */
+  vocab: { sourceKinds: string[]; addModes: Array<"upload" | "state_preconfigured" | "provider_form">; rightsBases: string[]; purposes: string[]; signerRoles: string[]; packetTypes: string[]; bundleKinds: string[]; requirementSources: string[] }
 }
 
 const sel = "h-8 rounded-md border bg-background px-2 text-xs"
+/** The words for each add door; WHICH doors are offered comes from the server's source-kind vocabulary (view.vocab.addModes). */
+const MODE_LABEL: Record<"upload" | "state_preconfigured" | "provider_form", string> = { upload: "upload a PDF", state_preconfigured: "pick from the state package", provider_form: "link a provider form by id" }
 
 export function AddFormOrPacket({ defaultState, onAdded }: { defaultState?: string | null; onAdded?: () => void }) {
   const [open, setOpen] = useState(false)
@@ -41,7 +44,8 @@ export function AddFormOrPacket({ defaultState, onAdded }: { defaultState?: stri
       const r = await fetch("/api/forms/directory?view=manage")
       const j = await r.json()
       if (!r.ok) { setLoadErr(refusalOf(j)); return }
-      setView(j); setLoadErr({ message: null, href: null })
+      const { owners, library, bundles, vocab } = j as ManageView
+      setView({ owners, library, bundles, vocab }); setLoadErr({ message: null, href: null })
     } catch (e) { setLoadErr({ message: e instanceof Error ? e.message : "Network error", href: null }) }
   }, [])
   useEffect(() => { if (open && !view) void reload() }, [open, view, reload])
@@ -99,7 +103,7 @@ function AddForm({ view, defaultState, onDone }: { view: ManageView; defaultStat
         r = await fetch("/api/forms/directory", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(meta) })
       }
       const j = await r.json()
-      if (!r.ok || j.ok === false) { setOut(refusalOf(j)); return }
+      if (!r.ok || j.ok === false) { setOut({ message: j.refusal?.message ?? refusalOf(j).message, href: j.refusal?.recoverHref ?? null }); return }
       setOut({ message: null, href: null, ok: j.status === "not_configured" ? "Added — it reads NOT CONFIGURED until a licensed file is uploaded or a provider form is linked." : j.existing ? "Already in your library." : "Added to your library." })
       onDone()
     } catch (e) { setOut({ message: e instanceof Error ? e.message : "Network error", href: null }) } finally { setBusy(false) }
@@ -118,9 +122,7 @@ function AddForm({ view, defaultState, onDone }: { view: ManageView; defaultStat
         </label>
         <label className="text-xs">How
           <select className={`${sel} ml-1`} value={mode} onChange={(e) => setMode(e.target.value as typeof mode)}>
-            <option value="upload">upload a PDF</option>
-            <option value="state_preconfigured">pick from the state package</option>
-            <option value="provider_form">link a provider form by id</option>
+            {view.vocab.addModes.map((m) => <option key={m} value={m}>{MODE_LABEL[m]}</option>)}
           </select>
         </label>
       </div>

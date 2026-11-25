@@ -274,7 +274,7 @@ export interface TrackMagnetEventInput {
    * scan reporter can choose which brokerage's ledger it writes into.
    */
   brokerageId?: string
-  eventType: "view" | "form_start" | "form_submit" | "qr_scan" | "link_click" | "calculator_open" | "calculation_completed" | "calculator_opt_in"
+  eventType: "view" | "form_start" | "form_submit" | "qr_scan" | "link_click" | import("@/lib/calculators/artifact").CalculatorEvent
   metadata?: Record<string, unknown>
   contactId?: string
   ipAddress?: string

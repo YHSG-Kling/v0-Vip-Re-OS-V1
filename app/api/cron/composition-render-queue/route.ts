@@ -31,7 +31,7 @@ import { verifyCronAuth } from "@/lib/cron-auth"
 import { createCronRunContextAction, recordCronSuccessAction, recordCronFailureAction } from "@/app/actions/cron-kernel"
 import { createServiceClient } from "@/lib/supabase/service"
 import { PICKABLE_RENDER_STATUS } from "@/lib/remotion/render-decision"
-import { recoverStalledRenders, requeueFailedRenders } from "@/lib/remotion/registry"
+import { recoverStalledRenders, requeueFailedRenders, pickNextQueuedRender } from "@/lib/remotion/registry"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -127,14 +127,14 @@ export async function GET(req: NextRequest) {
     failureCensus = { total: 0, byBucket: {}, lines: [], error: (e as Error).message }
   }
 
-  // Oldest queued row first (idx_remotion_renders_queued covers this).
-  const { data: rows, error } = await svc.from("remotion_composition_renders")
-    .select("id, composition_id, brokerage_id")
-    .eq("render_status", PICKABLE_RENDER_STATUS)
-    .order("created_at", { ascending: true })
-    .limit(1)
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  if (!rows || rows.length === 0) {
+  // THE FAIR PICK (wave 156, lane 156S): least-recently-served tenant, then its least-recently-served desk, then that
+  // desk's oldest row — lib/remotion/registry.ts pickNextQueuedRender over render-decision.ts chooseFairRender. It used
+  // to be the globally oldest queued row, so one tenant's batch held every other tenant behind it.
+  const pick = await pickNextQueuedRender(svc)
+  if (pick.error && !pick.row && pick.fairness === undefined) return NextResponse.json({ error: pick.error }, { status: 500 })
+  if (pick.error) console.warn(`[composition-render-queue] ${pick.error}`)
+  const rows = pick.row ? [pick.row] : []
+  if (rows.length === 0) {
     if (cronRun.data) await recordCronSuccessAction({ context_id: cronRun.data.context_id }) // 155R1
     return NextResponse.json({
       ran_at: new Date().toISOString(), processed: 0,

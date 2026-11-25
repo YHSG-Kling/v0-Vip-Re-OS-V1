@@ -518,6 +518,9 @@ export interface PermitMatch {
    * stable record number (see `permitDedupeKey`).
    */
   eventDate: string | null
+  /** WAVE 156 (156I): the PERMIT's own published disposition (issued / finaled / …), when the row carries one. A withdrawn,
+   *  void, cancelled, revoked, denied or expired permit never becomes a match (permitSupersededReason, foot of this file). */
+  permitStatus?: string | null
   raw: Record<string, unknown>
 }
 
@@ -529,6 +532,9 @@ export interface MatchOutcome {
   skippedOutsideWindow: number
   /** Rows whose declared event-date column was absent or unparseable. Cannot read ≠ not recent. */
   skippedNoEventDate: number
+  /** WAVE 156 (156I): permits whose own published status says the work will not happen (withdrawn / void / cancelled /
+   *  revoked / denied / expired) — a superseded record is history, never a current signal. */
+  skippedSuperseded: number
 }
 
 /**
@@ -594,6 +600,7 @@ export function matchPermitsToLeads(
   let skippedNoLeadMatch = 0
   let skippedOutsideWindow = 0
   let skippedNoEventDate = 0
+  let skippedSuperseded = 0
 
   for (const row of permits ?? []) {
     if (window) {
@@ -610,6 +617,10 @@ export function matchPermitsToLeads(
     const leadIds = byKey.get(key)
     if (!leadIds || leadIds.length === 0) { skippedNoLeadMatch++; continue }
 
+    // WAVE 156 (156I): a superseded permit (withdrawn / void / cancelled / revoked / denied / expired) is a contradicted fact —
+    // it never reaches a lead or a contact, and it is counted, not silently dropped.
+    const permitStatus = shape?.kind === "code_violations" ? null : readPermitStatus(row)
+    if (permitSupersededReason(permitStatus)) { skippedSuperseded++; continue }
     const description = readPermitDescription(row)
     const valuation = readPermitValuation(row)
     const status = shape?.kind === "code_violations" ? readViolationStatus(row) : null
@@ -631,11 +642,12 @@ export function matchPermitsToLeads(
         strength,
         status,
         eventDate,
+        permitStatus,
         raw: row,
       })
     }
   }
-  return { matches, skippedNoAddress, skippedNoLeadMatch, skippedOutsideWindow, skippedNoEventDate }
+  return { matches, skippedNoAddress, skippedNoLeadMatch, skippedOutsideWindow, skippedNoEventDate, skippedSuperseded }
 }
 
 /** The canonical signal_type this lane writes for a building permit. */
@@ -738,6 +750,9 @@ export function buildPermitSignalRow(params: {
       dataset_id: dataset.datasetId,
       dataset_host: dataset.host,
       dataset_label: dataset.label,
+      permit_status: match.permitStatus ?? null,
+      // WAVE 156 (156I): the field-level evidence every signal carries (permitSignalEvidence, foot of this file).
+      evidence: permitSignalEvidence(match, dataset),
     },
   }
 }
@@ -867,6 +882,12 @@ export interface PermitIngestResult {
   skippedOutsideWindow: number
   /** Fetched rows whose declared event-date column was missing or unparseable. */
   skippedNoEventDate: number
+  /** WAVE 156 (156I): fetched permits whose own status says they were withdrawn / void / cancelled / revoked / denied / expired. */
+  skippedSuperseded: number
+  /** WAVE 156 (156I): queryable datasets NEVER queried because nobody recorded their license (zero provider calls). */
+  datasetsSkippedRightsUnknown: number
+  /** The rights refusals, by dataset, verbatim. */
+  rightsUnknownReasons: string[]
   // ── THE TWO BOARDS, COUNTED APART ─────────────────────────────────────────
   // Owner ruling 2026-08-21: "motivated sellers source is for leads and
   // contacts." A single `signals_written` covering both would make a run that
@@ -920,8 +941,11 @@ export async function ingestPermitSignals(params: {
   territories: PermitScanTerritory[]
   /** Only permits issued on/after this ISO date are considered. */
   sinceIso: string
+  /** @proofSeam scripts/wave156-i-guard.ts — the registry's coverage verdict (production: classifyMarketCoverage). */
+  coverage?: typeof classifyMarketCoverage
 }): Promise<PermitIngestResult> {
   const { supabase, brokerageId, territories, sinceIso } = params
+  const coverageOf = params.coverage ?? classifyMarketCoverage
   const result: PermitIngestResult = {
     brokerageId,
     marketsConsidered: 0,
@@ -938,6 +962,9 @@ export async function ingestPermitSignals(params: {
     skippedNoLeadMatch: 0,
     skippedOutsideWindow: 0,
     skippedNoEventDate: 0,
+    skippedSuperseded: 0,
+    datasetsSkippedRightsUnknown: 0,
+    rightsUnknownReasons: [],
     leadsMatchable: 0,
     contactsMatchable: 0,
     leadsSkippedConverted: 0,
@@ -959,7 +986,7 @@ export async function ingestPermitSignals(params: {
   const seenMarkets = new Set<string>()
   for (const t of territories) {
     result.marketsConsidered++
-    const verdict = classifyMarketCoverage({ state: t.state, city: t.city })
+    const verdict = coverageOf({ state: t.state, city: t.city })
 
     // One verdict per distinct market, even when several territory rows name the same city — and
     // case-insensitively, because `lead_scraping_markets.city` is free text a human typed and
@@ -992,6 +1019,14 @@ export async function ingestPermitSignals(params: {
       const id = `${spec.host}/${spec.datasetId}`
       if (seen.has(id)) continue
       seen.add(id)
+      // WAVE 156 (156I): NO DOWNLOAD WITHOUT RECORDED RIGHTS. A dataset whose license nobody read is never queried — zero
+      // provider calls — and is named, so an unlicensed portal reads as refused, not as a quiet market.
+      const rightsProblem = permitDatasetRightsProblem(spec)
+      if (rightsProblem) {
+        result.datasetsSkippedRightsUnknown++
+        result.rightsUnknownReasons.push(`${spec.label} (${id}): ${rightsProblem}`)
+        continue
+      }
       datasets.push(spec)
     }
   }
@@ -1167,6 +1202,7 @@ export async function ingestPermitSignals(params: {
     result.skippedNoLeadMatch += outcome.skippedNoLeadMatch
     result.skippedOutsideWindow += outcome.skippedOutsideWindow
     result.skippedNoEventDate += outcome.skippedNoEventDate
+    result.skippedSuperseded += outcome.skippedSuperseded
     probe.matched = outcome.matches.length
 
     for (const match of outcome.matches) {
@@ -1223,4 +1259,68 @@ export async function ingestPermitSignals(params: {
     result.errors.push(`motivated_seller_signals insert refused: ${oneError.message}`)
   }
   return result
+}
+
+// ═══ WAVE 156 (lane 156I — grounded market intelligence: every signal carries field-level evidence) ═════════════════════════════
+// Three rules, each PURE and each driven by scripts/wave156-i-guard.ts:
+//   1. NO DOWNLOAD WITHOUT RECORDED RIGHTS — permitDatasetRightsProblem: a dataset whose license was never read (absent, or
+//      class "unknown") is never queried. The registry's C19 licence (lib/external/socrata-market-registry.ts DatasetLicence) is
+//      the ONE record of the right to use the rows; this lane did not consult it before fetching (measured at b261c474).
+//   2. A SUPERSEDED PERMIT IS HISTORY — permitSupersededReason over readPermitStatus: a withdrawn / void / cancelled / revoked /
+//      denied / expired permit never becomes a motivated-seller signal. Before this, only VIOLATIONS read a status; a withdrawn
+//      permit at a contact's address was filed and COUNTED by lead scoring as a reason to believe somebody is selling.
+//   3. FIELD-LEVEL EVIDENCE — permitSignalEvidence: source (dataset + record id), the source's own event date, the observed date
+//      (motivated_seller_signals.detected_at, the column default), confidence (the permit is a verified issuer record; the SELLER
+//      reading is circumstantial and labelled so), usage rights (the registry licence as read), the dedup key and the consumers.
+//      A permit is an ADDRESS fact: the evidence says in words that it never means the owner is moving (directive 156I row 1).
+// BLIND SPOT: the status column names below come from the portals' published schemas, not from a live re-read in wave 156; a
+// portal that publishes its disposition under another name is read as "no status" and is never assumed void.
+
+/** Permit disposition columns, in the order portals publish them (permit portals; violations keep STATUS_KEYS above). */
+const PERMIT_STATUS_KEYS = [
+  "permit_status", "status_current", "statuscurrent", "status_desc", "current_status", "currentstatus", "application_status", "status",
+]
+
+/** PURE. The permit's own published disposition, or null when the row publishes none. */
+export function readPermitStatus(row: Record<string, unknown>): string | null {
+  return pick(row, PERMIT_STATUS_KEYS)
+}
+
+/** Dispositions that mean the permitted work will not happen as recorded. Word-bounded, so "Issued" / "Finaled" / "Active" pass. */
+const SUPERSEDED_PERMIT_STATUS = /\b(withdrawn|void(?:ed)?|cancell?ed|cancell?ation|revoked|denied|disapproved|rejected|expired|superseded|abandoned)\b/i
+
+/** PURE. Why a permit's status supersedes it (null = the permit still stands, or it publishes no status — never assumed void). */
+export function permitSupersededReason(status: string | null | undefined): string | null {
+  const s = (status ?? "").trim()
+  if (!s) return null
+  const m = SUPERSEDED_PERMIT_STATUS.exec(s)
+  return m ? `the permit's published status is "${s}" — a ${m[1].toLowerCase()} permit is history, not a current signal` : null
+}
+
+/** PURE. Why a registered dataset may not be downloaded (null = its license was read and recorded). */
+export function permitDatasetRightsProblem(spec: Pick<SocrataDatasetSpec, "licence">): string | null {
+  const l = spec.licence
+  if (!l) return "no license was ever read for this dataset — its rows are not downloaded until one is recorded"
+  if (l.class === "unknown") return `its license is recorded as unknown (${l.text.slice(0, 120)}) — not downloaded`
+  return null
+}
+
+/** The readers of motivated_seller_signals (named in this file's header) — the action a permit signal is consumed by. */
+export const PERMIT_SIGNAL_CONSUMERS = Object.freeze([
+  "lib/services/lead-management.service.ts (lead scoring)",
+  "app/actions/ai-predictions.ts (conversion prediction)",
+] as const)
+
+/** PURE. The field-level evidence a permit / violation signal carries in signal_details.evidence. */
+export function permitSignalEvidence(match: PermitMatch, dataset: SocrataDatasetSpec): Record<string, unknown> {
+  return {
+    source: { provider: providerOf(dataset), dataset: `${dataset.host}/${dataset.datasetId}`, record_id: match.permitId, label: dataset.label },
+    source_event_date: match.eventDate,
+    observed_at: "motivated_seller_signals.detected_at (set by the database when the row is written)",
+    confidence: { record: "verified_issuer_record", seller_reading: "circumstantial", method: dataset.kind === "code_violations" ? "classifyViolationStrength" : "classifyPermitStrength" },
+    usage_rights: dataset.licence ? { class: dataset.licence.class, read_on: dataset.licence.readOn } : { class: "unknown", read_on: null },
+    dedup_key: permitDedupeKey(match, dataset),
+    consumed_by: [...PERMIT_SIGNAL_CONSUMERS],
+    person_inference: "none — a permit is a fact about an address the tenant already holds; it never says the owner is moving",
+  }
 }

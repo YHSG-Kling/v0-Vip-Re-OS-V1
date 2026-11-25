@@ -122,6 +122,8 @@ export const videoAdapter: ChannelAdapter = {
         outroUrl: step.video_outro_url ?? undefined,
         logoUrl: step.video_logo_url ?? undefined,
         brokerageId,
+        // Addressed to ONE contact → hosted PRIVATE (wave 156, 156S; the wave 146 personal-videos survivor).
+        addresseeContactId: contact?.id ? String(contact.id) : null,
       })
       videoUrl = result.videoUrl ?? undefined
       videoId = result.videoId
@@ -155,6 +157,17 @@ export const videoAdapter: ChannelAdapter = {
       return { status: "error", providerKey: "d-id", error: "Video generation returned no URL" }
     }
 
+    // THE PERSONAL VIDEO GOES THROUGH THE SURVIVOR'S DOOR (wave 156, lane 156S). The private render comes back as a
+    // stored reference; what later steps receive as {{step.video_url}} is the delivery door with a share grant for THIS
+    // contact — the same door lib/video/client-video-delivery.ts hands a client in its email — never a public file URL.
+    if (contact?.id && videoId) {
+      const shared = await sharePersonalWorkflowVideo({ brokerageId, contactId: String(contact.id), reference: videoUrl, talkId: videoId, script })
+      if (!shared.ok) {
+        return { status: "error", providerKey: "d-id", messageId: videoId, error: `The personal video was made but could not be shared privately: ${shared.reason}. Nothing was sent.`, output: { video_url: null, video_id: videoId } }
+      }
+      videoUrl = shared.url
+    }
+
     // Deliver via email if contact has email
     if (contact?.email) {
       const result = await dispatchVideo({
@@ -182,4 +195,41 @@ export const videoAdapter: ChannelAdapter = {
       output: { video_url: videoUrl, video_id: videoId },
     }
   },
+}
+
+/**
+ * FILE + SHARE ONE PERSONAL VIDEO (wave 156, lane 156S) — through the wave 146 / 154 survivor, never a second door:
+ *   1. the render is FILED as the ai_video_projects row addressed to this contact (tenant-pinned; once per D-ID job —
+ *      a replayed step finds its row by provider_job_id), because the share grant is minted only for a video project
+ *      addressed to the recipient (lib/storage/signed-doc-url.ts grantDoorLinksInText, purpose personal_video);
+ *   2. the stored reference becomes the delivery door with a share grant for THIS contact — exactly what
+ *      lib/video/client-video-delivery.ts puts in the client's email. No sealing secret / a refused read → refused
+ *      with the reason (the survivor's honest state), and the caller sends nothing.
+ * A value that is not a private reference (a voice-only mp3, an older public render) is returned unchanged.
+ */
+async function sharePersonalWorkflowVideo(a: { brokerageId: string; contactId: string; reference: string; talkId: string; script: string }): Promise<{ ok: true; url: string } | { ok: false; reason: string }> {
+  if (!a.reference.startsWith("docref://")) return { ok: true, url: a.reference }
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+  const { data: existing, error: readErr } = await svc.from("ai_video_projects")
+    .select("id").eq("brokerage_id", a.brokerageId).eq("contact_id", a.contactId).eq("provider_job_id", a.talkId).limit(1)
+  if (readErr) return { ok: false, reason: `the video project could not be read (${readErr.message})` }
+  if (!(existing ?? []).length) {
+    const { error: insErr } = await svc.from("ai_video_projects").insert({
+      brokerage_id: a.brokerageId, contact_id: a.contactId, title: "Personal video", script_content: a.script.slice(0, 5000),
+      status: "completed", video_url: a.reference, video_provider: "did", provider_job_id: a.talkId,
+      audience_type: "customer_facing", completed_at: new Date().toISOString(),
+    })
+    if (insErr) return { ok: false, reason: `the video could not be filed for its contact (${insErr.message})` }
+  }
+  const { grantDoorLinksInText } = await import("@/lib/storage/signed-doc-url")
+  const { encryptSecret, decryptSecret, isEncrypted } = await import("@/lib/security/secret-crypto")
+  const { siteUrl } = await import("@/lib/platform/site-url")
+  const granted = await grantDoorLinksInText(svc as never, a.reference, {
+    brokerageId: a.brokerageId, recipientContactId: a.contactId,
+    sealer: { seal: encryptSecret, open: decryptSecret, isSealed: isEncrypted }, origin: siteUrl(),
+  })
+  if (!granted.ok) return { ok: false, reason: granted.reason }
+  if (granted.granted !== 1) return { ok: false, reason: "no share grant could be minted for this contact" }
+  return { ok: true, url: granted.text }
 }

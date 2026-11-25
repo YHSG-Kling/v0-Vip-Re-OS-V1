@@ -80,6 +80,7 @@ export function RepresentationReviewPanel({ record, subjectId }: { record: Recor
         <span className="text-xs text-muted-foreground">Checked {new Date(d.checkedAt).toLocaleString()} · evidence {d.evidenceHash.slice(0, 12)}…</span>
         {d.approval && <span className="text-xs text-emerald-800">Approved {new Date(d.approval.at).toLocaleString()}</span>}
       </div>
+      <p className="text-xs text-muted-foreground">{data.whoMayApprove}</p>
 
       <div>
         <h3 className="text-sm font-medium mb-1">What the executed document says, beside the record</h3>
@@ -127,7 +128,7 @@ export function RepresentationReviewPanel({ record, subjectId }: { record: Recor
                 {r.field && <span className="text-xs">Field: {r.field.replace(/_/g, " ")}</span>}
               </div>
               <p className="mt-1">{r.message}</p>
-              {r.repair && <p className="text-xs text-muted-foreground mt-1">How this ends: {r.repair}</p>}
+              {data.repairs[r.code] && <p className="text-xs text-muted-foreground mt-1">How this ends: {data.repairs[r.code].path} — done when {data.repairs[r.code].terminatesWhen}.</p>}
               {data.mayDecide && r.documentId && READ_FAILURES.has(r.code) && (
                 <Button size="sm" variant="outline" className="mt-2" onClick={() => { setAttestFor(r.documentId); setSignersConfirmed(r.code === "ambiguous_signature") }}>
                   Record what I read on this document

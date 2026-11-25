@@ -99,6 +99,39 @@ export async function submitRecruitInquiry(
     }
   }
 
+  // ── WAVE 156 (lane 156K): who may become a prospect ───────────────────────
+  // lib/recruiting/stale-recruit-policy.ts recruitIntakeVerdict, read by lib/recruit-pipeline/recruit-processor.ts
+  // readRecruitIntake. A suspended or current member is never re-filed as a prospect, a DECLINED recruit is not re-opened by a
+  // form anyone can fill in with their address, and a person already in the pipeline gets no second row. The broker is told and
+  // decides (a person reaching out again is a human's call). The public answer is the same thanks in every case, so this page
+  // never tells a stranger whether an address belongs to a member, a suspended seat or a declined recruit. A refused read files
+  // nothing (fail closed).
+  {
+    const { readRecruitIntake } = await import("@/lib/recruit-pipeline/recruit-processor")
+    const intake = await readRecruitIntake(svc, { brokerageId: brokerage.id, email: input.email.trim().toLowerCase(), firstName: input.firstName.trim(), lastName: input.lastName.trim() })
+    if (!intake.ok) return { success: false, error: "We could not record your interest right now — please try again shortly." }
+    if (!intake.verdict.admit) {
+      const v = intake.verdict
+      const what = v.reason === "suspended_member" ? "belongs to a SUSPENDED member of your workspace — no recruit was filed; restoring a seat is the user's own reactivation"
+        : v.reason === "current_member" ? "belongs to a current member of your workspace — no recruit was filed"
+        : v.reason === "declined_recruit" ? "belongs to a recruit who DECLINED — their record was not re-opened; move the stage yourself if they want to talk"
+        : "is already in your recruiting pipeline — no second record was filed"
+      try {
+        const { data: brokerUsers } = await svc.from("users").select("id").eq("brokerage_id", brokerage.id).in("user_type", [...BROKERAGE_FINANCE_ADMIN_USER_TYPES]).limit(5)
+        const rows = ((brokerUsers ?? []) as Array<{ id: string }>).map((u) => ({
+          user_id: u.id, brokerage_id: brokerage.id, type: "recruit_inquiry", priority: "medium", channel: "in_app", is_read: false,
+          title: `Recruiting page submitted again`,
+          body: `Someone submitted ${brokerage.name}'s recruiting page with an address that ${what}.`,
+          entity_type: "recruit", entity_id: v.recruitId,
+        }))
+        if (rows.length > 0) await sentinelWrite(svc, svc.from("notifications").insert(rows), { table: "notifications", flow: "recruit_inquiry_broker_notice", brokerageId: brokerage.id, reason: "nothing was filed; the broker notice must not fail the public form" })
+      } catch (notifyErr) {
+        console.error("[submitRecruitInquiry] intake notice failed:", notifyErr)
+      }
+      return { success: true }
+    }
+  }
+
   // ── Insert the recruit row ────────────────────────────────────────────────
   const { data: recruit, error } = await svc
     .from("recruits")
@@ -194,5 +227,6 @@ export async function submitRecruitInquiry(
     }
   }
 
-  return { success: true, recruitId: recruit.id }
+  // No internal id in the public answer (wave 156, 156K): the same thanks as every intake refusal above.
+  return { success: true }
 }

@@ -23,6 +23,7 @@ type RecruitProcessingStatus =
   | "territory_mismatch"
   | "insufficient_identity"
   | "duplicate"
+  | "existing_member"
   | "unassigned_no_market"
   | "promoted"
   | "error"
@@ -166,23 +167,27 @@ export async function processRawRecruit(
     }
   }
 
-  // ── Dedup against existing recruits in the owning brokerage ─────────────────
-  let dupQuery = supabase
-    .from("recruits")
-    .select("id")
-    .eq("brokerage_id", effectiveBrokerageId)
-  dupQuery = email
-    ? dupQuery.eq("email", email)
-    : dupQuery.ilike("first_name", firstName).ilike("last_name", lastName)
-  const { data: existing } = await dupQuery.limit(1).maybeSingle()
-
-  if (existing?.id) {
+  // ── Intake gate + dedup (wave 156, lane 156K) — lib/recruiting/stale-recruit-policy.ts recruitIntakeVerdict ───────────────
+  // A suspended or current member of the owning brokerage is never filed as a prospect; a recruit who DECLINED is not re-opened;
+  // a person already in the pipeline links to their row. A refused read FAILS CLOSED (it used to read as "no duplicate").
+  const intake = await readRecruitIntake(supabase, { brokerageId: effectiveBrokerageId, email, firstName, lastName })
+  if (!intake.ok) {
+    await setStatus(supabase, rawId, "error")
+    return { success: false, action: "error", reason: intake.error, stage: "dedup" }
+  }
+  if (!intake.verdict.admit) {
+    const v = intake.verdict
+    if (!v.recruitId) {
+      await setStatus(supabase, rawId, "existing_member")
+      return { success: false, action: "skipped", reason: v.reason === "suspended_member" ? "A suspended member of this brokerage is never re-filed as a recruiting prospect" : "Already a member of this brokerage — not a recruit", stage: "member_gate" }
+    }
     const { error: dupErr } = await supabase
       .from("raw_recruit_prospects")
-      .update({ recruit_id: existing.id, processing_status: "duplicate", processed_at: new Date().toISOString() })
+      .update({ recruit_id: v.recruitId, processing_status: "duplicate", processed_at: new Date().toISOString() })
       .eq("id", rawId)
     if (dupErr) console.error(`[recruit-processor] raw ${rawId} duplicate link refused:`, dupErr.message)
-    return { success: true, action: "skipped", recruitId: existing.id, reason: dupErr ? `Duplicate of existing recruit (link refused: ${dupErr.message})` : "Duplicate of existing recruit", stage: "dedup" }
+    const what = v.reason === "declined_recruit" ? "Recruit previously DECLINED — not re-opened" : "Duplicate of existing recruit"
+    return { success: true, action: "skipped", recruitId: v.recruitId, reason: dupErr ? `${what} (link refused: ${dupErr.message})` : what, stage: "dedup" }
   }
 
   // ── Promote → recruits (brokerage-owned) ────────────────────────────────────
@@ -216,4 +221,33 @@ export async function processRawRecruit(
   if (promoteErr) console.error(`[recruit-processor] raw ${rawId} → recruit ${recruit.id} link refused:`, promoteErr.message)
 
   return { success: true, action: "created", recruitId: recruit.id, reason: promoteErr ? `New recruit created (raw link refused: ${promoteErr.message})` : "New recruit created", stage: "promotion" }
+}
+
+/**
+ * WAVE 156 (lane 156K) — the READS behind recruitIntakeVerdict (lib/recruiting/stale-recruit-policy.ts), shared by the two doors
+ * that file a prospect on their own: processRawRecruit above and the public recruiting page
+ * (app/recruiting/[brokerageSlug]/actions.ts submitRecruitInquiry). The client is HANDED in (both doors pass the service client
+ * after resolving the tenant themselves — the market row, or the page's own live slug); the tenant is a parameter only because
+ * those callers established it. Either read refused ⇒ { ok: false }: "could not tell" is never "admit".
+ */
+export async function readRecruitIntake(
+  db: { from: (table: string) => any },
+  p: { brokerageId: string; email: string | null; firstName: string; lastName: string },
+): Promise<{ ok: true; verdict: import("@/lib/recruiting/stale-recruit-policy").RecruitIntakeVerdict } | { ok: false; error: string }> {
+  const { recruitIntakeVerdict } = await import("@/lib/recruiting/stale-recruit-policy")
+  const email = (p.email ?? "").trim().toLowerCase() || null
+  // ILIKE with the wildcards escaped: case-insensitive equality (an address may carry "_").
+  const exact = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`)
+  let member: { brokerageId: string | null; status: string | null; userType: string | null } | null = null
+  if (email) {
+    const { data, error } = await db.from("users").select("id, brokerage_id, status, user_type").ilike("email", exact(email)).limit(1).maybeSingle()
+    if (error) return { ok: false, error: `Could not check whether this person is already a member (${error.message}); nothing was filed` }
+    const u = data as { brokerage_id?: string | null; status?: string | null; user_type?: string | null } | null
+    member = u ? { brokerageId: u.brokerage_id ?? null, status: u.status ?? null, userType: u.user_type ?? null } : null
+  }
+  let q = db.from("recruits").select("id, status").eq("brokerage_id", p.brokerageId)
+  q = email ? q.ilike("email", exact(email)) : q.ilike("first_name", exact(p.firstName)).ilike("last_name", exact(p.lastName))
+  const { data: rows, error: recErr } = await q.limit(20)
+  if (recErr) return { ok: false, error: `Could not check the recruiting pipeline for this person (${recErr.message}); nothing was filed` }
+  return { ok: true, verdict: recruitIntakeVerdict({ brokerageId: p.brokerageId, member, recruits: (rows ?? []) as Array<{ id: string; status: string | null }> }) }
 }

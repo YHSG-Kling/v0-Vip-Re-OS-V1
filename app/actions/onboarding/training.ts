@@ -262,7 +262,7 @@ export async function markVideoStarted(videoId: string): Promise<{
     if (!agentId) return { success: false, error: "Missing agent context" }
 
     const write = async (): Promise<{ success: boolean; error?: string }> => {
-    const supabase = await createClient()
+    const supabase = (await import("@/lib/supabase/service")).createServiceClient() // WAVE 156 (156K): session agent pinned below; the browser's own write policies on video_completion_tracking are closed by owner SQL
 
     // Check if this is the first video they're watching (for TRAINING_COURSE_ENROLLED)
     const { count } = await supabase

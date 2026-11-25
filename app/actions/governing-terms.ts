@@ -42,9 +42,9 @@ export async function loadProposedGoverningTermsAction(transactionId: string): P
   const { readGoverningTermsProposals, GOVERNING_TERM_FIELDS } = await import("@/lib/documents/governing-terms-proposal")
   const cur = await readGoverningTermsProposals(svc, desk.transactionId, desk.brokerageId)
   if (!cur.ok) return { success: false, error: cur.error }
-  const { data: ms, error: msErr } = await svc.from("transaction_milestones").select("milestone_name, due_date").eq("transaction_id", desk.transactionId)
+  const { data: ms, error: msErr } = await svc.from("transaction_milestones").select("milestone_name, target_date").eq("transaction_id", desk.transactionId)
   if (msErr) return { success: false, error: `Could not read the deal's milestones: ${msErr.message}` }
-  const dueOf = new Map(((ms ?? []) as Array<{ milestone_name: string; due_date: string | null }>).map((m) => [m.milestone_name, m.due_date]))
+  const dueOf = new Map(((ms ?? []) as Array<{ milestone_name: string; target_date: string | null }>).map((m) => [m.milestone_name, m.target_date]))
   const terms: ProposedTermView[] = []
   for (const p of cur.proposals) {
     for (const [f, v] of Object.entries(p.fields ?? {}) as Array<[GoverningTermField, string | number]>) {

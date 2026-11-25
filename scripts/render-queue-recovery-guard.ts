@@ -110,7 +110,12 @@ async function main() {
     check("isStalledRender agrees at the edges (exactly at the horizon = stalled, one ms before = live)", isStalledRender({ claimed_at: ago(RENDER_STALL_AFTER_MS) }, NOW) && !isStalledRender({ claimed_at: ago(RENDER_STALL_AFTER_MS - 1) }, NOW))
     check("a row with no clock at all is never reaped blindly", !isStalledRender({ claimed_at: null, created_at: null }, NOW))
 
-    const route = code("app/api/internal/remotion/render-composition/route.ts")
+    // Wave 156 (lane 156S): the claim moved from the route into lib/remotion/registry.ts claimQueuedRender (driven by
+    // test:wave156-s); the route calls it. The rule is the same: wherever the claim lives, it names no new column.
+    const routeSrc = code("app/api/internal/remotion/render-composition/route.ts")
+    const regSrc = code("lib/remotion/registry.ts")
+    const claimFn = /export async function claimQueuedRender[\s\S]*?\n\}/.exec(regSrc)?.[0] ?? ""
+    const route = /claimQueuedRender\(\s*svc/.test(routeSrc) ? claimFn : routeSrc
     const claim = /\.update\(\{\s*render_status:\s*"rendering"\s*\}\)/.exec(route)
     check("the claim UPDATE names NO new column (claimed_at is the trigger's — a lagging migration cannot PGRST204 every claim)", !!claim && !/claimed_at/.test(route))
     check("CONTROL: the claim locator would see a claim that DID name the column", !/\.update\(\{\s*render_status:\s*"rendering"\s*\}\)/.test(`.update({ render_status: "rendering", claimed_at: now })`))
@@ -191,7 +196,7 @@ async function main() {
 
     const cron = code("app/api/cron/composition-render-queue/route.ts")
     const at = (s: string) => cron.indexOf(s)
-    check("the cron runs recovery BEFORE the requeue, both AFTER the living-video refresh and BEFORE the drain", at("refreshLivingVideos(") > 0 && at("recoverStalledRenders(svc)") > at("refreshLivingVideos(") && at("requeueFailedRenders(svc)") > at("recoverStalledRenders(svc)") && cron.search(/\.eq\(\s*["']render_status["']\s*,\s*PICKABLE_RENDER_STATUS/) > at("requeueFailedRenders(svc)"))
+    check("the cron runs recovery BEFORE the requeue, both AFTER the living-video refresh and BEFORE the drain", at("refreshLivingVideos(") > 0 && at("recoverStalledRenders(svc)") > at("refreshLivingVideos(") && at("requeueFailedRenders(svc)") > at("recoverStalledRenders(svc)") && Math.max(cron.search(/\.eq\(\s*["']render_status["']\s*,\s*PICKABLE_RENDER_STATUS/), at("pickNextQueuedRender(svc)")) > at("requeueFailedRenders(svc)"))
     check("the cron reports both sweeps in BOTH responses (empty queue and processed)", (cron.match(/stall_recovery/g) ?? []).length === 2 && (cron.match(/auto_requeue/g) ?? []).length === 2)
   }
 

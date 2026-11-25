@@ -294,3 +294,62 @@ export async function loadOfficeDirectory(svc: HierarchySvc, viewer: { userId: s
     .map((r) => ({ membershipId: r.id, name: nameOf.get(r.user_id) ?? r.user_id, scope: r.scope_kind, team: r.team_id ? teamName.get(r.team_id) ?? null : null, removedBy: nameOrStaff(r.revoked_by_user_id), removedAt: r.revoked_at }))
   return { ok: true, scope, tier: v.tier, offices, unassignedTeams, people, recentRemovals }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE SEAT'S WORDS (wave 156, lane 156Q — directive 156A item 5: "an office user acts for the authorized
+// tenant/team/office, not a generic brokerage"). The business kind is lib/errors resolveTenantPayer (the session tenant's
+// own plan tier — the ONE payer resolver); THIS adds only the office the seat is pinned to, through resolveUserOffice above
+// (the ONE office answer), named from the tenant's own locations row. Wording input only: it never widens or narrows what
+// the seat may see or do. A team or a solo tenant carries no offices (tierCarriesOffices), so no office is read for them.
+// Any refused / empty office read leaves the verified brokerage wording ("your brokerage") — true for every seat of a
+// brokerage; an unread TIER stays "unknown" (actor-neutral), exactly as resolveTenantPayer answers.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export async function resolveSeatPayer(
+  svc: SupabaseClient<any, any, any>,
+  brokerageId: string | null | undefined,
+  userId: string | null | undefined,
+): Promise<import("@/lib/errors").TenantPayer> {
+  const { resolveTenantPayer } = await import("@/lib/errors")
+  const payer = await resolveTenantPayer(svc, brokerageId)
+  if (payer.kind !== "brokerage" || !brokerageId || !userId) return payer
+  try {
+    const pin = await resolveUserOffice(svc, userId)
+    if (!pin.locationId) return payer
+    const { data, error } = await svc.from("locations").select("name").eq("id", pin.locationId).eq("brokerage_id", brokerageId).maybeSingle()
+    if (error) {
+      console.error(`[resolve-user-office] office name read REFUSED for ${pin.locationId}: ${error.message}`)
+      return payer
+    }
+    const name = (data as { name?: string | null } | null)?.name?.trim() || null
+    return name ? { kind: "brokerage", office: name } : payer
+  } catch {
+    return payer
+  }
+}
+
+/**
+ * WAVE 156 (lane 156Q, round 2): the SESSION seat's words for a server page — the page resolves them ONCE and passes them
+ * down to its client components (a client component never calls a resolver). Tenant and user come from the session
+ * (auth user → users.brokerage_id, CLAUDE.md §4), never from a prop or a body. Any refusal / no session = actor-neutral
+ * words ("your account"), never the brokerage reading. Server-only by its imports (dynamic, inside the call).
+ */
+export async function resolveSessionSeatWords(): Promise<import("@/lib/errors").TenantPayerWords> {
+  const { tenantPayerWords } = await import("@/lib/errors")
+  try {
+    const { createClient } = await import("@/lib/supabase/server")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const supabase = await createClient()
+    const { data: auth } = await supabase.auth.getUser()
+    const userId = auth?.user?.id ?? null
+    if (!userId) return tenantPayerWords(null)
+    const svc = createServiceClient()
+    const { data: me, error } = await svc.from("users").select("brokerage_id").eq("id", userId).maybeSingle()
+    if (error) console.error(`[resolve-user-office] session seat read REFUSED for ${userId}: ${error.message}`)
+    const brokerageId = (me as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    if (!brokerageId) return tenantPayerWords(null)
+    return tenantPayerWords(await resolveSeatPayer(svc as SupabaseClient<any, any, any>, brokerageId, userId))
+  } catch {
+    return tenantPayerWords(null)
+  }
+}

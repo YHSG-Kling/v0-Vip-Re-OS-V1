@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 491 tables, 976 columns.
+ * MEASURED AT GENERATION: 491 tables, 979 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-11-25
  * source: public.live_check_constraints_json()
- * body-sha256: 4973fbeb87c059be21e0dea4c9d65f72ae6d185874565818edb3c1fc2281f85a
+ * body-sha256: 4a29255b2988b6ab5010a7d0be3ab013873865d6497e254f0fa9533e6562ebf1
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1819,6 +1819,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["cancelled", "completed", "in_progress", "pending"],
   },
   transaction_title_escrow: {
+    hoa_estoppel_status: ["needed", "not_applicable", "received", "requested", "verified"],
+    payoff_status: ["needed", "not_applicable", "received", "requested", "verified"],
+    recording_status: ["needed", "not_applicable", "received", "requested", "verified"],
     settlement_agent_basis: ["agent_entered", "contract_named", "party_confirmed"],
     settlement_agent_kind: ["attorney", "escrow_company", "other_authorized_entity", "title_company"],
   },

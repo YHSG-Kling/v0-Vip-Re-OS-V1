@@ -31,7 +31,8 @@ export function PacketBundleManager({ initial, onChanged }: { initial?: ManageVi
     const r = await fetch("/api/forms/directory?view=manage")
     const j = await r.json()
     if (!r.ok) { setMsg(refusalOf(j)); return }
-    setView(j); onChanged?.()
+    const { owners, library, bundles, vocab } = j as ManageView
+    setView({ owners, library, bundles, vocab }); onChanged?.()
   }, [onChanged])
   useEffect(() => { if (!view) void reload() }, [view, reload])
   useEffect(() => { if (initial) setView(initial) }, [initial])

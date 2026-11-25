@@ -28,7 +28,7 @@ import { applyBrandVoice } from "./brand-voice"
 type ComplianceGateClient = Pick<SupabaseClient, "from"> | { from: (table: string) => any }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-import { hasActiveRepresentation } from "./compliance/active-representation"
+import { hasActiveRepresentation, representationConsentCovers, type RepresentationSendPurpose } from "./compliance/active-representation"
 import type { EvaluateOutboundParams, ComplianceResult } from "./types"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
@@ -114,7 +114,7 @@ const REPRESENTATION_LOCK_STATES = new Set([
  * ComplianceResult. Throws only on unrecoverable DB errors.
  */
 export async function evaluateOutbound(
-  params: EvaluateOutboundParams,
+  params: EvaluateOutboundParams & { /** WAVE 156 (156N): why the message is sent; a campaign is never covered by representation alone. */ channelPurpose?: RepresentationSendPurpose },
   opts?: { client?: ComplianceGateClient },
 ): Promise<ComplianceResult> {
   // No client = the SESSION door (cookie client; RLS holds the caller to its tenant). A
@@ -179,7 +179,7 @@ export async function evaluateOutbound(
       const tcpaConsent = freshContact?.tcpa_consent ?? contact.tcpa_consent ?? false
       const consentGiven =
         tcpaConsent ||
-        (await hasActiveRepresentation(supabase, contact.id, actorContext.brokerageId))
+        (representationConsentCovers(params.channelPurpose) && (await hasActiveRepresentation(supabase, contact.id, actorContext.brokerageId)))
       if (!consentGiven) {
         violations.push("TCPA: Contact has not consented to SMS/phone outreach")
       }

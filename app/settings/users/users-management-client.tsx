@@ -66,10 +66,10 @@ interface Props {
    * would refuse — an INSERT/UPDATE naming one is refused ENTIRELY (CLAUDE.md §3).
    * Omitted ⇒ the full product menu (the pre-existing behaviour).
    */
-  storableUserTypes?: readonly string[] | null
+  storableUserTypes?: readonly string[] | null; /** wave 156Q: the session tenant's noun, resolved once by the server page. */ words?: { payer: string }
 }
 
-export function UsersManagementClient({ users: initialUsers, currentUserId, brokerageId, callerRole, tier, storableUserTypes }: Props) {
+export function UsersManagementClient({ users: initialUsers, currentUserId, brokerageId, callerRole, tier, storableUserTypes, words }: Props) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [users, setUsers] = useState<UserRow[]>(initialUsers)
@@ -142,7 +142,7 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
         <div>
           <h1 className="text-2xl font-semibold text-foreground">User Management</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage roles and access for {users.length} user{users.length !== 1 ? "s" : ""} in your brokerage.
+            Manage roles and access for {users.length} user{users.length !== 1 ? "s" : ""} in {words?.payer ?? "your account"}.
           </p>
         </div>
         <div className="flex items-center gap-2">

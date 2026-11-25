@@ -81,7 +81,7 @@ interface PromoRow {
   project:          {
     video_url:      string | null
     thumbnail_url:  string | null
-    status:         string | null
+    status:         string | null; format?: string | null
   } | null
   listing:          {
     address:        string | null
@@ -104,7 +104,7 @@ export async function GET(req: NextRequest) {
     .from("listing_promo_videos")
     .select(`
       id, brokerage_id, listing_id, agent_id, video_project_id, event_type, created_at,
-      project:ai_video_projects!listing_promo_videos_video_project_id_fkey(video_url, thumbnail_url, status),
+      project:ai_video_projects!listing_promo_videos_video_project_id_fkey(video_url, thumbnail_url, status, format),
       listing:listings!listing_promo_videos_listing_id_fkey(address, city, state, zip, list_price)
     `)
     .eq("status", "rendering")
@@ -113,7 +113,7 @@ export async function GET(req: NextRequest) {
     .limit(25)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  const results: Array<{ id: string; outcome: string; reason?: string; post_count?: number }> = []
+  const results: Array<{ id: string; outcome: string; reason?: string; post_count?: number; not_drafted?: Array<{ platform: string; reason: string }> }> = []
 
   for (const r of (rows ?? []) as unknown as PromoRow[]) {
     // Wave 28 — readiness branch. Three states:
@@ -203,8 +203,39 @@ export async function GET(req: NextRequest) {
       continue
     }
 
+    // HONEST VIDEO TRANSPORT (wave 156, lane 156S; directive: "no pretending licensed Instagram/Pinterest … is connected").
+    // This drafted a CAPTION-ONLY post for all eight platforms, connected or not, and never attached the reel — so the
+    // TikTok / YouTube drafts could never publish (the publish cron's mediaEgressVerdict refuses a text post there) and the
+    // promo still read "social_drafted" as though the reel had gone to social. A media platform is now decided by the ONE
+    // contract, lib/video/media-variant-contract.ts decidePlatformVariant (video route + this agent's connected account +
+    // the playable render): an `api_publish` route drafts the post WITH the reel; an `export_handoff` route (Instagram —
+    // its publisher here posts images) and every refusal (Pinterest is image-only; no connection) draft nothing and say why.
+    // Text platforms keep their caption post exactly as before.
+    const { decidePlatformVariant, classifyMediaUrl, VIDEO_VARIANT_ROUTES } = await import("@/lib/video/media-variant-contract")
+    const { VIDEO_FINISHED_STATUSES } = await import("@/lib/video/video-status")
+    const reelUrl = r.project?.video_url ?? null
+    const { data: accts, error: acctErr } = await svc.from("social_media_accounts")
+      .select("platform, is_active, scope").eq("brokerage_id", r.brokerage_id).eq("agent_id", socialAgentId)
+    const byPlatform = new Map<string, { isActive: boolean; scope: string | null }>()
+    for (const a of (accts ?? []) as Array<{ platform: string; is_active: boolean | null; scope: string | null }>) {
+      const prev = byPlatform.get(a.platform)
+      if (!prev || (!prev.isActive && a.is_active)) byPlatform.set(a.platform, { isActive: a.is_active === true, scope: a.scope ?? null })
+    }
+    const notDrafted: Array<{ platform: string; reason: string }> = []
     for (const platform of PLATFORMS) {
       const caption = captionFor(platform, { hook, address, cityState, price })
+      const mediaPlatform = !!VIDEO_VARIANT_ROUTES[platform] || platform === "pinterest"
+      let mediaUrls: string[] | null = null
+      if (mediaPlatform) {
+        if (acctErr) { notDrafted.push({ platform, reason: `connected accounts unreadable (${acctErr.message})` }); continue }
+        const v = decidePlatformVariant({ platform, account: byPlatform.get(platform) ?? null, media: {
+          kind: classifyMediaUrl(reelUrl), playable: !!reelUrl && (VIDEO_FINISHED_STATUSES as readonly string[]).includes(r.project?.status ?? ""),
+          aspect: r.project?.format ?? null, durationSeconds: null,
+        } })
+        if (!v.ok) { notDrafted.push({ platform, reason: v.reason }); continue }
+        if (v.route !== "api_publish") { notDrafted.push({ platform, reason: `export / handoff — ${v.why}` }); continue }
+        mediaUrls = [reelUrl as string]
+      }
       try {
         const { data: post, error: promoPostErr } = await svc
           .from("social_posts")
@@ -216,6 +247,7 @@ export async function GET(req: NextRequest) {
             platform,
             post_type:        postType,
             content:          caption,
+            ...(mediaUrls ? { media_urls: mediaUrls } : {}),
             status:           "scheduled",
             approval_status:  "pending",
             scheduled_for:    new Date(Date.now() + 60 * 60_000).toISOString(),
@@ -248,6 +280,7 @@ export async function GET(req: NextRequest) {
       outcome:   inserted > 0 ? "social_drafted" : "failed",
       post_count: inserted,
       reason:    failed > 0 && inserted === 0 ? "all_platforms_failed" : undefined,
+      ...(notDrafted.length ? { not_drafted: notDrafted } : {}),
     })
   }
 

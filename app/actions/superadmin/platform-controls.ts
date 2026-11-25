@@ -293,16 +293,17 @@ export async function setHealingCeilingsAction(input: Record<string, unknown>): 
 // refuses with that sentence — the page never fails on it.
 
 export async function getRentcastRequestCapAction(): Promise<
-  | { ok: true; applied: boolean; setting: import("@/lib/property/rentcast-eligibility").RentcastRequestCapSetting | null; verdict: import("@/lib/property/rentcast-eligibility").RentcastPlatformCapVerdict; windowStart: string; windowEnd: string }
+  | { ok: true; applied: boolean; setting: import("@/lib/property/rentcast-eligibility").RentcastRequestCapSetting | null; verdict: import("@/lib/property/rentcast-eligibility").RentcastPlatformCapVerdict; windowStart: string; windowEnd: string; planIncludedRequests: number }
   | { ok: false; error: string }
 > {
   const gate = await requirePlatformCapability("providers")
   if (!gate.ok) return { ok: false, error: gate.error ?? "Forbidden — requires platform 'providers' capability" }
   const svc = createServiceClient()
-  const { loadRentcastRequestCap, rentcastCapStatus } = await import("@/lib/property/rentcast-eligibility")
+  const { loadRentcastRequestCap, rentcastCapStatus, RENTCAST_PLAN_INCLUDED_REQUESTS } = await import("@/lib/property/rentcast-eligibility")
   const [cur, status] = await Promise.all([loadRentcastRequestCap(svc), rentcastCapStatus(svc)])
   if (!cur.ok) return { ok: false, error: cur.error }
-  return { ok: true, applied: cur.applied, setting: cur.setting, verdict: status.verdict, windowStart: status.windowStart, windowEnd: status.windowEnd }
+  // The DEFAULT ceiling is stated from the one constant the cutoff uses — never a second spelling of the number on the page.
+  return { ok: true, applied: cur.applied, setting: cur.setting, verdict: status.verdict, windowStart: status.windowStart, windowEnd: status.windowEnd, planIncludedRequests: RENTCAST_PLAN_INCLUDED_REQUESTS }
 }
 
 /** Set the platform's RentCast ceiling (superadmin only). monthly_requests: positive integer or null; billing_anchor_day: 1–31 or null. */

@@ -76,7 +76,7 @@ import { WEBHOOK_CONTRACT, type WebhookContractEntry } from "../lib/providers/we
 import { classifyProxyPath } from "../app/constants/auth"
 import { TENANT_POLICY_SETTINGS_KEYS } from "../lib/kernel/tenant-policy"
 import { claimOf } from "./migration-status"
-import { readDeploymentFacts, deployBuildOpen, installParityOpen, installOf, lockDrift, readReleaseEvidence, deriveO3, o3FullOpen, listingMediaPoliciesResolved, ARBITRATION_SUMMARY, censusBlockingGaps } from "./release-rules"
+import { readDeploymentFacts, deployBuildOpen, installParityOpen, installOf, lockDrift, readReleaseEvidence, deriveO3, o3FullOpen, listingMediaPoliciesResolved, ARBITRATION_SUMMARY, censusBlockingGaps, packetStatusResolved, r6AppliedLive, OWNER_ACTION_SHEET } from "./release-rules"
 import { providerOfferVerdict, DEFAULT_ESIGN_PROVIDER } from "../lib/integrations/providers/catalog"
 
 const ROOT = process.cwd()
@@ -2533,6 +2533,9 @@ const OWNER_OBLIGATIONS: OwnerObligation[] = [
   // repository facts test:release-blockers uses (scripts/release-rules.ts — one canonical path, never a copy).
   { id: "O3", what: `the Vercel deployment build — vercel.json runs the ${deployFacts.singlePass ? "single" : "split"} pass at ${deployFacts.vercelHeap} MB vs the CI compile cap ${deployFacts.ciCap} MB (must run above it)${o3Full.parts.length ? ` — OPEN: ${o3Full.parts.join("; ")}` : ""}`, blocking: o3Full.open, where: "ACTIVATION-CHECKLIST §1.9 + §6.7 rows M1/M2 (Vercel → Build Machine RAM, Domains)" },
   { id: "O4", what: `Vercel's install is not CI's — Vercel ${deployFacts.vInstall.pm}${deployFacts.vInstall.frozen ? " frozen" : " unfrozen"}, lockfile drift ${deployFacts.vDrift.absent.length} absent + ${deployFacts.vDrift.drifted.length} drifted vs CI ${deployFacts.ciInstall.pm}${deployFacts.ciInstall.frozen ? " frozen" : ""}`, blocking: deployFacts.o4Open, where: "ACTIVATION-CHECKLIST §1.10 (PRODUCTION-ARCHITECTURE §15.3 F-1: one package manager, one lockfile, frozen)" },
+  // wave 156 (lane 156O): §R.6 — the five deal tables' INSERT-side policies. Open until the owner's sheet reads APPLIED LIVE with
+  // the live project, the AFTER read-back and the two-tenant refusals (release-rules r6AppliedLive; a local measurement never lifts it).
+  { id: "R6", what: "OWNER-SQL §R.6 — ten ALTER POLICY statements on transaction_participants / _deadlines / _title_escrow / _repair_negotiations / _timeline (any seat of a tenant can INSERT on any deal today)", blocking: !r6AppliedLive(existsSync(join(ROOT, OWNER_ACTION_SHEET)) ? read(OWNER_ACTION_SHEET) : ""), where: `${OWNER_ACTION_SHEET} step 2 (status line R6) — packet docs/operations/WAVE156-R6-DEAL-TABLE-POLICY-PACKET.md` },
 ]
 for (const o of OWNER_OBLIGATIONS) console.log(`    ${o.blocking ? "RELEASE-BLOCKING" : "discharged      "} ${o.id} ${o.what} — ${o.where}`)
 check("O1 the storage-policy obligation (m855 §F / m875 §G) is RELEASE-BLOCKING while any storage.objects policy migration lacks the applied stamp (same classifier as the wave-146 access-control gate)",
@@ -2586,10 +2589,10 @@ console.log("\n[L · wave 155 launch gates — each EXTERNAL until its evidence 
 const PACKET_155 = "docs/operations/WAVE155-P0-OWNER-ACTION-PACKET.md"
 const packet155 = existsSync(join(ROOT, PACKET_155)) ? read(PACKET_155) : ""
 /** PURE — a packet status line `- <ID> status: RESOLVED <YYYY-MM-DD> — <read-back>`; HELD / OPEN / undated / no read-back stay EXTERNAL. */
-const statusResolved155 = (doc: string, id: string, evidence: RegExp): boolean => {
-  const m = new RegExp(`^- ${id} status:\\s*RESOLVED\\b([^\\n]*)$`, "m").exec(doc)
-  return !!m && /\d{4}-\d{2}-\d{2}/.test(m[1]) && evidence.test(m[1])
-}
+const statusResolved155 = (doc: string, id: string, evidence: RegExp): boolean =>
+  // wave 156 (lane 156O): the body moved VERBATIM to scripts/release-rules.ts packetStatusResolved — ONE rule, which
+  // test:release-blockers §H reads too (CLAUDE.md §1: the survivor is named, the duplicate is not kept).
+  packetStatusResolved(doc, id, evidence)
 interface LaunchGate155 { id: string; what: string; evidence: boolean; where: string }
 const obligationOf = (id: string) => OWNER_OBLIGATIONS.find((o) => o.id === id)
 const PACKET_STATUS_IDS_155 = ["SEK", "LEGAL", "LICENSES", "LIVE-PROBES"]

@@ -63,6 +63,8 @@ const REPLACE: Record<string, string> = {
   "lib/identity/get-agent-context.ts": "export async function getAgentContext(){ const s = globalThis.__R.seat; return s ? { isAuthenticated: true, userId: s.userId, userType: s.userType, brokerageId: s.brokerageId, agentId: s.agentId ?? null } : { isAuthenticated: false } }",
   "lib/teams/team-scope.ts": "export async function leadsAgentsTeam(){ return { ok: true, ledTeamId: null, leads: false } }",
   "app/actions/buyer-offer/submit-to-compliance.ts": "export async function submitOfferToCompliance(p){ globalThis.__R.calls.submit.push(p); return { success: true, transaction_id: 'tx-from-submit' } }",
+  // (round 3 of lane 156B: an approved offer continues through its own loop — the counted continuation, either door.)
+  "lib/transactions/offer-compliance-loop.ts": "export async function runOfferComplianceLoop(p){ globalThis.__R.calls.submit.push(p); return { outcome: 'advanced', transactionId: 'tx-from-loop', reason: null } }",
   "lib/listings/listing-compliance-loop.ts": "export async function runListingComplianceLoop(){ globalThis.__R.calls.loop++; return { outcome: 'advanced', stage: null, reason: null, blockers: [] } }",
 }
 const BY_SPEC: Record<string, string> = {

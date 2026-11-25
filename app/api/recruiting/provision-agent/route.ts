@@ -89,11 +89,17 @@ export async function POST(req: Request) {
     // may move them deliberately.
     const { data: existingUser } = await service
       .from("users")
-      .select("id, brokerage_id")
+      .select("id, brokerage_id, status")
       .eq("email", recruit.email)
       .maybeSingle()
 
     const holderBrokerageId = (existingUser as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    // WAVE 156 (lane 156K): a SUSPENDED member of this brokerage is not provisioned back through recruiting. The provisioner below
+    // leaves users.status untouched, so this used to answer "provisioned" for a person who still cannot sign in, and mark the
+    // recruit Joined. Restoring a seat is the user's own reactivation (app/actions/admin/update-user.ts — seat-gated there).
+    if (holderBrokerageId === recruit.brokerage_id && String((existingUser as { status?: string | null } | null)?.status ?? "").toLowerCase() === "suspended") {
+      return NextResponse.json({ error: "This person is a suspended member of your workspace. Reactivate their account in Team settings instead of provisioning them as a recruit." }, { status: 409 })
+    }
     if (holderBrokerageId && holderBrokerageId !== recruit.brokerage_id && !isPlatformAdmin) {
       await sentinelWrite(service, service.from("tenant_transition_log").insert({
         actor_user_id: user.id,

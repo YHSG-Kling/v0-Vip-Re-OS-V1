@@ -129,7 +129,7 @@ export const ACCOUNTING_OFFERINGS: Record<AccountingScope, Record<AccountingConn
       // brokerage's own merchant account is connected in Settings → Connections
       // (app/actions/connections/connection-center.ts :: startStripeConnect).
       verdict:
-        "Two different Stripe relationships, and this card is the first: as a billing CUSTOMER the brokerage pays the platform on the PLATFORM's account (subscription + metered usage) — Settings → Billing. Separately the brokerage has its OWN Stripe account, connected in Settings → Connections, which is the merchant on money the brokerage collects or pays; lib/billing/resolve-stripe-account.ts resolves it per tenant and REFUSES rather than settling that money into the platform's account.",
+        "Two different Stripe relationships, and this card is the first: as a billing CUSTOMER this account pays the platform on the PLATFORM's account (subscription + metered usage) — Settings → Billing. Separately the brokerage has its OWN Stripe account, connected in Settings → Connections, which is the merchant on money the brokerage collects or pays; lib/billing/resolve-stripe-account.ts resolves it per tenant and REFUSES rather than settling that money into the platform's account.",
     },
   },
   team: {

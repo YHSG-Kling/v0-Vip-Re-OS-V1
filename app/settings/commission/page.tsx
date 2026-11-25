@@ -35,7 +35,7 @@ export default function CommissionPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold text-gray-900">Commission &amp; Offerings</h1>
-        <p className="text-gray-600 mt-2">Define how commissions are calculated and mark what your brokerage offers agents</p>
+        <p className="text-gray-600 mt-2">Define how commissions are calculated and mark what you offer agents</p>
       </div>
 
       {/* The ONE brokerage-offerings home (§6): residual income (revenue share),

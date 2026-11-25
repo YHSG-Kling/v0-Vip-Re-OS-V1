@@ -614,3 +614,49 @@ export async function getCertificationStatus(
 
   return { certifications, allRequiredAwarded }
 }
+
+// ─── WAVE 156 (lane 156K) — WATCH CREDIT: the 90% a certification reads is the SERVER's, never the browser's ───────────
+//
+// The three certifications above read video_completion_tracking.percent_watched >= 90, and Lead Management Essentials reads
+// NOTHING else — so whatever wrote that column decided a CERTIFICATION_EARNED award (lib/gamification/award-points.ts). The
+// one writer, app/api/onboarding/training/progress/route.ts, stored the percentWatched the browser POSTed: one request with
+// percentWatched 100 completed a required video, and a handful of them earned the certificate and its points. A plain video
+// with no quiz attached IS legitimately complete at 90% watched (a training_videos row carries no quiz; a course with a quiz is
+// a learning_modules row, completed only by the persisted graded pass in lib/academy/course-completion.ts) — what was wrong is
+// WHO measured the 90%.
+//
+// The rule: watch time is credited only as wall-clock time passes between the server's own recorded writes. Each write may add
+// at most (seconds since the previous write, capped at MAX_CREDITED_GAP_SECONDS) × MAX_PLAYBACK_RATE seconds of the video, never
+// more than the browser claims, never less than what was already credited. So 90% of a video cannot be credited in less than
+// 0.9 × duration ÷ MAX_PLAYBACK_RATE seconds of real playback pings, and a long idle gap buys at most one capped step. A video
+// whose duration is unknown cannot be measured, so nothing beyond what was already credited is (fail closed).
+// @proofSeam PURE — scripts/wave156-k-guard.ts drives it through the route and directly.
+
+/** The completion bar every reader of percent_watched uses (the literals above say the same number). */
+export const VIDEO_WATCH_COMPLETE_PERCENT = 90
+/** The fastest playback the player offers. Credit never outruns real time at this speed. */
+export const MAX_PLAYBACK_RATE = 2
+/** A gap between two writes longer than this (a closed tab, a paused video) earns no more than this. */
+export const MAX_CREDITED_GAP_SECONDS = 30
+
+export interface WatchCreditInput {
+  /** training_videos.duration_seconds, read by the server — never a client value. */
+  durationSeconds: number | null | undefined
+  /** What the browser claims (0–100). */
+  claimedPercent: number
+  /** The server's own last write for this agent + video, or null when this is the first. */
+  prior: { percentWatched: number | null | undefined; lastWriteAt: string | null | undefined } | null
+  now: Date
+}
+
+export function creditWatchProgress(input: WatchCreditInput): { creditedPercent: number; measurable: boolean } {
+  const priorPct = Math.max(0, Math.min(100, Number(input.prior?.percentWatched ?? 0) || 0))
+  const duration = Number(input.durationSeconds)
+  if (!Number.isFinite(duration) || duration <= 0) return { creditedPercent: priorPct, measurable: false }
+  if (!input.prior) return { creditedPercent: 0, measurable: true }
+  const last = Date.parse(String(input.prior.lastWriteAt ?? ""))
+  const gapSeconds = Number.isNaN(last) ? 0 : Math.max(0, Math.min(MAX_CREDITED_GAP_SECONDS, (input.now.getTime() - last) / 1000))
+  const ceiling = priorPct + (gapSeconds * MAX_PLAYBACK_RATE * 100) / duration
+  const claimed = Math.max(0, Math.min(100, Number(input.claimedPercent) || 0))
+  return { creditedPercent: Math.max(priorPct, Math.min(claimed, ceiling, 100)), measurable: true }
+}

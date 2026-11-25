@@ -23,7 +23,7 @@ export interface GoLiveReadiness {
   generatedAt: string
   requiredReady: number
   requiredTotal: number
-  domains: DomainReadiness[]
+  domains: DomainReadiness[]; configNote: string
 }
 
 /** PURE: fold domain results into the go/no-go summary. */
@@ -33,7 +33,7 @@ export function rollupReadiness(domains: DomainReadiness[], generatedAt: string)
     generatedAt,
     requiredReady: required.filter((d) => d.status === "ready").length,
     requiredTotal: required.length,
-    domains,
+    domains, configNote: configurationNote(required.filter((d) => d.status === "ready").length, required.length),
   }
 }
 
@@ -326,4 +326,127 @@ export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
   const results = await Promise.all(probes.map((p) => p().catch((e) =>
     ({ key: "unknown", label: "Probe crashed", status: "broken" as const, optional: false, detail: String(e?.message ?? e) }))))
   return rollupReadiness(results, new Date().toISOString())
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// THE FIVE RELEASE STATES — the ONE source (wave 156, lane 156O; directive §156O "Release states must be honest").
+//
+// The board above answers ONE question: is the platform CONFIGURED (keys accepted, URLs set, buckets reachable)? That is
+// an input to a release, never a release state, so the board no longer prints "GO". The release is five DISTINCT states,
+// each with its own evidence; no state implies another, and a simulated or local result can never satisfy a live one:
+//
+//   CODE GREEN                 static / guard / CI proofs pass (the chain's own exit line, or a CI run id)
+//   SECURITY READBACK GREEN    live row-security / storage policies READ BACK on the live project, dated, by a named reader
+//   LEGAL/LICENSING READY      counsel-approved agreements and the provider licenses / terms actually held
+//   PREVIEW LIVE VERIFIED      a deployed preview's route / secret / provider / cron / e-sign / journey smoke evidence
+//   PUBLIC RELEASE AUTHORIZED  the owner says go, after every other state is met and every blocker is cleared
+//
+// Readers: this board (configNote), scripts/release-rules.ts (re-exports these for test:release-blockers §H), and
+// docs/operations/WAVE156-OWNER-ACTION-SHEET.md, whose release-state table parseReleaseStateTable reads. Pure; no I/O.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export type ReleaseStateKey = "CODE GREEN" | "SECURITY READBACK GREEN" | "LEGAL/LICENSING READY" | "PREVIEW LIVE VERIFIED" | "PUBLIC RELEASE AUTHORIZED"
+/** Where a piece of evidence came from. `simulated` (in-memory, stubbed, canary) and `local_db` (a scratch / local
+ *  PostgreSQL) are named ONLY so that they can be refused by name — no live state accepts either. */
+export type EvidenceOrigin = "ci" | "local_chain" | "live_read" | "counsel" | "owner" | "deployment" | "simulated" | "local_db"
+
+export interface ReleaseStateSpec {
+  key: ReleaseStateKey
+  means: string
+  /** true = the evidence must come from the real world (the live project, counsel, the owner, a deployment). */
+  live: boolean
+  origins: readonly EvidenceOrigin[]
+  /** every pattern must match the evidence cell (ledger prose, read raw). */
+  shape: readonly RegExp[]
+  /** owner obligations that must ALL be discharged first (ids as test:release-blockers prints them). */
+  blockedBy: readonly string[]
+  /** a well-formed evidence row — the guard's positive control proves the shape still accepts what it was written for. */
+  specimen: { origin: EvidenceOrigin; reader: string; evidence: string }
+}
+
+const LIVE_PROJECT_REF = "hrvaqgvukzxfskkcrwbt"
+/** Words that mark a result as not live; a live state refuses evidence carrying any of them. */
+export const NOT_LIVE_MARKERS = /\b(simulat\w*|in-memory|stub\w*|mock\w*|scratch|local|localhost|postgresql\s*1\d(?:\.\d+)?|canar(?:y|ies))\b/i
+
+export const RELEASE_STATES: readonly ReleaseStateSpec[] = Object.freeze([
+  { key: "CODE GREEN", means: "static / guard / CI proofs pass", live: false, origins: ["ci", "local_chain"],
+    shape: [/\bGUARD_EXIT=0\b|\brun \d{9,}\b/], blockedBy: [],
+    specimen: { origin: "ci", reader: "integrator", evidence: "guards run 43986529213 green; chain log final line GUARD_EXIT=0" } },
+  { key: "SECURITY READBACK GREEN", means: "live row-security and storage policies verified on the live project", live: true, origins: ["live_read"],
+    shape: [new RegExp(`\\b${LIVE_PROJECT_REF}\\b`), /\bpg_policies\b/, /storage_bucket_policy_readiness\(\)/],
+    blockedBy: ["O1", "O1-LM", "O2", "R6"],
+    specimen: { origin: "live_read", reader: "owner (SQL editor)", evidence: `${LIVE_PROJECT_REF}: storage_bucket_policy_readiness() every bucket owner_scoped or service_only; pg_policies R.6 ten rows naming the deal; two-tenant script five REFUSED then ROLLBACK` } },
+  { key: "LEGAL/LICENSING READY", means: "counsel-approved agreements and provider licenses / terms actually held", live: true, origins: ["counsel", "owner"],
+    shape: [/\b(counsel|attorney)\b/i, /\blicen[cs]e/i, /\bversion\b/i],
+    blockedBy: ["LEGAL", "LICENSES"],
+    specimen: { origin: "counsel", reader: "owner with counsel", evidence: "counsel sign-off ref LR-1, agreement version 1.0.0 published with its sha256; RentCast license recorded, ceiling set" } },
+  { key: "PREVIEW LIVE VERIFIED", means: "deployed route / secret / provider / cron / e-sign / buyer / seller / deal / finance smoke evidence", live: true, origins: ["deployment"],
+    shape: [/\bdpl_[A-Za-z0-9]{10,}\b/, /\/api\/cron\/dispatch\b/, /\bsigned in\b/i, /\b302\b/],
+    blockedBy: ["O3", "O4", "SEK", "LIVE-PROBES"],
+    specimen: { origin: "deployment", reader: "owner", evidence: "dpl_AbCdEf123456 preview: signed in as broker_owner; /api/cron/dispatch ok; share link 302, tampered 404; buyer, seller and deal journeys walked" } },
+  { key: "PUBLIC RELEASE AUTHORIZED", means: "the owner says go after every blocker is cleared", live: true, origins: ["owner"],
+    shape: [/\bowner\b/i, /\bgo\b/i],
+    blockedBy: ["O1", "O1-LM", "O2", "R6", "O3", "O4", "SEK", "LEGAL", "LICENSES", "LIVE-PROBES"],
+    specimen: { origin: "owner", reader: "owner", evidence: "owner: go for public release, all four states met" } },
+])
+
+export interface ReleaseStateRow { state: string; status: string; date: string; origin: string; reader: string; evidence: string }
+export interface ReleaseStateVerdict { key: ReleaseStateKey; met: boolean; why: string }
+
+/** PURE — one state's verdict. MET needs: the status word MET, an ISO date, an origin the state admits (never simulated /
+ *  local_db for a live state), a named reader for a live state, evidence matching every shape pattern and — for a live
+ *  state — no not-live marker, every blocker discharged, and (PUBLIC RELEASE AUTHORIZED) every other state met. */
+export function releaseStateVerdict(key: ReleaseStateKey, row: ReleaseStateRow | undefined, ctx: { openBlockers: readonly string[]; otherStatesMet?: boolean }): ReleaseStateVerdict {
+  const spec = RELEASE_STATES.find((s) => s.key === key)
+  const no = (why: string): ReleaseStateVerdict => ({ key, met: false, why })
+  if (!spec) return no("unknown state")
+  if (!row) return no("no evidence row")
+  if (row.status !== "MET") return no(`status ${row.status || "blank"}`)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(row.date)) return no("no ISO date")
+  if (!spec.origins.includes(row.origin as EvidenceOrigin)) return no(`origin ${row.origin || "blank"} cannot satisfy ${key}${row.origin === "simulated" || row.origin === "local_db" ? " (a simulated or local result is never live)" : ""}`)
+  if (spec.live && NOT_LIVE_MARKERS.test(row.evidence)) return no("the evidence describes a simulated or local result")
+  if (spec.live && !/[A-Za-z]{2,}/.test(row.reader.replace(/\b(lane\s*\w*|ci|guard|script|n\/a|none|unknown)\b/gi, ""))) return no("no named reader")
+  const missing = spec.shape.filter((re) => !re.test(row.evidence))
+  if (missing.length) return no(`evidence lacks ${missing.length} of ${spec.shape.length} required facts`)
+  const open = spec.blockedBy.filter((b) => ctx.openBlockers.includes(b))
+  if (open.length) return no(`blocked by ${open.join(", ")}`)
+  if (key === "PUBLIC RELEASE AUTHORIZED" && !ctx.otherStatesMet) return no("the other four states are not all met")
+  return { key, met: true, why: `${row.date}, ${row.origin}, read by ${row.reader}` }
+}
+
+/** PURE — all five verdicts; PUBLIC RELEASE AUTHORIZED is judged after the other four. */
+export function releaseStateVerdicts(rows: ReadonlyMap<string, ReleaseStateRow>, openBlockers: readonly string[]): ReleaseStateVerdict[] {
+  const firstFour = RELEASE_STATES.filter((s) => s.key !== "PUBLIC RELEASE AUTHORIZED").map((s) => releaseStateVerdict(s.key, rows.get(s.key), { openBlockers }))
+  const pub = releaseStateVerdict("PUBLIC RELEASE AUTHORIZED", rows.get("PUBLIC RELEASE AUTHORIZED"), { openBlockers, otherStatesMet: firstFour.every((v) => v.met) })
+  return [...firstFour, pub]
+}
+
+/** PURE — the release-state table between `<!-- release-states:start -->` and `<!-- release-states:end -->`:
+ *  | State | Status | Date | Origin | Reader | Evidence | (the first row per state wins). */
+export function parseReleaseStateTable(md: string): Map<string, ReleaseStateRow> {
+  const block = /<!-- release-states:start -->([\s\S]*?)<!-- release-states:end -->/.exec(md)?.[1] ?? ""
+  const rows = new Map<string, ReleaseStateRow>()
+  for (const line of block.split("\n")) {
+    const c = line.split(/(?<!\\)\|/).slice(1, -1).map((x) => x.trim())
+    if (c.length !== 6 || !RELEASE_STATES.some((s) => s.key === c[0])) continue
+    if (!rows.has(c[0])) rows.set(c[0], { state: c[0], status: c[1], date: c[2], origin: c[3], reader: c[4], evidence: c[5] })
+  }
+  return rows
+}
+
+/** Phrases that announce a release. Shown nowhere while PUBLIC RELEASE AUTHORIZED is unmet, except in a sentence that
+ *  negates it ("never", "not", "no one may", "cannot", "must not", "until"). */
+export const RELEASE_CLAIM = /\b(ready to sell|live[- ]ready|ready for public (?:launch|release)|go[- ]live ready)\b/i
+const NEGATED = /\b(never|not|no one|cannot|can't|must not|until|unless|refus\w*|forbid\w*|nothing|nobody)\b/i
+
+/** PURE — may this text be shown? Every sentence carrying a release claim must negate it, unless the release is authorized. */
+export function releaseClaimAllowed(text: string, publicReleaseAuthorized: boolean): boolean {
+  if (publicReleaseAuthorized) return true
+  return text.split(/(?<=[.!?;])\s+|\n/).every((s) => !RELEASE_CLAIM.test(s) || NEGATED.test(s))
+}
+
+/** PURE — the go-live board's one-line summary. Configuration only: it names the release states it is NOT. */
+export function configurationNote(ready: number, total: number): string {
+  const all = total > 0 && ready === total
+  return `${ready}/${total} required configuration domains answer${all ? "" : " (gaps listed below)"}. Configuration is not a release state: ${RELEASE_STATES.map((s) => s.key).join(" · ")} are judged separately (test:release-blockers §H; docs/operations/WAVE156-OWNER-ACTION-SHEET.md).`
 }

@@ -213,6 +213,7 @@ export const simliFaceRenderAdapter: FaceRenderAdapter = {
       faceId: face.faceId,
       maxSessionLength: SIMLI_DEFAULT_MAX_SESSION_LENGTH_S,
       maxIdleTime: SIMLI_DEFAULT_MAX_IDLE_TIME_S,
+      brokerageId: face.brokerageId ?? null,
     })
     if (!token.ok) return { ok: false, provider: "simli", error: token.error }
 

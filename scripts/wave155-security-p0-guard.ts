@@ -81,8 +81,8 @@ const STUB_BY_SPEC: Record<string, string> = {
   "@/lib/external": "export class BatchDataClient { async getMotivatedSellerData() { globalThis.__S1.calls.batchdata++; return [] } }",
   "@/lib/lead-pipeline/social-sourcer": "export const sourceGoogle = async () => { globalThis.__S1.calls.google++; return { cost: 0, records: [] } }",
   "@/lib/providers/payment": [
-    "export const createTransfer = async (a) => { globalThis.__S1.calls.transfer++; globalThis.__S1.lastTransfer = a; return globalThis.__S1.transferFails ? { success: false, error: 'the transfer seam refused' } : { success: true, transferId: 'tr_seam' } }",
-    "export const createCheckoutSession = async () => ({ success: false }); export const retrieveCheckoutSession = async () => ({ success: false })",
+    "export const createTransfer = async (a) => { globalThis.__S1.calls.transfer++; globalThis.__S1.lastTransfer = a; return globalThis.__S1.transferFails ? { success: false, error: 'the transfer seam refused', outcome: 'refused' } : { success: true, transferId: 'tr_seam' } }",
+    "export const findTransferForPayout = async () => ({ ok: true }); export const createCheckoutSession = async () => ({ success: false }); export const retrieveCheckoutSession = async () => ({ success: false })",
   ].join("\n"),
   "@/lib/stripe": "export const stripe = new Proxy({}, { get() { throw new Error('stripe is a seam in this proof — never called') } })",
   "@/lib/kernel/emit": "export const emitKernelEvent = async () => { globalThis.__S1.calls.events++; return { inserted: true } }; export const asWriteResult = () => ({ error: null })",

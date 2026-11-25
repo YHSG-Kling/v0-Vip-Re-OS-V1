@@ -1067,7 +1067,7 @@ Classes: `loop-complete` 712 · `read-surface` 412 · `partial` 219 · `writes-u
 | `batchdata_comps_provider` | partial (no closure) | cron `api/cron/lead-scraping` (+1) | — | `ai-cma-orchestrator.ts` +4 | cma_comp_supplement_cache | 1 reader(s) | — | — | — | `test:cma-provider-lane` |
 | `batchdata_date_window` | partial (no closure) | cron `api/cron/lead-scraping` (+1) | — | `batchdata-client.ts` | — | — | — | — | — | `test:batchdata-date-window` |
 | `batchdata_mcp_adapter_contract` | partial (no closure) | cron `api/cron/lead-scraping` (+1) | — | `batchdata-client.ts` +2 | — | — | — | — | — | `test:batchdata-mcp` |
-| `batchdata_seller_signals` | partial (no closure) | action `actions/lead-intelligence.ts` | R | `lead-intelligence.ts` +8 | ad_campaigns, audience_members, audience_sync_runs +14 | 55 reader(s) | — | — | — | `test:batchdata-seller-signals` |
+| `batchdata_seller_signals` | partial (no closure) | action `actions/lead-intelligence.ts` | R | `lead-intelligence.ts` +8 | ad_campaigns, audience_members, audience_sync_runs +15 | 57 reader(s) | — | — | — | `test:batchdata-seller-signals` |
 | `broker_brief_intel` | partial (no closure) | action `actions/briefing-actions.ts` (+2) | — | `broker.ts` | ai_daily_briefings | 7 reader(s) | — | — | — | `test:broker-brief-intel` |
 | `config_snapshots` | partial (no closure) | action `actions/superadmin/config-snapshots.ts` (+1) | — | `config-snapshots.ts` | brand_voice_profile, brokerage_brand_settings, brokerages +2 | 437 reader(s) | — | — | — | `test:config-snapshots` |
 | `contact_inheritance` | partial (no closure) | reactor `lib/kernel/event-reactor.ts` (+1) | — | `lead-visibility.ts` +1 | contacts, leads | 663 reader(s) | — | — | — | `test:contact-inheritance` |

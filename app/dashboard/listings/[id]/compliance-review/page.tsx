@@ -29,6 +29,7 @@ export default async function ListingComplianceReviewPage({ params }: { params: 
         <Link href={`/dashboard/listings/${listingId}/lifecycle`} className="text-sm text-muted-foreground hover:underline">← Back to the listing</Link>
         <h1 className="text-2xl font-semibold">Listing agreement compliance review</h1>
         {label && <p className="text-sm text-muted-foreground">{label}</p>}
+        <Link href={`/dashboard/compliance/queue/review/listing_agreement/${listingId}`} className="text-xs text-muted-foreground hover:underline">Open in the compliance queue&apos;s review page →</Link>
       </div>
       <RepresentationReviewPanel record="listing_agreement" subjectId={listingId} />
     </div>

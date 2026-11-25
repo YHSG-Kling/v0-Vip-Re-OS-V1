@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { AIIdentityEditor } from "@/app/components/ai-identity/AIIdentityEditor"
+import { AIIdentityEditor } from "@/app/components/ai-identity/AIIdentityEditor"; import { resolveSessionSeatWords } from "@/lib/kernel/resolve-user-office"
 import { getAIIdentityProfile } from "@/app/actions/ai-identity"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -67,7 +67,7 @@ export default async function AdminAIIdentityPage() {
         brokerageId={brokerageId}
         brokerageName={brokerage?.name ?? undefined}
         initialProfile={existingProfile}
-        parentProfile={null}
+        parentProfile={null} words={await resolveSessionSeatWords()}
       />
     </div>
   )

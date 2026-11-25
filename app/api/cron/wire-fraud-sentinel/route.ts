@@ -337,7 +337,7 @@ export async function GET(request: Request) {
         // agents.id; notifications.user_id needs a users.id. Cross via
         // agents.user_id, and pass null rather than substituting the id we hold.
         agentUserId: await resolveAgentUserId(supabase, txn.agent_id as string | null),
-        wire,
+        wire, transactionId: c.transactionId, agentId: (txn.agent_id as string | null) ?? null, subjectRef: dedupeKey, // 156J: bulletin match → verification task
       }, supabase)
 
       verdicts[verdict.riskLevel] = (verdicts[verdict.riskLevel] ?? 0) + 1
@@ -377,7 +377,12 @@ export async function GET(request: Request) {
       escalated += 1
     }
 
+    // 156J — the fraud network's retention timer rides this platform cron (no new schedule): private incident cases past
+    // retention_until are deleted, evidence fingerprints and bulletin source links cascade. Counted, never silent.
+    const { purgeExpiredFraudCases } = await import("@/lib/fraud-network/network")
+    const retention = await purgeExpiredFraudCases(supabase)
     const payload = {
+      fraud_case_retention: retention,
       scanned,
       batch_cap: BATCH * 2,
       capped: (txDocs?.length ?? 0) >= BATCH || (docs?.length ?? 0) >= BATCH,

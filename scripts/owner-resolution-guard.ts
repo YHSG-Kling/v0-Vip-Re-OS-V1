@@ -189,6 +189,12 @@ async function main(): Promise<void> {
     "server_action:app/actions/ai-content-generation.tsx#logGenerationCost": { via: "lane:155S3" },
     "server_action:app/actions/buyer-lifecycle-core.ts#executeBuyerStateTransition": { via: "lane:155S1" },
     "server_action:app/actions/buyer-offers.ts#startOfferDraft": { via: "domain", owner: "shopping_agent" },
+    // WAVE 156 (lane 156S): both paths synthesize speech through lib/voice/elevenlabs-tts.ts, which now leaves a paid-door
+    // receipt + a spend row (lib/vendor-governance/paid-egress.ts) — so the census newly sees them as log-only. The subject
+    // is the agent's / assistant's synthesized voice: the voice asset domain the Asset Manager owns (did_egress_gateway,
+    // the ElevenLabs egress rows of MAINTENANCE_DOMAINS).
+    "http:/api/internal/voice-tts": { via: "domain", owner: "asset_manager" },
+    "server_action:app/actions/ai-identity.ts#previewAssistantVoiceAction": { via: "domain", owner: "asset_manager" },
     "server_action:app/actions/compliance/closing-review.ts#getClosingReadinessAction": { via: "read:transaction_documents" },
     "server_action:app/actions/contact-persona.ts#readContactResearchAttributes": { via: "read:contacts" },
     "server_action:app/actions/content-prediction.ts#logActualPerformanceAction": { via: "log:prediction_accuracy_log" },

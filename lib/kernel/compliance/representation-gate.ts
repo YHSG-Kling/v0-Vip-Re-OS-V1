@@ -603,7 +603,12 @@ export function decideOfferRepresentation(input: OfferRepresentationInput): Repr
         ? "The executed contract on file was replaced by a later version that is not on this offer. Upload the current executed contract."
         : "No executed contract document is filed on this offer, so its terms cannot be compared. Upload the fully signed contract (and the accepted counter, if any)." })
   }
+  // WHICH PAPER IS THE HEAD (round 3): on a countered contract the accepted COUNTER states the governing terms; the original
+  // contract's paper legitimately states the original price and is not a contradiction of it. So the head is the newest counter
+  // paper when the sequence carries a counter, and only papers of the head's own kind are compared against each other.
+  if (input.packet.sequence.length > 1) current.sort((a, b) => Number(b.classification === "counter_offer") - Number(a.classification === "counter_offer"))
   const head = current[0]
+  const sameKind = current.slice(1).filter((d) => d.classification === head?.classification)
   const executedAddenda = offerAddenda.filter((d) => input.packet.addendumDocumentIds.includes(d.id) && !isSupersededDocument(d.metadata))
   const unsignedAddenda = offerAddenda.filter((d) => !input.packet.addendumDocumentIds.includes(d.id) && !isSupersededDocument(d.metadata))
 
@@ -612,6 +617,14 @@ export function decideOfferRepresentation(input: OfferRepresentationInput): Repr
     reasons.push(...readabilityReasons(head, label))
     reasons.push(...ambiguousSignatures(head, label, ["buyer", "seller"]))
     for (const ad of executedAddenda) reasons.push(...readabilityReasons(ad, "An executed addendum"))
+    // EVERY INSTRUMENT OF THE CONTRACT IS EXECUTED (round 3): the head (an accepted counter's own paper), the original's paper and
+    // each executed addendum carry both parties' signatures AND initials — the same evaluator the creation gate uses. The review
+    // runs before the stamp, so it must not accept a packet the gate would later refuse.
+    for (const paper of [...current, ...executedAddenda]) {
+      const ex = evaluateExecution(paper.signature_completeness, ["buyer", "seller"])
+      if (!ex.executed) reasons.push({ code: ex.missing.some((m) => m.endsWith("initials")) && !ex.missing.some((m) => m.endsWith("signature")) ? "initials_missing" : "gate_refused", severity: "hold", documentId: paper.id, field: "signatures",
+        message: `${paper.id === head.id ? label : paper.classification === "counter_offer" ? "A counter-offer paper" : paper.classification === "addendum" ? "An executed addendum" : "The original purchase contract"} (${String(paper.classification ?? "document").replace(/_/g, " ")}) is missing the ${ex.missing.join(", ")}. Obtain them and upload the executed paper.` })
+    }
 
     for (const t of CONTRACT_TERMS) {
       // Governing value: the head instrument, then each EXECUTED addendum in order (a later executed amendment governs).
@@ -625,7 +638,7 @@ export function decideOfferRepresentation(input: OfferRepresentationInput): Repr
       }
       if (gov) compareFact(compared, reasons, { field: t.field, documentId: gov.doc, documentSays: gov.v, recordSays: O[t.offerKey] }, t.eq, gov.doc === head.id ? label : "The executed addendum", t.what)
       // Two current contract papers on the head that disagree with each other are a contradiction, not a choice.
-      for (const other of current.slice(1)) {
+      for (const other of sameKind) {
         const ov = firstPresent(objectOf(other.extracted_fields), t.docKeys)
         const hv = firstPresent(objectOf(head.extracted_fields), t.docKeys)
         if (present(ov) && present(hv) && !t.eq(ov, hv)) reasons.push({ code: "contradictory_terms", severity: "hold", documentId: other.id, field: t.field, documentSays: ov, recordSays: hv,

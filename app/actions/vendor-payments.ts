@@ -32,7 +32,7 @@ import { isTenantCommerceAdmin } from "@/lib/auth/resolve-user-role"
 //
 // scripts/stripe-account-scope-simulator.ts (C8/C9) holds both halves of that.
 import { stripe } from "@/lib/stripe"
-import { createTransfer, createCheckoutSession, retrieveCheckoutSession } from "@/lib/providers/payment"
+import { createTransfer, createCheckoutSession, retrieveCheckoutSession, findTransferForPayout } from "@/lib/providers/payment"
 import {
   readVendorStripeConnect,
   upsertVendorStripeAccount,
@@ -640,12 +640,27 @@ export async function initiateVendorPayout(params: {
     return { success: false, error: "Vendor Stripe account not set up", w9Warning }
   }
 
+  // ── WAVE 156 (156N, C26): RECONCILE BEFORE ANY NEW TRANSFER ─────────────────────────────────────────────────────────
+  // A Stripe payout still 'pending' with no transfer id is one whose answer was lost (a crash, a timeout, a 5xx between the
+  // transfer and the row update). Its earnings stay claimed and it is settled HERE, before anything new is claimed or sent:
+  // found on Stripe → the row takes the transfer id; provably absent → it is re-sent under its OWN idempotency key (Stripe
+  // hands back the original if it did land); still unknown → this request is refused and nothing new moves.
+  const gates = ["resolveWriteContextForTenant (session tenant)", requester === "vendor_seat" ? "the vendor's own seat (requireVendorActor + decideClaimedTenant)" : "isTenantCommerceAdmin (TENANT_COMMERCE_ADMIN_USER_TYPES)", "verifyVendorInCallerBrokerage", "amount = the vendor's AVAILABLE earnings, claimed once (available → paid_out)", "payout row written before the transfer", "Stripe Connect onboarding complete"]
+  const recon = await reconcileUnconfirmedStripePayouts(svc, { vendorId: params.vendorId, brokerageId: ctx.brokerageId, actorUserId: ctx.actorUserId, requester, gates })
+  if (recon.unresolved.length > 0) {
+    return { success: false, error: `An earlier Stripe payout (${recon.unresolved.join(", ")}) has not been confirmed with Stripe yet, so nothing new was sent. Try again shortly.`, w9Warning, earningsWarning: recon.warning }
+  }
+
   // ── WHAT A PAYOUT MAY COVER: THE VENDOR'S AVAILABLE EARNINGS, EACH ONCE ─────────────────────────────────────────────
   // The amount used to be the caller's number, and the vendor button sent no earningIds — so nothing was ever marked
   // paid out and the same "available" balance could be requested again and again. claimAvailableEarnings reads this
   // vendor's 'available' earnings in THIS brokerage (the selected ones when earningIds are given), refuses an amount that
   // is not their sum, and CLAIMS them ('available' → 'paid_out', counted). A second request finds nothing left to claim.
   const bound = await claimAvailableEarnings(svc, { vendorId: params.vendorId, brokerageId: ctx.brokerageId, earningIds: params.earningIds, requestedAmount: params.amount })
+  if (!bound.ok && recon.settled.length > 0) {
+    // The retry WAS the reconcile: the earlier payout is now recorded with its transfer and nothing new was owed.
+    return { success: true, payoutId: recon.settled[0], w9Warning, earningsWarning: recon.warning ?? `An earlier payout was confirmed with Stripe; nothing new was sent.` }
+  }
   if (!bound.ok) return { success: false, error: bound.error, w9Warning }
 
   // The payout row is written BEFORE the transfer (status 'pending'): every claim has an owning record while its money is
@@ -707,62 +722,15 @@ export async function initiateVendorPayout(params: {
     // WAVE 155 (lane 155R8, D 152): a SECOND payout door (a vendor invoice is not a commission — the commission release gate does
     // not apply), so it writes its OWN decision record: the transfer runs inside ledgerToolCall (session human → authorized_human;
     // claim → transfer → settle on ONE row, its detail.governance naming the gates above). Secrets never enter the detail.
-    const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
-    const gates = ["resolveWriteContextForTenant (session tenant)", requester === "vendor_seat" ? "the vendor's own seat (requireVendorActor + decideClaimedTenant)" : "isTenantCommerceAdmin (TENANT_COMMERCE_ADMIN_USER_TYPES)", "verifyVendorInCallerBrokerage", "amount = the vendor's AVAILABLE earnings, claimed once (available → paid_out)", "payout row written before the transfer", "Stripe Connect onboarding complete"]
-    const transfer = (await ledgerToolCall({
-      brokerageId: ctx.brokerageId, action: "vendor.payout.transfer", channel: "payout_sink", actor: { type: "user", userId: ctx.actorUserId },
-      subject: { type: "vendor", id: params.vendorId }, riskClass: "IRREVERSIBLE", systemSource: "vendor_payout", reasonCode: "HUMAN_REQUESTED",
-      trustClass: "authorized_human", approvalBasis: "policy_permitted", dependencies: [{ type: "vendor", id: params.vendorId, version: null }, { type: "vendor_payout", id: payout.id, version: null }, ...bound.ids.slice(0, 20).map((id) => ({ type: "vendor_earning", id, version: null }))],
-      detail: { amount: bound.amount, earnings: bound.ids.length, requested_by: requester, payout_id: payout.id, governance: governanceRecord({
-        plane: "tool_boundary", verdict: "allow", scope: { brokerageId: ctx.brokerageId, userId: ctx.actorUserId }, actor: { type: "user", id: ctx.actorUserId },
-        entity: { type: "vendor", id: params.vendorId, version: null }, objective: "vendor.payout.transfer", policyConstraints: ["sink rule (D 152): irreversible payout — second door", ...gates],
-        rationale: "a vendor payout from the brokerage's own Stripe account", trustClass: "authorized_human", approvalBasis: "policy_permitted",
-      }) },
-    }, () => createTransfer(
-      {
-        amount: bound.amount,
-        destinationAccountId: connect.accountId!,
-        description: `Vendor payout — ${params.vendorId}`,
-        metadata: { vendorId: params.vendorId, brokerageId: ctx.brokerageId, payoutId: payout.id },
-      },
-      { side: "tenant", brokerageId: ctx.brokerageId },
-    ))) as Awaited<ReturnType<typeof createTransfer>>
-    if (!transfer.success || !transfer.transferId) {
-      // The transfer was refused and no money moved. The payout row says so ('failed' — an honest record of the attempt,
-      // never a pending payout nobody is going to make) and its earnings go back to 'available' through the ONE release
-      // rule (lib/vendors/vendor-payout-events.ts), the same one a later reversal uses.
-      const { data: marked, error: markErr } = await svc
-        .from("vendor_payouts")
-        .update({ status: "failed" })
-        .eq("id", payout.id)
-        .eq("brokerage_id", ctx.brokerageId)
-        .select("id")
-      if (markErr || (marked ?? []).length !== 1) {
-        earningsWarning = `Payout ${payout.id} did not send, but its record could not be marked failed (${markErr?.message ?? "no row matched"}) — its earnings stay reserved until that is corrected.`
-      } else {
-        const { releaseEarningsOfFailedPayout } = await import("@/lib/vendors/vendor-payout-events")
-        const release = await releaseEarningsOfFailedPayout(svc, payout.id)
-        if (!release.ok || release.released !== bound.ids.length) {
-          earningsWarning = `Payout ${payout.id} did not send, but only ${release.released} of ${bound.ids.length} earnings were made available again${release.error ? ` (${release.error})` : ""}.`
-        }
-      }
-      if (earningsWarning) console.error(`[initiateVendorPayout] ${earningsWarning}`)
-      return { success: false, error: transfer.error ?? "The payout could not be sent.", w9Warning, earningsWarning }
-    }
-
-    // The money moved. The row now carries the transfer id the provider's completion event will quote, and reads
-    // 'processing' until that event closes it (the writer never marks a payout paid itself).
-    const { data: sent, error: sentErr } = await svc
-      .from("vendor_payouts")
-      .update({ stripe_transfer_id: transfer.transferId, status: "processing" })
-      .eq("id", payout.id)
-      .eq("brokerage_id", ctx.brokerageId)
-      .select("id")
-    if (sentErr || (sent ?? []).length !== 1) {
-      // success stays true — the transfer EXISTS, and a caller retrying on success:false would be refused anyway (the
-      // earnings are claimed). The record that could not be updated rides beside it, loudly.
-      earningsWarning = `Transfer ${transfer.transferId} was sent, but payout ${payout.id} still reads pending (${sentErr?.message ?? "no row matched"}) — the provider's completion event will not find it until that is corrected.`
-      console.error(`[initiateVendorPayout] ${earningsWarning}`)
+    // WAVE 156 (156N, C26): the send and its settlement are ONE helper (sendAndSettleStripePayout, below) shared with the
+    // reconcile-before-retry path, so a first send and a re-send carry the same idempotency key and read failures the same way.
+    const sent = await sendAndSettleStripePayout(svc, {
+      payout: { id: payout.id, amount: bound.amount, earningsCount: bound.ids.length, earningIds: bound.ids },
+      vendorId: params.vendorId, brokerageId: ctx.brokerageId, actorUserId: ctx.actorUserId, requester, gates, destinationAccountId: connect.accountId!,
+    })
+    earningsWarning = sent.warning
+    if (sent.state !== "sent") {
+      return { success: false, error: sent.error ?? "The payout could not be sent.", w9Warning, earningsWarning }
     }
   }
 
@@ -784,6 +752,161 @@ export async function initiateVendorPayout(params: {
   }
 
   return { success: true, payoutId: payout.id, w9Warning, earningsWarning }
+}
+
+// ── WAVE 156 (lane 156N, canary C26): send → settle, and reconcile before any re-send (module-private) ──────────────
+//
+// THE DEFECT (red at b261c474): every failed create was read as "no money moved", so a timeout or a 5xx AFTER Stripe had
+// created the transfer marked the payout 'failed' and released its earnings, and the vendor's next request paid them a
+// second time. A crash between the transfer and the row update left the row 'pending' with no transfer id, which nothing
+// ever read again. Now: the create carries an idempotency key derived from the payout row and the row's id as its
+// transfer_group; only a PROVABLE refusal releases earnings; an unknown answer is looked up on Stripe first, and a row
+// still unconfirmed blocks every new payout for that vendor until it is settled.
+
+type StripePayoutSendState = "sent" | "failed" | "unconfirmed"
+
+/** The idempotency key a payout row's transfer is created under: the same row always sends under the same key. */
+function vendorPayoutIdempotencyKey(payoutId: string): string {
+  return `vendor-payout-${payoutId}`
+}
+
+async function sendAndSettleStripePayout(
+  svc: PayoutDb,
+  a: {
+    payout: { id: string; amount: number; earningsCount: number; earningIds: string[] }
+    vendorId: string; brokerageId: string; actorUserId: string; requester: string; gates: string[]; destinationAccountId: string
+  },
+): Promise<{ state: StripePayoutSendState; transferId?: string; error?: string; warning?: string }> {
+  const { ledgerToolCall, governanceRecord } = await import("@/lib/kernel/action-ledger")
+  const scope = { side: "tenant" as const, brokerageId: a.brokerageId }
+  const transfer = (await ledgerToolCall({
+    brokerageId: a.brokerageId, action: "vendor.payout.transfer", channel: "payout_sink", actor: { type: "user", userId: a.actorUserId },
+    subject: { type: "vendor", id: a.vendorId }, riskClass: "IRREVERSIBLE", systemSource: "vendor_payout", reasonCode: "HUMAN_REQUESTED",
+    trustClass: "authorized_human", approvalBasis: "policy_permitted", dependencies: [{ type: "vendor", id: a.vendorId, version: null }, { type: "vendor_payout", id: a.payout.id, version: null }, ...a.payout.earningIds.slice(0, 20).map((id) => ({ type: "vendor_earning", id, version: null }))],
+    detail: { amount: a.payout.amount, earnings: a.payout.earningsCount, requested_by: a.requester, payout_id: a.payout.id, idempotency_key: vendorPayoutIdempotencyKey(a.payout.id), governance: governanceRecord({
+      plane: "tool_boundary", verdict: "allow", scope: { brokerageId: a.brokerageId, userId: a.actorUserId }, actor: { type: "user", id: a.actorUserId },
+      entity: { type: "vendor", id: a.vendorId, version: null }, objective: "vendor.payout.transfer", policyConstraints: ["sink rule (D 152): irreversible payout — second door", ...a.gates],
+      rationale: "a vendor payout from the brokerage's own Stripe account", trustClass: "authorized_human", approvalBasis: "policy_permitted",
+    }) },
+  }, () => createTransfer(
+    {
+      amount: a.payout.amount,
+      destinationAccountId: a.destinationAccountId,
+      description: `Vendor payout — ${a.vendorId}`,
+      metadata: { vendorId: a.vendorId, brokerageId: a.brokerageId, payoutId: a.payout.id },
+      idempotencyKey: vendorPayoutIdempotencyKey(a.payout.id),
+      transferGroup: a.payout.id,
+    },
+    { side: "tenant", brokerageId: a.brokerageId },
+  ))) as Awaited<ReturnType<typeof createTransfer>> & { governance?: unknown }
+
+  let transferId = transfer.success ? transfer.transferId : undefined
+  let reconciled = false
+  if (!transferId) {
+    // A refusal at the action-ledger sink never ran the call; a provider refusal is definite. Anything else may have landed.
+    const provablyRefused = transfer.outcome === "refused" || (transfer.governance !== undefined && !("outcome" in transfer))
+    if (provablyRefused) {
+      // No money moved. The payout row says so ('failed' — an honest record of the attempt, never a pending payout nobody is
+      // going to make) and its earnings go back to 'available' through the ONE release rule (lib/vendors/vendor-payout-events.ts).
+      const { data: marked, error: markErr } = await svc
+        .from("vendor_payouts")
+        .update({ status: "failed" })
+        .eq("id", a.payout.id)
+        .eq("brokerage_id", a.brokerageId)
+        .eq("status", "pending")
+        .select("id")
+      let warning: string | undefined
+      if (markErr || (marked ?? []).length !== 1) {
+        warning = `Payout ${a.payout.id} did not send, but its record could not be marked failed (${markErr?.message ?? "no row matched"}) — its earnings stay reserved until that is corrected.`
+      } else {
+        const { releaseEarningsOfFailedPayout } = await import("@/lib/vendors/vendor-payout-events")
+        const release = await releaseEarningsOfFailedPayout(svc, a.payout.id)
+        if (!release.ok || release.released !== a.payout.earningsCount) {
+          warning = `Payout ${a.payout.id} did not send, but only ${release.released} of ${a.payout.earningsCount} earnings were made available again${release.error ? ` (${release.error})` : ""}.`
+        }
+      }
+      if (warning) console.error(`[initiateVendorPayout] ${warning}`)
+      return { state: "failed", error: transfer.error ?? "The payout could not be sent.", warning }
+    }
+    // UNKNOWN: ask Stripe whether this payout's transfer exists before anything is released or re-sent.
+    const found = await findTransferForPayout({ payoutId: a.payout.id, destinationAccountId: a.destinationAccountId }, scope)
+    if (!found.ok || !found.transfer) {
+      const warning = `Stripe did not confirm payout ${a.payout.id} (${transfer.error ?? "no answer"}${found.ok ? "" : `; lookup: ${found.error ?? "failed"}`}). It stays pending with its earnings reserved and is confirmed before anything else is sent.`
+      console.error(`[initiateVendorPayout] ${warning}`)
+      return { state: "unconfirmed", error: "Stripe did not confirm this payout. It is held as pending and will be confirmed before anything else is sent.", warning }
+    }
+    transferId = found.transfer.id
+    reconciled = true
+  }
+
+  // The money moved. The row now carries the transfer id the provider's completion event will quote, and reads
+  // 'processing' until that event closes it (the writer never marks a payout paid itself).
+  const { data: sentRows, error: sentErr } = await svc
+    .from("vendor_payouts")
+    .update({ stripe_transfer_id: transferId, status: "processing" })
+    .eq("id", a.payout.id)
+    .eq("brokerage_id", a.brokerageId)
+    .eq("status", "pending")
+    .select("id")
+  if (sentErr || (sentRows ?? []).length !== 1) {
+    // The transfer EXISTS; the next request's reconcile finds it by the same lookup. The record that could not be updated
+    // rides beside the success, loudly.
+    const warning = `Transfer ${transferId} was sent, but payout ${a.payout.id} still reads pending (${sentErr?.message ?? "no row matched"}) — it is reconciled before the next payout for this vendor.`
+    console.error(`[initiateVendorPayout] ${warning}`)
+    return { state: "sent", transferId, warning }
+  }
+  return { state: "sent", transferId, warning: reconciled ? `Stripe's answer was lost, but transfer ${transferId} for payout ${a.payout.id} was found and recorded.` : undefined }
+}
+
+/**
+ * Every Stripe payout of this vendor in this brokerage still 'pending' with no transfer id: settled BEFORE any new claim or
+ * transfer. Found on Stripe → recorded (no new transfer). Provably absent → re-sent under the row's own idempotency key and the
+ * row's OWN amount (never a new number). Unconfirmed → returned, and the caller refuses the new request.
+ */
+async function reconcileUnconfirmedStripePayouts(
+  svc: PayoutDb,
+  a: { vendorId: string; brokerageId: string; actorUserId: string; requester: string; gates: string[] },
+): Promise<{ unresolved: string[]; settled: string[]; warning?: string }> {
+  const { data, error } = await svc
+    .from("vendor_payouts")
+    .select("id, amount, earnings_ids, initiated_at")
+    .eq("vendor_id", a.vendorId)
+    .eq("brokerage_id", a.brokerageId)
+    .eq("payout_method", "stripe")
+    .eq("status", "pending")
+    .is("stripe_transfer_id", null)
+  if (error) return { unresolved: ["(unreadable)"], settled: [], warning: `Earlier payouts could not be read (${error.message}) — nothing new was sent.` }
+  const rows = (data ?? []) as Array<{ id: string; amount: number | string; earnings_ids: string[] | null; initiated_at?: string | null }>
+  if (rows.length === 0) return { unresolved: [], settled: [] }
+  const connect = await readVendorStripeConnect(svc, a.vendorId)
+  if (!connect?.accountId) return { unresolved: rows.map((r) => r.id), settled: [], warning: "The vendor's Stripe account could not be read to confirm an earlier payout." }
+  const scope = { side: "tenant" as const, brokerageId: a.brokerageId }
+  const unresolved: string[] = [], settled: string[] = []
+  const warnings: string[] = []
+  for (const row of rows) {
+    const found = await findTransferForPayout({ payoutId: row.id, destinationAccountId: connect.accountId, createdSince: row.initiated_at ?? null }, scope)
+    if (!found.ok) { unresolved.push(row.id); warnings.push(found.error ?? "lookup failed"); continue }
+    if (found.transfer) {
+      const { data: rec, error: recErr } = await svc
+        .from("vendor_payouts")
+        .update({ stripe_transfer_id: found.transfer.id, status: "processing" })
+        .eq("id", row.id)
+        .eq("brokerage_id", a.brokerageId)
+        .eq("status", "pending")
+        .is("stripe_transfer_id", null)
+        .select("id")
+      if (recErr || (rec ?? []).length !== 1) { unresolved.push(row.id); warnings.push(`payout ${row.id}: transfer ${found.transfer.id} found but not recorded`) } else { settled.push(row.id); warnings.push(`Stripe transfer ${found.transfer.id} for earlier payout ${row.id} was found and recorded; nothing was sent twice.`) }
+      continue
+    }
+    const ids = row.earnings_ids ?? []
+    const resent = await sendAndSettleStripePayout(svc, {
+      payout: { id: row.id, amount: Number(row.amount), earningsCount: ids.length, earningIds: ids },
+      vendorId: a.vendorId, brokerageId: a.brokerageId, actorUserId: a.actorUserId, requester: a.requester, gates: [...a.gates, "reconciled before re-send (C26)"], destinationAccountId: connect.accountId,
+    })
+    if (resent.state === "unconfirmed") unresolved.push(row.id); else if (resent.state === "sent") settled.push(row.id)
+    if (resent.warning) warnings.push(resent.warning)
+  }
+  return { unresolved, settled, warning: warnings.length ? warnings.join(" ") : undefined }
 }
 
 // ── the binding's two halves (module-private: a "use server" file exports only its actions) ──────────────────────────

@@ -165,7 +165,7 @@ export type IdentityBasis = "record_key" | "verified_match" | "published_contact
 export interface PersonCandidate {
   /** `statesHousingNeed` (wave 153, lane 153N — owner ruling B4): the author states THEIR OWN real-estate need in the first
    *  person (buying, selling, selling by owner, relocating, a military move) — the need is the person's own words, quoted. */
-  statement: { firstPerson: boolean; requestsAgentContact: boolean; statesHousingNeed?: boolean; quote: string | null }
+  statement: { firstPerson: boolean; requestsAgentContact: boolean; statesHousingNeed?: boolean; quote: string | null; /** wave 156 (156I): the author says they are under 18 */ minorAuthor?: boolean }
   identity: { basis: IdentityBasis; email?: string | null; phone?: string | null; handle?: string | null; name?: string | null }
   rights: Pick<SourceRights, "publishedContactPermitted" | "sourceClass">
   publishedAt: string | null
@@ -179,6 +179,9 @@ export function personCandidateProblem(c: PersonCandidate, now: Date): string | 
   if (!c.statement.firstPerson) return "not a first-person statement — a third party's mention of someone never identifies them"
   if (!c.statement.requestsAgentContact && !c.statement.statesHousingNeed) return "the author stated no real-estate need of their own and asked no agent to contact them — a question is answered, not pursued"
   if (!c.statement.quote) return "no verbatim quote — a request is never inferred without the author's own words"
+  // WAVE 156 (156I — directive row 5 "identity & age check"): the author's OWN statement that they are under 18 refuses the
+  // person path; the question is answered through our own inbound resource, never pursued (public-statement.ts authorStatesMinor).
+  if (c.statement.minorAuthor) return "the author says they are under 18 — a minor is never a Raw Lead or an outreach target; answered through our own inbound resource instead"
   const nameOnly = nameOnlyJoinProblem(c.identity.basis)
   if (nameOnly) return nameOnly
   if (c.identity.basis === "handle_only") return "a handle alone identifies nobody — an anonymous poster is never deanonymized"

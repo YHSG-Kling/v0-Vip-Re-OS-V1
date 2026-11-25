@@ -490,7 +490,7 @@ export default async function ConnectorHealingPage() {
           <CardContent className="space-y-2 p-4">
             <h3 className="text-sm font-medium">RentCast request ceiling (the platform&apos;s own hard cutoff)</h3>
             {rentcastCap.ok
-              ? <RentcastCapPanel applied={rentcastCap.applied} setting={rentcastCap.setting} verdict={rentcastCap.verdict} windowStart={rentcastCap.windowStart} windowEnd={rentcastCap.windowEnd} />
+              ? <RentcastCapPanel applied={rentcastCap.applied} setting={rentcastCap.setting} verdict={rentcastCap.verdict} windowStart={rentcastCap.windowStart} windowEnd={rentcastCap.windowEnd} planIncludedRequests={rentcastCap.planIncludedRequests} />
               : <p className="text-sm text-destructive">RentCast ceiling unreadable: {rentcastCap.error} — every RentCast request refuses while it cannot be read.</p>}
           </CardContent>
         </Card>

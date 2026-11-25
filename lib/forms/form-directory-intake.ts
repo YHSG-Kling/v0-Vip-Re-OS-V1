@@ -37,6 +37,21 @@ type Svc = SupabaseClient<any, any, any>
 
 /** MIRRORS m1005 brokerage_form_library_source_kind_check. */
 export const FORM_LIBRARY_SOURCE_KINDS = ["brokerage_upload", "agent_upload", "state_preconfigured", "connected_provider", "platform_catalogue"] as const
+export type FormLibrarySourceKind = (typeof FORM_LIBRARY_SOURCE_KINDS)[number]
+
+/**
+ * PURE (wave 156, 156C round 3): the SOURCE KIND each add door records — read FROM FORM_LIBRARY_SOURCE_KINDS, never a second spelling.
+ * `platform_catalogue` is written only by the catalogue door (lib/forms/platform-form-packets.ts), so no add-form door maps to it.
+ */
+export function sourceKindForAdd(mode: string, forMyself: boolean): FormLibrarySourceKind | null {
+  const wanted = mode === "upload" ? (forMyself ? "agent_upload" : "brokerage_upload") : mode === "state_preconfigured" ? "state_preconfigured" : mode === "provider_form" ? "connected_provider" : null
+  return wanted && (FORM_LIBRARY_SOURCE_KINDS as readonly string[]).includes(wanted) ? (wanted as FormLibrarySourceKind) : null
+}
+
+/** PURE: the add-form doors the screen offers — exactly the modes whose source kind is in the vocabulary (the screen reads this list). */
+export function addModesOffered(sourceKinds: readonly string[] = FORM_LIBRARY_SOURCE_KINDS): Array<"upload" | "state_preconfigured" | "provider_form"> {
+  return (["upload", "state_preconfigured", "provider_form"] as const).filter((m) => [sourceKindForAdd(m, false), sourceKindForAdd(m, true)].some((k) => k !== null && sourceKinds.includes(k)))
+}
 /** MIRRORS m1005 brokerage_form_library_rights_basis_check — the right under which the tenant may use the form. */
 export const FORM_RIGHTS_BASES = ["own_form", "association_membership", "provider_license", "state_mandated_public", "platform_catalogue_license"] as const
 /** MIRRORS m1005 brokerage_form_library_purpose_check — what the form is FOR (a finer word than packet_type). */
@@ -130,6 +145,8 @@ export async function addFormToLibrary(
   const owner = { teamId: input.owner.teamId || null, locationId: input.owner.locationId || null, scopeUserId: input.owner.scopeUserId || null }
   const bad = validateFormProvenance({ ...input, owner }, deps.now)
   if (bad) return { ok: false, error: bad }
+  const sourceKind = sourceKindForAdd(input.mode, !!owner.scopeUserId)
+  if (!sourceKind) return { ok: false, error: `"${input.mode}" is not a way to add a form (${addModesOffered().join(", ")}).` }
   if (!mayManagePacketOwner(actor, owner) || (owner.scopeUserId && owner.scopeUserId !== actor.userId && !actor.oversight)) {
     return { ok: false, error: "You do not have authority to add a form for that owner. Agents add supplemental forms for themselves; the brokerage, an office or a team's library is managed by its admins or team lead." }
   }
@@ -138,7 +155,7 @@ export async function addFormToLibrary(
     formCode: input.formCode ?? null, description: input.description ?? null, licenseNote: input.licenseNote ?? null, licenseExpiresAt: input.licenseExpiresAt ?? null,
   }
   const pv: PacketProvenance = {
-    sourceKind: input.mode === "upload" ? (owner.scopeUserId ? "agent_upload" : "brokerage_upload") : input.mode === "state_preconfigured" ? "state_preconfigured" : "connected_provider",
+    sourceKind,
     rightsBasis: input.rightsBasis, purpose: input.purpose, county: input.county || null, effectiveOn: input.effectiveOn, revisionDate: input.revisionDate || null,
     checklistKeys: input.checklistKeys, signerRoles: input.signerRoles, fieldMapping: input.fieldMapping ?? null,
   }

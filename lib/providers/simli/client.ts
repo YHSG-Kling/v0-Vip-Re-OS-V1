@@ -55,6 +55,8 @@ export interface MintSimliSessionTokenParams {
    *  any caller in this wave; passed through only when a future caller wants
    *  it, never fabricated as a default this file invents. */
   model?: "fasttalk" | "artalk"
+  /** Wave 156 (156S): the tenant the session's minutes belong to (the budget / receipt scope). */
+  brokerageId?: string | null
 }
 
 export type MintSimliSessionTokenResult =
@@ -74,7 +76,18 @@ export async function mintSimliSessionToken(
   const key = (process.env.SIMLI_API_KEY ?? "").trim()
   if (!key) return { ok: false, error: "SIMLI_API_KEY is not configured" }
 
-  const res = await callConnector<{ session_token?: string }>({
+  // THE PAID DOOR (wave 156, lane 156S) — lib/vendor-governance/paid-egress.ts runPaidEgress: a session opens billable
+  // minutes, so the tenant's vendor budget is asked BEFORE the token is minted, against the session's worst case (its
+  // hard length × the ONE per-minute rate); the mint leaves a receipt and books ONE session unit at price_state
+  // 'unknown' (the minutes actually streamed are not known at mint — never the cap booked as spend).
+  const { runPaidEgress } = await import("@/lib/vendor-governance/paid-egress")
+  const { SIMLI_USD_PER_STREAMING_MINUTE } = await import("@/lib/video/realism-profile")
+  type TokenRes = import("@/lib/agentic-os/connector-gateway").GatewayResponse<{ session_token?: string }>
+  const paid = await runPaidEgress<TokenRes>({
+    brokerageId: params.brokerageId ?? null, vendor: "simli", usageType: "live_session", action: "video.simli_session.open",
+    estimatedCostUsd: Math.round((params.maxSessionLength / 60) * SIMLI_USD_PER_STREAMING_MINUTE * 10000) / 10000,
+    units: 1, priceUnknown: true, subject: { type: "simli_face", id: null, ref: params.faceId }, systemSource: "live_agent_session",
+  }, () => callConnector<{ session_token?: string }>({
     connector: "simli",
     baseUrl: SIMLI_BASE,
     path: "/compose/token",
@@ -87,7 +100,9 @@ export async function mintSimliSessionToken(
       maxIdleTime: params.maxIdleTime,
       ...(params.model ? { model: params.model } : {}),
     },
-  })
+  }), (r) => ({ ok: r.ok && !!r.data?.session_token, costUsd: 0, error: r.ok ? null : r.error }))
+  if (!paid.ran) return { ok: false, error: paid.reason === "budget_refused" ? "Vendor budget exceeded — live face session paused" : paid.detail }
+  const res = paid.result
 
   if (!res.ok || !res.data?.session_token) {
     return { ok: false, error: res.error ?? `Simli token mint failed (HTTP ${res.status ?? "?"})` }
