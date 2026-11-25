@@ -410,7 +410,10 @@ async function main(): Promise<void> {
     const bad = await L.ledgerSessionAction(ctx("s-4", "commission.update"), async () => { runs.n++; return { success: true } }, { client: w.client as never }) as Row
     check("NEGATIVE · a two-segment action name is REFUSED by the claim — typed refusal, run not called", runs.n === 1 && bad.success === false && typeof bad.error === "string")
     await L.ledgerSessionAction({ ...ctx("s-5"), actor: { type: "system" } }, async () => ({ success: true }), { client: w.client as never })
-    check("NEGATIVE · a system actor gets NO default trust class (nothing set that the caller did not pass)", !rows().find((r) => r.idempotency_key?.endsWith(":s-5"))?.detail?.governance)
+    // WAVE 156 (156M): every row now carries the shared door's record (withBaseGovernance) — the RULE is unchanged: a system actor's
+    // trust class is what the caller stated, and it stated none, so it reads null (a named gap), never a default.
+    const sys = rows().find((r) => r.idempotency_key?.endsWith(":s-5"))?.detail?.governance
+    check("NEGATIVE · a system actor gets NO default trust class (nothing set that the caller did not pass)", !!sys && sys.trust_class === null && sys.written_by === "ledger_door", JSON.stringify(sys))
   }
 
   console.log(`\nGUARD_RESULT arbiter-decision-contract: ${passes} passed, ${failures} failed (SIMULATED — in-memory clients, counting seams)`)
