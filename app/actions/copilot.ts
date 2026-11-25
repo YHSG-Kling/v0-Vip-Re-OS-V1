@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { createServerClient, createClient } from "@/lib/supabase/server"
 import { agentIdForUser } from "@/lib/agents/agent-for-user"
-import { logMilestoneOverdue } from "@/lib/events"
+import { logMilestoneOverdue } from "@/lib/events/event-helpers"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
 import { isValidUUID } from "@/lib/validations"

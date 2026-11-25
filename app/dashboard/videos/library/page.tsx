@@ -43,7 +43,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
-import { useAuth } from "@/lib/auth/client"
+import { useAuth } from "@/lib/auth/useAuth"
 import { createClient } from "@/lib/supabase/client"
 import {
   getVideoScriptLibrary,

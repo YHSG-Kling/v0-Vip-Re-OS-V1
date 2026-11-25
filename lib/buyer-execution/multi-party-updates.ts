@@ -10,7 +10,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { emitFinancialVerificationEvent } from '@/lib/buyer-lifecycle'
+import { emitFinancialVerificationEvent } from '@/lib/buyer-lifecycle/extensions/financial-verification-schema'
 import { logBuyerExecutionEvent } from './buyer-execution-engine'
 import { assertVendorAssignedToContact } from '@/lib/vendor/assignment-access'
 // agents.id -> users.id. Taken from the CLIENT-AGNOSTIC kernel module, not from

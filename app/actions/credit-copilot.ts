@@ -4,7 +4,7 @@ import { createServerClient } from "@/lib/supabase/server"
 import { bestEffort } from "@/lib/db/best-effort"
 import { getAgentContext } from "@/lib/identity"
 import { agentIdForUser } from "@/lib/agents/agent-for-user"
-import { logCreditStatusUpdated } from "@/lib/events"
+import { logCreditStatusUpdated } from "@/lib/events/event-helpers"
 import { dispatchSms } from "@/lib/providers/dispatch"
 // The ONE way a notifications row gets its tenant — the recipient's
 // users.brokerage_id, the exact value badge-counts compares against.

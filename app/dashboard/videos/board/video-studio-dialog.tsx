@@ -49,7 +49,7 @@ import {
   Sparkles,
   Sliders,
 } from "lucide-react"
-import { useAuth } from "@/lib/auth/client"
+import { useAuth } from "@/lib/auth/useAuth"
 import { createClient } from "@/lib/supabase/client"
 import {
   generateVideoScriptAction,

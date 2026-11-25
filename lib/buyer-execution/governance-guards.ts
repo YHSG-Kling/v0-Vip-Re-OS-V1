@@ -10,12 +10,12 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import {
-  checkFinancialVerification,
-  getCurrentBuyerState as getCurrentState,
-  type FinancialVerificationResult,
-  type BuyerState,
-} from '@/lib/buyer-lifecycle'
+import { checkFinancialVerification, type FinancialVerificationResult } from '@/lib/buyer-lifecycle/financial-verification'
+import { getCurrentBuyerState as getCurrentState } from '@/lib/buyer-lifecycle/lifecycle-logger'
+import type { BuyerState } from '@/lib/buyer-lifecycle/lifecycle-definitions'
+
+
+
 // TWO functions are named `isVerificationExpired` and they take DIFFERENT shapes:
 //   · extensions/financial-verification-schema.ts — takes a FinancialVerificationEvent
 //     and reads `event.metadata.expires_at`. This is the one the barrel exports
