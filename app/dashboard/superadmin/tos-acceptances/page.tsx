@@ -10,6 +10,17 @@ export const dynamic = "force-dynamic"
 // requirePlatformStaff), not a tenant role. Sibling of the re-acceptance
 // gate banner (app/components/layout/tos-reacceptance-banner.tsx) — that
 // checks ONE user's status; this is the full legal-proof export.
+// Wave 156 (lane 156O round 3): the fingerprint columns answer a dispute — WHICH text this person accepted, compared with the
+// text served now (listTosAcceptancesAction computes both server-side; this page renders, it never hashes).
+const FINGERPRINT_LABEL: Record<string, string> = {
+  match: "Yes — same text",
+  different_text: "No — the text changed since (asked to accept again)",
+  not_fingerprinted: "Accepted, text not fingerprinted (recorded before m1066)",
+  earlier_version: "Earlier terms version",
+  unreadable: "Unknown — the current terms could not be read",
+  none: "—",
+}
+
 export default async function TosAcceptancesPage() {
   const result = await listTosAcceptancesAction()
 
@@ -23,6 +34,7 @@ export default async function TosAcceptancesPage() {
         <h1 className="text-lg font-semibold">ToS Acceptance Log</h1>
         <p className="text-sm text-muted-foreground">
           Legal proof-of-acceptance export — {result.rows.length} most recent record{result.rows.length !== 1 ? "s" : ""}.
+          {result.servedSha256 ? ` Text served now: sha256 ${result.servedSha256}.` : " The text served now could not be fingerprinted."}
         </p>
       </div>
       <div className="overflow-x-auto rounded border">
@@ -34,6 +46,8 @@ export default async function TosAcceptancesPage() {
               <th className="px-3 py-2 font-medium">IP</th>
               <th className="px-3 py-2 font-medium">User agent</th>
               <th className="px-3 py-2 font-medium">Accepted at</th>
+              <th className="px-3 py-2 font-medium">Text fingerprint (sha256)</th>
+              <th className="px-3 py-2 font-medium">Covers the text served now</th>
             </tr>
           </thead>
           <tbody>
@@ -44,10 +58,12 @@ export default async function TosAcceptancesPage() {
                 <td className="px-3 py-2">{row.ip_address ?? "—"}</td>
                 <td className="px-3 py-2 max-w-[280px] truncate" title={row.user_agent ?? ""}>{row.user_agent ?? "—"}</td>
                 <td className="px-3 py-2">{new Date(row.accepted_at).toLocaleString()}</td>
+                <td className="px-3 py-2 font-mono text-xs" title={row.content_sha256 ?? ""}>{row.content_sha256 ? `${row.content_sha256.slice(0, 16)}…` : "—"}</td>
+                <td className="px-3 py-2">{FINGERPRINT_LABEL[row.fingerprint]}</td>
               </tr>
             ))}
             {result.rows.length === 0 && (
-              <tr><td className="px-3 py-6 text-center text-muted-foreground" colSpan={5}>No acceptances recorded yet.</td></tr>
+              <tr><td className="px-3 py-6 text-center text-muted-foreground" colSpan={7}>No acceptances recorded yet.</td></tr>
             )}
           </tbody>
         </table>

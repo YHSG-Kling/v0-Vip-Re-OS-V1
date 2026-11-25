@@ -99,26 +99,51 @@ async function upsertTosAcceptance(svc: any, row: Record<string, unknown>, sha25
  * needsAcceptance:false so the banner stays silent rather than erroring.
  */
 export async function checkCurrentUserTosStatusAction(): Promise<
-  { ok: true; needsAcceptance: boolean; currentVersion: string } | { ok: false; error: string }
+  { ok: true; needsAcceptance: boolean; currentVersion: string; fingerprint: TosFingerprint } | { ok: false; error: string }
 > {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.email) return { ok: true, needsAcceptance: false, currentVersion: "" }
+  if (!user?.email) return { ok: true, needsAcceptance: false, currentVersion: "", fingerprint: "none" }
 
+  // WAVE 156 (lane 156O round 3) — THE READER of content_sha256. An acceptance covers what is served only when it names the
+  // current version AND its stored hash equals the hash of the text served NOW (servedTermsHash: the version plus the /legal
+  // notice as rendered). FAIL DIRECTION, deliberately: anything that cannot be read ASKS AGAIN (needsAcceptance true) — the
+  // current terms, the acceptance row — never a pass. A row written before m1066 (hash NULL) keeps the version-only answer and is
+  // labeled "not_fingerprinted": never treated as a match, never locked out.
   const svc = createServiceClient()
-  const { data: settings } = await svc.from("platform_settings").select("tos_version").limit(1).maybeSingle()
-  const currentVersion = (settings as any)?.tos_version ?? "2026-07-01"
+  const served = await servedTermsHash(svc, null)
+  if (!served.ok) return { ok: true, needsAcceptance: true, currentVersion: "", fingerprint: "unreadable" }
+  const row = await readTosAcceptance(svc, user.email.trim().toLowerCase(), served.version)
+  const fingerprint = tosFingerprint(row, served.sha256)
+  return { ok: true, needsAcceptance: fingerprint !== "match" && fingerprint !== "not_fingerprinted", currentVersion: served.version, fingerprint }
+}
 
-  const email = user.email.trim().toLowerCase()
-  const { data: accepted, error } = await svc
-    .from("platform_tos_acceptances")
-    .select("id")
-    .eq("email", email)
-    .eq("tos_version", currentVersion)
-    .maybeSingle()
-  if (error) return { ok: false, error: error.message }
+/** How a stored acceptance relates to the text served now. */
+type TosFingerprint = "match" | "not_fingerprinted" | "different_text" | "none" | "unreadable"
+type TosRowRead = { state: "row"; sha256: string | null } | { state: "none" } | { state: "unreadable" }
 
-  return { ok: true, needsAcceptance: !accepted, currentVersion }
+/** PURE — the comparison. A stored hash that is not exactly the served one (another text, or a tampered value) is "different_text". */
+function tosFingerprint(row: TosRowRead, servedSha256: string): TosFingerprint {
+  if (row.state === "unreadable") return "unreadable"
+  if (row.state === "none") return "none"
+  if (row.sha256 === null) return "not_fingerprinted"
+  return row.sha256 === servedSha256 ? "match" : "different_text"
+}
+
+/** The acceptance row for (email, version). Before m1066 the hash column is absent (PGRST204 / 42703 refuses the whole read):
+ *  the row is re-read without it and reported unfingerprinted. Any other refusal is "unreadable" (fail closed: ask again). */
+async function readTosAcceptance(svc: any, email: string, version: string): Promise<TosRowRead> {
+  const first = await svc.from("platform_tos_acceptances").select("id, content_sha256").eq("email", email).eq("tos_version", version).maybeSingle()
+  let data = first.data, error = first.error
+  if (error && (error.code === "PGRST204" || error.code === "42703") && /content_sha256/.test(error.message ?? "")) {
+    const again = await svc.from("platform_tos_acceptances").select("id").eq("email", email).eq("tos_version", version).maybeSingle()
+    data = again.data ? { ...again.data, content_sha256: null } : again.data
+    error = again.error
+  }
+  if (error) return { state: "unreadable" }
+  if (!data) return { state: "none" }
+  const h = (data as { content_sha256?: unknown }).content_sha256
+  return { state: "row", sha256: typeof h === "string" ? h : null }
 }
 
 /** Accept the CURRENT terms version as the signed-in user (session email — §4). */
@@ -162,18 +187,27 @@ export async function acceptCurrentTosAsCurrentUserAction(): Promise<{ ok: boole
  * Explicit columns, newest first, capped.
  */
 export async function listTosAcceptancesAction(limit = 200): Promise<
-  { ok: true; rows: Array<{ id: string; email: string; tos_version: string; ip_address: string | null; user_agent: string | null; accepted_at: string }> }
+  { ok: true; servedSha256: string | null; rows: Array<{ id: string; email: string; tos_version: string; ip_address: string | null; user_agent: string | null; accepted_at: string; content_sha256: string | null; fingerprint: TosFingerprint | "earlier_version" }> }
   | { ok: false; error: string }
 > {
   const guard = await requirePlatformStaff()
   if (!guard.ok) return { ok: false, error: guard.error }
 
+  // WAVE 156 (lane 156O round 3): the evidence a dispute needs — version, accepted-at and the fingerprint of the accepted text,
+  // beside the fingerprint of the text served now. Before m1066 the hash column is absent and the log is read without it.
   const svc = createServiceClient()
-  const { data, error } = await svc
-    .from("platform_tos_acceptances")
-    .select("id, email, tos_version, ip_address, user_agent, accepted_at")
-    .order("accepted_at", { ascending: false })
-    .limit(Math.min(limit, 1000))
+  const cols = "id, email, tos_version, ip_address, user_agent, accepted_at"
+  const page = (sel: string) => svc.from("platform_tos_acceptances").select(sel).order("accepted_at", { ascending: false }).limit(Math.min(limit, 1000))
+  let { data, error } = await page(`${cols}, content_sha256`)
+  if (error && (error.code === "PGRST204" || error.code === "42703") && /content_sha256/.test(error.message ?? "")) ({ data, error } = await page(cols))
   if (error) return { ok: false, error: error.message }
-  return { ok: true, rows: data ?? [] }
+  const served = await servedTermsHash(svc, null)
+  const rows = ((data ?? []) as Array<Record<string, any>>).map((r) => {
+    const content_sha256 = typeof r.content_sha256 === "string" ? r.content_sha256 : null
+    const fingerprint: TosFingerprint | "earlier_version" = !served.ok ? "unreadable"
+      : r.tos_version !== served.version ? (content_sha256 ? "earlier_version" : "not_fingerprinted")
+      : tosFingerprint({ state: "row", sha256: content_sha256 }, served.sha256)
+    return { id: r.id, email: r.email, tos_version: r.tos_version, ip_address: r.ip_address ?? null, user_agent: r.user_agent ?? null, accepted_at: r.accepted_at, content_sha256, fingerprint }
+  })
+  return { ok: true, servedSha256: served.ok ? served.sha256 : null, rows }
 }
