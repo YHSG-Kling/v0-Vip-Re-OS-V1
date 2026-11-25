@@ -797,7 +797,7 @@ async function sendAndSettleStripePayout(
       idempotencyKey: vendorPayoutIdempotencyKey(a.payout.id),
       transferGroup: a.payout.id,
     },
-    scope,
+    { side: "tenant", brokerageId: a.brokerageId },
   ))) as Awaited<ReturnType<typeof createTransfer>> & { governance?: unknown }
 
   let transferId = transfer.success ? transfer.transferId : undefined
