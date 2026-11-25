@@ -3,8 +3,8 @@
 // app/actions/calculator-artifacts.ts — THE DOORS OF THE CALCULATOR ARTIFACT FAMILY (wave 156, lane 156H).
 //
 // Every export here is a public HTTP endpoint (CLAUDE.md §4). Two kinds of door:
-//   · AUTHORING / INTERNAL (createCalculatorArtifactAction, listCalculatorArtifactsAction, getCalculatorFunnelAction,
-//     computeInternalSellerNetAction) — the tenant, the agent and the user come from the SESSION (getAgentContext), never
+//   · AUTHORING (createCalculatorArtifactAction, listCalculatorArtifactsAction, getCalculatorFunnelAction; the internal net
+//     sheet's one door is calculateSellerNet in app/actions/calculators.ts) — the tenant, the agent and the user come from the SESSION (getAgentContext), never
 //     from the body; gate first, then the service client. Publishing (and the optional QR) is the EXISTING door
 //     app/actions/lead-magnets-actions.ts publishLeadMagnetAction(magnetId, ["landing_page", "qr_code"]).
 //   · PUBLIC (recordCalculatorOpenAction, computeCalculatorArtifactAction, optInCalculatorArtifactAction) — anonymous by
@@ -82,13 +82,11 @@ export async function getCalculatorFunnelAction(formId: string) {
   return getCalculatorFunnel(await svc(), { brokerageId: ctx.brokerageId, formId: String(formId ?? "") })
 }
 
-/** The seller net sheet priced with the brokerage's AGREED commission — an authorized seat only (lib/calculators/artifact.ts). */
-export async function computeInternalSellerNetAction(input: { inputs: Record<string, unknown>; jurisdiction?: string | null; estimateKeys?: string[] }) {
-  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
-  const ctx = await getAgentContext()
-  const { computeInternalSellerNet } = await import("@/lib/calculators/artifact")
-  return computeInternalSellerNet(input ?? { inputs: {} }, { userId: ctx.isAuthenticated ? ctx.userId : null, brokerageId: ctx.isAuthenticated ? ctx.brokerageId : null, userType: ctx.role })
-}
+// TOMBSTONE (wave 156, lane 156H, round 3) — `computeInternalSellerNetAction` stood here: a second door onto the brokerage's
+// agreed-commission net sheet that nothing in the product called, beside the dashboard's own door. What it had and the survivor
+// lacked (estimate marks, buyer-broker compensation in dollars, other liens, concessions, prorated tax) was merged onto the
+// SURVIVOR first: calculateSellerNet at app/actions/calculators.ts:136 (session gate → claimed-tenant decision → ledger receipt →
+// lib/calculators/artifact.ts computeInternalSellerNet with the canonical commission reader).
 
 // ── public ────────────────────────────────────────────────────────────────────
 export async function recordCalculatorOpenAction(formId: string, attribution?: LeadMagnetAttribution | null) {

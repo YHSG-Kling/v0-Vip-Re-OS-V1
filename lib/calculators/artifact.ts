@@ -117,7 +117,7 @@ export function planCalculatorFollowOn(kind: CalculatorKind, intent: "save_resul
 }
 
 // ── seams ─────────────────────────────────────────────────────────────────────
-type TrackFn = (input: { magnetId: string; brokerageId?: string; eventType: string; metadata?: Record<string, unknown>; contactId?: string; ipAddress?: string; userAgent?: string }, opts?: { client?: any }) => Promise<{ success: boolean; eventId?: string; error?: string }>
+type TrackFn = (input: { magnetId: string; brokerageId?: string; eventType: CalculatorEvent; metadata?: Record<string, unknown>; contactId?: string; ipAddress?: string; userAgent?: string }, opts?: { client?: any }) => Promise<{ success: boolean; eventId?: string; error?: string }>
 type CaptureFn = (input: Record<string, unknown> & { formId: string; brokerageId: string; submissionData: Record<string, unknown> }, opts?: { client?: any }) => Promise<{ success: boolean; contactId?: string; submissionId?: string; error?: string }>
 type SignalFn = (input: Record<string, unknown> & { brokerageId: string; fromManager: string; toManager: string; signalType: string; message: string }, client?: any) => Promise<{ ok: boolean; signalId?: string; reason?: string }>
 type CreateFn = (input: any, opts?: { client?: any }) => Promise<{ success: boolean; magnetId?: string; slug?: string; error?: string; lifecycleState?: string }>

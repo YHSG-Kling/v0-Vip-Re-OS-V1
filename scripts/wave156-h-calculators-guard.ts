@@ -344,7 +344,7 @@ async function main() {
   section("§D · the doors and the page (comment-stripped source)")
   const doors = stripComments(raw("app/actions/calculator-artifacts.ts"))
   const exported = [...doors.matchAll(/^export\s+(async\s+)?function\s+(\w+)/gm)]
-  check("every export of the \"use server\" door file is an async function", exported.length >= 7 && exported.every((m) => !!m[1]) && !/^export\s+(const|let|class)/m.test(doors), exported.map((m) => m[2]))
+  check("every export of the \"use server\" door file is an async function", exported.length >= 6 && exported.every((m) => !!m[1]) && !/^export\s+(const|let|class)/m.test(doors), exported.map((m) => m[2]))
   const body = (name: string) => { const i = doors.indexOf(`export async function ${name}(`); const j = doors.indexOf("\nexport ", i + 10); return i < 0 ? "" : doors.slice(i, j < 0 ? undefined : j) }
   const authoring = ["createCalculatorArtifactAction", "listCalculatorArtifactsAction", "getCalculatorFunnelAction"]
   check("the authoring doors resolve the tenant from the SESSION (getAgentContext) before the service client, and pass ctx.brokerageId",
@@ -353,6 +353,15 @@ async function main() {
   check("the public doors take no tenant from the caller and never reach the internal net sheet or commission terms",
     publicDoors.every((n) => { const b = body(n); return b.length > 0 && !/brokerageId/.test(b) && !/computeInternalSellerNet|getDefaultCommissionStructure|agreedCommission/.test(b) }))
   check("CONTROL: the public-door rule fails a body that names a tenant", /brokerageId/.test("optInCalculatorResult({ brokerageId: input.brokerageId })"))
+  // ROUND 3: ONE door for the internal net sheet — the orphan duplicate is retired onto calculateSellerNet, with what it had merged.
+  const calcRaw3 = raw("app/actions/calculators.ts")
+  const tomb = /calculateSellerNet at app\/actions\/calculators\.ts:(\d+)/.exec(raw("app/actions/calculator-artifacts.ts"))
+  const sn = (() => { const c = stripComments(calcRaw3); const i = c.indexOf("export async function calculateSellerNet("); const j = c.indexOf("\nexport ", i + 10); return i < 0 ? "" : c.slice(i, j) })()
+  check("ONE internal net-sheet door: computeInternalSellerNetAction is retired, its tombstone names calculateSellerNet at the line that declares it, and the survivor carries what it had (estimate marks, the remaining net-sheet inputs)",
+    !/export\s+async\s+function\s+computeInternalSellerNetAction\b/.test(doors) && !!tomb && /export async function calculateSellerNet\(/.test(calcRaw3.split("\n")[Number(tomb[1]) - 1] ?? "")
+    && /estimateKeys: Array\.isArray\(data\.estimateKeys\)/.test(sn) && /otherLiens: data\.otherLiens/.test(sn) && /sellerConcessions: data\.sellerConcessions/.test(sn) && /buyerBrokerCompAmount: data\.buyerBrokerCompAmount/.test(sn), tomb?.[1])
+  check("CalculatorEvent is the ONE spelling of the three calculator events: the kernel's trackMagnetEvent parameter and the artifact's tracking seam both read it",
+    /CalculatorEvent/.test(stripComments(raw("lib/kernel/lead-magnets.ts")).match(/eventType:[^\n]*/)?.[0] ?? "") && /eventType: CalculatorEvent/.test(stripComments(raw("lib/calculators/artifact.ts"))))
   const page = stripComments(raw("app/lm/[slug]/page.tsx"))
   check("ONE PAGE FOR WEB, MOBILE AND QR: /lm/[slug] renders <CalculatorArtifact> for a calculator, with the brand computed server-side BEFORE render (tenant voice on the first paint)",
     /calculatorArtifactOf\(/.test(page) && /await loadCalculatorBrand\(/.test(page) && /<CalculatorArtifact[\s\S]{0,400}brand=\{calculator\.brand\}/.test(page))

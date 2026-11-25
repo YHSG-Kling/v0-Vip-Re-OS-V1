@@ -148,7 +148,7 @@ export async function calculateSellerNet(data: {
   /** Transfer tax in dollars; blank → the cited statute for the state (lib/calculators/rate-sources.ts), else "enter a value". */
   transferTaxAmount?: number
   /** Buyer-broker compensation the seller agrees to pay, as a percent — optional, never assumed. */
-  buyerBrokerCompPct?: number
+  buyerBrokerCompPct?: number; /** 156H round 3 — merged from the retired computeInternalSellerNetAction: the rest of the engine's net-sheet inputs + estimate marks. */ buyerBrokerCompAmount?: number; otherLiens?: number; sellerConcessions?: number; proratedPropertyTax?: number; estimateKeys?: string[]
 }) {
   const actor = await calcSessionActor()
   if (!actor.ok) return { success: false as const, error: actor.error }
@@ -172,8 +172,8 @@ export async function calculateSellerNet(data: {
     inputs: {
       salePrice: data.homeValue, mortgagePayoff: data.mortgageBalance, titleEscrowFees: data.titleEscrowFees,
       includeTransferTax: "yes", transferTaxAmount: data.transferTaxAmount, buyerBrokerCompPct: data.buyerBrokerCompPct,
-      hoaAtClosing: data.hoaFees, repairCredits: data.repairsConcessions, otherCosts: extra > 0 ? extra : undefined,
-    },
+      hoaAtClosing: data.hoaFees, repairCredits: data.repairsConcessions, otherCosts: extra > 0 ? extra : undefined, buyerBrokerCompAmount: data.buyerBrokerCompAmount, otherLiens: data.otherLiens, sellerConcessions: data.sellerConcessions, proratedPropertyTax: data.proratedPropertyTax,
+    }, estimateKeys: Array.isArray(data.estimateKeys) ? data.estimateKeys.map(String).slice(0, 40) : [],
     jurisdiction: data.state ? `US-${String(data.state).trim().toUpperCase()}` : null,
   }, { userId: actor.userId, brokerageId: tenant.brokerageId, userType: ctx.role }, { loadAgreedCommission: async (b: string) => agreedCommissionFromStructure(await getDefaultCommissionStructure(b)) })
   if (!r.success) return { success: false as const, error: r.error }
