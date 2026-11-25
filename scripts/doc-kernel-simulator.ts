@@ -1771,14 +1771,14 @@ async function main() {
       && src("lib/kernel/manager-registry.ts").includes("journey_visibility_and_bridge:"))
     // ── BUYER CLOSING-COST BREAKDOWN + THE RIGOROUS FK PASS (owner: "buyer gets a closing cost breakdown" + "go ahead with the rigorous pass test") ──
     const bcc = await import("../lib/offers/buyer-closing-costs")
-    const financed = bcc.estimateBuyerClosingCosts({ purchasePrice: 500_000, loanAmount: 400_000, sellerCredit: 5_000 })
+    const financed = bcc.estimateBuyerClosingCosts({ purchasePrice: 500_000, loanAmount: 400_000, sellerCredit: 5_000, state: "FL" }) // 156H r4: a state, so the reviewed convention prices what it can
     const cash = bcc.estimateBuyerClosingCosts({ purchasePrice: 500_000, loanAmount: 0, sellerCredit: 0 })
     check("BUYER CLOSING-COST BREAKDOWN (the buyer-side companion to the seller net sheet — keep-one, different audience) + THE RIGOROUS FK PASS: every cost line is a LOW–HIGH RANGE with its assumption stated (never false precision), cash drops all lender lines, the negotiated seller credit nets against the total, the disclaimer names the BINDING documents (Loan Estimate / Closing Disclosure), party-anchored action refuses a deal with no price (honest absence); THE FK PASS found the createTour bug class SYSTEMIC — 60+ writes of users.id into agents(id)-FK columns (the entire activity trail on leads/offers/listing flows silently FK-rejected; buyer_behavior_log, showings, contract_signatures, chat_sessions, call_analyses all broken) — ALL fixed via the documented resolveAgentId rule the code itself prescribed; call-intelligence reader+writer BOTH corrected (they were consistent-but-broken: writes rejected, reads empty)",
       financed.isCash === false && financed.lines.length >= 9
       && financed.lines.every((l) => l.high >= l.low && l.low >= 0)
-      && financed.netLow === financed.totalLow - 5000 && financed.netHigh === financed.totalHigh - 5000
+      && financed.netLow === Math.max(0, financed.totalLow - 5000) && financed.netHigh === Math.max(0, financed.totalHigh - 5000)
       && financed.pctLow > 0 && financed.pctHigh >= financed.pctLow
-      && Boolean(financed.lines.find((l) => l.label.includes("Lender fees"))!.note!.includes("0.5%"))
+      && financed.lines.find((l) => l.label.includes("Lender fees"))!.pending === true // RESTATED 156H r4: PENDING the Loan Estimate (the "0.5%–1% of the loan" band is gone)
       && Boolean(financed.disclaimer.includes("Loan Estimate")) && Boolean(financed.disclaimer.includes("Closing Disclosure"))
       && cash.isCash === true && cash.lines.every((l) => !l.label.includes("lender") || l.label.includes("Lender's title") === false)
       && cash.lines.length < financed.lines.length
